@@ -1,0 +1,26 @@
+# Configuration for MADDPG
+num_agents: 4
+gamma: 0.99
+batch_size: 128
+buffer_size: 100000
+tau: 0.001
+sigma: 0.2
+target_update_interval: 2
+steps_between_training_updates: 5
+lr_actor: 0.00001
+lr_critic: 0.0001
+actor_units:
+  - 256
+  - 128
+critic_units:
+  - 256
+  - 128
+decay_percentage: 0.995
+observation_dimension: [24, 24, 24, 24]  # Replace with actual dimensions
+action_space: 
+  - { shape: [2] }
+  - { shape: [2] }
+  - { shape: [2] }
+  - { shape: [2] } 
+  
+action_dimension: [2, 2, 2, 2]  # Replace with actual dimensions

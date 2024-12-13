@@ -1,80 +1,118 @@
-from typing import Any, List
-from citylearn.preprocessing import Encoder, NoNormalization, PeriodicNormalization, OnehotEncoding ,RemoveFeature, Normalize
+from typing import List
 import numpy as np
 import torch
 import torch.nn.functional as F
-from citylearn.agents.rlc import RLC
-from citylearn.citylearn import CityLearnEnv
-from citylearn.rl import Actor, Critic, OUNoise, ReplayBuffer1
-import random
-import numpy.typing as npt
-import timeit
 from torch.cuda.amp import autocast, GradScaler
-from citylearn.agents.rbc import RBC, BasicBatteryRBC, BasicRBC, V2GRBC, OptimizedRBC
-from citylearn.agents.rlc import RLC
 from torch.utils.tensorboard import SummaryWriter
+import random
 import pickle
 
-class MADDPG(RLC):
-    def __init__(self, env: CityLearnEnv, actor_units: list = [256, 128], critic_units: list = [256, 128],
-                 buffer_size: int = int(1e5), batch_size: int = 128, gamma: float = 0.99, sigma=0.2,
-                 target_update_interval: int = 2, lr_actor: float = 1e-5, lr_critic: float = 1e-4,
-                 steps_between_training_updates: int = 5, decay_percentage=0.995, tau=1e-3, *args, **kwargs):
+class MADDPG:
+    def __init__(self, config_path: str):
+        # Load configurations from YAML file
+        self.config = self._load_config(config_path)
 
-        super().__init__(env, **kwargs)
-
-        # Retrieve number of agents
-        self.num_agents = len(self.action_space)
-
-        # Discount factor for the MDP
-        self.gamma = gamma
-
-        # Replay buffer and batch size
-        self.replay_buffer = ReplayBuffer1(capacity=buffer_size, num_agents=self.num_agents)
-        self.batch_size = batch_size
+        # Load configurations
+        self.num_agents = self.config.get("num_agents", 1)
+        self.gamma = self.config.get("gamma", 0.99)
+        self.batch_size = self.config.get("batch_size", 128)
+        self.buffer_size = self.config.get("buffer_size", int(1e5))
+        self.tau = self.config.get("tau", 1e-3)
+        self.sigma = self.config.get("sigma", 0.2)
+        self.target_update_interval = self.config.get("target_update_interval", 2)
+        self.steps_between_training_updates = self.config.get("steps_between_training_updates", 5)
+        self.lr_actor = self.config.get("lr_actor", 1e-5)
+        self.lr_critic = self.config.get("lr_critic", 1e-4)
+        self.actor_units = self.config.get("actor_units", [256, 128])
+        self.critic_units = self.config.get("critic_units", [256, 128])
+        self.decay_percentage = self.config.get("decay_percentage", 0.995)
 
         # Determine device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(self.device)
+        print(f"Device selected: {self.device}")
 
-        self.seed = random.randint(0, 100_000_000)
-        self.actor_units = actor_units
-        self.critic_units = critic_units
-        self.tau = tau
-        self.sigma = sigma
+        # Initialize components
+        self.seed = self._initialize_seed()
+        self.replay_buffer = self._initialize_replay_buffer()
+        self.actors, self.critics, self.actors_target, self.critics_target = self._initialize_networks()
+        self.actors_optimizer, self.critics_optimizer = self._initialize_optimizers()
 
-        # Initialize actors and critics
-        self.actors = [
-            Actor(self.observation_dimension[i], self.action_space[i].shape[0], self.seed, actor_units).to(
-                self.device) for i in range(len(self.action_space))
-        ]
-        self.critics = [
-            Critic(sum(self.observation_dimension), sum(self.action_dimension), self.seed, critic_units).to(
-                self.device) for _ in range(len(self.action_space))
-        ]
-
-        # Initialize target networks
-        self.actors_target = [
-            Actor(self.observation_dimension[i], self.action_space[i].shape[0], self.seed, actor_units).to(
-                self.device) for i in range(len(self.action_space))
-        ]
-        self.critics_target = [
-            Critic(sum(self.observation_dimension), sum(self.action_dimension), self.seed, critic_units).to(
-                self.device) for _ in range(len(self.action_space))
-        ]
-
-        self.actors_optimizer = [torch.optim.Adam(self.actors[i].parameters(), lr=lr_actor) for i in
-                                 range(len(self.action_space))]
-        self.critics_optimizer = [torch.optim.Adam(self.critics[i].parameters(), lr=lr_critic) for i in
-                                  range(len(self.action_space))]
-
-        decay_factor = decay_percentage ** (1/self.env.time_steps)
-        #self.noise = [OUNoise(self.action_space[i].shape[0], self.seed, sigma=sigma, decay_factor=decay_factor) for i in range(len(self.action_space))]
-
-        self.target_update_interval = target_update_interval
-        self.steps_between_training_updates = steps_between_training_updates
         self.scaler = GradScaler()
         self.exploration_done = False
+
+    def _load_config(self, config_path: str):
+        """Loads configuration from a YAML file."""
+        import yaml
+        with open(config_path, 'r') as file:
+            return yaml.safe_load(file)
+
+    def _initialize_seed(self):
+        """Initializes the random seed."""
+        return random.randint(0, 100_000_000)
+
+    def _initialize_replay_buffer(self):
+        """Initializes the replay buffer."""
+        return ReplayBuffer1(
+            capacity=self.buffer_size, num_agents=self.num_agents
+        )
+
+    def _initialize_networks(self):
+        """Initializes actor and critic networks and their target networks."""
+        actors = [
+            Actor(
+                self.config["observation_dimension"][i],
+                self.config["action_space"][i].shape[0],
+                self.seed,
+                self.actor_units,
+            ).to(self.device)
+            for i in range(self.num_agents)
+        ]
+
+        critics = [
+            Critic(
+                sum(self.config["observation_dimension"]),
+                sum(self.config["action_dimension"]),
+                self.seed,
+                self.critic_units,
+            ).to(self.device)
+            for _ in range(self.num_agents)
+        ]
+
+        actors_target = [
+            Actor(
+                self.config["observation_dimension"][i],
+                self.config["action_space"][i].shape[0],
+                self.seed,
+                self.actor_units,
+            ).to(self.device)
+            for i in range(self.num_agents)
+        ]
+
+        critics_target = [
+            Critic(
+                sum(self.config["observation_dimension"]),
+                sum(self.config["action_dimension"]),
+                self.seed,
+                self.critic_units,
+            ).to(self.device)
+            for _ in range(self.num_agents)
+        ]
+
+        return actors, critics, actors_target, critics_target
+
+    def _initialize_optimizers(self):
+        """Initializes optimizers for actors and critics."""
+        actors_optimizer = [
+            torch.optim.Adam(actor.parameters(), lr=self.lr_actor)
+            for actor in self.actors
+        ]
+
+        critics_optimizer = [
+            torch.optim.Adam(critic.parameters(), lr=self.lr_critic)
+            for critic in self.critics
+        ]
+
+        return actors_optimizer, critics_optimizer
 
     @classmethod
     def from_saved_model(cls, filename):
