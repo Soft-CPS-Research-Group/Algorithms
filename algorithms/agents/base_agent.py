@@ -1,17 +1,21 @@
-import torch.nn as nn
+from torch.nn import Module
+from abc import ABC, abstractmethod
 
-class BaseAgent(nn.Module):
+class BaseAgent(Module):
     def __init__(self):
-        super(BaseAgent, self).__init__()
+        Module.__init__(self)  # Initialize nn.Module
+        ABC.__init__(self) #Initializes base class
+        # Add any shared logic or attributes here
+    
+    @abstractmethod
+    def predict(self, observations: List[List[float]], deterministic: bool = None) -> List[List[float]]:
+        """Provide actions for the current time step."""
+        pass
 
-    def act(self, state):
-        """
-        Compute the action given the state.
-        """
-        raise NotImplementedError
-
+    @abstractmethod
     def update(self, *args, **kwargs):
-        """
-        Update the agent's parameters.
-        """
-        raise NotImplementedError
+        """Update replay buffer and networks."""
+        pass
+
+    
+

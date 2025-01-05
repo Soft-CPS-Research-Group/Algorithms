@@ -1,44 +1,41 @@
-from typing import List
-import numpy as np
-import torch
-import torch.nn.functional as F
-from torch.cuda.amp import autocast, GradScaler
-from torch.utils.tensorboard import SummaryWriter
-from .base_agent import BaseAgent
-import random
 import yaml
-import pickle
+import torch
+import numpy as np
+from torch.cuda.amp import autocast, GradScaler
+import mlflow
+from typing import List, Dict
+from .base_agent import BaseAgent
 
 class MADDPG(BaseAgent):
     def __init__(self, config_path: str):
+
+        super().__init__()  # Initialize BaseAgent, which initializes nn.Module and RLC
+
         """Initialize MADDPG agent using a YAML configuration."""
         # Load configurations from YAML
         self.config = self._load_config(config_path)
 
         # Experiment settings
         self.experiment_name = self.config.get("experiment", {}).get("name", "default_experiment")
-        self.log_dir = self.config.get("experiment", {}).get("log_dir", "logs")
-        self.writer = SummaryWriter(log_dir=f"{self.log_dir}/{self.experiment_name}")
-
+                
         # Algorithm hyperparameters
-        self.num_agents = self.config.get("num_agents", 1)
-        self.gamma = self.config.get("gamma", 0.99)
-        self.batch_size = self.config.get("batch_size", 128)
-        self.tau = self.config.get("tau", 1e-3)
-        self.sigma = self.config.get("sigma", 0.2)
-        self.target_update_interval = self.config.get("target_update_interval", 2)
-        self.steps_between_training_updates = self.config.get("steps_between_training_updates", 5)
-        self.lr_actor = self.config.get("lr_actor", 1e-5)
-        self.lr_critic = self.config.get("lr_critic", 1e-4)
+        self.num_agents = self.config.get("algorithm", {}).get("num_agents", 1)
+        self.gamma = self.config.get("algorithm", {}).get("gamma", 0.99)
+        self.batch_size = self.config.get("algorithm", {}).get("batch_size", 128)
+        self.tau = self.config.get("algorithm", {}).get("tau", 1e-3)
+        self.sigma = self.config.get("exploration", {}).get("params", {}).get("sigma", 0.2)
+        self.target_update_interval = self.config.get("algorithm", {}).get("target_update_interval", 2)
+        self.steps_between_training_updates = self.config.get("algorithm", {}).get("steps_between_training_updates", 5)
+        self.lr_actor = self.config.get("algorithm", {}).get("lr_actor", 1e-4)
+        self.lr_critic = self.config.get("algorithm", {}).get("lr_critic", 1e-3)
 
         # Neural network dimensions
-        self.actor_units = self.config.get("actor_units", [256, 128])
-        self.critic_units = self.config.get("critic_units", [256, 128])
+        self.actor_units = self.config.get("algorithm", {}).get("actor_units", [256, 128])
+        self.critic_units = self.config.get("algorithm", {}).get("critic_units", [256, 128])
 
         # Seed and device setup
-        self.seed = self.config.get("seed", random.randint(0, 100_000_000))
+        self.seed = self.config.get("seed", np.random.randint(1e6))
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Device selected: {self.device}")
 
         # Initialize components
         self.replay_buffer = self._initialize_replay_buffer()
@@ -50,7 +47,11 @@ class MADDPG(BaseAgent):
         self.scaler = GradScaler()
         self.exploration_done = False
 
-    def _load_config(self, config_path: str):
+        # MLflow setup
+        if self.config.get("logging", {}).get("mlflow", True):
+            mlflow.set_experiment(self.experiment_name)
+
+    def _load_config(self, config_path: str) -> Dict:
         """Loads configuration from a YAML file."""
         with open(config_path, 'r') as file:
             return yaml.safe_load(file)
@@ -79,18 +80,18 @@ class MADDPG(BaseAgent):
         """Initializes actor and critic networks and their target networks."""
         actors = [
             Actor(
-                self.config["observation_dimension"][i],
-                self.config["action_space"][i].shape[0],
+                self.config["algorithm"]["observation_dimension"],
+                self.config["algorithm"]["action_space"],
                 self.seed,
                 self.actor_units,
             ).to(self.device)
-            for i in range(self.num_agents)
+            for _ in range(self.num_agents)
         ]
 
         critics = [
             Critic(
-                sum(self.config["observation_dimension"]),
-                sum(self.config["action_dimension"]),
+                sum(self.config["algorithm"]["observation_dimension"]),
+                sum(self.config["algorithm"]["action_dimension"]),
                 self.seed,
                 self.critic_units,
             ).to(self.device)
@@ -99,18 +100,18 @@ class MADDPG(BaseAgent):
 
         actors_target = [
             Actor(
-                self.config["observation_dimension"][i],
-                self.config["action_space"][i].shape[0],
+                self.config["algorithm"]["observation_dimension"],
+                self.config["algorithm"]["action_space"],
                 self.seed,
                 self.actor_units,
             ).to(self.device)
-            for i in range(self.num_agents)
+            for _ in range(self.num_agents)
         ]
 
         critics_target = [
             Critic(
-                sum(self.config["observation_dimension"]),
-                sum(self.config["action_dimension"]),
+                sum(self.config["algorithm"]["observation_dimension"]),
+                sum(self.config["algorithm"]["action_dimension"]),
                 self.seed,
                 self.critic_units,
             ).to(self.device)
@@ -135,6 +136,11 @@ class MADDPG(BaseAgent):
 
     def update(self, observations, actions, rewards, next_observations, dones):
         """Perform a training update using the replay buffer."""
+        if self.config.get("logging", {}).get("mlflow", True):
+            if not hasattr(self, 'training_step'):
+                self.training_step = 0  # Initialize training step
+            mlflow.log_param("update_step_interval", self.steps_between_training_updates)
+        """Perform a training update using the replay buffer."""
         self.replay_buffer.push(observations, actions, rewards, next_observations, dones)
 
         if len(self.replay_buffer) < self.batch_size:
@@ -144,7 +150,6 @@ class MADDPG(BaseAgent):
             self.batch_size
         )
 
-        # Prepare tensors
         obs_full = torch.cat(obs_batch, dim=1).to(self.device)
         next_obs_full = torch.cat(next_obs_batch, dim=1).to(self.device)
         action_full = torch.cat(actions_batch, dim=1).to(self.device)
@@ -153,7 +158,6 @@ class MADDPG(BaseAgent):
             zip(self.actors, self.critics, self.actors_target, self.critics_target, self.actors_optimizer, self.critics_optimizer)
         ):
             with autocast():
-                # Update critic
                 Q_expected = critic(obs_full, action_full)
                 next_actions = [
                     actor_target(next_obs) for next_obs in next_obs_batch
@@ -161,7 +165,7 @@ class MADDPG(BaseAgent):
                 next_actions_full = torch.cat(next_actions, dim=1)
                 Q_targets_next = critic_target(next_obs_full, next_actions_full)
                 Q_targets = rewards_batch[agent_num] + self.gamma * Q_targets_next * (1 - dones_batch[agent_num])
-                critic_loss = F.mse_loss(Q_expected, Q_targets.detach())
+                critic_loss = torch.nn.functional.mse_loss(Q_expected, Q_targets.detach())
 
             self.scaler.scale(critic_loss).backward()
             self.scaler.step(critic_optim)
@@ -169,7 +173,6 @@ class MADDPG(BaseAgent):
             self.scaler.update()
 
             with autocast():
-                # Update actor
                 predicted_actions = [actor(obs) for obs in obs_batch]
                 predicted_actions_full = torch.cat(predicted_actions, dim=1)
                 actor_loss = -critic(obs_full, predicted_actions_full).mean()
@@ -179,44 +182,48 @@ class MADDPG(BaseAgent):
             actor_optim.zero_grad()
             self.scaler.update()
 
-            # Update target networks
             if self.steps_between_training_updates % self.target_update_interval == 0:
+                self.training_step += 1  # Increment global training step
                 self.soft_update(critic, critic_target, self.tau)
                 self.soft_update(actor, actor_target, self.tau)
+
+            # Log training metrics to MLflow
+            if self.config.get("logging", {}).get("mlflow", True):
+                mlflow.log_metric(f"critic_loss_agent_{agent_num}", critic_loss.item(), step=self.training_step)
+                mlflow.log_metric(f"actor_loss_agent_{agent_num}", actor_loss.item(), step=self.training_step)
 
     def soft_update(self, local_model, target_model, tau):
         """Soft update model parameters."""
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
             target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
 
-    def save_model(self):
-        """Save the model's actor and critic networks."""
-        save_path = f"models/{self.experiment_name}_maddpg.pth"
-        torch.save({
-            'actors': [actor.state_dict() for actor in self.actors],
-            'critics': [critic.state_dict() for critic in self.critics],
-            'actors_target': [actor_target.state_dict() for actor_target in self.actors_target],
-            'critics_target': [critic_target.state_dict() for critic_target in self.critics_target],
-            'optimizers': {
-                'actors': [optim.state_dict() for optim in self.actors_optimizer],
-                'critics': [optim.state_dict() for optim in self.critics_optimizer],
-            },
-        }, save_path)
-        print(f"Model saved to {save_path}")
+    def save_model(self, path):
+        """Save model to specified path."""
+                for idx, (actor, critic) in enumerate(zip(self.actors, self.critics)):
+            actor_path = f"{path}_actor_{idx}.pth"
+            critic_path = f"{path}_critic_{idx}.pth"
+            torch.save(actor.state_dict(), actor_path)
+            torch.save(critic.state_dict(), critic_path)
+            if self.config.get("logging", {}).get("mlflow", True):
+                mlflow.log_artifact(actor_path, artifact_path="models/actors")
+                mlflow.log_artifact(critic_path, artifact_path="models/critics")
 
-    def load_model(self, load_path):
-        """Load the model's actor and critic networks."""
-        checkpoint = torch.load(load_path)
+        # Log the model artifact to MLflow
+        if self.config.get("logging", {}).get("mlflow", True):
+            # Logging the models individually is already handled above; removing redundant log_artifact.
+
+    def load_model(self, path):
+        """Load model from specified path."""
+        checkpoint = torch.load(path)
         for actor, state_dict in zip(self.actors, checkpoint['actors']):
             actor.load_state_dict(state_dict)
         for critic, state_dict in zip(self.critics, checkpoint['critics']):
             critic.load_state_dict(state_dict)
-        for actor_target, state_dict in zip(self.actors_target, checkpoint['actors_target']):
-            actor_target.load_state_dict(state_dict)
-        for critic_target, state_dict in zip(self.critics_target, checkpoint['critics_target']):
-            critic_target.load_state_dict(state_dict)
         for optim, state_dict in zip(self.actors_optimizer, checkpoint['optimizers']['actors']):
             optim.load_state_dict(state_dict)
         for optim, state_dict in zip(self.critics_optimizer, checkpoint['optimizers']['critics']):
             optim.load_state_dict(state_dict)
-        print(f"Model loaded from {load_path}")     
+
+        # Log model loading event
+        if self.config.get("logging", {}).get("mlflow", True):
+            mlflow.log_param("model_loaded", path)
