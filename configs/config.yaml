@@ -1,0 +1,56 @@
+experiment:
+  name: "test_1_putting_evrything_to_work"
+  logging:
+    log_dir: "./logs"  # Directory for log files
+    log_level: "INFO"  # Logging level
+    mlflow: true  # Enable MLflow
+    mlflow_uri: "file:./mlruns"  # MLflow tracking URI
+
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
+  dataset_path: ../datasets/citylearn_challenge_2022_phase_all_plus_evs         
+  central_agent: false                    
+  reward_function: RewardFunction       
+
+hyperparameters:
+  training:
+    num_agents: 2
+    gamma: 0.99
+    batch_size: 128
+    buffer_size: 100000
+    tau: 0.001
+    sigma: 0.2
+    steps_between_training_updates: 5
+    target_update_interval: 2
+
+replay_buffer:
+  class: "ReplayBuffer1"
+  params:
+    capacity: 100000
+    num_agents: 2
+    batch_size: 128
+
+exploration:
+  strategy: "GaussianNoise"
+  params:
+    sigma: 0.2
+    decay: 0.995
+
+algorithm:
+  actor_network:
+    class: "Actor"
+    params:
+      layers: [256, 128]
+  critic_network:
+    class: "Critic"
+    params:
+      layers: [256, 128]
+  optimizer:
+    actor:
+      class: "Adam"
+      params:
+        lr: 1e-4
+    critic:
+      class: "Adam"
+      params:
+        lr: 1e-3
