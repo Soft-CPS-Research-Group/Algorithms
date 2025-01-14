@@ -3,22 +3,20 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.cuda.amp import autocast, GradScaler
-from torch.utils.tensorboard import SummaryWriter
 from .base_agent import BaseAgent
 import random
 import yaml
-import pickle
 
 class MADDPG(BaseAgent):
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, mlflow):
         """Initialize MADDPG agent using a YAML configuration."""
-        # Load configurations from YAML
+        # 1. Setup
+        # 1.1. Load configurations from YAML
         self.config = self._load_config(config_path)
 
-        # Experiment settings
+        # 1.2. Experiment settings
         self.experiment_name = self.config.get("experiment", {}).get("name", "default_experiment")
         self.log_dir = self.config.get("experiment", {}).get("log_dir", "logs")
-        self.writer = SummaryWriter(log_dir=f"{self.log_dir}/{self.experiment_name}")
 
         # Algorithm hyperparameters
         self.num_agents = self.config.get("num_agents", 1)
