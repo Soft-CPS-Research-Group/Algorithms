@@ -25,7 +25,7 @@ class Wrapper_CityLearn(RLC):
 
     def predict(self, observations, deterministic=None):
         """
-        Delegates the action prediction logic to the custom BaseAgent model.
+        Updates the predict action logic. It now uses a mix of algorithm and the next time step.
         """
         actions = self.model.predict(observations, deterministic)
         self.actions = actions
@@ -34,7 +34,7 @@ class Wrapper_CityLearn(RLC):
 
     def update(self, *args, **kwargs):
         """
-        Delegates the update logic to the custom BaseAgent model.
+        Delegates the update logic to the Algorithm.
         """
         return self.model.update(*args, **kwargs)
 
