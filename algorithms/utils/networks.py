@@ -1,3 +1,17 @@
+import numpy as np
+import random
+from collections import namedtuple, deque
+import copy
+
+# conditional imports
+try:
+    import torch
+    from torch.distributions import Normal
+    import torch.nn as nn
+    import torch.nn.functional as F
+except ImportError:
+    raise Exception("This functionality requires you to install torch. You can install torch by : pip install torch torchvision, or for more detailed instructions please visit https://pytorch.org.")
+
 class Actor(nn.Module):
     """Actor (Policy) Model."""
 

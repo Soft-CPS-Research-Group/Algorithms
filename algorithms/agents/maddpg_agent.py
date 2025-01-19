@@ -1,220 +1,268 @@
-from typing import List
-import numpy as np
 import torch
-import torch.nn.functional as F
-from torch.cuda.amp import autocast, GradScaler
-from .base_agent import BaseAgent
+from torch.nn.functional import mse_loss
+from loguru import logger
+from torch.amp import GradScaler, autocast
 import random
-import yaml
+from algorithms.utils.networks import Actor, Critic
+from algorithms.utils.replay_buffer import *
+from typing import List
+from algorithms.utils.noise import add_noise
 
-class MADDPG(BaseAgent):
-    def __init__(self, config_path: str, mlflow):
-        """Initialize MADDPG agent using a YAML configuration."""
-        # 1. Setup
-        # 1.1. Load configurations from YAML
-        self.config = self._load_config(config_path)
+class MADDPG:
+    def __init__(self, config):
+        """1. Initialize MADDPG with structured logging and streamlined config handling."""
+        # 1.1. Store configuration
+        self.config = config
 
-        # 1.2. Experiment settings
-        self.experiment_name = self.config.get("experiment", {}).get("name", "default_experiment")
-        self.log_dir = self.config.get("experiment", {}).get("log_dir", "logs")
-
-        # Algorithm hyperparameters
-        self.num_agents = self.config.get("num_agents", 1)
-        self.gamma = self.config.get("gamma", 0.99)
-        self.batch_size = self.config.get("batch_size", 128)
-        self.tau = self.config.get("tau", 1e-3)
-        self.sigma = self.config.get("sigma", 0.2)
-        self.target_update_interval = self.config.get("target_update_interval", 2)
-        self.steps_between_training_updates = self.config.get("steps_between_training_updates", 5)
-        self.lr_actor = self.config.get("lr_actor", 1e-5)
-        self.lr_critic = self.config.get("lr_critic", 1e-4)
-
-        # Neural network dimensions
-        self.actor_units = self.config.get("actor_units", [256, 128])
-        self.critic_units = self.config.get("critic_units", [256, 128])
-
-        # Seed and device setup
-        self.seed = self.config.get("seed", random.randint(0, 100_000_000))
+        # 1.2. Device setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Device selected: {self.device}")
+        logger.info(f"Device selected: {self.device}")
 
-        # Initialize components
+        # 1.3. Hyperparameters
+        self.gamma = self.config["hyperparameters"]["training"]["gamma"]
+        self.batch_size = self.config["hyperparameters"]["training"]["batch_size"]
+        self.tau = self.config["hyperparameters"]["training"]["tau"]
+        self.lr_actor = float(self.config["hyperparameters"]["algorithm"]["optimizer"]["actor"]["params"]["lr"])
+        self.lr_critic = float(self.config["hyperparameters"]["algorithm"]["optimizer"]["critic"]["params"]["lr"])
+        self.target_update_interval = self.config["hyperparameters"]["training"]["target_update_interval"]
+
+        # 1.4. Log parameters using the MLflow helper
+        self._log_mlflow_params()
+
+        # 1.5. Retrieve number of agents and their dimensions
+        self.num_agents = self.config["hyperparameters"]["training"]["num_agents"]
+        self.observation_dimension = self.config["simulator"]["observation_dimensions"]
+        self.action_dimension = self.config["simulator"]["action_dimensions"]
+
+        # 1.6. Replay buffer
         self.replay_buffer = self._initialize_replay_buffer()
-        self.exploration_strategy = self._initialize_exploration()
-        self.actors, self.critics, self.actors_target, self.critics_target = self._initialize_networks()
-        self.actors_optimizer, self.critics_optimizer = self._initialize_optimizers()
 
-        # GradScaler for mixed precision training
-        self.scaler = GradScaler()
-        self.exploration_done = False
+        # 1.7. Neural networks and optimizers
+        self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
+        self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
+        self.scaler = GradScaler(self.device)
 
-    def _load_config(self, config_path: str):
-        """Loads configuration from a YAML file."""
-        with open(config_path, 'r') as file:
-            return yaml.safe_load(file)
+        logger.info("MADDPG initialization complete.")
+
+    def _log_mlflow_params(self):
+        """1.4.1 Log hyperparameters to MLflow using a helper."""
+        from utils.mlflow_helper import log_params_to_mlflow
+        logger.debug("Logging hyperparameters to MLflow using helper.")
+        log_params_to_mlflow({
+            "gamma": self.gamma,
+            "batch_size": self.batch_size,
+            "tau": self.tau,
+            "lr_actor": self.lr_actor,
+            "lr_critic": self.lr_critic
+        })
 
     def _initialize_replay_buffer(self):
-        """Dynamically initialize the replay buffer from the configuration."""
-        buffer_config = self.config.get("replay_buffer", {})
-        buffer_class_name = buffer_config.get("class", "ReplayBuffer1")
-        buffer_params = buffer_config.get("params", {})
+        """1.6.1 Initialize the replay buffer dynamically based on configuration."""
+        logger.debug("Initializing replay buffer dynamically.")
 
-        # Dynamically load the replay buffer class
-        buffer_class = getattr(my_replay_buffer_module, buffer_class_name)  # Replace with your replay buffer module
-        return buffer_class(**buffer_params)
+        try:
+            replay_buffer_class = self.config["replay_buffer"]["class"]
+            replay_buffer_params = self.config["replay_buffer"]["params"]
+            logger.debug(f"Replay buffer class: {replay_buffer_class}, params: {replay_buffer_params}")
 
-    def _initialize_exploration(self):
-        """Dynamically initialize the exploration strategy."""
-        exploration_config = self.config.get("exploration", {})
-        strategy_name = exploration_config.get("strategy", "GaussianNoise")
-        strategy_params = exploration_config.get("params", {})
+            ReplayBuffer = globals()[replay_buffer_class]  # Dynamically fetch the class
+            return ReplayBuffer(**replay_buffer_params)
 
-        # Dynamically load the exploration strategy class
-        strategy_class = getattr(my_exploration_module, strategy_name)  # Replace with your exploration module
-        return strategy_class(**strategy_params)
+        except KeyError as e:
+            logger.error(f"Missing key in configuration for replay buffer: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error initializing replay buffer: {e}")
+            raise
 
     def _initialize_networks(self):
-        """Initializes actor and critic networks and their target networks."""
-        actors = [
-            Actor(
-                self.config["observation_dimension"][i],
-                self.config["action_space"][i].shape[0],
-                self.seed,
-                self.actor_units,
-            ).to(self.device)
-            for i in range(self.num_agents)
-        ]
+        """1.7.1 Initialize actor and critic networks."""
+        logger.debug("Initializing actor and critic networks.")
+        seed = self.config["hyperparameters"]["training"].get("seed", 0)  # Default to 0 if not specified
 
-        critics = [
-            Critic(
-                sum(self.config["observation_dimension"]),
-                sum(self.config["action_dimension"]),
-                self.seed,
-                self.critic_units,
-            ).to(self.device)
-            for _ in range(self.num_agents)
-        ]
+        actors, critics, actor_targets, critic_targets = [], [], [], []
+        for i in range(self.num_agents):
+            # Use agent-specific observation and action dimensions
+            state_size = self.observation_dimension[i]
+            action_size = self.action_dimension[i]
 
-        actors_target = [
-            Actor(
-                self.config["observation_dimension"][i],
-                self.config["action_space"][i].shape[0],
-                self.seed,
-                self.actor_units,
-            ).to(self.device)
-            for i in range(self.num_agents)
-        ]
+            # Initialize networks
+            actors.append(Actor(state_size, action_size, seed).to(self.device))
+            critics.append(Critic(sum(self.observation_dimension), sum(self.action_dimension), seed).to(self.device))
+            actor_targets.append(Actor(state_size, action_size, seed).to(self.device))
+            critic_targets.append(Critic(sum(self.observation_dimension), sum(self.action_dimension), seed).to(self.device))
 
-        critics_target = [
-            Critic(
-                sum(self.config["observation_dimension"]),
-                sum(self.config["action_dimension"]),
-                self.seed,
-                self.critic_units,
-            ).to(self.device)
-            for _ in range(self.num_agents)
-        ]
-
-        return actors, critics, actors_target, critics_target
+        return actors, critics, actor_targets, critic_targets
 
     def _initialize_optimizers(self):
-        """Initializes optimizers for actors and critics."""
-        actors_optimizer = [
+        """1.7.2 Initialize optimizers for actors and critics."""
+        logger.debug("Initializing optimizers.")
+        actor_optimizers = [
             torch.optim.Adam(actor.parameters(), lr=self.lr_actor)
             for actor in self.actors
         ]
-
-        critics_optimizer = [
+        critic_optimizers = [
             torch.optim.Adam(critic.parameters(), lr=self.lr_critic)
             for critic in self.critics
         ]
-
-        return actors_optimizer, critics_optimizer
+        return actor_optimizers, critic_optimizers
 
     def update(self, observations, actions, rewards, next_observations, dones):
-        """Perform a training update using the replay buffer."""
+        """2. Perform a training update."""
+        logger.debug("Starting update phase.")
+
+        # 2.1. Push experiences to replay buffer
+        logger.debug("Pushing experiences to replay buffer.")
         self.replay_buffer.push(observations, actions, rewards, next_observations, dones)
 
+        # 2.2. Check if buffer has enough samples
         if len(self.replay_buffer) < self.batch_size:
+            logger.warning("Not enough samples in the replay buffer. Skipping update.")
             return
 
-        obs_batch, actions_batch, rewards_batch, next_obs_batch, dones_batch = self.replay_buffer.sample(
-            self.batch_size
-        )
+        # 2.3. Sample from replay buffer
+        logger.debug("Sampling from replay buffer.")
+        batch = self.replay_buffer.sample(self.batch_size)
 
-        # Prepare tensors
-        obs_full = torch.cat(obs_batch, dim=1).to(self.device)
-        next_obs_full = torch.cat(next_obs_batch, dim=1).to(self.device)
-        action_full = torch.cat(actions_batch, dim=1).to(self.device)
-
-        for agent_num, (actor, critic, actor_target, critic_target, actor_optim, critic_optim) in enumerate(
-            zip(self.actors, self.critics, self.actors_target, self.critics_target, self.actors_optimizer, self.critics_optimizer)
+        for agent_num, (actor, critic, actor_target, critic_target, actor_optimizer, critic_optimizer) in enumerate(
+            zip(self.actors, self.critics, self.actor_targets, self.critic_targets, self.actor_optimizers, self.critic_optimizers)
         ):
-            with autocast():
-                # Update critic
-                Q_expected = critic(obs_full, action_full)
-                next_actions = [
-                    actor_target(next_obs) for next_obs in next_obs_batch
-                ]
-                next_actions_full = torch.cat(next_actions, dim=1)
-                Q_targets_next = critic_target(next_obs_full, next_actions_full)
-                Q_targets = rewards_batch[agent_num] + self.gamma * Q_targets_next * (1 - dones_batch[agent_num])
-                critic_loss = F.mse_loss(Q_expected, Q_targets.detach())
+            logger.debug(f"Updating agent {agent_num}.")
+
+            # 2.4. Prepare data for this agent
+            obs, actions, rewards, next_obs, dones = batch[agent_num]
+            logger.debug(f"Agent {agent_num} data prepared.")
+
+            # 2.5. Update critic
+            logger.debug(f"Updating critic for agent {agent_num}.")
+            with autocast(self.device):
+                q_expected = critic(obs, actions)
+                next_actions = [actor_target(next_obs) for actor_target in self.actor_targets]
+                q_targets_next = critic_target(next_obs, next_actions)
+                q_targets = rewards + self.gamma * q_targets_next * (1 - dones)
+                critic_loss = mse_loss(q_expected, q_targets.detach())
 
             self.scaler.scale(critic_loss).backward()
-            self.scaler.step(critic_optim)
-            critic_optim.zero_grad()
+            self.scaler.step(critic_optimizer)
+            critic_optimizer.zero_grad()
             self.scaler.update()
+            logger.debug(f"Critic updated for agent {agent_num}. Loss: {critic_loss.item()}.")
 
-            with autocast():
-                # Update actor
-                predicted_actions = [actor(obs) for obs in obs_batch]
-                predicted_actions_full = torch.cat(predicted_actions, dim=1)
-                actor_loss = -critic(obs_full, predicted_actions_full).mean()
+            # 2.6. Update actor
+            logger.debug(f"Updating actor for agent {agent_num}.")
+            with autocast(self.device):
+                predicted_actions = [actor(obs) for actor in self.actors]
+                actor_loss = -critic(obs, predicted_actions).mean()
 
             self.scaler.scale(actor_loss).backward()
-            self.scaler.step(actor_optim)
-            actor_optim.zero_grad()
+            self.scaler.step(actor_optimizer)
+            actor_optimizer.zero_grad()
             self.scaler.update()
+            logger.debug(f"Actor updated for agent {agent_num}. Loss: {actor_loss.item()}.")
 
-            # Update target networks
-            if self.steps_between_training_updates % self.target_update_interval == 0:
-                self.soft_update(critic, critic_target, self.tau)
-                self.soft_update(actor, actor_target, self.tau)
+            # 2.7. Log metrics using helper
+            from utils.mlflow_helper import log_to_mlflow
+            log_to_mlflow(f"critic_loss_agent_{agent_num}", critic_loss.item())
+            log_to_mlflow(f"actor_loss_agent_{agent_num}", actor_loss.item())
 
-    def soft_update(self, local_model, target_model, tau):
-        """Soft update model parameters."""
+            # 2.8. Update target networks
+            if self.target_update_interval % self.config["hyperparameters"]["training"]["steps_between_training_updates"] == 0:
+                logger.debug(f"Updating target networks for agent {agent_num}.")
+                self._soft_update(critic, critic_target, self.tau)
+                self._soft_update(actor, actor_target, self.tau)
+
+    def _soft_update(self, local_model, target_model, tau):
+        """2.8.1 Soft update model parameters."""
+        logger.debug("Performing soft update.")
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
             target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
 
-    def save_model(self):
-        """Save the model's actor and critic networks."""
-        save_path = f"models/{self.experiment_name}_maddpg.pth"
-        torch.save({
-            'actors': [actor.state_dict() for actor in self.actors],
-            'critics': [critic.state_dict() for critic in self.critics],
-            'actors_target': [actor_target.state_dict() for actor_target in self.actors_target],
-            'critics_target': [critic_target.state_dict() for critic_target in self.critics_target],
-            'optimizers': {
-                'actors': [optim.state_dict() for optim in self.actors_optimizer],
-                'critics': [optim.state_dict() for optim in self.critics_optimizer],
-            },
-        }, save_path)
-        print(f"Model saved to {save_path}")
+    def predict(self, observations, deterministic=False):
+        """3. Predict actions based on observations.
 
-    def load_model(self, load_path):
-        """Load the model's actor and critic networks."""
-        checkpoint = torch.load(load_path)
-        for actor, state_dict in zip(self.actors, checkpoint['actors']):
-            actor.load_state_dict(state_dict)
-        for critic, state_dict in zip(self.critics, checkpoint['critics']):
-            critic.load_state_dict(state_dict)
-        for actor_target, state_dict in zip(self.actors_target, checkpoint['actors_target']):
-            actor_target.load_state_dict(state_dict)
-        for critic_target, state_dict in zip(self.critics_target, checkpoint['critics_target']):
-            critic_target.load_state_dict(state_dict)
-        for optim, state_dict in zip(self.actors_optimizer, checkpoint['optimizers']['actors']):
-            optim.load_state_dict(state_dict)
-        for optim, state_dict in zip(self.critics_optimizer, checkpoint['optimizers']['critics']):
-            optim.load_state_dict(state_dict)
-        print(f"Model loaded from {load_path}")     
+        Parameters
+        ----------
+        observations : List[torch.Tensor]
+            Observations for each agent.
+        deterministic : bool, optional
+            Whether to use deterministic predictions, by default False.
+
+        Returns
+        -------
+        List[float]
+            Predicted actions for each agent.
+        """
+        logger.debug("Predicting actions.")
+        if deterministic:
+            logger.debug("Using deterministic predictions.")
+            return self._predict_deterministic(observations)
+        else:
+            logger.debug("Using exploration for predictions.")
+            return self._predict_with_exploration(observations)
+
+    def _predict_deterministic(self, observations):
+        """3.1 Predict deterministic actions for given observations.
+
+        Parameters
+        ----------
+        observations : List[torch.Tensor]
+            Observations for each agent.
+
+        Returns
+        -------
+        List[float]
+            Deterministic actions for each agent.
+        """
+        logger.debug("Predicting deterministic actions.")
+        actions = []
+        with torch.no_grad():
+            for actor, obs in zip(self.actors, observations):
+                action = actor(torch.FloatTensor(obs).to(self.device)).cpu().numpy()
+                actions.append(action)
+        logger.debug(f"Deterministic actions predicted: {actions}")
+        return actions
+
+    def _predict_with_exploration(self, observations):
+        """3.2 Predict actions with added exploration noise.
+
+        Parameters
+        ----------
+        observations : List[List[float]]
+            Observations for each agent.
+
+        Returns
+        -------
+        List[float]
+            Actions with exploration noise for each agent.
+        """
+        logger.debug("Predicting actions with exploration noise.")
+
+        # Predict deterministic actions first
+        deterministic_actions = self._predict_deterministic(observations)
+
+        # Apply noise using the external noise utility
+        noisy_actions = [
+            add_noise(
+                action,
+                sigma=self.config["hyperparameters"]["exploration"]["sigma"],
+                bias=self.config["hyperparameters"]["exploration"].get("bias", 0.0),
+            )
+            for action in deterministic_actions
+        ]
+
+        #Hard Constraints to exploration
+        #for i, b in enumerate(self.env.buildings):
+        #    if b.chargers:
+        #        for charger_index, charger in reversed(list(enumerate(b.chargers))):
+        #            # If no EV is connected, set action to 0
+        #            if not charger.connected_ev:
+        #                actions_return[i][-charger_index - 1] = 0.0001
+
+        logger.debug(f"Actions with exploration noise: {noisy_actions}")
+        return noisy_actions
+
+    """
+    endoded observation
+    set 
+    ohysics constrains
+    """

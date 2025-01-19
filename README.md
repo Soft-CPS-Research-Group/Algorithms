@@ -1,3 +1,10 @@
+
+
+mlflow ui --backend-store-uri file:./mlruns
+
+
+
+
 # Algorithms for Energy Flexibility Optimization
 
 
@@ -64,3 +71,4 @@ Run unit and integration tests:
 ### 📜 License
 
 This project is licensed under the MIT License.
+
