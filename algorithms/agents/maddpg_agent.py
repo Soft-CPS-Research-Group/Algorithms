@@ -19,51 +19,37 @@ class MADDPG:
         logger.info(f"Device selected: {self.device}")
 
         # 1.3. Hyperparameters
-        self.gamma = self.config["hyperparameters"]["training"]["gamma"]
-        self.batch_size = self.config["hyperparameters"]["training"]["batch_size"]
-        self.tau = self.config["hyperparameters"]["training"]["tau"]
-        self.lr_actor = float(self.config["hyperparameters"]["algorithm"]["optimizer"]["actor"]["params"]["lr"])
-        self.lr_critic = float(self.config["hyperparameters"]["algorithm"]["optimizer"]["critic"]["params"]["lr"])
-        self.target_update_interval = self.config["hyperparameters"]["training"]["target_update_interval"]
+        self.gamma = self.config["algorithm"]["exploration"]["params"]["gamma"]
+        self.tau = self.config["algorithm"]["exploration"]["params"]["tau"]
+        self.batch_size = self.config["algorithm"]["replay_buffer"]["params"]["batch_size"]
+        self.lr_actor = float(self.config["algorithm"]["networks"]["actor_network"]["params"]["lr"])
+        self.lr_critic = float(self.config["algorithm"]["networks"]["critic_network"]["params"]["lr"])
 
-        # 1.4. Log parameters using the MLflow helper
-        self._log_mlflow_params()
+        # 1.4. Retrieve number of agents and their dimensions
+        self.num_agents = self.config["algorithm"]["hyperparameters"]["num_agents"]
+        self.observation_dimension = self.config["algorithm"]["hyperparameters"]["observation_dimensions"]
+        self.action_dimension = self.config["algorithm"]["hyperparameters"]["action_dimensions"]
 
-        # 1.5. Retrieve number of agents and their dimensions
-        self.num_agents = self.config["hyperparameters"]["training"]["num_agents"]
-        self.observation_dimension = self.config["simulator"]["observation_dimensions"]
-        self.action_dimension = self.config["simulator"]["action_dimensions"]
-
-        # 1.6. Replay buffer
+        # 1.5. Replay buffer
         self.replay_buffer = self._initialize_replay_buffer()
 
-        # 1.7. Neural networks and optimizers
+        # 1.6. Neural networks and optimizers
         self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
         self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
         self.scaler = GradScaler(self.device)
 
         logger.info("MADDPG initialization complete.")
 
-    def _log_mlflow_params(self):
-        """1.4.1 Log hyperparameters to MLflow using a helper."""
-        from utils.mlflow_helper import log_params_to_mlflow
-        logger.debug("Logging hyperparameters to MLflow using helper.")
-        log_params_to_mlflow({
-            "gamma": self.gamma,
-            "batch_size": self.batch_size,
-            "tau": self.tau,
-            "lr_actor": self.lr_actor,
-            "lr_critic": self.lr_critic
-        })
-
     def _initialize_replay_buffer(self):
         """1.6.1 Initialize the replay buffer dynamically based on configuration."""
         logger.debug("Initializing replay buffer dynamically.")
 
         try:
-            replay_buffer_class = self.config["replay_buffer"]["class"]
-            replay_buffer_params = self.config["replay_buffer"]["params"]
+            replay_buffer_class = self.config["algorithm"]["replay_buffer"]["class"]
+            replay_buffer_params = self.config["algorithm"]["replay_buffer"]["params"]
             logger.debug(f"Replay buffer class: {replay_buffer_class}, params: {replay_buffer_params}")
+            replay_buffer_params["device"] = self.device
+            replay_buffer_params["num_agents"] = self.num_agents
 
             ReplayBuffer = globals()[replay_buffer_class]  # Dynamically fetch the class
             return ReplayBuffer(**replay_buffer_params)
@@ -78,7 +64,9 @@ class MADDPG:
     def _initialize_networks(self):
         """1.7.1 Initialize actor and critic networks."""
         logger.debug("Initializing actor and critic networks.")
-        seed = self.config["hyperparameters"]["training"].get("seed", 0)  # Default to 0 if not specified
+        seed = self.config["hyperparameters"].get("seed", 22)
+        actor_fc_units = self.config["algorithm"]["networks"]["actor_network"]["params"]["layers"]
+        critic_fc_units = self.config["algorithm"]["networks"]["critic_network"]["params"]["layers"]
 
         actors, critics, actor_targets, critic_targets = [], [], [], []
         for i in range(self.num_agents):
@@ -87,10 +75,10 @@ class MADDPG:
             action_size = self.action_dimension[i]
 
             # Initialize networks
-            actors.append(Actor(state_size, action_size, seed).to(self.device))
-            critics.append(Critic(sum(self.observation_dimension), sum(self.action_dimension), seed).to(self.device))
-            actor_targets.append(Actor(state_size, action_size, seed).to(self.device))
-            critic_targets.append(Critic(sum(self.observation_dimension), sum(self.action_dimension), seed).to(self.device))
+            actors.append(Actor(state_size, action_size, seed, actor_fc_units).to(self.device))
+            critics.append(Critic(sum(self.observation_dimension), sum(self.action_dimension), seed, critic_fc_units).to(self.device))
+            actor_targets.append(Actor(state_size, action_size, seed, actor_fc_units).to(self.device))
+            critic_targets.append(Critic(sum(self.observation_dimension), sum(self.action_dimension), seed, critic_fc_units).to(self.device))
 
         return actors, critics, actor_targets, critic_targets
 
@@ -107,7 +95,7 @@ class MADDPG:
         ]
         return actor_optimizers, critic_optimizers
 
-    def update(self, observations, actions, rewards, next_observations, dones):
+    def update(self, observations, actions, rewards, next_observations, dones, initital_exploration_done, update_step, update_target_step):
         """2. Perform a training update."""
         logger.debug("Starting update phase.")
 
@@ -115,9 +103,19 @@ class MADDPG:
         logger.debug("Pushing experiences to replay buffer.")
         self.replay_buffer.push(observations, actions, rewards, next_observations, dones)
 
-        # 2.2. Check if buffer has enough samples
+        # 2.2.1 Check if buffer has enough samples
         if len(self.replay_buffer) < self.batch_size:
             logger.warning("Not enough samples in the replay buffer. Skipping update.")
+            return
+
+        # 2.2.2 Check if exploration phase is finished
+        if not initital_exploration_done:
+            logger.warning("Initial Exploration phase is not yet finished. Skipping update.")
+            return
+
+        # 2.2.3 Check if it is an update time step
+        if not update_step:
+            logger.warning("Not Updating due to time step. Skipping update.")
             return
 
         # 2.3. Sample from replay buffer
@@ -166,7 +164,7 @@ class MADDPG:
             log_to_mlflow(f"actor_loss_agent_{agent_num}", actor_loss.item())
 
             # 2.8. Update target networks
-            if self.target_update_interval % self.config["hyperparameters"]["training"]["steps_between_training_updates"] == 0:
+            if update_target_step:
                 logger.debug(f"Updating target networks for agent {agent_num}.")
                 self._soft_update(critic, critic_target, self.tau)
                 self._soft_update(actor, actor_target, self.tau)
@@ -223,7 +221,7 @@ class MADDPG:
         return actions
 
     def _predict_with_exploration(self, observations):
-        """3.2 Predict actions with added exploration noise.
+        """Predict actions with added exploration noise, including constraints and clipping.
 
         Parameters
         ----------
@@ -240,29 +238,22 @@ class MADDPG:
         # Predict deterministic actions first
         deterministic_actions = self._predict_deterministic(observations)
 
-        # Apply noise using the external noise utility
-        noisy_actions = [
-            add_noise(
-                action,
-                sigma=self.config["hyperparameters"]["exploration"]["sigma"],
-                bias=self.config["hyperparameters"]["exploration"].get("bias", 0.0),
-            )
-            for action in deterministic_actions
-        ]
+        # Apply noise using random generation, subtracting bias
+        random_noises = []
+        for action in deterministic_actions:
+            bias = self.config["hyperparameters"]["exploration"].get("bias", 0.3)  # Default bias to 0.3
+            noise = np.random.normal(scale=self.config["hyperparameters"]["exploration"]["sigma"]) - bias
+            random_noises.append(noise)
 
-        #Hard Constraints to exploration
-        #for i, b in enumerate(self.env.buildings):
-        #    if b.chargers:
-        #        for charger_index, charger in reversed(list(enumerate(b.chargers))):
-        #            # If no EV is connected, set action to 0
-        #            if not charger.connected_ev:
-        #                actions_return[i][-charger_index - 1] = 0.0001
+        # Add noise to deterministic actions
+        actions = [noise + action for action, noise in zip(deterministic_actions, random_noises)]
 
-        logger.debug(f"Actions with exploration noise: {noisy_actions}")
-        return noisy_actions
+        # Clip actions to stay within valid range (-1, 1)
+        clipped_actions = [np.clip(action, -1, 1) for action in actions]
 
-    """
-    endoded observation
-    set 
-    ohysics constrains
-    """
+        # Convert to list format
+        actions_return = [action.tolist() for action in clipped_actions]
+
+        logger.debug(f"Actions with exploration noise and constraints applied: {actions_return}")
+        return actions_return
+

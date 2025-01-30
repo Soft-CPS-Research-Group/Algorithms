@@ -1,5 +1,6 @@
 experiment:
-  name: "test_1_putting_evrything_to_work"
+  name: "citylearn_dataset"
+  run_name: "Run 5 - Batch and Buffer Size Changes"
   logging:
     log_dir: "./logs"  # Directory for log files
     log_level: "INFO"  # Logging level
@@ -11,48 +12,43 @@ simulator:
   dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json         
   central_agent: false                    
   reward_function: RewardFunction
-  observation_dimensions: [ 24, 30 ]  # Example values for each agent
-  action_dimensions: [ 4, 5 ]        # Example values for each agent
 
-hyperparameters:
-  training:
-    num_agents: 2
-    gamma: 0.99
-    batch_size: 128
-    buffer_size: 100000
-    tau: 0.001
-    sigma: 0.2
+algorithm:
+  seed: 22
+  hyperparameters:
     steps_between_training_updates: 5
     target_update_interval: 2
-  algorithm:
+    end_exploration_time_step: 200
+    num_agents:
+    observation_dimensions:
+    action_dimensions:
+    action_space:
+  networks:
     actor_network:
       class: "Actor"
       params:
         layers: [ 256, 128 ]
+        lr: 1e-4
+        optimizer_class: "Adam"
     critic_network:
       class: "Critic"
       params:
         layers: [ 256, 128 ]
-    optimizer:
-      actor:
-        class: "Adam"
-        params:
-          lr: 1e-4
-      critic:
-        class: "Adam"
-        params:
-          lr: 1e-3
+        optimizer_class: "Adam"
+        lr: 1e-3
+  replay_buffer:
+    class: "MultiAgentReplayBuffer"
+    params:
+      "capacity": 100000,
+      "batch_size": 256
+  exploration:
+    strategy: "GaussianNoise"
+    params:
+      sigma: 0.2
+      decay: 0.995
+      gamma: 0.99
+      tau: 0.001
 
-replay_buffer:
-  class: "MultiAgentReplayBuffer"
-  params:
-    capacity: 100000
-    num_agents: 2
-    batch_size: 128
 
-exploration:
-  strategy: "GaussianNoise"
-  params:
-    sigma: 0.2
-    decay: 0.995
+
 

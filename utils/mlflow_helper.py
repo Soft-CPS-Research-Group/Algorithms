@@ -2,7 +2,7 @@ import mlflow
 import json
 import tempfile
 from loguru import logger
-from utils.helpers import flatten_dict  
+from utils.helpers import flatten_dict
 
 def log_to_mlflow(metric_name, value, step=None):
     """
@@ -100,9 +100,6 @@ def log_params_to_mlflow(params):
     if mlflow.active_run():
         mlflow.log_params(params)
 
-import mlflow
-from loguru import logger
-
 
 def start_mlflow_run(config):
     """
@@ -117,7 +114,7 @@ def start_mlflow_run(config):
         # Check if MLflow is enabled
         mlflow_enabled = config.get("experiment", {}).get("logging", {}).get("mlflow", False)
         if not mlflow_enabled:
-            logger.warning("MLflow is disabled in the configuration.")
+            logger.warning("1.4: MLflow is disabled in the configuration.")
             return
 
         # Get MLflow tracking URI
@@ -126,21 +123,22 @@ def start_mlflow_run(config):
 
         # Get the experiment name
         experiment_name = config.get("experiment", {}).get("name", "default_experiment")
+        run_name = config.get("experiment", {}).get("run_name", "default_run")
 
         # Create or get the experiment in MLflow
         experiment_id = mlflow.set_experiment(experiment_name)
-        logger.info(f"Experiment set: {experiment_name} (ID: {experiment_id})")
+        logger.info(f"1.4: Experiment set: {experiment_name} (ID: {experiment_id})")
 
         # Start the MLflow run
-        with mlflow.start_run(run_name=experiment_name):
-            logger.info(f"MLflow run started: {experiment_name}")
+        mlflow.start_run(run_name=run_name)
+        logger.info(f"1.4: MLflow run started: {run_name}")
 
-            # Log configuration parameters
-            logger.info("Logging setup config parameters to MLflow.")
+        # Log configuration parameters
+        logger.info("1.4: Logging setup config parameters to MLflow.")
 
-            # Assuming flatten_dict is a utility function to flatten nested dictionaries
-            flattened_params = flatten_dict(config)
-            mlflow.log_params(flattened_params)
+        # Assuming flatten_dict is a utility function to flatten nested dictionaries
+        flattened_params = flatten_dict(config)
+        mlflow.log_params(flattened_params)
 
     except Exception as e:
-        logger.error(f"Failed to start MLflow run: {e}")
+        logger.error(f"1.4: Failed to start MLflow run: {e}")
