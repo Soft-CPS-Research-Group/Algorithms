@@ -71,7 +71,7 @@ env = CityLearnEnv(
 )
 
 # 2.2 Inititalize the wrapper with the environment
-logger.info("Wrapping environment into the experiment wrapper.")
+logger.info("2.2: Wrapping environment into the experiment wrapper.")
 wrapper = Wrapper(env=env, config=config)
 
 # 2.3 Get relevant information from the env to configure the algorithm
@@ -86,7 +86,7 @@ logger.debug(f'Action Space: {config["algorithm"]["hyperparameters"]["action_spa
 logger.debug(f'Num Agents: {config["algorithm"]["hyperparameters"]["num_agents"]}')
 
 # 2.4 Initialize the algorithm (e.x.: MADDPG) agent
-logger.info(f"Initializing MADDPG agent for experiment: {experiment_name}")
+logger.info(f"2.4: Initializing MADDPG agent for experiment: {experiment_name}")
 agent = MADDPG(config=config)
 
 # 2.5 Wrap the algorithm with the environment
@@ -102,6 +102,11 @@ logger.info("Evaluating environment KPIs.")
 kpis = wrapper.env.evaluate()
 kpis = kpis.pivot(index='cost_function', columns='name', values='value').round(3)
 kpis = kpis.dropna(how='all')
+logger.info(f"KPI Evaluation complete: {kpis}")
+
+for kpi_name, kpi_value in kpis.items():
+    mlflow.log_metric(f"kpi_{kpi_name}", kpi_value)
+
 logger.info(f"KPI Evaluation complete: {kpis}")
 
 # 5. Cleaning up

@@ -20,7 +20,7 @@ class MultiAgentReplayBuffer:
         self.device = torch.device(device)
         self.buffers = [deque(maxlen=capacity) for _ in range(num_agents)]
 
-    def push(self, states, actions, rewards, next_states, dones):
+    def push(self, states, actions, rewards, next_states, terminated):
         """
         Store experiences for each agent as PyTorch tensors.
 
@@ -29,7 +29,7 @@ class MultiAgentReplayBuffer:
             actions (list): List of actions, one for each agent.
             rewards (list): List of rewards, one for each agent.
             next_states (list): List of next states, one for each agent.
-            dones (bool or list): Done flag(s) (shared across agents).
+            terminated (bool or list): Done flag(s) (shared across agents).
         """
         for agent_idx in range(self.num_agents):
             # Convert to tensors before storing
@@ -37,32 +37,32 @@ class MultiAgentReplayBuffer:
             action_tensor = torch.tensor(actions[agent_idx], dtype=torch.float32, device=self.device)
             reward_tensor = torch.tensor(rewards[agent_idx], dtype=torch.float32, device=self.device).unsqueeze(0)
             next_state_tensor = torch.tensor(next_states[agent_idx], dtype=torch.float32, device=self.device)
-            done_tensor = torch.tensor(dones, dtype=torch.float32, device=self.device).unsqueeze(0)
+            terminated_tensor = torch.tensor(terminated, dtype=torch.float32, device=self.device).unsqueeze(0)
 
-            self.buffers[agent_idx].append((state_tensor, action_tensor, reward_tensor, next_state_tensor, done_tensor))
+            self.buffers[agent_idx].append((state_tensor, action_tensor, reward_tensor, next_state_tensor, terminated_tensor))
 
     def sample(self):
         """
         Sample a batch of experiences for each agent.
 
         Returns:
-            Tuple of (states, actions, rewards, next_states, dones) as tensors for all agents.
+            Tuple of (states, actions, rewards, next_states, terminated) as tensors for all agents.
         """
         if len(self) < self.batch_size:
             raise ValueError("Not enough samples in the buffer to sample a batch.")
 
-        states, actions, rewards, next_states, dones = [], [], [], [], []
+        states, actions, rewards, next_states, terminated = [], [], [], [], []
         for agent_idx in range(self.num_agents):
             batch = random.sample(self.buffers[agent_idx], self.batch_size)
-            states_agent, actions_agent, rewards_agent, next_states_agent, dones_agent = zip(*batch)
+            states_agent, actions_agent, rewards_agent, next_states_agent, terminated_agent = zip(*batch)
 
             states.append(torch.stack(states_agent).to(self.device))
             actions.append(torch.stack(actions_agent).to(self.device))
             rewards.append(torch.stack(rewards_agent).to(self.device))
             next_states.append(torch.stack(next_states_agent).to(self.device))
-            dones.append(torch.stack(dones_agent).to(self.device))
+            terminated.append(torch.stack(terminated_agent).to(self.device))
 
-        return states, actions, rewards, next_states, dones
+        return states, actions, rewards, next_states, terminated
 
     def __len__(self):
         """Get the current size of the smallest buffer."""

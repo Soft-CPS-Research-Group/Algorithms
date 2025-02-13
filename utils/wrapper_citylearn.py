@@ -1,11 +1,10 @@
 from citylearn.agents.rlc import RLC
 from citylearn.citylearn import CityLearnEnv
 from algorithms.agents.base_agent import BaseAgent
-from utils.mlflow_helper import log_param_to_mlflow
 from loguru import logger
-import numpy as np
+import mlflow
 import numpy.typing as npt
-from citylearn.preprocessing import *
+from utils.preprocessing import *
 
 class Wrapper_CityLearn(RLC):
     def __init__(self, env: CityLearnEnv, model: BaseAgent = None, config = None, **kwargs):
@@ -27,6 +26,7 @@ class Wrapper_CityLearn(RLC):
         self.end_initial_exploration_time_step = config["algorithm"]["hyperparameters"]["end_initial_exploration_time_step"]
         self.end_exploration_time_step = config["algorithm"]["hyperparameters"]["end_exploration_time_step"]
         self.target_update_interval = config["algorithm"]["hyperparameters"]["target_update_interval"]
+        self.checkpoint_interval = config["algorithm"]["hyperparameters"]["checkpoint_interval"]
 
 
     def set_model(self, model: BaseAgent):
@@ -43,7 +43,9 @@ class Wrapper_CityLearn(RLC):
         """
         if self.model is None:
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
-        return super().learn(episodes, deterministic, deterministic_finish, logging_level)
+        super().learn(episodes, deterministic, deterministic_finish, logging_level)
+        self.model.save_models(mlflow.active_run().run.info.run_id)
+        return
 
     def predict(self, observations, deterministic=None):
         """
@@ -66,6 +68,7 @@ class Wrapper_CityLearn(RLC):
         """
         Delegates the update logic to the Algorithm, encoding observations before passing them.
         """
+
         if self.model is None:
             logger.error("Model is not set. Use `set_model` to provide a model.")
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
@@ -83,38 +86,50 @@ class Wrapper_CityLearn(RLC):
         logger.debug(
             "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
-        # Extract observations from args
+        #if self.time_step % self.checkpoint_interval == 0:
+            #self.save_checkpoint(mlflow.active_run().run.info.run_ids, self.current_step)
+
         if args:
-            observations = args[0]  # First argument should be observations
+            # Process current observations (assumed to be the 1st argument)
+            observations = args[0]
             encoded_observations = self.get_all_encoded_observations(observations)
-            args = (encoded_observations,) + args[1:]  # Replace original observations with encoded ones
+
+            # Process next observations (assumed to be the 4th argument)
+            if len(args) >= 4:
+                next_observations = args[3]
+                encoded_next_observations = self.get_all_encoded_observations(next_observations)
+            else:
+                encoded_next_observations = None  # or handle this case appropriately
+
+            # Convert args to a list to update the tuple
+            args_list = list(args)
+            args_list[0] = encoded_observations
+            if encoded_next_observations is not None:
+                args_list[3] = encoded_next_observations
+            args = tuple(args_list)
 
         # Pass updated parameters to model.update()
         return self.model.update(
             initial_exploration_done=self.initial_exploration_done,
             update_step=self.update_step,
-            update_target_step=self.update_target_step,
+            update_target_step=self.update_target_step, time_step=self.time_step,
             *args, **kwargs
         )
 
     def get_encoded_observations(self, index: int, observations: List[float]) -> npt.NDArray[np.float64]:
-        return np.array([j for j in np.hstack(self.encoders[index] * np.array(observations, dtype=float)) if j != None],
-                        dtype=float)
+        return np.array(
+            [j for j in np.hstack(self.encoders[index] * np.array(observations, dtype=float)) if j is not None],
+            dtype=float
+        )
 
     def get_all_encoded_observations(self, observations: List[List[float]]) -> List[npt.NDArray[np.float64]]:
-
-
-        logger.debug(observations)
-        encoded_observations = []
-        for index, obs in enumerate(observations):
-            encoded_observations.append(
-                np.array(
-                    [j for j in np.hstack(self.encoders[index] * np.array(obs, dtype=float)) if j is not None],
-                    dtype=float
-                )
+        return [
+            np.array(
+                [j for j in np.hstack(self.encoders[idx] * np.array(obs, dtype=float)) if j is not None],
+                dtype=float
             )
-        logger.debug(encoded_observations)
-        return encoded_observations
+            for idx, obs in enumerate(observations)
+        ]
 
     def set_encoders(self) -> List[List[Encoder]]:
         r"""Get observation value transformers/encoders for use in MARLISA agent internal regression model.
@@ -147,11 +162,14 @@ class Wrapper_CityLearn(RLC):
                 if n in ['month', 'hour']:
                     e.append(PeriodicNormalization(s.high[i]))
 
-                elif any(item in n for item in ["required_soc_departure", "estimated_soc_arrival", "ev_soc"]):
-                    e.append(Normalize(s.low[i], s.high[i]))
+                elif any(item in n for item in ["connected_state", "incoming_state"]):
+                    e.append(OnehotEncoding([0,1]))
 
-                elif any(item in n for item in ["estimated_departure_time", "estimated_arrival_time"]):
-                    e.append(OnehotEncoding([-1] + list(range(0, 25))))
+                elif any(item in n for item in ["required_soc_departure", "estimated_soc_arrival", "electric_vehicle_soc"]):
+                    e.append(NormalizeWithMissing(s.low[i], s.high[i]))
+
+                elif any(item in n for item in ["departure_time", "arrival_time"]):
+                    e.append(OnehotEncoding([-0.1] + list(range(0, 25)))) #-0.1 encodes missing values
 
                 elif n in ['day_type']:
                     e.append(OnehotEncoding([1, 2, 3, 4, 5, 6, 7, 8]))
@@ -166,5 +184,7 @@ class Wrapper_CityLearn(RLC):
                     e.append(NoNormalization())
 
             encoders.append(e)
+
+        logger.debug("Encoders SET")
 
         return encoders

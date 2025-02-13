@@ -1,6 +1,8 @@
 from torch.nn import Module
 from abc import ABC, abstractmethod
 from typing import List
+import numpy as np
+import numpy.typing as npt
 
 class BaseAgent(Module):
     def __init__(self):
@@ -9,7 +11,7 @@ class BaseAgent(Module):
         # Add any shared logic or attributes here
     
     @abstractmethod
-    def predict(self, observations: List[List[float]], deterministic: bool = None) -> List[List[float]]:
+    def predict(self, observations: List[npt.NDArray[np.float64]], deterministic: bool = None) -> List[List[float]]:
         """Provide actions for the current time step."""
         pass
 

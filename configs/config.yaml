@@ -1,6 +1,6 @@
 experiment:
   name: "citylearn_dataset"
-  run_name: "Run 5 - Batch and Buffer Size Changes"
+  run_name: "Run 0 - Testing if everything works"
   logging:
     log_dir: "./logs"  # Directory for log files
     log_level: "INFO"  # Logging level
@@ -16,9 +16,11 @@ simulator:
 algorithm:
   seed: 22
   hyperparameters:
+    checkpoint_interval: 20
     steps_between_training_updates: 5
     target_update_interval: 2
     end_exploration_time_step: 200
+    end_initial_exploration_time_step: 100
     num_agents:
     observation_dimensions:
     action_dimensions:
@@ -44,6 +46,7 @@ algorithm:
   exploration:
     strategy: "GaussianNoise"
     params:
+      bias: 0.3
       sigma: 0.2
       decay: 0.995
       gamma: 0.99
