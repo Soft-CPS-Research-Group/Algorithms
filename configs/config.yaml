@@ -3,7 +3,7 @@ experiment:
   run_name: "Run 0 - Testing if everything works"
   logging:
     log_dir: "./logs"  # Directory for log files
-    log_level: "INFO"  # Logging level
+    log_level: "DEBUG"  # Logging level
     mlflow: true  # Enable MLflow
     mlflow_uri: "file:./mlruns"  # MLflow tracking URI
 
@@ -25,6 +25,7 @@ algorithm:
     observation_dimensions:
     action_dimensions:
     action_space:
+    gamma: 0.99
   networks:
     actor_network:
       class: "Actor"

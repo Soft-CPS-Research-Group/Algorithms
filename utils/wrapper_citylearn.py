@@ -5,6 +5,13 @@ from loguru import logger
 import mlflow
 import numpy.typing as npt
 from utils.preprocessing import *
+import time
+import psutil
+import numpy as np
+from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetUtilizationRates
+import torch
+
+class Wrapper_CityLearn(RLC):
 
 class Wrapper_CityLearn(RLC):
     def __init__(self, env: CityLearnEnv, model: BaseAgent = None, config = None, **kwargs):
@@ -18,16 +25,15 @@ class Wrapper_CityLearn(RLC):
         """
         super().__init__(env, **kwargs)
         self.model = model  # Custom model logic, it can be none upon initialization
-        self.exploration_done = False
         self.initial_exploration_done = False
         self.update_step = False
         self.update_target_step = False
+        self.global_step = 0
         self.steps_between_training_updates = config["algorithm"]["hyperparameters"]["steps_between_training_updates"]
         self.end_initial_exploration_time_step = config["algorithm"]["hyperparameters"]["end_initial_exploration_time_step"]
         self.end_exploration_time_step = config["algorithm"]["hyperparameters"]["end_exploration_time_step"]
         self.target_update_interval = config["algorithm"]["hyperparameters"]["target_update_interval"]
         self.checkpoint_interval = config["algorithm"]["hyperparameters"]["checkpoint_interval"]
-
 
     def set_model(self, model: BaseAgent):
         """
@@ -35,17 +41,157 @@ class Wrapper_CityLearn(RLC):
         """
         self.model = model
 
-    def learn(self, episodes=None, deterministic=None, deterministic_finish=None, logging_level=None):
-        """
-        Placeholder method for learn.
-        
-        Currently, this does nothing custom and uses the RLC implementation via super().
-        """
-        if self.model is None:
-            raise ValueError("Model is not set. Use `set_model` to provide a model.")
-        super().learn(episodes, deterministic, deterministic_finish, logging_level)
-        self.model.save_models(mlflow.active_run().run.info.run_id)
-        return
+    import time
+    import psutil
+    import numpy as np
+    import torch
+    from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetUtilizationRates
+
+    class Wrapper_CityLearn(RLC):
+        def learn(self, episodes=None, deterministic=None, deterministic_finish=None, logging_level=None):
+            """
+            Train agent with MLflow logging for rewards (per step and per agent), PyTorch GPU memory usage, and system usage.
+            """
+            if self.model is None:
+                raise ValueError("Model is not set. Use `set_model` to provide a model.")
+
+            episodes = episodes or 1
+            deterministic_finish = deterministic_finish if deterministic_finish is not None else False
+            deterministic = deterministic if deterministic is not None else False
+
+            # Initialize NVML for GPU monitoring
+            try:
+                nvmlInit()
+                gpu_available = True
+            except Exception:
+                gpu_available = False
+
+            total_rewards_across_episodes = []  # To track overall reward trends
+
+            for episode in range(episodes):
+                start_episode_time = time.time()
+                deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
+                observations, _ = self.env.reset()
+                self.episode_time_steps = self.episode_tracker.episode_time_steps
+                terminated = False
+                time_step = 0
+                rewards_list = []  # Stores rewards per step
+
+                while not terminated:
+                    step_start_time = time.time()
+                    self.global_step = episode * self.episode_time_steps + time_step  # Global step
+
+                    actions = self.predict(observations, deterministic=deterministic)
+
+                    # Apply actions to CityLearn environment
+                    next_observations, rewards, terminated, truncated, _ = self.env.step(actions)
+                    rewards_list.append(rewards)
+
+                    # Log reward per agent per step
+                    for i, reward in enumerate(rewards):
+                        mlflow.log_metric(f"Agent_{i}_Reward", reward, step=self.global_step)
+
+                    # Update model if not in deterministic mode
+                    if not deterministic:
+                        self.update(observations, actions, rewards, next_observations, terminated=terminated,
+                                    truncated=truncated)
+
+                    observations = [o for o in next_observations]
+
+                    # Measure system usage
+                    cpu_usage = psutil.cpu_percent()
+                    ram_usage = psutil.virtual_memory().percent
+
+                    if gpu_available:
+                        handle = nvmlDeviceGetHandleByIndex(0)  # Assuming 1 GPU
+                        gpu_memory_info = nvmlDeviceGetMemoryInfo(handle)
+                        gpu_usage = nvmlDeviceGetUtilizationRates(handle).gpu
+                        gpu_mem_used = gpu_memory_info.used / (1024 ** 2)  # Convert to MB
+                    else:
+                        gpu_usage = None
+                        gpu_mem_used = None
+
+                    # PyTorch-specific GPU memory tracking
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()  # Ensure all GPU operations are done before measuring
+                        gpu_mem_allocated = torch.cuda.memory_allocated() / 1024 ** 2  # Convert to MB
+                        gpu_mem_reserved = torch.cuda.memory_reserved() / 1024 ** 2  # Reserved for caching
+                    else:
+                        gpu_mem_allocated = None
+                        gpu_mem_reserved = None
+
+                    # Log system usage per step
+                    mlflow.log_metric("CPU_Usage", cpu_usage, step=self.global_step)
+                    mlflow.log_metric("RAM_Usage", ram_usage, step=self.global_step)
+
+                    if gpu_usage is not None:
+                        mlflow.log_metric("GPU_Usage", gpu_usage, step=self.global_step)
+                        mlflow.log_metric("GPU_Memory_Used_MB", gpu_mem_used, step=self.global_step)
+
+                    if gpu_mem_allocated is not None:
+                        mlflow.log_metric("GPU_PyTorch_Allocated_MB", gpu_mem_allocated, step=self.global_step)
+                        mlflow.log_metric("GPU_PyTorch_Reserved_MB", gpu_mem_reserved, step=self.global_step)
+
+                    step_duration = time.time() - step_start_time
+                    mlflow.log_metric("Step_Duration", step_duration, step=self.global_step)
+
+                    logger.debug(
+                        f'Time step: {time_step + 1}/{self.episode_time_steps},'
+                        f' Episode: {episode + 1}/{episodes},'
+                        f' Actions: {actions},'
+                        f' Rewards: {rewards},'
+                        f' CPU: {cpu_usage}%, RAM: {ram_usage}%,'
+                        f' GPU Allocated: {gpu_mem_allocated} MB, GPU Reserved: {gpu_mem_reserved} MB'
+                    )
+
+                    time_step += 1
+
+                # Compute rewards statistics for this episode
+                rewards_array = np.array(rewards_list, dtype='float')  # (time_steps, num_agents)
+                rewards_summary = {
+                    'sum': rewards_array.sum(axis=0),  # Sum per agent
+                    'mean': rewards_array.mean(axis=0),
+                    'min': rewards_array.min(axis=0),
+                    'max': rewards_array.max(axis=0)
+                }
+
+                # Store rewards for global tracking
+                total_rewards_across_episodes.append(rewards_summary['sum'])
+
+                # Log episode statistics
+                for i in range(len(rewards_summary['sum'])):  # For each agent
+                    mlflow.log_metric(f"Agent_{i}_Episode_Reward_Sum", rewards_summary['sum'][i], step=episode)
+                    mlflow.log_metric(f"Agent_{i}_Episode_Reward_Mean", rewards_summary['mean'][i], step=episode)
+                    mlflow.log_metric(f"Agent_{i}_Episode_Reward_Min", rewards_summary['min'][i], step=episode)
+                    mlflow.log_metric(f"Agent_{i}_Episode_Reward_Max", rewards_summary['max'][i], step=episode)
+
+                # Log episode duration
+                episode_duration = time.time() - start_episode_time
+                mlflow.log_metric("Episode_Duration", episode_duration, step=episode)
+
+                logger.info(
+                    f'Completed episode: {episode + 1}/{episodes}, Reward: {rewards_summary}, Duration: {episode_duration:.2f}s')
+
+            # Aggregate rewards across episodes
+            total_rewards_across_episodes = np.array(total_rewards_across_episodes)  # Shape: (episodes, num_agents)
+
+            # Compute overall statistics across episodes
+            overall_rewards_summary = {
+                'sum': total_rewards_across_episodes.sum(axis=0),
+                'mean': total_rewards_across_episodes.mean(axis=0),
+                'min': total_rewards_across_episodes.min(axis=0),
+                'max': total_rewards_across_episodes.max(axis=0)
+            }
+
+            # Log overall statistics
+            for i in range(len(overall_rewards_summary['sum'])):  # Per agent
+                mlflow.log_metric(f"Agent_{i}_Overall_Reward_Sum", overall_rewards_summary['sum'][i])
+                mlflow.log_metric(f"Agent_{i}_Overall_Reward_Mean", overall_rewards_summary['mean'][i])
+                mlflow.log_metric(f"Agent_{i}_Overall_Reward_Min", overall_rewards_summary['min'][i])
+                mlflow.log_metric(f"Agent_{i}_Overall_Reward_Max", overall_rewards_summary['max'][i])
+
+            # Save model at the end of training
+            self.model.save_models(mlflow.active_run().info.run_id)
 
     def predict(self, observations, deterministic=None):
         """
@@ -54,17 +200,14 @@ class Wrapper_CityLearn(RLC):
         if self.model is None:
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        # Determine exploration phase
-        self.exploration_done = self.time_step >= self.end_exploration_time_step
-        logger.debug("Exploration ended." if self.exploration_done else "Doing Exploration.")
-
         encoded_observations = self.get_all_encoded_observations(observations)
         actions = self.model.predict(encoded_observations, deterministic)
         self.actions = actions
         self.next_time_step()
         return actions
 
-    def update(self, *args, **kwargs):
+    def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float],
+               next_observations: List[List[float]], terminated: bool, truncated: bool):
         """
         Delegates the update logic to the Algorithm, encoding observations before passing them.
         """
@@ -73,47 +216,35 @@ class Wrapper_CityLearn(RLC):
             logger.error("Model is not set. Use `set_model` to provide a model.")
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        # Determine exploration phase
-        self.initial_exploration_done = self.time_step >= self.end_initial_exploration_time_step
-        logger.debug("Initial Exploration ended." if self.exploration_done else "Doing Initial Exploration.")
-
         # Determine whether to update
         self.update_step = self.time_step % self.steps_between_training_updates != 0
-        logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
+        if self.update_step:
+            logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
+        else:
+            logger.debug("Time step - Skipping Update")
+            return
+
+        # Determine exploration phase
+        self.initial_exploration_done = self.time_step >= self.end_initial_exploration_time_step
+        if self.initial_exploration_done:
+            logger.debug("Initial Exploration ended.")
+        else:
+            logger.debug("Doing Initial Exploration - Skipping Update")
+            return
 
         # Determine whether to update the target networks
         self.update_target_step = self.time_step % self.target_update_interval == 0
         logger.debug(
             "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
-        #if self.time_step % self.checkpoint_interval == 0:
-            #self.save_checkpoint(mlflow.active_run().run.info.run_ids, self.current_step)
-
-        if args:
-            # Process current observations (assumed to be the 1st argument)
-            observations = args[0]
-            encoded_observations = self.get_all_encoded_observations(observations)
-
-            # Process next observations (assumed to be the 4th argument)
-            if len(args) >= 4:
-                next_observations = args[3]
-                encoded_next_observations = self.get_all_encoded_observations(next_observations)
-            else:
-                encoded_next_observations = None  # or handle this case appropriately
-
-            # Convert args to a list to update the tuple
-            args_list = list(args)
-            args_list[0] = encoded_observations
-            if encoded_next_observations is not None:
-                args_list[3] = encoded_next_observations
-            args = tuple(args_list)
+        encoded_observations = self.get_all_encoded_observations(observations)
+        encoded_next_observations = self.get_all_encoded_observations(next_observations)
 
         # Pass updated parameters to model.update()
-        return self.model.update(
-            initial_exploration_done=self.initial_exploration_done,
-            update_step=self.update_step,
-            update_target_step=self.update_target_step, time_step=self.time_step,
-            *args, **kwargs
+        return self.model.update(observations = encoded_observations, actions= actions, reward= reward,
+                next_observations= encoded_next_observations, terminated = terminated,
+                truncated = truncated,
+                update_target_step=self.update_target_step, global_learning_step=self.global_step,
         )
 
     def get_encoded_observations(self, index: int, observations: List[float]) -> npt.NDArray[np.float64]:

@@ -9,7 +9,11 @@ from typing import List
 from algorithms.utils.noise import add_noise
 import mlflow.pytorch
 import os
-from utils.mlflow_helper import log_to_mlflow
+import time
+import torch
+import mlflow
+from torch.nn.utils import clip_grad_norm_
+from torch.optim.lr_scheduler import ExponentialLR
 
 def save_models(self, run_id):
     """Save all actor and critic models to MLflow"""
@@ -41,6 +45,7 @@ class MADDPG:
 
         # 1.3. Hyperparameters
         self.gamma = self.config["algorithm"]["exploration"]["params"]["gamma"]
+        self.lr_gamma = self.config["algorithm"]["hyperparameters"]["gamma"]
         self.tau = self.config["algorithm"]["exploration"]["params"]["tau"]
         self.sigma = self.config["algorithm"]["exploration"]["params"]["sigma"]
         self.bias = self.config["algorithm"]["exploration"]["params"]["bias"]
@@ -60,6 +65,8 @@ class MADDPG:
         self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
         self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
         self.scaler = GradScaler(self.device)
+        self.actor_schedulers = [ExponentialLR(opt, gamma=0.99) for opt in self.actor_optimizers]
+        self.critic_schedulers = [ExponentialLR(opt, gamma=0.99) for opt in self.critic_optimizers]
 
         logger.info("MADDPG initialization complete.")
 
@@ -143,112 +150,115 @@ class MADDPG:
         ]
         return actor_optimizers, critic_optimizers
 
-    def update(self, observations, actions, rewards, next_observations, terminated, truncated, initial_exploration_done, update_step, update_target_step, time_step, *args, **kwargs):
-        """2. Perform a training update."""
-        logger.debug("Starting update phase.")
+    def update(self, observations, actions, rewards, next_observations, terminated, truncated, update_target_step,
+               global_learning_step):
+        """Perform a training update for MADDPG with optimized efficiency using a single autocast scope."""
 
-        # 2.1. Push experiences to replay buffer
-        logger.debug("Pushing experiences to replay buffer.")
+        logger.debug("Starting update phase.")
+        update_start_time = time.time()  # Measure step time
+
+        # Push experiences to replay buffer
         self.replay_buffer.push(observations, actions, rewards, next_observations, terminated)
 
-        # 2.2.1 Check if buffer has enough samples
+        # Check if enough samples are in the replay buffer
         if len(self.replay_buffer) < self.batch_size:
             logger.warning("Not enough samples in the replay buffer. Skipping update.")
             return
 
-        # 2.2.2 Check if exploration phase is finished
-        if not initial_exploration_done:
-            logger.warning("Initial Exploration phase is not yet finished. Skipping update.")
-            return
-
-        # 2.2.3 Check if it is an update time step
-        if not update_step:
-            logger.warning("Not Updating due to time step. Skipping update.")
-            return
-
-        # 2.3. Sample from replay buffer
-        logger.debug("Sampling from replay buffer.")
+        # Sample batch from replay buffer
         batch = self.replay_buffer.sample()
-        # Unpack the batch from the replay buffer
         states, actions_all, rewards_all, next_states, dones_all = batch
 
-        # For the critic we need global (concatenated) states and actions.
-        global_state = torch.cat(states, dim=1)  # shape: (batch_size, sum(observation_dimensions))
+        # Create global state representations
+        global_state = torch.cat(states, dim=1)
         global_next_state = torch.cat(next_states, dim=1)
-        global_actions = torch.cat(actions_all, dim=1)  # shape: (batch_size, sum(action_dimensions))
-        # Compute global next actions by feeding each agent's next state into its corresponding actor_target.
+        global_actions = torch.cat(actions_all, dim=1)
+
+        # Compute next actions for each agent
         global_next_actions = torch.cat(
-            [actor_target(next_states[i]) for i, actor_target in enumerate(self.actor_targets)], dim=1
-        )
+            [actor_target(next_states[i]) for i, actor_target in enumerate(self.actor_targets)], dim=1)
 
-        for agent_num, (actor, critic, actor_target, critic_target, actor_optimizer, critic_optimizer) in enumerate(
-            zip(self.actors, self.critics, self.actor_targets, self.critic_targets, self.actor_optimizers, self.critic_optimizers)
-        ):
-            logger.debug(f"Updating agent {agent_num}.")
+        # Total loss tracking
+        total_critic_loss = 0
+        total_actor_loss = 0
 
-            # 2.4. Prepare data for this agent
-            # Extract individual data for the agent.
-            obs = states[agent_num]  # Individual observation
-            sampled_action = actions_all[agent_num]  # Sampled action
-            reward = rewards_all[agent_num]
-            terminated_agent = dones_all[agent_num]  # Numeric done flag (0.0 or 1.0)
-            next_obs = next_states[agent_num]
+        # Use a **single** `autocast` scope for the entire training step
+        with torch.cuda.amp.autocast(device_type=self.device.type):
+            for agent_num, (actor, critic, actor_target, critic_target, actor_optimizer, critic_optimizer) in enumerate(
+                    zip(self.actors, self.critics, self.actor_targets, self.critic_targets, self.actor_optimizers,
+                        self.critic_optimizers)
+            ):
+                logger.debug(f"Updating agent {agent_num}.")
 
-            logger.debug(f"Agent {agent_num} data prepared.")
+                # Get agent-specific data
+                obs = states[agent_num]
+                sampled_action = actions_all[agent_num]
+                reward = rewards_all[agent_num]
+                terminated_agent = dones_all[agent_num]
+                next_obs = next_states[agent_num]
 
-            # 2.5. Update critic
-            # --------------------- Update Critic ---------------------
-            logger.debug(f"Updating critic for agent {agent_num}.")
-            with autocast(device_type=self.device.type):
-                # Use global state and global actions for the critic.
+                # ---- Update Critic ----
                 q_expected = critic(global_state, global_actions)
                 q_targets_next = critic_target(global_next_state, global_next_actions)
                 q_targets = reward + self.gamma * q_targets_next * (1 - terminated_agent)
                 critic_loss = mse_loss(q_expected, q_targets.detach())
 
-            self.scaler.scale(critic_loss).backward()
-            self.scaler.step(critic_optimizer)
-            critic_optimizer.zero_grad()
-            self.scaler.update()
-            logger.debug(f"Critic updated for agent {agent_num}. Loss: {critic_loss.item()}.")
+                # Backpropagate critic loss
+                self.scaler.scale(critic_loss).backward()
+                self.scaler.step(critic_optimizer)
+                critic_optimizer.zero_grad()
+                self.scaler.update()
+                self.critic_schedulers[agent_num].step()
 
-            # 2.6. Update actor
-            logger.debug(f"Updating actor for agent {agent_num}.")
-            with autocast(device_type=self.device.type):
-                # Predict action for the current agent using its own observation.
+
+                total_critic_loss += critic_loss.item()
+
+                # ---- Update Actor ----
                 predicted_action = actor(obs)
-                # Build global predicted actions: replace the current agent's action with the predicted one,
-                # while keeping the sampled actions for all other agents.
-                global_predicted_actions = []
-                for i in range(self.num_agents):
-                    if i == agent_num:
-                        global_predicted_actions.append(predicted_action)
-                    else:
-                        # Detach sampled actions for other agents so gradients do not flow through them.
-                        global_predicted_actions.append(actions_all[i].detach())
-                global_predicted_actions = torch.cat(global_predicted_actions, dim=1)
-                # Actor loss computed using the critic on the global state and the new global predicted actions.
+                global_predicted_actions = torch.cat(
+                    [predicted_action if i == agent_num else actions_all[i].detach() for i in range(self.num_agents)],
+                    dim=1)
                 actor_loss = -critic(global_state, global_predicted_actions).mean()
 
-            self.scaler.scale(actor_loss).backward()
-            self.scaler.step(actor_optimizer)
-            actor_optimizer.zero_grad()
-            self.scaler.update()
-            logger.debug(f"Actor updated for agent {agent_num}. Loss: {actor_loss.item()}.")
+                # Backpropagate actor loss
+                self.scaler.scale(actor_loss).backward()
+                self.scaler.step(actor_optimizer)
+                actor_optimizer.zero_grad()
+                self.scaler.update()
+                self.actor_schedulers[agent_num].step()
 
-            # 2.7. Log metrics using helper
-            from utils.mlflow_helper import log_to_mlflow
-            log_to_mlflow(f"critic_loss_agent_{agent_num}", critic_loss.item())
-            log_to_mlflow(f"actor_loss_agent_{agent_num}", actor_loss.item())
+                total_actor_loss += actor_loss.item()
 
-            # 2.8. Update target networks
-            if update_target_step:
-                logger.debug(f"Updating target networks for agent {agent_num}.")
-                self._soft_update(critic, critic_target, self.tau)
-                self._soft_update(actor, actor_target, self.tau)
+                # Compute gradient norms
+                critic_grad_norm = clip_grad_norm_(critic.parameters(), max_norm=5.0)
+                actor_grad_norm = clip_grad_norm_(actor.parameters(), max_norm=5.0)
 
-            log_to_mlflow(f"critic_loss_agent_{agent_num}", critic_loss.item(), step=time_step)
-            log_to_mlflow(f"actor_loss_agent_{agent_num}", actor_loss.item(), step=time_step)
+                # Log metrics to MLflow
+                mlflow.log_metric(f"critic_loss_agent_{agent_num}", critic_loss.item(), step=global_learning_step)
+                mlflow.log_metric(f"actor_loss_agent_{agent_num}", actor_loss.item(), step=global_learning_step)
+                mlflow.log_metric(f"grad_norm_actor_{agent_num}", actor_grad_norm.item(), step=global_learning_step)
+                mlflow.log_metric(f"grad_norm_critic_{agent_num}", critic_grad_norm.item(), step=global_learning_step)
+
+                # Update target networks using soft update
+                if update_target_step:
+                    self._soft_update(critic, critic_target, self.tau)
+                    self._soft_update(actor, actor_target, self.tau)
+
+        # Log average losses
+        mlflow.log_metric("average_critic_loss", total_critic_loss / self.num_agents, step=global_learning_step)
+        mlflow.log_metric("average_actor_loss", total_actor_loss / self.num_agents, step=global_learning_step)
+
+        # Log learning rate (if using decay)
+        mlflow.log_metric("learning_rate_actor", self.actor_optimizers[0].param_groups[0]['lr'],
+                          step=global_learning_step)
+        mlflow.log_metric("learning_rate_critic", self.critic_optimizers[0].param_groups[0]['lr'],
+                          step=global_learning_step)
+
+        # Log step time
+        mlflow.log_metric("training_step_time", time.time() - update_start_time, step=global_learning_step)
+
+        logger.info(
+            f"Update complete. Avg Critic Loss: {total_critic_loss / self.num_agents:.4f}, Avg Actor Loss: {total_actor_loss / self.num_agents:.4f}.")
 
     def _soft_update(self, local_model, target_model, tau):
         """2.8.1 Soft update model parameters."""
