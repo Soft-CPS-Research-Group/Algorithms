@@ -12,8 +12,6 @@ from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 import torch
 
 class Wrapper_CityLearn(RLC):
-
-class Wrapper_CityLearn(RLC):
     def __init__(self, env: CityLearnEnv, model: BaseAgent = None, config = None, **kwargs):
         """
         Wrapper for CityLearn RLC that delegates custom behavior to a BaseAgent model.
@@ -41,157 +39,151 @@ class Wrapper_CityLearn(RLC):
         """
         self.model = model
 
-    import time
-    import psutil
-    import numpy as np
-    import torch
-    from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetUtilizationRates
+    def learn(self, episodes=None, deterministic=None, deterministic_finish=None, logging_level=None):
+        """
+        Train agent with MLflow logging for rewards (per step and per agent), PyTorch GPU memory usage, and system usage.
+        """
+        if self.model is None:
+            raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-    class Wrapper_CityLearn(RLC):
-        def learn(self, episodes=None, deterministic=None, deterministic_finish=None, logging_level=None):
-            """
-            Train agent with MLflow logging for rewards (per step and per agent), PyTorch GPU memory usage, and system usage.
-            """
-            if self.model is None:
-                raise ValueError("Model is not set. Use `set_model` to provide a model.")
+        episodes = episodes or 1
+        deterministic_finish = deterministic_finish if deterministic_finish is not None else False
+        deterministic = deterministic if deterministic is not None else False
 
-            episodes = episodes or 1
-            deterministic_finish = deterministic_finish if deterministic_finish is not None else False
-            deterministic = deterministic if deterministic is not None else False
+        # Initialize NVML for GPU monitoring
+        try:
+            nvmlInit()
+            gpu_available = True
+        except Exception:
+            gpu_available = False
 
-            # Initialize NVML for GPU monitoring
-            try:
-                nvmlInit()
-                gpu_available = True
-            except Exception:
-                gpu_available = False
+        total_rewards_across_episodes = []  # To track overall reward trends
 
-            total_rewards_across_episodes = []  # To track overall reward trends
+        for episode in range(episodes):
+            start_episode_time = time.time()
+            deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
+            observations, _ = self.env.reset()
+            self.episode_time_steps = self.episode_tracker.episode_time_steps
+            terminated = False
+            time_step = 0
+            rewards_list = []  # Stores rewards per step
 
-            for episode in range(episodes):
-                start_episode_time = time.time()
-                deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
-                observations, _ = self.env.reset()
-                self.episode_time_steps = self.episode_tracker.episode_time_steps
-                terminated = False
-                time_step = 0
-                rewards_list = []  # Stores rewards per step
+            while not terminated:
+                step_start_time = time.time()
+                self.global_step = episode * self.episode_time_steps + time_step  # Global step
 
-                while not terminated:
-                    step_start_time = time.time()
-                    self.global_step = episode * self.episode_time_steps + time_step  # Global step
+                actions = self.predict(observations, deterministic=deterministic)
 
-                    actions = self.predict(observations, deterministic=deterministic)
+                # Apply actions to CityLearn environment
+                next_observations, rewards, terminated, truncated, _ = self.env.step(actions)
+                rewards_list.append(rewards)
 
-                    # Apply actions to CityLearn environment
-                    next_observations, rewards, terminated, truncated, _ = self.env.step(actions)
-                    rewards_list.append(rewards)
+                # Log reward per agent per step
+                for i, reward in enumerate(rewards):
+                    mlflow.log_metric(f"Agent_{i}_Reward", reward, step=self.global_step)
 
-                    # Log reward per agent per step
-                    for i, reward in enumerate(rewards):
-                        mlflow.log_metric(f"Agent_{i}_Reward", reward, step=self.global_step)
+                # Update model if not in deterministic mode
+                if not deterministic:
+                    self.update(observations, actions, rewards, next_observations, terminated=terminated,
+                                truncated=truncated)
 
-                    # Update model if not in deterministic mode
-                    if not deterministic:
-                        self.update(observations, actions, rewards, next_observations, terminated=terminated,
-                                    truncated=truncated)
+                observations = [o for o in next_observations]
 
-                    observations = [o for o in next_observations]
+                # Measure system usage
+                cpu_usage = psutil.cpu_percent()
+                ram_usage = psutil.virtual_memory().percent
 
-                    # Measure system usage
-                    cpu_usage = psutil.cpu_percent()
-                    ram_usage = psutil.virtual_memory().percent
+                if gpu_available:
+                    handle = nvmlDeviceGetHandleByIndex(0)  # Assuming 1 GPU
+                    gpu_memory_info = nvmlDeviceGetMemoryInfo(handle)
+                    gpu_usage = nvmlDeviceGetUtilizationRates(handle).gpu
+                    gpu_mem_used = gpu_memory_info.used / (1024 ** 2)  # Convert to MB
+                else:
+                    gpu_usage = None
+                    gpu_mem_used = None
 
-                    if gpu_available:
-                        handle = nvmlDeviceGetHandleByIndex(0)  # Assuming 1 GPU
-                        gpu_memory_info = nvmlDeviceGetMemoryInfo(handle)
-                        gpu_usage = nvmlDeviceGetUtilizationRates(handle).gpu
-                        gpu_mem_used = gpu_memory_info.used / (1024 ** 2)  # Convert to MB
-                    else:
-                        gpu_usage = None
-                        gpu_mem_used = None
+                # PyTorch-specific GPU memory tracking
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()  # Ensure all GPU operations are done before measuring
+                    gpu_mem_allocated = torch.cuda.memory_allocated() / 1024 ** 2  # Convert to MB
+                    gpu_mem_reserved = torch.cuda.memory_reserved() / 1024 ** 2  # Reserved for caching
+                else:
+                    gpu_mem_allocated = None
+                    gpu_mem_reserved = None
 
-                    # PyTorch-specific GPU memory tracking
-                    if torch.cuda.is_available():
-                        torch.cuda.synchronize()  # Ensure all GPU operations are done before measuring
-                        gpu_mem_allocated = torch.cuda.memory_allocated() / 1024 ** 2  # Convert to MB
-                        gpu_mem_reserved = torch.cuda.memory_reserved() / 1024 ** 2  # Reserved for caching
-                    else:
-                        gpu_mem_allocated = None
-                        gpu_mem_reserved = None
+                # Log system usage per step
+                mlflow.log_metric("CPU_Usage", cpu_usage, step=self.global_step)
+                mlflow.log_metric("RAM_Usage", ram_usage, step=self.global_step)
 
-                    # Log system usage per step
-                    mlflow.log_metric("CPU_Usage", cpu_usage, step=self.global_step)
-                    mlflow.log_metric("RAM_Usage", ram_usage, step=self.global_step)
+                if gpu_usage is not None:
+                    mlflow.log_metric("GPU_Usage", gpu_usage, step=self.global_step)
+                    mlflow.log_metric("GPU_Memory_Used_MB", gpu_mem_used, step=self.global_step)
 
-                    if gpu_usage is not None:
-                        mlflow.log_metric("GPU_Usage", gpu_usage, step=self.global_step)
-                        mlflow.log_metric("GPU_Memory_Used_MB", gpu_mem_used, step=self.global_step)
+                if gpu_mem_allocated is not None:
+                    mlflow.log_metric("GPU_PyTorch_Allocated_MB", gpu_mem_allocated, step=self.global_step)
+                    mlflow.log_metric("GPU_PyTorch_Reserved_MB", gpu_mem_reserved, step=self.global_step)
 
-                    if gpu_mem_allocated is not None:
-                        mlflow.log_metric("GPU_PyTorch_Allocated_MB", gpu_mem_allocated, step=self.global_step)
-                        mlflow.log_metric("GPU_PyTorch_Reserved_MB", gpu_mem_reserved, step=self.global_step)
+                step_duration = time.time() - step_start_time
+                mlflow.log_metric("Step_Duration", step_duration, step=self.global_step)
 
-                    step_duration = time.time() - step_start_time
-                    mlflow.log_metric("Step_Duration", step_duration, step=self.global_step)
+                logger.debug(
+                    f'Time step: {time_step + 1}/{self.episode_time_steps},'
+                    f' Episode: {episode + 1}/{episodes},'
+                    f' Actions: {actions},'
+                    f' Rewards: {rewards},'
+                    f' CPU: {cpu_usage}%, RAM: {ram_usage}%,'
+                    f' GPU Allocated: {gpu_mem_allocated} MB, GPU Reserved: {gpu_mem_reserved} MB'
+                    f' Step Duration: {step_duration}'
+                )
 
-                    logger.debug(
-                        f'Time step: {time_step + 1}/{self.episode_time_steps},'
-                        f' Episode: {episode + 1}/{episodes},'
-                        f' Actions: {actions},'
-                        f' Rewards: {rewards},'
-                        f' CPU: {cpu_usage}%, RAM: {ram_usage}%,'
-                        f' GPU Allocated: {gpu_mem_allocated} MB, GPU Reserved: {gpu_mem_reserved} MB'
-                    )
+                time_step += 1
 
-                    time_step += 1
-
-                # Compute rewards statistics for this episode
-                rewards_array = np.array(rewards_list, dtype='float')  # (time_steps, num_agents)
-                rewards_summary = {
-                    'sum': rewards_array.sum(axis=0),  # Sum per agent
-                    'mean': rewards_array.mean(axis=0),
-                    'min': rewards_array.min(axis=0),
-                    'max': rewards_array.max(axis=0)
-                }
-
-                # Store rewards for global tracking
-                total_rewards_across_episodes.append(rewards_summary['sum'])
-
-                # Log episode statistics
-                for i in range(len(rewards_summary['sum'])):  # For each agent
-                    mlflow.log_metric(f"Agent_{i}_Episode_Reward_Sum", rewards_summary['sum'][i], step=episode)
-                    mlflow.log_metric(f"Agent_{i}_Episode_Reward_Mean", rewards_summary['mean'][i], step=episode)
-                    mlflow.log_metric(f"Agent_{i}_Episode_Reward_Min", rewards_summary['min'][i], step=episode)
-                    mlflow.log_metric(f"Agent_{i}_Episode_Reward_Max", rewards_summary['max'][i], step=episode)
-
-                # Log episode duration
-                episode_duration = time.time() - start_episode_time
-                mlflow.log_metric("Episode_Duration", episode_duration, step=episode)
-
-                logger.info(
-                    f'Completed episode: {episode + 1}/{episodes}, Reward: {rewards_summary}, Duration: {episode_duration:.2f}s')
-
-            # Aggregate rewards across episodes
-            total_rewards_across_episodes = np.array(total_rewards_across_episodes)  # Shape: (episodes, num_agents)
-
-            # Compute overall statistics across episodes
-            overall_rewards_summary = {
-                'sum': total_rewards_across_episodes.sum(axis=0),
-                'mean': total_rewards_across_episodes.mean(axis=0),
-                'min': total_rewards_across_episodes.min(axis=0),
-                'max': total_rewards_across_episodes.max(axis=0)
+            # Compute rewards statistics for this episode
+            rewards_array = np.array(rewards_list, dtype='float')  # (time_steps, num_agents)
+            rewards_summary = {
+                'sum': rewards_array.sum(axis=0),  # Sum per agent
+                'mean': rewards_array.mean(axis=0),
+                'min': rewards_array.min(axis=0),
+                'max': rewards_array.max(axis=0)
             }
 
-            # Log overall statistics
-            for i in range(len(overall_rewards_summary['sum'])):  # Per agent
-                mlflow.log_metric(f"Agent_{i}_Overall_Reward_Sum", overall_rewards_summary['sum'][i])
-                mlflow.log_metric(f"Agent_{i}_Overall_Reward_Mean", overall_rewards_summary['mean'][i])
-                mlflow.log_metric(f"Agent_{i}_Overall_Reward_Min", overall_rewards_summary['min'][i])
-                mlflow.log_metric(f"Agent_{i}_Overall_Reward_Max", overall_rewards_summary['max'][i])
+            # Store rewards for global tracking
+            total_rewards_across_episodes.append(rewards_summary['sum'])
 
-            # Save model at the end of training
-            self.model.save_models(mlflow.active_run().info.run_id)
+            # Log episode statistics
+            for i in range(len(rewards_summary['sum'])):  # For each agent
+                mlflow.log_metric(f"Agent_{i}_Episode_Reward_Sum", rewards_summary['sum'][i], step=episode)
+                mlflow.log_metric(f"Agent_{i}_Episode_Reward_Mean", rewards_summary['mean'][i], step=episode)
+                mlflow.log_metric(f"Agent_{i}_Episode_Reward_Min", rewards_summary['min'][i], step=episode)
+                mlflow.log_metric(f"Agent_{i}_Episode_Reward_Max", rewards_summary['max'][i], step=episode)
+
+            # Log episode duration
+            episode_duration = time.time() - start_episode_time
+            mlflow.log_metric("Episode_Duration", episode_duration, step=episode)
+
+            logger.info(
+                f'Completed episode: {episode + 1}/{episodes}, Reward: {rewards_summary}, Duration: {episode_duration:.2f}s')
+
+        # Aggregate rewards across episodes
+        total_rewards_across_episodes = np.array(total_rewards_across_episodes)  # Shape: (episodes, num_agents)
+
+        # Compute overall statistics across episodes
+        overall_rewards_summary = {
+            'sum': total_rewards_across_episodes.sum(axis=0),
+            'mean': total_rewards_across_episodes.mean(axis=0),
+            'min': total_rewards_across_episodes.min(axis=0),
+            'max': total_rewards_across_episodes.max(axis=0)
+        }
+
+        # Log overall statistics
+        for i in range(len(overall_rewards_summary['sum'])):  # Per agent
+            mlflow.log_metric(f"Agent_{i}_Overall_Reward_Sum", overall_rewards_summary['sum'][i])
+            mlflow.log_metric(f"Agent_{i}_Overall_Reward_Mean", overall_rewards_summary['mean'][i])
+            mlflow.log_metric(f"Agent_{i}_Overall_Reward_Min", overall_rewards_summary['min'][i])
+            mlflow.log_metric(f"Agent_{i}_Overall_Reward_Max", overall_rewards_summary['max'][i])
+
+        # Save model at the end of training
+        self.model.save_models(mlflow.active_run().info.run_id)
 
     def predict(self, observations, deterministic=None):
         """
@@ -218,19 +210,11 @@ class Wrapper_CityLearn(RLC):
 
         # Determine whether to update
         self.update_step = self.time_step % self.steps_between_training_updates != 0
-        if self.update_step:
-            logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
-        else:
-            logger.debug("Time step - Skipping Update")
-            return
+        logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
 
         # Determine exploration phase
         self.initial_exploration_done = self.time_step >= self.end_initial_exploration_time_step
-        if self.initial_exploration_done:
-            logger.debug("Initial Exploration ended.")
-        else:
-            logger.debug("Doing Initial Exploration - Skipping Update")
-            return
+        logger.debug("Initial Exploration ended." if self.initial_exploration_done else "Doing Initial Exploration - Skipping Update")
 
         # Determine whether to update the target networks
         self.update_target_step = self.time_step % self.target_update_interval == 0
@@ -241,10 +225,11 @@ class Wrapper_CityLearn(RLC):
         encoded_next_observations = self.get_all_encoded_observations(next_observations)
 
         # Pass updated parameters to model.update()
-        return self.model.update(observations = encoded_observations, actions= actions, reward= reward,
+        return self.model.update(observations = encoded_observations, actions= actions, rewards= reward,
                 next_observations= encoded_next_observations, terminated = terminated,
                 truncated = truncated,
                 update_target_step=self.update_target_step, global_learning_step=self.global_step,
+                update_step = self.update_step, initial_exploration_done= self.initial_exploration_done
         )
 
     def get_encoded_observations(self, index: int, observations: List[float]) -> npt.NDArray[np.float64]:

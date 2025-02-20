@@ -6,32 +6,14 @@ import random
 from algorithms.utils.networks import Actor, Critic
 from algorithms.utils.replay_buffer import *
 from typing import List
-from algorithms.utils.noise import add_noise
 import mlflow.pytorch
 import os
 import time
 import torch
 import mlflow
+from contextlib import nullcontext
 from torch.nn.utils import clip_grad_norm_
-from torch.optim.lr_scheduler import ExponentialLR
-
-def save_models(self, run_id):
-    """Save all actor and critic models to MLflow"""
-    model_dir = f"./models/{run_id}"
-    os.makedirs(model_dir, exist_ok=True)
-
-    for i, (actor, critic) in enumerate(zip(self.actors, self.critics)):
-        actor_path = os.path.join(model_dir, f"actor_{i}.pt")
-        critic_path = os.path.join(model_dir, f"critic_{i}.pt")
-
-        torch.save(actor.state_dict(), actor_path)
-        torch.save(critic.state_dict(), critic_path)
-
-        mlflow.log_artifact(actor_path, artifact_path="models")
-        mlflow.log_artifact(critic_path, artifact_path="models")
-
-    logger.info("Models saved to MLflow.")
-
+import numpy as np
 
 class MADDPG:
     def __init__(self, config):
@@ -42,16 +24,21 @@ class MADDPG:
         # 1.2. Device setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Device selected: {self.device}")
+        torch.backends.cudnn.benchmark = True
 
         # 1.3. Hyperparameters
         self.gamma = self.config["algorithm"]["exploration"]["params"]["gamma"]
-        self.lr_gamma = self.config["algorithm"]["hyperparameters"]["gamma"]
         self.tau = self.config["algorithm"]["exploration"]["params"]["tau"]
         self.sigma = self.config["algorithm"]["exploration"]["params"]["sigma"]
         self.bias = self.config["algorithm"]["exploration"]["params"]["bias"]
         self.batch_size = self.config["algorithm"]["replay_buffer"]["params"]["batch_size"]
         self.lr_actor = float(self.config["algorithm"]["networks"]["actor_network"]["params"]["lr"])
         self.lr_critic = float(self.config["algorithm"]["networks"]["critic_network"]["params"]["lr"])
+        self.seed = self.config["algorithm"].get("seed", 22)
+        torch.manual_seed(self.seed)
+        torch.cuda.manual_seed_all(self.seed)
+        np.random.seed(self.seed)
+        random.seed(self.seed)
 
         # 1.4. Retrieve number of agents and their dimensions
         self.num_agents = self.config["algorithm"]["hyperparameters"]["num_agents"]
@@ -65,8 +52,6 @@ class MADDPG:
         self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
         self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
         self.scaler = GradScaler(self.device)
-        self.actor_schedulers = [ExponentialLR(opt, gamma=0.99) for opt in self.actor_optimizers]
-        self.critic_schedulers = [ExponentialLR(opt, gamma=0.99) for opt in self.critic_optimizers]
 
         logger.info("MADDPG initialization complete.")
 
@@ -104,8 +89,6 @@ class MADDPG:
                         # For non-numeric strings (like device names), just use the cleaned string
                         replay_buffer_params[key] = cleaned_value
 
-            print(replay_buffer_params)
-
             ReplayBuffer = globals()[replay_buffer_class]  # Dynamically fetch the class
             return ReplayBuffer(**replay_buffer_params)
 
@@ -119,7 +102,6 @@ class MADDPG:
     def _initialize_networks(self):
         """1.7.1 Initialize actor and critic networks."""
         logger.debug("Initializing actor and critic networks.")
-        seed = self.config["algorithm"].get("seed", 22)
         actor_fc_units = self.config["algorithm"]["networks"]["actor_network"]["params"]["layers"]
         critic_fc_units = self.config["algorithm"]["networks"]["critic_network"]["params"]["layers"]
 
@@ -130,10 +112,17 @@ class MADDPG:
             action_size = self.action_dimension[i]
 
             # Initialize networks
-            actors.append(Actor(state_size, action_size, seed, actor_fc_units).to(self.device))
-            critics.append(Critic(sum(self.observation_dimension), sum(self.action_dimension), seed, critic_fc_units).to(self.device))
-            actor_targets.append(Actor(state_size, action_size, seed, actor_fc_units).to(self.device))
-            critic_targets.append(Critic(sum(self.observation_dimension), sum(self.action_dimension), seed, critic_fc_units).to(self.device))
+            actors.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
+            critics.append(Critic(sum(self.observation_dimension), sum(self.action_dimension), self.seed, critic_fc_units).to(self.device))
+            actor_targets.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
+            critic_targets.append(Critic(sum(self.observation_dimension), sum(self.action_dimension), self.seed, critic_fc_units).to(self.device))
+
+        # Target Network Initialization: the target networks are initially synchronized with the main networks
+        # (i.e. copying weights at initialization).
+        for actor, actor_target in zip(actors, actor_targets):
+            actor_target.load_state_dict(actor.state_dict())
+        for critic, critic_target in zip(critics, critic_targets):
+            critic_target.load_state_dict(critic.state_dict())
 
         return actors, critics, actor_targets, critic_targets
 
@@ -150,121 +139,150 @@ class MADDPG:
         ]
         return actor_optimizers, critic_optimizers
 
-    def update(self, observations, actions, rewards, next_observations, terminated, truncated, update_target_step,
-               global_learning_step):
-        """Perform a training update for MADDPG with optimized efficiency using a single autocast scope."""
+    def update(self, observations, actions, rewards, next_observations, terminated, truncated,
+               update_target_step, global_learning_step, update_step, initial_exploration_done):
+        """
+        Perform a MADDPG update step with optimized batch processing and full MLflow logging.
 
+        Steps:
+        1. Collect and store experiences in the replay buffer.
+        2. Sample a batch from the replay buffer.
+        3. Optimize all critics in a vectorized manner.
+        4. Optimize each actor individually.
+        5. Perform a soft update on target networks.
+        6. Log metrics for training progress.
+        """
         logger.debug("Starting update phase.")
-        update_start_time = time.time()  # Measure step time
+        update_start_time = time.time()
 
         # Push experiences to replay buffer
         self.replay_buffer.push(observations, actions, rewards, next_observations, terminated)
 
-        # Check if enough samples are in the replay buffer
+        # Early exit conditions
         if len(self.replay_buffer) < self.batch_size:
             logger.warning("Not enough samples in the replay buffer. Skipping update.")
             return
 
-        # Sample batch from replay buffer
-        batch = self.replay_buffer.sample()
-        states, actions_all, rewards_all, next_states, dones_all = batch
+        if not initial_exploration_done:
+            logger.warning("Initial exploration phase not finished. Skipping update.")
+            return
 
-        # Create global state representations
+        if not update_step:
+            logger.warning("Not updating due to time step constraint. Skipping update.")
+            return
+
+        # Sample batch from replay buffer
+        # Sample batch from replay buffer (still in CPU)
+        states, actions_all, rewards_all, next_states, dones_all = self.replay_buffer.sample()
+
+        # ✅ Fix: Convert rewards_all to a single tensor before using in calculations
+        rewards_all = torch.stack(rewards_all).to(self.device, dtype=torch.float32, non_blocking=True)
+
+        # ✅ dones_all is already a tensor from sample()
+        dones_all = dones_all.to(self.device, dtype=torch.float32, non_blocking=True)
+
+        # ✅ Move batch to GPU efficiently using non_blocking=True
+        states = [s.to(self.device, non_blocking=True) for s in states]
+        actions_all = [a.to(self.device, non_blocking=True) for a in actions_all]
+        next_states = [ns.to(self.device, non_blocking=True) for ns in next_states]
+
+        # Compute global state representations
         global_state = torch.cat(states, dim=1)
         global_next_state = torch.cat(next_states, dim=1)
         global_actions = torch.cat(actions_all, dim=1)
 
-        # Compute next actions for each agent
-        global_next_actions = torch.cat(
-            [actor_target(next_states[i]) for i, actor_target in enumerate(self.actor_targets)], dim=1)
+        # Compute target next actions using target actor networks
+        with torch.no_grad():
+            global_next_actions = torch.cat(
+                [self.actor_targets[i](next_states[i]) for i in range(self.num_agents)], dim=1
+            )
+            q_targets_next = torch.stack(
+                [critic(global_next_state, global_next_actions) for critic in self.critic_targets])
 
-        # Total loss tracking
-        total_critic_loss = 0
-        total_actor_loss = 0
+            # Compute target Q-values with correct `dones_all`
+            q_targets = rewards_all + self.gamma * q_targets_next * (1 - dones_all)
 
-        # Use a **single** `autocast` scope for the entire training step
-        with torch.cuda.amp.autocast(device_type=self.device.type):
-            for agent_num, (actor, critic, actor_target, critic_target, actor_optimizer, critic_optimizer) in enumerate(
-                    zip(self.actors, self.critics, self.actor_targets, self.critic_targets, self.actor_optimizers,
-                        self.critic_optimizers)
-            ):
-                logger.debug(f"Updating agent {agent_num}.")
+        # Optimize Critics
+        q_expected = torch.stack([critic(global_state, global_actions) for critic in self.critics])
+        with autocast(device_type="cuda"):
+            critic_loss = mse_loss(q_expected, q_targets.expand_as(q_expected)).mean()
 
-                # Get agent-specific data
-                obs = states[agent_num]
-                sampled_action = actions_all[agent_num]
-                reward = rewards_all[agent_num]
-                terminated_agent = dones_all[agent_num]
-                next_obs = next_states[agent_num]
+        self.critic_optimizers[0].zero_grad(set_to_none=True)
+        self.scaler.scale(critic_loss).backward()
+        self.scaler.unscale_(self.critic_optimizers[0])
+        clip_grad_norm_([param for critic in self.critics for param in critic.parameters()], max_norm=1.0)
+        self.scaler.step(self.critic_optimizers[0])
+        self.scaler.update()
 
-                # ---- Update Critic ----
-                q_expected = critic(global_state, global_actions)
-                q_targets_next = critic_target(global_next_state, global_next_actions)
-                q_targets = reward + self.gamma * q_targets_next * (1 - terminated_agent)
-                critic_loss = mse_loss(q_expected, q_targets.detach())
+        logger.debug(f"Critics updated. Loss: {critic_loss.item():.4f}.")
 
-                # Backpropagate critic loss
-                self.scaler.scale(critic_loss).backward()
-                self.scaler.step(critic_optimizer)
-                critic_optimizer.zero_grad()
-                self.scaler.update()
-                self.critic_schedulers[agent_num].step()
+        # **🔹 Log Individual Critic Losses to MLflow**
+        for agent_num in range(self.num_agents):
+            critic_loss_value = (q_expected[:, agent_num] - q_targets[:, agent_num].expand_as(
+                q_expected[:, agent_num])).abs().mean()
+            mlflow.log_metric(f"critic_loss_agent_{agent_num}", critic_loss_value.item(), step=global_learning_step)
 
+        # **🔹 Optimize Each Actor Individually**
+        total_actor_loss = 0.0
 
-                total_critic_loss += critic_loss.item()
+        for agent_num, (actor, critic, actor_optimizer) in enumerate(
+                zip(self.actors, self.critics, self.actor_optimizers)
+        ):
+            logger.debug(f"Updating actor for agent {agent_num}.")
 
-                # ---- Update Actor ----
-                predicted_action = actor(obs)
-                global_predicted_actions = torch.cat(
-                    [predicted_action if i == agent_num else actions_all[i].detach() for i in range(self.num_agents)],
-                    dim=1)
+            obs = states[agent_num]
+
+            # Compute predicted actions for the agent
+            predicted_action = actor(obs)
+
+            # Replace only the current agent's action in the global set
+            global_predicted_actions = torch.cat([
+                predicted_action if i == agent_num else actions_all[i].detach()
+                for i in range(self.num_agents)
+            ], dim=1)
+
+            # Compute actor loss
+            with autocast(device_type="cuda"):
                 actor_loss = -critic(global_state, global_predicted_actions).mean()
 
-                # Backpropagate actor loss
-                self.scaler.scale(actor_loss).backward()
-                self.scaler.step(actor_optimizer)
-                actor_optimizer.zero_grad()
-                self.scaler.update()
-                self.actor_schedulers[agent_num].step()
+            actor_optimizer.zero_grad(set_to_none=True)
+            self.scaler.scale(actor_loss).backward()
+            self.scaler.unscale_(actor_optimizer)
+            clip_grad_norm_(actor.parameters(), max_norm=1.0)  # Gradient clipping
+            self.scaler.step(actor_optimizer)
+            self.scaler.update()
 
-                total_actor_loss += actor_loss.item()
+            total_actor_loss += actor_loss.item()
 
-                # Compute gradient norms
-                critic_grad_norm = clip_grad_norm_(critic.parameters(), max_norm=5.0)
-                actor_grad_norm = clip_grad_norm_(actor.parameters(), max_norm=5.0)
+            logger.debug(f"Actor {agent_num} updated. Loss: {actor_loss.item():.4f}.")
 
-                # Log metrics to MLflow
-                mlflow.log_metric(f"critic_loss_agent_{agent_num}", critic_loss.item(), step=global_learning_step)
-                mlflow.log_metric(f"actor_loss_agent_{agent_num}", actor_loss.item(), step=global_learning_step)
-                mlflow.log_metric(f"grad_norm_actor_{agent_num}", actor_grad_norm.item(), step=global_learning_step)
-                mlflow.log_metric(f"grad_norm_critic_{agent_num}", critic_grad_norm.item(), step=global_learning_step)
+            # **🔹 Log Individual Actor Loss to MLflow**
+            mlflow.log_metric(f"actor_loss_agent_{agent_num}", actor_loss.item(), step=global_learning_step)
 
-                # Update target networks using soft update
-                if update_target_step:
-                    self._soft_update(critic, critic_target, self.tau)
-                    self._soft_update(actor, actor_target, self.tau)
+            # **🔹 Soft Update Target Networks**
+            if update_target_step:
+                logger.debug(f"Updating target networks for agent {agent_num}.")
+                self._soft_update(critic, self.critic_targets[agent_num], self.tau)
+                self._soft_update(actor, self.actor_targets[agent_num], self.tau)
 
-        # Log average losses
-        mlflow.log_metric("average_critic_loss", total_critic_loss / self.num_agents, step=global_learning_step)
-        mlflow.log_metric("average_actor_loss", total_actor_loss / self.num_agents, step=global_learning_step)
+        # **🔹 Log Global Metrics**
+        mlflow.log_metrics({
+            "average_critic_loss": critic_loss.item(),
+            "average_actor_loss": total_actor_loss / self.num_agents,
+            "training_step_time": time.time() - update_start_time
+        }, step=global_learning_step)
 
-        # Log learning rate (if using decay)
-        mlflow.log_metric("learning_rate_actor", self.actor_optimizers[0].param_groups[0]['lr'],
-                          step=global_learning_step)
-        mlflow.log_metric("learning_rate_critic", self.critic_optimizers[0].param_groups[0]['lr'],
-                          step=global_learning_step)
-
-        # Log step time
-        mlflow.log_metric("training_step_time", time.time() - update_start_time, step=global_learning_step)
-
-        logger.info(
-            f"Update complete. Avg Critic Loss: {total_critic_loss / self.num_agents:.4f}, Avg Actor Loss: {total_actor_loss / self.num_agents:.4f}.")
+        logger.info(f"Update complete. Avg Critic Loss: {critic_loss.item():.4f}, "
+                    f"Avg Actor Loss: {total_actor_loss / self.num_agents:.4f}.")
 
     def _soft_update(self, local_model, target_model, tau):
         """2.8.1 Soft update model parameters."""
-        logger.debug("Performing soft update.")
-        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
+        #for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
+        #    target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
+
+        with torch.no_grad():
+            for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
+                target_param.data.lerp_(local_param.data, tau)
 
     def predict(self, observations, deterministic=False):
         """3. Predict actions based on observations.

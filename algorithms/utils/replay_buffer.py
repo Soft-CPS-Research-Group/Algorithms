@@ -6,47 +6,49 @@ from collections import deque
 class MultiAgentReplayBuffer:
     def __init__(self, capacity, num_agents, batch_size, device="cpu"):
         """
-        Multi-Agent Replay Buffer that stores experiences as PyTorch tensors.
+        Multi-Agent Replay Buffer optimized for CPU storage with fast GPU transfers.
 
         Args:
             capacity (int): Maximum number of experiences per agent.
             num_agents (int): Number of agents.
             batch_size (int): Number of experiences to sample per agent.
-            device (str): Device to store tensors on ('cpu' or 'cuda').
+            device (str): Device for training ('cpu' or 'cuda'). The buffer remains in CPU.
         """
         self.capacity = capacity
         self.num_agents = num_agents
         self.batch_size = batch_size
-        self.device = torch.device(device)
-        self.buffers = [deque(maxlen=capacity) for _ in range(num_agents)]
+        self.device = torch.device(device)  # Device for training
+        self.buffers = [deque(maxlen=capacity) for _ in range(num_agents)]  # Store data in CPU memory
 
     def push(self, states, actions, rewards, next_states, terminated):
         """
-        Store experiences for each agent as PyTorch tensors.
+        Store experiences for each agent in CPU memory.
 
         Args:
-            states (list): List of states, one for each agent.
-            actions (list): List of actions, one for each agent.
-            rewards (list): List of rewards, one for each agent.
-            next_states (list): List of next states, one for each agent.
-            terminated (bool or list): Done flag(s) (shared across agents).
+            states (list): List of states per agent.
+            actions (list): List of actions per agent.
+            rewards (list): List of rewards per agent.
+            next_states (list): List of next states per agent.
+            terminated (bool): Single done flag shared across all agents.
         """
         for agent_idx in range(self.num_agents):
-            # Convert to tensors before storing
-            state_tensor = torch.tensor(states[agent_idx], dtype=torch.float32, device=self.device)
-            action_tensor = torch.tensor(actions[agent_idx], dtype=torch.float32, device=self.device)
-            reward_tensor = torch.tensor(rewards[agent_idx], dtype=torch.float32, device=self.device).unsqueeze(0)
-            next_state_tensor = torch.tensor(next_states[agent_idx], dtype=torch.float32, device=self.device)
-            terminated_tensor = torch.tensor(terminated, dtype=torch.float32, device=self.device).unsqueeze(0)
+            state_tensor = torch.tensor(states[agent_idx], dtype=torch.float32).pin_memory()
+            action_tensor = torch.tensor(actions[agent_idx], dtype=torch.float32).pin_memory()
+            reward_tensor = torch.tensor(rewards[agent_idx], dtype=torch.float32).unsqueeze(0).pin_memory()
+            next_state_tensor = torch.tensor(next_states[agent_idx], dtype=torch.float32).pin_memory()
 
-            self.buffers[agent_idx].append((state_tensor, action_tensor, reward_tensor, next_state_tensor, terminated_tensor))
+            # ✅ Convert terminated (bool) to a single tensor (no indexing!)
+            terminated_tensor = torch.tensor(terminated, dtype=torch.float32).unsqueeze(-1).pin_memory()
+
+            self.buffers[agent_idx].append(
+                (state_tensor, action_tensor, reward_tensor, next_state_tensor, terminated_tensor))
 
     def sample(self):
         """
         Sample a batch of experiences for each agent.
 
         Returns:
-            Tuple of (states, actions, rewards, next_states, terminated) as tensors for all agents.
+            Tuple of (states, actions, rewards, next_states, terminated) as CPU tensors.
         """
         if len(self) < self.batch_size:
             raise ValueError("Not enough samples in the buffer to sample a batch.")
@@ -56,11 +58,14 @@ class MultiAgentReplayBuffer:
             batch = random.sample(self.buffers[agent_idx], self.batch_size)
             states_agent, actions_agent, rewards_agent, next_states_agent, terminated_agent = zip(*batch)
 
-            states.append(torch.stack(states_agent).to(self.device))
-            actions.append(torch.stack(actions_agent).to(self.device))
-            rewards.append(torch.stack(rewards_agent).to(self.device))
-            next_states.append(torch.stack(next_states_agent).to(self.device))
-            terminated.append(torch.stack(terminated_agent).to(self.device))
+            states.append(torch.stack(states_agent))
+            actions.append(torch.stack(actions_agent))
+            rewards.append(torch.stack(rewards_agent))
+            next_states.append(torch.stack(next_states_agent))
+            terminated.append(torch.stack(terminated_agent))  # ✅ Convert to tensor here
+
+        # ✅ Fix: Convert dones_all from list to tensor immediately (avoid `.to()` issues)
+        terminated = torch.stack(terminated)
 
         return states, actions, rewards, next_states, terminated
 
