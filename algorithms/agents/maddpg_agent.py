@@ -1,19 +1,19 @@
-import torch
 from torch.nn.functional import mse_loss
 from loguru import logger
 from torch.amp import GradScaler, autocast
-import random
 from algorithms.utils.networks import Actor, Critic
 from algorithms.utils.replay_buffer import *
 from typing import List
 import mlflow.pytorch
-import os
 import time
 import torch
 import mlflow
-from contextlib import nullcontext
 from torch.nn.utils import clip_grad_norm_
 import numpy as np
+import torch
+import onnx
+import os
+from loguru import logger
 
 class MADDPG:
     def __init__(self, config):
@@ -39,6 +39,10 @@ class MADDPG:
         torch.cuda.manual_seed_all(self.seed)
         np.random.seed(self.seed)
         random.seed(self.seed)
+        self.resume_training = self.config["experiment"]["resume_training"]
+        self.checkpoint_run_id = self.config["experiment"]["checkpoint_run_id"]
+        self.checkpoint_artifact = self.config["experiment"]["checkpoint_artifact"]
+        self.use_best_checkpoint_artifact = self.config["experiment"]["use_best_checkpoint_artifact"]
 
         # 1.4. Retrieve number of agents and their dimensions
         self.num_agents = self.config["algorithm"]["hyperparameters"]["num_agents"]
@@ -53,43 +57,35 @@ class MADDPG:
         self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
         self.scaler = GradScaler(self.device)
 
+        # 1.7. Resume Training/Continous Training/Transfer Learning
+        if self.resume_training:
+            if self.use_best_checkpoint_artifact:
+                self.checkpoint_run_id = self.get_best_checkpoint(self.config["experiment"]["name"])
+
+            if self.checkpoint_run_id:
+                self._load_checkpoint_from_mlflow()
+
+            # ✅ Freeze layers if needed for fine-tuning
+            if self.config["experiment"].get("freeze_pretrained_layers", False):
+                self.freeze_layers(freeze_actor=True, freeze_critic=False)
+
         logger.info("MADDPG initialization complete.")
 
-    def _initialize_replay_buffer(self):
-        """1.6.1 Initialize the replay buffer dynamically based on configuration."""
-        logger.debug("Initializing replay buffer dynamically.")
 
+    def _initialize_replay_buffer(self):
+        """Initialize the replay buffer dynamically based on configuration."""
+        logger.debug("Initializing replay buffer.")
         try:
             replay_buffer_class = self.config["algorithm"]["replay_buffer"]["class"]
             replay_buffer_params = self.config["algorithm"]["replay_buffer"]["params"]
-            logger.debug(f"Replay buffer class: {replay_buffer_class}, params: {replay_buffer_params}")
-            replay_buffer_params["device"] = self.device
             replay_buffer_params["num_agents"] = self.num_agents
 
-            device_str = str(self.device)
-            if "cuda" in device_str:
-                # If there is extra info (like ":0"), you can split it off
-                replay_buffer_params["device"] = "cuda"
-            elif "cpu" in device_str:
-                replay_buffer_params["device"] = "cpu"
-            else:
-                replay_buffer_params["device"] = device_str  # fallback
-
-            replay_buffer_params["num_agents"] = self.num_agents
-
-            # Clean up parameters: convert numeric strings to integers if necessary
+            # Convert string numbers to integers if necessary
             for key, value in replay_buffer_params.items():
-                if isinstance(value, str):
-                    # Remove commas and extra whitespace
-                    cleaned_value = value.replace(',', '').strip()
-                    # If the cleaned string is a digit, convert it to an integer
-                    if cleaned_value.isdigit():
-                        replay_buffer_params[key] = int(cleaned_value)
-                    else:
-                        # For non-numeric strings (like device names), just use the cleaned string
-                        replay_buffer_params[key] = cleaned_value
+                if isinstance(value, str) and value.isdigit():
+                    replay_buffer_params[key] = int(value)
 
-            ReplayBuffer = globals()[replay_buffer_class]  # Dynamically fetch the class
+            ReplayBuffer = globals()[replay_buffer_class]
             return ReplayBuffer(**replay_buffer_params)
 
         except KeyError as e:
@@ -365,68 +361,106 @@ class MADDPG:
         logger.debug(f"Actions with exploration noise and constraints applied: {actions_return}")
         return actions_return
 
-    def save_models(self, run_id):
-        """Save all actor and critic models to MLflow"""
-        model_dir = f"./models/{run_id}"
-        os.makedirs(model_dir, exist_ok=True)
+    def freeze_layers(self, freeze_actor=True, freeze_critic=False):
+        """Freeze parts of the network for transfer learning."""
+        for i in range(self.num_agents):
+            if freeze_actor:
+                for param in self.actors[i].parameters():
+                    param.requires_grad = False
+            if freeze_critic:
+                for param in self.critics[i].parameters():
+                    param.requires_grad = False
+        logger.info(f"Freezing actors: {freeze_actor}, Freezing critics: {freeze_critic}")
 
-        for i, (actor, critic) in enumerate(zip(self.actors, self.critics)):
-            actor_path = os.path.join(model_dir, f"actor_{i}.pt")
-            critic_path = os.path.join(model_dir, f"critic_{i}.pt")
+    def save_checkpoint_to_mlflow(self, step):
+        """Save a checkpoint to MLflow."""
+        logger.info(f"Saving checkpoint at step {step}.")
 
-            torch.save(actor.state_dict(), actor_path)
-            torch.save(critic.state_dict(), critic_path)
+        checkpoint = {}
+        for i in range(self.num_agents):
+            checkpoint[f"actor_state_dict_{i}"] = self.actors[i].state_dict()
+            checkpoint[f"critic_state_dict_{i}"] = self.critics[i].state_dict()
+            checkpoint[f"actor_optimizer_state_dict_{i}"] = self.actor_optimizers[i].state_dict()
+            checkpoint[f"critic_optimizer_state_dict_{i}"] = self.critic_optimizers[i].state_dict()
 
-            mlflow.log_artifact(actor_path, artifact_path="models")
-            mlflow.log_artifact(critic_path, artifact_path="models")
-
-        logger.info("Models saved to MLflow.")
-
-    def save_checkpoint(self, run_id, checkpoint_step):
-        """Save MADDPG checkpoint (actor & critic networks) and optimizer states"""
-        checkpoint_dir = f"./checkpoints/{run_id}"
-        os.makedirs(checkpoint_dir, exist_ok=True)
-
-        checkpoint_data = {
-            "actors": [actor.state_dict() for actor in self.actors],
-            "critics": [critic.state_dict() for critic in self.critics],
-            "actor_optimizers": [opt.state_dict() for opt in self.actor_optimizers],
-            "critic_optimizers": [opt.state_dict() for opt in self.critic_optimizers],
-            "step": checkpoint_step
-        }
-
-        checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{checkpoint_step}.pt")
-        torch.save(checkpoint_data, checkpoint_path)
+        checkpoint["replay_buffer"] = self.replay_buffer.get_state()
+        checkpoint_path = os.path.join("/tmp", self.checkpoint_artifact)
+        torch.save(checkpoint, checkpoint_path)
 
         # Log to MLflow
-        mlflow.log_artifact(checkpoint_path, artifact_path="checkpoints")
-
-        logger.info(f"Checkpoint saved at step {checkpoint_step} - {checkpoint_path}")
-
-    def load_checkpoint(self, checkpoint_path):
-        """Load MADDPG checkpoint (actor & critic networks) and optimizer states"""
-        if not os.path.exists(checkpoint_path):
-            logger.error(f"Checkpoint file {checkpoint_path} not found.")
-            return False
-
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-
-        for actor, actor_state in zip(self.actors, checkpoint["actors"]):
-            actor.load_state_dict(actor_state)
-
-        for critic, critic_state in zip(self.critics, checkpoint["critics"]):
-            critic.load_state_dict(critic_state)
-
-        for opt, opt_state in zip(self.actor_optimizers, checkpoint["actor_optimizers"]):
-            opt.load_state_dict(opt_state)
-
-        for opt, opt_state in zip(self.critic_optimizers, checkpoint["critic_optimizers"]):
-            opt.load_state_dict(opt_state)
-
-        self.current_step = checkpoint["step"]
-
-        logger.info(f"Checkpoint loaded from {checkpoint_path} at step {self.current_step}.")
-        return True
+        mlflow.log_artifact(checkpoint_path)
+        logger.info(f"Checkpoint saved to MLflow: {self.checkpoint_artifact}")
 
 
+    def _load_checkpoint_from_mlflow(self):
+        """Load model parameters and optionally optimizer states from MLflow."""
+        logger.info(f"Loading checkpoint from MLflow Run ID: {self.checkpoint_run_id}")
+
+        try:
+            checkpoint_path = os.path.join("/tmp", self.checkpoint_artifact)
+            mlflow.artifacts.download_artifact(
+                artifact_path=self.checkpoint_artifact,
+                dst_path=checkpoint_path,
+                run_id=self.checkpoint_run_id
+            )
+
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+            for i in range(self.num_agents):
+                self.actors[i].load_state_dict(checkpoint[f"actor_state_dict_{i}"])
+                self.critics[i].load_state_dict(checkpoint[f"critic_state_dict_{i}"])
+
+                # ✅ Skip loading optimizer states if fine-tuning
+                if not self.config["experiment"].get("fine_tune", False):
+                    self.actor_optimizers[i].load_state_dict(checkpoint[f"actor_optimizer_state_dict_{i}"])
+                    self.critic_optimizers[i].load_state_dict(checkpoint[f"critic_optimizer_state_dict_{i}"])
+
+            if "replay_buffer" in checkpoint and not self.config["experiment"].get("reset_replay_buffer", False):
+                self.replay_buffer.set_state(checkpoint["replay_buffer"])
+
+            logger.info("Checkpoint successfully loaded from MLflow.")
+
+        except Exception as e:
+            logger.error(f"Failed to load checkpoint from MLflow: {e}")
+            raise RuntimeError("Error loading checkpoint from MLflow")
+
+    @staticmethod
+    def get_best_checkpoint(experiment_name):
+        """Retrieve the best checkpoint (lowest validation loss) from MLflow."""
+        client = mlflow.MlflowClient()
+        experiment = client.get_experiment_by_name(experiment_name)
+        if not experiment:
+            raise ValueError(f"Experiment {experiment_name} not found in MLflow.")
+
+        runs = client.search_runs(experiment.experiment_id, order_by=["metrics.validation_loss ASC"], max_results=1)
+
+        if runs:
+            return runs[0].info.run_id
+        else:
+            raise ValueError(f"No runs found for experiment {experiment_name}.")
+
+    def export_to_onnx(self, log_dir):
+        """Export each agent's actor network to ONNX format inside the log directory."""
+        export_dir = os.path.join(log_dir, "onnx_models")
+        logger.info(f"Exporting MADDPG actors to ONNX. Saving to {export_dir}")
+
+        os.makedirs(export_dir, exist_ok=True)  # Ensure directory exists
+
+        for i, actor in enumerate(self.actors):
+            export_path = os.path.join(export_dir, f"agent_{i}.onnx")
+            dummy_input = torch.randn(1, self.observation_dimension[i]).to(self.device)  # Adjust per agent
+
+            torch.onnx.export(
+                actor,  # Export actor network for agent i
+                dummy_input,
+                export_path,
+                export_params=True,
+                opset_version=11,
+                do_constant_folding=True,
+                input_names=[f"observation_agent_{i}"],
+                output_names=[f"action_agent_{i}"],
+                dynamic_axes={f"observation_agent_{i}": {0: "batch_size"}, f"action_agent_{i}": {0: "batch_size"}}
+            )
+
+            logger.info(f"ONNX model exported for Agent {i}: {export_path}")
 

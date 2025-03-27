@@ -4,7 +4,7 @@ import torch
 from collections import deque
 
 class MultiAgentReplayBuffer:
-    def __init__(self, capacity, num_agents, batch_size, device="cpu"):
+    def __init__(self, capacity, num_agents, batch_size):
         """
         Multi-Agent Replay Buffer optimized for CPU storage with fast GPU transfers.
 
@@ -12,12 +12,11 @@ class MultiAgentReplayBuffer:
             capacity (int): Maximum number of experiences per agent.
             num_agents (int): Number of agents.
             batch_size (int): Number of experiences to sample per agent.
-            device (str): Device for training ('cpu' or 'cuda'). The buffer remains in CPU.
         """
+
         self.capacity = capacity
         self.num_agents = num_agents
         self.batch_size = batch_size
-        self.device = torch.device(device)  # Device for training
         self.buffers = [deque(maxlen=capacity) for _ in range(num_agents)]  # Store data in CPU memory
 
     def push(self, states, actions, rewards, next_states, terminated):

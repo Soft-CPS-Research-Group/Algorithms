@@ -32,6 +32,7 @@ class Wrapper_CityLearn(RLC):
         self.end_exploration_time_step = config["algorithm"]["hyperparameters"]["end_exploration_time_step"]
         self.target_update_interval = config["algorithm"]["hyperparameters"]["target_update_interval"]
         self.checkpoint_interval = config["algorithm"]["hyperparameters"]["checkpoint_interval"]
+        self.log_dir= config["experiment"]["logging"]["log_dir"]
 
     def set_model(self, model: BaseAgent):
         """
@@ -49,13 +50,6 @@ class Wrapper_CityLearn(RLC):
         episodes = episodes or 1
         deterministic_finish = deterministic_finish if deterministic_finish is not None else False
         deterministic = deterministic if deterministic is not None else False
-
-        # Initialize NVML for GPU monitoring
-        try:
-            nvmlInit()
-            gpu_available = True
-        except Exception:
-            gpu_available = False
 
         total_rewards_across_episodes = []  # To track overall reward trends
 
@@ -78,10 +72,6 @@ class Wrapper_CityLearn(RLC):
                 next_observations, rewards, terminated, truncated, _ = self.env.step(actions)
                 rewards_list.append(rewards)
 
-                # Log reward per agent per step
-                for i, reward in enumerate(rewards):
-                    mlflow.log_metric(f"Agent_{i}_Reward", reward, step=self.global_step)
-
                 # Update model if not in deterministic mode
                 if not deterministic:
                     self.update(observations, actions, rewards, next_observations, terminated=terminated,
@@ -89,44 +79,37 @@ class Wrapper_CityLearn(RLC):
 
                 observations = [o for o in next_observations]
 
-                # Measure system usage
-                cpu_usage = psutil.cpu_percent()
-                ram_usage = psutil.virtual_memory().percent
+                # Reduce system monitoring frequency
+                if self.global_step % 10 == 0:
+                    cpu_usage = psutil.cpu_percent()
+                    ram_usage = psutil.virtual_memory().percent
 
-                if gpu_available:
-                    handle = nvmlDeviceGetHandleByIndex(0)  # Assuming 1 GPU
-                    gpu_memory_info = nvmlDeviceGetMemoryInfo(handle)
-                    gpu_usage = nvmlDeviceGetUtilizationRates(handle).gpu
-                    gpu_mem_used = gpu_memory_info.used / (1024 ** 2)  # Convert to MB
-                else:
-                    gpu_usage = None
-                    gpu_mem_used = None
-
-                # PyTorch-specific GPU memory tracking
+                # PyTorch-specific GPU memory tracking (kept only PyTorch measurement)
                 if torch.cuda.is_available():
-                    torch.cuda.synchronize()  # Ensure all GPU operations are done before measuring
                     gpu_mem_allocated = torch.cuda.memory_allocated() / 1024 ** 2  # Convert to MB
                     gpu_mem_reserved = torch.cuda.memory_reserved() / 1024 ** 2  # Reserved for caching
                 else:
                     gpu_mem_allocated = None
                     gpu_mem_reserved = None
 
-                # Log system usage per step
-                mlflow.log_metric("CPU_Usage", cpu_usage, step=self.global_step)
-                mlflow.log_metric("RAM_Usage", ram_usage, step=self.global_step)
-
-                if gpu_usage is not None:
-                    mlflow.log_metric("GPU_Usage", gpu_usage, step=self.global_step)
-                    mlflow.log_metric("GPU_Memory_Used_MB", gpu_mem_used, step=self.global_step)
-
-                if gpu_mem_allocated is not None:
-                    mlflow.log_metric("GPU_PyTorch_Allocated_MB", gpu_mem_allocated, step=self.global_step)
-                    mlflow.log_metric("GPU_PyTorch_Reserved_MB", gpu_mem_reserved, step=self.global_step)
-
+                # Step duration calculation
                 step_duration = time.time() - step_start_time
-                mlflow.log_metric("Step_Duration", step_duration, step=self.global_step)
 
-                logger.debug(
+                # Consolidated MLflow logging
+                metrics = {
+                    f"Agent_{i}_Reward": reward for i, reward in enumerate(rewards)
+                }
+                if cpu_usage is not None:
+                    metrics["CPU_Usage"] = cpu_usage
+                    metrics["RAM_Usage"] = ram_usage
+                if gpu_mem_allocated is not None:
+                    metrics["GPU_PyTorch_Allocated_MB"] = gpu_mem_allocated
+                    metrics["GPU_PyTorch_Reserved_MB"] = gpu_mem_reserved
+                metrics["Step_Duration"] = step_duration
+
+                mlflow.log_metrics(metrics, step=self.global_step)
+
+                logger.info(
                     f'Time step: {time_step + 1}/{self.episode_time_steps},'
                     f' Episode: {episode + 1}/{episodes},'
                     f' Actions: {actions},'
@@ -151,15 +134,17 @@ class Wrapper_CityLearn(RLC):
             total_rewards_across_episodes.append(rewards_summary['sum'])
 
             # Log episode statistics
-            for i in range(len(rewards_summary['sum'])):  # For each agent
-                mlflow.log_metric(f"Agent_{i}_Episode_Reward_Sum", rewards_summary['sum'][i], step=episode)
-                mlflow.log_metric(f"Agent_{i}_Episode_Reward_Mean", rewards_summary['mean'][i], step=episode)
-                mlflow.log_metric(f"Agent_{i}_Episode_Reward_Min", rewards_summary['min'][i], step=episode)
-                mlflow.log_metric(f"Agent_{i}_Episode_Reward_Max", rewards_summary['max'][i], step=episode)
+            episode_metrics = {}
 
-            # Log episode duration
+            for i in range(len(rewards_summary['sum'])):
+                episode_metrics[f"Agent_{i}_Episode_Reward_Sum"] = rewards_summary['sum'][i]
+                episode_metrics[f"Agent_{i}_Episode_Reward_Mean"] = rewards_summary['mean'][i]
+                episode_metrics[f"Agent_{i}_Episode_Reward_Min"] = rewards_summary['min'][i]
+                episode_metrics[f"Agent_{i}_Episode_Reward_Max"] = rewards_summary['max'][i]
+
             episode_duration = time.time() - start_episode_time
-            mlflow.log_metric("Episode_Duration", episode_duration, step=episode)
+            episode_metrics["Episode_Duration"] = episode_duration
+            mlflow.log_metrics(episode_metrics, step=episode)
 
             logger.info(
                 f'Completed episode: {episode + 1}/{episodes}, Reward: {rewards_summary}, Duration: {episode_duration:.2f}s')
@@ -176,14 +161,18 @@ class Wrapper_CityLearn(RLC):
         }
 
         # Log overall statistics
-        for i in range(len(overall_rewards_summary['sum'])):  # Per agent
-            mlflow.log_metric(f"Agent_{i}_Overall_Reward_Sum", overall_rewards_summary['sum'][i])
-            mlflow.log_metric(f"Agent_{i}_Overall_Reward_Mean", overall_rewards_summary['mean'][i])
-            mlflow.log_metric(f"Agent_{i}_Overall_Reward_Min", overall_rewards_summary['min'][i])
-            mlflow.log_metric(f"Agent_{i}_Overall_Reward_Max", overall_rewards_summary['max'][i])
+        overall_metrics = {}
+
+        for i in range(len(overall_rewards_summary['sum'])):
+            overall_metrics[f"Agent_{i}_Overall_Reward_Sum"] = overall_rewards_summary['sum'][i]
+            overall_metrics[f"Agent_{i}_Overall_Reward_Mean"] = overall_rewards_summary['mean'][i]
+            overall_metrics[f"Agent_{i}_Overall_Reward_Min"] = overall_rewards_summary['min'][i]
+            overall_metrics[f"Agent_{i}_Overall_Reward_Max"] = overall_rewards_summary['max'][i]
+
+        mlflow.log_metrics(overall_metrics)
 
         # Save model at the end of training
-        self.model.save_models(mlflow.active_run().info.run_id)
+        self.model.export_to_onnx(self.log_dir)
 
     def predict(self, observations, deterministic=None):
         """
@@ -232,20 +221,26 @@ class Wrapper_CityLearn(RLC):
                 update_step = self.update_step, initial_exploration_done= self.initial_exploration_done
         )
 
-    def get_encoded_observations(self, index: int, observations: List[float]) -> npt.NDArray[np.float64]:
-        return np.array(
-            [j for j in np.hstack(self.encoders[index] * np.array(observations, dtype=float)) if j is not None],
-            dtype=float
-        )
+    def get_encoded_observations(self, index: int, observations: List[float]) -> np.ndarray:
+        """Optimized encoding function using NumPy with proper type handling."""
 
-    def get_all_encoded_observations(self, observations: List[List[float]]) -> List[npt.NDArray[np.float64]]:
-        return [
-            np.array(
-                [j for j in np.hstack(self.encoders[idx] * np.array(obs, dtype=float)) if j is not None],
-                dtype=float
-            )
-            for idx, obs in enumerate(observations)
-        ]
+        obs_array = np.array(observations, dtype=np.float64)  # Ensure numeric type
+
+        # Apply encoding transformation correctly
+        encoded = np.hstack([
+            encoder.transform(obs) if hasattr(encoder, "transform") else encoder * obs
+            for encoder, obs in zip(self.encoders[index], obs_array)
+        ]).astype(np.float64)  # Convert everything to float
+
+        return encoded[~np.isnan(encoded)]  # Remove NaN values safely
+
+    def get_all_encoded_observations(self, observations: List[List[float]]) -> List[np.ndarray]:
+        """Optimized encoding function avoiding joblib issues."""
+        return [self.get_encoded_observations(idx, obs) for idx, obs in enumerate(observations)]
+
+    def get_all_encoded_observations(self, observations: List[List[float]]) -> List[np.ndarray]:
+        """Optimized version without joblib for better performance."""
+        return [self.get_encoded_observations(idx, obs) for idx, obs in enumerate(observations)]
 
     def set_encoders(self) -> List[List[Encoder]]:
         r"""Get observation value transformers/encoders for use in MARLISA agent internal regression model.

@@ -1,6 +1,15 @@
 experiment:
-  name: "citylearn_dataset"
-  run_name: "Run 0 - Testing if everything works"
+  name: "real_world_dataset_4houses"
+  run_name: "Run 6 - Final Testing Run"
+  resume_training: false
+  checkpoint_run_id: "1234567890abcdef"  # Paste the correct run_id here
+  checkpoint_artifact: "latest_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false  # If true, clears replay buffer when loading checkpoint
+  freeze_pretrained_layers: false
+  save_checkpoints: true
+  checkpoint_interval_steps: 5000
+  save_final_model: true
   logging:
     log_dir: "./logs"  # Directory for log files
     log_level: "DEBUG"  # Logging level
@@ -30,20 +39,20 @@ algorithm:
     actor_network:
       class: "Actor"
       params:
-        layers: [ 256, 128 ]
+        layers: [2048, 1024, 512, 256, 128, 64]
         lr: 1e-4
         optimizer_class: "Adam"
     critic_network:
       class: "Critic"
       params:
-        layers: [ 256, 128 ]
+        layers: [2048, 1024, 512, 256, 128, 64]
         optimizer_class: "Adam"
         lr: 1e-3
   replay_buffer:
     class: "MultiAgentReplayBuffer"
     params:
-      "capacity": 100000,
-      "batch_size": 256
+      "capacity": 100000
+      "batch_size": 512
   exploration:
     strategy: "GaussianNoise"
     params:
