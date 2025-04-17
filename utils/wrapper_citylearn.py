@@ -12,7 +12,8 @@ from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 import torch
 
 class Wrapper_CityLearn(RLC):
-    def __init__(self, env: CityLearnEnv, model: BaseAgent = None, config = None, **kwargs):
+    def __init__(self, env: CityLearnEnv, model: BaseAgent = None, config=None, job_id=None, progress_path=None,
+                 **kwargs):
         """
         Wrapper for CityLearn RLC that delegates custom behavior to a BaseAgent model.
 
@@ -22,23 +23,44 @@ class Wrapper_CityLearn(RLC):
         - **kwargs: Additional arguments passed to the RLC constructor.
         """
         super().__init__(env, **kwargs)
-        self.model = model  # Custom model logic, it can be none upon initialization
+        self.model = model
+        self.job_id = job_id
+        self.progress_path = progress_path
         self.initial_exploration_done = False
         self.update_step = False
         self.update_target_step = False
         self.global_step = 0
-        self.steps_between_training_updates = config["algorithm"]["hyperparameters"]["steps_between_training_updates"]
-        self.end_initial_exploration_time_step = config["algorithm"]["hyperparameters"]["end_initial_exploration_time_step"]
+        self.steps_between_training_updates = config["algorithm"]["hyperparameters"][
+            "steps_between_training_updates"]
+        self.end_initial_exploration_time_step = config["algorithm"]["hyperparameters"][
+            "end_initial_exploration_time_step"]
         self.end_exploration_time_step = config["algorithm"]["hyperparameters"]["end_exploration_time_step"]
         self.target_update_interval = config["algorithm"]["hyperparameters"]["target_update_interval"]
         self.checkpoint_interval = config["algorithm"]["hyperparameters"]["checkpoint_interval"]
-        self.log_dir= config["experiment"]["logging"]["log_dir"]
+        self.log_dir = config["experiment"]["logging"]["log_dir"]
 
     def set_model(self, model: BaseAgent):
         """
         Set the model after initialization.
         """
         self.model = model
+
+    def _write_progress(self, episode, step, rewards=None):
+        """Write current progress to a JSON file."""
+        try:
+            import json, datetime
+            progress = {
+                "episode": episode,
+                "step": step,
+                "global_step": self.global_step,
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+            }
+            if rewards:
+                progress["rewards"] = rewards
+            with open(self.progress_path, "w") as f:
+                json.dump(progress, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Could not write progress file: {e}")
 
     def learn(self, episodes=None, deterministic=None, deterministic_finish=None, logging_level=None):
         """
@@ -99,6 +121,7 @@ class Wrapper_CityLearn(RLC):
                 metrics = {
                     f"Agent_{i}_Reward": reward for i, reward in enumerate(rewards)
                 }
+
                 if cpu_usage is not None:
                     metrics["CPU_Usage"] = cpu_usage
                     metrics["RAM_Usage"] = ram_usage
@@ -118,6 +141,9 @@ class Wrapper_CityLearn(RLC):
                     f' GPU Allocated: {gpu_mem_allocated} MB, GPU Reserved: {gpu_mem_reserved} MB'
                     f' Step Duration: {step_duration}'
                 )
+
+                if self.global_step % 5 == 0:
+                    self._write_progress(episode=episode, step=time_step, rewards=rewards)
 
                 time_step += 1
 
