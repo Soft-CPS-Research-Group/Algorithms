@@ -70,16 +70,41 @@ if run is None:
 run_id = run.info.run_id
 run_name = run.info.run_name
 
+# -------------------------------
+# 4.1 Update job_info.json with MLflow run ID
+# -------------------------------
+job_info_path = os.path.join(job_dir, "job_info.json")
+
+try:
+    if os.path.exists(job_info_path):
+        with open(job_info_path, "r") as f:
+            job_info = json.load(f)
+    else:
+        job_info = {}
+
+    job_info["mlflow_run_id"] = run_id
+    job_info["mlflow_uri"] = f"file:{mlflow_uri}"  # optional, nice to track
+
+    with open(job_info_path, "w") as f:
+        json.dump(job_info, f, indent=2)
+
+    logger.info(f"MLflow run ID saved to job_info.json: {run_id}")
+
+except Exception as e:
+    logger.warning(f"Could not update job_info.json with MLflow run ID: {e}")
+
+
 print("Starting logs")
 log_file = os.path.join(log_dir, f"{run_id}.log")
-logger.add(log_file, rotation="1 week", retention="1 month", compression="zip")
+level = config["experiment"]["logging"].get("log_level", "INFO").upper()
+logger.add(log_file, level=level)
 
 logger.info(f"Started run {run_name} with ID {run_id} for job {job_id}")
 
 # -------------------------------
 # 5. Initialize Environment
 # -------------------------------
-print("INitializing ENV")
+print("Initializing ENV")
 reward_function_map = {
     "V2GPenaltyReward": V2G_Reward,
     "RewardFunction": RewardFunction
