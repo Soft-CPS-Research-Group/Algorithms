@@ -23,7 +23,9 @@ parser.add_argument('--job_id', required=True, help='Job ID to structure output 
 args = parser.parse_args()
 
 config_file_path = args.config
+print(config_file_path)
 job_id = args.job_id
+print(job_id)
 
 # -------------------------------
 # 2. Setup Directories
@@ -40,6 +42,13 @@ os.makedirs(os.path.dirname(result_path), exist_ok=True)
 os.makedirs(os.path.dirname(progress_path), exist_ok=True)
 os.makedirs(mlflow_uri, exist_ok=True)
 
+print("DIRS OK")
+print(log_dir)
+print(result_path)
+print(progress_path)
+print(mlflow_uri)
+
+
 # -------------------------------
 # 3. Load Config
 # -------------------------------
@@ -53,6 +62,7 @@ config["experiment"]["logging"]["mlflow_uri"] = f"file:{mlflow_uri}"
 # -------------------------------
 # 4. Set up MLflow & Logging
 # -------------------------------
+print("Starting MLFlow")
 start_mlflow_run(config=config)
 run = mlflow.active_run()
 if run is None:
@@ -60,6 +70,7 @@ if run is None:
 run_id = run.info.run_id
 run_name = run.info.run_name
 
+print("Starting logs")
 log_file = os.path.join(log_dir, f"{run_id}.log")
 logger.add(log_file, rotation="1 week", retention="1 month", compression="zip")
 
@@ -68,6 +79,7 @@ logger.info(f"Started run {run_name} with ID {run_id} for job {job_id}")
 # -------------------------------
 # 5. Initialize Environment
 # -------------------------------
+print("INitializing ENV")
 reward_function_map = {
     "V2GPenaltyReward": V2G_Reward,
     "RewardFunction": RewardFunction

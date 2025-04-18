@@ -13,4 +13,4 @@ RUN pip install --upgrade pip && \
     pip install -r requirements.txt
 
 # Create entrypoint
-ENTRYPOINT ["python", "citylearn_train.py"]
+ENTRYPOINT ["python", "docker_run.py"]
