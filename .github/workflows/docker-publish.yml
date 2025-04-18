@@ -19,8 +19,14 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build Docker image
-        run: docker build -t calof/opeva_simulator:latest .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Push Docker image
-        run: docker push calof/opeva_simulator:latest
+      - name: Build and push Docker image with cache
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: calof/opeva_simulator:latest
+          cache-from: type=registry,ref=calof/opeva_simulator:buildcache
+          cache-to: type=registry,ref=calof/opeva_simulator:buildcache,mode=max
