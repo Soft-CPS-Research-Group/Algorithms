@@ -1,0 +1,27 @@
+# Ignore cache, temp files, secrets, and dev env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.ipynb
+
+# Editor / system files
+.vscode/
+.idea/
+.DS_Store
+
+# Git and CI/CD
+.git/
+.github/
+*.env
+.env
+
+# Virtual env
+venv/
+.venv/
+
+# Simulation outputs or experiment files
+experiments/
+datasets/
+mlruns/
