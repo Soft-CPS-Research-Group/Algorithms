@@ -1,5 +1,3 @@
-import torch
-
 class MADDPGTrainer:
     def __init__(self, agents, environment, replay_buffer, batch_size=64):
         self.agents = agents
@@ -18,7 +16,10 @@ class MADDPGTrainer:
                 next_states, rewards, done, _ = self.environment.step(actions)
 
                 # Add experience to the replay buffer
-                self.replay_buffer.add(states, actions, rewards, next_states, done)
+                # `MultiAgentReplayBuffer` and `PrioritizedReplayBuffer` expose
+                # a `push` method to store new transitions. Using the incorrect
+                # method name results in an `AttributeError` at runtime.
+                self.replay_buffer.push(states, actions, rewards, next_states, done)
 
                 # Update agents
                 if len(self.replay_buffer) >= self.batch_size:
