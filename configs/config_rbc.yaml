@@ -1,0 +1,47 @@
+# Example configuration for the heuristic rule-based controller
+
+experiment:
+  name: "rbc_example"                      # descriptive experiment identifier
+  run_name: "RBC baseline"                 # MLflow run name for tracking
+  resume_training: false                   # set true to reuse previous run
+  checkpoint_run_id: ""                    # run id containing checkpoint
+  checkpoint_artifact: "latest_checkpoint.pth"  # checkpoint file name
+  use_best_checkpoint_artifact: false      # load best checkpoint instead of latest
+  reset_replay_buffer: false               # unused for RBC but kept for interface
+  freeze_actors: false                     # not applicable to RBC
+  freeze_critics: false                    # not applicable to RBC
+  load_optimizer_state: true               # not applicable to RBC
+  save_checkpoints: false                  # RBC has no state to save
+  checkpoint_interval_steps: 5000          # interval for checkpointing if enabled
+  save_final_model: true                   # export final configuration to MLflow
+  progress_write_interval: 10              # steps between progress file updates
+  logging:
+    log_dir: "./logs"                      # directory for log files
+    log_level: "INFO"                      # verbosity of logging output
+    mlflow: true                           # enable MLflow tracking
+    mlflow_uri: "file:./mlruns"           # MLflow tracking URI
+
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs   # dataset identifier
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json  # path to dataset schema
+  central_agent: false                                       # train independent agents
+  reward_function: RewardFunction                            # reward function class name
+
+algorithm:
+  class: "RBC"                          # choose the rule-based agent
+  charge_price_threshold: 0.3           # price below which to charge
+  discharge_price_threshold: 0.7        # price above which to discharge
+  target_soc: 0.8                       # desired battery state of charge
+  min_soc: 0.2                          # minimum allowable state of charge
+  neighbor_balance: true                # balance energy among neighbours
+  balance_buffer: 0.05                  # tolerance for neighbour balancing
+  hyperparameters:                      # placeholders to match MADDPG structure
+    steps_between_training_updates: 1   # unused
+    end_exploration_time_step: 1        # unused
+    end_initial_exploration_time_step: 1  # unused
+    target_update_interval: 1           # unused
+    num_agents:                         # populated at runtime from env
+    observation_dimensions:             # populated at runtime from env
+    action_dimensions:                  # populated at runtime from env
+    action_space:                       # populated at runtime from env
+    gamma: 0.99                         # unused

@@ -14,30 +14,31 @@ import torch
 class Wrapper_CityLearn(RLC):
     def __init__(self, env: CityLearnEnv, model: BaseAgent = None, config=None, job_id=None, progress_path=None,
                  **kwargs):
-        """
-        Wrapper for CityLearn RLC that delegates custom behavior to a BaseAgent model.
+        """Wrapper for CityLearn RLC that delegates custom behavior to a BaseAgent model."""
 
-        Parameters:
-        - env: CityLearnEnv instance for the simulation environment.
-        - model: BaseAgent instance implementing custom predict and update logic.
-        - **kwargs: Additional arguments passed to the RLC constructor.
-        """
         super().__init__(env, **kwargs)
         self.model = model
         self.job_id = job_id
         self.progress_path = progress_path
+        self.config = config or {}
+
         self.initial_exploration_done = False
         self.update_step = False
         self.update_target_step = False
         self.global_step = 0
-        self.steps_between_training_updates = config["algorithm"]["hyperparameters"][
-            "steps_between_training_updates"]
-        self.end_initial_exploration_time_step = config["algorithm"]["hyperparameters"][
-            "end_initial_exploration_time_step"]
-        self.end_exploration_time_step = config["algorithm"]["hyperparameters"]["end_exploration_time_step"]
-        self.target_update_interval = config["algorithm"]["hyperparameters"]["target_update_interval"]
-        self.checkpoint_interval = config["algorithm"]["hyperparameters"]["checkpoint_interval"]
-        self.log_dir = config["experiment"]["logging"]["log_dir"]
+
+        hp = config["algorithm"]["hyperparameters"]
+        self.steps_between_training_updates = hp["steps_between_training_updates"]
+        self.end_initial_exploration_time_step = hp["end_initial_exploration_time_step"]
+        self.end_exploration_time_step = hp["end_exploration_time_step"]
+        self.target_update_interval = hp["target_update_interval"]
+
+        exp_cfg = config["experiment"]
+        self.save_checkpoints = exp_cfg.get("save_checkpoints", False)
+        self.checkpoint_interval = exp_cfg.get("checkpoint_interval_steps", 1000)
+        self.save_final_model = exp_cfg.get("save_final_model", True)
+        self.log_dir = exp_cfg["logging"]["log_dir"]
+        self.progress_write_interval = exp_cfg.get("progress_write_interval", 5)
 
     def set_model(self, model: BaseAgent):
         """
@@ -52,13 +53,20 @@ class Wrapper_CityLearn(RLC):
             progress = {
                 "episode": episode,
                 "step": step,
+                "total_steps": self.episode_time_steps,
                 "global_step": self.global_step,
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
             }
             if rewards:
                 progress["rewards"] = rewards
             with open(self.progress_path, "w") as f:
                 json.dump(progress, f, indent=2)
+            logger.debug(
+                "Progress written: episode %s step %s/%s",
+                episode,
+                step,
+                self.episode_time_steps,
+            )
         except Exception as e:
             logger.warning(f"Could not write progress file: {e}")
 
@@ -132,6 +140,9 @@ class Wrapper_CityLearn(RLC):
 
                 mlflow.log_metrics(metrics, step=self.global_step)
 
+                if self.save_checkpoints and self.global_step > 0 and self.global_step % self.checkpoint_interval == 0:
+                    self.model.save_checkpoint(self.global_step)
+
                 logger.info(
                     f'Time step: {time_step + 1}/{self.episode_time_steps},'
                     f' Episode: {episode + 1}/{episodes},'
@@ -142,8 +153,10 @@ class Wrapper_CityLearn(RLC):
                     f' Step Duration: {step_duration}'
                 )
 
-                if self.global_step % 5 == 0:
-                    self._write_progress(episode=episode, step=time_step, rewards=rewards)
+                if self.global_step % self.progress_write_interval == 0:
+                    self._write_progress(
+                        episode=episode, step=time_step, rewards=rewards
+                    )
 
                 time_step += 1
 
@@ -197,8 +210,9 @@ class Wrapper_CityLearn(RLC):
 
         mlflow.log_metrics(overall_metrics)
 
-        # Save model at the end of training
-        self.model.export_to_onnx(self.log_dir)
+        # Save model at the end of training if requested
+        if self.save_final_model:
+            self.model.export_to_onnx(self.log_dir)
 
     def predict(self, observations, deterministic=None):
         """

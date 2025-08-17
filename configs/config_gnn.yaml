@@ -1,0 +1,43 @@
+# Example configuration for the GNN-based agent
+
+experiment:
+  name: "gnn_example"                     # descriptive experiment identifier
+  run_name: "GNN test run"                # MLflow run name for tracking
+  resume_training: false                   # set true to reuse previous run
+  checkpoint_run_id: ""                    # run id containing checkpoint
+  checkpoint_artifact: "latest_checkpoint.pth"  # checkpoint file name
+  use_best_checkpoint_artifact: false      # load best checkpoint instead of latest
+  reset_replay_buffer: false               # placeholder for interface consistency
+  freeze_actors: false                     # not applicable to GNN agent
+  freeze_critics: false                    # not applicable to GNN agent
+  load_optimizer_state: true               # restore optimizer if resuming
+  save_checkpoints: true                   # persist model weights during training
+  checkpoint_interval_steps: 5000          # interval between checkpoint saves
+  save_final_model: true                   # export final model to MLflow
+  progress_write_interval: 10              # steps between progress file updates
+  logging:
+    log_dir: "./logs"                      # directory for log files
+    log_level: "INFO"                      # verbosity of logging output
+    mlflow: true                           # enable MLflow tracking
+    mlflow_uri: "file:./mlruns"           # MLflow tracking URI
+
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs   # dataset identifier
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json  # path to dataset schema
+  central_agent: false                                       # train independent agents
+  reward_function: RewardFunction                            # reward function class name
+
+algorithm:
+  class: "GNN"                          # choose the graph neural network agent
+  hyperparameters:
+    hidden_dim: 64                       # number of hidden units in the GNN
+    adjacency_matrix:                    # adjacency matrix; defaults to identity
+    steps_between_training_updates: 1    # placeholder
+    target_update_interval: 1           # placeholder
+    end_exploration_time_step: 1        # placeholder
+    end_initial_exploration_time_step: 1  # placeholder
+    num_agents:                         # populated at runtime from env
+    observation_dimensions:             # populated at runtime from env
+    action_dimensions:                  # populated at runtime from env
+    action_space:                       # populated at runtime from env
+    gamma: 0.99                         # placeholder

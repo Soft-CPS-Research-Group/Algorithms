@@ -1,6 +1,6 @@
-from torch.nn.functional import mse_loss
 from loguru import logger
 from torch.amp import GradScaler, autocast
+from torch.nn.functional import mse_loss
 from algorithms.utils.networks import Actor, Critic
 from algorithms.utils.replay_buffer import *
 from typing import List
@@ -10,13 +10,15 @@ import torch
 import mlflow
 from torch.nn.utils import clip_grad_norm_
 import numpy as np
-import torch
 import onnx
 import os
-from loguru import logger
+from algorithms.agents.base_agent import BaseAgent
+import random
 
-class MADDPG:
+
+class MADDPG(BaseAgent):
     def __init__(self, config):
+        super().__init__()
         """1. Initialize MADDPG with structured logging and streamlined config handling."""
         # 1.1. Store configuration
         self.config = config
@@ -43,6 +45,7 @@ class MADDPG:
         self.checkpoint_run_id = self.config["experiment"]["checkpoint_run_id"]
         self.checkpoint_artifact = self.config["experiment"]["checkpoint_artifact"]
         self.use_best_checkpoint_artifact = self.config["experiment"]["use_best_checkpoint_artifact"]
+        self.load_optimizer_state = self.config["experiment"].get("load_optimizer_state", True)
 
         # 1.4. Retrieve number of agents and their dimensions
         self.num_agents = self.config["algorithm"]["hyperparameters"]["num_agents"]
@@ -63,11 +66,15 @@ class MADDPG:
                 self.checkpoint_run_id = self.get_best_checkpoint(self.config["experiment"]["name"])
 
             if self.checkpoint_run_id:
-                self._load_checkpoint_from_mlflow()
+                self.load_checkpoint()
 
             # ✅ Freeze layers if needed for fine-tuning
+            freeze_actor = self.config["experiment"].get("freeze_actors", False)
+            freeze_critic = self.config["experiment"].get("freeze_critics", False)
             if self.config["experiment"].get("freeze_pretrained_layers", False):
-                self.freeze_layers(freeze_actor=True, freeze_critic=False)
+                freeze_actor = True
+            if freeze_actor or freeze_critic:
+                self.freeze_layers(freeze_actor=freeze_actor, freeze_critic=freeze_critic)
 
         logger.info("MADDPG initialization complete.")
 
@@ -372,7 +379,7 @@ class MADDPG:
                     param.requires_grad = False
         logger.info(f"Freezing actors: {freeze_actor}, Freezing critics: {freeze_critic}")
 
-    def save_checkpoint_to_mlflow(self, step):
+    def save_checkpoint(self, step: int) -> None:
         """Save a checkpoint to MLflow."""
         logger.info(f"Saving checkpoint at step {step}.")
 
@@ -390,9 +397,7 @@ class MADDPG:
         # Log to MLflow
         mlflow.log_artifact(checkpoint_path)
         logger.info(f"Checkpoint saved to MLflow: {self.checkpoint_artifact}")
-
-
-    def _load_checkpoint_from_mlflow(self):
+    def load_checkpoint(self) -> None:
         """Load model parameters and optionally optimizer states from MLflow."""
         logger.info(f"Loading checkpoint from MLflow Run ID: {self.checkpoint_run_id}")
 
@@ -411,7 +416,7 @@ class MADDPG:
                 self.critics[i].load_state_dict(checkpoint[f"critic_state_dict_{i}"])
 
                 # ✅ Skip loading optimizer states if fine-tuning
-                if not self.config["experiment"].get("fine_tune", False):
+                if self.load_optimizer_state:
                     self.actor_optimizers[i].load_state_dict(checkpoint[f"actor_optimizer_state_dict_{i}"])
                     self.critic_optimizers[i].load_state_dict(checkpoint[f"critic_optimizer_state_dict_{i}"])
 
@@ -462,5 +467,6 @@ class MADDPG:
                 dynamic_axes={f"observation_agent_{i}": {0: "batch_size"}, f"action_agent_{i}": {0: "batch_size"}}
             )
 
+            mlflow.log_artifact(export_path)
             logger.info(f"ONNX model exported for Agent {i}: {export_path}")
 
