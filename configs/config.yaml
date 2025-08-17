@@ -1,67 +1,68 @@
+# Main configuration file used for training MADDPG agents
+
 experiment:
-  name: "real_world_dataset_4houses"
-  run_name: "Run 6 - Final Testing Run"
-  resume_training: false
-  checkpoint_run_id: "1234567890abcdef"  # Paste the correct run_id here
-  checkpoint_artifact: "latest_checkpoint.pth"
-  use_best_checkpoint_artifact: false
-  reset_replay_buffer: false  # If true, clears replay buffer when loading checkpoint
-  freeze_pretrained_layers: false
-  save_checkpoints: true
-  checkpoint_interval_steps: 5000
-  save_final_model: true
-  logging:
-    log_dir: "./logs"  # Directory for log files
-    log_level: "DEBUG"  # Logging level
-    mlflow: true  # Enable MLflow
-    mlflow_uri: "file:./mlruns"  # MLflow tracking URI
+  name: "real_world_dataset_4houses"           # descriptive experiment identifier
+  run_name: "Run 6 - Final Testing Run"         # MLflow run name for tracking
+  resume_training: false                        # set true to continue from a checkpoint
+  checkpoint_run_id: "1234567890abcdef"         # MLflow run id holding the checkpoint
+  checkpoint_artifact: "latest_checkpoint.pth"  # artifact file name inside the run
+  use_best_checkpoint_artifact: false           # load best checkpoint instead of latest
+  reset_replay_buffer: false                    # discard replay buffer when resuming
+  freeze_actors: false                          # freeze actor networks on resume
+  freeze_critics: false                         # freeze critic networks on resume
+  load_optimizer_state: true                    # restore optimizer state on resume
+  save_checkpoints: true                        # periodically save checkpoints
+  checkpoint_interval_steps: 5000               # step interval for checkpointing
+  save_final_model: true                        # export model when training ends
+  progress_write_interval: 5                    # steps between progress file updates
+  logging:                                      # logging related settings
+    log_dir: "./logs"                           # directory for log files
+    log_level: "DEBUG"                          # verbosity of logging output
+    mlflow: true                                # enable MLflow tracking
+    mlflow_uri: "file:./mlruns"                # MLflow tracking URI
 
 simulator:
-  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
-  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json         
-  central_agent: false                    
-  reward_function: RewardFunction
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs   # dataset identifier
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json  # path to dataset schema
+  central_agent: false                                       # train independent agents
+  reward_function: RewardFunction                            # reward function class name
 
 algorithm:
-  seed: 22
+  class: "MADDPG"                       # algorithm to use (see docker_run.py)
+  seed: 22                              # RNG seed for reproducibility
   hyperparameters:
-    checkpoint_interval: 20
-    steps_between_training_updates: 5
-    target_update_interval: 2
-    end_exploration_time_step: 200
-    end_initial_exploration_time_step: 100
-    num_agents:
-    observation_dimensions:
-    action_dimensions:
-    action_space:
-    gamma: 0.99
+    steps_between_training_updates: 5   # env steps between learner updates
+    target_update_interval: 2          # steps between target network updates
+    end_exploration_time_step: 200     # timestep where exploration ends
+    end_initial_exploration_time_step: 100  # initial random policy duration
+    num_agents:                        # populated at runtime from env
+    observation_dimensions:            # populated at runtime from env
+    action_dimensions:                 # populated at runtime from env
+    action_space:                      # populated at runtime from env
+    gamma: 0.99                        # discount factor
   networks:
     actor_network:
-      class: "Actor"
+      class: "Actor"                    # actor network class
       params:
-        layers: [2048, 1024, 512, 256, 128, 64]
-        lr: 1e-4
-        optimizer_class: "Adam"
+        layers: [2048, 1024, 512, 256, 128, 64]  # hidden layer sizes
+        lr: 1e-4                                 # learning rate
+        optimizer_class: "Adam"                  # optimizer type
     critic_network:
-      class: "Critic"
+      class: "Critic"                   # critic network class
       params:
-        layers: [2048, 1024, 512, 256, 128, 64]
-        optimizer_class: "Adam"
-        lr: 1e-3
+        layers: [2048, 1024, 512, 256, 128, 64]  # hidden layer sizes
+        optimizer_class: "Adam"                 # optimizer type
+        lr: 1e-3                                # learning rate
   replay_buffer:
-    class: "MultiAgentReplayBuffer"
+    class: "MultiAgentReplayBuffer"     # replay buffer implementation
     params:
-      "capacity": 100000
-      "batch_size": 512
+      capacity: 100000                   # max number of transitions stored
+      batch_size: 512                    # minibatch size for updates
   exploration:
-    strategy: "GaussianNoise"
+    strategy: "GaussianNoise"           # exploration noise strategy
     params:
-      bias: 0.3
-      sigma: 0.2
-      decay: 0.995
-      gamma: 0.99
-      tau: 0.001
-
-
-
-
+      bias: 0.3                          # mean of Gaussian noise
+      sigma: 0.2                         # std of Gaussian noise
+      decay: 0.995                       # multiplicative decay per step
+      gamma: 0.99                        # not used by MADDPG but kept for consistency
+      tau: 0.001                         # soft update coefficient for targets

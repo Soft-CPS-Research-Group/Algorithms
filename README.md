@@ -40,20 +40,55 @@ mlflow ui --backend-store-uri file:./mlruns
 1. Run a Rule-Based Baseline
 To test a rule-based algorithm in the simulator:
 
-    ```bash
-    python examples/rule_based_demo.py --config configs/default_config.yaml
+```bash
+python examples/rule_based_demo.py --config configs/default_config.yaml
+```
 
-2. Train a MARL Agent
-To train a MADDPG agent:
+2. Train or Evaluate Agents in Docker
 
-    ```bash
-    python examples/train_maddpg.py --config configs/maddpg_config.yaml
+```bash
+python docker_run.py --config configs/config.yaml --job_id maddpg_run
+python docker_run.py --config configs/config_rbc.yaml --job_id rbc_run
+```
 
 3. Export a Trained Model
-To export a trained model for deployment:
+Exported models are logged to MLflow as ONNX artifacts.
 
-    ```bash
-    python marl/export/torchscript_export.py --model-path models/maddpg_agent.pth --output-path models/maddpg_scripted.pt
+### 🚢 Docker Usage
+
+To train inside a Docker container, build the image and launch the entry script:
+
+```bash
+docker build -t citylearn-marl .
+docker run --rm \
+  -v /path/to/persistent/data:/data \
+  -v $(pwd)/configs/config.yaml:/app/config.yaml \
+  citylearn-marl \
+  --config /app/config.yaml \
+  --job_id my_run \
+  --log-level INFO \
+  --resume --checkpoint-run-id <previous_run_id>
+```
+
+Select the learning algorithm through `algorithm.class` in the config file.
+Supported options are `MADDPG`, `RBC`, `GNN`, and `Transformer`.
+
+### Resuming Training
+
+When `experiment.save_checkpoints` is enabled, the agent periodically stores its
+state as an MLflow artifact. To continue a run:
+
+1. Obtain the previous MLflow run ID.
+2. Re‑launch the container with `--resume --checkpoint-run-id <run_id>` or set
+   `experiment.resume_training` and `experiment.checkpoint_run_id` in the config.
+
+All agents implement `save_checkpoint`, `load_checkpoint`, and
+`export_to_onnx` to provide a consistent interface for persistence and
+deployment. Exported ONNX models can be served via:
+
+```bash
+python scripts/serve_onnx.py --run-id <mlflow_run_id>
+```
 
 ### 📚 Documentation
 

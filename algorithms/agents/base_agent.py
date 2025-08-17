@@ -20,5 +20,20 @@ class BaseAgent(Module):
         """Update replay buffer and networks."""
         pass
 
+    @abstractmethod
+    def save_checkpoint(self, step: int) -> None:
+        """Persist model state for later resumption."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def load_checkpoint(self) -> None:
+        """Restore model state from a previously saved checkpoint."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def export_to_onnx(self, log_dir: str) -> None:
+        """Export a representation of the agent for serving."""
+        raise NotImplementedError
+
     
 

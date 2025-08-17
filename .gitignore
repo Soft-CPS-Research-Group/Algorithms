@@ -2,3 +2,5 @@
 /citylearn_env
 /mlruns
 *.log
+__pycache__/
+*.pyc
