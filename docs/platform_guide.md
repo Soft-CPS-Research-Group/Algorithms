@@ -92,6 +92,15 @@ Checkpoints are managed by `utils/checkpoint_manager.CheckpointManager`:
 
 This manifest enables a separate inference service to apply the same preprocessing and routing logic that was used during training.
 
+### Manifest Fields in Detail
+
+- `manifest_version`: increment when the structure changes to keep inference code compatible.
+- `metadata`: mirrors the config’s experiment name/run name so manifests can be catalogued.
+- `topology`: injected by the wrapper; contains agent counts and per-agent observation/action dimensionality.
+- `environment`: detailed encoder definitions (type + params), action names/bounds, reward configuration.
+- `agent`: metadata returned by the agent—usually ONNX artefact paths, but algorithms can include additional information such as critic checkpoints or normalisation statistics.
+- `training`: seed and schedule parameters used during training, useful for reproducibility.
+
 ## 7. Extending the Platform with New Algorithms
 
 1. **Implement the Agent**
@@ -111,6 +120,22 @@ This manifest enables a separate inference service to apply the same preprocessi
 
 5. **Testing & Documentation**
    - Provide small smoke tests and update documentation to explain how to use the new algorithm.
+
+### Worked Example: Adding a New Agent
+
+1. Duplicate `configs/templates/maddpg_example.yaml` and adjust fields for the new algorithm.
+2. Implement the agent class under `algorithms/agents/` and ensure it inherits `BaseAgent`.
+3. Register the agent name/class mapping in `algorithms/registry.py`.
+4. Extend `utils/config_schema.py` with a new Pydantic model if the algorithm introduces unique config fields.
+5. Implement `export_artifacts` to export ONNX graphs (or other artefacts) plus metadata.
+6. Add unit tests covering key behaviours (config validation edge cases, manifest metadata).
+7. Update `docs/platform_guide.md` with any algorithm-specific quirks.
+
+### Troubleshooting
+
+- **Missing artefacts in manifest**: Ensure `export_artifacts` returns a metadata dict and that the files reside under the run’s log directory.
+- **MLflow disabled but metrics missing**: Confirm `tracking.mlflow_enabled: false` and inspect `<log_dir>/metrics.jsonl`; metrics are appended in JSONL format.
+- **Checkpoint resume not restoring simulator state**: Currently only the agent state is persisted; see the roadmap for plans to snapshot the environment.
 
 ## 8. Logging Guidelines
 

@@ -109,6 +109,24 @@ All agents must inherit from `algorithms.agents.base_agent.BaseAgent` and implem
 2. Run `python run_experiment.py --config configs/config.yaml --job-id smoke-test` to verify the setup.
 3. Prefer small, well-documented PRs so classmates can review changes easily.
 
+## FAQ
+
+- **Can I resume training mid-episode?** Not yet. `checkpointing.resume_training: true`
+  reloads the agent state, but the simulator restarts at the beginning of the episode.
+- **How do I disable MLflow logging?** Set `tracking.mlflow_enabled: false`. Metrics will
+  then be written to `<log_dir>/metrics.jsonl`.
+- **Where can I inspect preprocessing metadata?** Check
+  `<log_dir>/artifact_manifest.json`; it contains encoder parameters, reward
+  configuration, topology, and ONNX artefacts.
+
+## To-Do
+
+- Capture CityLearn environment state for true mid-episode resume.
+- Flesh out schema/templates for additional algorithms (single-agent RL,
+  hierarchical, rule-based variants).
+- Provide inference-side validation scripts that consume `artifact_manifest.json`.
+- Publish example notebooks for students.
+
 ## License
 
 This project is licensed under the MIT License.

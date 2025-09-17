@@ -171,8 +171,10 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     set_default_config(config, ["topology", "action_space"], wrapper.action_space)
     set_default_config(config, ["topology", "num_agents"], len(wrapper.action_space))
     logger.debug(
-        "Topology derived: num_agents=%s",
+        "Topology derived: num_agents=%s, obs_dims=%s, action_dims=%s",
         config.get("topology", {}).get("num_agents"),
+        config.get("topology", {}).get("observation_dimensions"),
+        config.get("topology", {}).get("action_dimensions"),
     )
 
     agent = create_agent(config=config)

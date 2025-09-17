@@ -76,6 +76,7 @@ class Wrapper_CityLearn(RLC):
         Train agent with MLflow logging for rewards (per step and per agent), PyTorch GPU memory usage, and system usage.
         """
         if self.model is None:
+            logger.error("Wrapper invoked without a model; aborting training.")
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
         episodes = episodes or 1
@@ -96,8 +97,10 @@ class Wrapper_CityLearn(RLC):
             while not terminated:
                 step_start_time = time.time()
                 self.global_step = episode * self.episode_time_steps + time_step  # Global step
+                logger.debug("Global step %s (episode %s, timestep %s)", self.global_step, episode, time_step)
 
                 actions = self.predict(observations, deterministic=deterministic)
+                logger.debug("Predicted actions: %s", actions)
 
                 # Apply actions to CityLearn environment
                 next_observations, rewards, terminated, truncated, _ = self.env.step(actions)
@@ -113,6 +116,7 @@ class Wrapper_CityLearn(RLC):
                         terminated=terminated,
                         truncated=truncated,
                     )
+                    logger.debug("Model update executed at global step %s", self.global_step)
 
                     self.checkpoint_manager.maybe_save(
                         agent=self.model,
@@ -208,7 +212,12 @@ class Wrapper_CityLearn(RLC):
                 self.local_metrics_logger.log(episode_metrics, episode)
 
             logger.info(
-                f'Completed episode: {episode + 1}/{episodes}, Reward: {rewards_summary}, Duration: {episode_duration:.2f}s')
+                "Completed episode %s/%s, reward summary: %s, duration: %.2fs",
+                episode + 1,
+                episodes,
+                rewards_summary,
+                episode_duration,
+            )
 
         # Aggregate rewards across episodes
         total_rewards_across_episodes = np.array(total_rewards_across_episodes)  # Shape: (episodes, num_agents)
