@@ -1,74 +1,114 @@
-
-
-mlflow ui --backend-store-uri file:./mlruns
-
-
-
-
 # Algorithms for Energy Flexibility Optimization
 
+This repository contains the research code that trains multi-agent reinforcement learning controllers on the [CityLearn](https://github.com/intelligent-environments-lab/CityLearn) simulator. It is the code that runs inside the Docker container managed by the backend orchestrator and also the foundation that students will extend with new agents.
 
-### Prerequisites
-- **Python 3.8+**
-- **PyTorch** (for training and inference)
-- **Other Dependencies** (listed in `requirements.txt`)
+## Repository Layout
 
-### Installation
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/your-username/my_marl_algorithm.git
-   cd my_marl_algorithm
+- `run_experiment.py` – unified entrypoint used both locally and inside Docker.
+- `algorithms/agents/` – agent implementations. Every agent inherits from `BaseAgent`.
+- `utils/wrapper_citylearn.py` – glue code between CityLearn and our agents (encoding, logging, checkpoints).
+- `configs/` – experiment configuration files.
+- `reward_function/` – custom reward definitions.
+- `runs/` (created at runtime) – local output directory that mirrors the `/data` mount used in production.
 
-2. Set up a virtual environment:
+## Running Experiments
 
-    ```bash
-    python3 -m venv env
-    source env/bin/activate
+### Local development
+```bash
+python run_experiment.py --config configs/config.yaml --job-id dev-run
+```
+- Results are stored under `./runs/jobs/dev-run/`.
+- MLflow logs go to `./runs/mlflow/mlruns` (open them with `mlflow ui --backend-store-uri file:./runs/mlflow/mlruns`).
+- A progress file is updated at `./runs/jobs/dev-run/progress/progress.json` so the orchestrator UI can poll it.
 
-3. Install dependencies:
+### Inside Docker / orchestrated runs
+The container entrypoint invokes `run_experiment.py` directly. The image sets `OPEVA_BASE_DIR=/data`, so the shared volume mounted at `/data` remains the default destination for artefacts. Launch the container with the same arguments as before:
+```bash
+python run_experiment.py --config /data/configs/<experiment>.yaml --job-id <job-id>
+```
+All artefacts, results, and logs will appear under `/data/jobs/<job-id>/`.
 
-    ```bash
-    pip install -r requirements.txt```
+**Resuming runs.** Setting `checkpointing.resume_training: true` reloads the agent weights and optimiser state from the specified MLflow artefact, but the CityLearn simulator itself starts a fresh episode. In other words, resume picks up the model where it left off while replaying the environment from the beginning. Document this expectation for students so they do not assume simulation state is persisted.
 
-4. Install the package:
+## Configuration
 
-    ```bash
-    pip install -e .
+Experiment configuration lives in `configs/config.yaml` and is validated at load
+time (`utils/config_schema.py`) so typos or missing fields fail fast. The file is
+organised for clarity:
 
-### 🧩 Quick Start
+- `metadata`: experiment and run names used for MLflow tracking and logging.
+- `runtime`: automatically populated paths (leave these set to `null` in the file).
+- `tracking`: logging and MLflow toggles.
+- `checkpointing`: resume/transfer-learning controls and checkpoint cadence.
+- `simulator`: dataset location and reward function selection.
+- `training`: common schedule parameters (seed, exploration boundaries, update cadence).
+- `topology`: environment-driven dimensions injected by the wrapper (number of agents/houses, per-agent observation/action sizes, action bounds). These stay `null` in versioned configs but become the canonical source of truth for inference encoders.
+- `algorithm`: algorithm-specific hyperparameters, network definitions, replay buffer, and exploration noise configuration. Students can swap this section for other algorithms by following the templates.
 
-1. Run a Rule-Based Baseline
-To test a rule-based algorithm in the simulator:
+Students should copy the base config and edit only the documented fields. Runtime-populated entries (`runtime.*`, derived dimensions) will be filled automatically by `run_experiment.py`.
 
-    ```bash
-    python examples/rule_based_demo.py --config configs/default_config.yaml
+Validation automatically selects the appropriate schema based on
+`algorithm.name` (currently `MADDPG` and a lightweight `RuleBasedPolicy`
+example). Additional ready-to-edit examples live in `configs/templates/`
+(e.g., `maddpg_example.yaml`, `rule_based_example.yaml`, `single_agent_example.yaml`) so students can start
+new algorithms without modifying the canonical base file. Each run emits an
+`artifact_manifest.json` alongside the exported ONNX graphs describing topology,
+encoders, and reward configuration consumed by the inference service. A deeper
+explanation of the platform and extension process lives in
+`docs/platform_guide.md`.
 
-2. Train a MARL Agent
-To train a MADDPG agent:
+## Artefacts and Logging
 
-    ```bash
-    python examples/train_maddpg.py --config configs/maddpg_config.yaml
+Every run (local or container) produces the following structure:
+```
+<base_dir>/
+  mlflow/mlruns/           # MLflow experiment store
+  jobs/<job_id>/
+    job_info.json          # includes mlflow run information
+    logs/<run_id>.log      # loguru log file
+    progress/progress.json # periodically updated training progress
+    results/result.json    # pivoted KPI table from CityLearn
+    checkpoints/           # optional training checkpoints
+    logs/onnx_models/      # ONNX exports, one per agent
+```
+Checkpoints are saved every `checkpoint_interval` steps once the exploration warm-up is over. The latest checkpoint file is also logged to MLflow (`checkpoint_artifact` in the config), enabling training to resume from the orchestrator UI.
 
-3. Export a Trained Model
-To export a trained model for deployment:
+## Implementing Custom Agents
 
-    ```bash
-    python marl/export/torchscript_export.py --model-path models/maddpg_agent.pth --output-path models/maddpg_scripted.pt
+All agents must inherit from `algorithms.agents.base_agent.BaseAgent` and implement:
 
-### 📚 Documentation
+- `predict(observations, deterministic)` – return an action vector per agent.
+- `update(...)` – consume replay buffer samples and update model parameters.
+- `save_checkpoint(output_dir, step)` – persist model/replay buffer state (called automatically by the wrapper).
+- `export_artifacts(output_dir)` – export inference artefacts (e.g., ONNX graphs plus metadata).
 
-- [Wiki's Repository](https://github.com/Soft-CPS-Research-Group/.opeva_wiki)
+`utils/wrapper_citylearn.Wrapper_CityLearn` handles encoding observations, scheduling updates, writing progress files, and triggering checkpoints/artefact exports. To add a new algorithm:
 
-### 🧪 Testing
-Run unit and integration tests:
+1. Create the agent implementation under `algorithms/agents/` and inherit from `BaseAgent`.
+2. Register the agent in `algorithms/registry.py` so `run_experiment.py` can instantiate it via configuration (`algorithm.name`).
+3. Extend the config schema if new algorithm-specific parameters are required.
+4. Implement `export_artifacts` to emit the artefacts your inference service needs (typically ONNX graphs plus encoder/decoder metadata).
 
-    ```bash
-    pytest tests/
+## MLflow & Monitoring
 
-### 🤝 Contributing
-- Tiago Fonseca calof@isep.ipp.pt
+- Every run is wrapped in an MLflow experiment. Metrics such as rewards, losses, and system stats are logged each step/episode.
+- Launch the UI locally with `mlflow ui --backend-store-uri file:./runs/mlflow/mlruns`.
+- Checkpoints are logged as MLflow artefacts, enabling the backend to resume from the best run or a specific step.
+- When MLflow is disabled (`tracking.mlflow_enabled: false`), metrics are written to `<log_dir>/metrics.jsonl` so you still have a structured record of training progress.
 
-### 📜 License
+## Development Tips for Students
+
+- Keep new code within the existing abstractions (agent, replay buffer, preprocessing). Avoid modifying orchestrator-specific paths.
+- Add unit tests for encoders, replay buffers, and any new utility code. The `tests/` folder is ready for expansion.
+- Ensure your agent’s ONNX export includes enough metadata (observation order, scaling, action bounds) for the serving project to consume.
+- Follow the repository’s logging conventions: use `loguru` for structured logs and rely on MLflow for metrics/artefacts.
+
+## Contributing
+
+1. Create a virtual environment and install dependencies with `pip install -r requirements.txt`.
+2. Run `python run_experiment.py --config configs/config.yaml --job-id smoke-test` to verify the setup.
+3. Prefer small, well-documented PRs so classmates can review changes easily.
+
+## License
 
 This project is licensed under the MIT License.
-

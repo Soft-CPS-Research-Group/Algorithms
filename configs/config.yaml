@@ -1,58 +1,71 @@
-experiment:
-  name: "real_world_dataset_4houses"
-  run_name: "Run 6 - Final Testing Run"
-  resume_training: false
-  checkpoint_run_id: "1234567890abcdef"  # Paste the correct run_id here
-  checkpoint_artifact: "latest_checkpoint.pth"
-  use_best_checkpoint_artifact: false
-  reset_replay_buffer: false  # If true, clears replay buffer when loading checkpoint
-  freeze_pretrained_layers: false
-  save_checkpoints: true
-  checkpoint_interval_steps: 5000
-  save_final_model: true
-  logging:
-    log_dir: "./logs"  # Directory for log files
-    log_level: "DEBUG"  # Logging level
-    mlflow: true  # Enable MLflow
-    mlflow_uri: "file:./mlruns"  # MLflow tracking URI
+# -----------------------------------------------------------------------------
+# Base configuration for MADDPG training on the CityLearn simulator.
+# Fields are grouped to help students understand what to customise when
+# implementing new algorithms. Runtime-generated values must remain `null` here;
+# they will be injected by `run_experiment.py` before training starts.
+# -----------------------------------------------------------------------------
+metadata:
+  experiment_name: "real_world_dataset_4houses"  # Shown in MLflow experiment list.
+  run_name: "Run 6 - Final Testing Run"         # Display name for the run instance.
+
+runtime:
+  log_dir: null      # Populated at runtime with the per-job log directory.
+  mlflow_uri: null   # Populated at runtime with the tracking URI.
+
+tracking:
+  mlflow_enabled: true  # Disable only when you explicitly do not want MLflow logs.
+  log_level: "DEBUG"    # Loguru log level for the training script.
+
+checkpointing:
+  resume_training: false              # Resume from a previous MLflow run if true.
+  checkpoint_run_id: null             # Run ID to resume from (overrides best-run lookup).
+  checkpoint_artifact: "latest_checkpoint.pth"  # File name stored in MLflow artefacts.
+  use_best_checkpoint_artifact: false # Automatically pick the best run by validation metric.
+  reset_replay_buffer: false          # Ignore stored replay buffer when resuming.
+  freeze_pretrained_layers: false     # Freeze actor layers when fine-tuning a checkpoint.
+  fine_tune: false                    # Skip optimiser state restore when true.
+  checkpoint_interval: 5000           # Steps between automatic checkpoint saves.
 
 simulator:
   dataset_name: citylearn_challenge_2022_phase_all_plus_evs
-  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json         
-  central_agent: false                    
-  reward_function: RewardFunction
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
+  central_agent: false
+  reward_function: RewardFunction     # Swap to V2GPenaltyReward for EV-aware penalties.
+
+training:
+  seed: 22
+  end_initial_exploration_time_step: 100  # After this, training updates may begin.
+  end_exploration_time_step: 200          # Transition into fully deterministic actions.
+  steps_between_training_updates: 5       # Update cadence once exploration is complete.
+  target_update_interval: 2               # Soft-update interval for target networks.
+
+# The topology section captures environment-driven dimensions. These values are
+# injected automatically from the simulator wrapper so keep them `null`. They are
+# crucial for inference encoders/decoders and describe how many agents/houses the
+# environment exposes along with per-agent observation/action shapes.
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
 
 algorithm:
-  seed: 22
+  name: "MADDPG"  # Students can replace this when introducing new agents.
   hyperparameters:
-    checkpoint_interval: 20
-    steps_between_training_updates: 5
-    target_update_interval: 2
-    end_exploration_time_step: 200
-    end_initial_exploration_time_step: 100
-    num_agents:
-    observation_dimensions:
-    action_dimensions:
-    action_space:
-    gamma: 0.99
+    gamma: 0.99                     # Discount applied to future rewards.
   networks:
-    actor_network:
+    actor:
       class: "Actor"
-      params:
-        layers: [2048, 1024, 512, 256, 128, 64]
-        lr: 1e-4
-        optimizer_class: "Adam"
-    critic_network:
+      layers: [2048, 1024, 512, 256, 128, 64]
+      lr: 1.0e-4
+    critic:
       class: "Critic"
-      params:
-        layers: [2048, 1024, 512, 256, 128, 64]
-        optimizer_class: "Adam"
-        lr: 1e-3
+      layers: [2048, 1024, 512, 256, 128, 64]
+      lr: 1.0e-3
   replay_buffer:
     class: "MultiAgentReplayBuffer"
-    params:
-      "capacity": 100000
-      "batch_size": 512
+    capacity: 100000
+    batch_size: 512
   exploration:
     strategy: "GaussianNoise"
     params:
@@ -61,7 +74,3 @@ algorithm:
       decay: 0.995
       gamma: 0.99
       tau: 0.001
-
-
-
-

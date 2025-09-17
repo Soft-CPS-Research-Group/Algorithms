@@ -1,0 +1,57 @@
+# Template for training a single-agent RL policy (placeholder schema).
+metadata:
+  experiment_name: "single_agent_template"
+  run_name: "Single Agent Training"
+
+runtime:
+  log_dir: null
+  mlflow_uri: null
+
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "single_agent_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 5000
+
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
+  central_agent: true
+  reward_function: RewardFunction
+
+training:
+  seed: 42
+  end_initial_exploration_time_step: 64
+  end_exploration_time_step: 128
+  steps_between_training_updates: 1
+  target_update_interval: 1
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+algorithm:
+  name: "SingleAgentRL"
+  hyperparameters:
+    gamma: 0.99
+  policy: "DQN"
+  replay_buffer:
+    class: "MultiAgentReplayBuffer"
+    capacity: 50000
+    batch_size: 64
+  exploration:
+    strategy: "EpsilonGreedy"
+    params:
+      epsilon_start: 1.0
+      epsilon_final: 0.05
+      epsilon_decay: 0.995

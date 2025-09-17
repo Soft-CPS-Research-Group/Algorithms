@@ -1,19 +1,30 @@
+import time
+from typing import List
+
+import mlflow
+import numpy as np
+import psutil
+import torch
 from citylearn.agents.rlc import RLC
 from citylearn.citylearn import CityLearnEnv
-from algorithms.agents.base_agent import BaseAgent
 from loguru import logger
-import mlflow
-import numpy.typing as npt
+
+from algorithms.agents.base_agent import BaseAgent
+from utils.checkpoint_manager import CheckpointManager
+from utils.local_metrics import LocalMetricsLogger
 from utils.preprocessing import *
-import time
-import psutil
-import numpy as np
-from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetUtilizationRates
-import torch
+from utils.progress_tracker import ProgressTracker
 
 class Wrapper_CityLearn(RLC):
-    def __init__(self, env: CityLearnEnv, model: BaseAgent = None, config=None, job_id=None, progress_path=None,
-                 **kwargs):
+    def __init__(
+        self,
+        env: CityLearnEnv,
+        model: BaseAgent = None,
+        config=None,
+        job_id=None,
+        progress_path=None,
+        **kwargs,
+    ):
         """
         Wrapper for CityLearn RLC that delegates custom behavior to a BaseAgent model.
 
@@ -25,19 +36,33 @@ class Wrapper_CityLearn(RLC):
         super().__init__(env, **kwargs)
         self.model = model
         self.job_id = job_id
-        self.progress_path = progress_path
         self.initial_exploration_done = False
         self.update_step = False
         self.update_target_step = False
         self.global_step = 0
-        self.steps_between_training_updates = config["algorithm"]["hyperparameters"][
-            "steps_between_training_updates"]
-        self.end_initial_exploration_time_step = config["algorithm"]["hyperparameters"][
-            "end_initial_exploration_time_step"]
-        self.end_exploration_time_step = config["algorithm"]["hyperparameters"]["end_exploration_time_step"]
-        self.target_update_interval = config["algorithm"]["hyperparameters"]["target_update_interval"]
-        self.checkpoint_interval = config["algorithm"]["hyperparameters"]["checkpoint_interval"]
-        self.log_dir = config["experiment"]["logging"]["log_dir"]
+        training_cfg = config.get("training", {})
+        checkpoint_cfg = config.get("checkpointing", {})
+        tracking_cfg = config.get("tracking", {})
+
+        self.steps_between_training_updates = training_cfg.get("steps_between_training_updates", 1)
+        self.end_initial_exploration_time_step = training_cfg.get("end_initial_exploration_time_step", 0)
+        self.end_exploration_time_step = training_cfg.get("end_exploration_time_step", 0)
+        self.target_update_interval = training_cfg.get("target_update_interval", 0)
+        self.log_dir = config.get("runtime", {}).get("log_dir")
+        self.mlflow_enabled = tracking_cfg.get("mlflow_enabled", True)
+        self.progress_tracker = ProgressTracker(progress_path)
+        self.checkpoint_manager = CheckpointManager(
+            base_dir=self.log_dir,
+            interval=checkpoint_cfg.get("checkpoint_interval"),
+            log_to_mlflow=tracking_cfg.get("mlflow_enabled", True),
+        )
+        self.local_metrics_logger = None
+        if not self.mlflow_enabled:
+            self.local_metrics_logger = LocalMetricsLogger(self.log_dir)
+
+        # Ensure encoders are initialised for observation metadata and encoding
+        if not hasattr(self, "encoders") or not getattr(self, "encoders"):
+            self.encoders = self.set_encoders()
 
     def set_model(self, model: BaseAgent):
         """
@@ -45,22 +70,6 @@ class Wrapper_CityLearn(RLC):
         """
         self.model = model
 
-    def _write_progress(self, episode, step, rewards=None):
-        """Write current progress to a JSON file."""
-        try:
-            import json, datetime
-            progress = {
-                "episode": episode,
-                "step": step,
-                "global_step": self.global_step,
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
-            }
-            if rewards:
-                progress["rewards"] = rewards
-            with open(self.progress_path, "w") as f:
-                json.dump(progress, f, indent=2)
-        except Exception as e:
-            logger.warning(f"Could not write progress file: {e}")
 
     def learn(self, episodes=None, deterministic=None, deterministic_finish=None, logging_level=None):
         """
@@ -96,12 +105,27 @@ class Wrapper_CityLearn(RLC):
 
                 # Update model if not in deterministic mode
                 if not deterministic:
-                    self.update(observations, actions, rewards, next_observations, terminated=terminated,
-                                truncated=truncated)
+                    self.update(
+                        observations,
+                        actions,
+                        rewards,
+                        next_observations,
+                        terminated=terminated,
+                        truncated=truncated,
+                    )
+
+                    self.checkpoint_manager.maybe_save(
+                        agent=self.model,
+                        step=self.global_step,
+                        initial_exploration_done=self.initial_exploration_done,
+                        update_step=self.update_step,
+                    )
 
                 observations = [o for o in next_observations]
 
                 # Reduce system monitoring frequency
+                cpu_usage = None
+                ram_usage = None
                 if self.global_step % 10 == 0:
                     cpu_usage = psutil.cpu_percent()
                     ram_usage = psutil.virtual_memory().percent
@@ -130,7 +154,10 @@ class Wrapper_CityLearn(RLC):
                     metrics["GPU_PyTorch_Reserved_MB"] = gpu_mem_reserved
                 metrics["Step_Duration"] = step_duration
 
-                mlflow.log_metrics(metrics, step=self.global_step)
+                if mlflow.active_run():
+                    mlflow.log_metrics(metrics, step=self.global_step)
+                elif self.local_metrics_logger:
+                    self.local_metrics_logger.log(metrics, self.global_step)
 
                 logger.info(
                     f'Time step: {time_step + 1}/{self.episode_time_steps},'
@@ -143,7 +170,12 @@ class Wrapper_CityLearn(RLC):
                 )
 
                 if self.global_step % 5 == 0:
-                    self._write_progress(episode=episode, step=time_step, rewards=rewards)
+                    self.progress_tracker.update(
+                        episode=episode,
+                        step=time_step,
+                        global_step=self.global_step,
+                        rewards=rewards,
+                    )
 
                 time_step += 1
 
@@ -170,7 +202,10 @@ class Wrapper_CityLearn(RLC):
 
             episode_duration = time.time() - start_episode_time
             episode_metrics["Episode_Duration"] = episode_duration
-            mlflow.log_metrics(episode_metrics, step=episode)
+            if mlflow.active_run():
+                mlflow.log_metrics(episode_metrics, step=episode)
+            elif self.local_metrics_logger:
+                self.local_metrics_logger.log(episode_metrics, episode)
 
             logger.info(
                 f'Completed episode: {episode + 1}/{episodes}, Reward: {rewards_summary}, Duration: {episode_duration:.2f}s')
@@ -195,10 +230,11 @@ class Wrapper_CityLearn(RLC):
             overall_metrics[f"Agent_{i}_Overall_Reward_Min"] = overall_rewards_summary['min'][i]
             overall_metrics[f"Agent_{i}_Overall_Reward_Max"] = overall_rewards_summary['max'][i]
 
-        mlflow.log_metrics(overall_metrics)
-
-        # Save model at the end of training
-        self.model.export_to_onnx(self.log_dir)
+        if mlflow.active_run():
+            mlflow.log_metrics(overall_metrics)
+        elif self.local_metrics_logger:
+            # Use -1 to denote aggregate metrics when logging locally.
+            self.local_metrics_logger.log(overall_metrics, -1)
 
     def predict(self, observations, deterministic=None):
         """
@@ -224,7 +260,10 @@ class Wrapper_CityLearn(RLC):
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
         # Determine whether to update
-        self.update_step = self.time_step % self.steps_between_training_updates != 0
+        if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
+            self.update_step = True
+        else:
+            self.update_step = self.time_step % self.steps_between_training_updates == 0
         logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
 
         # Determine exploration phase
@@ -232,7 +271,10 @@ class Wrapper_CityLearn(RLC):
         logger.debug("Initial Exploration ended." if self.initial_exploration_done else "Doing Initial Exploration - Skipping Update")
 
         # Determine whether to update the target networks
-        self.update_target_step = self.time_step % self.target_update_interval == 0
+        if not self.target_update_interval:
+            self.update_target_step = False
+        else:
+            self.update_target_step = self.time_step % self.target_update_interval == 0
         logger.debug(
             "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
@@ -261,12 +303,73 @@ class Wrapper_CityLearn(RLC):
         return encoded[~np.isnan(encoded)]  # Remove NaN values safely
 
     def get_all_encoded_observations(self, observations: List[List[float]]) -> List[np.ndarray]:
-        """Optimized encoding function avoiding joblib issues."""
-        return [self.get_encoded_observations(idx, obs) for idx, obs in enumerate(observations)]
-
-    def get_all_encoded_observations(self, observations: List[List[float]]) -> List[np.ndarray]:
         """Optimized version without joblib for better performance."""
         return [self.get_encoded_observations(idx, obs) for idx, obs in enumerate(observations)]
+
+    def describe_environment(self) -> dict:
+        """Return metadata required for inference encoders/decoders."""
+        if not getattr(self, "encoders", None):
+            self.encoders = self.set_encoders()
+
+        def _encode_params(encoder):
+            params = {}
+            for attr in ("x_max", "x_min", "classes", "missing_value", "default"):
+                if hasattr(encoder, attr):
+                    value = getattr(encoder, attr)
+                    if isinstance(value, np.ndarray):
+                        value = value.tolist()
+                    elif isinstance(value, (list, tuple)):
+                        value = list(value)
+                    params[attr] = value
+            return {
+                "type": encoder.__class__.__name__,
+                "params": params,
+            }
+
+        encoders_metadata = [
+            [_encode_params(encoder) for encoder in encoder_list]
+            for encoder_list in self.encoders
+        ]
+
+        action_bounds = []
+        for space in self.action_space:
+            if hasattr(space, "low") and hasattr(space, "high"):
+                action_bounds.append(
+                    {
+                        "low": np.asarray(space.low).tolist(),
+                        "high": np.asarray(space.high).tolist(),
+                    }
+                )
+            else:
+                action_bounds.append(None)
+
+        action_names = getattr(self.env, "action_names", None)
+        if action_names is None and hasattr(self, "action_names"):
+            action_names = self.action_names
+
+        reward_fn = getattr(self.env, "reward_function", None)
+        reward_config = None
+        if reward_fn is not None:
+            reward_config = {}
+            for key, value in vars(reward_fn).items():
+                if key.startswith("_"):
+                    continue
+                if isinstance(value, (int, float, str, bool)):
+                    reward_config[key] = value
+                elif isinstance(value, (list, tuple)):
+                    reward_config[key] = list(value)
+
+        return {
+            "observation_names": self.observation_names,
+            "encoders": encoders_metadata,
+            "action_bounds": action_bounds,
+            "action_names": action_names,
+            "reward_function": {
+                "name": reward_fn.__class__.__name__ if reward_fn else None,
+                "params": reward_config,
+            },
+        }
+
 
     def set_encoders(self) -> List[List[Encoder]]:
         r"""Get observation value transformers/encoders for use in MARLISA agent internal regression model.

@@ -68,6 +68,23 @@ class MultiAgentReplayBuffer:
 
         return states, actions, rewards, next_states, terminated
 
+    def get_state(self):
+        """Return a serialisable snapshot of the replay buffer."""
+        return [list(buffer) for buffer in self.buffers]
+
+    def set_state(self, state):
+        """Restore buffer contents from :meth:`get_state`."""
+        if state is None:
+            return
+        if len(state) != self.num_agents:
+            raise ValueError("State does not match number of agents in replay buffer.")
+
+        self.buffers = [deque(maxlen=self.capacity) for _ in range(self.num_agents)]
+        for agent_idx, experiences in enumerate(state):
+            buffer = self.buffers[agent_idx]
+            for experience in experiences:
+                buffer.append(experience)
+
     def __len__(self):
         """Get the current size of the smallest buffer."""
         return min(len(buffer) for buffer in self.buffers)
@@ -166,3 +183,26 @@ class PrioritizedReplayBuffer:
         """
         for idx, priority in zip(indices, priorities):
             self.priorities[idx] = priority
+
+    def get_state(self):
+        """Return a serialisable snapshot of the buffer."""
+        return {
+            "buffer": list(self.buffer),
+            "priorities": self.priorities.copy(),
+            "position": self.position,
+            "capacity": self.capacity,
+            "alpha": self.alpha,
+            "device": str(self.device),
+        }
+
+    def set_state(self, state):
+        """Restore buffer contents from :meth:`get_state`."""
+        if state is None:
+            return
+
+        self.buffer = state["buffer"]
+        self.priorities = state["priorities"]
+        self.position = state["position"]
+        self.capacity = state["capacity"]
+        self.alpha = state["alpha"]
+        self.device = torch.device(state["device"])

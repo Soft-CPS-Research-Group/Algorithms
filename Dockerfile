@@ -14,5 +14,7 @@ RUN pip install --upgrade pip && \
 # Now copy the rest of your project files
 COPY . .
 
+ENV OPEVA_BASE_DIR=/data
+
 # Define the entrypoint for your container
-ENTRYPOINT ["python", "docker_run.py"]
+ENTRYPOINT ["python", "run_experiment.py"]

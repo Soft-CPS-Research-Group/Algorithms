@@ -112,18 +112,22 @@ def start_mlflow_run(config):
 
     try:
         # Check if MLflow is enabled
-        mlflow_enabled = config.get("experiment", {}).get("logging", {}).get("mlflow", False)
+        tracking_cfg = config.get("tracking", {})
+        runtime_cfg = config.get("runtime", {})
+        metadata_cfg = config.get("metadata", {})
+
+        mlflow_enabled = tracking_cfg.get("mlflow_enabled", False)
         if not mlflow_enabled:
             logger.warning("1.4: MLflow is disabled in the configuration.")
             return
 
         # Get MLflow tracking URI
-        mlflow_uri = config.get("experiment", {}).get("logging", {}).get("mlflow_uri", "file:./mlruns")
+        mlflow_uri = runtime_cfg.get("mlflow_uri", "file:./mlruns")
         mlflow.set_tracking_uri(mlflow_uri)
 
         # Get the experiment name
-        experiment_name = config.get("experiment", {}).get("name", "default_experiment")
-        run_name = config.get("experiment", {}).get("run_name", "default_run")
+        experiment_name = metadata_cfg.get("experiment_name", "default_experiment")
+        run_name = metadata_cfg.get("run_name", "default_run")
 
         # Create or get the experiment in MLflow
         experiment_id = mlflow.set_experiment(experiment_name)
