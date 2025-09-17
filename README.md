@@ -82,12 +82,13 @@ All agents must inherit from `algorithms.agents.base_agent.BaseAgent` and implem
 - `save_checkpoint(output_dir, step)` – persist model/replay buffer state (called automatically by the wrapper).
 - `export_artifacts(output_dir)` – export inference artefacts (e.g., ONNX graphs plus metadata).
 
-`utils/wrapper_citylearn.Wrapper_CityLearn` handles encoding observations, scheduling updates, writing progress files, and triggering checkpoints/artefact exports. To add a new algorithm:
+`utils/wrapper_citylearn.Wrapper_CityLearn` handles encoding observations, scheduling updates, writing progress files, and triggering checkpoints/artefact exports. Encoders are configured in `configs/encoders/default.json`; update that file if the observation set changes so training and inference remain aligned. To add a new algorithm:
 
 1. Create the agent implementation under `algorithms/agents/` and inherit from `BaseAgent`.
 2. Register the agent in `algorithms/registry.py` so `run_experiment.py` can instantiate it via configuration (`algorithm.name`).
-3. Extend the config schema if new algorithm-specific parameters are required.
-4. Implement `export_artifacts` to emit the artefacts your inference service needs (typically ONNX graphs plus encoder/decoder metadata).
+3. Implement `update` with the full BaseAgent signature (`observations`, `actions`, `rewards`, `next_observations`, `terminated`, `truncated`, plus the scheduling flags passed as keyword-only arguments). A helper mixin can wrap simpler update loops if needed.
+4. Extend the config schema if new algorithm-specific parameters are required.
+5. Implement `export_artifacts` to emit the artefacts your inference service needs (typically ONNX graphs plus encoder/decoder metadata).
 
 ## MLflow & Monitoring
 

@@ -14,6 +14,7 @@ from torch.nn.functional import mse_loss
 from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.constants import DEFAULT_ONNX_OPSET
 from algorithms.utils.networks import Actor, Critic
 from algorithms.utils.replay_buffer import (
     MultiAgentReplayBuffer,
@@ -144,16 +145,17 @@ class MADDPG(BaseAgent):
 
     def update(
         self,
-        observations,
-        actions,
-        rewards,
-        next_observations,
-        terminated,
-        truncated,
-        update_target_step,
-        global_learning_step,
-        update_step,
-        initial_exploration_done,
+        observations: List[torch.Tensor],
+        actions: List[torch.Tensor],
+        rewards: List[float],
+        next_observations: List[torch.Tensor],
+        terminated: bool,
+        truncated: bool,
+        *,
+        update_target_step: bool,
+        global_learning_step: int,
+        update_step: bool,
+        initial_exploration_done: bool,
     ) -> None:
         logger.debug("Starting update phase.")
         update_start_time = time.time()
@@ -395,7 +397,7 @@ class MADDPG(BaseAgent):
                 dummy_input,
                 str(export_path),
                 export_params=True,
-                opset_version=11,
+                opset_version=DEFAULT_ONNX_OPSET,
                 do_constant_folding=True,
                 input_names=[f"observation_agent_{i}"],
                 output_names=[f"action_agent_{i}"],

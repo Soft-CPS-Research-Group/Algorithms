@@ -1,0 +1,90 @@
+{
+  "rules": [
+    {
+      "match": {"equals": ["month", "hour"]},
+      "encoder": {
+        "type": "PeriodicNormalization",
+        "params": {"x_max": "space_high"}
+      }
+    },
+    {
+      "match": {"contains": ["connected_state", "incoming_state"]},
+      "encoder": {
+        "type": "OnehotEncoding",
+        "params": {"classes": [0, 1]}
+      }
+    },
+    {
+      "match": {
+        "contains": [
+          "required_soc_departure",
+          "estimated_soc_arrival",
+          "electric_vehicle_soc"
+        ]
+      },
+      "encoder": {
+        "type": "NormalizeWithMissing",
+        "params": {
+          "x_min": "space_low",
+          "x_max": "space_high",
+          "missing_value": -0.1,
+          "default": 0.0
+        }
+      }
+    },
+    {
+      "match": {"contains": ["departure_time", "arrival_time"]},
+      "encoder": {
+        "type": "OnehotEncoding",
+        "params": {
+          "classes": [
+            -0.1,
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+            13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
+          ]
+        }
+      }
+    },
+    {
+      "match": {"equals": ["day_type"]},
+      "encoder": {
+        "type": "OnehotEncoding",
+        "params": {"classes": [1, 2, 3, 4, 5, 6, 7, 8]}
+      }
+    },
+    {
+      "match": {"equals": ["daylight_savings_status"]},
+      "encoder": {
+        "type": "OnehotEncoding",
+        "params": {"classes": [0, 1]}
+      }
+    },
+    {
+      "match": {
+        "equals": [
+          "outdoor_dry_bulb_temperature",
+          "outdoor_dry_bulb_temperature_predicted_6h",
+          "outdoor_dry_bulb_temperature_predicted_12h",
+          "outdoor_dry_bulb_temperature_predicted_24h",
+          "outdoor_relative_humidity",
+          "outdoor_relative_humidity_predicted_6h",
+          "outdoor_relative_humidity_predicted_12h",
+          "outdoor_relative_humidity_predicted_24h",
+          "diffuse_solar_irradiance",
+          "diffuse_solar_irradiance_predicted_6h",
+          "diffuse_solar_irradiance_predicted_12h",
+          "diffuse_solar_irradiance_predicted_24h"
+        ]
+      },
+      "encoder": {
+        "type": "RemoveFeature"
+      }
+    },
+    {
+      "match": {"default": true},
+      "encoder": {
+        "type": "NoNormalization"
+      }
+    }
+  ]
+}

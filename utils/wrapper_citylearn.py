@@ -1,5 +1,8 @@
+import json
 import time
-from typing import List
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Dict, List
 
 import mlflow
 import numpy as np
@@ -12,8 +15,89 @@ from loguru import logger
 from algorithms.agents.base_agent import BaseAgent
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
-from utils.preprocessing import *
+from utils.preprocessing import (
+    Encoder,
+    NoNormalization,
+    Normalize,
+    NormalizeWithMissing,
+    OnehotEncoding,
+    PeriodicNormalization,
+    RemoveFeature,
+)
 from utils.progress_tracker import ProgressTracker
+
+
+ENCODER_RULES_PATH = (
+    Path(__file__).resolve().parents[1] / "configs" / "encoders" / "default.json"
+)
+
+
+ENCODER_TYPE_MAP: Dict[str, type[Encoder]] = {
+    "NoNormalization": NoNormalization,
+    "Normalize": Normalize,
+    "NormalizeWithMissing": NormalizeWithMissing,
+    "OnehotEncoding": OnehotEncoding,
+    "PeriodicNormalization": PeriodicNormalization,
+    "RemoveFeature": RemoveFeature,
+}
+
+
+@lru_cache(maxsize=1)
+def _load_encoder_rules() -> List[Dict[str, Any]]:
+    if not ENCODER_RULES_PATH.exists():
+        raise FileNotFoundError(f"Encoder rules file not found: {ENCODER_RULES_PATH}")
+    with ENCODER_RULES_PATH.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    rules = data.get("rules", [])
+    if not rules:
+        raise ValueError("Encoder rules configuration must define at least one rule")
+    return rules
+
+
+def _matches_rule(name: str, match_spec: Dict[str, Any]) -> bool:
+    equals = match_spec.get("equals")
+    if equals is not None and name in equals:
+        return True
+
+    contains = match_spec.get("contains")
+    if contains is not None and any(token in name for token in contains):
+        return True
+
+    prefixes = match_spec.get("prefixes")
+    if prefixes is not None and any(name.startswith(prefix) for prefix in prefixes):
+        return True
+
+    suffixes = match_spec.get("suffixes")
+    if suffixes is not None and any(name.endswith(suffix) for suffix in suffixes):
+        return True
+
+    return bool(match_spec.get("default", False))
+
+
+def _resolve_param(value: Any, space: Any, index: int) -> Any:
+    if isinstance(value, str):
+        if value == "space_high":
+            return np.asarray(space.high)[index]
+        if value == "space_low":
+            return np.asarray(space.low)[index]
+    if isinstance(value, list):
+        return [_resolve_param(item, space, index) for item in value]
+    return value
+
+
+def _build_encoder(rule: Dict[str, Any], space: Any, index: int) -> Encoder:
+    encoder_spec = rule.get("encoder", {})
+    encoder_type = encoder_spec.get("type")
+    if encoder_type is None:
+        raise ValueError(f"Encoder rule missing type definition: {rule}")
+    try:
+        encoder_cls = ENCODER_TYPE_MAP[encoder_type]
+    except KeyError as exc:
+        raise ValueError(f"Unknown encoder type '{encoder_type}' in encoder rules") from exc
+
+    raw_params = encoder_spec.get("params", {})
+    params = {key: _resolve_param(value, space, index) for key, value in raw_params.items()}
+    return encoder_cls(**params) if params else encoder_cls()
 
 class Wrapper_CityLearn(RLC):
     def __init__(
@@ -381,59 +465,37 @@ class Wrapper_CityLearn(RLC):
 
 
     def set_encoders(self) -> List[List[Encoder]]:
-        r"""Get observation value transformers/encoders for use in MARLISA agent internal regression model.
+        r"""Instantiate observation encoders from the shared JSON configuration."""
 
-        The encoder classes are defined in the `preprocessing.py` module and include `PeriodicNormalization` for cyclic observations,
-        `OnehotEncoding` for categorical obeservations, `RemoveFeature` for non-applicable observations given available storage systems and devices
-        and `Normalize` for observations with known minimum and maximum boundaries.
+        rules = _load_encoder_rules()
+        encoders: List[List[Encoder]] = []
+        missing: List[str] = []
 
-        Returns
-        -------
-        encoders : List[Encoder]
-            Encoder classes for observations ordered with respect to `active_observations`.
-        """
+        for observation_group, space in zip(self.observation_names, self.observation_space):
+            group_encoders: List[Encoder] = []
+            for index, name in enumerate(observation_group):
+                rule = next((r for r in rules if _matches_rule(name, r.get("match", {}))), None)
+                if rule is None:
+                    missing.append(name)
+                    continue
 
-        encoders = []
+                if rule.get("warn_on_use"):
+                    logger.warning("Encoder rule warning for observation '%s'", name)
 
-        for o, s in zip(self.observation_names, self.observation_space):
-            e = []
+                encoder = _build_encoder(rule, space, index)
+                group_encoders.append(encoder)
 
-            remove_features = [
-                'outdoor_dry_bulb_temperature', 'outdoor_dry_bulb_temperature_predicted_6h',
-                'outdoor_dry_bulb_temperature_predicted_12h', 'outdoor_dry_bulb_temperature_predicted_24h',
-                'outdoor_relative_humidity', 'outdoor_relative_humidity_predicted_6h',
-                'outdoor_relative_humidity_predicted_12h', 'outdoor_relative_humidity_predicted_24h',
-                'diffuse_solar_irradiance', 'diffuse_solar_irradiance_predicted_6h',
-                'diffuse_solar_irradiance_predicted_12h', 'diffuse_solar_irradiance_predicted_24h'
-            ]
+            if len(group_encoders) != len(observation_group):
+                raise ValueError(
+                    "Failed to build encoders for all observations: "
+                    f"expected {len(observation_group)}, built {len(group_encoders)}"
+                )
+            encoders.append(group_encoders)
 
-            for i, n in enumerate(o):
-                if n in ['month', 'hour']:
-                    e.append(PeriodicNormalization(s.high[i]))
+        if missing:
+            raise ValueError(
+                "No encoder rule defined for observations: " + ", ".join(sorted(set(missing)))
+            )
 
-                elif any(item in n for item in ["connected_state", "incoming_state"]):
-                    e.append(OnehotEncoding([0,1]))
-
-                elif any(item in n for item in ["required_soc_departure", "estimated_soc_arrival", "electric_vehicle_soc"]):
-                    e.append(NormalizeWithMissing(s.low[i], s.high[i]))
-
-                elif any(item in n for item in ["departure_time", "arrival_time"]):
-                    e.append(OnehotEncoding([-0.1] + list(range(0, 25)))) #-0.1 encodes missing values
-
-                elif n in ['day_type']:
-                    e.append(OnehotEncoding([1, 2, 3, 4, 5, 6, 7, 8]))
-
-                elif n in ["daylight_savings_status"]:
-                    e.append(OnehotEncoding([0, 1]))
-
-                elif n in remove_features:
-                    e.append(RemoveFeature())
-
-                else:
-                    e.append(NoNormalization())
-
-            encoders.append(e)
-
-        logger.debug("Encoders SET")
-
+        logger.debug("Encoders initialised from external configuration")
         return encoders

@@ -62,7 +62,7 @@ This prevents students from launching malformed runs.
 1. **Configuration** – Student clones `configs/config.yaml` or a template under `configs/templates/` and sets algorithm-specific values.
 2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
 3. **Agent instantiation** – `create_agent(config)` looks up `algorithm.name` in `algorithms/registry.py`; the registry maps names to classes.
-4. **Wrapper** – handles the CityLearn loop, invoking `BaseAgent.predict`/`update`. It logs metrics and checkpoints using helper classes.
+4. **Wrapper** – handles the CityLearn loop, invoking `BaseAgent.predict`/`update`. It logs metrics and checkpoints using helper classes. Observation encoders are built from `configs/encoders/default.json` so training and serving stay aligned; update the JSON when the simulator exposes new features.
 5. **Artifacts** – After training, `agent.export_artifacts` emits ONNX models/metadata, and `build_manifest` creates `artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment.
 
 ## 4. Checkpointing
@@ -104,7 +104,7 @@ This manifest enables a separate inference service to apply the same preprocessi
 ## 7. Extending the Platform with New Algorithms
 
 1. **Implement the Agent**
-   - Subclass `BaseAgent` and implement `predict`, `update`, `save_checkpoint`, `export_artifacts` (and optionally `load_checkpoint`).
+   - Subclass `BaseAgent` and implement `predict`, `update`, `save_checkpoint`, `export_artifacts` (and optionally `load_checkpoint`). The `update` method must accept the full scheduler-aware signature (`observations`, `actions`, `rewards`, `next_observations`, `terminated`, `truncated`, plus keyword-only flags for `update_step`, `update_target_step`, `initial_exploration_done`, `global_learning_step`).
    - Reuse helper utilities (replay buffers, noise, etc.) as needed.
 
 2. **Register the Agent**
@@ -116,7 +116,7 @@ This manifest enables a separate inference service to apply the same preprocessi
    - Add a template config in `configs/templates/` highlighting the new fields.
 
 4. **Export Metadata**
-   - Ensure `export_artifacts` writes whatever the inference service requires. For ONNX-based policies, call `mlflow.log_artifact` if MLflow is active and return a metadata dict describing the exports.
+   - Ensure `export_artifacts` writes whatever the inference service requires. For ONNX-based policies, call `mlflow.log_artifact` if MLflow is active and return a metadata dict describing the exports. Use the shared `DEFAULT_ONNX_OPSET` constant so exported graphs stay compatible with the serving stack.
 
 5. **Testing & Documentation**
    - Provide small smoke tests and update documentation to explain how to use the new algorithm.
