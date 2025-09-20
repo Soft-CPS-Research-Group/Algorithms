@@ -1,6 +1,6 @@
 # Training Platform Guide
 
-This document explains how the fixed part of the project is structured, what responsibilities it owns, and how students can extend it with new algorithms. Treat this as the reference manual for anyone onboarding to the codebase.
+This document explains how the fixed part of the project is structured, what responsibilities it owns, and how students can extend it with new algorithms. Treat this as the reference manual for anyone onboarding to the codebase. For a high-level overview and quick commands, start with the repository [README](../README.md).
 
 ## 1. Architecture Overview
 
@@ -31,8 +31,8 @@ This document explains how the fixed part of the project is structured, what res
 
 Key responsibilities:
 - **run_experiment.py** orchestrates a run end-to-end: validates config, prepares directories, starts MLflow (if enabled), instantiates the algorithm class, and writes an artifact manifest after training.
-- **Wrapper_CityLearn** hides CityLearn-specific plumbing. It encodes observations, logs metrics, writes progress files, schedules checkpoints, and exposes environment metadata for inference.
-- **BaseAgent + registry** define the contract students must fulfil. Algorithms handle model logic, replay buffers, ONNX export, and provide metadata consumed by the manifest.
+- **Wrapper_CityLearn** hides CityLearn-specific plumbing. It encodes observations, logs metrics, writes progress files, schedules checkpoints, and exposes environment metadata for inference. Encoders are built from `configs/encoders/default.json`.
+- **BaseAgent + registry** define the contract students must fulfil. Algorithms handle model logic, replay buffers, ONNX export (using `DEFAULT_ONNX_OPSET`), and provide metadata consumed by the manifest. The `update` method must accept the scheduler-aware signature (`observations`, `actions`, `rewards`, `next_observations`, `terminated`, `truncated`, `update_step`, `update_target_step`, `initial_exploration_done`, `global_learning_step`).
 
 ## 2. Configuration & Schema
 
@@ -63,7 +63,7 @@ This prevents students from launching malformed runs.
 2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
 3. **Agent instantiation** – `create_agent(config)` looks up `algorithm.name` in `algorithms/registry.py`; the registry maps names to classes.
 4. **Wrapper** – handles the CityLearn loop, invoking `BaseAgent.predict`/`update`. It logs metrics and checkpoints using helper classes. Observation encoders are built from `configs/encoders/default.json` so training and serving stay aligned; update the JSON when the simulator exposes new features.
-5. **Artifacts** – After training, `agent.export_artifacts` emits ONNX models/metadata, and `build_manifest` creates `artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment.
+5. **Artifacts** – After training, `agent.export_artifacts` emits ONNX models/metadata, and `build_manifest` creates `artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.
 
 ## 4. Checkpointing
 
