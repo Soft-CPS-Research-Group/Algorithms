@@ -11,6 +11,56 @@ This repository contains the research code that trains multi-agent reinforcement
 - `reward_function/` – custom reward definitions.
 - `runs/` (created at runtime) – local output directory that mirrors the `/data` mount used in production.
 
+## How the Training Stack Fits Together
+
+```
+┌────────────────┐       ┌────────────────────────────┐
+│ YAML Config(s) │──────▶│ run_experiment.py (entry)  │
+└────────────────┘       │ - validates config         │
+                         │ - boots MLflow + logging   │
+                         └─────────┬──────────────────┘
+                                   │
+                                   ▼
+                        ┌────────────────────────────┐
+                        │ Wrapper_CityLearn          │
+                        │ - builds encoders from     │
+                        │   configs/encoders/*.json  │
+                        │ - drives CityLearn loop    │
+                        └──────────┬─────────────────┘
+                                   │
+                     ┌─────────────┴─────────────┐
+                     │                           │
+                     ▼                           ▼
+        ┌────────────────────────────┐   ┌────────────────────┐
+        │ CityLearn Simulator        │   │ BaseAgent (MADDPG) │
+        │ datasets/<schema>.json     │   │ algorithms/agents  │
+        └────────────┬───────────────┘   └────────┬───────────┘
+                     │                            │
+                     ▼                            ▼
+        ┌────────────────────────────┐   ┌────────────────────┐
+        │ Training Artefacts         │   │ MLflow Tracking    │
+        │ runs/jobs/<job_id>/        │   │ runs/mlflow/mlruns │
+        │ ├─ checkpoints/            │   └────────────────────┘
+        │ ├─ logs/onnx_models/       │ 
+        │ └─ artifact_manifest.json  │
+        └────────────┬───────────────┘
+                     │ exported bundle
+                     ▼
+        ┌─────────────────────────────────────────────┐
+        │ energAIze_inference service (separate repo) │
+        │ consumes manifest + ONNX per agent          │
+        └─────────────────────────────────────────────┘
+```
+
+- **Entry point**: `run_experiment.py` (invoked directly or via the Docker entrypoint) takes a YAML config and job id, prepares directories, and starts MLflow.
+- **Simulator & algorithms**: `Wrapper_CityLearn` glues the CityLearn environment to whichever `BaseAgent` implementation is requested in the config (MADDPG by default, but students can register others).
+- **Exports**: every run writes ONNX actors, checkpoints, KPI reports, and an `artifact_manifest.json` describing encoders, topology, and reward configuration. That manifest + ONNX bundle is what the [`energAIze_inference`](https://github.com/your-org/energAIze_inference) service loads at runtime to serve actions via FastAPI.
+
+Use this diagram as the mental map when extending the training repo or when wiring CI to push artefacts for inference.
+
+- 📄 Sample manifest: `docs/examples/manifest_example.json`
+- 📘 Inference bundle contract: `docs/inference_bundle.md`
+
 ## Running Experiments
 
 ### Local development

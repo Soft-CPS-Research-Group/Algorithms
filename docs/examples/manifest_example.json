@@ -1,0 +1,127 @@
+{
+  "manifest_version": 1,
+  "generated_at": "2024-12-01T12:34:56Z",
+  "metadata": {
+    "experiment_name": "citylearn_maddpg_ev",
+    "run_name": "baseline_run"
+  },
+  "simulator": {
+    "dataset_name": "citylearn_challenge_2022_phase_all_plus_evs",
+    "dataset_path": "./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json",
+    "central_agent": false,
+    "reward_function": "RewardFunction"
+  },
+  "training": {
+    "seed": 22,
+    "end_initial_exploration_time_step": 100,
+    "end_exploration_time_step": 200,
+    "steps_between_training_updates": 5,
+    "target_update_interval": 2
+  },
+  "topology": {
+    "num_agents": 2,
+    "observation_dimensions": [3, 3],
+    "action_dimensions": [1, 1],
+    "action_space": [
+      {
+        "high": [1.0],
+        "low": [-1.0]
+      },
+      {
+        "high": [1.0],
+        "low": [-1.0]
+      }
+    ]
+  },
+  "algorithm": {
+    "name": "MADDPG",
+    "hyperparameters": {
+      "gamma": 0.99
+    }
+  },
+  "environment": {
+    "observation_names": [
+      [
+        "month",
+        "non_shiftable_load",
+        "net_electricity_consumption"
+      ],
+      [
+        "month",
+        "non_shiftable_load",
+        "net_electricity_consumption"
+      ]
+    ],
+    "encoders": [
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ]
+    ],
+    "action_bounds": [
+      {
+        "low": [-1.0],
+        "high": [1.0]
+      },
+      {
+        "low": [-1.0],
+        "high": [1.0]
+      }
+    ],
+    "action_names": [
+      "hvac_power_kw",
+      "battery_power_kw"
+    ],
+    "reward_function": {
+      "name": "RewardFunction",
+      "params": {
+        "param": 1
+      }
+    }
+  },
+  "agent": {
+    "format": "onnx",
+    "artifacts": [
+      {
+        "agent_index": 0,
+        "path": "onnx_models/agent_0.onnx",
+        "observation_dimension": 3,
+        "action_dimension": 1
+      },
+      {
+        "agent_index": 1,
+        "path": "onnx_models/agent_1.onnx",
+        "observation_dimension": 3,
+        "action_dimension": 1
+      }
+    ]
+  }
+}
