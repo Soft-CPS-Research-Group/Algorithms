@@ -63,7 +63,7 @@ This prevents students from launching malformed runs.
 2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
 3. **Agent instantiation** – `create_agent(config)` looks up `algorithm.name` in `algorithms/registry.py`; the registry maps names to classes.
 4. **Wrapper** – handles the CityLearn loop, invoking `BaseAgent.predict`/`update`. It logs metrics and checkpoints using helper classes. Observation encoders are built from `configs/encoders/default.json` so training and serving stay aligned; update the JSON when the simulator exposes new features.
-5. **Artifacts** – After training, `agent.export_artifacts` emits ONNX models/metadata, and `build_manifest` creates `artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.
+5. **Artifacts** – After training, `agent.export_artifacts` writes ONNX models under `jobs/<job_id>/onnx_models/` (or `rbc_policy.json` for `RuleBasedPolicy`), and `build_manifest` drops `jobs/<job_id>/artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.
 
 ## 4. Checkpointing
 
@@ -76,13 +76,14 @@ Checkpoints are managed by `utils/checkpoint_manager.CheckpointManager`:
 
 ## 5. Metrics and Logging
 
-- **MLflow Enabled**: Metrics are logged every step/episode; KPIs and artifact manifests are uploaded as run artifacts.
-- **MLflow Disabled**: Metrics are appended to `<log_dir>/metrics.jsonl` via `LocalMetricsLogger`. The file uses JSONL (one record per line) for easy ingestion.
+- **MLflow Enabled**: Per-step metrics honour `tracking.log_frequency`; KPIs and artifact manifests are uploaded as run artifacts.
+- **MLflow Disabled**: Per-step metrics (when `tracking.log_frequency` matches) are appended to `<log_dir>/metrics.jsonl` via `LocalMetricsLogger`. The file uses JSONL (one record per line) for easy ingestion.
 - `tracking.log_level` controls Loguru output; informative messages (`info`, `debug`) are sprinkled through the runner and wrapper to aid debugging.
+- `tracking.log_frequency` throttles how often Wrapper_CityLearn logs observation rewards/system stats.
 
 ## 6. Artifact Manifest
 
-`artifact_manifest.json` (written beside ONNX models) contains:
+`artifact_manifest.json` (written beside `onnx_models/`) contains:
 - Config snapshot (`metadata`, `training`, `topology`, algorithm hyperparameters).
 - Environment metadata from `Wrapper_CityLearn.describe_environment()`:
   - `observation_names` and per-observation encoder definitions (type + parameters like `x_min`, `x_max`, `classes`, etc.).
@@ -116,7 +117,8 @@ This manifest enables a separate inference service to apply the same preprocessi
    - Add a template config in `configs/templates/` highlighting the new fields.
 
 4. **Export Metadata**
-   - Ensure `export_artifacts` writes whatever the inference service requires. For ONNX-based policies, call `mlflow.log_artifact` if MLflow is active and return a metadata dict describing the exports. Use the shared `DEFAULT_ONNX_OPSET` constant so exported graphs stay compatible with the serving stack.
+ - Ensure `export_artifacts` writes whatever the inference service requires. For ONNX-based policies, call `mlflow.log_artifact` if MLflow is active and return a metadata dict describing the exports. Use the shared `DEFAULT_ONNX_OPSET` constant so exported graphs stay compatible with the serving stack.
+  - For `RuleBasedPolicy`, export `rbc_policy.json` alongside the manifest so inference can rebuild the deterministic schedule.
 
 5. **Testing & Documentation**
    - Provide small smoke tests and update documentation to explain how to use the new algorithm.
@@ -133,7 +135,7 @@ This manifest enables a separate inference service to apply the same preprocessi
 
 ### Troubleshooting
 
-- **Missing artefacts in manifest**: Ensure `export_artifacts` returns a metadata dict and that the files reside under the run’s log directory.
+- **Missing artefacts in manifest**: Ensure `export_artifacts` returns a metadata dict and that the files reside under the job directory (manifest root).
 - **MLflow disabled but metrics missing**: Confirm `tracking.mlflow_enabled: false` and inspect `<log_dir>/metrics.jsonl`; metrics are appended in JSONL format.
 - **Checkpoint resume not restoring simulator state**: Currently only the agent state is persisted; see the roadmap for plans to snapshot the environment.
 

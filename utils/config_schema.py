@@ -21,6 +21,7 @@ class RuntimeConfig(BaseModel):
 class TrackingConfig(BaseModel):
     mlflow_enabled: bool = Field(default=True, description="If false, skips MLflow tracking")
     log_level: str = Field(default="INFO", description="Loguru log level")
+    log_frequency: int = Field(default=1, ge=1, description="Log metrics every N environment steps")
 
 
 class CheckpointingConfig(BaseModel):
@@ -88,6 +89,19 @@ class AlgorithmHyperparameters(BaseModel):
     gamma: float = Field(gt=0)
 
 
+class RuleBasedHyperparameters(BaseModel):
+    pv_charge_threshold: float = Field(default=0.0, ge=0)
+    flexibility_hours: float = Field(default=3.0, ge=0)
+    emergency_hours: float = Field(default=1.0, ge=0)
+    pv_preferred_charge_rate: float = Field(default=0.6, ge=0)
+    flex_trickle_charge: float = Field(default=0.0, ge=0)
+    min_charge_rate: float = Field(default=0.0, ge=0)
+    emergency_charge_rate: float = Field(default=1.0, ge=0)
+    energy_epsilon: float = Field(default=1e-3, ge=0)
+    default_capacity_kwh: float = Field(default=60.0, ge=0)
+    non_flexible_chargers: List[str] = Field(default_factory=list)
+
+
 class TopologyConfig(BaseModel):
     num_agents: Optional[int] = None
     observation_dimensions: Optional[List[int]] = None
@@ -105,7 +119,7 @@ class MADDPGAlgorithmConfig(BaseModel):
 
 class RuleBasedAlgorithmConfig(BaseModel):
     name: Literal["RuleBasedPolicy"]
-    hyperparameters: AlgorithmHyperparameters = AlgorithmHyperparameters(gamma=1.0)
+    hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None

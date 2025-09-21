@@ -12,6 +12,7 @@ runtime:
 tracking:
   mlflow_enabled: true
   log_level: "INFO"
+  log_frequency: 1
 
 checkpointing:
   resume_training: false
@@ -45,7 +46,15 @@ topology:
 algorithm:
   name: "RuleBasedPolicy"
   hyperparameters:
-    gamma: 1.0
+    pv_charge_threshold: 2.0          # kW of onsite PV generation that triggers immediate charging
+    flexibility_hours: 3.0            # hours we can delay charging when the vehicle is flexible
+    emergency_hours: 1.0              # within this window we always charge at least `emergency_charge_rate`
+    pv_preferred_charge_rate: 0.7     # normalised charge rate when PV is abundant
+    flex_trickle_charge: 0.0          # trickle charge rate during flexible periods without PV
+    min_charge_rate: 0.0              # minimum charge rate once charging has started
+    emergency_charge_rate: 1.0        # fallback charge rate in the final hours before departure
+    default_capacity_kwh: 60.0        # used when the dataset does not specify an EV battery capacity
+    non_flexible_chargers: []         # list of charger ids that must always charge immediately
   networks: null
   replay_buffer: null
   exploration: null

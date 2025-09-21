@@ -11,6 +11,7 @@ class BaseAgent(Module, ABC):
 
     def __init__(self) -> None:
         super().__init__()
+        self.use_raw_observations: bool = False
 
     @abstractmethod
     def predict(
@@ -53,6 +54,17 @@ class BaseAgent(Module, ABC):
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
         """Persist training state and return the checkpoint path."""
         raise NotImplementedError("Agent does not implement checkpointing.")
+
+    def attach_environment(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Optional hook that provides environment metadata after instantiation."""
 
     @abstractmethod
     def export_artifacts(

@@ -134,6 +134,12 @@ class Wrapper_CityLearn(RLC):
         self.target_update_interval = training_cfg.get("target_update_interval", 0)
         self.log_dir = config.get("runtime", {}).get("log_dir")
         self.mlflow_enabled = tracking_cfg.get("mlflow_enabled", True)
+        try:
+            self.log_frequency = int(tracking_cfg.get("log_frequency", 1) or 1)
+        except (TypeError, ValueError):
+            self.log_frequency = 1
+        if self.log_frequency < 1:
+            self.log_frequency = 1
         self.progress_tracker = ProgressTracker(progress_path)
         self.checkpoint_manager = CheckpointManager(
             base_dir=self.log_dir,
@@ -153,6 +159,21 @@ class Wrapper_CityLearn(RLC):
         Set the model after initialization.
         """
         self.model = model
+        metadata = {
+            "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
+            "building_names": getattr(self.env, "building_names", None),
+        }
+        try:
+            self.model.attach_environment(
+                observation_names=self.observation_names,
+                action_names=self.action_names,
+                action_space=self.action_space,
+                observation_space=self.observation_space,
+                metadata=metadata,
+            )
+        except AttributeError:
+            # Older agents may not implement attach_environment.
+            pass
 
 
     def learn(self, episodes=None, deterministic=None, deterministic_finish=None, logging_level=None):
@@ -242,10 +263,11 @@ class Wrapper_CityLearn(RLC):
                     metrics["GPU_PyTorch_Reserved_MB"] = gpu_mem_reserved
                 metrics["Step_Duration"] = step_duration
 
-                if mlflow.active_run():
-                    mlflow.log_metrics(metrics, step=self.global_step)
-                elif self.local_metrics_logger:
-                    self.local_metrics_logger.log(metrics, self.global_step)
+                if self._should_log_step(self.global_step):
+                    if mlflow.active_run():
+                        mlflow.log_metrics(metrics, step=self.global_step)
+                    elif self.local_metrics_logger:
+                        self.local_metrics_logger.log(metrics, self.global_step)
 
                 logger.info(
                     f'Time step: {time_step + 1}/{self.episode_time_steps},'
@@ -336,7 +358,11 @@ class Wrapper_CityLearn(RLC):
         if self.model is None:
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        encoded_observations = self.get_all_encoded_observations(observations)
+        if getattr(self.model, "use_raw_observations", False):
+            encoded_observations = [np.asarray(obs, dtype=np.float64) for obs in observations]
+        else:
+            encoded_observations = self.get_all_encoded_observations(observations)
+
         actions = self.model.predict(encoded_observations, deterministic)
         self.actions = actions
         self.next_time_step()
@@ -371,8 +397,12 @@ class Wrapper_CityLearn(RLC):
         logger.debug(
             "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
-        encoded_observations = self.get_all_encoded_observations(observations)
-        encoded_next_observations = self.get_all_encoded_observations(next_observations)
+        if getattr(self.model, "use_raw_observations", False):
+            encoded_observations = [np.asarray(obs, dtype=np.float64) for obs in observations]
+            encoded_next_observations = [np.asarray(obs, dtype=np.float64) for obs in next_observations]
+        else:
+            encoded_observations = self.get_all_encoded_observations(observations)
+            encoded_next_observations = self.get_all_encoded_observations(next_observations)
 
         # Pass updated parameters to model.update()
         return self.model.update(observations = encoded_observations, actions= actions, rewards= reward,
@@ -381,6 +411,9 @@ class Wrapper_CityLearn(RLC):
                 update_target_step=self.update_target_step, global_learning_step=self.global_step,
                 update_step = self.update_step, initial_exploration_done= self.initial_exploration_done
         )
+
+    def _should_log_step(self, step: int) -> bool:
+        return step % self.log_frequency == 0
 
     def get_encoded_observations(self, index: int, observations: List[float]) -> np.ndarray:
         """Optimized encoding function using NumPy with proper type handling."""

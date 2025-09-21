@@ -94,7 +94,7 @@ inference.
         │ Training Artefacts         │   │ MLflow Tracking    │
         │ runs/jobs/<job_id>/        │   │ runs/mlflow/mlruns │
         │ ├─ checkpoints/            │   └────────────────────┘
-        │ ├─ logs/onnx_models/       │
+        │ ├─ onnx_models/            │
         │ └─ artifact_manifest.json  │
         └────────────┬───────────────┘
                      │ exported bundle
@@ -119,11 +119,13 @@ Use this diagram as the mental model when wiring CI or new algorithms.
 Important knobs:
 
 - `tracking.mlflow_enabled` – switch between MLflow and JSONL logging.
+- `tracking.log_frequency` – log rewards/system metrics every N steps (default 1).
 - `checkpointing.resume_training` – reload agent state from MLflow (simulator
   still restarts).
 - `training.*` – exploration warm-up, update cadence, target refresh.
 - `algorithm.*` – hyperparameters, network sizes, replay buffer type, exploration
-  policy.
+  policy. `RuleBasedPolicy` replaces neural network knobs with PV thresholds,
+  flexibility buffers, and charger overrides.
 
 ## Training Outputs & Inference Hand-off
 
@@ -133,9 +135,11 @@ Every job produces:
 - `jobs/<job_id>/progress/progress.json` – progress updates for dashboards.
 - `jobs/<job_id>/results/result.json` – CityLearn KPI pivot table.
 - `jobs/<job_id>/checkpoints/` – optional checkpoints.
-- `jobs/<job_id>/logs/onnx_models/` – one ONNX actor per agent.
+- `jobs/<job_id>/onnx_models/` – one ONNX actor per agent.
 - `jobs/<job_id>/artifact_manifest.json` – metadata consumed by the inference
   repo.
+- `jobs/<job_id>/rbc_policy.json` – exported schedule and heuristics when
+  `RuleBasedPolicy` runs.
 
 Bundle the manifest, ONNX directory, and optional alias map as described in
 [`docs/inference_bundle.md`](docs/inference_bundle.md) to deploy a trained agent.
@@ -157,7 +161,7 @@ in detail and contains troubleshooting tips.
 
 ## Monitoring & Logging
 
-- MLflow records metrics every step/episode when enabled.
+- MLflow records per-step metrics according to `tracking.log_frequency` when enabled.
 - If MLflow is disabled (`tracking.mlflow_enabled: false`), metrics go to
   `<log_dir>/metrics.jsonl` via `LocalMetricsLogger`.
 - Wrapper_CityLearn samples CPU/RAM/GPU utilisation every 10 steps.

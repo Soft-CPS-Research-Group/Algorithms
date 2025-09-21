@@ -201,7 +201,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         json.dump(kpis.to_dict(), result_file, indent=2)
     logger.info("KPI summary written to {}", result_path)
 
-    artifacts_root = Path(config["runtime"].get("log_dir") or path_info["log_dir"]).resolve()
+    artifacts_root = path_info["job_dir"].resolve()
     environment_metadata = wrapper.describe_environment()
     agent_metadata = agent.export_artifacts(
         output_dir=str(artifacts_root),
