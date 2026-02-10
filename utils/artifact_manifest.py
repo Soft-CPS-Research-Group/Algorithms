@@ -44,8 +44,33 @@ def write_manifest(manifest: Dict[str, Any], output_dir: str) -> Path:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as handle:
-            json.dump(manifest, handle, indent=2)
+            json.dump(manifest, handle, indent=2, default=_json_default)
     except Exception as exc:
         logger.error("Failed to write artifact manifest: %s", exc)
         raise
     return path
+
+
+def _json_default(obj: Any) -> Any:
+    """Best-effort conversion of non-serializable objects for JSON dumps."""
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, set):
+        return sorted(obj)
+    try:
+        import numpy as np  # Local import to keep optional dependency.
+
+        if isinstance(obj, (np.integer, np.floating, np.bool_)):
+            return obj.item()
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+    except Exception:
+        pass
+    try:
+        import torch
+
+        if isinstance(obj, torch.Tensor):
+            return obj.detach().cpu().tolist()
+    except Exception:
+        pass
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")

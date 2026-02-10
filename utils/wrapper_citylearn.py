@@ -196,10 +196,11 @@ class Wrapper_CityLearn(RLC):
             observations, _ = self.env.reset()
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             terminated = False
+            truncated = False
             time_step = 0
             rewards_list = []  # Stores rewards per step
 
-            while not terminated:
+            while not (terminated or truncated):
                 step_start_time = time.time()
                 self.global_step = episode * self.episode_time_steps + time_step  # Global step
                 logger.debug("Global step %s (episode %s, timestep %s)", self.global_step, episode, time_step)

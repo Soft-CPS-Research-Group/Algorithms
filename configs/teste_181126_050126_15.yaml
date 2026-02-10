@@ -1,0 +1,70 @@
+# -----------------------------------------------------------------------------
+# Test configuration for the teste_181126_050126_15 dataset.
+# -----------------------------------------------------------------------------
+metadata:
+  experiment_name: "teste_181126_050126_15"
+  run_name: "test-run"
+
+runtime:
+  log_dir: null
+  mlflow_uri: null
+
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "latest_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 5000
+
+simulator:
+  dataset_name: teste_181126_050126_15
+  dataset_path: ./datasets/teste_181126_050126_15/schema.json
+  central_agent: false
+  reward_function: RewardFunction
+
+training:
+  seed: 22
+  end_initial_exploration_time_step: 100
+  end_exploration_time_step: 200
+  steps_between_training_updates: 5
+  target_update_interval: 2
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+algorithm:
+  name: "MADDPG"
+  hyperparameters:
+    gamma: 0.99
+  networks:
+    actor:
+      class: "Actor"
+      layers: [2048, 1024, 512, 256, 128, 64]
+      lr: 1.0e-4
+    critic:
+      class: "Critic"
+      layers: [2048, 1024, 512, 256, 128, 64]
+      lr: 1.0e-3
+  replay_buffer:
+    class: "MultiAgentReplayBuffer"
+    capacity: 100000
+    batch_size: 512
+  exploration:
+    strategy: "GaussianNoise"
+    params:
+      bias: 0.3
+      sigma: 0.2
+      decay: 0.995
+      gamma: 0.99
+      tau: 0.001

@@ -385,7 +385,7 @@ class MADDPG(BaseAgent):
         export_root = Path(output_dir)
         onnx_dir = export_root / "onnx_models"
         onnx_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("Exporting MADDPG actors to ONNX under %s", onnx_dir)
+        logger.info("Exporting MADDPG actors to ONNX under {}", onnx_dir)
 
         metadata: Dict[str, Any] = {"format": "onnx", "artifacts": []}
 
@@ -407,7 +407,7 @@ class MADDPG(BaseAgent):
                 },
             )
 
-            logger.info("ONNX model exported for agent %s: %s", i, export_path)
+            logger.info("ONNX model exported for agent {}: {}", i, export_path)
 
             relative_path = export_path.relative_to(export_root)
             metadata["artifacts"].append(

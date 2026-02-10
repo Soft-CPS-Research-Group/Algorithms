@@ -1,6 +1,7 @@
 
 /citylearn_env
 /mlruns
+/runs
 *.log
 # Virtual env
 venv/

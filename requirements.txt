@@ -4,7 +4,7 @@ blinker==1.9.0
 cachetools==5.5.0
 certifi==2024.12.14
 charset-normalizer==3.4.1
-CityLearn==2.3.0
+CityLearn==2.5.0
 click==8.1.8
 cloudpickle==3.1.1
 contourpy==1.3.1
@@ -29,7 +29,7 @@ graphql-core==3.2.5
 graphql-relay==3.2.0
 greenlet==3.1.1
 gunicorn==23.0.0
-gymnasium==1.0.0
+gymnasium==0.28.1
 idna==3.10
 importlib_metadata==8.5.0
 itsdangerous==2.2.0

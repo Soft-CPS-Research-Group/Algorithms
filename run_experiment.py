@@ -168,7 +168,6 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     # Populate derived dimensions required by MADDPG.
     set_default_config(config, ["topology", "observation_dimensions"], wrapper.observation_dimension)
     set_default_config(config, ["topology", "action_dimensions"], wrapper.action_dimension)
-    set_default_config(config, ["topology", "action_space"], wrapper.action_space)
     set_default_config(config, ["topology", "num_agents"], len(wrapper.action_space))
     logger.debug(
         "Topology derived: num_agents=%s, obs_dims=%s, action_dims=%s",
@@ -187,14 +186,20 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     kpis = wrapper.env.evaluate()
     kpis = kpis.pivot(index="cost_function", columns="name", values="value").round(3).dropna(how="all")
 
-    if mlflow.active_run():
+    kpi_metrics = {}
+    if hasattr(kpis, "stack"):
+        for (cost_function, name), value in kpis.stack(dropna=True).items():
+            kpi_metrics[f"kpi_{cost_function}_{name}"] = float(value)
+    else:
         for kpi_name, kpi_value in kpis.items():
-            mlflow.log_metric(f"kpi_{kpi_name}", kpi_value)
+            kpi_metrics[f"kpi_{kpi_name}"] = float(kpi_value)
+
+    if mlflow.active_run():
+        for kpi_name, kpi_value in kpi_metrics.items():
+            mlflow.log_metric(kpi_name, kpi_value)
     elif getattr(wrapper, "local_metrics_logger", None):
-        wrapper.local_metrics_logger.log(
-            {f"kpi_{kpi_name}": float(kpi_value) for kpi_name, kpi_value in kpis.items()},
-            -2,
-        )
+        if kpi_metrics:
+            wrapper.local_metrics_logger.log(kpi_metrics, -2)
 
     result_path = path_info["result_path"]
     with open(result_path, "w", encoding="utf-8") as result_file:
