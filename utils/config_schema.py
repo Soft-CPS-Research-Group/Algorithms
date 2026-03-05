@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -133,6 +134,49 @@ class SingleAgentRLAlgorithmConfig(BaseModel):
     exploration: Optional[ExplorationParams] = None
 
 
+class DeucalionExecutionConfig(BaseModel):
+    partition: Optional[str] = None
+    account: Optional[str] = None
+    time: Optional[str] = None
+    cpus_per_task: Optional[int] = Field(default=None, ge=1)
+    mem_gb: Optional[int] = Field(default=None, ge=1)
+    gpus: Optional[int] = Field(default=None, ge=0)
+    sif_path: Optional[str] = None
+    modules: List[str] = Field(default_factory=list)
+    required_paths: List[str] = Field(default_factory=list)
+    command_mode: Literal["run", "exec"] = "run"
+    datasets: List[str] = Field(default_factory=list)
+
+    @field_validator("datasets")
+    @classmethod
+    def validate_datasets(cls, value: List[str]) -> List[str]:
+        validated: List[str] = []
+        for raw in value:
+            path = (raw or "").strip()
+            if not path:
+                raise ValueError("execution.deucalion.datasets entries must be non-empty")
+
+            pure = PurePosixPath(path)
+            if pure.is_absolute():
+                raise ValueError(f"execution.deucalion.datasets must be relative paths, got: {path!r}")
+            if ".." in pure.parts:
+                raise ValueError(f"execution.deucalion.datasets cannot contain '..', got: {path!r}")
+
+            normalized = str(pure)
+            if normalized.startswith("./"):
+                normalized = normalized[2:]
+            if not normalized.startswith("datasets/"):
+                raise ValueError(
+                    f"execution.deucalion.datasets must start with 'datasets/', got: {path!r}"
+                )
+            validated.append(normalized)
+        return validated
+
+
+class ExecutionConfig(BaseModel):
+    deucalion: Optional[DeucalionExecutionConfig] = None
+
+
 class ProjectConfig(BaseModel):
     metadata: MetadataConfig
     runtime: RuntimeConfig = RuntimeConfig()
@@ -142,6 +186,7 @@ class ProjectConfig(BaseModel):
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
     algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    execution: Optional[ExecutionConfig] = None
 
     model_config = ConfigDict(extra="forbid")
 
