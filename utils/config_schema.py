@@ -74,6 +74,8 @@ class CheckpointingConfig(BaseModel):
     freeze_pretrained_layers: bool = False
     fine_tune: bool = False
     checkpoint_interval: Optional[int] = Field(default=None, ge=1)
+    require_update_step: bool = True
+    require_initial_exploration_done: bool = True
 
 
 class SimulatorExportConfig(BaseModel):

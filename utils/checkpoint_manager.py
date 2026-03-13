@@ -19,10 +19,14 @@ class CheckpointManager:
         base_dir: Optional[str],
         interval: Optional[int],
         log_to_mlflow: bool = True,
+        require_update_step: bool = True,
+        require_initial_exploration_done: bool = True,
     ) -> None:
         self.base_dir = Path(base_dir) if base_dir else None
         self.interval = interval if interval and interval > 0 else None
         self.log_to_mlflow = log_to_mlflow
+        self.require_update_step = require_update_step
+        self.require_initial_exploration_done = require_initial_exploration_done
 
     def maybe_save(
         self,
@@ -33,7 +37,11 @@ class CheckpointManager:
     ) -> Optional[Path]:
         if not self.interval or not self.base_dir:
             return None
-        if step <= 0 or not initial_exploration_done or not update_step:
+        if step <= 0:
+            return None
+        if self.require_initial_exploration_done and not initial_exploration_done:
+            return None
+        if self.require_update_step and not update_step:
             return None
         if step % self.interval != 0:
             return None

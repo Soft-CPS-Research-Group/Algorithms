@@ -168,6 +168,10 @@ class Wrapper_CityLearn(RLC):
             base_dir=self.log_dir,
             interval=checkpoint_cfg.get("checkpoint_interval"),
             log_to_mlflow=tracking_cfg.get("mlflow_enabled", True),
+            require_update_step=bool(checkpoint_cfg.get("require_update_step", True)),
+            require_initial_exploration_done=bool(
+                checkpoint_cfg.get("require_initial_exploration_done", True)
+            ),
         )
         self.local_metrics_logger = None
         if not self.mlflow_enabled:
