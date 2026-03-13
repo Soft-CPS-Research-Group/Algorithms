@@ -39,7 +39,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a CityLearn training experiment")
     parser.add_argument("--config", required=True, help="Path to YAML config file")
     parser.add_argument(
-        "--job-id",
         "--job_id",
         dest="job_id",
         help="Unique ID used to organise output artefacts",

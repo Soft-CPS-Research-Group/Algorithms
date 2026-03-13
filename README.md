@@ -33,10 +33,8 @@ orchestration, logging, and packaging.
 ### Local training
 
 ```bash
-python run_experiment.py --config configs/config.yaml --job-id dev-run
+python run_experiment.py --config configs/config.yaml --job_id dev-run
 ```
-
-`--job_id` (underscore) is also accepted for compatibility with existing workers.
 
 Outputs are written to `./runs/`:
 
@@ -50,7 +48,7 @@ The Docker image sets `OPEVA_BASE_DIR=/data`. Mount a volume at `/data` and run
 with the same arguments:
 
 ```bash
-python run_experiment.py --config /data/configs/<experiment>.yaml --job-id <job_id>
+python run_experiment.py --config /data/configs/<experiment>.yaml --job_id <job_id>
 ```
 
 Artefacts appear under `/data/jobs/<job_id>/`, ready to publish or archive for
@@ -61,7 +59,6 @@ inference.
 The same training entrypoint is compatible with the Deucalion worker runtime:
 
 - default worker command: `--config /data/<config_path> --job_id <job_id>`
-- this runner accepts both `--job-id` and `--job_id`
 - keep simulator datasets under `/data/datasets/...` inside the container/SIF
 - per-job outputs remain under `/data/jobs/<job_id>/...` in both Docker and SIF
 
@@ -189,7 +186,7 @@ in detail and contains troubleshooting tips.
 ## Contributing
 
 1. Create a virtual environment and install dependencies (`pip install -r requirements.txt`).
-2. Run a smoke test: `python run_experiment.py --config configs/config.yaml --job-id smoke-test`.
+2. Run a smoke test: `python run_experiment.py --config configs/config.yaml --job_id smoke-test`.
 3. Execute the test suite: `pytest`.
 4. Submit focused PRs with documentation updates when behaviour changes.
 
