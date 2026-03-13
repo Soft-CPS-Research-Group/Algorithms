@@ -19,7 +19,12 @@ from pydantic import ValidationError
 from citylearn.citylearn import CityLearnEnv
 from citylearn.reward_function import RewardFunction
 from reward_function.V2G_Reward import V2GPenaltyReward
-from algorithms.registry import create_agent
+from algorithms.agents.base_agent import BaseAgent
+from algorithms.registry import (
+    build_unsupported_algorithm_message,
+    create_agent,
+    is_algorithm_supported,
+)
 from utils.helpers import set_default_config
 from utils.mlflow_helper import end_mlflow_run, start_mlflow_run
 from utils.wrapper_citylearn import Wrapper_CityLearn as Wrapper
@@ -179,6 +184,152 @@ def _log_curated_artifacts(
             mlflow.log_artifact(str(artifact), artifact_path="artifacts")
 
 
+def _build_checkpoint_artifact_candidates(checkpoint_artifact: str) -> list[str]:
+    """Return ordered MLflow artifact paths with legacy fallback."""
+    artifact_name = str(checkpoint_artifact or "latest_checkpoint.pth").strip() or "latest_checkpoint.pth"
+    candidates = [f"checkpoints/{artifact_name}", artifact_name]
+    deduplicated: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate not in seen:
+            deduplicated.append(candidate)
+            seen.add(candidate)
+    return deduplicated
+
+
+def _agent_supports_checkpoint_loading(agent: BaseAgent) -> bool:
+    """Return whether the agent overrides ``BaseAgent.load_checkpoint``."""
+    load_checkpoint = getattr(type(agent), "load_checkpoint", None)
+    if load_checkpoint is None:
+        return False
+    return load_checkpoint is not BaseAgent.load_checkpoint
+
+
+def _resolve_best_checkpoint_run_id(
+    agent: BaseAgent,
+    *,
+    experiment_name: Optional[str],
+) -> Optional[str]:
+    """Resolve best checkpoint run id through an agent hook when available."""
+    if not experiment_name:
+        return None
+
+    get_best_checkpoint = getattr(agent, "get_best_checkpoint", None)
+    if not callable(get_best_checkpoint):
+        raise RuntimeError(
+            "checkpointing.use_best_checkpoint_artifact=true requires the agent to implement "
+            "`get_best_checkpoint(experiment_name)`."
+        )
+    return get_best_checkpoint(experiment_name)
+
+
+def _download_checkpoint_from_mlflow(
+    *,
+    checkpoint_run_id: str,
+    checkpoint_artifact: str,
+    tracking_uri: str,
+    download_dir: Path,
+) -> Path:
+    """Download checkpoint artifact from MLflow using current API with fallback paths."""
+    mlflow.set_tracking_uri(tracking_uri)
+    artifact_candidates = _build_checkpoint_artifact_candidates(checkpoint_artifact)
+    last_error: Optional[Exception] = None
+
+    for artifact_path in artifact_candidates:
+        try:
+            downloaded = mlflow.artifacts.download_artifacts(
+                run_id=checkpoint_run_id,
+                artifact_path=artifact_path,
+                dst_path=str(download_dir),
+            )
+            resolved = Path(downloaded)
+            logger.info(
+                "Resolved checkpoint artifact '{}' from run {} -> {}",
+                artifact_path,
+                checkpoint_run_id,
+                resolved,
+            )
+            return resolved
+        except Exception as exc:  # pragma: no cover - error details are asserted via raised message
+            last_error = exc
+            logger.warning(
+                "Checkpoint artifact '{}' not available in run {}: {}",
+                artifact_path,
+                checkpoint_run_id,
+                exc,
+            )
+
+    attempted = ", ".join(artifact_candidates)
+    raise RuntimeError(
+        f"Could not download checkpoint from MLflow run '{checkpoint_run_id}'. "
+        f"Tried artifact paths: {attempted}."
+    ) from last_error
+
+
+def _resolve_local_checkpoint_path(
+    *,
+    checkpoint_artifact: str,
+    checkpoints_dir: Path,
+) -> Path:
+    """Resolve a local checkpoint path using standard and fallback locations."""
+    artifact = str(checkpoint_artifact or "latest_checkpoint.pth").strip() or "latest_checkpoint.pth"
+    candidate_paths = [
+        checkpoints_dir / artifact,
+        Path(artifact),
+    ]
+    for candidate in candidate_paths:
+        if candidate.exists():
+            return candidate.resolve()
+
+    attempted = ", ".join(str(path) for path in candidate_paths)
+    raise RuntimeError(f"Could not resolve local checkpoint path. Tried: {attempted}.")
+
+
+def _resume_agent_from_checkpoint(
+    *,
+    agent: BaseAgent,
+    config: dict[str, Any],
+    tracking_uri: str,
+    checkpoints_dir: Path,
+) -> Optional[Path]:
+    """Resume training by loading an agent checkpoint if requested in config."""
+    checkpoint_cfg = config.get("checkpointing", {}) or {}
+    if not bool(checkpoint_cfg.get("resume_training", False)):
+        return None
+
+    if not _agent_supports_checkpoint_loading(agent):
+        raise RuntimeError(
+            f"resume_training=true but agent '{agent.__class__.__name__}' does not implement load_checkpoint()."
+        )
+
+    checkpoint_artifact = str(checkpoint_cfg.get("checkpoint_artifact", "latest_checkpoint.pth"))
+    checkpoint_run_id = checkpoint_cfg.get("checkpoint_run_id")
+    if bool(checkpoint_cfg.get("use_best_checkpoint_artifact", False)) and not checkpoint_run_id:
+        metadata_cfg = config.get("metadata", {}) or {}
+        checkpoint_run_id = _resolve_best_checkpoint_run_id(
+            agent,
+            experiment_name=metadata_cfg.get("experiment_name"),
+        )
+        logger.info("Resolved best checkpoint run id: {}", checkpoint_run_id)
+
+    if checkpoint_run_id:
+        checkpoint_path = _download_checkpoint_from_mlflow(
+            checkpoint_run_id=str(checkpoint_run_id),
+            checkpoint_artifact=checkpoint_artifact,
+            tracking_uri=tracking_uri,
+            download_dir=checkpoints_dir,
+        )
+    else:
+        checkpoint_path = _resolve_local_checkpoint_path(
+            checkpoint_artifact=checkpoint_artifact,
+            checkpoints_dir=checkpoints_dir,
+        )
+
+    agent.load_checkpoint(str(checkpoint_path))
+    logger.info("Agent '{}' resumed from checkpoint {}", agent.__class__.__name__, checkpoint_path)
+    return checkpoint_path
+
+
 def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> None:
     """Execute training with outputs written under ``base_dir``/jobs/<job_id>."""
     job_id = _derive_job_id(job_id)
@@ -199,6 +350,11 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         raise SystemExit(1) from exc
 
     config = config_model.to_dict()
+    algorithm_name = (config.get("algorithm", {}) or {}).get("name")
+    if not is_algorithm_supported(algorithm_name):
+        message = build_unsupported_algorithm_message(algorithm_name)
+        logger.error(message)
+        raise ValueError(message)
 
     metadata = config.get("metadata", {})
     runtime = config.setdefault("runtime", {})
@@ -383,6 +539,12 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
 
         agent = create_agent(config=config)
         wrapper.set_model(agent)
+        _resume_agent_from_checkpoint(
+            agent=agent,
+            config=config,
+            tracking_uri=tracking_uri,
+            checkpoints_dir=path_info["checkpoints_dir"],
+        )
 
         logger.info("Starting training loop")
         wrapper.learn(episodes=int(simulator_cfg.get("episodes", 1) or 1))

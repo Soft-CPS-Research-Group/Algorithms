@@ -61,10 +61,7 @@ class MADDPG(BaseAgent):
         np.random.seed(self.seed)
         random.seed(self.seed)
 
-        self.resume_training = checkpoint_cfg.get("resume_training", False)
-        self.checkpoint_run_id = checkpoint_cfg.get("checkpoint_run_id")
         self.checkpoint_artifact = checkpoint_cfg.get("checkpoint_artifact", "latest_checkpoint.pth")
-        self.use_best_checkpoint_artifact = checkpoint_cfg.get("use_best_checkpoint_artifact", False)
         self.reset_replay_buffer = checkpoint_cfg.get("reset_replay_buffer", False)
         self.freeze_pretrained_layers = checkpoint_cfg.get("freeze_pretrained_layers", False)
         self.fine_tune = checkpoint_cfg.get("fine_tune", False)
@@ -89,20 +86,6 @@ class MADDPG(BaseAgent):
         self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
         self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
         self.scaler = GradScaler(self.device)
-
-        metadata_cfg = self.config.get("metadata", {})
-
-        if self.resume_training:
-            if self.use_best_checkpoint_artifact:
-                experiment_name = metadata_cfg.get("experiment_name")
-                if experiment_name:
-                    self.checkpoint_run_id = self.get_best_checkpoint(experiment_name)
-
-            if self.checkpoint_run_id:
-                self._load_checkpoint_from_mlflow()
-
-            if self.freeze_pretrained_layers:
-                self.freeze_layers(freeze_actor=True, freeze_critic=False)
 
         logger.info("MADDPG initialization complete.")
 
@@ -168,7 +151,8 @@ class MADDPG(BaseAgent):
         logger.debug("Starting update phase.")
         update_start_time = time.time()
 
-        self.replay_buffer.push(observations, actions, rewards, next_observations, terminated)
+        done = bool(terminated or truncated)
+        self.replay_buffer.push(observations, actions, rewards, next_observations, done)
 
         if len(self.replay_buffer) < self.batch_size:
             logger.debug("Not enough samples in the replay buffer. Skipping update.")
@@ -351,31 +335,26 @@ class MADDPG(BaseAgent):
         logger.info("Checkpoint saved at step {} -> {}", step, latest_path)
         return str(latest_path)
 
-    def _load_checkpoint_from_mlflow(self) -> None:
-        logger.info("Loading checkpoint from MLflow Run ID: {}", self.checkpoint_run_id)
-        try:
-            download_dir = Path("/tmp")
-            downloaded_path = mlflow.artifacts.download_artifact(
-                artifact_path=self.checkpoint_artifact,
-                dst_path=str(download_dir),
-                run_id=self.checkpoint_run_id,
-            )
-            checkpoint = torch.load(downloaded_path, map_location=self.device)
+    def load_checkpoint(self, checkpoint_path: str) -> None:
+        checkpoint_file = Path(checkpoint_path)
+        if not checkpoint_file.exists():
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
 
-            for i in range(self.num_agents):
-                self.actors[i].load_state_dict(checkpoint[f"actor_state_dict_{i}"])
-                self.critics[i].load_state_dict(checkpoint[f"critic_state_dict_{i}"])
-                if not self.fine_tune:
-                    self.actor_optimizers[i].load_state_dict(checkpoint[f"actor_optimizer_state_dict_{i}"])
-                    self.critic_optimizers[i].load_state_dict(checkpoint[f"critic_optimizer_state_dict_{i}"])
+        checkpoint = torch.load(checkpoint_file, map_location=self.device)
+        for i in range(self.num_agents):
+            self.actors[i].load_state_dict(checkpoint[f"actor_state_dict_{i}"])
+            self.critics[i].load_state_dict(checkpoint[f"critic_state_dict_{i}"])
+            if not self.fine_tune:
+                self.actor_optimizers[i].load_state_dict(checkpoint[f"actor_optimizer_state_dict_{i}"])
+                self.critic_optimizers[i].load_state_dict(checkpoint[f"critic_optimizer_state_dict_{i}"])
 
-            if "replay_buffer" in checkpoint and not self.reset_replay_buffer:
-                self.replay_buffer.set_state(checkpoint["replay_buffer"])
+        if "replay_buffer" in checkpoint and not self.reset_replay_buffer:
+            self.replay_buffer.set_state(checkpoint["replay_buffer"])
 
-            logger.info("Checkpoint successfully loaded from MLflow.")
-        except Exception as exc:
-            logger.error("Failed to load checkpoint from MLflow: {}", exc)
-            raise RuntimeError("Error loading checkpoint from MLflow") from exc
+        if self.freeze_pretrained_layers:
+            self.freeze_layers(freeze_actor=True, freeze_critic=False)
+
+        logger.info("Checkpoint loaded from {}", checkpoint_file)
 
     @staticmethod
     def get_best_checkpoint(experiment_name: str) -> str:

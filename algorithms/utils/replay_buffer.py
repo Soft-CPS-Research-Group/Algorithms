@@ -19,7 +19,7 @@ class MultiAgentReplayBuffer:
         self.batch_size = batch_size
         self.buffers = [deque(maxlen=capacity) for _ in range(num_agents)]  # Store data in CPU memory
 
-    def push(self, states, actions, rewards, next_states, terminated):
+    def push(self, states, actions, rewards, next_states, done):
         """
         Store experiences for each agent in CPU memory.
 
@@ -28,7 +28,7 @@ class MultiAgentReplayBuffer:
             actions (list): List of actions per agent.
             rewards (list): List of rewards per agent.
             next_states (list): List of next states per agent.
-            terminated (bool): Single done flag shared across all agents.
+            done (bool): Single done flag shared across all agents.
         """
         for agent_idx in range(self.num_agents):
             state_tensor = torch.tensor(states[agent_idx], dtype=torch.float32).pin_memory()
@@ -36,8 +36,8 @@ class MultiAgentReplayBuffer:
             reward_tensor = torch.tensor(rewards[agent_idx], dtype=torch.float32).unsqueeze(0).pin_memory()
             next_state_tensor = torch.tensor(next_states[agent_idx], dtype=torch.float32).pin_memory()
 
-            # ✅ Convert terminated (bool) to a single tensor (no indexing!)
-            terminated_tensor = torch.tensor(terminated, dtype=torch.float32).unsqueeze(-1).pin_memory()
+            # Convert done flag (terminated or truncated) to a single tensor.
+            terminated_tensor = torch.tensor(done, dtype=torch.float32).unsqueeze(-1).pin_memory()
 
             self.buffers[agent_idx].append(
                 (state_tensor, action_tensor, reward_tensor, next_state_tensor, terminated_tensor))
