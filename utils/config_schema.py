@@ -24,6 +24,9 @@ class RuntimeConfig(BaseModel):
     log_dir: Optional[str] = Field(default=None, description="Resolved at runtime; path for log files")
     job_dir: Optional[str] = Field(default=None, description="Resolved at runtime; job root directory")
     mlflow_uri: Optional[str] = Field(default=None, description="Resolved at runtime; MLflow tracking URI")
+    job_id: Optional[str] = Field(default=None, description="Resolved at runtime; orchestrator job identifier")
+    run_id: Optional[str] = Field(default=None, description="Resolved at runtime; active run identifier")
+    run_name: Optional[str] = Field(default=None, description="Resolved at runtime; active run display name")
 
 
 class TrackingConfig(BaseModel):

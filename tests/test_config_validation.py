@@ -1,15 +1,14 @@
 import copy
+from pathlib import Path
 
 import pytest
+import yaml
 
 from utils.config_schema import validate_config
 
 
 @pytest.fixture
 def base_config():
-    from pathlib import Path
-    import yaml
-
     config_path = Path("configs/config.yaml")
     with config_path.open("r", encoding="utf-8") as handle:
         return yaml.safe_load(handle)
@@ -68,3 +67,13 @@ def test_validate_config_accepts_bundle_section(base_config):
         "artifact_config": {"input_site_key": "site_a"},
     }
     validate_config(config)
+
+
+def test_validate_all_templates():
+    template_paths = sorted(Path("configs/templates").glob("*.yaml"))
+    assert template_paths, "No template files found under configs/templates"
+
+    for template_path in template_paths:
+        with template_path.open("r", encoding="utf-8") as handle:
+            template_config = yaml.safe_load(handle)
+        validate_config(template_config)

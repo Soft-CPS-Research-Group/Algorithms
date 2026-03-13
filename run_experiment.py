@@ -81,6 +81,7 @@ def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
         "mlflow_dir": base_dir / "mlflow" / "mlruns",
         "job_info_path": job_dir / "job_info.json",
         "artifact_manifest_path": job_dir / "artifact_manifest.json",
+        "resolved_config_path": job_dir / "config.resolved.yaml",
     }
 
     for key, path in paths.items():
@@ -90,6 +91,12 @@ def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
             path.parent.mkdir(parents=True, exist_ok=True)
 
     return paths
+
+
+def _write_resolved_config(config: dict, output_path: Path) -> None:
+    """Persist the runtime-resolved configuration for reproducibility."""
+    with output_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(config, handle, sort_keys=False)
 
 
 def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> None:
@@ -113,7 +120,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
 
     config = config_model.to_dict()
 
-    # Inject runtime paths expected by downstream helpers (not persisted to disk).
+    # Inject runtime paths expected by downstream helpers.
     log_dir = path_info["log_dir"]
     mlflow_uri = path_info["mlflow_dir"]
 
@@ -133,6 +140,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     runtime["log_dir"] = str(log_dir)
     runtime["job_dir"] = str(path_info["job_dir"])
     runtime["mlflow_uri"] = f"file:{mlflow_uri}"
+    runtime["job_id"] = job_id
 
     try:
         start_mlflow_run(config=config)
@@ -149,6 +157,9 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             run_id = run.info.run_id
             run_name = run.info.run_name
             logger.info("MLflow run started: name={}, id={}", run_name, run_id)
+
+        runtime["run_id"] = run_id
+        runtime["run_name"] = run_name
 
         # Persist job metadata for orchestrators/consumers.
         job_info_path = path_info["job_info_path"]
@@ -221,6 +232,12 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             config.get("topology", {}).get("observation_dimensions"),
             config.get("topology", {}).get("action_dimensions"),
         )
+
+        resolved_config_path = path_info["resolved_config_path"]
+        _write_resolved_config(config, resolved_config_path)
+        logger.info("Resolved runtime config written to {}", resolved_config_path)
+        if mlflow.active_run():
+            mlflow.log_artifact(str(resolved_config_path), artifact_path="artifacts")
 
         agent = create_agent(config=config)
         wrapper.set_model(agent)

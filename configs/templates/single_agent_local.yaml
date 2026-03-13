@@ -1,17 +1,26 @@
-# Template for training a single-agent RL policy (placeholder schema).
-metadata:
-  experiment_name: "single_agent_template"
-  run_name: "Single Agent Training"
+# Local SingleAgentRL template (schema placeholder).
 
+# Human-readable experiment metadata used across MLflow, logs, and manifests.
+metadata:
+  experiment_name: "single_agent_local_template"
+  run_name: "Single Agent Local"
+
+# Runtime values are injected automatically by run_experiment.py.
 runtime:
   log_dir: null
+  job_dir: null
   mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
 
+# Tracking controls for metrics/log verbosity and MLflow enablement.
 tracking:
   mlflow_enabled: true
   log_level: "INFO"
   log_frequency: 1
 
+# Checkpoint behavior for saving and optional resume/fine-tuning workflows.
 checkpointing:
   resume_training: false
   checkpoint_run_id: null
@@ -22,6 +31,7 @@ checkpointing:
   fine_tune: false
   checkpoint_interval: 5000
 
+# Bundle metadata/options consumed by inference-side artifact loading.
 bundle:
   bundle_version: null
   description: null
@@ -29,12 +39,14 @@ bundle:
   require_observations_envelope: false
   artifact_config: {}
 
+# Simulator wiring: local dataset path.
 simulator:
   dataset_name: citylearn_challenge_2022_phase_all_plus_evs
   dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
   central_agent: true
   reward_function: RewardFunction
 
+# Training schedule knobs used by the wrapper/agent update cadence.
 training:
   seed: 42
   end_initial_exploration_time_step: 64
@@ -42,12 +54,14 @@ training:
   steps_between_training_updates: 1
   target_update_interval: 1
 
+# Topology is environment-derived at runtime.
 topology:
   num_agents: null
   observation_dimensions: null
   action_dimensions: null
   action_space: null
 
+# Algorithm family and hyperparameters.
 algorithm:
   name: "SingleAgentRL"
   hyperparameters:
@@ -63,3 +77,6 @@ algorithm:
       epsilon_start: 1.0
       epsilon_final: 0.05
       epsilon_decay: 0.995
+
+# Optional worker-specific overrides; omitted for local execution.
+execution: null

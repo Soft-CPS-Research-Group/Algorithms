@@ -140,8 +140,27 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert (job_root / "onnx_models" / "agent_0.onnx").exists()
     assert (job_root / "artifact_manifest.json").exists()
     assert (job_root / "job_info.json").exists()
+    assert (job_root / "config.resolved.yaml").exists()
 
     job_info = json.loads((job_root / "job_info.json").read_text(encoding="utf-8"))
     assert job_info["mlflow_enabled"] is False
     assert job_info["run_id"] == "local-job-mlflow-off"
     assert job_info["mlflow_run_id"] is None
+
+    resolved_config = yaml.safe_load((job_root / "config.resolved.yaml").read_text(encoding="utf-8"))
+    runtime_cfg = resolved_config["runtime"]
+    assert runtime_cfg["job_id"] == "job-mlflow-off"
+    assert runtime_cfg["run_id"] == "local-job-mlflow-off"
+    assert runtime_cfg["run_name"] == "run"
+    assert runtime_cfg["job_dir"] == str(job_root)
+    assert runtime_cfg["log_dir"] == str(job_root / "logs")
+    assert runtime_cfg["mlflow_uri"] == f"file:{tmp_path / 'mlflow' / 'mlruns'}"
+
+    topology_cfg = resolved_config["topology"]
+    assert topology_cfg["num_agents"] == 1
+    assert topology_cfg["observation_dimensions"] == [2]
+    assert topology_cfg["action_dimensions"] == [1]
+
+    # Input config file must remain unchanged; resolved values are written separately.
+    unchanged_input = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert unchanged_input == config

@@ -1,0 +1,96 @@
+# Deucalion GPU RuleBasedPolicy template.
+
+# Human-readable experiment metadata used across MLflow, logs, and manifests.
+metadata:
+  experiment_name: "rule_based_deucalion_gpu_template"
+  run_name: "Rule Based Deucalion GPU"
+
+# Runtime values are injected automatically by run_experiment.py.
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+
+# Tracking controls for metrics/log verbosity and MLflow enablement.
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+
+# Checkpoint behavior for saving and optional resume/fine-tuning workflows.
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "rule_based_checkpoint.json"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: null
+
+# Bundle metadata/options consumed by inference-side artifact loading.
+bundle:
+  bundle_version: "2026-03-10-v1"
+  description: "Rule-based Deucalion GPU template"
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+
+# Simulator wiring: /data paths are required inside worker containers/SIF jobs.
+simulator:
+  dataset_name: citylearn_charging_constraints_demo
+  dataset_path: /data/datasets/citylearn_charging_constraints_demo/schema.json
+  central_agent: false
+  reward_function: RewardFunction
+
+# Training schedule knobs used by the wrapper/agent update cadence.
+training:
+  seed: 22
+  end_initial_exploration_time_step: 0
+  end_exploration_time_step: 0
+  steps_between_training_updates: 1
+  target_update_interval: 0
+
+# Topology is environment-derived at runtime.
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+# Algorithm family and hyperparameters.
+algorithm:
+  name: "RuleBasedPolicy"
+  hyperparameters:
+    pv_charge_threshold: 2.0
+    flexibility_hours: 3.0
+    emergency_hours: 1.0
+    pv_preferred_charge_rate: 0.7
+    flex_trickle_charge: 0.0
+    min_charge_rate: 0.0
+    emergency_charge_rate: 1.0
+    default_capacity_kwh: 60.0
+    non_flexible_chargers: []
+  networks: null
+  replay_buffer: null
+  exploration: null
+
+# Optional worker-specific overrides used by the Deucalion executor.
+execution:
+  deucalion:
+    command_mode: run
+    gpus: 1
+    account: f202508843cpcaa0g
+    partition: normal-a100-80
+    time: "00:10:00"
+    cpus_per_task: 8
+    mem_gb: 16
+    sif_path: /projects/F202508843CPCAA0/tiagocalof/images/simulator.sif
+    modules: []
+    datasets:
+      - datasets/citylearn_charging_constraints_demo
+    required_paths:
+      - /projects/F202508843CPCAA0/tiagocalof/images/simulator.sif

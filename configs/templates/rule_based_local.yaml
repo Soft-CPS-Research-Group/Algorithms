@@ -1,15 +1,11 @@
-# -----------------------------------------------------------------------------
-# Canonical training config.
-# Keep this file as the single non-template config under configs/.
-# -----------------------------------------------------------------------------
+# Local RuleBasedPolicy template.
 
 # Human-readable experiment metadata used across MLflow, logs, and manifests.
 metadata:
-  experiment_name: "maddpg_local_default"
-  run_name: "MADDPG Local Run"
+  experiment_name: "rule_based_local_template"
+  run_name: "Rule Based Local"
 
 # Runtime values are injected automatically by run_experiment.py.
-# Leave them null in version-controlled config files.
 runtime:
   log_dir: null
   job_dir: null
@@ -28,12 +24,12 @@ tracking:
 checkpointing:
   resume_training: false
   checkpoint_run_id: null
-  checkpoint_artifact: "latest_checkpoint.pth"
+  checkpoint_artifact: "rule_based_checkpoint.json"
   use_best_checkpoint_artifact: false
   reset_replay_buffer: false
   freeze_pretrained_layers: false
   fine_tune: false
-  checkpoint_interval: 5000
+  checkpoint_interval: null
 
 # Bundle metadata/options consumed by inference-side artifact loading.
 bundle:
@@ -43,7 +39,7 @@ bundle:
   require_observations_envelope: false
   artifact_config: {}
 
-# Simulator wiring: dataset schema path, agent mode, and reward implementation.
+# Simulator wiring: local dataset path.
 simulator:
   dataset_name: citylearn_challenge_2022_phase_all_plus_evs
   dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
@@ -53,12 +49,12 @@ simulator:
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:
   seed: 22
-  end_initial_exploration_time_step: 100
-  end_exploration_time_step: 200
-  steps_between_training_updates: 5
-  target_update_interval: 2
+  end_initial_exploration_time_step: 0
+  end_exploration_time_step: 0
+  steps_between_training_updates: 1
+  target_update_interval: 0
 
-# Topology is environment-derived at runtime (do not hardcode values here).
+# Topology is environment-derived at runtime.
 topology:
   num_agents: null
   observation_dimensions: null
@@ -67,30 +63,20 @@ topology:
 
 # Algorithm family and hyperparameters.
 algorithm:
-  name: "MADDPG"
+  name: "RuleBasedPolicy"
   hyperparameters:
-    gamma: 0.99
-  networks:
-    actor:
-      class: "Actor"
-      layers: [1024, 512, 256]
-      lr: 1.0e-4
-    critic:
-      class: "Critic"
-      layers: [1024, 512, 256]
-      lr: 1.0e-3
-  replay_buffer:
-    class: "MultiAgentReplayBuffer"
-    capacity: 100000
-    batch_size: 256
-  exploration:
-    strategy: "GaussianNoise"
-    params:
-      bias: 0.3
-      sigma: 0.2
-      decay: 0.995
-      gamma: 0.99
-      tau: 0.001
+    pv_charge_threshold: 2.0
+    flexibility_hours: 3.0
+    emergency_hours: 1.0
+    pv_preferred_charge_rate: 0.7
+    flex_trickle_charge: 0.0
+    min_charge_rate: 0.0
+    emergency_charge_rate: 1.0
+    default_capacity_kwh: 60.0
+    non_flexible_chargers: []
+  networks: null
+  replay_buffer: null
+  exploration: null
 
-# Optional worker-specific overrides (e.g., Deucalion). Keep null for local runs.
+# Optional worker-specific overrides; omitted for local execution.
 execution: null

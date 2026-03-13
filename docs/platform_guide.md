@@ -61,7 +61,7 @@ This prevents students from launching malformed runs.
 ## 3. Runtime Workflow
 
 1. **Configuration** – Student clones `configs/config.yaml` or a template under `configs/templates/` and sets algorithm-specific values.
-2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
+2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. It also writes `jobs/<job_id>/config.resolved.yaml` with runtime-injected fields (for example `runtime.job_id`, `runtime.run_id`) plus derived topology. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
 3. **Agent instantiation** – `create_agent(config)` looks up `algorithm.name` in `algorithms/registry.py`; the registry maps names to classes.
 4. **Wrapper** – handles the CityLearn loop, invoking `BaseAgent.predict`/`update`. It logs metrics and checkpoints using helper classes. Observation encoders are built from `configs/encoders/default.json` so training and serving stay aligned; update the JSON when the simulator exposes new features.
 5. **Artifacts** – After training, `agent.export_artifacts` writes ONNX models under `jobs/<job_id>/onnx_models/` (or `policy_agent_<index>.json` for `RuleBasedPolicy`), and `build_manifest` drops `jobs/<job_id>/artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. The training runner validates the bundle contract (`utils/bundle_validator.py`) before finalizing output. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.
@@ -126,7 +126,7 @@ This manifest enables a separate inference service to apply the same preprocessi
 
 ### Worked Example: Adding a New Agent
 
-1. Duplicate `configs/templates/maddpg_example.yaml` and adjust fields for the new algorithm.
+1. Duplicate `configs/templates/maddpg_local.yaml` and adjust fields for the new algorithm.
 2. Implement the agent class under `algorithms/agents/` and ensure it inherits `BaseAgent`.
 3. Register the agent name/class mapping in `algorithms/registry.py`.
 4. Extend `utils/config_schema.py` with a new Pydantic model if the algorithm introduces unique config fields.

@@ -122,11 +122,21 @@ Use this diagram as the mental model when wiring CI or new algorithms.
 ## Configuration Essentials
 
 - Base config lives in `configs/config.yaml` (students typically copy this).
+- `configs/` keeps a single canonical config file outside templates: `configs/config.yaml`.
 - Validation happens in `utils/config_schema.py` (Pydantic models).
 - Observation encoders are defined in `configs/encoders/default.json` so training
   and inference stay aligned.
-- Templates under `configs/templates/*.yaml` provide starting points for new
-  algorithms/datasets.
+- Templates under `configs/templates/*.yaml` provide algorithm x environment
+  starting points:
+  `maddpg_local.yaml`,
+  `maddpg_deucalion_cpu.yaml`,
+  `maddpg_deucalion_gpu.yaml`,
+  `rule_based_local.yaml`,
+  `rule_based_deucalion_cpu.yaml`,
+  `rule_based_deucalion_gpu.yaml`,
+  `single_agent_local.yaml`,
+  `single_agent_deucalion_cpu.yaml`,
+  `single_agent_deucalion_gpu.yaml`.
 
 Important knobs:
 
@@ -153,6 +163,8 @@ Every job produces:
 - `jobs/<job_id>/onnx_models/` – one ONNX actor per agent.
 - `jobs/<job_id>/artifact_manifest.json` – metadata consumed by the inference
   repo.
+- `jobs/<job_id>/config.resolved.yaml` – runtime-resolved config snapshot
+  (auto-populated `runtime.*` and derived topology).
 - `jobs/<job_id>/policy_agent_<index>.json` – exported rule-based policy files
   when `RuleBasedPolicy` runs.
 

@@ -1,24 +1,26 @@
-# -----------------------------------------------------------------------------
-# Example config for CPU runs.
-#
-# Dataset usage:
-# 1) Put your dataset folder under ./datasets/<your_dataset_name>/
-# 2) Ensure schema exists at ./datasets/<your_dataset_name>/schema.json
-# 3) Update BOTH simulator.dataset_name and simulator.dataset_path below
-# -----------------------------------------------------------------------------
-metadata:
-  experiment_name: "deucalion_cpu_example"
-  run_name: "CPU Example Run"
+# Deucalion CPU MADDPG template.
 
+# Human-readable experiment metadata used across MLflow, logs, and manifests.
+metadata:
+  experiment_name: "maddpg_deucalion_cpu_template"
+  run_name: "MADDPG Deucalion CPU"
+
+# Runtime values are injected automatically by run_experiment.py.
 runtime:
   log_dir: null
+  job_dir: null
   mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
 
+# Tracking controls for metrics/log verbosity and MLflow enablement.
 tracking:
   mlflow_enabled: true
   log_level: "INFO"
   log_frequency: 1
 
+# Checkpoint behavior for saving and optional resume/fine-tuning workflows.
 checkpointing:
   resume_training: false
   checkpoint_run_id: null
@@ -29,19 +31,22 @@ checkpointing:
   fine_tune: false
   checkpoint_interval: 5000
 
+# Bundle metadata/options consumed by inference-side artifact loading.
 bundle:
   bundle_version: "2026-03-10-v1"
-  description: "CPU Deucalion smoke configuration"
+  description: "MADDPG Deucalion CPU template"
   alias_mapping_path: null
   require_observations_envelope: false
   artifact_config: {}
 
+# Simulator wiring: /data paths are required inside worker containers/SIF jobs.
 simulator:
   dataset_name: citylearn_charging_constraints_demo
   dataset_path: /data/datasets/citylearn_charging_constraints_demo/schema.json
   central_agent: false
   reward_function: RewardFunction
 
+# Training schedule knobs used by the wrapper/agent update cadence.
 training:
   seed: 22
   end_initial_exploration_time_step: 100
@@ -49,12 +54,14 @@ training:
   steps_between_training_updates: 5
   target_update_interval: 2
 
+# Topology is environment-derived at runtime.
 topology:
   num_agents: null
   observation_dimensions: null
   action_dimensions: null
   action_space: null
 
+# Algorithm family and hyperparameters.
 algorithm:
   name: "MADDPG"
   hyperparameters:
@@ -81,8 +88,7 @@ algorithm:
       gamma: 0.99
       tau: 0.001
 
-# Optional block used by the Deucalion worker.
-# It is ignored by training logic and consumed by the job worker executor.
+# Optional worker-specific overrides used by the Deucalion executor.
 execution:
   deucalion:
     command_mode: run
