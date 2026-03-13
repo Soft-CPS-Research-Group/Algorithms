@@ -144,6 +144,11 @@ Important knobs:
 - `tracking.log_frequency` – log rewards/system metrics every N steps (default 1).
 - `checkpointing.resume_training` – reload agent state from MLflow (simulator
   still restarts).
+- `simulator.simulation_start_time_step`, `simulator.simulation_end_time_step`,
+  `simulator.episode_time_steps` – optional overrides for simulation window and
+  episode length.
+- `simulator.export.*` – CityLearn export controls:
+  `mode` (`none|during|end`), KPI CSV toggle, optional fixed session name.
 - `bundle.*` – manifest/export metadata (`bundle_version`, `description`,
   `alias_mapping_path`) and default `artifact.config` knobs (for example
   `require_observations_envelope`).
@@ -159,6 +164,9 @@ Every job produces:
 - `jobs/<job_id>/logs/<run_id>.log` – Loguru trace.
 - `jobs/<job_id>/progress/progress.json` – progress updates for dashboards.
 - `jobs/<job_id>/results/result.json` – CityLearn KPI pivot table.
+- `jobs/<job_id>/results/simulation_data/<session|timestamp>/` – optional
+  simulator CSV exports (`exported_*.csv`, `exported_kpis.csv`) when
+  `simulator.export.mode != none` or KPI export is enabled.
 - `jobs/<job_id>/checkpoints/` – optional checkpoints.
 - `jobs/<job_id>/onnx_models/` – one ONNX actor per agent.
 - `jobs/<job_id>/artifact_manifest.json` – metadata consumed by the inference

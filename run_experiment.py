@@ -75,6 +75,7 @@ def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
         "checkpoints_dir": job_dir / "checkpoints",
         "onnx_dir": job_dir / "onnx_models",
         "results_dir": results_dir,
+        "simulation_data_dir": results_dir / "simulation_data",
         "progress_dir": progress_dir,
         "result_path": results_dir / "result.json",
         "progress_path": progress_dir / "progress.json",
@@ -209,11 +210,25 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         if reward_cls is None:
             raise ValueError(f"Unsupported reward function '{reward_key}'.")
 
-        env = CityLearnEnv(
-            schema=config["simulator"]["dataset_path"],
-            central_agent=config["simulator"]["central_agent"],
-            reward_function=reward_cls,
-        )
+        simulator_cfg = config["simulator"]
+        export_cfg = simulator_cfg.get("export", {})
+        env_kwargs = {
+            "schema": simulator_cfg["dataset_path"],
+            "central_agent": simulator_cfg["central_agent"],
+            "reward_function": reward_cls,
+            "render_mode": export_cfg.get("mode", "none"),
+            "export_kpis_on_episode_end": export_cfg.get("export_kpis_on_episode_end", False),
+            "render_directory": str(path_info["simulation_data_dir"]),
+        }
+        if export_cfg.get("session_name"):
+            env_kwargs["render_session_name"] = export_cfg["session_name"]
+
+        for key in ("simulation_start_time_step", "simulation_end_time_step", "episode_time_steps"):
+            value = simulator_cfg.get(key)
+            if value is not None:
+                env_kwargs[key] = value
+
+        env = CityLearnEnv(**env_kwargs)
 
         wrapper = Wrapper(
             env=env,

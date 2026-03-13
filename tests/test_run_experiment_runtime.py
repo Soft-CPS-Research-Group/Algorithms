@@ -99,6 +99,14 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
             "dataset_path": "dummy.json",
             "central_agent": False,
             "reward_function": "RewardFunction",
+            "simulation_start_time_step": 12,
+            "simulation_end_time_step": 48,
+            "episode_time_steps": 24,
+            "export": {
+                "mode": "end",
+                "export_kpis_on_episode_end": True,
+                "session_name": "job-session",
+            },
         },
         "training": {
             "seed": 1,
@@ -127,7 +135,13 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     monkeypatch.setattr(runner, "start_mlflow_run", lambda config: None)
     monkeypatch.setattr(runner, "end_mlflow_run", lambda: None)
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
-    monkeypatch.setattr(runner, "CityLearnEnv", lambda **kwargs: _DummyEnv())
+    captured_env_kwargs = {}
+
+    def _dummy_citylearn_env(**kwargs):
+        captured_env_kwargs.update(kwargs)
+        return _DummyEnv()
+
+    monkeypatch.setattr(runner, "CityLearnEnv", _dummy_citylearn_env)
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
     monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
 
@@ -160,6 +174,21 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert topology_cfg["num_agents"] == 1
     assert topology_cfg["observation_dimensions"] == [2]
     assert topology_cfg["action_dimensions"] == [1]
+    simulator_cfg = resolved_config["simulator"]
+    assert simulator_cfg["export"]["mode"] == "end"
+    assert simulator_cfg["export"]["export_kpis_on_episode_end"] is True
+    assert simulator_cfg["export"]["session_name"] == "job-session"
+    assert simulator_cfg["simulation_start_time_step"] == 12
+    assert simulator_cfg["simulation_end_time_step"] == 48
+    assert simulator_cfg["episode_time_steps"] == 24
+    assert captured_env_kwargs["schema"] == "dummy.json"
+    assert captured_env_kwargs["render_mode"] == "end"
+    assert captured_env_kwargs["export_kpis_on_episode_end"] is True
+    assert captured_env_kwargs["render_session_name"] == "job-session"
+    assert captured_env_kwargs["simulation_start_time_step"] == 12
+    assert captured_env_kwargs["simulation_end_time_step"] == 48
+    assert captured_env_kwargs["episode_time_steps"] == 24
+    assert captured_env_kwargs["render_directory"] == str(job_root / "results" / "simulation_data")
 
     # Input config file must remain unchanged; resolved values are written separately.
     unchanged_input = yaml.safe_load(config_path.read_text(encoding="utf-8"))

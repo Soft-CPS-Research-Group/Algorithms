@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Literal
 
 
@@ -46,11 +46,50 @@ class CheckpointingConfig(BaseModel):
     checkpoint_interval: Optional[int] = Field(default=None, ge=1)
 
 
+class SimulatorExportConfig(BaseModel):
+    mode: Literal["none", "during", "end"] = "none"
+    export_kpis_on_episode_end: bool = False
+    session_name: Optional[str] = None
+
+
 class SimulatorConfig(BaseModel):
     dataset_name: str
     dataset_path: str
     central_agent: bool = False
     reward_function: str
+    simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
+    simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
+    episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
+    export: SimulatorExportConfig = SimulatorExportConfig()
+
+    @field_validator("episode_time_steps")
+    @classmethod
+    def validate_episode_time_steps(
+        cls, value: Optional[Union[int, List[Tuple[int, int]]]]
+    ) -> Optional[Union[int, List[Tuple[int, int]]]]:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            if value < 1:
+                raise ValueError("simulator.episode_time_steps must be >= 1")
+            return value
+
+        for start, end in value:
+            if start < 0 or end < 0:
+                raise ValueError("simulator.episode_time_steps ranges must be >= 0")
+            if end < start:
+                raise ValueError("simulator.episode_time_steps range end must be >= start")
+        return value
+
+    @model_validator(mode="after")
+    def validate_time_window(self) -> "SimulatorConfig":
+        if (
+            self.simulation_start_time_step is not None
+            and self.simulation_end_time_step is not None
+            and self.simulation_end_time_step < self.simulation_start_time_step
+        ):
+            raise ValueError("simulator.simulation_end_time_step must be >= simulation_start_time_step")
+        return self
 
 
 class TrainingConfig(BaseModel):

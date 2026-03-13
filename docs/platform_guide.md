@@ -43,7 +43,9 @@ Sections:
 - `runtime`: paths injected at runtime (leave null in files).
 - `tracking`: log level, MLflow toggle.
 - `checkpointing`: resume/transfer-learning parameters and cadence.
-- `simulator`: dataset, schema path, reward function.
+- `simulator`: dataset/schema path, reward function, optional window controls
+  (`simulation_start_time_step`, `simulation_end_time_step`,
+  `episode_time_steps`), and export controls under `simulator.export`.
 - `training`: global training schedule knobs.
 - `topology`: **derived** environment dimensions (num agents, observation/action shapes). These remain null in version-controlled configs and are filled by the wrapper.
 - `algorithm`: algorithm name and its parameters. The schema currently supports MADDPG and a rule-based placeholder. New algorithms must extend the schema.
@@ -61,7 +63,7 @@ This prevents students from launching malformed runs.
 ## 3. Runtime Workflow
 
 1. **Configuration** – Student clones `configs/config.yaml` or a template under `configs/templates/` and sets algorithm-specific values.
-2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. It also writes `jobs/<job_id>/config.resolved.yaml` with runtime-injected fields (for example `runtime.job_id`, `runtime.run_id`) plus derived topology. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
+2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. It also writes `jobs/<job_id>/config.resolved.yaml` with runtime-injected fields (for example `runtime.job_id`, `runtime.run_id`) plus derived topology. If enabled, simulator CSV exports are written under `jobs/<job_id>/results/simulation_data/`. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
 3. **Agent instantiation** – `create_agent(config)` looks up `algorithm.name` in `algorithms/registry.py`; the registry maps names to classes.
 4. **Wrapper** – handles the CityLearn loop, invoking `BaseAgent.predict`/`update`. It logs metrics and checkpoints using helper classes. Observation encoders are built from `configs/encoders/default.json` so training and serving stay aligned; update the JSON when the simulator exposes new features.
 5. **Artifacts** – After training, `agent.export_artifacts` writes ONNX models under `jobs/<job_id>/onnx_models/` (or `policy_agent_<index>.json` for `RuleBasedPolicy`), and `build_manifest` drops `jobs/<job_id>/artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. The training runner validates the bundle contract (`utils/bundle_validator.py`) before finalizing output. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.

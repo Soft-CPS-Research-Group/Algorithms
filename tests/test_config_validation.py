@@ -69,6 +69,37 @@ def test_validate_config_accepts_bundle_section(base_config):
     validate_config(config)
 
 
+def test_validate_config_accepts_simulator_export_and_time_controls(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["simulation_start_time_step"] = 0
+    config["simulator"]["simulation_end_time_step"] = 95
+    config["simulator"]["episode_time_steps"] = 24
+    config["simulator"]["export"] = {
+        "mode": "end",
+        "export_kpis_on_episode_end": True,
+        "session_name": "session-a",
+    }
+    validate_config(config)
+
+
+def test_validate_config_rejects_invalid_simulator_export_mode(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["export"] = {
+        "mode": "invalid-mode",
+        "export_kpis_on_episode_end": False,
+    }
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
+def test_validate_config_rejects_invalid_simulation_window(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["simulation_start_time_step"] = 50
+    config["simulator"]["simulation_end_time_step"] = 10
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
 def test_validate_all_templates():
     template_paths = sorted(Path("configs/templates").glob("*.yaml"))
     assert template_paths, "No template files found under configs/templates"
