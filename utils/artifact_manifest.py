@@ -16,10 +16,15 @@ def build_manifest(
     agent_metadata: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Combine configuration, environment, and agent metadata into a manifest."""
+    metadata = dict(config.get("metadata", {}) or {})
+    bundle_cfg = dict(config.get("bundle", {}) or {})
+    _merge_bundle_metadata(metadata, bundle_cfg)
+    normalized_agent_metadata = _normalize_agent_metadata(agent_metadata)
+
     manifest = {
         "manifest_version": 1,
         "generated_at": datetime.utcnow().isoformat() + "Z",
-        "metadata": config.get("metadata", {}),
+        "metadata": metadata,
         "simulator": {
             "dataset_name": config.get("simulator", {}).get("dataset_name"),
             "dataset_path": config.get("simulator", {}).get("dataset_path"),
@@ -33,7 +38,7 @@ def build_manifest(
             "hyperparameters": config.get("algorithm", {}).get("hyperparameters", {}),
         },
         "environment": environment_metadata,
-        "agent": agent_metadata,
+        "agent": normalized_agent_metadata,
     }
     return manifest
 
@@ -46,9 +51,37 @@ def write_manifest(manifest: Dict[str, Any], output_dir: str) -> Path:
         with path.open("w", encoding="utf-8") as handle:
             json.dump(manifest, handle, indent=2, default=_json_default)
     except Exception as exc:
-        logger.error("Failed to write artifact manifest: %s", exc)
+        logger.error("Failed to write artifact manifest: {}", exc)
         raise
     return path
+
+
+def _merge_bundle_metadata(metadata: Dict[str, Any], bundle_cfg: Dict[str, Any]) -> None:
+    """Backfill bundle metadata keys when provided in the `bundle` config section."""
+    if not metadata.get("bundle_version") and bundle_cfg.get("bundle_version"):
+        metadata["bundle_version"] = bundle_cfg["bundle_version"]
+    if not metadata.get("description") and bundle_cfg.get("description"):
+        metadata["description"] = bundle_cfg["description"]
+    if not metadata.get("alias_mapping_path") and bundle_cfg.get("alias_mapping_path"):
+        metadata["alias_mapping_path"] = bundle_cfg["alias_mapping_path"]
+
+
+def _normalize_agent_metadata(agent_metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure the manifest carries canonical artifact entries."""
+    metadata = dict(agent_metadata or {})
+    artifacts = metadata.get("artifacts") or []
+    default_format = metadata.get("format") or "onnx"
+
+    normalized_artifacts = []
+    for raw_artifact in artifacts:
+        artifact = dict(raw_artifact or {})
+        artifact.setdefault("format", default_format)
+        artifact["config"] = dict(artifact.get("config") or {})
+        normalized_artifacts.append(artifact)
+
+    metadata["format"] = default_format
+    metadata["artifacts"] = normalized_artifacts
+    return metadata
 
 
 def _json_default(obj: Any) -> Any:

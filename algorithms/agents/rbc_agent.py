@@ -172,43 +172,69 @@ class RuleBasedPolicy(BaseAgent):
         output_dir: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        policy = {
-            "policy_type": "rule_based_ev",
-            "version": 1,
-            "dataset_schema": str(self._dataset_path) if self._dataset_path else None,
-            "hyperparameters": {
-                "pv_charge_threshold": self.pv_charge_threshold,
-                "flexibility_hours": self.flexibility_hours,
-                "emergency_hours": self.emergency_hours,
-                "pv_preferred_charge_rate": self.pv_preferred_charge_rate,
-                "flex_trickle_charge": self.flex_trickle_charge,
-                "min_charge_rate": self.min_charge_rate,
-                "emergency_charge_rate": self.emergency_charge_rate,
-                "energy_epsilon": self.energy_epsilon,
-                "non_flexible_chargers": sorted(self.non_flexible_chargers),
-                "default_capacity_kwh": self.default_capacity,
-                "step_hours": self.step_hours,
-            },
-            "charger_mapping": self._serialise_charger_mapping(),
+        context = context or {}
+        bundle_cfg = ((context.get("config") or {}).get("bundle") or {})
+        require_observations_envelope = bool(bundle_cfg.get("require_observations_envelope", False))
+        extra_artifact_config = dict(bundle_cfg.get("artifact_config") or {})
+
+        hyperparameters = {
+            "pv_charge_threshold": self.pv_charge_threshold,
+            "flexibility_hours": self.flexibility_hours,
+            "emergency_hours": self.emergency_hours,
+            "pv_preferred_charge_rate": self.pv_preferred_charge_rate,
+            "flex_trickle_charge": self.flex_trickle_charge,
+            "min_charge_rate": self.min_charge_rate,
+            "emergency_charge_rate": self.emergency_charge_rate,
+            "energy_epsilon": self.energy_epsilon,
+            "non_flexible_chargers": sorted(self.non_flexible_chargers),
+            "default_capacity_kwh": self.default_capacity,
+            "step_hours": self.step_hours,
         }
 
-        output_path = Path(output_dir) / "rbc_policy.json"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w", encoding="utf-8") as handle:
-            json.dump(policy, handle, indent=2)
+        export_root = Path(output_dir)
+        export_root.mkdir(parents=True, exist_ok=True)
+        agent_action_labels = self._action_labels or [[]]
 
-        return {
-            "format": "rbc",
-            "parameters": {
-                "hyperparameters": policy["hyperparameters"],
-            },
-            "artifacts": [
+        metadata: Dict[str, Any] = {
+            "format": "rule_based",
+            "parameters": {"hyperparameters": hyperparameters},
+            "artifacts": [],
+        }
+
+        for agent_index, action_names in enumerate(agent_action_labels):
+            default_actions = {str(name): 0.0 for name in action_names}
+            policy = {
+                "policy_type": "rule_based_ev",
+                "version": 1,
+                "agent_index": agent_index,
+                "dataset_schema": str(self._dataset_path) if self._dataset_path else None,
+                "action_names": [str(name) for name in action_names],
+                "default_actions": default_actions,
+                "rules": [],
+                "hyperparameters": hyperparameters,
+                "charger_mapping": self._serialise_charger_mapping(),
+            }
+
+            output_path = export_root / f"policy_agent_{agent_index}.json"
+            with output_path.open("w", encoding="utf-8") as handle:
+                json.dump(policy, handle, indent=2)
+
+            artifact_config = {
+                "use_preprocessor": False,
+                "require_observations_envelope": require_observations_envelope,
+            }
+            artifact_config.update(extra_artifact_config)
+
+            metadata["artifacts"].append(
                 {
-                    "type": "policy_data",
-                    "path": str(output_path.relative_to(Path(output_dir))),
+                    "agent_index": agent_index,
+                    "path": str(output_path.relative_to(export_root)),
+                    "format": "rule_based",
+                    "config": artifact_config,
                 }
-            ],
-        }
+            )
+
+        return metadata
 
     # ------------------------------------------------------------------
     # Internals

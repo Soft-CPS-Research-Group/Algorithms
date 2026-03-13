@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -76,3 +78,24 @@ def test_rbc_emergency_window_forces_full_charge():
     ]
     actions = agent.predict(observations)
     assert actions[0][0] == pytest.approx(1.0, rel=1e-6)
+
+
+def test_rbc_export_artifacts_uses_rule_based_contract(tmp_path):
+    agent = make_agent()
+    metadata = agent.export_artifacts(
+        output_dir=str(tmp_path),
+        context={"config": {"bundle": {"require_observations_envelope": True}}},
+    )
+
+    assert metadata["format"] == "rule_based"
+    assert len(metadata["artifacts"]) == 1
+    artifact = metadata["artifacts"][0]
+    assert artifact["path"] == "policy_agent_0.json"
+    assert artifact["format"] == "rule_based"
+    assert artifact["config"]["require_observations_envelope"] is True
+
+    exported_path = tmp_path / artifact["path"]
+    assert exported_path.exists()
+    payload = json.loads(exported_path.read_text(encoding="utf-8"))
+    assert isinstance(payload.get("default_actions"), dict)
+    assert isinstance(payload.get("rules"), list)

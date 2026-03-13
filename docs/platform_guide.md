@@ -47,6 +47,7 @@ Sections:
 - `training`: global training schedule knobs.
 - `topology`: **derived** environment dimensions (num agents, observation/action shapes). These remain null in version-controlled configs and are filled by the wrapper.
 - `algorithm`: algorithm name and its parameters. The schema currently supports MADDPG and a rule-based placeholder. New algorithms must extend the schema.
+- `bundle`: manifest/export options shared by all algorithms (`bundle_version`, `description`, alias map hint, artifact config defaults).
 
 ### Validation
 
@@ -63,7 +64,7 @@ This prevents students from launching malformed runs.
 2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
 3. **Agent instantiation** – `create_agent(config)` looks up `algorithm.name` in `algorithms/registry.py`; the registry maps names to classes.
 4. **Wrapper** – handles the CityLearn loop, invoking `BaseAgent.predict`/`update`. It logs metrics and checkpoints using helper classes. Observation encoders are built from `configs/encoders/default.json` so training and serving stay aligned; update the JSON when the simulator exposes new features.
-5. **Artifacts** – After training, `agent.export_artifacts` writes ONNX models under `jobs/<job_id>/onnx_models/` (or `rbc_policy.json` for `RuleBasedPolicy`), and `build_manifest` drops `jobs/<job_id>/artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.
+5. **Artifacts** – After training, `agent.export_artifacts` writes ONNX models under `jobs/<job_id>/onnx_models/` (or `policy_agent_<index>.json` for `RuleBasedPolicy`), and `build_manifest` drops `jobs/<job_id>/artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. The training runner validates the bundle contract (`utils/bundle_validator.py`) before finalizing output. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.
 
 ## 4. Checkpointing
 
@@ -72,7 +73,7 @@ Checkpoints are managed by `utils/checkpoint_manager.CheckpointManager`:
 - Optionally logs to MLflow when tracking is enabled.
 - Agents must implement `save_checkpoint(output_dir, step)` returning the checkpoint path. The MADDPG example stores PyTorch state dicts and replay buffer state.
 
-**Resuming**: Setting `checkpointing.resume_training: true` reloads model weights/optimizers, but the simulator restarts from the beginning of the episode. The rationale: CityLearn does not expose environment snapshots, so only agent state is restored. Document this for students.
+**Resuming**: Setting `checkpointing.resume_training: true` reloads model weights/optimizers, but the simulator restarts from the beginning of the episode. The rationale: CityLearn does not expose environment snapshots, so only agent state is restored. See [`docs/simulator_limits.md`](simulator_limits.md) for the formal Phase 1 limits/backlog.
 
 ## 5. Metrics and Logging
 
@@ -87,7 +88,7 @@ Checkpoints are managed by `utils/checkpoint_manager.CheckpointManager`:
 - Config snapshot (`metadata`, `training`, `topology`, algorithm hyperparameters).
 - Environment metadata from `Wrapper_CityLearn.describe_environment()`:
   - `observation_names` and per-observation encoder definitions (type + parameters like `x_min`, `x_max`, `classes`, etc.).
-  - `action_bounds` and `action_names` (if provided by CityLearn).
+  - `action_bounds`, `action_names`, and optional `action_names_by_agent` for heterogeneous multi-agent setups.
   - Reward function class name and non-private attributes (parameters used during training).
 - Agent metadata returned by `BaseAgent.export_artifacts` (e.g., ONNX paths, observation/action dimensions).
 
@@ -99,7 +100,7 @@ This manifest enables a separate inference service to apply the same preprocessi
 - `metadata`: mirrors the config’s experiment name/run name so manifests can be catalogued.
 - `topology`: injected by the wrapper; contains agent counts and per-agent observation/action dimensionality.
 - `environment`: detailed encoder definitions (type + params), action names/bounds, reward configuration.
-- `agent`: metadata returned by the agent—usually ONNX artefact paths, but algorithms can include additional information such as critic checkpoints or normalisation statistics.
+- `agent`: metadata returned by the agent with one artifact entry per agent (`agent_index`, `path`, `format`, `config`), plus optional dimensions for ONNX exports.
 - `training`: seed and schedule parameters used during training, useful for reproducibility.
 
 ## 7. Extending the Platform with New Algorithms
@@ -118,7 +119,7 @@ This manifest enables a separate inference service to apply the same preprocessi
 
 4. **Export Metadata**
  - Ensure `export_artifacts` writes whatever the inference service requires. For ONNX-based policies, call `mlflow.log_artifact` if MLflow is active and return a metadata dict describing the exports. Use the shared `DEFAULT_ONNX_OPSET` constant so exported graphs stay compatible with the serving stack.
-  - For `RuleBasedPolicy`, export `rbc_policy.json` alongside the manifest so inference can rebuild the deterministic schedule.
+  - For `RuleBasedPolicy`, export `policy_agent_<index>.json` files alongside the manifest so inference can load each agent directly.
 
 5. **Testing & Documentation**
    - Provide small smoke tests and update documentation to explain how to use the new algorithm.

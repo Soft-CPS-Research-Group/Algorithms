@@ -332,7 +332,7 @@ class MADDPG(BaseAgent):
         latest_path = output_dir_path / latest_name
         torch.save(checkpoint, latest_path)
 
-        logger.info("Checkpoint saved at step %s -> %s", step, latest_path)
+        logger.info("Checkpoint saved at step {} -> {}", step, latest_path)
         return str(latest_path)
 
     def _load_checkpoint_from_mlflow(self) -> None:
@@ -382,6 +382,12 @@ class MADDPG(BaseAgent):
         output_dir: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        context = context or {}
+        bundle_cfg = ((context.get("config") or {}).get("bundle") or {})
+        default_artifact_config = dict(bundle_cfg.get("artifact_config") or {})
+        if bundle_cfg.get("require_observations_envelope", False):
+            default_artifact_config.setdefault("require_observations_envelope", True)
+
         export_root = Path(output_dir)
         onnx_dir = export_root / "onnx_models"
         onnx_dir.mkdir(parents=True, exist_ok=True)
@@ -410,12 +416,15 @@ class MADDPG(BaseAgent):
             logger.info("ONNX model exported for agent {}: {}", i, export_path)
 
             relative_path = export_path.relative_to(export_root)
+            artifact_config = dict(default_artifact_config)
             metadata["artifacts"].append(
                 {
                     "agent_index": i,
                     "path": str(relative_path),
+                    "format": "onnx",
                     "observation_dimension": self.observation_dimension[i],
                     "action_dimension": self.action_dimension[i],
+                    "config": artifact_config,
                 }
             )
 

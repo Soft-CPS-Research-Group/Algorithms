@@ -16,7 +16,7 @@ class LocalMetricsLogger:
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
             except Exception as exc:
-                logger.warning("Could not create metrics directory %s: %s", self._path.parent, exc)
+                logger.warning("Could not create metrics directory {}: {}", self._path.parent, exc)
                 self._path = None
 
     def log(self, metrics: Dict[str, float], step: int) -> None:
@@ -26,6 +26,6 @@ class LocalMetricsLogger:
         try:
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record) + "\n")
-            logger.debug("Local metrics logged at step %s", step)
+            logger.debug("Local metrics logged at step {}", step)
         except Exception as exc:
-            logger.warning("Failed to write local metrics to %s: %s", self._path, exc)
+            logger.warning("Failed to write local metrics to {}: {}", self._path, exc)

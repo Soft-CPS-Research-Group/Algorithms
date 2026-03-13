@@ -27,6 +27,13 @@ checkpointing:
   fine_tune: false                    # Skip optimiser state restore when true.
   checkpoint_interval: 5000           # Steps between automatic checkpoint saves.
 
+bundle:
+  bundle_version: null                # Optional version tag stored in manifest metadata.
+  description: null                   # Optional description stored in manifest metadata.
+  alias_mapping_path: null            # Optional alias map path relative to job root.
+  require_observations_envelope: false  # If true, inference expects features.observations payloads.
+  artifact_config: {}                 # Extra keys merged into every exported artifact.config.
+
 simulator:
   dataset_name: citylearn_challenge_2022_phase_all_plus_evs
   dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json

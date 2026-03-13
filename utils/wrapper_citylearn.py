@@ -203,10 +203,15 @@ class Wrapper_CityLearn(RLC):
             while not (terminated or truncated):
                 step_start_time = time.time()
                 self.global_step = episode * self.episode_time_steps + time_step  # Global step
-                logger.debug("Global step %s (episode %s, timestep %s)", self.global_step, episode, time_step)
+                logger.debug(
+                    "Global step {} (episode {}, timestep {})",
+                    self.global_step,
+                    episode,
+                    time_step,
+                )
 
                 actions = self.predict(observations, deterministic=deterministic)
-                logger.debug("Predicted actions: %s", actions)
+                logger.debug("Predicted actions: {}", actions)
 
                 # Apply actions to CityLearn environment
                 next_observations, rewards, terminated, truncated, _ = self.env.step(actions)
@@ -222,7 +227,7 @@ class Wrapper_CityLearn(RLC):
                         terminated=terminated,
                         truncated=truncated,
                     )
-                    logger.debug("Model update executed at global step %s", self.global_step)
+                    logger.debug("Model update executed at global step {}", self.global_step)
 
                     self.checkpoint_manager.maybe_save(
                         agent=self.model,
@@ -319,7 +324,7 @@ class Wrapper_CityLearn(RLC):
                 self.local_metrics_logger.log(episode_metrics, episode)
 
             logger.info(
-                "Completed episode %s/%s, reward summary: %s, duration: %.2fs",
+                "Completed episode {}/{}, reward summary: {}, duration: {:.2f}s",
                 episode + 1,
                 episodes,
                 rewards_summary,
@@ -474,6 +479,23 @@ class Wrapper_CityLearn(RLC):
         if action_names is None and hasattr(self, "action_names"):
             action_names = self.action_names
 
+        action_names_by_agent = None
+        flat_action_names = None
+        if isinstance(action_names, list):
+            if action_names and all(isinstance(item, (list, tuple)) for item in action_names):
+                action_names_by_agent = {
+                    str(index): [str(name) for name in names]
+                    for index, names in enumerate(action_names)
+                }
+                flat_action_names = [str(name) for name in action_names[0]] if action_names else []
+            else:
+                flat_action_names = [str(name) for name in action_names]
+                if len(self.observation_names) > 1:
+                    action_names_by_agent = {
+                        str(index): list(flat_action_names)
+                        for index in range(len(self.observation_names))
+                    }
+
         reward_fn = getattr(self.env, "reward_function", None)
         reward_config = None
         if reward_fn is not None:
@@ -490,7 +512,8 @@ class Wrapper_CityLearn(RLC):
             "observation_names": self.observation_names,
             "encoders": encoders_metadata,
             "action_bounds": action_bounds,
-            "action_names": action_names,
+            "action_names": flat_action_names,
+            "action_names_by_agent": action_names_by_agent,
             "reward_function": {
                 "name": reward_fn.__class__.__name__ if reward_fn else None,
                 "params": reward_config,
@@ -514,7 +537,7 @@ class Wrapper_CityLearn(RLC):
                     continue
 
                 if rule.get("warn_on_use"):
-                    logger.warning("Encoder rule warning for observation '%s'", name)
+                    logger.warning("Encoder rule warning for observation '{}'", name)
 
                 encoder = _build_encoder(rule, space, index)
                 group_encoders.append(encoder)

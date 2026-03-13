@@ -16,11 +16,15 @@ orchestration, logging, and packaging.
   `artifact_manifest.json` emitted after training.
 - 🔌 [Inference bundle contract](docs/inference_bundle.md): files the serving API
   expects and how to load them.
+- 🧭 [Simulator limits](docs/simulator_limits.md): what is and is not supported in
+  this phase (resume, stepping contracts, next backlog).
 
 ## Prerequisites
 
 - Python 3.10
 - `pip install -r requirements.txt`
+- Simulator dependency is installed via `softcpsrecsimulator` (imports remain `citylearn.*`)
+- If your environment already had `CityLearn`, run `pip uninstall -y CityLearn` first (or recreate the venv)
 - (Optional) `mlflow` if you want the UI locally
 - Docker (optional, for containerised runs)
 
@@ -31,6 +35,8 @@ orchestration, logging, and packaging.
 ```bash
 python run_experiment.py --config configs/config.yaml --job-id dev-run
 ```
+
+`--job_id` (underscore) is also accepted for compatibility with existing workers.
 
 Outputs are written to `./runs/`:
 
@@ -49,6 +55,15 @@ python run_experiment.py --config /data/configs/<experiment>.yaml --job-id <job_
 
 Artefacts appear under `/data/jobs/<job_id>/`, ready to publish or archive for
 inference.
+
+### Deucalion/SIF parity
+
+The same training entrypoint is compatible with the Deucalion worker runtime:
+
+- default worker command: `--config /data/<config_path> --job_id <job_id>`
+- this runner accepts both `--job-id` and `--job_id`
+- keep simulator datasets under `/data/datasets/...` inside the container/SIF
+- per-job outputs remain under `/data/jobs/<job_id>/...` in both Docker and SIF
 
 ## Repository Layout
 
@@ -122,6 +137,9 @@ Important knobs:
 - `tracking.log_frequency` – log rewards/system metrics every N steps (default 1).
 - `checkpointing.resume_training` – reload agent state from MLflow (simulator
   still restarts).
+- `bundle.*` – manifest/export metadata (`bundle_version`, `description`,
+  `alias_mapping_path`) and default `artifact.config` knobs (for example
+  `require_observations_envelope`).
 - `training.*` – exploration warm-up, update cadence, target refresh.
 - `algorithm.*` – hyperparameters, network sizes, replay buffer type, exploration
   policy. `RuleBasedPolicy` replaces neural network knobs with PV thresholds,
@@ -138,8 +156,8 @@ Every job produces:
 - `jobs/<job_id>/onnx_models/` – one ONNX actor per agent.
 - `jobs/<job_id>/artifact_manifest.json` – metadata consumed by the inference
   repo.
-- `jobs/<job_id>/rbc_policy.json` – exported schedule and heuristics when
-  `RuleBasedPolicy` runs.
+- `jobs/<job_id>/policy_agent_<index>.json` – exported rule-based policy files
+  when `RuleBasedPolicy` runs.
 
 Bundle the manifest, ONNX directory, and optional alias map as described in
 [`docs/inference_bundle.md`](docs/inference_bundle.md) to deploy a trained agent.
@@ -178,7 +196,8 @@ in detail and contains troubleshooting tips.
 ## FAQ
 
 - **Can I resume mid-episode?** No. Checkpoint resume reloads the agent state but
-  CityLearn restarts at the beginning of the episode.
+  CityLearn restarts at the beginning of the episode. See
+  [`docs/simulator_limits.md`](docs/simulator_limits.md) for details and backlog.
 - **How do I disable MLflow logging?** Set `tracking.mlflow_enabled: false`.
   Metrics stream to `<log_dir>/metrics.jsonl`.
 - **Where do I inspect preprocessing metadata?** Open

@@ -3,7 +3,10 @@
   "generated_at": "2024-12-01T12:34:56Z",
   "metadata": {
     "experiment_name": "citylearn_maddpg_ev",
-    "run_name": "baseline_run"
+    "run_name": "baseline_run",
+    "bundle_version": "2026-03-10-v1",
+    "description": "Example ONNX bundle for inference integration",
+    "alias_mapping_path": "aliases.json"
   },
   "simulator": {
     "dataset_name": "citylearn_challenge_2022_phase_all_plus_evs",
@@ -100,6 +103,10 @@
       "hvac_power_kw",
       "battery_power_kw"
     ],
+    "action_names_by_agent": {
+      "0": ["hvac_power_kw", "battery_power_kw"],
+      "1": ["hvac_power_kw", "battery_power_kw"]
+    },
     "reward_function": {
       "name": "RewardFunction",
       "params": {
@@ -113,14 +120,22 @@
       {
         "agent_index": 0,
         "path": "onnx_models/agent_0.onnx",
+        "format": "onnx",
         "observation_dimension": 3,
-        "action_dimension": 1
+        "action_dimension": 1,
+        "config": {
+          "require_observations_envelope": true
+        }
       },
       {
         "agent_index": 1,
         "path": "onnx_models/agent_1.onnx",
+        "format": "onnx",
         "observation_dimension": 3,
-        "action_dimension": 1
+        "action_dimension": 1,
+        "config": {
+          "require_observations_envelope": true
+        }
       }
     ]
   }

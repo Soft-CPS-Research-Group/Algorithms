@@ -30,6 +30,7 @@ class DummyEnv:
         self.reward_function = type("reward", (), {"__dict__": {"param": 1}})()
         self.time_steps = 1
         self.seconds_per_time_step = 3600
+        self.time_step_ratio = 1.0
         self.random_seed = 0
         self.episode_tracker = type("tracker", (), {"episode_time_steps": self.time_steps})()
         self.unwrapped = self
@@ -54,4 +55,5 @@ def test_describe_environment_contains_encoder_params():
     assert metadata["encoders"][0][0]["type"] == "DummyEncoder"
     assert metadata["encoders"][0][0]["params"]["x_min"] == 0
     assert metadata["action_names"] == ["a1", "a2"]
+    assert metadata["action_names_by_agent"] == {"0": ["a1", "a2"], "1": ["a1", "a2"]}
     assert metadata["reward_function"]["name"] == "reward"

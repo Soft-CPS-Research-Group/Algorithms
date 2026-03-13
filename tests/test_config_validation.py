@@ -56,3 +56,15 @@ def test_validate_config_rejects_invalid_deucalion_dataset(base_config):
     }
     with pytest.raises(Exception):
         validate_config(config)
+
+
+def test_validate_config_accepts_bundle_section(base_config):
+    config = copy.deepcopy(base_config)
+    config["bundle"] = {
+        "bundle_version": "2026-03-10-v1",
+        "description": "Validation test",
+        "alias_mapping_path": "aliases.json",
+        "require_observations_envelope": True,
+        "artifact_config": {"input_site_key": "site_a"},
+    }
+    validate_config(config)

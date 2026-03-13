@@ -28,6 +28,7 @@ class MinimalEnv:
         self.reward_function = type("reward", (), {"__dict__": {"param": 1}})()
         self.time_steps = 1
         self.seconds_per_time_step = 3600
+        self.time_step_ratio = 1.0
         self.random_seed = 0
         self.episode_tracker = type("tracker", (), {"episode_time_steps": self.time_steps})()
         self.unwrapped = self

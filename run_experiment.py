@@ -22,6 +22,7 @@ from utils.helpers import set_default_config
 from utils.mlflow_helper import end_mlflow_run, start_mlflow_run
 from utils.wrapper_citylearn import Wrapper_CityLearn as Wrapper
 from utils.artifact_manifest import build_manifest, write_manifest
+from utils.bundle_validator import validate_bundle_contract
 from utils.config_schema import validate_config
 
 # Available reward functions keyed by config name
@@ -35,9 +36,14 @@ DEFAULT_LOCAL_BASE = Path(os.environ.get("OPEVA_BASE_DIR", "./runs"))
 
 def build_argument_parser() -> argparse.ArgumentParser:
     """Create the CLI parser without binding defaults for portability."""
-    parser = argparse.ArgumentParser(description="Run a CityLearn MADDPG experiment")
+    parser = argparse.ArgumentParser(description="Run a CityLearn training experiment")
     parser.add_argument("--config", required=True, help="Path to YAML config file")
-    parser.add_argument("--job-id", help="Unique ID used to organise output artefacts")
+    parser.add_argument(
+        "--job-id",
+        "--job_id",
+        dest="job_id",
+        help="Unique ID used to organise output artefacts",
+    )
     parser.add_argument(
         "--base-dir",
         help="Base directory for logs/results/mlflow artefacts (defaults to env OPEVA_BASE_DIR or ./runs)",
@@ -62,13 +68,20 @@ def _derive_job_id(job_id: Optional[str]) -> str:
 
 def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
     job_dir = base_dir / "jobs" / job_id
+    results_dir = job_dir / "results"
+    progress_dir = job_dir / "progress"
     paths = {
         "job_dir": job_dir,
         "log_dir": job_dir / "logs",
-        "result_path": job_dir / "results" / "result.json",
-        "progress_path": job_dir / "progress" / "progress.json",
+        "checkpoints_dir": job_dir / "checkpoints",
+        "onnx_dir": job_dir / "onnx_models",
+        "results_dir": results_dir,
+        "progress_dir": progress_dir,
+        "result_path": results_dir / "result.json",
+        "progress_path": progress_dir / "progress.json",
         "mlflow_dir": base_dir / "mlflow" / "mlruns",
         "job_info_path": job_dir / "job_info.json",
+        "artifact_manifest_path": job_dir / "artifact_manifest.json",
     }
 
     for key, path in paths.items():
@@ -119,111 +132,147 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     )
 
     runtime["log_dir"] = str(log_dir)
+    runtime["job_dir"] = str(path_info["job_dir"])
     runtime["mlflow_uri"] = f"file:{mlflow_uri}"
 
-    start_mlflow_run(config=config)
-    run = mlflow.active_run()
-    if run is None:
-        raise RuntimeError("MLflow run could not be started.")
+    try:
+        start_mlflow_run(config=config)
+        run = mlflow.active_run()
+        mlflow_enabled = tracking.get("mlflow_enabled", True)
+        if mlflow_enabled and run is None:
+            raise RuntimeError("MLflow run could not be started.")
 
-    run_id = run.info.run_id
-    run_name = run.info.run_name
-    logger.info("MLflow run started: name={}, id={}", run_name, run_id)
+        if run is None:
+            run_id = f"local-{job_id}"
+            run_name = metadata.get("run_name") or run_id
+            logger.info("MLflow disabled; using local run id {}", run_id)
+        else:
+            run_id = run.info.run_id
+            run_name = run.info.run_name
+            logger.info("MLflow run started: name={}, id={}", run_name, run_id)
 
-    # Persist job metadata for orchestrators/consumers.
-    job_info_path = path_info["job_info_path"]
-    job_info = {}
-    if job_info_path.exists():
-        with open(job_info_path, "r", encoding="utf-8") as job_file:
-            job_info = json.load(job_file)
-    job_info.update({"mlflow_run_id": run_id, "mlflow_uri": runtime["mlflow_uri"]})
-    with open(job_info_path, "w", encoding="utf-8") as job_file:
-        json.dump(job_info, job_file, indent=2)
+        # Persist job metadata for orchestrators/consumers.
+        job_info_path = path_info["job_info_path"]
+        job_info = {}
+        if job_info_path.exists():
+            with open(job_info_path, "r", encoding="utf-8") as job_file:
+                job_info = json.load(job_file)
+        job_info.update(
+            {
+                "job_id": job_id,
+                "job_dir": str(path_info["job_dir"]),
+                "run_id": run_id,
+                "run_name": run_name,
+                "mlflow_run_id": run_id if mlflow_enabled else None,
+                "mlflow_uri": runtime["mlflow_uri"],
+                "mlflow_enabled": mlflow_enabled,
+            }
+        )
+        with open(job_info_path, "w", encoding="utf-8") as job_file:
+            json.dump(job_info, job_file, indent=2)
 
-    # Configure loguru file sink after run metadata is available.
-    log_file = log_dir / f"{run_id}.log"
-    log_level = tracking.get("log_level", "INFO").upper()
-    logger.add(str(log_file), level=log_level)
-    logger.info("Logging to {}", log_file)
+        # Materialise expected per-job output files early for orchestration parity.
+        with open(path_info["progress_path"], "w", encoding="utf-8") as progress_file:
+            json.dump(
+                {
+                    "episode": 0,
+                    "step": 0,
+                    "global_step": 0,
+                    "status": "initializing",
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                },
+                progress_file,
+                indent=2,
+            )
+        with open(path_info["result_path"], "w", encoding="utf-8") as result_file:
+            json.dump({"status": "pending"}, result_file, indent=2)
 
-    # Build environment and agent stack.
-    reward_key = config["simulator"]["reward_function"]
-    reward_cls = REWARD_FUNCTION_MAP.get(reward_key)
-    if reward_cls is None:
-        raise ValueError(f"Unsupported reward function '{reward_key}'.")
+        # Configure loguru file sink after run metadata is available.
+        log_file = log_dir / f"{run_id}.log"
+        log_level = tracking.get("log_level", "INFO").upper()
+        logger.add(str(log_file), level=log_level)
+        logger.info("Logging to {}", log_file)
 
-    env = CityLearnEnv(
-        schema=config["simulator"]["dataset_path"],
-        central_agent=config["simulator"]["central_agent"],
-        reward_function=reward_cls,
-    )
+        # Build environment and agent stack.
+        reward_key = config["simulator"]["reward_function"]
+        reward_cls = REWARD_FUNCTION_MAP.get(reward_key)
+        if reward_cls is None:
+            raise ValueError(f"Unsupported reward function '{reward_key}'.")
 
-    wrapper = Wrapper(
-        env=env,
-        config=config,
-        job_id=job_id,
-        progress_path=str(path_info["progress_path"]),
-    )
+        env = CityLearnEnv(
+            schema=config["simulator"]["dataset_path"],
+            central_agent=config["simulator"]["central_agent"],
+            reward_function=reward_cls,
+        )
 
-    # Populate derived dimensions required by MADDPG.
-    set_default_config(config, ["topology", "observation_dimensions"], wrapper.observation_dimension)
-    set_default_config(config, ["topology", "action_dimensions"], wrapper.action_dimension)
-    set_default_config(config, ["topology", "num_agents"], len(wrapper.action_space))
-    logger.debug(
-        "Topology derived: num_agents=%s, obs_dims=%s, action_dims=%s",
-        config.get("topology", {}).get("num_agents"),
-        config.get("topology", {}).get("observation_dimensions"),
-        config.get("topology", {}).get("action_dimensions"),
-    )
+        wrapper = Wrapper(
+            env=env,
+            config=config,
+            job_id=job_id,
+            progress_path=str(path_info["progress_path"]),
+        )
 
-    agent = create_agent(config=config)
-    wrapper.set_model(agent)
+        # Populate derived dimensions required by MADDPG.
+        set_default_config(config, ["topology", "observation_dimensions"], wrapper.observation_dimension)
+        set_default_config(config, ["topology", "action_dimensions"], wrapper.action_dimension)
+        set_default_config(config, ["topology", "num_agents"], len(wrapper.action_space))
+        logger.debug(
+            "Topology derived: num_agents={}, obs_dims={}, action_dims={}",
+            config.get("topology", {}).get("num_agents"),
+            config.get("topology", {}).get("observation_dimensions"),
+            config.get("topology", {}).get("action_dimensions"),
+        )
 
-    logger.info("Starting training loop")
-    wrapper.learn()
+        agent = create_agent(config=config)
+        wrapper.set_model(agent)
 
-    logger.info("Evaluating environment KPIs")
-    kpis = wrapper.env.evaluate()
-    kpis = kpis.pivot(index="cost_function", columns="name", values="value").round(3).dropna(how="all")
+        logger.info("Starting training loop")
+        wrapper.learn()
 
-    kpi_metrics = {}
-    if hasattr(kpis, "stack"):
-        for (cost_function, name), value in kpis.stack(dropna=True).items():
-            kpi_metrics[f"kpi_{cost_function}_{name}"] = float(value)
-    else:
-        for kpi_name, kpi_value in kpis.items():
-            kpi_metrics[f"kpi_{kpi_name}"] = float(kpi_value)
+        logger.info("Evaluating environment KPIs")
+        kpis = wrapper.env.evaluate()
+        kpis = kpis.pivot(index="cost_function", columns="name", values="value").round(3).dropna(how="all")
 
-    if mlflow.active_run():
-        for kpi_name, kpi_value in kpi_metrics.items():
-            mlflow.log_metric(kpi_name, kpi_value)
-    elif getattr(wrapper, "local_metrics_logger", None):
-        if kpi_metrics:
-            wrapper.local_metrics_logger.log(kpi_metrics, -2)
+        kpi_metrics = {}
+        if hasattr(kpis, "stack"):
+            for (cost_function, name), value in kpis.stack(dropna=True).items():
+                kpi_metrics[f"kpi_{cost_function}_{name}"] = float(value)
+        else:
+            for kpi_name, kpi_value in kpis.items():
+                kpi_metrics[f"kpi_{kpi_name}"] = float(kpi_value)
 
-    result_path = path_info["result_path"]
-    with open(result_path, "w", encoding="utf-8") as result_file:
-        json.dump(kpis.to_dict(), result_file, indent=2)
-    logger.info("KPI summary written to {}", result_path)
+        if mlflow.active_run():
+            for kpi_name, kpi_value in kpi_metrics.items():
+                mlflow.log_metric(kpi_name, kpi_value)
+        elif getattr(wrapper, "local_metrics_logger", None):
+            if kpi_metrics:
+                wrapper.local_metrics_logger.log(kpi_metrics, -2)
 
-    artifacts_root = path_info["job_dir"].resolve()
-    environment_metadata = wrapper.describe_environment()
-    agent_metadata = agent.export_artifacts(
-        output_dir=str(artifacts_root),
-        context={
-            "topology": config.get("topology", {}),
-            "environment": environment_metadata,
-            "config": config,
-        },
-    )
-    manifest = build_manifest(config, environment_metadata, agent_metadata)
-    manifest_path = write_manifest(manifest, str(artifacts_root))
-    logger.info("Artifact manifest written to %s", manifest_path)
-    if mlflow.active_run():
-        mlflow.log_artifact(str(manifest_path), artifact_path="artifacts")
+        result_path = path_info["result_path"]
+        with open(result_path, "w", encoding="utf-8") as result_file:
+            json.dump(kpis.to_dict(), result_file, indent=2)
+        logger.info("KPI summary written to {}", result_path)
 
-    end_mlflow_run()
-    logger.info("Experiment complete")
+        artifacts_root = path_info["job_dir"].resolve()
+        environment_metadata = wrapper.describe_environment()
+        agent_metadata = agent.export_artifacts(
+            output_dir=str(artifacts_root),
+            context={
+                "topology": config.get("topology", {}),
+                "environment": environment_metadata,
+                "config": config,
+            },
+        )
+        manifest = build_manifest(config, environment_metadata, agent_metadata)
+        validate_bundle_contract(manifest, artifacts_root)
+        manifest_path = write_manifest(manifest, str(artifacts_root))
+        logger.info("Artifact manifest written to {}", manifest_path)
+        if mlflow.active_run():
+            mlflow.log_artifact(str(manifest_path), artifact_path="artifacts")
+
+        logger.info("Experiment complete")
+    finally:
+        end_mlflow_run()
 
 
 if __name__ == "__main__":

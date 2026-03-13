@@ -12,10 +12,17 @@ from typing_extensions import Literal
 class MetadataConfig(BaseModel):
     experiment_name: str = Field(..., min_length=1, description="Name registered in MLflow")
     run_name: str = Field(..., min_length=1, description="Friendly name for the MLflow run")
+    description: Optional[str] = Field(default=None, description="Optional human-readable bundle description")
+    bundle_version: Optional[str] = Field(default=None, description="Optional bundle version string")
+    alias_mapping_path: Optional[str] = Field(
+        default=None,
+        description="Optional alias mapping path (relative to bundle root)",
+    )
 
 
 class RuntimeConfig(BaseModel):
     log_dir: Optional[str] = Field(default=None, description="Resolved at runtime; path for log files")
+    job_dir: Optional[str] = Field(default=None, description="Resolved at runtime; job root directory")
     mlflow_uri: Optional[str] = Field(default=None, description="Resolved at runtime; MLflow tracking URI")
 
 
@@ -177,6 +184,23 @@ class ExecutionConfig(BaseModel):
     deucalion: Optional[DeucalionExecutionConfig] = None
 
 
+class BundleConfig(BaseModel):
+    bundle_version: Optional[str] = Field(default=None, description="Bundle version published in manifest metadata")
+    description: Optional[str] = Field(default=None, description="Bundle description published in manifest metadata")
+    alias_mapping_path: Optional[str] = Field(
+        default=None,
+        description="Optional alias mapping path published in manifest metadata",
+    )
+    require_observations_envelope: bool = Field(
+        default=False,
+        description="If true, inference expects features.observations envelope",
+    )
+    artifact_config: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra key-values merged into each exported artifact config",
+    )
+
+
 class ProjectConfig(BaseModel):
     metadata: MetadataConfig
     runtime: RuntimeConfig = RuntimeConfig()
@@ -187,6 +211,7 @@ class ProjectConfig(BaseModel):
     topology: TopologyConfig = TopologyConfig()
     algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
     execution: Optional[ExecutionConfig] = None
+    bundle: BundleConfig = BundleConfig()
 
     model_config = ConfigDict(extra="forbid")
 

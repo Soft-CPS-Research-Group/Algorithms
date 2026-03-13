@@ -40,4 +40,4 @@ class ProgressTracker:
             with self.progress_path.open("w", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2)
         except Exception as exc:
-            logger.warning("Failed to write progress file %s: %s", self.progress_path, exc)
+            logger.warning("Failed to write progress file {}: {}", self.progress_path, exc)
