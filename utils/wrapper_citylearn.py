@@ -140,6 +140,13 @@ class Wrapper_CityLearn(RLC):
             self.log_frequency = 1
         if self.log_frequency < 1:
             self.log_frequency = 1
+        try:
+            self.mlflow_step_sample_interval = int(tracking_cfg.get("mlflow_step_sample_interval", 10) or 10)
+        except (TypeError, ValueError):
+            self.mlflow_step_sample_interval = 10
+        if self.mlflow_step_sample_interval < 1:
+            self.mlflow_step_sample_interval = 1
+        self.step_metric_interval = max(self.log_frequency, self.mlflow_step_sample_interval)
         self.progress_tracker = ProgressTracker(progress_path)
         self.checkpoint_manager = CheckpointManager(
             base_dir=self.log_dir,
@@ -419,7 +426,7 @@ class Wrapper_CityLearn(RLC):
         )
 
     def _should_log_step(self, step: int) -> bool:
-        return step % self.log_frequency == 0
+        return step % self.step_metric_interval == 0
 
     def get_encoded_observations(self, index: int, observations: List[float]) -> np.ndarray:
         """Optimized encoding function using NumPy with proper type handling."""

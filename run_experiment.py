@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import mlflow
 import yaml
@@ -78,6 +80,7 @@ def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
         "simulation_data_dir": results_dir / "simulation_data",
         "progress_dir": progress_dir,
         "result_path": results_dir / "result.json",
+        "summary_path": results_dir / "summary.json",
         "progress_path": progress_dir / "progress.json",
         "mlflow_dir": base_dir / "mlflow" / "mlruns",
         "job_info_path": job_dir / "job_info.json",
@@ -98,6 +101,82 @@ def _write_resolved_config(config: dict, output_path: Path) -> None:
     """Persist the runtime-resolved configuration for reproducibility."""
     with output_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(config, handle, sort_keys=False)
+
+
+def _resolve_tracking_uri(runtime: dict[str, Any], fallback_mlflow_dir: Path) -> str:
+    """Resolve MLflow tracking URI with env-first precedence."""
+    env_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
+    if env_uri:
+        return env_uri
+
+    runtime_tracking_uri = (runtime.get("tracking_uri") or runtime.get("mlflow_uri") or "").strip()
+    if runtime_tracking_uri:
+        return runtime_tracking_uri
+
+    return f"file:{fallback_mlflow_dir}"
+
+
+def _compute_config_hash(config: dict[str, Any]) -> str:
+    """Build a stable hash of the validated config excluding runtime-only volatile fields."""
+    payload = json.loads(json.dumps(config))
+    runtime = payload.get("runtime") or {}
+    for key in ("log_dir", "job_dir", "job_id", "run_id", "run_name", "experiment_id", "mlflow_run_url"):
+        runtime.pop(key, None)
+    payload["runtime"] = runtime
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _discover_git_sha(repo_root: Path) -> Optional[str]:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        sha = completed.stdout.strip()
+        return sha or None
+    except Exception:
+        return None
+
+
+def _build_mlflow_run_url(base_url: Optional[str], experiment_id: Optional[str], run_id: Optional[str]) -> Optional[str]:
+    if not base_url or not experiment_id or not run_id:
+        return None
+    normalized = base_url.rstrip("/")
+    return f"{normalized}/#/experiments/{experiment_id}/runs/{run_id}"
+
+
+def _build_mlflow_tags(config: dict[str, Any], *, job_id: str, run_name: str, config_hash: str, git_sha: Optional[str]) -> dict[str, str]:
+    simulator_cfg = config.get("simulator", {})
+    dataset_name = simulator_cfg.get("dataset_name") or simulator_cfg.get("dataset_path") or "unknown_dataset"
+    algorithm_name = (config.get("algorithm", {}) or {}).get("name", "unknown_algorithm")
+    tags: dict[str, str] = {
+        "opeva.job_id": str(job_id),
+        "opeva.algorithm": str(algorithm_name),
+        "opeva.dataset": str(dataset_name),
+        "opeva.run_name": str(run_name),
+        "opeva.config_hash": config_hash,
+    }
+    if git_sha:
+        tags["opeva.git_sha"] = git_sha
+    return tags
+
+
+def _log_curated_artifacts(
+    *,
+    resolved_config_path: Path,
+    manifest_path: Path,
+    result_path: Path,
+    summary_path: Path,
+) -> None:
+    if not mlflow.active_run():
+        return
+    for artifact in (resolved_config_path, manifest_path, result_path, summary_path):
+        if artifact.exists():
+            mlflow.log_artifact(str(artifact), artifact_path="artifacts")
 
 
 def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> None:
@@ -121,15 +200,18 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
 
     config = config_model.to_dict()
 
-    # Inject runtime paths expected by downstream helpers.
-    log_dir = path_info["log_dir"]
-    mlflow_uri = path_info["mlflow_dir"]
-
     metadata = config.get("metadata", {})
     runtime = config.setdefault("runtime", {})
     tracking = config.get("tracking", {})
+    artifact_profile = str(tracking.get("mlflow_artifacts_profile", "minimal")).strip().lower() or "minimal"
+    mlflow_enabled = bool(tracking.get("mlflow_enabled", True))
 
-    if not tracking.get("mlflow_enabled", True):
+    config_hash = _compute_config_hash(config)
+    git_sha = _discover_git_sha(Path(__file__).resolve().parent)
+    tracking_uri = _resolve_tracking_uri(runtime, path_info["mlflow_dir"])
+    mlflow_ui_base_url = (os.environ.get("MLFLOW_UI_BASE_URL") or "").strip() or None
+
+    if not mlflow_enabled:
         logger.warning("MLflow disabled; metrics will be stored in local JSONL logs only.")
 
     logger.info(
@@ -138,29 +220,42 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         job_id,
     )
 
-    runtime["log_dir"] = str(log_dir)
+    runtime["log_dir"] = str(path_info["log_dir"])
     runtime["job_dir"] = str(path_info["job_dir"])
-    runtime["mlflow_uri"] = f"file:{mlflow_uri}"
+    runtime["mlflow_uri"] = tracking_uri
+    runtime["tracking_uri"] = tracking_uri
     runtime["job_id"] = job_id
 
     try:
         start_mlflow_run(config=config)
         run = mlflow.active_run()
-        mlflow_enabled = tracking.get("mlflow_enabled", True)
         if mlflow_enabled and run is None:
             raise RuntimeError("MLflow run could not be started.")
 
+        experiment_id: Optional[str] = None
         if run is None:
             run_id = f"local-{job_id}"
             run_name = metadata.get("run_name") or run_id
             logger.info("MLflow disabled; using local run id {}", run_id)
         else:
             run_id = run.info.run_id
-            run_name = run.info.run_name
-            logger.info("MLflow run started: name={}, id={}", run_name, run_id)
+            run_name = run.info.run_name or metadata.get("run_name") or run_id
+            experiment_id = run.info.experiment_id
+            logger.info("MLflow run started: name={}, id={}, experiment_id={}", run_name, run_id, experiment_id)
+            mlflow.set_tags(
+                _build_mlflow_tags(
+                    config,
+                    job_id=job_id,
+                    run_name=run_name,
+                    config_hash=config_hash,
+                    git_sha=git_sha,
+                )
+            )
 
         runtime["run_id"] = run_id
         runtime["run_name"] = run_name
+        runtime["experiment_id"] = experiment_id
+        runtime["mlflow_run_url"] = _build_mlflow_run_url(mlflow_ui_base_url, experiment_id, run_id if run else None)
 
         # Persist job metadata for orchestrators/consumers.
         job_info_path = path_info["job_info_path"]
@@ -175,7 +270,11 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
                 "run_id": run_id,
                 "run_name": run_name,
                 "mlflow_run_id": run_id if mlflow_enabled else None,
-                "mlflow_uri": runtime["mlflow_uri"],
+                "experiment_id": experiment_id,
+                "mlflow_experiment_id": experiment_id,
+                "tracking_uri": tracking_uri,
+                "mlflow_uri": tracking_uri,
+                "mlflow_run_url": runtime["mlflow_run_url"],
                 "mlflow_enabled": mlflow_enabled,
             }
         )
@@ -199,7 +298,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             json.dump({"status": "pending"}, result_file, indent=2)
 
         # Configure loguru file sink after run metadata is available.
-        log_file = log_dir / f"{run_id}.log"
+        log_file = path_info["log_dir"] / f"{run_id}.log"
         log_level = tracking.get("log_level", "INFO").upper()
         logger.add(str(log_file), level=log_level)
         logger.info("Logging to {}", log_file)
@@ -251,8 +350,6 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         resolved_config_path = path_info["resolved_config_path"]
         _write_resolved_config(config, resolved_config_path)
         logger.info("Resolved runtime config written to {}", resolved_config_path)
-        if mlflow.active_run():
-            mlflow.log_artifact(str(resolved_config_path), artifact_path="artifacts")
 
         agent = create_agent(config=config)
         wrapper.set_model(agent)
@@ -298,8 +395,29 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         validate_bundle_contract(manifest, artifacts_root)
         manifest_path = write_manifest(manifest, str(artifacts_root))
         logger.info("Artifact manifest written to {}", manifest_path)
-        if mlflow.active_run():
-            mlflow.log_artifact(str(manifest_path), artifact_path="artifacts")
+
+        summary_payload = {
+            "job_id": job_id,
+            "run_id": run_id,
+            "run_name": run_name,
+            "experiment_id": experiment_id,
+            "tracking_uri": tracking_uri,
+            "mlflow_enabled": mlflow_enabled,
+            "artifact_profile": artifact_profile,
+            "kpi_metric_count": len(kpi_metrics),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+        summary_path = path_info["summary_path"]
+        with open(summary_path, "w", encoding="utf-8") as summary_file:
+            json.dump(summary_payload, summary_file, indent=2)
+
+        if mlflow.active_run() and artifact_profile == "curated":
+            _log_curated_artifacts(
+                resolved_config_path=resolved_config_path,
+                manifest_path=Path(manifest_path),
+                result_path=result_path,
+                summary_path=summary_path,
+            )
 
         logger.info("Experiment complete")
     finally:

@@ -141,7 +141,11 @@ Use this diagram as the mental model when wiring CI or new algorithms.
 Important knobs:
 
 - `tracking.mlflow_enabled` – switch between MLflow and JSONL logging.
-- `tracking.log_frequency` – log rewards/system metrics every N steps (default 1).
+- `tracking.log_frequency` – legacy step logging control (kept for compatibility).
+- `tracking.mlflow_step_sample_interval` – sampled MLflow step metric interval
+  (default 10, low-overhead mode).
+- `tracking.mlflow_artifacts_profile` – `minimal|curated` artifact policy for
+  MLflow uploads (default `minimal`).
 - `checkpointing.resume_training` – reload agent state from MLflow (simulator
   still restarts).
 - `simulator.simulation_start_time_step`, `simulator.simulation_end_time_step`,
@@ -173,6 +177,8 @@ Every job produces:
   repo.
 - `jobs/<job_id>/config.resolved.yaml` – runtime-resolved config snapshot
   (auto-populated `runtime.*` and derived topology).
+- `jobs/<job_id>/results/summary.json` – lightweight final run summary with
+  MLflow identity/URI linkage.
 - `jobs/<job_id>/policy_agent_<index>.json` – exported rule-based policy files
   when `RuleBasedPolicy` runs.
 
@@ -196,7 +202,11 @@ in detail and contains troubleshooting tips.
 
 ## Monitoring & Logging
 
-- MLflow records per-step metrics according to `tracking.log_frequency` when enabled.
+- MLflow tracking URI resolution priority is:
+  `MLFLOW_TRACKING_URI` env -> `runtime.mlflow_uri`/`runtime.tracking_uri` ->
+  local `file:.../mlflow/mlruns`.
+- MLflow records step metrics using sampled intervals
+  (`tracking.mlflow_step_sample_interval`) plus always-on episode/final KPI logs.
 - If MLflow is disabled (`tracking.mlflow_enabled: false`), metrics go to
   `<log_dir>/metrics.jsonl` via `LocalMetricsLogger`.
 - Wrapper_CityLearn samples CPU/RAM/GPU utilisation every 10 steps.

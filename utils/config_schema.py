@@ -24,15 +24,27 @@ class RuntimeConfig(BaseModel):
     log_dir: Optional[str] = Field(default=None, description="Resolved at runtime; path for log files")
     job_dir: Optional[str] = Field(default=None, description="Resolved at runtime; job root directory")
     mlflow_uri: Optional[str] = Field(default=None, description="Resolved at runtime; MLflow tracking URI")
+    tracking_uri: Optional[str] = Field(default=None, description="Resolved at runtime; effective MLflow tracking URI")
     job_id: Optional[str] = Field(default=None, description="Resolved at runtime; orchestrator job identifier")
     run_id: Optional[str] = Field(default=None, description="Resolved at runtime; active run identifier")
     run_name: Optional[str] = Field(default=None, description="Resolved at runtime; active run display name")
+    experiment_id: Optional[str] = Field(default=None, description="Resolved at runtime; MLflow experiment identifier")
+    mlflow_run_url: Optional[str] = Field(default=None, description="Resolved at runtime; MLflow UI URL for the active run")
 
 
 class TrackingConfig(BaseModel):
     mlflow_enabled: bool = Field(default=True, description="If false, skips MLflow tracking")
     log_level: str = Field(default="INFO", description="Loguru log level")
     log_frequency: int = Field(default=1, ge=1, description="Log metrics every N environment steps")
+    mlflow_step_sample_interval: int = Field(
+        default=10,
+        ge=1,
+        description="Sample MLflow step metrics every N steps to reduce logging overhead",
+    )
+    mlflow_artifacts_profile: Literal["minimal", "curated"] = Field(
+        default="minimal",
+        description="Artifact logging profile for MLflow",
+    )
 
 
 class CheckpointingConfig(BaseModel):

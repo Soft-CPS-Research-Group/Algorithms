@@ -52,6 +52,7 @@ class MADDPG(BaseAgent):
 
         training_cfg = self.config.get("training", {})
         checkpoint_cfg = self.config.get("checkpointing", {})
+        tracking_cfg = self.config.get("tracking", {})
 
         self.seed = training_cfg.get("seed", 22)
         torch.manual_seed(self.seed)
@@ -66,6 +67,12 @@ class MADDPG(BaseAgent):
         self.reset_replay_buffer = checkpoint_cfg.get("reset_replay_buffer", False)
         self.freeze_pretrained_layers = checkpoint_cfg.get("freeze_pretrained_layers", False)
         self.fine_tune = checkpoint_cfg.get("fine_tune", False)
+        try:
+            self.mlflow_step_sample_interval = int(tracking_cfg.get("mlflow_step_sample_interval", 10) or 10)
+        except (TypeError, ValueError):
+            self.mlflow_step_sample_interval = 10
+        if self.mlflow_step_sample_interval < 1:
+            self.mlflow_step_sample_interval = 1
 
         hyperparams = self.config["algorithm"]["hyperparameters"]
         topology = self.config.get("topology", {})
@@ -211,11 +218,13 @@ class MADDPG(BaseAgent):
 
         logger.debug("Critics updated. Loss: {:.4f}.", critic_loss.item())
 
+        should_log_step_metrics = self._should_log_training_step(global_learning_step)
+
         for agent_num in range(self.num_agents):
             critic_loss_value = (
                 q_expected[:, agent_num] - q_targets[:, agent_num].expand_as(q_expected[:, agent_num])
             ).abs().mean()
-            if mlflow.active_run():
+            if should_log_step_metrics and mlflow.active_run():
                 mlflow.log_metric(
                     f"critic_loss_agent_{agent_num}",
                     critic_loss_value.item(),
@@ -252,14 +261,14 @@ class MADDPG(BaseAgent):
                 self._soft_update(critic, self.critic_targets[agent_num], self.tau)
                 self._soft_update(actor, self.actor_targets[agent_num], self.tau)
 
-            if mlflow.active_run():
+            if should_log_step_metrics and mlflow.active_run():
                 mlflow.log_metric(
                     f"actor_loss_agent_{agent_num}",
                     actor_loss.item(),
                     step=global_learning_step,
                 )
 
-        if mlflow.active_run():
+        if should_log_step_metrics and mlflow.active_run():
             mlflow.log_metrics(
                 {
                     "average_critic_loss": critic_loss.item(),
@@ -274,6 +283,9 @@ class MADDPG(BaseAgent):
             critic_loss.item(),
             total_actor_loss / self.num_agents,
         )
+
+    def _should_log_training_step(self, global_learning_step: int) -> bool:
+        return global_learning_step % self.mlflow_step_sample_interval == 0
 
     def _soft_update(self, local_model, target_model, tau):
         with torch.no_grad():

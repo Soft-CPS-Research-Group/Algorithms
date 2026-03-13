@@ -1,7 +1,9 @@
-import mlflow
 import json
 import tempfile
+
+import mlflow
 from loguru import logger
+
 from utils.helpers import flatten_dict
 
 def log_to_mlflow(metric_name, value, step=None):
@@ -122,7 +124,7 @@ def start_mlflow_run(config):
             return
 
         # Get MLflow tracking URI
-        mlflow_uri = runtime_cfg.get("mlflow_uri", "file:./mlruns")
+        mlflow_uri = runtime_cfg.get("tracking_uri") or runtime_cfg.get("mlflow_uri") or "file:./mlruns"
         mlflow.set_tracking_uri(mlflow_uri)
 
         # Get the experiment name
@@ -130,11 +132,12 @@ def start_mlflow_run(config):
         run_name = metadata_cfg.get("run_name", "default_run")
 
         # Create or get the experiment in MLflow
-        experiment_id = mlflow.set_experiment(experiment_name)
+        experiment = mlflow.set_experiment(experiment_name)
+        experiment_id = getattr(experiment, "experiment_id", str(experiment))
         logger.info(f"1.4: Experiment set: {experiment_name} (ID: {experiment_id})")
 
         # Start the MLflow run
-        mlflow.start_run(run_name=run_name)
+        run = mlflow.start_run(run_name=run_name)
         logger.info(f"1.4: MLflow run started: {run_name}")
 
         # Log configuration parameters
@@ -143,6 +146,8 @@ def start_mlflow_run(config):
         # Assuming flatten_dict is a utility function to flatten nested dictionaries
         flattened_params = flatten_dict(config)
         mlflow.log_params(flattened_params)
+        return run
 
     except Exception as e:
         logger.error(f"1.4: Failed to start MLflow run: {e}")
+        raise

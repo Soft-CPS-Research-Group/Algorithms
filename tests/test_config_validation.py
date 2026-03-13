@@ -100,6 +100,13 @@ def test_validate_config_rejects_invalid_simulation_window(base_config):
         validate_config(config)
 
 
+def test_validate_config_rejects_invalid_mlflow_artifacts_profile(base_config):
+    config = copy.deepcopy(base_config)
+    config["tracking"]["mlflow_artifacts_profile"] = "all"
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
 def test_validate_all_templates():
     template_paths = sorted(Path("configs/templates").glob("*.yaml"))
     assert template_paths, "No template files found under configs/templates"

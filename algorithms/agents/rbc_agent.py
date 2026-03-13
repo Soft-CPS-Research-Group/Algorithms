@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+import mlflow
 import numpy as np
 
 from algorithms.agents.base_agent import BaseAgent
@@ -218,6 +219,8 @@ class RuleBasedPolicy(BaseAgent):
             output_path = export_root / f"policy_agent_{agent_index}.json"
             with output_path.open("w", encoding="utf-8") as handle:
                 json.dump(policy, handle, indent=2)
+            if mlflow.active_run():
+                mlflow.log_artifact(str(output_path), artifact_path="model")
 
             artifact_config = {
                 "use_preprocessor": False,

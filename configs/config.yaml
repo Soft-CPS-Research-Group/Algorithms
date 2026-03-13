@@ -17,12 +17,17 @@ runtime:
   job_id: null
   run_id: null
   run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
 
 # Tracking controls for metrics/log verbosity and MLflow enablement.
 tracking:
   mlflow_enabled: true
   log_level: "INFO"
   log_frequency: 1
+  mlflow_step_sample_interval: 10
+  mlflow_artifacts_profile: minimal
 
 # Checkpoint behavior for saving and optional resume/fine-tuning workflows.
 checkpointing:
