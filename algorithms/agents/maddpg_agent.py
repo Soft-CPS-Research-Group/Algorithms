@@ -46,6 +46,7 @@ class MADDPG(BaseAgent):
         self.tau = exploration_cfg["tau"]
         self.sigma = exploration_cfg["sigma"]
         self.bias = exploration_cfg["bias"]
+        self.end_initial_exploration_time_step = int(exploration_cfg.get("end_initial_exploration_time_step", 0) or 0)
         self.batch_size = buffer_cfg["batch_size"]
         self.lr_actor = float(network_cfg["actor"]["lr"])
         self.lr_critic = float(network_cfg["critic"]["lr"])
@@ -283,6 +284,9 @@ class MADDPG(BaseAgent):
             critic_loss.item(),
             total_actor_loss / self.num_agents,
         )
+
+    def is_initial_exploration_done(self, global_learning_step: int) -> bool:
+        return global_learning_step >= self.end_initial_exploration_time_step
 
     def _should_log_training_step(self, global_learning_step: int) -> bool:
         return global_learning_step % self.mlflow_step_sample_interval == 0

@@ -45,6 +45,24 @@ class TrackingConfig(BaseModel):
         default="minimal",
         description="Artifact logging profile for MLflow",
     )
+    progress_updates_enabled: bool = Field(
+        default=True,
+        description="Enable periodic progress.json updates while training",
+    )
+    progress_update_interval: int = Field(
+        default=5,
+        ge=1,
+        description="Write progress.json every N steps when progress updates are enabled",
+    )
+    system_metrics_enabled: bool = Field(
+        default=False,
+        description="Collect CPU/RAM/GPU system metrics during training (debug-oriented)",
+    )
+    system_metrics_interval: int = Field(
+        default=10,
+        ge=1,
+        description="Collect system metrics every N steps when enabled",
+    )
 
 
 class CheckpointingConfig(BaseModel):
@@ -69,6 +87,7 @@ class SimulatorConfig(BaseModel):
     dataset_path: str
     central_agent: bool = False
     reward_function: str
+    episodes: int = Field(default=1, ge=1)
     simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
     simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
@@ -106,8 +125,6 @@ class SimulatorConfig(BaseModel):
 
 class TrainingConfig(BaseModel):
     seed: int = 22
-    end_initial_exploration_time_step: int = Field(default=0, ge=0)
-    end_exploration_time_step: int = Field(default=0, ge=0)
     steps_between_training_updates: int = Field(default=1, ge=1)
     target_update_interval: int = Field(default=0, ge=0)
 

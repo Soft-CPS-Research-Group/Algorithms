@@ -28,6 +28,12 @@ tracking:
   log_frequency: 1
   mlflow_step_sample_interval: 10
   mlflow_artifacts_profile: minimal
+  # Progress file writes can be throttled or disabled for lighter I/O.
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  # System metrics are useful for debug but expensive; disabled by default.
+  system_metrics_enabled: false
+  system_metrics_interval: 10
 
 # Checkpoint behavior for saving and optional resume/fine-tuning workflows.
 checkpointing:
@@ -54,6 +60,8 @@ simulator:
   dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
   central_agent: false
   reward_function: RewardFunction
+  # Number of episodes executed by the training loop.
+  episodes: 1
   # Optional simulation window overrides (null = dataset schema defaults).
   simulation_start_time_step: null
   simulation_end_time_step: null
@@ -67,8 +75,6 @@ simulator:
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:
   seed: 22
-  end_initial_exploration_time_step: 100
-  end_exploration_time_step: 200
   steps_between_training_updates: 5
   target_update_interval: 2
 
@@ -105,6 +111,7 @@ algorithm:
       decay: 0.995
       gamma: 0.99
       tau: 0.001
+      end_initial_exploration_time_step: 100
 
 # Optional worker-specific overrides (e.g., Deucalion). Keep null for local runs.
 execution: null

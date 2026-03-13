@@ -71,8 +71,13 @@ def test_validate_config_accepts_bundle_section(base_config):
 
 def test_validate_config_accepts_simulator_export_and_time_controls(base_config):
     config = copy.deepcopy(base_config)
+    config["tracking"]["progress_updates_enabled"] = False
+    config["tracking"]["progress_update_interval"] = 3
+    config["tracking"]["system_metrics_enabled"] = True
+    config["tracking"]["system_metrics_interval"] = 12
     config["simulator"]["simulation_start_time_step"] = 0
     config["simulator"]["simulation_end_time_step"] = 95
+    config["simulator"]["episodes"] = 2
     config["simulator"]["episode_time_steps"] = 24
     config["simulator"]["export"] = {
         "mode": "end",
@@ -99,10 +104,27 @@ def test_validate_config_rejects_invalid_simulation_window(base_config):
     with pytest.raises(Exception):
         validate_config(config)
 
+    config = copy.deepcopy(base_config)
+    config["simulator"]["episodes"] = 0
+    with pytest.raises(Exception):
+        validate_config(config)
+
 
 def test_validate_config_rejects_invalid_mlflow_artifacts_profile(base_config):
     config = copy.deepcopy(base_config)
     config["tracking"]["mlflow_artifacts_profile"] = "all"
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
+def test_validate_config_rejects_invalid_tracking_intervals(base_config):
+    config = copy.deepcopy(base_config)
+    config["tracking"]["progress_update_interval"] = 0
+    with pytest.raises(Exception):
+        validate_config(config)
+
+    config = copy.deepcopy(base_config)
+    config["tracking"]["system_metrics_interval"] = 0
     with pytest.raises(Exception):
         validate_config(config)
 

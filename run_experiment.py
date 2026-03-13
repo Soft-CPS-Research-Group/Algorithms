@@ -205,6 +205,10 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     tracking = config.get("tracking", {})
     artifact_profile = str(tracking.get("mlflow_artifacts_profile", "minimal")).strip().lower() or "minimal"
     mlflow_enabled = bool(tracking.get("mlflow_enabled", True))
+    log_level = str(tracking.get("log_level", "INFO")).upper()
+    active_log_file = path_info["log_dir"] / f"{job_id}.log"
+    file_sink_id = logger.add(str(active_log_file), level=log_level)
+    logger.info("Logging bootstrap to {}", active_log_file)
 
     config_hash = _compute_config_hash(config)
     git_sha = _discover_git_sha(Path(__file__).resolve().parent)
@@ -257,6 +261,23 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         runtime["experiment_id"] = experiment_id
         runtime["mlflow_run_url"] = _build_mlflow_run_url(mlflow_ui_base_url, experiment_id, run_id if run else None)
 
+        target_log_file = path_info["log_dir"] / f"{run_id}.log"
+        if target_log_file != active_log_file:
+            try:
+                if target_log_file.exists():
+                    target_log_file.unlink()
+                if active_log_file.exists():
+                    active_log_file.replace(target_log_file)
+                active_log_file = target_log_file
+            except OSError as exc:
+                logger.warning(
+                    "Could not rename log file {} -> {}: {}",
+                    active_log_file,
+                    target_log_file,
+                    exc,
+                )
+        logger.info("Logging to {}", active_log_file)
+
         # Persist job metadata for orchestrators/consumers.
         job_info_path = path_info["job_info_path"]
         job_info = {}
@@ -282,26 +303,35 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             json.dump(job_info, job_file, indent=2)
 
         # Materialise expected per-job output files early for orchestration parity.
+        simulator_cfg = config.get("simulator", {})
+        configured_episode_total = int(simulator_cfg.get("episodes", 1) or 1)
+        configured_step_total = simulator_cfg.get("episode_time_steps")
+        if not isinstance(configured_step_total, int) or configured_step_total <= 0:
+            configured_step_total = None
+        configured_global_step_total = (
+            configured_episode_total * configured_step_total if configured_step_total is not None else None
+        )
+
+        progress_payload: dict[str, Any] = {
+            "episode": 0,
+            "episode_current": 0,
+            "episode_total": configured_episode_total,
+            "step": 0,
+            "step_current": 0,
+            "global_step": 0,
+            "status": "initializing",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "progress_pct": 0.0,
+        }
+        if configured_step_total is not None:
+            progress_payload["step_total"] = configured_step_total
+        if configured_global_step_total is not None:
+            progress_payload["global_step_total"] = configured_global_step_total
+
         with open(path_info["progress_path"], "w", encoding="utf-8") as progress_file:
-            json.dump(
-                {
-                    "episode": 0,
-                    "step": 0,
-                    "global_step": 0,
-                    "status": "initializing",
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                },
-                progress_file,
-                indent=2,
-            )
+            json.dump(progress_payload, progress_file, indent=2)
         with open(path_info["result_path"], "w", encoding="utf-8") as result_file:
             json.dump({"status": "pending"}, result_file, indent=2)
-
-        # Configure loguru file sink after run metadata is available.
-        log_file = path_info["log_dir"] / f"{run_id}.log"
-        log_level = tracking.get("log_level", "INFO").upper()
-        logger.add(str(log_file), level=log_level)
-        logger.info("Logging to {}", log_file)
 
         # Build environment and agent stack.
         reward_key = config["simulator"]["reward_function"]
@@ -355,31 +385,33 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         wrapper.set_model(agent)
 
         logger.info("Starting training loop")
-        wrapper.learn()
-
-        logger.info("Evaluating environment KPIs")
-        kpis = wrapper.env.evaluate()
-        kpis = kpis.pivot(index="cost_function", columns="name", values="value").round(3).dropna(how="all")
+        wrapper.learn(episodes=int(simulator_cfg.get("episodes", 1) or 1))
 
         kpi_metrics = {}
-        if hasattr(kpis, "stack"):
-            for (cost_function, name), value in kpis.stack(dropna=True).items():
-                kpi_metrics[f"kpi_{cost_function}_{name}"] = float(value)
+        if export_cfg.get("export_kpis_on_episode_end", False):
+            result_payload = {
+                "status": "completed",
+                "kpi_source": "simulator_export",
+                "export_kpis_on_episode_end": True,
+                "simulation_data_dir": str(path_info["simulation_data_dir"]),
+            }
+            logger.info("KPI evaluation delegated to simulator export; skipping explicit env.evaluate().")
         else:
-            for kpi_name, kpi_value in kpis.items():
-                kpi_metrics[f"kpi_{kpi_name}"] = float(kpi_value)
-
-        if mlflow.active_run():
-            for kpi_name, kpi_value in kpi_metrics.items():
-                mlflow.log_metric(kpi_name, kpi_value)
-        elif getattr(wrapper, "local_metrics_logger", None):
-            if kpi_metrics:
-                wrapper.local_metrics_logger.log(kpi_metrics, -2)
+            result_payload = {
+                "status": "completed",
+                "kpi_source": "disabled",
+                "message": (
+                    "KPI evaluation is disabled. Enable simulator.export.export_kpis_on_episode_end "
+                    "to export KPIs directly from the environment."
+                ),
+                "simulation_data_dir": str(path_info["simulation_data_dir"]),
+            }
+            logger.info("KPI evaluation disabled by config; skipping explicit env.evaluate().")
 
         result_path = path_info["result_path"]
         with open(result_path, "w", encoding="utf-8") as result_file:
-            json.dump(kpis.to_dict(), result_file, indent=2)
-        logger.info("KPI summary written to {}", result_path)
+            json.dump(result_payload, result_file, indent=2)
+        logger.info("Result payload written to {}", result_path)
 
         artifacts_root = path_info["job_dir"].resolve()
         environment_metadata = wrapper.describe_environment()
@@ -422,6 +454,10 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         logger.info("Experiment complete")
     finally:
         end_mlflow_run()
+        try:
+            logger.remove(file_sink_id)
+        except ValueError:
+            pass
 
 
 if __name__ == "__main__":

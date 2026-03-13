@@ -32,7 +32,7 @@ This document explains how the fixed part of the project is structured, what res
 Key responsibilities:
 - **run_experiment.py** orchestrates a run end-to-end: validates config, prepares directories, starts MLflow (if enabled), instantiates the algorithm class, and writes an artifact manifest after training.
 - **Wrapper_CityLearn** hides CityLearn-specific plumbing. It encodes observations, logs metrics, writes progress files, schedules checkpoints, and exposes environment metadata for inference. Encoders are built from `configs/encoders/default.json`.
-- **BaseAgent + registry** define the contract students must fulfil. Algorithms handle model logic, replay buffers, ONNX export (using `DEFAULT_ONNX_OPSET`), and provide metadata consumed by the manifest. The `update` method must accept the scheduler-aware signature (`observations`, `actions`, `rewards`, `next_observations`, `terminated`, `truncated`, `update_step`, `update_target_step`, `initial_exploration_done`, `global_learning_step`).
+- **BaseAgent + registry** define the contract students must fulfil. Algorithms handle model logic, replay buffers, ONNX export (using `DEFAULT_ONNX_OPSET`), and provide metadata consumed by the manifest. The `update` method must accept the scheduler-aware signature (`observations`, `actions`, `rewards`, `next_observations`, `terminated`, `truncated`, `update_step`, `update_target_step`, `initial_exploration_done`, `global_learning_step`), and exploration ownership belongs to the algorithm (`BaseAgent.is_initial_exploration_done`).
 
 ## 2. Configuration & Schema
 
@@ -46,7 +46,7 @@ Sections:
 - `simulator`: dataset/schema path, reward function, optional window controls
   (`simulation_start_time_step`, `simulation_end_time_step`,
   `episode_time_steps`), and export controls under `simulator.export`.
-- `training`: global training schedule knobs.
+- `training`: global update cadence knobs.
 - `topology`: **derived** environment dimensions (num agents, observation/action shapes). These remain null in version-controlled configs and are filled by the wrapper.
 - `algorithm`: algorithm name and its parameters. The schema currently supports MADDPG and a rule-based placeholder. New algorithms must extend the schema.
 - `bundle`: manifest/export options shared by all algorithms (`bundle_version`, `description`, alias map hint, artifact config defaults).
@@ -79,10 +79,11 @@ Checkpoints are managed by `utils/checkpoint_manager.CheckpointManager`:
 
 ## 5. Metrics and Logging
 
-- **MLflow Enabled**: Per-step metrics honour `tracking.log_frequency`; KPIs and artifact manifests are uploaded as run artifacts.
-- **MLflow Disabled**: Per-step metrics (when `tracking.log_frequency` matches) are appended to `<log_dir>/metrics.jsonl` via `LocalMetricsLogger`. The file uses JSONL (one record per line) for easy ingestion.
+- **MLflow Enabled**: Per-step metrics honour sampled cadence (`tracking.mlflow_step_sample_interval`) and episode summaries are logged.
+- **MLflow Disabled**: Metrics are appended to `<log_dir>/metrics.jsonl` via `LocalMetricsLogger`. The file uses JSONL (one record per line) for easy ingestion.
 - `tracking.log_level` controls Loguru output; informative messages (`info`, `debug`) are sprinkled through the runner and wrapper to aid debugging.
-- `tracking.log_frequency` throttles how often Wrapper_CityLearn logs observation rewards/system stats.
+- `tracking.progress_updates_enabled` and `tracking.progress_update_interval` control progress file writes.
+- `tracking.system_metrics_enabled` and `tracking.system_metrics_interval` control CPU/RAM/GPU telemetry (debug-oriented, disabled by default).
 
 ## 6. Artifact Manifest
 

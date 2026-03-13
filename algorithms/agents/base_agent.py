@@ -77,3 +77,8 @@ class BaseAgent(Module, ABC):
     def load_checkpoint(self, checkpoint_path: str) -> None:
         """Optional hook for loading checkpoints outside MLflow resume logic."""
         raise NotImplementedError("Agent does not implement checkpoint loading.")
+
+    def is_initial_exploration_done(self, global_learning_step: int) -> bool:
+        """Return whether the agent considers warm-up/exploration complete."""
+        _ = global_learning_step
+        return True

@@ -2,7 +2,7 @@ import json
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import mlflow
 import numpy as np
@@ -125,12 +125,14 @@ class Wrapper_CityLearn(RLC):
         self.update_target_step = False
         self.global_step = 0
         training_cfg = config.get("training", {})
+        simulator_cfg = config.get("simulator", {})
         checkpoint_cfg = config.get("checkpointing", {})
         tracking_cfg = config.get("tracking", {})
 
         self.steps_between_training_updates = training_cfg.get("steps_between_training_updates", 1)
-        self.end_initial_exploration_time_step = training_cfg.get("end_initial_exploration_time_step", 0)
-        self.end_exploration_time_step = training_cfg.get("end_exploration_time_step", 0)
+        self.default_episodes = int(simulator_cfg.get("episodes", 1) or 1)
+        if self.default_episodes < 1:
+            self.default_episodes = 1
         self.target_update_interval = training_cfg.get("target_update_interval", 0)
         self.log_dir = config.get("runtime", {}).get("log_dir")
         self.mlflow_enabled = tracking_cfg.get("mlflow_enabled", True)
@@ -147,6 +149,20 @@ class Wrapper_CityLearn(RLC):
         if self.mlflow_step_sample_interval < 1:
             self.mlflow_step_sample_interval = 1
         self.step_metric_interval = max(self.log_frequency, self.mlflow_step_sample_interval)
+        self.progress_updates_enabled = bool(tracking_cfg.get("progress_updates_enabled", True))
+        try:
+            self.progress_update_interval = int(tracking_cfg.get("progress_update_interval", 5) or 5)
+        except (TypeError, ValueError):
+            self.progress_update_interval = 5
+        if self.progress_update_interval < 1:
+            self.progress_update_interval = 1
+        self.system_metrics_enabled = bool(tracking_cfg.get("system_metrics_enabled", False))
+        try:
+            self.system_metrics_interval = int(tracking_cfg.get("system_metrics_interval", 10) or 10)
+        except (TypeError, ValueError):
+            self.system_metrics_interval = 10
+        if self.system_metrics_interval < 1:
+            self.system_metrics_interval = 10
         self.progress_tracker = ProgressTracker(progress_path)
         self.checkpoint_manager = CheckpointManager(
             base_dir=self.log_dir,
@@ -160,6 +176,20 @@ class Wrapper_CityLearn(RLC):
         # Ensure encoders are initialised for observation metadata and encoding
         if not hasattr(self, "encoders") or not getattr(self, "encoders"):
             self.encoders = self.set_encoders()
+
+    @staticmethod
+    def _coerce_positive_int(value) -> Optional[int]:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def _resolve_progress_totals(self, episodes: int) -> tuple[Optional[int], Optional[int]]:
+        step_total = self._coerce_positive_int(self.episode_time_steps)
+        if step_total is None:
+            return None, None
+        return step_total, episodes * step_total
 
     def set_model(self, model: BaseAgent):
         """
@@ -183,7 +213,7 @@ class Wrapper_CityLearn(RLC):
             pass
 
 
-    def learn(self, episodes=None, deterministic=None, deterministic_finish=None, logging_level=None):
+    def learn(self, episodes=None, deterministic=None, deterministic_finish=None):
         """
         Train agent with MLflow logging for rewards (per step and per agent), PyTorch GPU memory usage, and system usage.
         """
@@ -191,7 +221,7 @@ class Wrapper_CityLearn(RLC):
             logger.error("Wrapper invoked without a model; aborting training.")
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        episodes = episodes or 1
+        episodes = episodes or self.default_episodes
         deterministic_finish = deterministic_finish if deterministic_finish is not None else False
         deterministic = deterministic if deterministic is not None else False
 
@@ -202,6 +232,7 @@ class Wrapper_CityLearn(RLC):
             deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
             observations, _ = self.env.reset()
             self.episode_time_steps = self.episode_tracker.episode_time_steps
+            episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             terminated = False
             truncated = False
             time_step = 0
@@ -209,7 +240,7 @@ class Wrapper_CityLearn(RLC):
 
             while not (terminated or truncated):
                 step_start_time = time.time()
-                self.global_step = episode * self.episode_time_steps + time_step  # Global step
+                self.global_step += 1
                 logger.debug(
                     "Global step {} (episode {}, timestep {})",
                     self.global_step,
@@ -248,12 +279,12 @@ class Wrapper_CityLearn(RLC):
                 # Reduce system monitoring frequency
                 cpu_usage = None
                 ram_usage = None
-                if self.global_step % 10 == 0:
+                if self.system_metrics_enabled and (self.global_step % self.system_metrics_interval == 0):
                     cpu_usage = psutil.cpu_percent()
                     ram_usage = psutil.virtual_memory().percent
 
                 # PyTorch-specific GPU memory tracking (kept only PyTorch measurement)
-                if torch.cuda.is_available():
+                if self.system_metrics_enabled and torch.cuda.is_available():
                     gpu_mem_allocated = torch.cuda.memory_allocated() / 1024 ** 2  # Convert to MB
                     gpu_mem_reserved = torch.cuda.memory_reserved() / 1024 ** 2  # Reserved for caching
                 else:
@@ -292,15 +323,31 @@ class Wrapper_CityLearn(RLC):
                     f' Step Duration: {step_duration}'
                 )
 
-                if self.global_step % 5 == 0:
+                if self.progress_updates_enabled and (self.global_step % self.progress_update_interval == 0):
                     self.progress_tracker.update(
                         episode=episode,
                         step=time_step,
                         global_step=self.global_step,
                         rewards=rewards,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        status="running",
                     )
 
                 time_step += 1
+
+            if self.progress_updates_enabled and time_step > 0:
+                self.progress_tracker.update(
+                    episode=episode,
+                    step=time_step - 1,
+                    global_step=self.global_step,
+                    rewards=rewards_list[-1],
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    status="completed" if episode + 1 >= episodes else "running",
+                )
 
             # Compute rewards statistics for this episode
             rewards_array = np.array(rewards_list, dtype='float')  # (time_steps, num_agents)
@@ -398,9 +445,13 @@ class Wrapper_CityLearn(RLC):
             self.update_step = self.time_step % self.steps_between_training_updates == 0
         logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
 
-        # Determine exploration phase
-        self.initial_exploration_done = self.time_step >= self.end_initial_exploration_time_step
-        logger.debug("Initial Exploration ended." if self.initial_exploration_done else "Doing Initial Exploration - Skipping Update")
+        # Exploration phase ownership belongs to the algorithm.
+        self.initial_exploration_done = bool(self.model.is_initial_exploration_done(self.global_step))
+        logger.debug(
+            "Initial exploration done: {} (global step={})",
+            self.initial_exploration_done,
+            self.global_step,
+        )
 
         # Determine whether to update the target networks
         if not self.target_update_interval:

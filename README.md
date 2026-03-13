@@ -146,11 +146,16 @@ Important knobs:
   (default 10, low-overhead mode).
 - `tracking.mlflow_artifacts_profile` – `minimal|curated` artifact policy for
   MLflow uploads (default `minimal`).
+- `tracking.progress_updates_enabled` / `tracking.progress_update_interval` –
+  enable and pace writes to `progress/progress.json`.
+- `tracking.system_metrics_enabled` / `tracking.system_metrics_interval` –
+  optional CPU/RAM/GPU telemetry for debug (disabled by default).
 - `checkpointing.resume_training` – reload agent state from MLflow (simulator
   still restarts).
 - `simulator.simulation_start_time_step`, `simulator.simulation_end_time_step`,
   `simulator.episode_time_steps` – optional overrides for simulation window and
   episode length.
+- `simulator.episodes` – number of training episodes to execute.
 - `simulator.export.*` – CityLearn export controls:
   `mode` (`none|during|end`), KPI CSV toggle, optional fixed session name.
 - `bundle.*` – manifest/export metadata (`bundle_version`, `description`,
@@ -167,7 +172,8 @@ Every job produces:
 
 - `jobs/<job_id>/logs/<run_id>.log` – Loguru trace.
 - `jobs/<job_id>/progress/progress.json` – progress updates for dashboards.
-- `jobs/<job_id>/results/result.json` – CityLearn KPI pivot table.
+- `jobs/<job_id>/results/result.json` – canonical run result payload (status +
+  KPI source metadata).
 - `jobs/<job_id>/results/simulation_data/<session|timestamp>/` – optional
   simulator CSV exports (`exported_*.csv`, `exported_kpis.csv`) when
   `simulator.export.mode != none` or KPI export is enabled.
@@ -206,10 +212,12 @@ in detail and contains troubleshooting tips.
   `MLFLOW_TRACKING_URI` env -> `runtime.mlflow_uri`/`runtime.tracking_uri` ->
   local `file:.../mlflow/mlruns`.
 - MLflow records step metrics using sampled intervals
-  (`tracking.mlflow_step_sample_interval`) plus always-on episode/final KPI logs.
+  (`tracking.mlflow_step_sample_interval`) plus episode-level reward summaries.
 - If MLflow is disabled (`tracking.mlflow_enabled: false`), metrics go to
   `<log_dir>/metrics.jsonl` via `LocalMetricsLogger`.
-- Wrapper_CityLearn samples CPU/RAM/GPU utilisation every 10 steps.
+- Wrapper_CityLearn samples CPU/RAM/GPU only when
+  `tracking.system_metrics_enabled=true` (interval controlled by
+  `tracking.system_metrics_interval`).
 - Use Loguru levels consistently (`info` for progress, `debug` for verbose state,
   `warning` for recoverable issues).
 

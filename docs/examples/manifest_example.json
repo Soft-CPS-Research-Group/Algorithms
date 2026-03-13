@@ -16,8 +16,6 @@
   },
   "training": {
     "seed": 22,
-    "end_initial_exploration_time_step": 100,
-    "end_exploration_time_step": 200,
     "steps_between_training_updates": 5,
     "target_update_interval": 2
   },

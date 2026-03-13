@@ -24,6 +24,10 @@ tracking:
   log_frequency: 1
   mlflow_step_sample_interval: 10
   mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
 
 # Checkpoint behavior for saving and optional resume/fine-tuning workflows.
 checkpointing:
@@ -50,6 +54,7 @@ simulator:
   dataset_path: /data/datasets/citylearn_charging_constraints_demo/schema.json
   central_agent: false
   reward_function: RewardFunction
+  episodes: 1
   # Optional simulation window overrides (null = dataset schema defaults).
   simulation_start_time_step: null
   simulation_end_time_step: null
@@ -63,8 +68,6 @@ simulator:
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:
   seed: 22
-  end_initial_exploration_time_step: 100
-  end_exploration_time_step: 200
   steps_between_training_updates: 5
   target_update_interval: 2
 
@@ -101,6 +104,7 @@ algorithm:
       decay: 0.995
       gamma: 0.99
       tau: 0.001
+      end_initial_exploration_time_step: 100
 
 # Optional worker-specific overrides used by the Deucalion executor.
 execution:

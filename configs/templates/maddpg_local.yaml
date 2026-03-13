@@ -24,6 +24,10 @@ tracking:
   log_frequency: 1
   mlflow_step_sample_interval: 10
   mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
 
 # Checkpoint behavior for saving and optional resume/fine-tuning workflows.
 checkpointing:
@@ -50,6 +54,7 @@ simulator:
   dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
   central_agent: false
   reward_function: V2GPenaltyReward
+  episodes: 1
   # Optional simulation window overrides (null = dataset schema defaults).
   simulation_start_time_step: null
   simulation_end_time_step: null
@@ -63,8 +68,6 @@ simulator:
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:
   seed: 123
-  end_initial_exploration_time_step: 96
-  end_exploration_time_step: 192
   steps_between_training_updates: 4
   target_update_interval: 2
 
@@ -101,6 +104,7 @@ algorithm:
       decay: 0.99
       gamma: 0.99
       tau: 0.001
+      end_initial_exploration_time_step: 96
 
 # Optional worker-specific overrides; omitted for local execution.
 execution: null
