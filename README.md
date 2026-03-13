@@ -164,7 +164,8 @@ Important knobs:
 - `training.*` – exploration warm-up, update cadence, target refresh.
 - `algorithm.*` – hyperparameters, network sizes, replay buffer type, exploration
   policy. `RuleBasedPolicy` replaces neural network knobs with PV thresholds,
-  flexibility buffers, and charger overrides.
+  flexibility buffers, and charger overrides. `SingleAgentRL` is currently a
+  schema placeholder only (not runtime-implemented).
 
 ## Training Outputs & Inference Hand-off
 
@@ -195,6 +196,7 @@ Bundle the manifest, ONNX directory, and optional alias map as described in
 
 1. Implement an agent under `algorithms/agents/` inheriting `BaseAgent`.
 2. Register it in `algorithms/registry.py`.
+   Fail-fast errors list supported names and known placeholders.
 3. Honour the full `BaseAgent.update` signature (scheduler flags are
    keyword-only and mandatory).
 4. Extend `configs/templates/` and `utils/config_schema.py` if new
@@ -211,6 +213,8 @@ in detail and contains troubleshooting tips.
 - MLflow tracking URI resolution priority is:
   `MLFLOW_TRACKING_URI` env -> `runtime.mlflow_uri`/`runtime.tracking_uri` ->
   local `file:.../mlflow/mlruns`.
+- Resume checkpoint download path policy is:
+  `checkpoints/<checkpoint_artifact>` first, then legacy `<checkpoint_artifact>`.
 - MLflow records step metrics using sampled intervals
   (`tracking.mlflow_step_sample_interval`) plus episode-level reward summaries.
 - If MLflow is disabled (`tracking.mlflow_enabled: false`), metrics go to

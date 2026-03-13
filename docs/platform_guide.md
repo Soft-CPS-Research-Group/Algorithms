@@ -48,7 +48,7 @@ Sections:
   `episode_time_steps`), and export controls under `simulator.export`.
 - `training`: global update cadence knobs.
 - `topology`: **derived** environment dimensions (num agents, observation/action shapes). These remain null in version-controlled configs and are filled by the wrapper.
-- `algorithm`: algorithm name and its parameters. The schema currently supports MADDPG and a rule-based placeholder. New algorithms must extend the schema.
+- `algorithm`: algorithm name and its parameters. Runtime-supported algorithms are `MADDPG` and `RuleBasedPolicy`; `SingleAgentRL` is a schema placeholder that intentionally fails fast at runtime until implemented.
 - `bundle`: manifest/export options shared by all algorithms (`bundle_version`, `description`, alias map hint, artifact config defaults).
 
 ### Validation
@@ -71,11 +71,18 @@ This prevents students from launching malformed runs.
 ## 4. Checkpointing
 
 Checkpoints are managed by `utils/checkpoint_manager.CheckpointManager`:
-- Saves every `checkpoint_interval` steps (post exploration phase) to `<log_dir>/checkpoints/`.
+- Saves every `checkpoint_interval` steps to `<log_dir>/checkpoints/`.
+- Gating defaults are `update_step == true` and `initial_exploration_done == true`.
 - Optionally logs to MLflow when tracking is enabled.
 - Agents must implement `save_checkpoint(output_dir, step)` returning the checkpoint path. The MADDPG example stores PyTorch state dicts and replay buffer state.
 
-**Resuming**: Setting `checkpointing.resume_training: true` reloads model weights/optimizers, but the simulator restarts from the beginning of the episode. The rationale: CityLearn does not expose environment snapshots, so only agent state is restored. See [`docs/simulator_limits.md`](simulator_limits.md) for the formal Phase 1 limits/backlog.
+**Resuming**: Setting `checkpointing.resume_training: true` uses a runner-level generic flow that calls `agent.load_checkpoint(path)`:
+- If `checkpoint_run_id` is set, the runner downloads from MLflow via `mlflow.artifacts.download_artifacts`.
+- Artifact lookup order is `checkpoints/<checkpoint_artifact>` first, then legacy `<checkpoint_artifact>`.
+- If `use_best_checkpoint_artifact=true` and no run id is provided, runner uses `agent.get_best_checkpoint(experiment_name)` when available.
+- If the agent does not implement `load_checkpoint`, runner fails before the training loop starts.
+
+The simulator still restarts from the beginning of the episode because CityLearn does not expose environment snapshots. See [`docs/simulator_limits.md`](simulator_limits.md) for the formal Phase 1 limits/backlog.
 
 ## 5. Metrics and Logging
 
@@ -114,6 +121,7 @@ This manifest enables a separate inference service to apply the same preprocessi
 
 2. **Register the Agent**
    - Add an entry to `algorithms/registry.py` mapping the algorithm name to the new class.
+   - Registry errors include supported names and known placeholders for fail-fast diagnostics.
 
 3. **Extend the Schema**
    - Create a new Pydantic model mirroring the algorithm’s configuration needs.
