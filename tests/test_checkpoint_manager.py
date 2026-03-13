@@ -30,3 +30,29 @@ def test_checkpoint_manager_saves(tmp_path):
     assert path is not None
     assert Path(path).exists()
     assert agent.saved_steps == [5]
+
+
+def test_checkpoint_manager_can_skip_update_step_gate(tmp_path):
+    manager = CheckpointManager(
+        base_dir=str(tmp_path),
+        interval=5,
+        require_update_step=False,
+    )
+    agent = DummyAgent()
+
+    path = manager.maybe_save(agent, step=5, initial_exploration_done=True, update_step=False)
+    assert path is not None
+    assert Path(path).exists()
+
+
+def test_checkpoint_manager_can_skip_initial_exploration_gate(tmp_path):
+    manager = CheckpointManager(
+        base_dir=str(tmp_path),
+        interval=5,
+        require_initial_exploration_done=False,
+    )
+    agent = DummyAgent()
+
+    path = manager.maybe_save(agent, step=5, initial_exploration_done=False, update_step=True)
+    assert path is not None
+    assert Path(path).exists()

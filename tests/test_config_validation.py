@@ -75,6 +75,8 @@ def test_validate_config_accepts_simulator_export_and_time_controls(base_config)
     config["tracking"]["progress_update_interval"] = 3
     config["tracking"]["system_metrics_enabled"] = True
     config["tracking"]["system_metrics_interval"] = 12
+    config["checkpointing"]["require_update_step"] = False
+    config["checkpointing"]["require_initial_exploration_done"] = False
     config["simulator"]["simulation_start_time_step"] = 0
     config["simulator"]["simulation_end_time_step"] = 95
     config["simulator"]["episodes"] = 2

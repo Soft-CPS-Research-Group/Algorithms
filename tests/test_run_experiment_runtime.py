@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 import run_experiment as runner
@@ -102,6 +103,19 @@ class _DummyAgent:
                 }
             ],
         }
+
+
+class _DummyResumeAgent(_DummyAgent):
+    def __init__(self):
+        self.loaded_checkpoint_paths = []
+
+    def load_checkpoint(self, checkpoint_path: str):
+        self.loaded_checkpoint_paths.append(checkpoint_path)
+
+    @staticmethod
+    def get_best_checkpoint(experiment_name: str) -> str:
+        _ = experiment_name
+        return "best-run-id"
 
 
 class _DummyRunInfo:
@@ -440,3 +454,107 @@ def test_run_experiment_minimal_profile_skips_curated_artifacts(monkeypatch, tmp
     assert "artifact_manifest.json" not in artifact_names
     assert "result.json" not in artifact_names
     assert "summary.json" not in artifact_names
+
+
+def test_build_checkpoint_artifact_candidates_has_fallback_order():
+    candidates = runner._build_checkpoint_artifact_candidates("latest_checkpoint.pth")
+    assert candidates == ["checkpoints/latest_checkpoint.pth", "latest_checkpoint.pth"]
+
+
+def test_download_checkpoint_from_mlflow_uses_legacy_fallback_when_needed(monkeypatch, tmp_path):
+    downloaded_from = []
+    checkpoint_file = tmp_path / "downloaded" / "latest_checkpoint.pth"
+    checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_file.write_text("checkpoint", encoding="utf-8")
+
+    def _download_artifacts(**kwargs):
+        downloaded_from.append(kwargs["artifact_path"])
+        if kwargs["artifact_path"] == "latest_checkpoint.pth":
+            return str(checkpoint_file)
+        raise FileNotFoundError("new path missing")
+
+    monkeypatch.setattr(runner.mlflow, "set_tracking_uri", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner.mlflow.artifacts, "download_artifacts", _download_artifacts)
+
+    resolved_path = runner._download_checkpoint_from_mlflow(
+        checkpoint_run_id="run-id",
+        checkpoint_artifact="latest_checkpoint.pth",
+        tracking_uri="http://mlflow.local",
+        download_dir=tmp_path / "downloads",
+    )
+
+    assert downloaded_from == ["checkpoints/latest_checkpoint.pth", "latest_checkpoint.pth"]
+    assert resolved_path == checkpoint_file
+
+
+def test_run_experiment_resume_uses_mlflow_download_artifacts_and_load(monkeypatch, tmp_path):
+    config = _build_enabled_config(artifact_profile="minimal")
+    config["checkpointing"].update(
+        {
+            "resume_training": True,
+            "checkpoint_run_id": "resume-run-id",
+            "checkpoint_artifact": "latest_checkpoint.pth",
+        }
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    dummy_run = _DummyRun(run_id="run-002", run_name="mlflow-run", experiment_id="9")
+    resume_agent = _DummyResumeAgent()
+    downloaded_from = []
+    checkpoint_file = tmp_path / "downloaded" / "latest_checkpoint.pth"
+    checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_file.write_text("checkpoint", encoding="utf-8")
+
+    def _download_artifacts(**kwargs):
+        downloaded_from.append(kwargs["artifact_path"])
+        if kwargs["artifact_path"].startswith("checkpoints/"):
+            return str(checkpoint_file)
+        raise FileNotFoundError("legacy path not needed")
+
+    monkeypatch.setattr(runner, "validate_config", lambda raw: _DummyConfigModel(raw))
+    monkeypatch.setattr(runner, "start_mlflow_run", lambda config: None)
+    monkeypatch.setattr(runner, "end_mlflow_run", lambda: None)
+    monkeypatch.setattr(runner.mlflow, "active_run", lambda: dummy_run)
+    monkeypatch.setattr(runner.mlflow, "set_tags", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner.mlflow, "log_artifact", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner.mlflow, "set_tracking_uri", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner.mlflow.artifacts, "download_artifacts", _download_artifacts)
+    monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
+    monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
+    monkeypatch.setattr(runner, "create_agent", lambda config: resume_agent)
+
+    runner.run_experiment(str(config_path), "job-resume", tmp_path)
+
+    assert downloaded_from == ["checkpoints/latest_checkpoint.pth"]
+    assert resume_agent.loaded_checkpoint_paths == [str(checkpoint_file)]
+
+
+def test_run_experiment_resume_fails_if_agent_does_not_implement_load(monkeypatch, tmp_path):
+    config = _build_enabled_config(artifact_profile="minimal")
+    config["checkpointing"]["resume_training"] = True
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    monkeypatch.setattr(runner, "validate_config", lambda raw: _DummyConfigModel(raw))
+    monkeypatch.setattr(runner, "start_mlflow_run", lambda config: None)
+    monkeypatch.setattr(runner, "end_mlflow_run", lambda: None)
+    monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
+    monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
+    monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
+    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+
+    with pytest.raises(RuntimeError, match="does not implement load_checkpoint"):
+        runner.run_experiment(str(config_path), "job-resume-fail", tmp_path)
+
+
+def test_run_experiment_fails_fast_for_placeholder_algorithm(monkeypatch, tmp_path):
+    config = _build_enabled_config(artifact_profile="minimal")
+    config["algorithm"]["name"] = "SingleAgentRL"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    monkeypatch.setattr(runner, "validate_config", lambda raw: _DummyConfigModel(raw))
+
+    with pytest.raises(ValueError, match="placeholder"):
+        runner.run_experiment(str(config_path), "job-placeholder", tmp_path)
