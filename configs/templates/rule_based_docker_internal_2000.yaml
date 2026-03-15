@@ -1,0 +1,100 @@
+# Docker RuleBasedPolicy template: ~2000 simulator steps, dataset from image filesystem.
+
+# Human-readable experiment metadata used across MLflow, logs, and manifests.
+metadata:
+  experiment_name: "rule_based_docker_internal_dataset"
+  run_name: "Rule Based Docker 2000"
+
+# Runtime values are injected automatically by run_experiment.py.
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+# Tracking controls for metrics/log verbosity and MLflow enablement.
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 10
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+# Checkpoint behavior for saving and optional resume/fine-tuning workflows.
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "rule_based_checkpoint.json"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: null
+
+# Bundle metadata/options consumed by inference-side artifact loading.
+bundle:
+  bundle_version: null
+  description: "RBC docker run with ~2000 steps and internal dataset"
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+
+# Simulator wiring.
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
+  # Dataset comes from inside the image (not /data/datasets).
+  dataset_path: /app/datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
+  central_agent: false
+  reward_function: RewardFunction
+  episodes: 1
+  # ~2000 steps in a single episode.
+  simulation_start_time_step: 0
+  simulation_end_time_step: null
+  episode_time_steps: 2000
+  # Export controls for simulator CSV/KPI outputs.
+  export:
+    mode: none
+    export_kpis_on_episode_end: false
+    session_name: null
+
+# Training schedule knobs used by the wrapper/agent update cadence.
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 0
+
+# Topology is environment-derived at runtime.
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+# Algorithm family and hyperparameters.
+algorithm:
+  name: "RuleBasedPolicy"
+  hyperparameters:
+    pv_charge_threshold: 2.0
+    flexibility_hours: 3.0
+    emergency_hours: 1.0
+    pv_preferred_charge_rate: 0.7
+    flex_trickle_charge: 0.0
+    min_charge_rate: 0.0
+    emergency_charge_rate: 1.0
+    default_capacity_kwh: 60.0
+    non_flexible_chargers: []
+  networks: null
+  replay_buffer: null
+  exploration: null
+
+# Optional worker-specific overrides; omitted for docker worker execution.
+execution: null
