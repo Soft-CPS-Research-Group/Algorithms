@@ -533,6 +533,7 @@ def test_run_experiment_resume_uses_mlflow_download_artifacts_and_load(monkeypat
 def test_run_experiment_resume_fails_if_agent_does_not_implement_load(monkeypatch, tmp_path):
     config = _build_enabled_config(artifact_profile="minimal")
     config["checkpointing"]["resume_training"] = True
+    config["tracking"]["mlflow_enabled"] = False
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
