@@ -82,20 +82,50 @@ def test_rbc_emergency_window_forces_full_charge():
 
 def test_rbc_export_artifacts_uses_rule_based_contract(tmp_path):
     agent = make_agent()
+    agent._action_labels = [["electric_vehicle_storage"], ["electric_vehicle_storage_2"]]
     metadata = agent.export_artifacts(
         output_dir=str(tmp_path),
-        context={"config": {"bundle": {"require_observations_envelope": True}}},
+        context={
+            "config": {
+                "bundle": {
+                    "require_observations_envelope": True,
+                    "artifact_config": {
+                        "input_site_key": "site_default",
+                        "use_preprocessor": True,
+                    },
+                    "per_agent_artifact_config": {
+                        "1": {
+                            "input_site_key": "site_b",
+                            "use_preprocessor": False,
+                            "require_observations_envelope": False,
+                        }
+                    },
+                }
+            }
+        },
     )
 
     assert metadata["format"] == "rule_based"
-    assert len(metadata["artifacts"]) == 1
-    artifact = metadata["artifacts"][0]
-    assert artifact["path"] == "policy_agent_0.json"
-    assert artifact["format"] == "rule_based"
-    assert artifact["config"]["require_observations_envelope"] is True
+    assert len(metadata["artifacts"]) == 2
 
-    exported_path = tmp_path / artifact["path"]
-    assert exported_path.exists()
-    payload = json.loads(exported_path.read_text(encoding="utf-8"))
-    assert isinstance(payload.get("default_actions"), dict)
-    assert isinstance(payload.get("rules"), list)
+    first = metadata["artifacts"][0]
+    second = metadata["artifacts"][1]
+
+    assert first["path"] == "policy_agent_0.json"
+    assert first["format"] == "rule_based"
+    assert first["config"]["require_observations_envelope"] is True
+    assert first["config"]["input_site_key"] == "site_default"
+    assert first["config"]["use_preprocessor"] is True
+
+    assert second["path"] == "policy_agent_1.json"
+    assert second["format"] == "rule_based"
+    assert second["config"]["require_observations_envelope"] is True
+    assert second["config"]["input_site_key"] == "site_b"
+    assert second["config"]["use_preprocessor"] is False
+
+    for artifact in metadata["artifacts"]:
+        exported_path = tmp_path / artifact["path"]
+        assert exported_path.exists()
+        payload = json.loads(exported_path.read_text(encoding="utf-8"))
+        assert isinstance(payload.get("default_actions"), dict)
+        assert isinstance(payload.get("rules"), list)

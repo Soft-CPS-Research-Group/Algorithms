@@ -47,6 +47,11 @@ bundle:
   alias_mapping_path: null
   require_observations_envelope: false
   artifact_config: {}
+  # Community example:
+  # per_agent_artifact_config:
+  #   "0": {"input_site_key": "boavista"}
+  #   "1": {"input_site_key": "sao_mamede"}
+  per_agent_artifact_config: {}
 
 # Simulator wiring: local dataset path.
 simulator:

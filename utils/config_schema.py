@@ -272,6 +272,25 @@ class BundleConfig(BaseModel):
         default_factory=dict,
         description="Extra key-values merged into each exported artifact config",
     )
+    per_agent_artifact_config: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Per-agent artifact config overrides keyed by agent_index as string",
+    )
+
+    @field_validator("per_agent_artifact_config")
+    @classmethod
+    def validate_per_agent_artifact_config(
+        cls, value: Dict[str, Dict[str, Any]]
+    ) -> Dict[str, Dict[str, Any]]:
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for key, cfg in value.items():
+            if not isinstance(cfg, dict):
+                raise ValueError(
+                    "bundle.per_agent_artifact_config values must be objects "
+                    f"(got {type(cfg).__name__} for key {key!r})"
+                )
+            normalized[str(key)] = dict(cfg)
+        return normalized
 
 
 class ProjectConfig(BaseModel):

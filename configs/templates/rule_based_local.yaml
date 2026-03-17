@@ -47,6 +47,7 @@ bundle:
   alias_mapping_path: null
   require_observations_envelope: false
   artifact_config: {}
+  per_agent_artifact_config: {}
 
 # Simulator wiring: local dataset path.
 simulator:

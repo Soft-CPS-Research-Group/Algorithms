@@ -13,6 +13,7 @@ import mlflow
 import numpy as np
 
 from algorithms.agents.base_agent import BaseAgent
+from utils.artifact_config_builder import build_auto_artifact_config
 
 
 @dataclass(slots=True)
@@ -176,7 +177,11 @@ class RuleBasedPolicy(BaseAgent):
         context = context or {}
         bundle_cfg = ((context.get("config") or {}).get("bundle") or {})
         require_observations_envelope = bool(bundle_cfg.get("require_observations_envelope", False))
-        extra_artifact_config = dict(bundle_cfg.get("artifact_config") or {})
+        global_artifact_config = dict(bundle_cfg.get("artifact_config") or {})
+        raw_per_agent_config = bundle_cfg.get("per_agent_artifact_config") or {}
+        per_agent_artifact_config = (
+            raw_per_agent_config if isinstance(raw_per_agent_config, dict) else {}
+        )
 
         hyperparameters = {
             "pv_charge_threshold": self.pv_charge_threshold,
@@ -222,11 +227,19 @@ class RuleBasedPolicy(BaseAgent):
             if mlflow.active_run():
                 mlflow.log_artifact(str(output_path), artifact_path="model")
 
-            artifact_config = {
-                "use_preprocessor": False,
-                "require_observations_envelope": require_observations_envelope,
-            }
-            artifact_config.update(extra_artifact_config)
+            raw_agent_override = (
+                per_agent_artifact_config.get(str(agent_index))
+                if str(agent_index) in per_agent_artifact_config
+                else per_agent_artifact_config.get(agent_index)
+            )
+            agent_override = raw_agent_override if isinstance(raw_agent_override, dict) else {}
+            auto_artifact_config = build_auto_artifact_config(context=context, agent_index=agent_index)
+            artifact_config = {"use_preprocessor": False}
+            artifact_config.update(auto_artifact_config)
+            artifact_config.update(global_artifact_config)
+            artifact_config.update(agent_override)
+            if require_observations_envelope:
+                artifact_config["require_observations_envelope"] = True
 
             metadata["artifacts"].append(
                 {

@@ -570,12 +570,18 @@ class Wrapper_CityLearn(RLC):
                 elif isinstance(value, (list, tuple)):
                     reward_config[key] = list(value)
 
+        raw_building_names = getattr(self.env, "building_names", None)
+        building_names = None
+        if isinstance(raw_building_names, list):
+            building_names = [str(name) for name in raw_building_names]
+
         return {
             "observation_names": self.observation_names,
             "encoders": encoders_metadata,
             "action_bounds": action_bounds,
             "action_names": flat_action_names,
             "action_names_by_agent": action_names_by_agent,
+            "building_names": building_names,
             "reward_function": {
                 "name": reward_fn.__class__.__name__ if reward_fn else None,
                 "params": reward_config,

@@ -65,8 +65,19 @@ def test_validate_config_accepts_bundle_section(base_config):
         "alias_mapping_path": "aliases.json",
         "require_observations_envelope": True,
         "artifact_config": {"input_site_key": "site_a"},
+        "per_agent_artifact_config": {
+            "0": {"input_site_key": "boavista"},
+            "1": {"input_site_key": "sao_mamede"},
+        },
     }
     validate_config(config)
+
+
+def test_validate_config_rejects_invalid_per_agent_artifact_config(base_config):
+    config = copy.deepcopy(base_config)
+    config["bundle"]["per_agent_artifact_config"] = {"0": ["invalid"]}
+    with pytest.raises(Exception):
+        validate_config(config)
 
 
 def test_validate_config_accepts_simulator_export_and_time_controls(base_config):

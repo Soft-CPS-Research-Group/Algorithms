@@ -53,6 +53,8 @@ bundle:
   alias_mapping_path: null
   require_observations_envelope: false
   artifact_config: {}
+  # Default single-building run: no per-agent override required.
+  per_agent_artifact_config: {}
 
 # Simulator wiring: dataset schema path, agent mode, and reward implementation.
 simulator:

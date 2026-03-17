@@ -1,7 +1,15 @@
 import random
+from collections import deque
+
 import numpy as np
 import torch
-from collections import deque
+
+
+def _maybe_pin_memory(tensor: torch.Tensor) -> torch.Tensor:
+    """Pin memory only when CUDA is available in the current runtime."""
+    if torch.cuda.is_available():
+        return tensor.pin_memory()
+    return tensor
 
 class MultiAgentReplayBuffer:
     def __init__(self, capacity, num_agents, batch_size):
@@ -31,13 +39,17 @@ class MultiAgentReplayBuffer:
             done (bool): Single done flag shared across all agents.
         """
         for agent_idx in range(self.num_agents):
-            state_tensor = torch.tensor(states[agent_idx], dtype=torch.float32).pin_memory()
-            action_tensor = torch.tensor(actions[agent_idx], dtype=torch.float32).pin_memory()
-            reward_tensor = torch.tensor(rewards[agent_idx], dtype=torch.float32).unsqueeze(0).pin_memory()
-            next_state_tensor = torch.tensor(next_states[agent_idx], dtype=torch.float32).pin_memory()
+            state_tensor = _maybe_pin_memory(torch.tensor(states[agent_idx], dtype=torch.float32))
+            action_tensor = _maybe_pin_memory(torch.tensor(actions[agent_idx], dtype=torch.float32))
+            reward_tensor = _maybe_pin_memory(
+                torch.tensor(rewards[agent_idx], dtype=torch.float32).unsqueeze(0)
+            )
+            next_state_tensor = _maybe_pin_memory(torch.tensor(next_states[agent_idx], dtype=torch.float32))
 
             # Convert done flag (terminated or truncated) to a single tensor.
-            terminated_tensor = torch.tensor(done, dtype=torch.float32).unsqueeze(-1).pin_memory()
+            terminated_tensor = _maybe_pin_memory(
+                torch.tensor(done, dtype=torch.float32).unsqueeze(-1)
+            )
 
             self.buffers[agent_idx].append(
                 (state_tensor, action_tensor, reward_tensor, next_state_tensor, terminated_tensor))

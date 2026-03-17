@@ -59,6 +59,36 @@ When feature names in production differ from those in the manifest, supply a fla
 
 The API rewrites incoming features using this mapping before applying encoders.
 
+## Exporter Config (training-side)
+
+Set bundle behavior in the training config:
+
+```yaml
+bundle:
+  require_observations_envelope: false
+  artifact_config: {}
+  per_agent_artifact_config: {}
+```
+
+- `artifact_config` applies to every exported artifact.
+- `per_agent_artifact_config` applies overrides per `agent_index` (keys `"0"`, `"1"`, ...).
+- `require_observations_envelope: true` force-sets `artifact.config.require_observations_envelope=true` for every artifact.
+- When the dataset schema includes EV electrical topology (`charging_constraints.phases` or `electrical_service.limits.per_phase`), exporter auto-populates `artifact.config.chargers`, `line_limits`, and `max_board_kw` per agent.
+
+Community example:
+
+```yaml
+bundle:
+  require_observations_envelope: true
+  artifact_config:
+    community_optimization_enabled: true
+  per_agent_artifact_config:
+    "0":
+      input_site_key: boavista
+    "1":
+      input_site_key: sao_mamede
+```
+
 ## Deployment Flow
 
 1. **Training job finishes**: `run_experiment.py` writes `artifact_manifest.json` and ONNX files under `runs/jobs/<job_id>/`.

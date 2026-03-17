@@ -20,6 +20,7 @@ from algorithms.utils.replay_buffer import (
     MultiAgentReplayBuffer,
     PrioritizedReplayBuffer,
 )
+from utils.artifact_config_builder import build_auto_artifact_config
 
 REPLAY_BUFFER_REGISTRY = {
     "MultiAgentReplayBuffer": MultiAgentReplayBuffer,
@@ -379,9 +380,12 @@ class MADDPG(BaseAgent):
     ) -> Dict[str, Any]:
         context = context or {}
         bundle_cfg = ((context.get("config") or {}).get("bundle") or {})
-        default_artifact_config = dict(bundle_cfg.get("artifact_config") or {})
-        if bundle_cfg.get("require_observations_envelope", False):
-            default_artifact_config.setdefault("require_observations_envelope", True)
+        global_artifact_config = dict(bundle_cfg.get("artifact_config") or {})
+        raw_per_agent_config = bundle_cfg.get("per_agent_artifact_config") or {}
+        per_agent_artifact_config = (
+            raw_per_agent_config if isinstance(raw_per_agent_config, dict) else {}
+        )
+        require_observations_envelope = bool(bundle_cfg.get("require_observations_envelope", False))
 
         export_root = Path(output_dir)
         onnx_dir = export_root / "onnx_models"
@@ -411,7 +415,19 @@ class MADDPG(BaseAgent):
             logger.info("ONNX model exported for agent {}: {}", i, export_path)
 
             relative_path = export_path.relative_to(export_root)
-            artifact_config = dict(default_artifact_config)
+            raw_agent_override = (
+                per_agent_artifact_config.get(str(i))
+                if str(i) in per_agent_artifact_config
+                else per_agent_artifact_config.get(i)
+            )
+            agent_override = raw_agent_override if isinstance(raw_agent_override, dict) else {}
+            auto_artifact_config = build_auto_artifact_config(context=context, agent_index=i)
+            artifact_config: Dict[str, Any] = {}
+            artifact_config.update(auto_artifact_config)
+            artifact_config.update(global_artifact_config)
+            artifact_config.update(agent_override)
+            if require_observations_envelope:
+                artifact_config["require_observations_envelope"] = True
             metadata["artifacts"].append(
                 {
                     "agent_index": i,
