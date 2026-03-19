@@ -147,5 +147,3 @@ Coverage includes:
 - **Checkpointing** - Save/resume functionality
 - **Manifest** - Artifact metadata generation
 - **Bundle validation** - Export contract compliance
-
-perms test
