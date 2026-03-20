@@ -253,6 +253,8 @@ class Wrapper_CityLearn(RLC):
                 )
 
                 actions = self.predict(observations, deterministic=deterministic)
+                actions = self._clip_actions(actions)
+                self.actions = actions
                 logger.debug("Predicted actions: {}", actions)
 
                 # Apply actions to CityLearn environment
@@ -431,6 +433,41 @@ class Wrapper_CityLearn(RLC):
         self.actions = actions
         self.next_time_step()
         return actions
+
+    def _clip_actions(self, actions: List[List[float]]) -> List[List[float]]:
+        """Clip model actions to each agent action-space bounds."""
+        if not isinstance(actions, list):
+            raise ValueError("Model predicted actions must be provided as a list.")
+
+        clipped_actions: List[List[float]] = []
+        for agent_idx, action_space in enumerate(self.action_space):
+            raw = actions[agent_idx] if agent_idx < len(actions) else []
+            action_array = np.asarray(raw, dtype=np.float64).reshape(-1)
+
+            if hasattr(action_space, "low") and hasattr(action_space, "high"):
+                low = np.asarray(action_space.low, dtype=np.float64).reshape(-1)
+                high = np.asarray(action_space.high, dtype=np.float64).reshape(-1)
+                expected_dim = low.shape[0]
+
+                if action_array.shape[0] != expected_dim:
+                    logger.warning(
+                        "Action dimension mismatch for agent {}: predicted={}, expected={}. "
+                        "Padding/truncating before clipping.",
+                        agent_idx,
+                        action_array.shape[0],
+                        expected_dim,
+                    )
+                    fixed = np.zeros(expected_dim, dtype=np.float64)
+                    copy_dim = min(expected_dim, action_array.shape[0])
+                    if copy_dim > 0:
+                        fixed[:copy_dim] = action_array[:copy_dim]
+                    action_array = fixed
+
+                action_array = np.clip(action_array, low, high)
+
+            clipped_actions.append(action_array.tolist())
+
+        return clipped_actions
 
     def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float],
                next_observations: List[List[float]], terminated: bool, truncated: bool):

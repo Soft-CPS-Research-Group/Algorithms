@@ -43,10 +43,14 @@ class MADDPG(BaseAgent):
         buffer_cfg = self.config["algorithm"]["replay_buffer"]
         network_cfg = self.config["algorithm"]["networks"]
 
-        self.gamma = exploration_cfg["gamma"]
-        self.tau = exploration_cfg["tau"]
-        self.sigma = exploration_cfg["sigma"]
-        self.bias = exploration_cfg["bias"]
+        hyperparams = self.config["algorithm"]["hyperparameters"]
+
+        self.gamma = float(hyperparams.get("gamma", exploration_cfg.get("gamma", 0.99)))
+        self.tau = float(exploration_cfg.get("tau", 0.001))
+        self.sigma = float(exploration_cfg.get("sigma", 0.2))
+        self.sigma_decay = float(exploration_cfg.get("decay", 1.0))
+        self.min_sigma = float(exploration_cfg.get("min_sigma", 0.0))
+        self.bias = float(exploration_cfg.get("bias", 0.0))
         self.end_initial_exploration_time_step = int(exploration_cfg.get("end_initial_exploration_time_step", 0) or 0)
         self.batch_size = buffer_cfg["batch_size"]
         self.lr_actor = float(network_cfg["actor"]["lr"])
@@ -73,7 +77,6 @@ class MADDPG(BaseAgent):
         if self.mlflow_step_sample_interval < 1:
             self.mlflow_step_sample_interval = 1
 
-        hyperparams = self.config["algorithm"]["hyperparameters"]
         topology = self.config.get("topology", {})
 
         self.num_agents = topology.get("num_agents") or hyperparams.get("num_agents")
@@ -86,7 +89,8 @@ class MADDPG(BaseAgent):
         self.replay_buffer = self._initialize_replay_buffer()
         self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
         self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
-        self.scaler = GradScaler(self.device)
+        self.use_amp = self.device.type == "cuda"
+        self.scaler = GradScaler(enabled=self.use_amp)
 
         logger.info("MADDPG initialization complete.")
 
@@ -180,17 +184,15 @@ class MADDPG(BaseAgent):
         global_actions = torch.cat(actions_all, dim=1)
 
         with torch.no_grad():
-            global_next_actions = torch.cat(
-                [self.actor_targets[i](next_states[i]) for i in range(self.num_agents)], dim=1
-            )
+            global_next_actions = torch.cat([self.actor_targets[i](next_states[i]) for i in range(self.num_agents)], dim=1)
             q_targets_next = torch.stack(
                 [critic(global_next_state, global_next_actions) for critic in self.critic_targets]
             )
             q_targets = rewards_all + self.gamma * q_targets_next * (1 - dones_all)
 
         q_expected = torch.stack([critic(global_state, global_actions) for critic in self.critics])
-        with autocast(device_type=self.device.type):
-            critic_loss = mse_loss(q_expected, q_targets.expand_as(q_expected)).mean()
+        with autocast(device_type=self.device.type, enabled=self.use_amp):
+            critic_loss = mse_loss(q_expected, q_targets).mean()
 
         for optimizer in self.critic_optimizers:
             optimizer.zero_grad(set_to_none=True)
@@ -207,9 +209,7 @@ class MADDPG(BaseAgent):
         should_log_step_metrics = self._should_log_training_step(global_learning_step)
 
         for agent_num in range(self.num_agents):
-            critic_loss_value = (
-                q_expected[:, agent_num] - q_targets[:, agent_num].expand_as(q_expected[:, agent_num])
-            ).abs().mean()
+            critic_loss_value = (q_expected[agent_num] - q_targets[agent_num]).abs().mean()
             if should_log_step_metrics and mlflow.active_run():
                 mlflow.log_metric(
                     f"critic_loss_agent_{agent_num}",
@@ -225,11 +225,14 @@ class MADDPG(BaseAgent):
 
             predicted_action = actor(obs)
             global_predicted_actions = torch.cat(
-                [predicted_action if i == agent_num else actions_all[i].detach() for i in range(self.num_agents)],
+                [
+                    predicted_action if i == agent_num else self.actors[i](states[i]).detach()
+                    for i in range(self.num_agents)
+                ],
                 dim=1,
             )
 
-            with autocast(device_type=self.device.type):
+            with autocast(device_type=self.device.type, enabled=self.use_amp):
                 actor_loss = -critic(global_state, global_predicted_actions).mean()
 
             actor_optimizer.zero_grad(set_to_none=True)
@@ -304,6 +307,8 @@ class MADDPG(BaseAgent):
             noise = np.random.normal(scale=self.sigma, size=action.shape) - self.bias
             noisy_actions.append(np.clip(action + noise, -1, 1))
 
+        self.sigma = max(self.min_sigma, self.sigma * self.sigma_decay)
+
         logger.debug("Actions with exploration applied: {}", noisy_actions)
         return [action.tolist() for action in noisy_actions]
 
@@ -341,7 +346,7 @@ class MADDPG(BaseAgent):
         if not checkpoint_file.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
 
-        checkpoint = torch.load(checkpoint_file, map_location=self.device)
+        checkpoint = torch.load(checkpoint_file, map_location=self.device, weights_only=False)
         for i in range(self.num_agents):
             self.actors[i].load_state_dict(checkpoint[f"actor_state_dict_{i}"])
             self.critics[i].load_state_dict(checkpoint[f"critic_state_dict_{i}"])
