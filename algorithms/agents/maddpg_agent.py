@@ -51,7 +51,19 @@ class MADDPG(BaseAgent):
         self.sigma_decay = float(exploration_cfg.get("decay", 1.0))
         self.min_sigma = float(exploration_cfg.get("min_sigma", 0.0))
         self.bias = float(exploration_cfg.get("bias", 0.0))
-        self.end_initial_exploration_time_step = int(exploration_cfg.get("end_initial_exploration_time_step", 0) or 0)
+        noise_clip_raw = exploration_cfg.get("noise_clip")
+        self.noise_clip = float(noise_clip_raw) if noise_clip_raw is not None else None
+        if self.noise_clip is not None and self.noise_clip <= 0.0:
+            self.noise_clip = None
+        self.end_initial_exploration_time_step = max(
+            0,
+            int(exploration_cfg.get("end_initial_exploration_time_step", 0) or 0),
+        )
+        self.random_exploration_steps = max(
+            0,
+            int(exploration_cfg.get("random_exploration_steps", self.end_initial_exploration_time_step) or 0),
+        )
+        self.exploration_step = 0
         self.batch_size = buffer_cfg["batch_size"]
         self.lr_actor = float(network_cfg["actor"]["lr"])
         self.lr_critic = float(network_cfg["critic"]["lr"])
@@ -300,17 +312,31 @@ class MADDPG(BaseAgent):
         return actions
 
     def _predict_with_exploration(self, observations):
+        self.exploration_step += 1
+        if self.exploration_step <= self.random_exploration_steps:
+            return self._predict_random()
+
         deterministic_actions = self._predict_deterministic(observations)
 
         noisy_actions = []
         for action in deterministic_actions:
-            noise = np.random.normal(scale=self.sigma, size=action.shape) - self.bias
+            noise = np.random.normal(loc=self.bias, scale=self.sigma, size=action.shape)
+            if self.noise_clip is not None and self.noise_clip > 0.0:
+                noise = np.clip(noise, -self.noise_clip, self.noise_clip)
             noisy_actions.append(np.clip(action + noise, -1, 1))
 
         self.sigma = max(self.min_sigma, self.sigma * self.sigma_decay)
 
         logger.debug("Actions with exploration applied: {}", noisy_actions)
         return [action.tolist() for action in noisy_actions]
+
+    def _predict_random(self) -> List[List[float]]:
+        random_actions = [
+            np.random.uniform(low=-1.0, high=1.0, size=(self.action_dimension[i],)).tolist()
+            for i in range(self.num_agents)
+        ]
+        logger.debug("Random exploration actions predicted: {}", random_actions)
+        return random_actions
 
     def freeze_layers(self, freeze_actor: bool = True, freeze_critic: bool = False) -> None:
         for actor in self.actors:
