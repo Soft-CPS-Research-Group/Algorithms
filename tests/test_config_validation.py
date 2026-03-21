@@ -100,6 +100,27 @@ def test_validate_config_accepts_simulator_export_and_time_controls(base_config)
     validate_config(config)
 
 
+def test_validate_config_accepts_wrapper_reward_overrides(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["wrapper_reward"] = {
+        "enabled": True,
+        "profile": "cost_limits_v1",
+        "clip_enabled": True,
+        "clip_min": -5.0,
+        "clip_max": 5.0,
+        "squash": "tanh",
+    }
+    validate_config(config)
+
+
+def test_validate_config_rejects_wrapper_reward_invalid_clip_range(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["wrapper_reward"]["clip_min"] = 1.0
+    config["simulator"]["wrapper_reward"]["clip_max"] = -1.0
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
 def test_validate_config_rejects_invalid_simulator_export_mode(base_config):
     config = copy.deepcopy(base_config)
     config["simulator"]["export"] = {

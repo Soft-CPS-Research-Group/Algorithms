@@ -19,6 +19,28 @@ class _DummyConfigModel:
 
 
 class _DummyKpiTable:
+    def __init__(self):
+        self.rows = [
+            {
+                "cost_function": "community_settled_cost_total_eur",
+                "value": 10.0,
+                "name": "District",
+                "level": "district",
+            },
+            {
+                "cost_function": "electrical_service_violation_total_kwh",
+                "value": 2.5,
+                "name": "District",
+                "level": "district",
+            },
+            {
+                "cost_function": "ev_departure_success_rate",
+                "value": 0.97,
+                "name": "District",
+                "level": "district",
+            },
+        ]
+
     def pivot(self, **_kwargs):
         return self
 
@@ -31,8 +53,10 @@ class _DummyKpiTable:
     def stack(self, **_kwargs):
         return {("cost", "building"): 1.23}
 
-    def to_dict(self):
-        return {"cost": {"building": 1.23}}
+    def to_dict(self, *args, **kwargs):
+        if kwargs.get("orient") == "records":
+            return list(self.rows)
+        return {row["cost_function"]: row["value"] for row in self.rows}
 
 
 class _DummyEnv:
@@ -52,15 +76,26 @@ class _DummyWrapper:
         self.action_dimension = [1]
         self.action_space = [object()]
         self.local_metrics_logger = None
-        self.learn_call_kwargs = None
+        self.learn_calls = []
         _DummyWrapper.last_instance = self
 
     def set_model(self, _agent):
         return None
 
     def learn(self, **kwargs):
-        self.learn_call_kwargs = kwargs
+        self.learn_calls.append(kwargs)
         return None
+
+    def get_wrapper_reward_metadata(self):
+        return {
+            "enabled": False,
+            "profile": "cost_limits_v1",
+            "version": "cost_limits_v1.0.0",
+            "clip_enabled": True,
+            "clip_min": -10.0,
+            "clip_max": 10.0,
+            "squash": "none",
+        }
 
     def describe_environment(self):
         return {
@@ -79,7 +114,7 @@ class _DummyWrapperWithLocalMetrics(_DummyWrapper):
         self.local_metrics_logger = LocalMetricsLogger(config.get("runtime", {}).get("log_dir"))
 
     def learn(self, **kwargs):
-        self.learn_call_kwargs = kwargs
+        self.learn_calls.append(kwargs)
         if self.local_metrics_logger:
             self.local_metrics_logger.log({"sample_metric": 1.0}, 0)
 
@@ -148,6 +183,7 @@ def _build_enabled_config(*, artifact_profile: str) -> dict:
             "dataset_path": "dummy.json",
             "central_agent": False,
             "reward_function": "RewardFunction",
+            "reward_function_kwargs": {},
             "episodes": 3,
             "simulation_start_time_step": None,
             "simulation_end_time_step": None,
@@ -156,6 +192,14 @@ def _build_enabled_config(*, artifact_profile: str) -> dict:
                 "mode": "none",
                 "export_kpis_on_episode_end": False,
                 "session_name": None,
+            },
+            "wrapper_reward": {
+                "enabled": False,
+                "profile": "cost_limits_v1",
+                "clip_enabled": True,
+                "clip_min": -10.0,
+                "clip_max": 10.0,
+                "squash": "none",
             },
         },
         "training": {
@@ -207,6 +251,7 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
             "dataset_path": "dummy.json",
             "central_agent": False,
             "reward_function": "RewardFunction",
+            "reward_function_kwargs": {},
             "episodes": 2,
             "simulation_start_time_step": 12,
             "simulation_end_time_step": 48,
@@ -215,6 +260,14 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
                 "mode": "end",
                 "export_kpis_on_episode_end": True,
                 "session_name": "job-session",
+            },
+            "wrapper_reward": {
+                "enabled": False,
+                "profile": "cost_limits_v1",
+                "clip_enabled": True,
+                "clip_min": -10.0,
+                "clip_max": 10.0,
+                "squash": "none",
             },
         },
         "training": {
@@ -254,7 +307,8 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
 
     runner.run_experiment(str(config_path), "job-mlflow-off", tmp_path)
     assert _DummyWrapper.last_instance is not None
-    assert _DummyWrapper.last_instance.learn_call_kwargs == {"episodes": 2}
+    assert _DummyWrapper.last_instance.learn_calls[0] == {"episodes": 2}
+    assert _DummyWrapper.last_instance.learn_calls == [{"episodes": 2}]
 
     job_root = tmp_path / "jobs" / "job-mlflow-off"
     assert (job_root / "logs").exists()
@@ -308,6 +362,8 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert result_payload["status"] == "completed"
     assert result_payload["kpi_source"] == "simulator_export"
     assert result_payload["export_kpis_on_episode_end"] is True
+    assert result_payload["wrapper_reward_profile"] == "cost_limits_v1"
+    assert result_payload["wrapper_reward_version"] == "cost_limits_v1.0.0"
 
     # Input config file must remain unchanged; resolved values are written separately.
     unchanged_input = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -337,7 +393,7 @@ def test_run_experiment_mlflow_disabled_keeps_local_metrics_fallback(monkeypatch
     assert any("sample_metric" in record.get("metrics", {}) for record in records)
 
 
-def test_run_experiment_writes_disabled_kpi_result_when_export_toggle_off(monkeypatch, tmp_path):
+def test_run_experiment_writes_not_collected_kpi_result_when_export_toggle_off(monkeypatch, tmp_path):
     config = _build_enabled_config(artifact_profile="minimal")
     config["tracking"]["mlflow_enabled"] = False
     config["simulator"]["export"]["export_kpis_on_episode_end"] = False
@@ -354,13 +410,13 @@ def test_run_experiment_writes_disabled_kpi_result_when_export_toggle_off(monkey
 
     runner.run_experiment(str(config_path), "job-kpi-disabled", tmp_path)
     assert _DummyWrapper.last_instance is not None
-    assert _DummyWrapper.last_instance.learn_call_kwargs == {"episodes": 3}
+    assert _DummyWrapper.last_instance.learn_calls == [{"episodes": 3}]
 
     result_payload = json.loads(
         (tmp_path / "jobs" / "job-kpi-disabled" / "results" / "result.json").read_text(encoding="utf-8")
     )
     assert result_payload["status"] == "completed"
-    assert result_payload["kpi_source"] == "disabled"
+    assert result_payload["kpi_source"] == "not_collected"
 
 
 def test_run_experiment_uses_env_tracking_uri_adds_mlflow_identity_and_curated_artifacts(monkeypatch, tmp_path):

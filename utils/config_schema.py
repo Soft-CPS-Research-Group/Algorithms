@@ -84,16 +84,33 @@ class SimulatorExportConfig(BaseModel):
     session_name: Optional[str] = None
 
 
+class WrapperRewardConfig(BaseModel):
+    enabled: bool = False
+    profile: Literal["cost_limits_v1"] = "cost_limits_v1"
+    clip_enabled: bool = True
+    clip_min: float = -10.0
+    clip_max: float = 10.0
+    squash: Literal["none", "tanh"] = "none"
+
+    @model_validator(mode="after")
+    def validate_clip_range(self) -> "WrapperRewardConfig":
+        if self.clip_max < self.clip_min:
+            raise ValueError("simulator.wrapper_reward.clip_max must be >= clip_min")
+        return self
+
+
 class SimulatorConfig(BaseModel):
     dataset_name: str
     dataset_path: str
     central_agent: bool = False
     reward_function: str
+    reward_function_kwargs: Dict[str, Any] = Field(default_factory=dict)
     episodes: int = Field(default=1, ge=1)
     simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
     simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
     export: SimulatorExportConfig = SimulatorExportConfig()
+    wrapper_reward: WrapperRewardConfig = WrapperRewardConfig()
 
     @field_validator("episode_time_steps")
     @classmethod

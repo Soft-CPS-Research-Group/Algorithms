@@ -61,7 +61,18 @@ simulator:
   dataset_name: citylearn_challenge_2022_phase_all_plus_evs
   dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
   central_agent: false
-  reward_function: RewardFunction
+  reward_function: CostHardConstraintReward
+  reward_function_kwargs:
+    export_credit_ratio: 0.8
+    grid_violation_penalty: 60.0
+    power_outage_penalty: 120.0
+    ev_departure_window_hours: 1.0
+    ev_departure_deficit_penalty: 120.0
+    ev_departure_missed_penalty: 250.0
+    battery_soc_min: 0.05
+    battery_soc_max: 0.95
+    battery_soc_violation_penalty: 30.0
+    community_import_penalty: 0.0
   # Number of episodes executed by the training loop.
   episodes: 1
   # Optional simulation window overrides (null = dataset schema defaults).
@@ -73,6 +84,14 @@ simulator:
     mode: none
     export_kpis_on_episode_end: false
     session_name: null
+  # Wrapper-only reward shaping profile (simulator remains untouched).
+  wrapper_reward:
+    enabled: false
+    profile: cost_limits_v1
+    clip_enabled: true
+    clip_min: -10.0
+    clip_max: 10.0
+    squash: none
 
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:
@@ -111,9 +130,11 @@ algorithm:
       bias: 0.3
       sigma: 0.2
       decay: 0.995
+      noise_clip: 0.3
       gamma: 0.99
       tau: 0.001
       end_initial_exploration_time_step: 100
+      random_exploration_steps: 100
 
 # Optional worker-specific overrides (e.g., Deucalion). Keep null for local runs.
 execution: null

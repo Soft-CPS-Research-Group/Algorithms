@@ -55,6 +55,7 @@ simulator:
   dataset_path: /data/datasets/citylearn_charging_constraints_demo/schema.json
   central_agent: false
   reward_function: RewardFunction
+  reward_function_kwargs: {}
   episodes: 1
   # Optional simulation window overrides (null = dataset schema defaults).
   simulation_start_time_step: null
@@ -65,6 +66,13 @@ simulator:
     mode: none
     export_kpis_on_episode_end: false
     session_name: null
+  wrapper_reward:
+    enabled: false
+    profile: cost_limits_v1
+    clip_enabled: true
+    clip_min: -10.0
+    clip_max: 10.0
+    squash: none
 
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:

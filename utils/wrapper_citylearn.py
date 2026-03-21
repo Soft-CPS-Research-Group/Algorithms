@@ -41,6 +41,29 @@ ENCODER_TYPE_MAP: Dict[str, type[Encoder]] = {
     "RemoveFeature": RemoveFeature,
 }
 
+WRAPPER_REWARD_PROFILES: Dict[str, Dict[str, Any]] = {
+    "cost_limits_v1": {
+        "version": "cost_limits_v1.0.0",
+        "enabled_terms": {
+            "energy_cost": True,
+            "grid_violation": True,
+            "ev_success": True,
+            "community": True,
+        },
+        "weights": {
+            "energy_cost": 1.0,
+            "grid_violation": 1.0,
+            "ev_success": 0.5,
+            "community": 0.05,
+        },
+        "params": {
+            "export_credit_ratio": 0.8,
+            "community_export_bonus_ratio": 0.2,
+            "ev_soc_tolerance": 0.1,
+        },
+    },
+}
+
 
 @lru_cache(maxsize=1)
 def _load_encoder_rules() -> List[Dict[str, Any]]:
@@ -128,6 +151,7 @@ class Wrapper_CityLearn(RLC):
         simulator_cfg = config.get("simulator", {})
         checkpoint_cfg = config.get("checkpointing", {})
         tracking_cfg = config.get("tracking", {})
+        wrapper_reward_cfg = simulator_cfg.get("wrapper_reward", {})
 
         self.steps_between_training_updates = training_cfg.get("steps_between_training_updates", 1)
         self.default_episodes = int(simulator_cfg.get("episodes", 1) or 1)
@@ -164,6 +188,35 @@ class Wrapper_CityLearn(RLC):
         if self.system_metrics_interval < 1:
             self.system_metrics_interval = 10
         self.progress_tracker = ProgressTracker(progress_path)
+
+        self.wrapper_reward_enabled = bool(wrapper_reward_cfg.get("enabled", False))
+        self.wrapper_reward_profile = str(wrapper_reward_cfg.get("profile", "cost_limits_v1")).strip() or "cost_limits_v1"
+        if self.wrapper_reward_profile not in WRAPPER_REWARD_PROFILES:
+            logger.warning(
+                "Unknown wrapper reward profile '{}'; falling back to 'cost_limits_v1'.",
+                self.wrapper_reward_profile,
+            )
+            self.wrapper_reward_profile = "cost_limits_v1"
+        self.wrapper_reward_profile_config = WRAPPER_REWARD_PROFILES[self.wrapper_reward_profile]
+        self.wrapper_reward_version = str(self.wrapper_reward_profile_config.get("version", "unknown"))
+        self.wrapper_reward_clip_enabled = bool(wrapper_reward_cfg.get("clip_enabled", True))
+        self.wrapper_reward_clip_min = float(wrapper_reward_cfg.get("clip_min", -10.0))
+        self.wrapper_reward_clip_max = float(wrapper_reward_cfg.get("clip_max", 10.0))
+        if self.wrapper_reward_clip_max < self.wrapper_reward_clip_min:
+            logger.warning(
+                "Invalid wrapper reward clip range [{}, {}]; disabling clipping.",
+                self.wrapper_reward_clip_min,
+                self.wrapper_reward_clip_max,
+            )
+            self.wrapper_reward_clip_enabled = False
+        self.wrapper_reward_squash = str(wrapper_reward_cfg.get("squash", "none")).strip().lower() or "none"
+        if self.wrapper_reward_squash not in {"none", "tanh"}:
+            logger.warning(
+                "Unknown wrapper reward squash '{}'; falling back to 'none'.",
+                self.wrapper_reward_squash,
+            )
+            self.wrapper_reward_squash = "none"
+
         self.checkpoint_manager = CheckpointManager(
             base_dir=self.log_dir,
             interval=checkpoint_cfg.get("checkpoint_interval"),
@@ -259,6 +312,7 @@ class Wrapper_CityLearn(RLC):
 
                 # Apply actions to CityLearn environment
                 next_observations, rewards, terminated, truncated, _ = self.env.step(actions)
+                rewards = self._shape_rewards(rewards, next_observations)
                 rewards_list.append(rewards)
 
                 # Update model if not in deterministic mode
@@ -469,6 +523,142 @@ class Wrapper_CityLearn(RLC):
 
         return clipped_actions
 
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if np.isnan(parsed) or np.isinf(parsed):
+            return default
+        return parsed
+
+    def _build_observation_lookup(self, agent_index: int, observation: List[float]) -> Dict[str, float]:
+        names: List[str] = []
+        if agent_index < len(self.observation_names):
+            names = [str(name) for name in self.observation_names[agent_index]]
+        values = np.asarray(observation, dtype=np.float64).reshape(-1)
+        return {name: self._safe_float(value) for name, value in zip(names, values)}
+
+    @staticmethod
+    def _extract_signal(observation_lookup: Dict[str, float], candidates: List[str], default: float = 0.0) -> float:
+        for key in candidates:
+            if key in observation_lookup:
+                return observation_lookup[key]
+        return default
+
+    def _shape_rewards(self, rewards: List[float], observations: List[List[float]]) -> List[float]:
+        if not self.wrapper_reward_enabled:
+            return [self._safe_float(reward) for reward in rewards]
+
+        profile = self.wrapper_reward_profile_config
+        enabled_terms = profile.get("enabled_terms", {})
+        weights = profile.get("weights", {})
+        params = profile.get("params", {})
+
+        observation_lookup = [
+            self._build_observation_lookup(agent_index=i, observation=observation)
+            for i, observation in enumerate(observations)
+        ]
+
+        community_net_consumption = sum(
+            self._extract_signal(
+                values,
+                ["net_electricity_consumption", "net_electricity_consumption_without_storage"],
+                default=0.0,
+            )
+            for values in observation_lookup
+        )
+        community_export_bonus_ratio = self._safe_float(params.get("community_export_bonus_ratio"), default=0.2)
+        community_term = -abs(community_net_consumption) + (
+            max(-community_net_consumption, 0.0) * community_export_bonus_ratio
+        )
+
+        shaped_rewards: List[float] = []
+        export_credit_ratio = self._safe_float(params.get("export_credit_ratio"), default=0.8)
+        ev_soc_tolerance = max(self._safe_float(params.get("ev_soc_tolerance"), default=0.1), 1e-6)
+
+        for i, reward in enumerate(rewards):
+            base_reward = self._safe_float(reward)
+            obs_values = observation_lookup[i] if i < len(observation_lookup) else {}
+
+            net_consumption = self._extract_signal(
+                obs_values,
+                ["net_electricity_consumption", "net_electricity_consumption_without_storage"],
+                default=0.0,
+            )
+            electricity_price = max(
+                self._extract_signal(
+                    obs_values,
+                    ["electricity_pricing", "electricity_price", "electricity_tariff"],
+                    default=0.0,
+                ),
+                0.0,
+            )
+            import_cost = max(net_consumption, 0.0) * electricity_price
+            export_credit = max(-net_consumption, 0.0) * electricity_price * export_credit_ratio
+            energy_cost_term = -(import_cost - export_credit)
+
+            grid_violation = self._extract_signal(
+                obs_values,
+                [
+                    "electrical_service_violation",
+                    "electrical_service_violation_kwh",
+                    "service_violation",
+                    "service_violation_kwh",
+                ],
+                default=0.0,
+            )
+            grid_violation_term = -max(grid_violation, 0.0)
+
+            ev_success_signal = self._extract_signal(
+                obs_values,
+                [
+                    "ev_departure_success",
+                    "ev_departure_success_rate",
+                    "ev_departure_status",
+                    "departure_success",
+                ],
+                default=np.nan,
+            )
+            if not np.isnan(ev_success_signal):
+                clipped_signal = float(np.clip(ev_success_signal, 0.0, 1.0))
+                ev_term = 2.0 * clipped_signal - 1.0
+            else:
+                soc = self._extract_signal(obs_values, ["ev_soc", "soc"], default=np.nan)
+                required_soc = self._extract_signal(
+                    obs_values,
+                    ["ev_required_soc_departure", "required_soc_departure", "required_soc"],
+                    default=np.nan,
+                )
+                if np.isnan(soc) or np.isnan(required_soc):
+                    ev_term = 0.0
+                else:
+                    distance = abs(soc - required_soc)
+                    ev_term = float(np.clip(1.0 - (distance / ev_soc_tolerance), -1.0, 1.0))
+
+            shaped_reward = base_reward
+            if enabled_terms.get("energy_cost", True):
+                shaped_reward += self._safe_float(weights.get("energy_cost"), default=1.0) * energy_cost_term
+            if enabled_terms.get("grid_violation", True):
+                shaped_reward += self._safe_float(weights.get("grid_violation"), default=1.0) * grid_violation_term
+            if enabled_terms.get("ev_success", True):
+                shaped_reward += self._safe_float(weights.get("ev_success"), default=1.0) * ev_term
+            if enabled_terms.get("community", True):
+                shaped_reward += self._safe_float(weights.get("community"), default=1.0) * community_term
+
+            if self.wrapper_reward_clip_enabled:
+                shaped_reward = float(
+                    np.clip(shaped_reward, self.wrapper_reward_clip_min, self.wrapper_reward_clip_max)
+                )
+
+            if self.wrapper_reward_squash == "tanh":
+                shaped_reward = float(np.tanh(shaped_reward))
+
+            shaped_rewards.append(shaped_reward)
+
+        return shaped_rewards
+
     def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float],
                next_observations: List[List[float]], terminated: bool, truncated: bool):
         """
@@ -623,6 +813,18 @@ class Wrapper_CityLearn(RLC):
                 "name": reward_fn.__class__.__name__ if reward_fn else None,
                 "params": reward_config,
             },
+            "wrapper_reward": self.get_wrapper_reward_metadata(),
+        }
+
+    def get_wrapper_reward_metadata(self) -> dict:
+        return {
+            "enabled": bool(self.wrapper_reward_enabled),
+            "profile": self.wrapper_reward_profile,
+            "version": self.wrapper_reward_version,
+            "clip_enabled": bool(self.wrapper_reward_clip_enabled),
+            "clip_min": float(self.wrapper_reward_clip_min),
+            "clip_max": float(self.wrapper_reward_clip_max),
+            "squash": self.wrapper_reward_squash,
         }
 
 

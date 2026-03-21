@@ -17,8 +17,10 @@ from loguru import logger
 from pydantic import ValidationError
 
 from citylearn.citylearn import CityLearnEnv
-from citylearn.reward_function import RewardFunction
-from reward_function.V2G_Reward import V2GPenaltyReward
+from reward_function.registry import (
+    REWARD_FUNCTION_MAP,
+    get_available_reward_function_names,
+)
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.registry import (
     build_unsupported_algorithm_message,
@@ -31,12 +33,6 @@ from utils.wrapper_citylearn import Wrapper_CityLearn as Wrapper
 from utils.artifact_manifest import build_manifest, write_manifest
 from utils.bundle_validator import validate_bundle_contract
 from utils.config_schema import validate_config
-
-# Available reward functions keyed by config name
-REWARD_FUNCTION_MAP = {
-    "V2GPenaltyReward": V2GPenaltyReward,
-    "RewardFunction": RewardFunction,
-}
 
 DEFAULT_LOCAL_BASE = Path(os.environ.get("OPEVA_BASE_DIR", "./runs"))
 
@@ -493,7 +489,8 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         reward_key = config["simulator"]["reward_function"]
         reward_cls = REWARD_FUNCTION_MAP.get(reward_key)
         if reward_cls is None:
-            raise ValueError(f"Unsupported reward function '{reward_key}'.")
+            available = ", ".join(get_available_reward_function_names())
+            raise ValueError(f"Unsupported reward function '{reward_key}'. Available reward functions: {available}.")
 
         simulator_cfg = config["simulator"]
         export_cfg = simulator_cfg.get("export", {})
@@ -505,6 +502,9 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "export_kpis_on_episode_end": export_cfg.get("export_kpis_on_episode_end", False),
             "render_directory": str(path_info["simulation_data_dir"]),
         }
+        reward_function_kwargs = simulator_cfg.get("reward_function_kwargs")
+        if isinstance(reward_function_kwargs, dict) and reward_function_kwargs:
+            env_kwargs["reward_function_kwargs"] = reward_function_kwargs
         if export_cfg.get("session_name"):
             env_kwargs["render_session_name"] = export_cfg["session_name"]
 
@@ -532,6 +532,19 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             config.get("topology", {}).get("observation_dimensions"),
             config.get("topology", {}).get("action_dimensions"),
         )
+        set_default_config(config, ["simulator", "reward_function_kwargs"], {})
+        set_default_config(
+            config,
+            ["simulator", "wrapper_reward"],
+            {
+                "enabled": False,
+                "profile": "cost_limits_v1",
+                "clip_enabled": True,
+                "clip_min": -10.0,
+                "clip_max": 10.0,
+                "squash": "none",
+            },
+        )
 
         resolved_config_path = path_info["resolved_config_path"]
         _write_resolved_config(config, resolved_config_path)
@@ -549,26 +562,34 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         logger.info("Starting training loop")
         wrapper.learn(episodes=int(simulator_cfg.get("episodes", 1) or 1))
 
-        kpi_metrics = {}
-        if export_cfg.get("export_kpis_on_episode_end", False):
-            result_payload = {
-                "status": "completed",
-                "kpi_source": "simulator_export",
-                "export_kpis_on_episode_end": True,
-                "simulation_data_dir": str(path_info["simulation_data_dir"]),
-            }
-            logger.info("KPI evaluation delegated to simulator export; skipping explicit env.evaluate().")
+        kpi_source = "simulator_export" if export_cfg.get("export_kpis_on_episode_end", False) else "not_collected"
+        if kpi_source == "simulator_export":
+            logger.info("KPI extraction delegated to simulator export files.")
         else:
-            result_payload = {
-                "status": "completed",
-                "kpi_source": "disabled",
-                "message": (
-                    "KPI evaluation is disabled. Enable simulator.export.export_kpis_on_episode_end "
-                    "to export KPIs directly from the environment."
-                ),
-                "simulation_data_dir": str(path_info["simulation_data_dir"]),
+            logger.info("No KPI extraction performed during run; use exported artifacts for ad hoc comparison.")
+
+        wrapper_reward_metadata = (
+            wrapper.get_wrapper_reward_metadata()
+            if hasattr(wrapper, "get_wrapper_reward_metadata")
+            else {
+                "enabled": bool((simulator_cfg.get("wrapper_reward") or {}).get("enabled", False)),
+                "profile": str((simulator_cfg.get("wrapper_reward") or {}).get("profile", "cost_limits_v1")),
+                "version": None,
+                "clip_enabled": bool((simulator_cfg.get("wrapper_reward") or {}).get("clip_enabled", True)),
+                "clip_min": (simulator_cfg.get("wrapper_reward") or {}).get("clip_min", -10.0),
+                "clip_max": (simulator_cfg.get("wrapper_reward") or {}).get("clip_max", 10.0),
+                "squash": str((simulator_cfg.get("wrapper_reward") or {}).get("squash", "none")),
             }
-            logger.info("KPI evaluation disabled by config; skipping explicit env.evaluate().")
+        )
+
+        result_payload = {
+            "status": "completed",
+            "kpi_source": kpi_source,
+            "export_kpis_on_episode_end": bool(export_cfg.get("export_kpis_on_episode_end", False)),
+            "simulation_data_dir": str(path_info["simulation_data_dir"]),
+            "wrapper_reward_profile": wrapper_reward_metadata.get("profile"),
+            "wrapper_reward_version": wrapper_reward_metadata.get("version"),
+        }
 
         result_path = path_info["result_path"]
         with open(result_path, "w", encoding="utf-8") as result_file:
@@ -598,7 +619,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "tracking_uri": tracking_uri,
             "mlflow_enabled": mlflow_enabled,
             "artifact_profile": artifact_profile,
-            "kpi_metric_count": len(kpi_metrics),
+            "kpi_metric_count": 0,
             "timestamp": datetime.utcnow().isoformat() + "Z",
         }
         summary_path = path_info["summary_path"]
