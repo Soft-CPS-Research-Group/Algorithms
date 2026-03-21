@@ -228,6 +228,14 @@ class TopologyConfig(BaseModel):
     action_space: Optional[Any] = None
 
 
+class CommunityCoordinatorlgorithmConfig(BaseModel):
+    name: Literal["CommunityCoordinator"]
+    hyperparameters: AlgorithmHyperparameters
+    networks: AlgorithmNetworks
+    replay_buffer: ReplayBufferConfig
+    exploration: ExplorationParams
+
+
 class MADDPGAlgorithmConfig(BaseModel):
     name: Literal["MADDPG"]
     hyperparameters: AlgorithmHyperparameters
@@ -341,7 +349,7 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    algorithm: Union[CommunityCoordinatorlgorithmConfig, MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
