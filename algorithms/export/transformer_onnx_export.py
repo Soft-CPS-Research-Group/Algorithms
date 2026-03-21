@@ -11,7 +11,7 @@ from typing import Optional, Tuple
 
 import torch
 
-from algorithms.constants import DEFAULT_ONNX_OPSET
+from algorithms.constants import TRANSFORMER_ONNX_OPSET
 
 
 def export_transformer_actor_to_onnx(
@@ -20,7 +20,7 @@ def export_transformer_actor_to_onnx(
     example_ca_tokens: torch.Tensor,
     example_sro_tokens: torch.Tensor,
     example_nfc_token: torch.Tensor,
-    opset_version: int = DEFAULT_ONNX_OPSET,
+    opset_version: int = TRANSFORMER_ONNX_OPSET,
 ) -> None:
     """Export TransformerActor to ONNX with dynamic axes.
     
