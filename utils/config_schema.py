@@ -467,6 +467,15 @@ class TopologyConfig(BaseModel):
     action_space: Optional[Any] = None
 
 
+class CommunityCoordinatorAlgorithmConfig(BaseModel):
+    algorithm: Literal["CommunityCoordinator"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    hyperparameters: AlgorithmHyperparameters
+    networks: AlgorithmNetworks
+    replay_buffer: ReplayBufferConfig
+    exploration: ExplorationParams
+
+
 class ActorCriticAlgorithmConfig(BaseModel):
     algorithm: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
     count: int = Field(default=1, ge=1, description="Number of identical agents at this level")

@@ -1,0 +1,101 @@
+# Community Coordinator — local development template.
+# Experiment: A-O1-S-MLP (Path A input, O1 output, single-step, MLP only)
+# Inner local controller: RuleBasedPolicy (fixed, not trained)
+
+metadata:
+  experiment_name: "cc_local_template"
+  run_name: "CC Local Run — A-O1-S-MLP"
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 10
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "latest_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 200
+
+bundle:
+  bundle_version: null
+  description: null
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
+  central_agent: false
+  reward_function: RewardFunction
+  episodes: 1
+  episode_time_steps: 200      # Short window for smoke testing
+  simulation_start_time_step: null
+  simulation_end_time_step: null
+  export:
+    mode: none
+    export_kpis_on_episode_end: false
+    session_name: null
+
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 2
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+# Algorithm family and hyperparameters.
+algorithm:
+  name: "CommunityCoordinator"
+  hyperparameters:
+    gamma: 0.995
+  networks:
+    actor:
+      class: "Actor"
+      layers: [1024, 512, 256]
+      lr: 5.0e-5
+    critic:
+      class: "Critic"
+      layers: [1024, 512, 256]
+      lr: 5.0e-4
+  replay_buffer:
+    class: "MultiAgentReplayBuffer"
+    capacity: 200000
+    batch_size: 256
+  exploration:
+    strategy: "GaussianNoise"
+    params:
+      bias: 0.1
+      sigma: 0.15
+      decay: 0.99
+      gamma: 0.99
+      tau: 0.001
+      end_initial_exploration_time_step: 96
+
+execution: null

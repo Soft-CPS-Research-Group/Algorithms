@@ -15,6 +15,7 @@ from algorithms.agents.baseline_policies import (
     RandomPolicy,
 )
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.agents.community_coordinator_agent import CommunityCoordinatorAgent
 from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.agents.masac_agent import MASAC
 from algorithms.agents.matd3_agent import MATD3
@@ -24,6 +25,7 @@ from algorithms.execution_unit import ExecutionUnit
 from algorithms.pipeline import Ensemble, Pipeline
 
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
+    "CommunityCoordinator": CommunityCoordinatorAgent,
     "HAPPO": HAPPO,
     "IPPO": IPPO,
     "MADDPG": MADDPG,
