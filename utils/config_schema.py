@@ -214,6 +214,86 @@ class SingleAgentRLAlgorithmConfig(BaseModel):
     exploration: Optional[ExplorationParams] = None
 
 
+# --- Transformer-based MADDPG Configuration ---
+
+
+class TransformerNetworkConfig(BaseModel):
+    """Configuration for Transformer network hyperparameters."""
+    d_model: int = Field(default=64, ge=8, description="Embedding dimension")
+    nhead: int = Field(default=4, ge=1, description="Number of attention heads")
+    num_layers: int = Field(default=2, ge=1, description="Number of encoder layers")
+    dim_feedforward: int = Field(default=128, ge=8, description="FFN hidden size")
+    dropout: float = Field(default=0.0, ge=0.0, le=1.0, description="Dropout rate")
+    max_tokens: int = Field(default=128, ge=4, description="Maximum total tokens")
+
+    @field_validator("d_model")
+    @classmethod
+    def validate_d_model_divisible_by_nhead(cls, v: int, info) -> int:
+        # Note: nhead validation happens via model_validator since we need both fields
+        return v
+
+    @model_validator(mode="after")
+    def validate_divisibility(self) -> "TransformerNetworkConfig":
+        if self.d_model % self.nhead != 0:
+            raise ValueError(
+                f"d_model ({self.d_model}) must be divisible by nhead ({self.nhead})"
+            )
+        return self
+
+
+class TransformerTokenizerConfig(BaseModel):
+    """Configuration for feature-to-token mapping."""
+    ca_feature_patterns: List[str] = Field(
+        default_factory=lambda: [
+            "electric_vehicle_soc",
+            "connected_state",
+            "departure_time",
+            "arrival_time",
+        ],
+        description="Patterns identifying CA features",
+    )
+    sro_feature_patterns: List[str] = Field(
+        default_factory=lambda: [
+            "outdoor_dry_bulb",
+            "carbon_intensity",
+            "electricity_pricing",
+        ],
+        description="Patterns identifying SRO features",
+    )
+    nfc_feature_patterns: List[str] = Field(
+        default_factory=lambda: ["non_shiftable_load"],
+        description="Patterns identifying NFC features",
+    )
+
+
+class TransformerNetworksConfig(BaseModel):
+    """Networks configuration for TransformerMADDPG."""
+    transformer: TransformerNetworkConfig = TransformerNetworkConfig()
+    lr_actor: float = Field(default=1e-4, gt=0, description="Actor learning rate")
+    lr_critic: float = Field(default=1e-3, gt=0, description="Critic learning rate")
+
+
+class TransformerReplayBufferConfig(BaseModel):
+    """Replay buffer configuration for TransformerMADDPG."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    class_name: str = Field(default="TransformerReplayBuffer", alias="class")
+    capacity: int = Field(default=100000, ge=1, description="Buffer capacity")
+    batch_size: int = Field(default=256, ge=1, description="Training batch size")
+    max_ca: Optional[int] = Field(default=None, ge=1, description="Max CA tokens (auto if None)")
+    max_sro: Optional[int] = Field(default=None, ge=1, description="Max SRO tokens (auto if None)")
+
+
+class TransformerMADDPGAlgorithmConfig(BaseModel):
+    """Configuration for TransformerMADDPG algorithm."""
+    name: Literal["TransformerMADDPG"]
+    hyperparameters: AlgorithmHyperparameters = AlgorithmHyperparameters(gamma=0.99)
+    networks: TransformerNetworksConfig = TransformerNetworksConfig()
+    tokenizer: TransformerTokenizerConfig = TransformerTokenizerConfig()
+    replay_buffer: TransformerReplayBufferConfig = TransformerReplayBufferConfig()
+    exploration: ExplorationParams
+
+
 class DeucalionExecutionConfig(BaseModel):
     partition: Optional[str] = None
     account: Optional[str] = None
@@ -301,7 +381,12 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    algorithm: Union[
+        MADDPGAlgorithmConfig,
+        RuleBasedAlgorithmConfig,
+        SingleAgentRLAlgorithmConfig,
+        TransformerMADDPGAlgorithmConfig,
+    ]
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
