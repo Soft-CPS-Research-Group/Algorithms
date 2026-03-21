@@ -228,6 +228,15 @@ class TopologyConfig(BaseModel):
     action_space: Optional[Any] = None
 
 
+class CommunityCoordinatorlgorithmConfig(BaseModel):
+    algorithm: Literal["CommunityCoordinator"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    hyperparameters: AlgorithmHyperparameters
+    networks: AlgorithmNetworks
+    replay_buffer: ReplayBufferConfig
+    exploration: ExplorationParams
+
+
 class MADDPGStageConfig(BaseModel):
     """Pipeline stage describing a MADDPG agent."""
 
