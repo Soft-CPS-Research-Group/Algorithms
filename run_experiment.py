@@ -361,6 +361,10 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     mlflow_enabled = bool(tracking.get("mlflow_enabled", True))
     log_level = str(tracking.get("log_level", "INFO")).upper()
     active_log_file = path_info["log_dir"] / f"{job_id}.log"
+    # Keep a single canonical log file per job (`<job_id>.log`).
+    # The worker already captures container stdout/stderr separately, so
+    # removing default sinks avoids duplicate lines in the same file.
+    logger.remove()
     file_sink_id = logger.add(str(active_log_file), level=log_level)
     logger.info("Logging bootstrap to {}", active_log_file)
 
@@ -415,21 +419,6 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         runtime["experiment_id"] = experiment_id
         runtime["mlflow_run_url"] = _build_mlflow_run_url(mlflow_ui_base_url, experiment_id, run_id if run else None)
 
-        target_log_file = path_info["log_dir"] / f"{run_id}.log"
-        if target_log_file != active_log_file:
-            try:
-                if target_log_file.exists():
-                    target_log_file.unlink()
-                if active_log_file.exists():
-                    active_log_file.replace(target_log_file)
-                active_log_file = target_log_file
-            except OSError as exc:
-                logger.warning(
-                    "Could not rename log file {} -> {}: {}",
-                    active_log_file,
-                    target_log_file,
-                    exc,
-                )
         logger.info("Logging to {}", active_log_file)
 
         # Persist job metadata for orchestrators/consumers.

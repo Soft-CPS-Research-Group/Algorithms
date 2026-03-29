@@ -313,7 +313,7 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     job_root = tmp_path / "jobs" / "job-mlflow-off"
     bundle_root = job_root / "bundle"
     assert (job_root / "logs").exists()
-    log_path = job_root / "logs" / "local-job-mlflow-off.log"
+    log_path = job_root / "logs" / "job-mlflow-off.log"
     assert log_path.exists()
     assert "Starting experiment" in log_path.read_text(encoding="utf-8")
     assert (job_root / "progress" / "progress.json").exists()
