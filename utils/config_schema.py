@@ -244,6 +244,8 @@ class DeucalionExecutionConfig(BaseModel):
     mem_gb: Optional[int] = Field(default=None, ge=1)
     gpus: Optional[int] = Field(default=None, ge=0)
     sif_path: Optional[str] = None
+    sif_image: Optional[str] = None
+    sif_version: Optional[str] = None
     modules: List[str] = Field(default_factory=list)
     required_paths: List[str] = Field(default_factory=list)
     command_mode: Literal["run", "exec"] = "run"

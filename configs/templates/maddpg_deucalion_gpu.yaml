@@ -139,6 +139,8 @@ execution:
     cpus_per_task: 8
     mem_gb: 16
     sif_path: /projects/F202508843CPCAA0/tiagocalof/images/simulator.sif
+    sif_image: calof/opeva_simulator
+    sif_version: latest
     modules: []
     datasets:
       - datasets/citylearn_charging_constraints_demo
