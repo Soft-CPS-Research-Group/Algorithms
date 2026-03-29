@@ -4,6 +4,7 @@
 metadata:
   experiment_name: "rule_based_docker_internal_dataset"
   run_name: "Rule Based Docker 2000"
+  community_name: null
 
 # Runtime values are injected automatically by run_experiment.py.
 runtime:

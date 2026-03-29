@@ -39,7 +39,7 @@ Key responsibilities:
 All configurations are validated against `utils/config_schema.py` before training begins.
 
 Sections:
-- `metadata`: experiment and run identifiers (used in MLflow).
+- `metadata`: experiment/run identifiers plus optional catalog fields (`community_name`, `description`, etc.).
 - `runtime`: paths injected at runtime (leave null in files).
 - `tracking`: log level, MLflow toggle.
 - `checkpointing`: resume/transfer-learning parameters and cadence.
@@ -107,7 +107,7 @@ This manifest enables a separate inference service to apply the same preprocessi
 ### Manifest Fields in Detail
 
 - `manifest_version`: increment when the structure changes to keep inference code compatible.
-- `metadata`: mirrors the config’s experiment name/run name so manifests can be catalogued.
+- `metadata`: mirrors config metadata (for example `experiment_name`, `run_name`, `community_name`) so manifests can be catalogued.
 - `topology`: injected by the wrapper; contains agent counts and per-agent observation/action dimensionality.
 - `environment`: detailed encoder definitions (type + params), action names/bounds, reward configuration.
 - `agent`: metadata returned by the agent with one artifact entry per agent (`agent_index`, `path`, `format`, `config`), plus optional dimensions for ONNX exports.

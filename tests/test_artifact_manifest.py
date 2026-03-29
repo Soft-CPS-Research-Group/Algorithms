@@ -3,7 +3,7 @@ from utils.artifact_manifest import build_manifest
 
 def test_manifest_contains_core_sections_and_normalized_artifacts():
     config = {
-        "metadata": {"experiment_name": "test", "run_name": "run"},
+        "metadata": {"experiment_name": "test", "run_name": "run", "community_name": "porto_cluster_a"},
         "bundle": {
             "bundle_version": "2026-03-10-v1",
             "description": "Bundle emitted from unit test",
@@ -43,6 +43,7 @@ def test_manifest_contains_core_sections_and_normalized_artifacts():
 
     assert manifest["manifest_version"] == 1
     assert manifest["metadata"]["experiment_name"] == "test"
+    assert manifest["metadata"]["community_name"] == "porto_cluster_a"
     assert manifest["metadata"]["bundle_version"] == "2026-03-10-v1"
     assert manifest["metadata"]["description"] == "Bundle emitted from unit test"
     assert manifest["metadata"]["alias_mapping_path"] == "aliases.json"

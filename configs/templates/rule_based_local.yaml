@@ -4,6 +4,7 @@
 metadata:
   experiment_name: "rule_based_local_template"
   run_name: "Rule Based Local"
+  community_name: null
 
 # Runtime values are injected automatically by run_experiment.py.
 runtime:

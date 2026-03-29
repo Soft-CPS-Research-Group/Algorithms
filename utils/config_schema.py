@@ -12,6 +12,11 @@ from typing_extensions import Literal
 class MetadataConfig(BaseModel):
     experiment_name: str = Field(..., min_length=1, description="Name registered in MLflow")
     run_name: str = Field(..., min_length=1, description="Friendly name for the MLflow run")
+    community_name: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        description="Optional community/site identifier for the run",
+    )
     description: Optional[str] = Field(default=None, description="Optional human-readable bundle description")
     bundle_version: Optional[str] = Field(default=None, description="Optional bundle version string")
     alias_mapping_path: Optional[str] = Field(

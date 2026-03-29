@@ -4,6 +4,7 @@
 metadata:
   experiment_name: "single_agent_local_template"
   run_name: "Single Agent Local"
+  community_name: null
 
 # Runtime values are injected automatically by run_experiment.py.
 runtime:

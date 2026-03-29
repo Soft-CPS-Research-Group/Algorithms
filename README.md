@@ -158,6 +158,7 @@ Important knobs:
 - `simulator.episodes` – number of training episodes to execute.
 - `simulator.export.*` – CityLearn export controls:
   `mode` (`none|during|end`), KPI CSV toggle, optional fixed session name.
+- `metadata.community_name` – optional business/domain grouping key (useful for UI filtering/catalogs).
 - `bundle.*` – manifest/export metadata (`bundle_version`, `description`,
   `alias_mapping_path`) and default `artifact.config` knobs (for example
   `require_observations_envelope`).

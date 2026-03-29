@@ -19,6 +19,12 @@ def test_validate_config_success(base_config):
     validate_config(base_config)
 
 
+def test_validate_config_accepts_metadata_community_name(base_config):
+    config = copy.deepcopy(base_config)
+    config["metadata"]["community_name"] = "porto_cluster_a"
+    validate_config(config)
+
+
 def test_validate_config_missing_algorithm(base_config):
     config = copy.deepcopy(base_config)
     config["algorithm"] = None

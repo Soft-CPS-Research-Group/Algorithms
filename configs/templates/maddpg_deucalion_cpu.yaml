@@ -4,6 +4,7 @@
 metadata:
   experiment_name: "maddpg_deucalion_cpu_template"
   run_name: "MADDPG Deucalion CPU"
+  community_name: null
 
 # Runtime values are injected automatically by run_experiment.py.
 runtime:

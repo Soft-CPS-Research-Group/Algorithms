@@ -4,6 +4,7 @@
 metadata:
   experiment_name: "single_agent_deucalion_gpu_template"
   run_name: "Single Agent Deucalion GPU"
+  community_name: null
 
 # Runtime values are injected automatically by run_experiment.py.
 runtime:

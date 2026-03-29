@@ -7,6 +7,7 @@
 metadata:
   experiment_name: "maddpg_local_default"
   run_name: "MADDPG Local Run"
+  community_name: null
 
 # Runtime values are injected automatically by run_experiment.py.
 # Leave them null in version-controlled config files.

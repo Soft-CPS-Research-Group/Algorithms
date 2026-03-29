@@ -4,6 +4,7 @@
 metadata:
   experiment_name: "maddpg_local_template"
   run_name: "MADDPG Local"
+  community_name: null
 
 # Runtime values are injected automatically by run_experiment.py.
 runtime:
