@@ -311,14 +311,16 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert _DummyWrapper.last_instance.learn_calls == [{"episodes": 2}]
 
     job_root = tmp_path / "jobs" / "job-mlflow-off"
+    bundle_root = job_root / "bundle"
     assert (job_root / "logs").exists()
     log_path = job_root / "logs" / "local-job-mlflow-off.log"
     assert log_path.exists()
     assert "Starting experiment" in log_path.read_text(encoding="utf-8")
     assert (job_root / "progress" / "progress.json").exists()
     assert (job_root / "results" / "result.json").exists()
-    assert (job_root / "onnx_models" / "agent_0.onnx").exists()
-    assert (job_root / "artifact_manifest.json").exists()
+    assert (bundle_root / "onnx_models" / "agent_0.onnx").exists()
+    assert (bundle_root / "artifact_manifest.json").exists()
+    assert not (bundle_root / "config.resolved.yaml").exists()
     assert (job_root / "job_info.json").exists()
     assert (job_root / "config.resolved.yaml").exists()
     assert (job_root / "results" / "summary.json").exists()

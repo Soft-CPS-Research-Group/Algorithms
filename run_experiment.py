@@ -70,13 +70,15 @@ def _derive_job_id(job_id: Optional[str]) -> str:
 
 def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
     job_dir = base_dir / "jobs" / job_id
+    bundle_dir = job_dir / "bundle"
     results_dir = job_dir / "results"
     progress_dir = job_dir / "progress"
     paths = {
         "job_dir": job_dir,
+        "bundle_dir": bundle_dir,
         "log_dir": job_dir / "logs",
         "checkpoints_dir": job_dir / "checkpoints",
-        "onnx_dir": job_dir / "onnx_models",
+        "onnx_dir": bundle_dir / "onnx_models",
         "results_dir": results_dir,
         "simulation_data_dir": results_dir / "simulation_data",
         "progress_dir": progress_dir,
@@ -85,7 +87,7 @@ def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
         "progress_path": progress_dir / "progress.json",
         "mlflow_dir": base_dir / "mlflow" / "mlruns",
         "job_info_path": job_dir / "job_info.json",
-        "artifact_manifest_path": job_dir / "artifact_manifest.json",
+        "artifact_manifest_path": bundle_dir / "artifact_manifest.json",
         "resolved_config_path": job_dir / "config.resolved.yaml",
     }
 
@@ -440,6 +442,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             {
                 "job_id": job_id,
                 "job_dir": str(path_info["job_dir"]),
+                "bundle_dir": str(path_info["bundle_dir"]),
                 "run_id": run_id,
                 "run_name": run_name,
                 "mlflow_run_id": run_id if mlflow_enabled else None,
@@ -562,6 +565,26 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         logger.info("Starting training loop")
         wrapper.learn(episodes=int(simulator_cfg.get("episodes", 1) or 1))
 
+        # Ensure progress file reaches terminal state with 100% completion.
+        completed_episodes = int(simulator_cfg.get("episodes", 1) or 1)
+        final_step_total = int(getattr(wrapper, "episode_time_steps", 0) or 0)
+        final_step = max(0, final_step_total - 1)
+        final_global_step = max(0, int(getattr(wrapper, "global_step", 0) or 0))
+        final_global_step_total = (
+            completed_episodes * final_step_total if final_step_total > 0 else None
+        )
+        if getattr(wrapper, "progress_tracker", None) is not None:
+            wrapper.progress_tracker.update(
+                episode=max(0, completed_episodes - 1),
+                step=final_step,
+                global_step=final_global_step,
+                episode_total=completed_episodes,
+                step_total=final_step_total if final_step_total > 0 else None,
+                global_step_total=final_global_step_total,
+                status="completed",
+                force_complete=True,
+            )
+
         kpi_source = "simulator_export" if export_cfg.get("export_kpis_on_episode_end", False) else "not_collected"
         if kpi_source == "simulator_export":
             logger.info("KPI extraction delegated to simulator export files.")
@@ -596,7 +619,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             json.dump(result_payload, result_file, indent=2)
         logger.info("Result payload written to {}", result_path)
 
-        artifacts_root = path_info["job_dir"].resolve()
+        artifacts_root = path_info["bundle_dir"].resolve()
         environment_metadata = wrapper.describe_environment()
         agent_metadata = agent.export_artifacts(
             output_dir=str(artifacts_root),
@@ -620,6 +643,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "mlflow_enabled": mlflow_enabled,
             "artifact_profile": artifact_profile,
             "kpi_metric_count": 0,
+            "bundle_dir": str(path_info["bundle_dir"]),
             "timestamp": datetime.utcnow().isoformat() + "Z",
         }
         summary_path = path_info["summary_path"]
