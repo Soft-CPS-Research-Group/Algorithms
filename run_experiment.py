@@ -106,6 +106,34 @@ def _write_resolved_config(config: dict, output_path: Path) -> None:
         yaml.safe_dump(config, handle, sort_keys=False)
 
 
+def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
+    """Prefer local schema payloads to avoid remote dataset-index lookups.
+
+    CityLearn may query remote dataset registries when receiving a string schema
+    identifier/path. If the provided path exists locally, loading and passing the
+    JSON payload avoids those external calls (important on restricted HPC nodes).
+    """
+    if not isinstance(dataset_path_value, str):
+        return dataset_path_value
+
+    candidate = Path(dataset_path_value)
+    if not candidate.exists():
+        return dataset_path_value
+
+    try:
+        with candidate.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return dataset_path_value
+
+    if isinstance(payload, dict):
+        if payload.get("root_directory") in (None, ""):
+            payload["root_directory"] = str(candidate.resolve().parent)
+        return payload
+
+    return dataset_path_value
+
+
 def _resolve_tracking_uri(runtime: dict[str, Any], fallback_mlflow_dir: Path) -> str:
     """Resolve MLflow tracking URI with env-first precedence."""
     env_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
@@ -486,10 +514,12 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
 
         simulator_cfg = config["simulator"]
         export_cfg = simulator_cfg.get("export", {})
+        schema_input = _resolve_citylearn_schema_input(simulator_cfg["dataset_path"])
         env_kwargs = {
-            "schema": simulator_cfg["dataset_path"],
+            "schema": schema_input,
             "central_agent": simulator_cfg["central_agent"],
             "reward_function": reward_cls,
+            "offline": True,
             "render_mode": export_cfg.get("mode", "none"),
             "export_kpis_on_episode_end": export_cfg.get("export_kpis_on_episode_end", False),
             "render_directory": str(path_info["simulation_data_dir"]),
