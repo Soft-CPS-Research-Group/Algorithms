@@ -383,6 +383,12 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         raise ValueError(message)
 
     metadata = config.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    job_name_override = (os.environ.get("OPEVA_JOB_NAME") or "").strip()
+    if job_name_override:
+        metadata["run_name"] = job_name_override
+        config["metadata"] = metadata
     runtime = config.setdefault("runtime", {})
     tracking = config.get("tracking", {})
     artifact_profile = str(tracking.get("mlflow_artifacts_profile", "minimal")).strip().lower() or "minimal"

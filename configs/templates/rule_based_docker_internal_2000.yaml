@@ -4,7 +4,8 @@
 metadata:
   experiment_name: "rule_based_docker_internal_dataset"
   run_name: "Rule Based Docker 2000"
-  community_name: null
+  community_name: "default_community"
+  description: "Rule-based docker run with internal dataset"
 
 # Runtime values are injected automatically by run_experiment.py.
 runtime:
@@ -65,8 +66,8 @@ simulator:
   episode_time_steps: 2000
   # Export controls for simulator CSV/KPI outputs.
   export:
-    mode: none
-    export_kpis_on_episode_end: false
+    mode: end
+    export_kpis_on_episode_end: true
     session_name: null
   wrapper_reward:
     enabled: false

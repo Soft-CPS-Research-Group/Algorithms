@@ -129,14 +129,10 @@ Use this diagram as the mental model when wiring CI or new algorithms.
 - Templates under `configs/templates/*.yaml` provide algorithm x environment
   starting points:
   `maddpg_local.yaml`,
-  `maddpg_deucalion_cpu.yaml`,
-  `maddpg_deucalion_gpu.yaml`,
   `rule_based_local.yaml`,
-  `rule_based_deucalion_cpu.yaml`,
-  `rule_based_deucalion_gpu.yaml`,
+  `rule_based_docker_internal_2000.yaml`,
   `single_agent_local.yaml`,
-  `single_agent_deucalion_cpu.yaml`,
-  `single_agent_deucalion_gpu.yaml`.
+  all executor/runtime specifics now chosen at launch time (UI/payload), not in template YAML.
 
 Important knobs:
 

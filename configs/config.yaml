@@ -7,7 +7,8 @@
 metadata:
   experiment_name: "maddpg_local_default"
   run_name: "MADDPG Local Run"
-  community_name: null
+  community_name: "default_community"
+  description: "Default MADDPG training configuration"
 
 # Runtime values are injected automatically by run_experiment.py.
 # Leave them null in version-controlled config files.
@@ -82,8 +83,8 @@ simulator:
   episode_time_steps: null
   # Export controls for simulator CSV/KPI outputs.
   export:
-    mode: none
-    export_kpis_on_episode_end: false
+    mode: end
+    export_kpis_on_episode_end: true
     session_name: null
   # Wrapper-only reward shaping profile (simulator remains untouched).
   wrapper_reward:
