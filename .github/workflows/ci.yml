@@ -69,12 +69,21 @@ jobs:
     needs: docker
     runs-on: ubuntu-latest
     env:
-      DOCKER_TAGS: ${{ needs.docker.outputs.tags }}
       SOURCE_IMAGE_REPO: calof/opeva_simulator
       SIF_ARTIFACT_REPO: calof/opeva_simulator_sif
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Docker metadata (SIF tags)
+        id: meta_sif
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.SOURCE_IMAGE_REPO }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short,prefix=sha-
+            type=ref,event=tag
 
       - name: Install Apptainer
         run: |
@@ -97,10 +106,12 @@ jobs:
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | oras login docker.io --username "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Build and publish SIF OCI artifacts
+        env:
+          DOCKER_TAGS: ${{ steps.meta_sif.outputs.tags }}
         run: |
           set -euo pipefail
 
-          mapfile -t refs < <(printf '%s\n' "${DOCKER_TAGS}" | sed '/^$/d')
+          mapfile -t refs < <(printf '%s\n' "${DOCKER_TAGS}" | tr ',' '\n' | sed '/^[[:space:]]*$/d')
           if [ "${#refs[@]}" -eq 0 ]; then
             echo "No Docker tags received from metadata output."
             exit 1
