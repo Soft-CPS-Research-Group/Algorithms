@@ -229,6 +229,13 @@ class MADDPG(BaseAgent):
                     step=global_learning_step,
                 )
 
+        # Compute detached policy actions once and reuse them during actor updates.
+        with torch.no_grad():
+            detached_policy_actions = [
+                actor(state).detach()
+                for actor, state in zip(self.actors, states)
+            ]
+
         total_actor_loss = 0.0
         for agent_num, (actor, critic, actor_optimizer) in enumerate(
             zip(self.actors, self.critics, self.actor_optimizers)
@@ -236,13 +243,9 @@ class MADDPG(BaseAgent):
             obs = states[agent_num]
 
             predicted_action = actor(obs)
-            global_predicted_actions = torch.cat(
-                [
-                    predicted_action if i == agent_num else self.actors[i](states[i]).detach()
-                    for i in range(self.num_agents)
-                ],
-                dim=1,
-            )
+            joint_policy_actions = list(detached_policy_actions)
+            joint_policy_actions[agent_num] = predicted_action
+            global_predicted_actions = torch.cat(joint_policy_actions, dim=1)
 
             with autocast(device_type=self.device.type, enabled=self.use_amp):
                 actor_loss = -critic(global_state, global_predicted_actions).mean()
@@ -253,6 +256,10 @@ class MADDPG(BaseAgent):
             clip_grad_norm_(actor.parameters(), max_norm=1.0)
             self.scaler.step(actor_optimizer)
             self.scaler.update()
+
+            # Keep cached detached actions in sync with sequential actor updates.
+            with torch.no_grad():
+                detached_policy_actions[agent_num] = actor(obs).detach()
 
             total_actor_loss += actor_loss.item()
             logger.debug("Actor {} updated. Loss: {:.4f}.", agent_num, actor_loss.item())
@@ -279,11 +286,11 @@ class MADDPG(BaseAgent):
                 step=global_learning_step,
             )
 
-        logger.info(
-            "Update complete. Avg Critic Loss: {:.4f}, Avg Actor Loss: {:.4f}.",
-            critic_loss.item(),
-            total_actor_loss / self.num_agents,
-        )
+        log_message = "Update complete. Avg Critic Loss: {:.4f}, Avg Actor Loss: {:.4f}."
+        if should_log_step_metrics:
+            logger.info(log_message, critic_loss.item(), total_actor_loss / self.num_agents)
+        else:
+            logger.debug(log_message, critic_loss.item(), total_actor_loss / self.num_agents)
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return global_learning_step >= self.end_initial_exploration_time_step
@@ -304,7 +311,7 @@ class MADDPG(BaseAgent):
 
     def _predict_deterministic(self, observations):
         actions = []
-        with torch.no_grad():
+        with torch.inference_mode():
             for actor, obs in zip(self.actors, observations):
                 action = actor(torch.as_tensor(obs, dtype=torch.float32, device=self.device)).cpu().numpy()
                 actions.append(action)

@@ -344,7 +344,11 @@ class Wrapper_CityLearn(RLC):
                     ram_usage = psutil.virtual_memory().percent
 
                 # PyTorch-specific GPU memory tracking (kept only PyTorch measurement)
-                if self.system_metrics_enabled and torch.cuda.is_available():
+                if (
+                    self.system_metrics_enabled
+                    and (self.global_step % self.system_metrics_interval == 0)
+                    and torch.cuda.is_available()
+                ):
                     gpu_mem_allocated = torch.cuda.memory_allocated() / 1024 ** 2  # Convert to MB
                     gpu_mem_reserved = torch.cuda.memory_reserved() / 1024 ** 2  # Reserved for caching
                 else:
@@ -354,34 +358,39 @@ class Wrapper_CityLearn(RLC):
                 # Step duration calculation
                 step_duration = time.time() - step_start_time
 
-                # Consolidated MLflow logging
-                metrics = {
-                    f"Agent_{i}_Reward": reward for i, reward in enumerate(rewards)
-                }
+                should_log_step = self._should_log_step(self.global_step)
+                if should_log_step:
+                    metrics = {
+                        f"Agent_{i}_Reward": reward for i, reward in enumerate(rewards)
+                    }
+                    if cpu_usage is not None:
+                        metrics["CPU_Usage"] = cpu_usage
+                        metrics["RAM_Usage"] = ram_usage
+                    if gpu_mem_allocated is not None:
+                        metrics["GPU_PyTorch_Allocated_MB"] = gpu_mem_allocated
+                        metrics["GPU_PyTorch_Reserved_MB"] = gpu_mem_reserved
+                    metrics["Step_Duration"] = step_duration
 
-                if cpu_usage is not None:
-                    metrics["CPU_Usage"] = cpu_usage
-                    metrics["RAM_Usage"] = ram_usage
-                if gpu_mem_allocated is not None:
-                    metrics["GPU_PyTorch_Allocated_MB"] = gpu_mem_allocated
-                    metrics["GPU_PyTorch_Reserved_MB"] = gpu_mem_reserved
-                metrics["Step_Duration"] = step_duration
-
-                if self._should_log_step(self.global_step):
                     if mlflow.active_run():
                         mlflow.log_metrics(metrics, step=self.global_step)
                     elif self.local_metrics_logger:
                         self.local_metrics_logger.log(metrics, self.global_step)
 
-                logger.info(
-                    f'Time step: {time_step + 1}/{self.episode_time_steps},'
-                    f' Episode: {episode + 1}/{episodes},'
-                    f' Actions: {actions},'
-                    f' Rewards: {rewards},'
-                    f' CPU: {cpu_usage}%, RAM: {ram_usage}%,'
-                    f' GPU Allocated: {gpu_mem_allocated} MB, GPU Reserved: {gpu_mem_reserved} MB'
-                    f' Step Duration: {step_duration}'
-                )
+                    logger.info(
+                        "Time step: {}/{}, Episode: {}/{}, Actions: {}, Rewards: {}, CPU: {}%, RAM: {}%, "
+                        "GPU Allocated: {} MB, GPU Reserved: {} MB Step Duration: {}",
+                        time_step + 1,
+                        self.episode_time_steps,
+                        episode + 1,
+                        episodes,
+                        actions,
+                        rewards,
+                        cpu_usage,
+                        ram_usage,
+                        gpu_mem_allocated,
+                        gpu_mem_reserved,
+                        step_duration,
+                    )
 
                 if self.progress_updates_enabled and (self.global_step % self.progress_update_interval == 0):
                     self.progress_tracker.update(

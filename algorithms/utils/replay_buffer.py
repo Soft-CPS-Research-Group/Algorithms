@@ -11,6 +11,7 @@ def _maybe_pin_memory(tensor: torch.Tensor) -> torch.Tensor:
         return tensor.pin_memory()
     return tensor
 
+
 class MultiAgentReplayBuffer:
     def __init__(self, capacity, num_agents, batch_size):
         """
@@ -39,23 +40,25 @@ class MultiAgentReplayBuffer:
             next_states (list): List of next states per agent.
             done (bool): Single done flag shared across all agents.
         """
+        # Keep transitions on pageable CPU memory and pin only sampled batches.
+        # This avoids long-lived pinned allocations that can hurt host memory performance.
         state_tensors = [
-            _maybe_pin_memory(torch.tensor(states[agent_idx], dtype=torch.float32))
+            torch.tensor(states[agent_idx], dtype=torch.float32)
             for agent_idx in range(self.num_agents)
         ]
         action_tensors = [
-            _maybe_pin_memory(torch.tensor(actions[agent_idx], dtype=torch.float32))
+            torch.tensor(actions[agent_idx], dtype=torch.float32)
             for agent_idx in range(self.num_agents)
         ]
         reward_tensors = [
-            _maybe_pin_memory(torch.tensor(rewards[agent_idx], dtype=torch.float32).unsqueeze(0))
+            torch.tensor(rewards[agent_idx], dtype=torch.float32).unsqueeze(0)
             for agent_idx in range(self.num_agents)
         ]
         next_state_tensors = [
-            _maybe_pin_memory(torch.tensor(next_states[agent_idx], dtype=torch.float32))
+            torch.tensor(next_states[agent_idx], dtype=torch.float32)
             for agent_idx in range(self.num_agents)
         ]
-        done_tensor = _maybe_pin_memory(torch.tensor(float(done), dtype=torch.float32).unsqueeze(0))
+        done_tensor = torch.tensor(float(done), dtype=torch.float32).unsqueeze(0)
 
         self.buffer.append((state_tensors, action_tensors, reward_tensors, next_state_tensors, done_tensor))
 
@@ -73,24 +76,24 @@ class MultiAgentReplayBuffer:
         states_batch, actions_batch, rewards_batch, next_states_batch, dones_batch = zip(*batch)
 
         states = [
-            torch.stack([transition[agent_idx] for transition in states_batch])
+            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in states_batch]))
             for agent_idx in range(self.num_agents)
         ]
         actions = [
-            torch.stack([transition[agent_idx] for transition in actions_batch])
+            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in actions_batch]))
             for agent_idx in range(self.num_agents)
         ]
         rewards = [
-            torch.stack([transition[agent_idx] for transition in rewards_batch])
+            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in rewards_batch]))
             for agent_idx in range(self.num_agents)
         ]
         next_states = [
-            torch.stack([transition[agent_idx] for transition in next_states_batch])
+            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in next_states_batch]))
             for agent_idx in range(self.num_agents)
         ]
 
         # Keep historical shape: [num_agents, batch_size, 1].
-        done_tensor = torch.stack(dones_batch)
+        done_tensor = _maybe_pin_memory(torch.stack(dones_batch))
         done_tensor = done_tensor.unsqueeze(0).expand(self.num_agents, -1, -1)
 
         return states, actions, rewards, next_states, done_tensor
