@@ -536,6 +536,12 @@ def test_run_experiment_resume_fails_if_agent_does_not_implement_load(monkeypatc
     config["tracking"]["mlflow_enabled"] = False
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    
+    # Create a dummy checkpoint file
+    checkpoints_dir = tmp_path / "jobs" / "job-resume-fail" / "checkpoints"
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_file = checkpoints_dir / "latest_checkpoint.pth"
+    checkpoint_file.write_text("checkpoint", encoding="utf-8")
 
     monkeypatch.setattr(runner, "validate_config", lambda raw: _DummyConfigModel(raw))
     monkeypatch.setattr(runner, "start_mlflow_run", lambda config: None)

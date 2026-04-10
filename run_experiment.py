@@ -285,33 +285,23 @@ def _resolve_local_checkpoint_path(
     raise RuntimeError(f"Could not resolve local checkpoint path. Tried: {attempted}.")
 
 
-def _resume_agent_from_checkpoint(
+def _resolve_checkpoint_path(
     *,
-    agent: BaseAgent,
     config: dict[str, Any],
     tracking_uri: str,
     checkpoints_dir: Path,
 ) -> Optional[Path]:
-    """Resume training by loading an agent checkpoint if requested in config."""
+    """Resolve checkpoint path if resume_training is enabled."""
     checkpoint_cfg = config.get("checkpointing", {}) or {}
     if not bool(checkpoint_cfg.get("resume_training", False)):
         return None
 
-    if not _agent_supports_checkpoint_loading(agent):
-        raise RuntimeError(
-            f"resume_training=true but agent '{agent.__class__.__name__}' does not implement load_checkpoint()."
-        )
-
     checkpoint_artifact = str(checkpoint_cfg.get("checkpoint_artifact", "latest_checkpoint.pth"))
     checkpoint_run_id = checkpoint_cfg.get("checkpoint_run_id")
-    if bool(checkpoint_cfg.get("use_best_checkpoint_artifact", False)) and not checkpoint_run_id:
-        metadata_cfg = config.get("metadata", {}) or {}
-        checkpoint_run_id = _resolve_best_checkpoint_run_id(
-            agent,
-            experiment_name=metadata_cfg.get("experiment_name"),
-        )
-        logger.info("Resolved best checkpoint run id: {}", checkpoint_run_id)
-
+    
+    # Note: use_best_checkpoint_artifact requires agent, so skip for now
+    # (can be added later if needed)
+    
     if checkpoint_run_id:
         checkpoint_path = _download_checkpoint_from_mlflow(
             checkpoint_run_id=str(checkpoint_run_id),
@@ -324,6 +314,63 @@ def _resume_agent_from_checkpoint(
             checkpoint_artifact=checkpoint_artifact,
             checkpoints_dir=checkpoints_dir,
         )
+    
+    logger.info("Resolved checkpoint path: {}", checkpoint_path)
+    return checkpoint_path
+
+
+def _resume_agent_from_checkpoint(
+    *,
+    agent: BaseAgent,
+    config: dict[str, Any],
+    tracking_uri: str,
+    checkpoints_dir: Path,
+    checkpoint_path: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resume training by loading an agent checkpoint if requested in config.
+    
+    Parameters
+    ----------
+    checkpoint_path : Optional[Path]
+        Pre-resolved checkpoint path. If None, will resolve from config.
+    """
+    checkpoint_cfg = config.get("checkpointing", {}) or {}
+    if not bool(checkpoint_cfg.get("resume_training", False)):
+        return None
+
+    if not _agent_supports_checkpoint_loading(agent):
+        raise RuntimeError(
+            f"resume_training=true but agent '{agent.__class__.__name__}' does not implement load_checkpoint()."
+        )
+
+    # Use pre-resolved path if provided, otherwise resolve now
+    if checkpoint_path is not None:
+        # Path already resolved, just load it
+        pass
+    else:
+        # Resolve checkpoint path
+        checkpoint_artifact = str(checkpoint_cfg.get("checkpoint_artifact", "latest_checkpoint.pth"))
+        checkpoint_run_id = checkpoint_cfg.get("checkpoint_run_id")
+        if bool(checkpoint_cfg.get("use_best_checkpoint_artifact", False)) and not checkpoint_run_id:
+            metadata_cfg = config.get("metadata", {}) or {}
+            checkpoint_run_id = _resolve_best_checkpoint_run_id(
+                agent,
+                experiment_name=metadata_cfg.get("experiment_name"),
+            )
+            logger.info("Resolved best checkpoint run id: {}", checkpoint_run_id)
+
+        if checkpoint_run_id:
+            checkpoint_path = _download_checkpoint_from_mlflow(
+                checkpoint_run_id=str(checkpoint_run_id),
+                checkpoint_artifact=checkpoint_artifact,
+                tracking_uri=tracking_uri,
+                download_dir=checkpoints_dir,
+            )
+        else:
+            checkpoint_path = _resolve_local_checkpoint_path(
+                checkpoint_artifact=checkpoint_artifact,
+                checkpoints_dir=checkpoints_dir,
+            )
 
     agent.load_checkpoint(str(checkpoint_path))
     logger.info("Agent '{}' resumed from checkpoint {}", agent.__class__.__name__, checkpoint_path)
@@ -538,12 +585,30 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         logger.info("Resolved runtime config written to {}", resolved_config_path)
 
         agent = create_agent(config=config)
+        
+        # Resolve checkpoint path before attach_environment if resuming
+        checkpoint_path = _resolve_checkpoint_path(
+            config=config,
+            tracking_uri=tracking_uri,
+            checkpoints_dir=path_info["checkpoints_dir"],
+        )
+        
+        # Extract checkpoint CA dimensions for cross-topology transfer
+        if checkpoint_path and hasattr(agent, "extract_checkpoint_ca_dims"):
+            ca_dims = agent.extract_checkpoint_ca_dims(str(checkpoint_path))
+            agent._checkpoint_ca_dims = ca_dims
+            logger.info("Extracted checkpoint CA dims: {}", ca_dims)
+        
+        # Set model on wrapper (calls attach_environment)
         wrapper.set_model(agent)
+        
+        # Load checkpoint weights after model is built
         _resume_agent_from_checkpoint(
             agent=agent,
             config=config,
             tracking_uri=tracking_uri,
             checkpoints_dir=path_info["checkpoints_dir"],
+            checkpoint_path=checkpoint_path,  # Pass pre-resolved path
         )
 
         logger.info("Starting training loop")

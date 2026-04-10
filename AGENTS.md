@@ -8,6 +8,18 @@ Agents live in `algorithms/agents/` and extend `BaseAgent`. Infrastructure (runn
 
 > **Note:** The training loop is handled by the runner. Agents receive already processed observations from the wrapper.
 
+### TransformerPPO — Design Motivation
+
+The `AgentTransformerPPO` introduces a Transformer backbone to address three design considerations that fixed-topology MLP agents (like MADDPG) cannot handle:
+
+1. **Variable CA count without retraining.** The system must adapt to changes in the number of controllable assets at runtime, supporting variable numbers of CA inputs and outputs. A Transformer processes a variable-length token sequence via self-attention, naturally handling different asset counts.
+
+2. **Strict one-to-one CA input/output mapping.** Each CA's observation features are tokenized into a dedicated token. The actor head produces exactly one action per CA token — the architecture enforces this structurally.
+
+3. **Additional context inputs without spurious outputs.** The system incorporates a single global NFC input (the RL token) and a variable-sized set of SROs (shared read-only context like weather, pricing, time), while keeping all outputs aligned with their respective CAs.
+
+**Thesis goal:** A single model class handles different prosumer configurations (varying numbers and types of controllable assets per building) without retraining from scratch. Weights for shared asset types transfer across topologies, and the self-attention mechanism naturally adapts to different token counts.
+
 ## Base Contract
 
 Extend `algorithms/agents/base_agent.py`:
@@ -130,6 +142,17 @@ runs/jobs/<job_id>/
 ```
 
 The manifest (`artifact_manifest.json`) contains metadata returned by `export_artifacts()` and is used for bundle validation and deployment.
+
+## TransformerPPO — Validation Phases
+
+Incremental validation plan for `AgentTransformerPPO`. Prove it works on the simplest case first, then scale up.
+
+| Phase | Setup | Goal |
+|-------|-------|------|
+| **1** | 1 building, fixed topology (no variance in input count) | Baseline: does the agent learn at all? Compare reward curve and KPIs against RBC/MADDPG on the same single building. |
+| **2** | 1 building, variable topology (different CA counts across runs) | Core thesis: same model architecture handles different asset configurations. Train on building with 3 CAs, evaluate on building with 1 CA (or vice versa). |
+| **3** | 1 building, variable topology + KPI analysis | Assess whether results are good enough or if hyperparameters/architecture need tuning before scaling. |
+| **4** | Multiple buildings (scale up) | Full multi-building training. Same as Phase 3 but with more buildings to verify the approach generalizes. |
 
 ## Tests
 

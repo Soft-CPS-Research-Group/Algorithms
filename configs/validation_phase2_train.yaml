@@ -1,0 +1,124 @@
+# Validation Phase 2 Training config: Building_4, 1 episode
+# Used to create checkpoint for cross-topology testing
+
+metadata:
+  experiment_name: "validation_phase2_train_building4"
+  run_name: "TransformerPPO Validation Phase 2 - Train on Building_4"
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 100
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 100
+
+checkpointing:
+  resume_training: false
+  checkpoint_interval: 2000
+  checkpoint_artifact: "phase2_checkpoint.pth"
+
+bundle:
+  bundle_version: null
+  description: "Validation Phase 2 Training - Building_4"
+
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema_building4_only.json
+  central_agent: false
+  reward_function: V2GPenaltyReward
+  episodes: 1
+  export:
+    mode: none
+    export_kpis_on_episode_end: true
+
+training:
+  seed: 123
+  steps_between_training_updates: 1
+  target_update_interval: 0
+
+topology:
+  num_agents: null
+
+algorithm:
+  name: "AgentTransformerPPO"
+
+  transformer:
+    d_model: 64
+    nhead: 4
+    num_layers: 2
+    dim_feedforward: 128
+    dropout: 0.1
+
+  hyperparameters:
+    learning_rate: 3.0e-4
+    gamma: 0.99
+    gae_lambda: 0.95
+    clip_eps: 0.2
+    ppo_epochs: 4
+    minibatch_size: 64
+    entropy_coeff: 0.01
+    value_coeff: 0.5
+    max_grad_norm: 0.5
+    min_steps_before_update: 0
+
+  tokenizer:
+    ca_types:
+      ev_charger:
+        features:
+          - connected_state
+          - departure_time
+          - required_soc_departure
+          - _soc
+          - battery_capacity
+          - incoming_state
+          - arrival_time
+        action_name: electric_vehicle_storage
+      battery:
+        features:
+          - electrical_storage_soc
+        action_name: electrical_storage
+      washing_machine:
+        features:
+          - start_time_step
+          - end_time_step
+        action_name: washing_machine
+    sro_types:
+      temporal:
+        features:
+          - month
+          - hour
+          - day_type
+          - daylight_savings_status
+      weather:
+        features:
+          - outdoor_dry_bulb_temperature
+          - outdoor_relative_humidity
+          - diffuse_solar_irradiance
+          - direct_solar_irradiance
+      pricing:
+        features:
+          - electricity_pricing
+      carbon:
+        features:
+          - carbon_intensity
+    rl:
+      demand_feature: non_shiftable_load
+      generation_features:
+        - solar_generation
+      extra_features:
+        - net_electricity_consumption
+
+execution: null

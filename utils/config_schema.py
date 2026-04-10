@@ -214,6 +214,60 @@ class SingleAgentRLAlgorithmConfig(BaseModel):
     exploration: Optional[ExplorationParams] = None
 
 
+# ---------------------------------------------------------------------------
+# TransformerPPO algorithm configuration
+# ---------------------------------------------------------------------------
+
+
+class TransformerPPOHyperparameters(BaseModel):
+    learning_rate: float = Field(default=3e-4, gt=0, description="Adam learning rate")
+    gamma: float = Field(default=0.99, gt=0, le=1, description="Discount factor")
+    gae_lambda: float = Field(default=0.95, ge=0, le=1, description="GAE lambda")
+    clip_eps: float = Field(default=0.2, gt=0, le=1, description="PPO clipping epsilon")
+    ppo_epochs: int = Field(default=4, ge=1, description="Number of PPO update epochs per rollout")
+    minibatch_size: int = Field(default=64, ge=1, description="Minibatch size for PPO updates")
+    entropy_coeff: float = Field(default=0.01, ge=0, description="Entropy bonus coefficient")
+    value_coeff: float = Field(default=0.5, gt=0, description="Value loss coefficient")
+    max_grad_norm: float = Field(default=0.5, gt=0, description="Gradient clipping max norm")
+    min_steps_before_update: int = Field(default=0, ge=0, description="Minimum global steps before first PPO update")
+
+
+class TransformerArchitectureConfig(BaseModel):
+    d_model: int = Field(default=64, ge=1, description="Embedding dimension")
+    nhead: int = Field(default=4, ge=1, description="Number of attention heads")
+    num_layers: int = Field(default=2, ge=1, description="Number of Transformer encoder layers")
+    dim_feedforward: int = Field(default=128, ge=1, description="FFN hidden dimension")
+    dropout: float = Field(default=0.1, ge=0, le=1, description="Dropout rate")
+
+
+class CATypeConfig(BaseModel):
+    features: List[str] = Field(..., min_length=1, description="Substring patterns for observation matching")
+    action_name: str = Field(..., min_length=1, description="Substring pattern for action matching")
+
+
+class SROTypeConfig(BaseModel):
+    features: List[str] = Field(..., min_length=1, description="Substring patterns for observation matching")
+
+
+class RLTokenConfig(BaseModel):
+    demand_feature: str = Field(..., min_length=1, description="Substring pattern for demand feature")
+    generation_features: List[str] = Field(default_factory=list, description="Substring patterns for generation features")
+    extra_features: List[str] = Field(default_factory=list, description="Additional features for the RL token (e.g. net_electricity_consumption)")
+
+
+class TokenizerConfig(BaseModel):
+    ca_types: Dict[str, CATypeConfig] = Field(default_factory=dict, description="Controllable asset type definitions")
+    sro_types: Dict[str, SROTypeConfig] = Field(default_factory=dict, description="Shared read-only type definitions")
+    rl: RLTokenConfig = Field(..., description="Residual load token configuration")
+
+
+class TransformerPPOAlgorithmConfig(BaseModel):
+    name: Literal["AgentTransformerPPO"]
+    hyperparameters: TransformerPPOHyperparameters = TransformerPPOHyperparameters()
+    transformer: TransformerArchitectureConfig = TransformerArchitectureConfig()
+    tokenizer: TokenizerConfig
+
+
 class DeucalionExecutionConfig(BaseModel):
     partition: Optional[str] = None
     account: Optional[str] = None
@@ -301,7 +355,7 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig, TransformerPPOAlgorithmConfig]
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
