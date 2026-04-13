@@ -8,6 +8,8 @@ from torch import nn
 from loguru import logger
 from pathlib import Path
 from algorithms.constants import DEFAULT_ONNX_OPSET
+from algorithms.utils.ppo import PPOActorCritic, RolloutBuffer
+from torch.optim import Adam
 
 import numpy as np
 
@@ -20,14 +22,18 @@ class CommunityCoordinatorAgent(BaseAgent):
         self.community = hyper.get("community")
         self.use_raw_observations = True
 
-        self.network = nn.Sequential(
-            nn.Linear(3, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Tanh()
-        )
+        self._num_epochs      = hyper.get("num_epochs",      10)
+        self._mini_batch_size = hyper.get("mini_batch_size", 64)
+        self._clip_coef       = hyper.get("clip_coef",       0.2)
+        self._ent_coef        = hyper.get("ent_coef",        0.01)
+        self._vf_coef         = hyper.get("vf_coef",         0.5)
+        self._max_grad_norm   = hyper.get("max_grad_norm",   0.5)
+        self._target_kl       = hyper.get("target_kl",       0.02)
+        self._gae_lambda      = hyper.get("gae_lambda",      0.95)
+
+        self.actor_critic    = PPOActorCritic(3, 1)
+        self.ppo_optim       = Adam(self.actor_critic.parameters(), lr=hyper.get("lr"))
+        self.rollout_buffer  = RolloutBuffer(hyper.get("num_steps"), 3, 1)
 
 
     def update(
@@ -44,30 +50,44 @@ class CommunityCoordinatorAgent(BaseAgent):
         update_step: bool,
         initial_exploration_done: bool,
     ) -> None:
-        pass
+        # --- Build community state ---
+        state = np.array(self._build_community_state(observations), dtype=np.float32)
 
+        # --- Community reward: sum of all per-building rewards ---
+        community_reward = float(sum(rewards)) / len(rewards)
 
+        done = terminated or truncated
 
-    def _build_community_state(
-            self, 
-            observations: List[np.ndarray]
-    ) -> List[Any]:
-        total_net_electricity_consumption = 0
-        total_solar = 0
-        total_load = 0
+        # --- Re-evaluate the network on the state + action that was taken ---
+        # O1 is whatever was broadcast to the buildings — read it back from actions[0][0]
+        o1 = float(actions[0][0])
+        state_tensor  = torch.tensor(state,   dtype=torch.float32).unsqueeze(0)
+        action_tensor = torch.tensor([[o1]],  dtype=torch.float32)
 
-        for idx, building_obs in enumerate(observations):
-            obs_indexes = self._obs_index[idx]
+        with torch.no_grad():
+            _, log_prob, _, value = self.actor_critic.get_action_and_value(state_tensor, action=action_tensor)
 
-            net_electricity_consumption_idx = obs_indexes["net_electricity_consumption"]
-            solar_idx = obs_indexes["solar_generation"]
-            load_idx = obs_indexes["non_shiftable_load"]
+        # --- Store the transition ---
+        self.rollout_buffer.add(
+            obs=state,
+            action=o1,
+            logprob=float(log_prob.item()),
+            reward=community_reward,
+            done=done,
+            value=float(value.item()),
+        )
 
-            total_net_electricity_consumption += building_obs[net_electricity_consumption_idx]
-            total_solar += building_obs[solar_idx]
-            total_load += building_obs[load_idx]
+        # --- If the buffer is full, learn ---
+        if self.rollout_buffer.full:
+            next_state = np.array(self._build_community_state(next_observations), dtype=np.float32)
+            next_state_tensor = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0)
 
-        return [total_net_electricity_consumption, total_solar, total_load]
+            with torch.no_grad():
+                last_value = float(self.actor_critic.critic(next_state_tensor).item())
+
+            self.rollout_buffer.compute_gae(last_value=last_value, last_done=done, gae_lambda=self._gae_lambda)
+            self._ppo_update()
+            self.rollout_buffer.reset()
 
 
     def predict(
@@ -75,14 +95,13 @@ class CommunityCoordinatorAgent(BaseAgent):
         observations: List[np.ndarray],
         deterministic: bool | None = None,
     ) -> List[List[float]]:
-        community_state = self._build_community_state(observations)
+        state = self._build_community_state(observations)
 
-        state_tensor = torch.tensor(community_state, dtype=torch.float32)
-        o1 = self.network(state_tensor)
-        logger.info("O1: {}", o1)
+        with torch.no_grad():
+            action, log_prob, entropy, value = self.actor_critic.get_action_and_value(torch.tensor(state, dtype=torch.float32).unsqueeze(0))
+            o1 = action.squeeze().item()
 
-        return [[0.0] * self._action_dims[i] for i in range(len(observations))]
-    
+        return [[o1] * self._action_dims[i] for i in range(len(observations))]
 
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
@@ -114,7 +133,7 @@ class CommunityCoordinatorAgent(BaseAgent):
         dummy_input = torch.randn(1, 3)
 
         torch.onnx.export(
-            self.network,
+            self.actor_critic.actor_mean,
             dummy_input,
             str(export_path),
             export_params=True,
@@ -147,3 +166,90 @@ class CommunityCoordinatorAgent(BaseAgent):
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         pass
+
+
+    def _ppo_update(self) -> None:
+        data             = self.rollout_buffer.get()
+        batch_obs        = data["obs"]
+        batch_actions    = data["actions"]
+        batch_logprobs   = data["logprobs"]
+        batch_returns    = data["returns"]
+        batch_advantages = data["advantages"]
+
+        # Old values from the buffer — needed for value clipping
+        old_values = torch.tensor(self.rollout_buffer.values, dtype=torch.float32)
+
+        num_steps       = self.rollout_buffer.num_steps
+        mini_batch_size = self._mini_batch_size
+        kl_exceeded     = False
+
+        for _ in range(self._num_epochs):
+            if kl_exceeded:
+                break
+
+            indices = np.random.permutation(num_steps)
+
+            for start in range(0, num_steps, mini_batch_size):
+                mb = indices[start : start + mini_batch_size]
+
+                _, new_logprobs, entropy, new_values = self.actor_critic.get_action_and_value(
+                    batch_obs[mb], action=batch_actions[mb]
+                )
+                new_values = new_values.squeeze()
+
+                # --- KL early stopping ---
+                log_ratio = new_logprobs - batch_logprobs[mb]
+                ratio     = torch.exp(log_ratio)
+                approx_kl = ((ratio - 1) - log_ratio).mean().item()
+
+                if self._target_kl is not None and approx_kl > 1.5 * self._target_kl:
+                    kl_exceeded = True
+                    break
+
+                # --- Policy loss (clipped) ---
+                mb_adv  = batch_advantages[mb]
+                pg_loss = torch.max(
+                    -mb_adv * ratio,
+                    -mb_adv * torch.clamp(ratio, 1 - self._clip_coef, 1 + self._clip_coef),
+                ).mean()
+
+                # --- Value loss (clipped) ---
+                v_unclipped = (new_values - batch_returns[mb]) ** 2
+                v_clipped   = old_values[mb] + (new_values - old_values[mb]).clamp(-self._clip_coef, self._clip_coef)
+                v_loss      = 0.5 * torch.max(v_unclipped, (v_clipped - batch_returns[mb]) ** 2).mean()
+
+                # --- Entropy bonus ---
+                entropy_loss = entropy.mean()
+
+                loss = pg_loss + self._vf_coef * v_loss - self._ent_coef * entropy_loss
+
+                self.ppo_optim.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self._max_grad_norm)
+                self.ppo_optim.step()
+
+        logger.info("PPO update | pg={:.4f}  v={:.4f}  ent={:.4f}  kl_stop={}",
+                    pg_loss.item(), v_loss.item(), entropy_loss.item(), kl_exceeded)
+
+
+    def _build_community_state(
+            self, 
+            observations: List[np.ndarray]
+    ) -> List[Any]:
+        total_net_electricity_consumption = 0
+        total_solar = 0
+        total_load = 0
+
+        for idx, building_obs in enumerate(observations):
+            obs_indexes = self._obs_index[idx]
+
+            net_electricity_consumption_idx = obs_indexes["net_electricity_consumption"]
+            solar_idx = obs_indexes["solar_generation"]
+            load_idx = obs_indexes["non_shiftable_load"]
+            # aggregate price
+
+            total_net_electricity_consumption += building_obs[net_electricity_consumption_idx]
+            total_solar += building_obs[solar_idx]
+            total_load += building_obs[load_idx]
+
+        return [total_net_electricity_consumption, total_solar, total_load]

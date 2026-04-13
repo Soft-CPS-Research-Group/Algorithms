@@ -21,7 +21,7 @@ tracking:
   mlflow_enabled: true
   log_level: "INFO"
   log_frequency: 1
-  mlflow_step_sample_interval: 10
+  mlflow_step_sample_interval: 50
   mlflow_artifacts_profile: minimal
   progress_updates_enabled: true
   progress_update_interval: 5
@@ -36,7 +36,7 @@ checkpointing:
   reset_replay_buffer: false
   freeze_pretrained_layers: false
   fine_tune: false
-  checkpoint_interval: 200
+  checkpoint_interval: 2048
 
 bundle:
   bundle_version: null
@@ -50,13 +50,13 @@ simulator:
   dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
   central_agent: false
   reward_function: RewardFunction
-  episodes: 1
-  episode_time_steps: 200      # Short window for smoke testing
+  episodes: 250
+  episode_time_steps: 8760     # Full year (hourly timesteps)
   simulation_start_time_step: null
   simulation_end_time_step: null
   export:
     mode: none
-    export_kpis_on_episode_end: false
+    export_kpis_on_episode_end: true
     session_name: null
 
 training:
@@ -74,28 +74,23 @@ topology:
 algorithm:
   name: "CommunityCoordinator"
   hyperparameters:
-    gamma: 0.995
-  networks:
-    actor:
-      class: "Actor"
-      layers: [1024, 512, 256]
-      lr: 5.0e-5
-    critic:
-      class: "Critic"
-      layers: [1024, 512, 256]
-      lr: 5.0e-4
-  replay_buffer:
-    class: "MultiAgentReplayBuffer"
-    capacity: 200000
-    batch_size: 256
-  exploration:
-    strategy: "GaussianNoise"
-    params:
-      bias: 0.1
-      sigma: 0.15
-      decay: 0.99
-      gamma: 0.99
-      tau: 0.001
-      end_initial_exploration_time_step: 96
+    # Rollout
+    num_steps: 2048         # steps collected before each PPO update
+
+    # Optimiser
+    lr: 3.0e-4
+
+    # Discount & GAE
+    gamma: 0.99
+    gae_lambda: 0.95
+
+    # PPO update
+    num_epochs: 10          # gradient passes over each rollout
+    mini_batch_size: 64
+    clip_coef: 0.2          # PPO clip epsilon
+    vf_coef: 0.5            # value loss weight
+    ent_coef: 0.01          # entropy bonus weight
+    max_grad_norm: 0.5      # gradient clipping
+    target_kl: 0.02         # KL early-stopping threshold (null to disable)
 
 execution: null
