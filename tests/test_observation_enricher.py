@@ -566,3 +566,43 @@ class TestObservationEnricherTopologyChanged:
         # No enrich_names() called yet - cache is empty
         assert enricher.topology_changed(observation_names, action_names)
 
+
+class TestEnricherPortability:
+    """Tests to verify ObservationEnricher has no external dependencies."""
+
+    def test_no_numpy_import(self) -> None:
+        """ObservationEnricher should not import numpy."""
+        import algorithms.utils.observation_enricher as enricher_module
+        import sys
+        
+        # Check that numpy is not in the module's namespace
+        assert not hasattr(enricher_module, "np")
+        assert not hasattr(enricher_module, "numpy")
+        
+        # Check module source doesn't import numpy
+        import inspect
+        source = inspect.getsource(enricher_module)
+        assert "import numpy" not in source
+        assert "from numpy" not in source
+
+    def test_no_torch_import(self) -> None:
+        """ObservationEnricher should not import torch."""
+        import algorithms.utils.observation_enricher as enricher_module
+        import inspect
+        
+        source = inspect.getsource(enricher_module)
+        assert "import torch" not in source
+        assert "from torch" not in source
+
+    def test_no_training_imports(self) -> None:
+        """ObservationEnricher should not import from algorithms.* or utils.*."""
+        import algorithms.utils.observation_enricher as enricher_module
+        import inspect
+        
+        source = inspect.getsource(enricher_module)
+        # Should not import from other project modules
+        assert "from algorithms." not in source.replace(
+            "from algorithms.utils.observation_enricher", ""
+        )
+        assert "from utils." not in source
+
