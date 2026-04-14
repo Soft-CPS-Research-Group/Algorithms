@@ -12,6 +12,21 @@
 
 ---
 
+## Git Setup
+
+**Before starting implementation:**
+
+1. Ensure you are on branch `gj/plan-a` (created from `gj/master`)
+2. Verify you're on the correct branch:
+   ```bash
+   git branch -v | grep plan-a
+   # Expected: gj/plan-a ... (should show a commit)
+   ```
+3. After all tasks complete and tests pass, this branch will be merged back to `gj/master`
+4. Do NOT commit to `gj/master` or `main` — all work stays on `gj/plan-a`
+
+---
+
 ## File Structure
 
 | File | Responsibility |

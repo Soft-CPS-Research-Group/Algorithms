@@ -14,6 +14,27 @@
 
 ---
 
+## Git Setup
+
+**Before starting implementation:**
+
+1. Ensure Plans A and B are merged to `gj/master`
+2. Create branch `gj/plan-c` from `gj/master`:
+   ```bash
+   git checkout gj/master
+   git pull origin gj/master
+   git checkout -b gj/plan-c
+   ```
+3. Verify you're on the correct branch:
+   ```bash
+   git branch -v | grep plan-c
+   # Expected: gj/plan-c ... (should show latest gj/master commit)
+   ```
+4. After all tasks complete and tests pass, this branch will be merged back to `gj/master`
+5. Do NOT commit to `gj/master` or `main` — all work stays on `gj/plan-c`
+
+---
+
 ## File Structure
 
 | File | Responsibility |
