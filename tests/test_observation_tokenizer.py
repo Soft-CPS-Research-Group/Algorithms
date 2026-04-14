@@ -676,3 +676,233 @@ class TestGradientFlow:
 
         if tok.rl_projection is not None:
             assert tok.rl_projection.weight.grad is not None, "No gradient for RL projection"
+
+
+# ---------------------------------------------------------------------------
+# Marker parsing tests (Phase C1 of DIN plan)
+# ---------------------------------------------------------------------------
+
+
+from algorithms.utils.observation_tokenizer import (
+    _parse_markers,
+    _build_encoded_dims_map,
+    _has_markers,
+    _matches_rule,
+    _compute_encoded_dims,
+    TokenGroup,
+    EncoderSlice,
+)
+
+
+class TestParseMarkersBasic:
+    """Test _parse_markers() with basic marker patterns."""
+
+    def test_parse_ca_markers(self):
+        """Parse CA markers without device ID."""
+        names = [
+            "__tkn_ca_battery__",
+            "electrical_storage_soc",
+            "__tkn_sro_temporal__",
+            "month",
+            "hour",
+        ]
+        groups = _parse_markers(names)
+
+        assert len(groups) == 2
+        assert groups[0].family == "ca"
+        assert groups[0].type_name == "battery"
+        assert groups[0].device_id is None
+        assert groups[0].feature_names == ["electrical_storage_soc"]
+
+        assert groups[1].family == "sro"
+        assert groups[1].type_name == "temporal"
+        assert groups[1].feature_names == ["month", "hour"]
+
+    def test_parse_markers_extracts_device_id(self):
+        """Parse CA markers with device ID."""
+        names = [
+            "__tkn_ca_ev_charger__charger_1_1__",
+            "ev_charger_charger_1_1_connected_state",
+            "ev_charger_charger_1_1_soc",
+        ]
+        groups = _parse_markers(names)
+
+        assert len(groups) == 1
+        assert groups[0].family == "ca"
+        assert groups[0].type_name == "ev_charger"
+        assert groups[0].device_id == "charger_1_1"
+        assert len(groups[0].feature_names) == 2
+
+    def test_parse_markers_multi_instance(self):
+        """Parse multiple CA markers with different device IDs."""
+        names = [
+            "__tkn_ca_ev_charger__charger_1_1__",
+            "feature_charger_1_1_a",
+            "__tkn_ca_ev_charger__charger_1_2__",
+            "feature_charger_1_2_a",
+        ]
+        groups = _parse_markers(names)
+
+        assert len(groups) == 2
+        assert groups[0].device_id == "charger_1_1"
+        assert groups[1].device_id == "charger_1_2"
+
+    def test_parse_markers_nfc(self):
+        """Parse NFC marker."""
+        names = [
+            "__tkn_nfc__",
+            "non_shiftable_load",
+            "solar_generation",
+        ]
+        groups = _parse_markers(names)
+
+        assert len(groups) == 1
+        assert groups[0].family == "nfc"
+        assert groups[0].type_name == ""
+        assert groups[0].device_id is None
+        assert groups[0].feature_names == ["non_shiftable_load", "solar_generation"]
+
+    def test_parse_markers_empty(self):
+        """Empty observation names → empty groups list."""
+        groups = _parse_markers([])
+        assert groups == []
+
+    def test_parse_markers_no_markers(self):
+        """Names without markers → empty groups list."""
+        names = ["month", "hour", "day_type"]
+        groups = _parse_markers(names)
+        assert groups == []
+
+
+class TestBuildEncodedDimsMap:
+    """Test _build_encoded_dims_map() with markers."""
+
+    def test_marker_gets_one_dim(self, encoder_config):
+        """Marker names get 1 dim (NoNormalization)."""
+        names = ["__tkn_ca_battery__", "electrical_storage_soc"]
+        dims_map = _build_encoded_dims_map(names, encoder_config)
+
+        assert dims_map["__tkn_ca_battery__"].n_dims == 1
+        assert dims_map["electrical_storage_soc"].n_dims == 1
+
+    def test_regular_features_get_correct_dims(self, encoder_config):
+        """Regular features get dims from encoder rules."""
+        names = [
+            "__tkn_sro_temporal__",
+            "month",  # PeriodicNormalization → 2
+            "hour",   # PeriodicNormalization → 2
+            "day_type",  # OnehotEncoding with 8 classes → 8
+        ]
+        dims_map = _build_encoded_dims_map(names, encoder_config)
+
+        assert dims_map["__tkn_sro_temporal__"].n_dims == 1
+        assert dims_map["month"].n_dims == 2
+        assert dims_map["hour"].n_dims == 2
+        assert dims_map["day_type"].n_dims == 8
+
+    def test_contiguous_slices(self, encoder_config):
+        """Slices must be contiguous."""
+        names = ["__tkn_ca_battery__", "electrical_storage_soc", "month"]
+        dims_map = _build_encoded_dims_map(names, encoder_config)
+
+        slices = list(dims_map.values())
+        for i in range(1, len(slices)):
+            assert slices[i].start_idx == slices[i - 1].end_idx
+
+
+class TestHasMarkers:
+    """Test _has_markers() helper."""
+
+    def test_has_markers_true(self):
+        """Detect markers in observation names."""
+        names = ["__tkn_ca_battery__", "electrical_storage_soc"]
+        assert _has_markers(names) is True
+
+    def test_has_markers_false(self):
+        """No markers in observation names."""
+        names = ["month", "hour", "electrical_storage_soc"]
+        assert _has_markers(names) is False
+
+    def test_has_markers_empty(self):
+        """Empty list has no markers."""
+        assert _has_markers([]) is False
+
+
+class TestMatchesRule:
+    """Test _matches_rule() encoder rule matching."""
+
+    def test_equals_match(self):
+        assert _matches_rule("month", {"equals": ["month", "hour"]})
+
+    def test_equals_no_match(self):
+        assert not _matches_rule("year", {"equals": ["month", "hour"]})
+
+    def test_contains_match(self):
+        assert _matches_rule(
+            "electric_vehicle_charger_connected_state",
+            {"contains": ["connected_state"]},
+        )
+
+    def test_default_match(self):
+        assert _matches_rule("anything", {"default": True})
+
+
+class TestComputeEncodedDims:
+    """Test _compute_encoded_dims() dimension computation."""
+
+    def test_periodic_normalization(self):
+        assert _compute_encoded_dims({"type": "PeriodicNormalization"}) == 2
+
+    def test_onehot_encoding(self):
+        spec = {"type": "OnehotEncoding", "params": {"classes": [0, 1]}}
+        assert _compute_encoded_dims(spec) == 2
+
+    def test_remove_feature(self):
+        assert _compute_encoded_dims({"type": "RemoveFeature"}) == 0
+
+    def test_no_normalization(self):
+        assert _compute_encoded_dims({"type": "NoNormalization"}) == 1
+
+
+class TestTokenGroupDataclass:
+    """Test TokenGroup dataclass."""
+
+    def test_token_group_creation(self):
+        group = TokenGroup(
+            family="ca",
+            type_name="battery",
+            device_id=None,
+            feature_names=["electrical_storage_soc"],
+        )
+        assert group.family == "ca"
+        assert group.type_name == "battery"
+        assert group.device_id is None
+        assert group.feature_names == ["electrical_storage_soc"]
+
+    def test_token_group_with_device_id(self):
+        group = TokenGroup(
+            family="ca",
+            type_name="ev_charger",
+            device_id="charger_1_1",
+            feature_names=[],
+        )
+        assert group.device_id == "charger_1_1"
+
+
+class TestEncoderSlice:
+    """Test EncoderSlice class."""
+
+    def test_encoder_slice_equality(self):
+        slice1 = EncoderSlice(0, 2, 2)
+        slice2 = EncoderSlice(0, 2, 2)
+        assert slice1 == slice2
+
+    def test_encoder_slice_inequality(self):
+        slice1 = EncoderSlice(0, 2, 2)
+        slice2 = EncoderSlice(2, 4, 2)
+        assert slice1 != slice2
+
+    def test_encoder_slice_repr(self):
+        slice_ = EncoderSlice(0, 2, 2)
+        assert "start_idx=0" in repr(slice_)
+        assert "end_idx=2" in repr(slice_)

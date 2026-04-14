@@ -146,7 +146,7 @@ def _make_config(num_agents=1):
 
 def _get_obs_dim(obs_names):
     """Compute encoded obs dimension from raw feature names."""
-    from algorithms.utils.encoder_index_map import build_encoder_index_map
+    from algorithms.utils.observation_tokenizer import _build_encoded_dims_map
     from pathlib import Path
     import json
 
@@ -156,7 +156,7 @@ def _get_obs_dim(obs_names):
     with open(encoder_config_path) as f:
         encoder_config = json.load(f)
 
-    index_map = build_encoder_index_map(obs_names, encoder_config)
+    index_map = _build_encoded_dims_map(obs_names, encoder_config)
     if not index_map:
         return 0
     last_slice = list(index_map.values())[-1]

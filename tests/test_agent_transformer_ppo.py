@@ -187,10 +187,10 @@ class DummySpace:
 
 
 def _get_obs_dim(obs_names: List[str]) -> int:
-    """Compute obs dim using the encoder index map."""
-    from algorithms.utils.encoder_index_map import build_encoder_index_map
+    """Compute obs dim using the tokenizer's encoded dims map."""
+    from algorithms.utils.observation_tokenizer import _build_encoded_dims_map
     enc_cfg = _load_encoder_config()
-    idx_map = build_encoder_index_map(obs_names, enc_cfg)
+    idx_map = _build_encoded_dims_map(obs_names, enc_cfg)
     return sum(s.n_dims for s in idx_map.values())
 
 

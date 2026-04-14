@@ -13,6 +13,7 @@ from citylearn.citylearn import CityLearnEnv
 from loguru import logger
 
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.utils.observation_enricher import ObservationEnricher
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
 from utils.preprocessing import (
@@ -117,6 +118,15 @@ class Wrapper_CityLearn(RLC):
         - model: BaseAgent instance implementing custom predict and update logic.
         - **kwargs: Additional arguments passed to the RLC constructor.
         """
+        # --- Initialize enrichment attributes BEFORE super().__init__() ---
+        # These must exist before set_encoders() is called by parent.__init__
+        algo_cfg = config.get("algorithm", {}) if config else {}
+        self._tokenizer_config: Dict[str, Any] = algo_cfg.get("tokenizer", {})
+        self._use_enrichment: bool = False  # Set in set_model() based on agent type
+        self._enrichers: List[Optional[ObservationEnricher]] = []
+        self._enriched_observation_names: List[List[str]] = []
+        self._config = config
+        
         super().__init__(env, **kwargs)
         self.model = model
         self.job_id = job_id
@@ -200,13 +210,30 @@ class Wrapper_CityLearn(RLC):
         Set the model after initialization.
         """
         self.model = model
+
+        # Detect if agent is Transformer-based (requires enrichment)
+        # Check for AgentTransformerPPO or similar transformer agents
+        agent_class_name = model.__class__.__name__
+        self._use_enrichment = "Transformer" in agent_class_name
+
+        if self._use_enrichment:
+            logger.info("Enrichment enabled for Transformer-based agent: {}", agent_class_name)
+            # Rebuild encoders with enrichment
+            self.encoders = self.set_encoders()
+
         metadata = {
             "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "building_names": getattr(self.env, "building_names", None),
         }
         try:
+            # Pass enriched names if enrichment is enabled
+            obs_names = (
+                self._enriched_observation_names
+                if self._use_enrichment and self._enriched_observation_names
+                else self.observation_names
+            )
             self.model.attach_environment(
-                observation_names=self.observation_names,
+                observation_names=obs_names,
                 action_names=self.action_names,
                 action_space=self.action_space,
                 observation_space=self.observation_space,
@@ -486,7 +513,12 @@ class Wrapper_CityLearn(RLC):
     def get_encoded_observations(self, index: int, observations: List[float]) -> np.ndarray:
         """Optimized encoding function using NumPy with proper type handling."""
 
-        obs_array = np.array(observations, dtype=np.float64)  # Ensure numeric type
+        # Apply enrichment if enabled for this building
+        if self._use_enrichment and index < len(self._enrichers) and self._enrichers[index] is not None:
+            enriched_obs = self._enrichers[index].enrich_values(observations)
+            obs_array = np.array(enriched_obs, dtype=np.float64)
+        else:
+            obs_array = np.array(observations, dtype=np.float64)  # Ensure numeric type
 
         # Apply encoding transformation correctly
         encoded = np.hstack([
@@ -590,15 +622,56 @@ class Wrapper_CityLearn(RLC):
 
 
     def set_encoders(self) -> List[List[Encoder]]:
-        r"""Instantiate observation encoders from the shared JSON configuration."""
+        r"""Instantiate observation encoders from the shared JSON configuration.
+
+        When enrichment is enabled (for Transformer-based agents), this method:
+        1. Creates per-building ObservationEnrichers
+        2. Enriches observation names with __tkn_*__ markers
+        3. Builds encoders for enriched names (markers get NoNormalization)
+        """
 
         rules = _load_encoder_rules()
         encoders: List[List[Encoder]] = []
         missing: List[str] = []
 
-        for observation_group, space in zip(self.observation_names, self.observation_space):
+        # Reset enrichment state
+        self._enrichers = []
+        self._enriched_observation_names = []
+
+        # Get action names by building (handle different formats)
+        action_names_by_building = self._get_action_names_by_building()
+
+        for building_idx, (observation_group, space) in enumerate(
+            zip(self.observation_names, self.observation_space)
+        ):
+            # Get action names for this building
+            action_names = (
+                action_names_by_building[building_idx]
+                if building_idx < len(action_names_by_building)
+                else []
+            )
+
+            # --- Enrichment step (if enabled) ---
+            if self._use_enrichment and self._tokenizer_config:
+                enricher = ObservationEnricher(self._tokenizer_config)
+                enrichment = enricher.enrich_names(observation_group, action_names)
+                enriched_names = enrichment.enriched_names
+                self._enrichers.append(enricher)
+                self._enriched_observation_names.append(enriched_names)
+            else:
+                self._enrichers.append(None)
+                enriched_names = list(observation_group)
+                self._enriched_observation_names.append(enriched_names)
+
+            # Build encoders from (possibly enriched) names
             group_encoders: List[Encoder] = []
-            for index, name in enumerate(observation_group):
+            for index, name in enumerate(enriched_names):
+                # Marker features use NoNormalization (pass-through)
+                if name.startswith("__tkn_") and name.endswith("__"):
+                    encoder = NoNormalization()
+                    group_encoders.append(encoder)
+                    continue
+
                 rule = next((r for r in rules if _matches_rule(name, r.get("match", {}))), None)
                 if rule is None:
                     missing.append(name)
@@ -610,10 +683,10 @@ class Wrapper_CityLearn(RLC):
                 encoder = _build_encoder(rule, space, index)
                 group_encoders.append(encoder)
 
-            if len(group_encoders) != len(observation_group):
+            if len(group_encoders) != len(enriched_names):
                 raise ValueError(
                     "Failed to build encoders for all observations: "
-                    f"expected {len(observation_group)}, built {len(group_encoders)}"
+                    f"expected {len(enriched_names)}, built {len(group_encoders)}"
                 )
             encoders.append(group_encoders)
 
@@ -624,3 +697,24 @@ class Wrapper_CityLearn(RLC):
 
         logger.debug("Encoders initialised from external configuration")
         return encoders
+
+    def _get_action_names_by_building(self) -> List[List[str]]:
+        """Get action names grouped by building.
+
+        Handles different CityLearn action_names formats:
+        - List[List[str]]: Already per-building
+        - List[str]: Same actions for all buildings
+        """
+        action_names = getattr(self, "action_names", None)
+        if action_names is None:
+            return [[] for _ in self.observation_names]
+
+        if isinstance(action_names, list):
+            if action_names and isinstance(action_names[0], list):
+                # Already per-building
+                return action_names
+            else:
+                # Same actions for all buildings
+                return [list(action_names) for _ in self.observation_names]
+
+        return [[] for _ in self.observation_names]

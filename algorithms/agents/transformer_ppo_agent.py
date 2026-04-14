@@ -151,6 +151,10 @@ class AgentTransformerPPO(BaseAgent):
     ) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int], int]:
         """Compute global CA/SRO type dims and type-to-index mapping.
         
+        Supports both enriched (marker-based) and raw (heuristic-based) observation names.
+        When observation names contain __tkn_*__ markers, uses marker parsing.
+        Otherwise, falls back to heuristic classification.
+        
         Parameters
         ----------
         checkpoint_ca_dims : Optional[Dict[str, int]]
@@ -167,8 +171,11 @@ class AgentTransformerPPO(BaseAgent):
         max_rl_input_dim : int
             Maximum RL input dimension across all buildings.
         """
-        from collections import OrderedDict
-        from algorithms.utils.encoder_index_map import build_encoder_index_map
+        from algorithms.utils.observation_tokenizer import (
+            _parse_markers,
+            _build_encoded_dims_map,
+            _has_markers,
+        )
         
         ca_config = self.tokenizer_config.get("ca_types", {})
         sro_config = self.tokenizer_config.get("sro_types", {})
@@ -180,107 +187,24 @@ class AgentTransformerPPO(BaseAgent):
         rl_dims_observed: List[int] = []
         
         for i, (obs_names, act_names) in enumerate(zip(observation_names, action_names)):
-            # Build encoder index map for this building
-            index_map = build_encoder_index_map(obs_names, encoder_config)
-            
-            # --- Detect CA types and compute dims ---
-            # Import device ID extraction logic
-            from algorithms.utils.observation_tokenizer import _extract_device_ids, _contains_device_id, _feature_matches_ca_type
-            
-            device_ids_by_type = _extract_device_ids(act_names, ca_config)
-            
-            for ca_type_name, ca_spec in ca_config.items():
-                device_ids = device_ids_by_type.get(ca_type_name, [])
-                if not device_ids:
-                    continue
-                
-                ca_feature_patterns = ca_spec.get("features", [])
-                
-                # Find features for the first instance to compute dims
-                first_device_id = device_ids[0]
-                instance_features: List[str] = []
-                
-                for raw_name in obs_names:
-                    if not _feature_matches_ca_type(raw_name, ca_feature_patterns):
-                        continue
-                    
-                    if first_device_id is None:
-                        # Single-instance, no device ID
-                        instance_features.append(raw_name)
-                    elif _contains_device_id(raw_name, first_device_id):
-                        instance_features.append(raw_name)
-                
-                # Compute total dims for this CA type
-                dims = sum(index_map[n].n_dims for n in instance_features if n in index_map)
-                if dims > 0:
-                    if ca_type_name in ca_type_dims_observed:
-                        # Verify consistency
-                        if ca_type_dims_observed[ca_type_name] != dims:
-                            logger.warning(
-                                "CA type '{}' has inconsistent dims across buildings: {} vs {}",
-                                ca_type_name, ca_type_dims_observed[ca_type_name], dims,
-                            )
-                    else:
-                        ca_type_dims_observed[ca_type_name] = dims
-            
-            # --- Detect SRO types and compute dims ---
-            for sro_type_name, sro_spec in sro_config.items():
-                sro_features = sro_spec.get("features", [])
-                matched_names = []
-                
-                for raw_name in obs_names:
-                    for sro_feat in sro_features:
-                        if sro_feat in raw_name:
-                            matched_names.append(raw_name)
-                            break
-                
-                dims = sum(index_map[n].n_dims for n in matched_names if n in index_map)
-                if dims > 0:
-                    if sro_type_name in sro_type_dims_observed:
-                        # Check consistency - if inconsistent, don't use global dims
-                        if sro_type_dims_observed[sro_type_name] != dims:
-                            # Mark as inconsistent by setting to -1
-                            sro_type_dims_observed[sro_type_name] = -1
-                            logger.debug(
-                                "SRO type '{}' has inconsistent dims across buildings - will use per-building dims",
-                                sro_type_name,
-                            )
-                    else:
-                        sro_type_dims_observed[sro_type_name] = dims
-            
-            # --- Compute RL dims ---
-            rl_demand_feature = rl_config.get("demand_feature")
-            rl_generation_features = rl_config.get("generation_features", [])
-            rl_extra_features = rl_config.get("extra_features", [])
-            
-            rl_input_dim = 0
-            has_demand_or_gen = False
-            
-            for raw_name in obs_names:
-                if rl_demand_feature and rl_demand_feature in raw_name:
-                    has_demand_or_gen = True
-                    break
-                if any(gen in raw_name for gen in rl_generation_features):
-                    has_demand_or_gen = True
-                    break
-            
-            if has_demand_or_gen:
-                rl_input_dim += 1  # residual
-            
-            # Count extra features
-            for raw_name in obs_names:
-                if any(extra in raw_name for extra in rl_extra_features):
-                    if raw_name in index_map:
-                        rl_input_dim += index_map[raw_name].n_dims
-            
-            if rl_input_dim > 0:
-                rl_dims_observed.append(rl_input_dim)
+            # Check if observation names are enriched (have markers)
+            if _has_markers(obs_names):
+                # --- Marker-based classification ---
+                self._compute_vocab_from_markers(
+                    obs_names, encoder_config, 
+                    ca_type_dims_observed, sro_type_dims_observed, rl_dims_observed,
+                    rl_config,
+                )
+            else:
+                # --- Heuristic-based classification (legacy) ---
+                self._compute_vocab_from_heuristics(
+                    obs_names, act_names, encoder_config, ca_config, sro_config, rl_config,
+                    ca_type_dims_observed, sro_type_dims_observed, rl_dims_observed,
+                )
         
         # --- Compute fallback dims for unseen CA types ---
-        # For any CA type in config but not observed, use checkpoint dims or estimate
         for ca_type_name, ca_spec in ca_config.items():
             if ca_type_name not in ca_type_dims_observed:
-                # Priority 1: Use checkpoint dimensions if available
                 if checkpoint_ca_dims and ca_type_name in checkpoint_ca_dims:
                     ca_type_dims_observed[ca_type_name] = checkpoint_ca_dims[ca_type_name]
                     logger.info(
@@ -288,9 +212,8 @@ class AgentTransformerPPO(BaseAgent):
                         ca_type_name, checkpoint_ca_dims[ca_type_name],
                     )
                 else:
-                    # Priority 2: Fallback estimate from config patterns
                     ca_feature_patterns = ca_spec.get("features", [])
-                    estimated_dims = len(ca_feature_patterns)  # Conservative estimate
+                    estimated_dims = len(ca_feature_patterns)
                     if estimated_dims > 0:
                         ca_type_dims_observed[ca_type_name] = estimated_dims
                         logger.info(
@@ -302,7 +225,7 @@ class AgentTransformerPPO(BaseAgent):
         for sro_type_name, sro_spec in sro_config.items():
             if sro_type_name not in sro_type_dims_observed:
                 sro_features = sro_spec.get("features", [])
-                estimated_dims = len(sro_features)  # Conservative estimate
+                estimated_dims = len(sro_features)
                 if estimated_dims > 0:
                     sro_type_dims_observed[sro_type_name] = estimated_dims
                     logger.info(
@@ -327,6 +250,167 @@ class AgentTransformerPPO(BaseAgent):
             global_type_to_idx,
             max_rl_dim,
         )
+
+    def _compute_vocab_from_markers(
+        self,
+        obs_names: List[str],
+        encoder_config: Dict[str, Any],
+        ca_type_dims: Dict[str, int],
+        sro_type_dims: Dict[str, int],
+        rl_dims: List[int],
+        rl_config: Dict[str, Any],
+    ) -> None:
+        """Compute vocabulary from enriched (marker-based) observation names."""
+        from algorithms.utils.observation_tokenizer import (
+            _parse_markers,
+            _build_encoded_dims_map,
+        )
+        
+        token_groups = _parse_markers(obs_names)
+        dims_map = _build_encoded_dims_map(obs_names, encoder_config)
+        
+        for group in token_groups:
+            # Compute total encoded dims for this group's features
+            group_dims = sum(
+                dims_map[n].n_dims
+                for n in group.feature_names
+                if n in dims_map
+            )
+            
+            if group.family == "ca" and group.type_name and group_dims > 0:
+                if group.type_name in ca_type_dims:
+                    if ca_type_dims[group.type_name] != group_dims:
+                        logger.warning(
+                            "CA type '{}' has inconsistent dims: {} vs {}",
+                            group.type_name, ca_type_dims[group.type_name], group_dims,
+                        )
+                else:
+                    ca_type_dims[group.type_name] = group_dims
+            
+            elif group.family == "sro" and group.type_name and group_dims > 0:
+                if group.type_name in sro_type_dims:
+                    if sro_type_dims[group.type_name] != group_dims:
+                        sro_type_dims[group.type_name] = -1  # Mark inconsistent
+                else:
+                    sro_type_dims[group.type_name] = group_dims
+            
+            elif group.family == "nfc":
+                # Compute RL input dim: residual (1) + extra features
+                rl_demand_feature = rl_config.get("demand_feature")
+                rl_generation_features = rl_config.get("generation_features", [])
+                rl_extra_features = rl_config.get("extra_features", [])
+                
+                has_demand_or_gen = False
+                extra_dims = 0
+                
+                for feat_name in group.feature_names:
+                    if rl_demand_feature and rl_demand_feature in feat_name:
+                        has_demand_or_gen = True
+                    elif any(gen in feat_name for gen in rl_generation_features):
+                        has_demand_or_gen = True
+                    elif any(extra in feat_name for extra in rl_extra_features):
+                        if feat_name in dims_map:
+                            extra_dims += dims_map[feat_name].n_dims
+                
+                rl_input_dim = (1 if has_demand_or_gen else 0) + extra_dims
+                if rl_input_dim > 0:
+                    rl_dims.append(rl_input_dim)
+
+    def _compute_vocab_from_heuristics(
+        self,
+        obs_names: List[str],
+        act_names: List[str],
+        encoder_config: Dict[str, Any],
+        ca_config: Dict[str, Dict[str, Any]],
+        sro_config: Dict[str, Dict[str, Any]],
+        rl_config: Dict[str, Any],
+        ca_type_dims: Dict[str, int],
+        sro_type_dims: Dict[str, int],
+        rl_dims: List[int],
+    ) -> None:
+        """Compute vocabulary using heuristic classification (legacy mode)."""
+        from algorithms.utils.observation_tokenizer import (
+            _build_encoded_dims_map,
+            _extract_device_ids,
+            _contains_device_id,
+            _feature_matches_ca_type,
+        )
+        
+        index_map = _build_encoded_dims_map(obs_names, encoder_config)
+        device_ids_by_type = _extract_device_ids(act_names, ca_config)
+        
+        for ca_type_name, ca_spec in ca_config.items():
+            device_ids = device_ids_by_type.get(ca_type_name, [])
+            if not device_ids:
+                continue
+            
+            ca_feature_patterns = ca_spec.get("features", [])
+            first_device_id = device_ids[0]
+            instance_features: List[str] = []
+            
+            for raw_name in obs_names:
+                if not _feature_matches_ca_type(raw_name, ca_feature_patterns):
+                    continue
+                
+                if first_device_id is None:
+                    instance_features.append(raw_name)
+                elif _contains_device_id(raw_name, first_device_id):
+                    instance_features.append(raw_name)
+            
+            dims = sum(index_map[n].n_dims for n in instance_features if n in index_map)
+            if dims > 0:
+                if ca_type_name in ca_type_dims:
+                    if ca_type_dims[ca_type_name] != dims:
+                        logger.warning(
+                            "CA type '{}' has inconsistent dims: {} vs {}",
+                            ca_type_name, ca_type_dims[ca_type_name], dims,
+                        )
+                else:
+                    ca_type_dims[ca_type_name] = dims
+        
+        for sro_type_name, sro_spec in sro_config.items():
+            sro_features = sro_spec.get("features", [])
+            matched_names = []
+            
+            for raw_name in obs_names:
+                for sro_feat in sro_features:
+                    if sro_feat in raw_name:
+                        matched_names.append(raw_name)
+                        break
+            
+            dims = sum(index_map[n].n_dims for n in matched_names if n in index_map)
+            if dims > 0:
+                if sro_type_name in sro_type_dims:
+                    if sro_type_dims[sro_type_name] != dims:
+                        sro_type_dims[sro_type_name] = -1
+                else:
+                    sro_type_dims[sro_type_name] = dims
+        
+        rl_demand_feature = rl_config.get("demand_feature")
+        rl_generation_features = rl_config.get("generation_features", [])
+        rl_extra_features = rl_config.get("extra_features", [])
+        
+        rl_input_dim = 0
+        has_demand_or_gen = False
+        
+        for raw_name in obs_names:
+            if rl_demand_feature and rl_demand_feature in raw_name:
+                has_demand_or_gen = True
+                break
+            if any(gen in raw_name for gen in rl_generation_features):
+                has_demand_or_gen = True
+                break
+        
+        if has_demand_or_gen:
+            rl_input_dim += 1
+        
+        for raw_name in obs_names:
+            if any(extra in raw_name for extra in rl_extra_features):
+                if raw_name in index_map:
+                    rl_input_dim += index_map[raw_name].n_dims
+        
+        if rl_input_dim > 0:
+            rl_dims.append(rl_input_dim)
 
     # --------------------------------------------------------------------- #
     # attach_environment — tokenizer construction
