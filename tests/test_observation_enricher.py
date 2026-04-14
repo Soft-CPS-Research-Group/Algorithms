@@ -264,3 +264,129 @@ class TestFeatureClassification:
         
         assert result is None
 
+
+class TestObservationEnricherEnrichNames:
+    """Tests for ObservationEnricher.enrich_names() method."""
+
+    @pytest.fixture
+    def sample_tokenizer_config(self) -> Dict[str, Any]:
+        """Sample tokenizer config for testing."""
+        return {
+            "marker_values": {
+                "ca_base": 1000,
+                "sro_base": 2000,
+                "nfc": 3001,
+            },
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                },
+                "ev_charger": {
+                    "features": [
+                        "electric_vehicle_charger",
+                        "connected_electric_vehicle",
+                    ],
+                    "action_name": "electric_vehicle_storage",
+                    "input_dim": 61,
+                },
+            },
+            "sro_types": {
+                "temporal": {
+                    "features": ["month", "hour"],
+                    "input_dim": 12,
+                },
+                "pricing": {
+                    "features": ["electricity_pricing"],
+                    "input_dim": 4,
+                },
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": ["solar_generation"],
+                "extra_features": [],
+                "input_dim": 2,
+            },
+        }
+
+    def test_enrich_names_single_ca(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Single CA building should have one CA marker."""
+        enricher = ObservationEnricher(sample_tokenizer_config)
+        
+        observation_names = [
+            "month",
+            "hour",
+            "electricity_pricing",
+            "electrical_storage_soc",
+            "non_shiftable_load",
+            "solar_generation",
+        ]
+        action_names = ["electrical_storage"]
+        
+        result = enricher.enrich_names(observation_names, action_names)
+        
+        # Should have markers for: 1 CA (battery), 2 SROs (temporal, pricing), 1 NFC
+        # Total markers: 4
+        assert len(result.enriched_names) == len(observation_names) + 4
+        
+        # Check marker positions exist
+        assert any("1001" in name for name in result.enriched_names)  # CA marker
+        assert any("2001" in name for name in result.enriched_names)  # SRO marker
+        assert any("3001" in name for name in result.enriched_names)  # NFC marker
+
+    def test_enrich_names_multi_ca(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Building with battery + 2 EV chargers should have 3 CA markers."""
+        enricher = ObservationEnricher(sample_tokenizer_config)
+        
+        observation_names = [
+            "month",
+            "electrical_storage_soc",
+            "electric_vehicle_charger_charger_1_1_connected_state",
+            "connected_electric_vehicle_at_charger_charger_1_1_soc",
+            "electric_vehicle_charger_charger_1_2_connected_state",
+            "connected_electric_vehicle_at_charger_charger_1_2_soc",
+            "non_shiftable_load",
+        ]
+        action_names = [
+            "electrical_storage",
+            "electric_vehicle_storage_charger_1_1",
+            "electric_vehicle_storage_charger_1_2",
+        ]
+        
+        result = enricher.enrich_names(observation_names, action_names)
+        
+        # Count CA markers (1001, 1002, 1003)
+        ca_markers = [n for n in result.enriched_names if n.startswith("__marker_100")]
+        assert len(ca_markers) == 3  # battery + 2 ev_chargers
+
+    def test_enrich_names_marker_positions_correct(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Marker positions should correctly index into enriched_names."""
+        enricher = ObservationEnricher(sample_tokenizer_config)
+        
+        observation_names = [
+            "month",
+            "electrical_storage_soc",
+            "non_shiftable_load",
+        ]
+        action_names = ["electrical_storage"]
+        
+        result = enricher.enrich_names(observation_names, action_names)
+        
+        # Verify each marker position points to a marker name
+        for marker_name, positions in result.marker_positions.items():
+            for pos in positions:
+                assert result.enriched_names[pos] == marker_name
+
+    def test_enrich_names_caching(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Calling enrich_names twice with same input should return cached result."""
+        enricher = ObservationEnricher(sample_tokenizer_config)
+        
+        observation_names = ["month", "electrical_storage_soc"]
+        action_names = ["electrical_storage"]
+        
+        result1 = enricher.enrich_names(observation_names, action_names)
+        result2 = enricher.enrich_names(observation_names, action_names)
+        
+        assert result1 is result2  # Same object (cached)
+

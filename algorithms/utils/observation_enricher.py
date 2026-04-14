@@ -175,8 +175,171 @@ def _classify_feature(
 
 
 class ObservationEnricher:
-    """Placeholder stub for future implementation.
-    
-    This class will be implemented in subsequent tasks.
+    """Classifies observation features and injects token-type markers.
+
+    Portable: no dependencies on training-only code. Can be used in
+    both the training wrapper and the production inference preprocessor.
     """
-    pass
+
+    def __init__(self, tokenizer_config: Dict[str, Any]) -> None:
+        """Initialize the enricher with tokenizer configuration.
+
+        Args:
+            tokenizer_config: The tokenizer config dict.
+                Must contain 'marker_values', 'ca_types', 'sro_types', 'nfc' keys.
+        """
+        self._config = tokenizer_config
+        self._marker_values = tokenizer_config.get("marker_values", {})
+        self._ca_config = tokenizer_config.get("ca_types", {})
+        self._sro_config = tokenizer_config.get("sro_types", {})
+        self._nfc_config = tokenizer_config.get("nfc", {})
+
+        # Cache for topology change detection
+        self._cache_key: Optional[Tuple[Tuple[str, ...], Tuple[str, ...]]] = None
+        self._cached_result: Optional[EnrichmentResult] = None
+        self._insertion_positions: List[int] = []
+        self._marker_values_list: List[float] = []
+
+    def enrich_names(
+        self,
+        observation_names: List[str],
+        action_names: List[str],
+    ) -> EnrichmentResult:
+        """Classify features and produce enriched observation names.
+
+        Called once per topology (cached until topology changes).
+
+        Args:
+            observation_names: Raw observation names for one building.
+            action_names: Action names for one building.
+
+        Returns:
+            EnrichmentResult with enriched_names, marker_positions, marker_to_type.
+        """
+        # Check cache
+        cache_key = (tuple(observation_names), tuple(action_names))
+        if cache_key == self._cache_key and self._cached_result is not None:
+            return self._cached_result
+
+        # Extract device IDs from action names
+        device_ids_by_type = _extract_device_ids(action_names, self._ca_config)
+
+        # Classify all features
+        classified: List[Tuple[str, Optional[Tuple[str, str, Optional[str]]]]] = []
+        for feature_name in observation_names:
+            classification = _classify_feature(
+                feature_name, self._config, device_ids_by_type
+            )
+            classified.append((feature_name, classification))
+
+        # Group features by (family, type_name, device_id)
+        groups: Dict[Tuple[str, str, Optional[str]], List[str]] = {}
+        unclassified: List[str] = []
+
+        for feature_name, classification in classified:
+            if classification is None:
+                unclassified.append(feature_name)
+            else:
+                key = classification
+                if key not in groups:
+                    groups[key] = []
+                groups[key].append(feature_name)
+
+        # Build enriched names with markers
+        enriched_names: List[str] = []
+        marker_positions: Dict[str, List[int]] = {}
+        marker_to_type: Dict[str, Tuple[str, str, Optional[str]]] = {}
+        insertion_positions: List[int] = []
+        marker_values_list: List[float] = []
+
+        ca_base = self._marker_values.get("ca_base", 1000)
+        sro_base = self._marker_values.get("sro_base", 2000)
+        nfc_marker_value = self._marker_values.get("nfc", 3001)
+
+        ca_counter = 1
+        sro_counter = 1
+
+        # Determine order: CAs first (sorted by type then device_id), then SROs, then NFC
+        # This ensures marker order = action order
+
+        # Sort CA groups to match action order
+        ca_groups = [(k, v) for k, v in groups.items() if k[0] == "ca"]
+        # Sort by the order they appear in action_names
+        def ca_sort_key(item: Tuple[Tuple[str, str, Optional[str]], List[str]]) -> int:
+            key, _ = item
+            _, type_name, device_id = key
+            action_prefix = self._ca_config.get(type_name, {}).get("action_name", "")
+            if device_id:
+                action_name = f"{action_prefix}_{device_id}"
+            else:
+                action_name = action_prefix
+            try:
+                return action_names.index(action_name)
+            except ValueError:
+                return 999
+
+        ca_groups.sort(key=ca_sort_key)
+
+        # Add CA groups
+        for (family, type_name, device_id), features in ca_groups:
+            marker_value = ca_base + ca_counter
+            marker_name = f"__marker_{marker_value}__"
+            
+            insertion_positions.append(len(enriched_names))
+            marker_values_list.append(float(marker_value))
+            
+            enriched_names.append(marker_name)
+            marker_positions[marker_name] = [len(enriched_names) - 1]
+            marker_to_type[marker_name] = (family, type_name, device_id)
+            
+            enriched_names.extend(features)
+            ca_counter += 1
+
+        # Add SRO groups (in config order)
+        for sro_type_name in self._sro_config.keys():
+            key = ("sro", sro_type_name, None)
+            if key in groups:
+                features = groups[key]
+                marker_value = sro_base + sro_counter
+                marker_name = f"__marker_{marker_value}__"
+                
+                insertion_positions.append(len(enriched_names))
+                marker_values_list.append(float(marker_value))
+                
+                enriched_names.append(marker_name)
+                marker_positions[marker_name] = [len(enriched_names) - 1]
+                marker_to_type[marker_name] = key
+                
+                enriched_names.extend(features)
+                sro_counter += 1
+
+        # Add NFC group
+        nfc_key = ("nfc", "nfc", None)
+        if nfc_key in groups:
+            features = groups[nfc_key]
+            marker_name = f"__marker_{nfc_marker_value}__"
+            
+            insertion_positions.append(len(enriched_names))
+            marker_values_list.append(float(nfc_marker_value))
+            
+            enriched_names.append(marker_name)
+            marker_positions[marker_name] = [len(enriched_names) - 1]
+            marker_to_type[marker_name] = nfc_key
+            
+            enriched_names.extend(features)
+
+        # Add unclassified features at the end (no marker)
+        enriched_names.extend(unclassified)
+
+        # Cache result
+        result = EnrichmentResult(
+            enriched_names=enriched_names,
+            marker_positions=marker_positions,
+            marker_to_type=marker_to_type,
+        )
+        self._cache_key = cache_key
+        self._cached_result = result
+        self._insertion_positions = insertion_positions
+        self._marker_values_list = marker_values_list
+
+        return result
