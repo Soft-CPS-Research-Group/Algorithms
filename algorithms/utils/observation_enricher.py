@@ -34,6 +34,53 @@ class EnrichmentResult:
     marker_to_type: Dict[str, Tuple[str, str, Optional[str]]]
 
 
+def _extract_device_ids(
+    action_names: List[str],
+    ca_config: Dict[str, Dict[str, Any]],
+) -> Dict[str, List[Optional[str]]]:
+    """Extract device IDs from action names, grouped by CA type.
+
+    For each CA type, strips the configured ``action_name`` prefix from each
+    matching action name. The remainder (if any) is the device ID.
+
+    Args:
+        action_names: List of action names for one building.
+        ca_config: CA types configuration with action_name patterns.
+
+    Returns:
+        Dict mapping ca_type_name -> list of device IDs (None for single-instance).
+
+    Examples:
+        >>> _extract_device_ids(
+        ...     ["electrical_storage", "electric_vehicle_storage_charger_1_1"],
+        ...     {"battery": {"action_name": "electrical_storage"},
+        ...      "ev_charger": {"action_name": "electric_vehicle_storage"}},
+        ... )
+        {'battery': [None], 'ev_charger': ['charger_1_1']}
+    """
+    result: Dict[str, List[Optional[str]]] = {}
+
+    for ca_type_name, ca_spec in ca_config.items():
+        action_prefix = ca_spec.get("action_name", "")
+        if not action_prefix:
+            continue
+
+        device_ids: List[Optional[str]] = []
+        for act_name in action_names:
+            if act_name == action_prefix:
+                # Exact match -> single-instance, no device ID
+                device_ids.append(None)
+            elif act_name.startswith(action_prefix + "_"):
+                # Has a device ID suffix
+                device_id = act_name[len(action_prefix) + 1:]
+                device_ids.append(device_id)
+
+        if device_ids:
+            result[ca_type_name] = device_ids
+
+    return result
+
+
 class ObservationEnricher:
     """Placeholder stub for future implementation.
     
