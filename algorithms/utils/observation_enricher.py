@@ -343,3 +343,60 @@ class ObservationEnricher:
         self._marker_values_list = marker_values_list
 
         return result
+
+    def enrich_values(self, observation_values: List[float]) -> List[float]:
+        """Inject marker values at cached positions.
+
+        Must be called after enrich_names() to populate the cache.
+
+        Args:
+            observation_values: Raw observation values (same length as observation_names
+                passed to enrich_names()).
+
+        Returns:
+            Enriched values list with marker values inserted.
+
+        Raises:
+            RuntimeError: If enrich_names() has not been called yet.
+        """
+        if self._cached_result is None or self._cache_key is None:
+            raise RuntimeError("enrich_names() must be called before enrich_values()")
+
+        # Build mapping from feature name to value
+        observation_names = list(self._cache_key[0])  # Original observation names
+        value_map = dict(zip(observation_names, observation_values))
+
+        enriched_values: List[float] = []
+
+        for name in self._cached_result.enriched_names:
+            if name.startswith("__marker_") and name.endswith("__"):
+                # Extract marker value from name: "__marker_1001__" -> 1001.0
+                marker_str = name[9:-2]  # Strip "__marker_" prefix and "__" suffix
+                marker_value = float(marker_str)
+                enriched_values.append(marker_value)
+            else:
+                # Regular feature - look up value by name
+                enriched_values.append(value_map[name])
+
+        return enriched_values
+
+    def topology_changed(
+        self,
+        observation_names: List[str],
+        action_names: List[str],
+    ) -> bool:
+        """Check if topology differs from cached state.
+
+        Args:
+            observation_names: Current observation names.
+            action_names: Current action names.
+
+        Returns:
+            True if no cache exists or if topology has changed.
+            False if topology matches cached state.
+        """
+        if self._cache_key is None:
+            return True
+
+        current_key = (tuple(observation_names), tuple(action_names))
+        return current_key != self._cache_key

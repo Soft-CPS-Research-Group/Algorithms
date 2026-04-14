@@ -390,3 +390,179 @@ class TestObservationEnricherEnrichNames:
         
         assert result1 is result2  # Same object (cached)
 
+
+class TestObservationEnricherEnrichValues:
+    """Tests for ObservationEnricher.enrich_values() method."""
+
+    @pytest.fixture
+    def sample_tokenizer_config(self) -> Dict[str, Any]:
+        """Sample tokenizer config for testing."""
+        return {
+            "marker_values": {
+                "ca_base": 1000,
+                "sro_base": 2000,
+                "nfc": 3001,
+            },
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                },
+            },
+            "sro_types": {
+                "temporal": {
+                    "features": ["month", "hour"],
+                    "input_dim": 12,
+                },
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+    def test_enrich_values_inserts_markers(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """enrich_values() should inject marker values at correct positions."""
+        enricher = ObservationEnricher(sample_tokenizer_config)
+        
+        observation_names = [
+            "month",
+            "hour",
+            "electrical_storage_soc",
+            "non_shiftable_load",
+        ]
+        action_names = ["electrical_storage"]
+        
+        # First enrich names to populate cache
+        enriched_result = enricher.enrich_names(observation_names, action_names)
+        
+        # Raw observation values (4 values, same order as observation_names)
+        observation_values = [6.0, 14.0, 0.5, 100.0]
+        
+        # Enrich values
+        enriched_values = enricher.enrich_values(observation_values)
+        
+        # Enriched should have: CA marker, battery feature, SRO marker, temporal features, NFC marker, nfc feature
+        # Expected: [1001.0, 0.5, 2001.0, 6.0, 14.0, 3001.0, 100.0]
+        assert len(enriched_values) == len(enriched_result.enriched_names)
+        
+        # Verify marker values are inserted
+        assert 1001.0 in enriched_values  # CA marker
+        assert 2001.0 in enriched_values  # SRO marker
+        assert 3001.0 in enriched_values  # NFC marker
+        
+        # Verify original values are still present
+        assert 0.5 in enriched_values  # electrical_storage_soc
+        assert 6.0 in enriched_values  # month
+        assert 14.0 in enriched_values  # hour
+        assert 100.0 in enriched_values  # non_shiftable_load
+
+    def test_enrich_values_preserves_order(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """enrich_values() should place values after their corresponding markers."""
+        enricher = ObservationEnricher(sample_tokenizer_config)
+        
+        observation_names = [
+            "month",
+            "electrical_storage_soc",
+            "non_shiftable_load",
+        ]
+        action_names = ["electrical_storage"]
+        
+        # Enrich names
+        enriched_result = enricher.enrich_names(observation_names, action_names)
+        
+        # Raw values
+        observation_values = [6.0, 0.5, 100.0]
+        
+        # Enrich values
+        enriched_values = enricher.enrich_values(observation_values)
+        
+        # Find marker positions and verify values appear after them
+        for i, name in enumerate(enriched_result.enriched_names):
+            if name == "__marker_1001__":
+                # Battery marker - next value should be electrical_storage_soc (0.5)
+                assert enriched_values[i] == 1001.0
+                assert enriched_values[i + 1] == 0.5
+            elif name == "__marker_2001__":
+                # Temporal marker - next value should be month (6.0)
+                assert enriched_values[i] == 2001.0
+                assert enriched_values[i + 1] == 6.0
+            elif name == "__marker_3001__":
+                # NFC marker - next value should be non_shiftable_load (100.0)
+                assert enriched_values[i] == 3001.0
+                assert enriched_values[i + 1] == 100.0
+
+
+class TestObservationEnricherTopologyChanged:
+    """Tests for ObservationEnricher.topology_changed() method."""
+
+    @pytest.fixture
+    def sample_tokenizer_config(self) -> Dict[str, Any]:
+        """Sample tokenizer config for testing."""
+        return {
+            "marker_values": {
+                "ca_base": 1000,
+                "sro_base": 2000,
+                "nfc": 3001,
+            },
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                },
+            },
+            "sro_types": {
+                "temporal": {
+                    "features": ["month"],
+                    "input_dim": 12,
+                },
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+    def test_topology_unchanged(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """topology_changed() should return False when topology is same as cached."""
+        enricher = ObservationEnricher(sample_tokenizer_config)
+        
+        observation_names = ["month", "electrical_storage_soc"]
+        action_names = ["electrical_storage"]
+        
+        # Enrich to populate cache
+        enricher.enrich_names(observation_names, action_names)
+        
+        # Check with same topology
+        assert not enricher.topology_changed(observation_names, action_names)
+
+    def test_topology_changed_different_observations(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """topology_changed() should return True when observation names differ."""
+        enricher = ObservationEnricher(sample_tokenizer_config)
+        
+        observation_names = ["month", "electrical_storage_soc"]
+        action_names = ["electrical_storage"]
+        
+        # Enrich to populate cache
+        enricher.enrich_names(observation_names, action_names)
+        
+        # Check with different observation names
+        new_observation_names = ["month", "electrical_storage_soc", "non_shiftable_load"]
+        assert enricher.topology_changed(new_observation_names, action_names)
+
+    def test_topology_changed_before_enrich_names(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """topology_changed() should return True when no cache exists."""
+        enricher = ObservationEnricher(sample_tokenizer_config)
+        
+        observation_names = ["month", "electrical_storage_soc"]
+        action_names = ["electrical_storage"]
+        
+        # No enrich_names() called yet - cache is empty
+        assert enricher.topology_changed(observation_names, action_names)
+
