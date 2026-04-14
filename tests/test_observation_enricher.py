@@ -93,6 +93,29 @@ class TestDeviceIdExtraction:
         
         assert "ev_charger" not in result or result.get("ev_charger") == []
 
+    def test_extract_mixed_device_ids_raises_error(self) -> None:
+        """Mixed single and multi-instance action names raise ValueError."""
+        import pytest
+        from algorithms.utils.observation_enricher import _extract_device_ids
+        
+        # Scenario: One battery without suffix, one with suffix
+        action_names = ["electrical_storage", "electrical_storage_1"]
+        ca_config = {
+            "battery": {
+                "features": ["electrical_storage_soc"],
+                "action_name": "electrical_storage",
+                "input_dim": 1,
+            },
+        }
+        
+        with pytest.raises(ValueError) as exc_info:
+            _extract_device_ids(action_names, ca_config)
+        
+        assert "Inconsistent device ID naming" in str(exc_info.value)
+        assert "battery" in str(exc_info.value)
+        assert "electrical_storage" in str(exc_info.value)
+        assert "electrical_storage_1" in str(exc_info.value)
+
 
 class TestFeatureMatching:
     """Tests for feature pattern matching helpers."""
