@@ -1,13 +1,10 @@
 """Observation Enricher — injects token-type markers into observation names/values.
 
 This module classifies raw observation features into token groups (CA, SRO, NFC)
-and injects marker values that allow the tokenizer to identify token boundaries
-without heuristic-based classification.
+and injects marker values that allow the tokenizer to identify token boundaries.
 
 Portable: no dependencies on training-only code. Can be used in both the training
 wrapper and the production inference preprocessor.
-
-No PyTorch/NumPy dependencies — pure Python with stdlib + typing only.
 """
 
 from __future__ import annotations
@@ -77,6 +74,27 @@ def _extract_device_ids(
                 device_ids.append(device_id)
 
         if device_ids:
+            # Validate consistency: all None or all present, never mixed
+            has_none = None in device_ids
+            has_non_none = any(d is not None for d in device_ids)
+            
+            if has_none and has_non_none:
+                single_instance_names = [
+                    act for act in action_names 
+                    if act == action_prefix
+                ]
+                multi_instance_names = [
+                    act for act in action_names 
+                    if act.startswith(action_prefix + "_")
+                ]
+                raise ValueError(
+                    f"Inconsistent device ID naming for CA type '{ca_type_name}': "
+                    f"Found both single-instance {single_instance_names} and "
+                    f"multi-instance {multi_instance_names} action names. "
+                    f"All instances must use consistent naming: either all without "
+                    f"suffix OR all with '_<device_id>' suffix."
+                )
+            
             result[ca_type_name] = device_ids
 
     return result
