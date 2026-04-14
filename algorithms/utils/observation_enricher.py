@@ -12,6 +12,7 @@ No PyTorch/NumPy dependencies — pure Python with stdlib + typing only.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -79,6 +80,37 @@ def _extract_device_ids(
             result[ca_type_name] = device_ids
 
     return result
+
+
+def _feature_matches_patterns(feature_name: str, patterns: List[str]) -> bool:
+    """Check if feature_name contains any of the patterns as substring.
+
+    Args:
+        feature_name: Raw observation feature name.
+        patterns: List of pattern substrings to match against.
+
+    Returns:
+        True if any pattern is a substring of feature_name.
+    """
+    return any(pattern in feature_name for pattern in patterns)
+
+
+def _contains_device_id(feature_name: str, device_id: str) -> bool:
+    """Check whether device_id appears as a bounded token in feature_name.
+
+    A bounded match means the device_id is surrounded by ``_`` (or at the
+    start/end of the string). This prevents false positives when the
+    device_id is short.
+
+    Args:
+        feature_name: Raw observation feature name.
+        device_id: Device ID to search for (e.g., "charger_1_1").
+
+    Returns:
+        True if device_id appears as bounded token in feature_name.
+    """
+    pattern = r"(?:^|_)" + re.escape(device_id) + r"(?:_|$)"
+    return re.search(pattern, feature_name) is not None
 
 
 class ObservationEnricher:
