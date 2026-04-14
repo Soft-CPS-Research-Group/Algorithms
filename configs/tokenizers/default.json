@@ -1,0 +1,61 @@
+{
+  "marker_values": {
+    "ca_base": 1000,
+    "sro_base": 2000,
+    "nfc": 3001
+  },
+  "ca_types": {
+    "battery": {
+      "features": ["electrical_storage_soc"],
+      "action_name": "electrical_storage",
+      "input_dim": 1
+    },
+    "ev_charger": {
+      "features": [
+        "electric_vehicle_charger_connected_state",
+        "connected_electric_vehicle_at_charger_battery_capacity",
+        "connected_electric_vehicle_at_charger_departure_time",
+        "connected_electric_vehicle_at_charger_required_soc_departure",
+        "connected_electric_vehicle_at_charger_soc",
+        "electric_vehicle_charger_incoming_state",
+        "incoming_electric_vehicle_at_charger_estimated_arrival_time"
+      ],
+      "action_name": "electric_vehicle_storage",
+      "input_dim": 61
+    },
+    "washing_machine": {
+      "features": [
+        "washing_machine_start_time_step",
+        "washing_machine_end_time_step",
+        "washing_machine_load_profile"
+      ],
+      "action_name": "washing_machine",
+      "input_dim": 3
+    }
+  },
+  "sro_types": {
+    "temporal": {
+      "features": ["month", "hour", "day_type"],
+      "input_dim": 12
+    },
+    "pricing": {
+      "features": [
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ],
+      "input_dim": 4
+    },
+    "carbon": {
+      "features": ["carbon_intensity"],
+      "input_dim": 1
+    }
+  },
+  "nfc": {
+    "demand_features": ["non_shiftable_load"],
+    "generation_features": ["solar_generation"],
+    "extra_features": ["net_electricity_consumption"],
+    "input_dim": 3
+  }
+}
