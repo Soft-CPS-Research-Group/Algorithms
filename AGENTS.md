@@ -2,6 +2,18 @@
 
 Guide for developing, registering, and configuring learning agents.
 
+## Development Environment
+
+This project uses a Python virtual environment (`.venv`) for dependency management.
+
+**Always activate the virtual environment before running commands:**
+
+```bash
+source .venv/bin/activate
+```
+
+All Python commands (`python`, `pytest`, etc.) should be run within the activated virtual environment to ensure correct dependencies are available.
+
 ## Overview
 
 Agents live in `algorithms/agents/` and extend `BaseAgent`. Infrastructure (runner, wrapper, tracking, checkpoints) is provided—focus on algorithm logic.
@@ -136,6 +148,7 @@ The manifest (`artifact_manifest.json`) contains metadata returned by `export_ar
 Run the test suite to verify implementation:
 
 ```bash
+source .venv/bin/activate
 pytest
 ```
 
