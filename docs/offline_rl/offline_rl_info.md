@@ -10,10 +10,10 @@
 
 ### Total
 
-- Agent 0 - 37 (base + 1 charger + washing machine)
-- Agent 1, 2, 5, 7, 8, 10, 12, 13, 15, 16 - 28 (base)
-- Agent 3, 4, 6, 9, 11 - 35 (base + 1 charger)
-- Agent 14 - 42 (base + 2 chargers)
+- Agent 1 - 37 (base + 1 charger + washing machine)
+- Agent 2, 3, 6, 8, 9, 11, 13, 14, 16, 17 - 28 (base)
+- Agent 4, 5, 7, 10, 12 - 35 (base + 1 charger)
+- Agent 15 - 42 (base + 2 chargers)
 - Total of 534 scalar slots per timestamp when adding all the agents
 
 Note: Agent's charger identifier is equal to the agent's identifier plus one.

@@ -229,19 +229,7 @@ CityLearn is a multi-agent environment. You have two main design choices for Off
 
 For a first pass, independent learners are simpler and often work surprisingly well.
 
-### 9.5 Suggested thesis experiment pipeline
-
-```
-1. Collect dataset     →  Run behaviour policy (MADDPG/RBC) in CityLearn, record (s,a,r,s',d)
-2. Dataset analysis    →  Visualise distributions, check coverage, compute feature importance
-3. Train BC baseline   →  Behaviour Cloning (supervised learning)
-4. Train Offline RL    →  TD3+BC or IQL
-5. Evaluate            →  Run all agents in CityLearn, compare KPIs
-6. Augmentation study  →  Repeat step 4 with augmented data, compare
-7. Ablations           →  Feature subsets, dataset size, hyperparameter sensitivity
-```
-
-### 9.6 Libraries and frameworks
+### 9.5 Libraries and frameworks
 
 For implementation, consider:
 
