@@ -606,3 +606,70 @@ class TestEnricherPortability:
         )
         assert "from utils." not in source
 
+
+class TestEnricherIntegration:
+    """Integration tests using the actual tokenizer config file."""
+
+    def test_with_real_config_file(self) -> None:
+        """Test enricher with the actual configs/tokenizers/default.json."""
+        import json
+        from pathlib import Path
+        
+        config_path = Path("configs/tokenizers/default.json")
+        with open(config_path) as f:
+            tokenizer_config = json.load(f)
+        
+        enricher = ObservationEnricher(tokenizer_config)
+        
+        # Simulate Building_4 (battery + 1 EV charger)
+        observation_names = [
+            "month",
+            "hour",
+            "day_type",
+            "electricity_pricing",
+            "electricity_pricing_predicted_1",
+            "electricity_pricing_predicted_2",
+            "electricity_pricing_predicted_3",
+            "carbon_intensity",
+            "electrical_storage_soc",
+            "electric_vehicle_charger_connected_state",
+            "connected_electric_vehicle_at_charger_battery_capacity",
+            "connected_electric_vehicle_at_charger_departure_time",
+            "connected_electric_vehicle_at_charger_required_soc_departure",
+            "connected_electric_vehicle_at_charger_soc",
+            "electric_vehicle_charger_incoming_state",
+            "incoming_electric_vehicle_at_charger_estimated_arrival_time",
+            "non_shiftable_load",
+            "solar_generation",
+            "net_electricity_consumption",
+        ]
+        action_names = ["electrical_storage", "electric_vehicle_storage"]
+        
+        result = enricher.enrich_names(observation_names, action_names)
+        
+        # Should have markers for: 2 CAs, 3 SROs (temporal, pricing, carbon), 1 NFC
+        # Total markers: 6
+        marker_count = sum(1 for n in result.enriched_names if n.startswith("__marker_"))
+        assert marker_count == 6
+        
+        # Verify CA markers (1001 for battery, 1002 for ev_charger)
+        assert "__marker_1001__" in result.enriched_names
+        assert "__marker_1002__" in result.enriched_names
+        
+        # Verify SRO markers (2001 temporal, 2002 pricing, 2003 carbon)
+        assert "__marker_2001__" in result.enriched_names
+        assert "__marker_2002__" in result.enriched_names
+        assert "__marker_2003__" in result.enriched_names
+        
+        # Verify NFC marker
+        assert "__marker_3001__" in result.enriched_names
+        
+        # Test enrich_values
+        observation_values = [float(i) for i in range(len(observation_names))]
+        enriched_values = enricher.enrich_values(observation_values)
+        
+        assert len(enriched_values) == len(result.enriched_names)
+        assert 1001.0 in enriched_values
+        assert 2001.0 in enriched_values
+        assert 3001.0 in enriched_values
+
