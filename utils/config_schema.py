@@ -9,6 +9,52 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from typing_extensions import Literal
 
 
+# ---------------------------------------------------------------------------
+# Tokenizer Config Schema (for TransformerPPO)
+# ---------------------------------------------------------------------------
+
+
+class MarkerValuesConfig(BaseModel):
+    """Configuration for marker values used in observation enrichment."""
+
+    ca_base: int = Field(..., gt=0, description="Base marker value for CA tokens (e.g., 1000)")
+    sro_base: int = Field(..., gt=0, description="Base marker value for SRO tokens (e.g., 2000)")
+    nfc: int = Field(..., gt=0, description="Marker value for NFC token (e.g., 3001)")
+
+
+class CATypeConfig(BaseModel):
+    """Configuration for a Controllable Asset type."""
+
+    features: List[str] = Field(..., description="Feature name patterns for this CA type")
+    action_name: str = Field(..., description="Action name pattern for this CA type")
+    input_dim: int = Field(..., gt=0, description="Post-encoding dimension for this CA type")
+
+
+class SROTypeConfig(BaseModel):
+    """Configuration for a Shared Read-Only observation type."""
+
+    features: List[str] = Field(..., description="Feature name patterns for this SRO type")
+    input_dim: int = Field(..., ge=0, description="Post-encoding dimension for this SRO type")
+
+
+class NFCConfig(BaseModel):
+    """Configuration for Non-Flexible Context (residual load) token."""
+
+    demand_features: List[str] = Field(default_factory=list, description="Demand feature patterns")
+    generation_features: List[str] = Field(default_factory=list, description="Generation feature patterns")
+    extra_features: List[str] = Field(default_factory=list, description="Extra feature patterns")
+    input_dim: int = Field(..., ge=0, description="Post-encoding dimension for NFC")
+
+
+class TokenizerConfig(BaseModel):
+    """Full tokenizer configuration for TransformerPPO agent."""
+
+    marker_values: MarkerValuesConfig
+    ca_types: Dict[str, CATypeConfig] = Field(default_factory=dict)
+    sro_types: Dict[str, SROTypeConfig] = Field(default_factory=dict)
+    nfc: NFCConfig
+
+
 class MetadataConfig(BaseModel):
     experiment_name: str = Field(..., min_length=1, description="Name registered in MLflow")
     run_name: str = Field(..., min_length=1, description="Friendly name for the MLflow run")
