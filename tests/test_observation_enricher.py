@@ -1,5 +1,7 @@
 """Tests for ObservationEnricher."""
 
+from typing import Any, Dict
+
 import pytest
 
 from algorithms.utils.observation_enricher import (
@@ -139,3 +141,126 @@ class TestFeatureMatching:
         # (this is a tricky case - we accept some false positives for simplicity)
         # The important thing is that the feature-pattern check happens first
         pass  # This test documents expected behavior
+
+
+class TestFeatureClassification:
+    """Tests for classifying features into token groups."""
+
+    @pytest.fixture
+    def sample_tokenizer_config(self) -> Dict[str, Any]:
+        """Sample tokenizer config for testing."""
+        return {
+            "marker_values": {
+                "ca_base": 1000,
+                "sro_base": 2000,
+                "nfc": 3001,
+            },
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                },
+                "ev_charger": {
+                    "features": [
+                        "electric_vehicle_charger",
+                        "connected_electric_vehicle",
+                    ],
+                    "action_name": "electric_vehicle_storage",
+                    "input_dim": 61,
+                },
+            },
+            "sro_types": {
+                "temporal": {
+                    "features": ["month", "hour", "day_type"],
+                    "input_dim": 12,
+                },
+                "pricing": {
+                    "features": ["electricity_pricing"],
+                    "input_dim": 4,
+                },
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": ["solar_generation"],
+                "extra_features": [],
+                "input_dim": 2,
+            },
+        }
+
+    def test_classify_battery_feature(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Battery feature should be classified as CA."""
+        from algorithms.utils.observation_enricher import _classify_feature
+        
+        result = _classify_feature(
+            "electrical_storage_soc",
+            sample_tokenizer_config,
+            device_ids_by_type={"battery": [None]},
+        )
+        
+        assert result is not None
+        family, type_name, device_id = result
+        assert family == "ca"
+        assert type_name == "battery"
+        assert device_id is None
+
+    def test_classify_ev_feature_with_device_id(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """EV charger feature with device ID should be classified correctly."""
+        from algorithms.utils.observation_enricher import _classify_feature
+        
+        result = _classify_feature(
+            "electric_vehicle_charger_charger_1_1_connected_state",
+            sample_tokenizer_config,
+            device_ids_by_type={"ev_charger": ["charger_1_1", "charger_1_2"]},
+        )
+        
+        assert result is not None
+        family, type_name, device_id = result
+        assert family == "ca"
+        assert type_name == "ev_charger"
+        assert device_id == "charger_1_1"
+
+    def test_classify_temporal_feature(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Temporal feature should be classified as SRO."""
+        from algorithms.utils.observation_enricher import _classify_feature
+        
+        result = _classify_feature(
+            "month",
+            sample_tokenizer_config,
+            device_ids_by_type={},
+        )
+        
+        assert result is not None
+        family, type_name, device_id = result
+        assert family == "sro"
+        assert type_name == "temporal"
+        assert device_id is None
+
+    def test_classify_nfc_demand_feature(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Demand feature should be classified as NFC."""
+        from algorithms.utils.observation_enricher import _classify_feature
+        
+        result = _classify_feature(
+            "non_shiftable_load",
+            sample_tokenizer_config,
+            device_ids_by_type={},
+        )
+        
+        assert result is not None
+        family, type_name, device_id = result
+        assert family == "nfc"
+        assert type_name == "nfc"
+        assert device_id is None
+
+    def test_classify_unknown_feature(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Unknown feature should return None."""
+        from algorithms.utils.observation_enricher import _classify_feature
+        
+        result = _classify_feature(
+            "unknown_random_feature",
+            sample_tokenizer_config,
+            device_ids_by_type={},
+        )
+        
+        assert result is None
+

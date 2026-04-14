@@ -113,6 +113,67 @@ def _contains_device_id(feature_name: str, device_id: str) -> bool:
     return re.search(pattern, feature_name) is not None
 
 
+def _classify_feature(
+    feature_name: str,
+    tokenizer_config: Dict[str, Any],
+    device_ids_by_type: Dict[str, List[Optional[str]]],
+) -> Optional[Tuple[str, str, Optional[str]]]:
+    """Classify a feature into a token group.
+
+    Checks in order: CA types, SRO types, NFC.
+
+    Args:
+        feature_name: Raw observation feature name.
+        tokenizer_config: Full tokenizer config dict.
+        device_ids_by_type: Device IDs per CA type (from _extract_device_ids).
+
+    Returns:
+        Tuple of (family, type_name, device_id) or None if unmatched.
+        family is "ca", "sro", or "nfc".
+    """
+    ca_config = tokenizer_config.get("ca_types", {})
+    sro_config = tokenizer_config.get("sro_types", {})
+    nfc_config = tokenizer_config.get("nfc", {})
+
+    # 1. Try CA types
+    for ca_type_name, ca_spec in ca_config.items():
+        patterns = ca_spec.get("features", [])
+        if _feature_matches_patterns(feature_name, patterns):
+            # Determine which device instance this belongs to
+            device_ids = device_ids_by_type.get(ca_type_name, [None])
+            
+            # If only one instance (or no device IDs), use first/None
+            if len(device_ids) <= 1:
+                return ("ca", ca_type_name, device_ids[0] if device_ids else None)
+            
+            # Multiple instances - find which device ID is in the feature name
+            for device_id in device_ids:
+                if device_id is not None and _contains_device_id(feature_name, device_id):
+                    return ("ca", ca_type_name, device_id)
+            
+            # Feature matches CA type but no specific device ID found
+            # This shouldn't happen with well-formed data, but return first as fallback
+            return ("ca", ca_type_name, device_ids[0])
+
+    # 2. Try SRO types
+    for sro_type_name, sro_spec in sro_config.items():
+        patterns = sro_spec.get("features", [])
+        if _feature_matches_patterns(feature_name, patterns):
+            return ("sro", sro_type_name, None)
+
+    # 3. Try NFC
+    demand_patterns = nfc_config.get("demand_features", [])
+    generation_patterns = nfc_config.get("generation_features", [])
+    extra_patterns = nfc_config.get("extra_features", [])
+    all_nfc_patterns = demand_patterns + generation_patterns + extra_patterns
+    
+    if _feature_matches_patterns(feature_name, all_nfc_patterns):
+        return ("nfc", "nfc", None)
+
+    # 4. Unmatched
+    return None
+
+
 class ObservationEnricher:
     """Placeholder stub for future implementation.
     
