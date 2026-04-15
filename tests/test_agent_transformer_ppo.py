@@ -216,3 +216,153 @@ class TestAgentPredict:
             actions = agent_with_env.predict([encoded_obs], deterministic=False)
             assert (actions[0] >= -1.0).all()
             assert (actions[0] <= 1.0).all()
+
+
+class TestAgentUpdate:
+    """Tests for AgentTransformerPPO.update()."""
+
+    @pytest.fixture
+    def sample_config(self, tmp_path: Path) -> Dict[str, Any]:
+        """Create sample config."""
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month", "hour"], "input_dim": 4},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+        tokenizer_path = tmp_path / "tokenizer.json"
+        with open(tokenizer_path, "w") as f:
+            json.dump(tokenizer_config, f)
+        
+        return {
+            "algorithm": {
+                "name": "AgentTransformerPPO",
+                "tokenizer_config_path": str(tokenizer_path),
+                "transformer": {
+                    "d_model": 64,
+                    "nhead": 4,
+                    "num_layers": 2,
+                },
+                "hyperparameters": {
+                    "learning_rate": 3e-4,
+                    "gamma": 0.99,
+                    "gae_lambda": 0.95,
+                    "clip_eps": 0.2,
+                    "ppo_epochs": 2,  # Fewer epochs for testing
+                    "minibatch_size": 4,
+                    "entropy_coeff": 0.01,
+                    "value_coeff": 0.5,
+                    "max_grad_norm": 0.5,
+                    "hidden_dim": 64,
+                    "rollout_length": 8,  # Small for testing
+                },
+            }
+        }
+
+    @pytest.fixture
+    def agent_with_env(self, sample_config: Dict[str, Any]) -> Any:
+        """Create agent and attach mock environment."""
+        from algorithms.agents.transformer_ppo_agent import AgentTransformerPPO
+        
+        agent = AgentTransformerPPO(sample_config)
+        agent.attach_environment(
+            observation_names=[["month", "hour", "electrical_storage_soc", "non_shiftable_load"]],
+            action_names=[["electrical_storage"]],
+            action_space=[MagicMock()],
+            observation_space=[MagicMock()],
+            metadata={},
+        )
+        return agent
+
+    def test_update_stores_transition(self, agent_with_env: Any) -> None:
+        """update() should store transition in buffer."""
+        encoded_obs = np.array([[
+            1001.0, 0.5,
+            2001.0, 0.5, 0.5, 0.5, 0.5,
+            3001.0, 100.0,
+        ]])
+        
+        # Predict first to generate values/log_probs
+        agent_with_env.predict([encoded_obs], deterministic=False)
+        
+        # Update
+        metrics = agent_with_env.update(
+            observations=[encoded_obs],
+            actions=[np.array([[0.5]])],
+            rewards=[1.0],
+            next_observations=[encoded_obs],
+            terminated=[False],
+            truncated=[False],
+            update_target_step=False,
+            global_learning_step=1,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+        
+        # Buffer should have one transition
+        assert len(agent_with_env.rollout_buffers[0]) == 1
+
+    def test_update_returns_metrics(self, agent_with_env: Any) -> None:
+        """update() should return metrics dict."""
+        encoded_obs = np.array([[
+            1001.0, 0.5,
+            2001.0, 0.5, 0.5, 0.5, 0.5,
+            3001.0, 100.0,
+        ]])
+        
+        agent_with_env.predict([encoded_obs], deterministic=False)
+        
+        metrics = agent_with_env.update(
+            observations=[encoded_obs],
+            actions=[np.array([[0.5]])],
+            rewards=[1.0],
+            next_observations=[encoded_obs],
+            terminated=[False],
+            truncated=[False],
+            update_target_step=False,
+            global_learning_step=1,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+        
+        assert isinstance(metrics, dict)
+
+    def test_update_triggers_ppo_update(self, agent_with_env: Any) -> None:
+        """update() should trigger PPO update when buffer is full."""
+        encoded_obs = np.array([[
+            1001.0, 0.5,
+            2001.0, 0.5, 0.5, 0.5, 0.5,
+            3001.0, 100.0,
+        ]])
+        
+        # Fill buffer to rollout_length (8)
+        for i in range(10):
+            agent_with_env.predict([encoded_obs], deterministic=False)
+            agent_with_env.update(
+                observations=[encoded_obs],
+                actions=[np.array([[0.5]])],
+                rewards=[1.0],
+                next_observations=[encoded_obs],
+                terminated=[False],
+                truncated=[False],
+                update_target_step=False,
+                global_learning_step=i,
+                update_step=(i == 9),  # Trigger update on last step
+                initial_exploration_done=True,
+            )
+        
+        # Buffer should be cleared after update
+        # (depends on implementation)

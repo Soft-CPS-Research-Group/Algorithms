@@ -240,6 +240,9 @@ class AgentTransformerPPO(BaseAgent):
     ) -> Dict[str, float]:
         """PPO on-policy update step.
 
+        Stores transitions in rollout buffer. When update_step is True and
+        buffer has enough data, performs PPO update.
+
         Args:
             observations: Encoded observations per building.
             actions: Actions taken per building.
@@ -255,8 +258,141 @@ class AgentTransformerPPO(BaseAgent):
         Returns:
             Metrics dict (empty if no update performed).
         """
-        # Placeholder - will be implemented in Task 6
-        return {}
+        metrics: Dict[str, float] = {}
+        
+        if not initial_exploration_done:
+            return metrics
+        
+        # Store transitions in buffers
+        for b_idx in range(self._num_buildings):
+            if self._last_values[b_idx] is None:
+                continue
+                
+            obs_tensor = torch.tensor(
+                observations[b_idx], dtype=torch.float32, device=self.device
+            )
+            if obs_tensor.ndim == 1:
+                obs_tensor = obs_tensor.unsqueeze(0)
+                
+            action_tensor = torch.tensor(
+                actions[b_idx], dtype=torch.float32, device=self.device
+            )
+            
+            done = terminated[b_idx] or truncated[b_idx]
+            
+            self.rollout_buffers[b_idx].add(
+                observation=obs_tensor.squeeze(0),
+                action=action_tensor.squeeze(0) if action_tensor.ndim > 1 else action_tensor,
+                log_prob=self._last_log_probs[b_idx].squeeze(),
+                reward=rewards[b_idx],
+                value=self._last_values[b_idx].squeeze(),
+                done=done,
+            )
+        
+        self._step_count += 1
+        
+        # Perform PPO update if requested and buffer is ready
+        if update_step:
+            for b_idx in range(self._num_buildings):
+                buffer = self.rollout_buffers[b_idx]
+                if len(buffer) >= self.minibatch_size:
+                    update_metrics = self._ppo_update(b_idx, next_observations[b_idx])
+                    for k, v in update_metrics.items():
+                        metrics[f"building_{b_idx}/{k}"] = v
+        
+        return metrics
+
+    def _ppo_update(
+        self, building_idx: int, last_obs: np.ndarray
+    ) -> Dict[str, float]:
+        """Perform PPO update for a single building.
+
+        Args:
+            building_idx: Index of the building.
+            last_obs: Last observation for bootstrapping value.
+
+        Returns:
+            Metrics from the update.
+        """
+        buffer = self.rollout_buffers[building_idx]
+        
+        # Compute last value for GAE
+        with torch.no_grad():
+            last_obs_tensor = torch.tensor(
+                last_obs, dtype=torch.float32, device=self.device
+            )
+            if last_obs_tensor.ndim == 1:
+                last_obs_tensor = last_obs_tensor.unsqueeze(0)
+            
+            tokenized = self.tokenizer(last_obs_tensor)
+            backbone_out = self.backbone(
+                tokenized.ca_tokens,
+                tokenized.sro_tokens,
+                tokenized.nfc_token,
+            )
+            last_value = self.critic(backbone_out.pooled)
+        
+        # Compute advantages
+        buffer.compute_returns_and_advantages(last_value.squeeze())
+        
+        # PPO epochs
+        all_metrics: Dict[str, List[float]] = {
+            "policy_loss": [],
+            "value_loss": [],
+            "entropy": [],
+        }
+        
+        self.tokenizer.train()
+        self.backbone.train()
+        self.actor.train()
+        self.critic.train()
+        
+        for _ in range(self.ppo_epochs):
+            for batch in buffer.get_batches(self.minibatch_size):
+                # Forward pass
+                tokenized = self.tokenizer(batch.observations)
+                backbone_out = self.backbone(
+                    tokenized.ca_tokens,
+                    tokenized.sro_tokens,
+                    tokenized.nfc_token,
+                )
+                
+                # Get new log probs
+                _, log_probs_new, _ = self.actor(
+                    backbone_out.ca_embeddings,
+                    deterministic=False,
+                )
+                log_probs_new = log_probs_new.mean(dim=-1)  # Average over CAs
+                
+                # Get new values
+                values_new = self.critic(backbone_out.pooled).squeeze(-1)
+                
+                # Compute loss
+                loss, batch_metrics = compute_ppo_loss(
+                    log_probs_new=log_probs_new,
+                    log_probs_old=batch.log_probs,
+                    advantages=batch.advantages,
+                    values=values_new,
+                    returns=batch.returns,
+                    clip_eps=self.clip_eps,
+                    value_coeff=self.value_coeff,
+                    entropy_coeff=self.entropy_coeff,
+                )
+                
+                # Backward pass
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.all_params, self.max_grad_norm)
+                self.optimizer.step()
+                
+                for k, v in batch_metrics.items():
+                    all_metrics[k].append(v)
+        
+        # Clear buffer
+        buffer.clear()
+        
+        # Average metrics
+        return {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
 
     def export_artifacts(
         self,
