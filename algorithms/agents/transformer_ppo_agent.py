@@ -121,6 +121,8 @@ class AgentTransformerPPO(BaseAgent):
         self._step_count = 0
         self._last_values: List[Optional[torch.Tensor]] = []
         self._last_log_probs: List[Optional[torch.Tensor]] = []
+        self._last_obs: List[Optional[torch.Tensor]] = []
+        self._last_actions: List[Optional[torch.Tensor]] = []
 
     def _move_to_device(self) -> None:
         """Move all modules to the configured device."""
@@ -162,6 +164,8 @@ class AgentTransformerPPO(BaseAgent):
         # Initialize tracking lists
         self._last_values = [None] * self._num_buildings
         self._last_log_probs = [None] * self._num_buildings
+        self._last_obs = [None] * self._num_buildings
+        self._last_actions = [None] * self._num_buildings
 
     def predict(
         self,
@@ -185,7 +189,7 @@ class AgentTransformerPPO(BaseAgent):
         
         all_actions: List[np.ndarray] = []
         
-        with torch.no_grad() if deterministic else torch.enable_grad():
+        with torch.no_grad():
             for b_idx, obs in enumerate(observations):
                 # Convert to tensor
                 obs_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device)
@@ -215,8 +219,8 @@ class AgentTransformerPPO(BaseAgent):
                 if not deterministic:
                     self._last_values[b_idx] = value
                     self._last_log_probs[b_idx] = log_probs
-                    self._last_obs = obs_tensor
-                    self._last_actions = actions
+                    self._last_obs[b_idx] = obs_tensor
+                    self._last_actions[b_idx] = actions
                 
                 # Convert to numpy
                 actions_np = actions.squeeze(0).detach().cpu().numpy()  # Remove batch dim
@@ -283,7 +287,7 @@ class AgentTransformerPPO(BaseAgent):
             self.rollout_buffers[b_idx].add(
                 observation=obs_tensor.squeeze(0),
                 action=action_tensor.squeeze(0) if action_tensor.ndim > 1 else action_tensor,
-                log_prob=self._last_log_probs[b_idx].squeeze(),
+                log_prob=self._last_log_probs[b_idx].sum(dim=-1).squeeze(),  # Sum over CAs
                 reward=rewards[b_idx],
                 value=self._last_values[b_idx].squeeze(),
                 done=done,
@@ -362,7 +366,8 @@ class AgentTransformerPPO(BaseAgent):
                     backbone_out.ca_embeddings,
                     deterministic=False,
                 )
-                log_probs_new = log_probs_new.mean(dim=-1)  # Average over CAs
+                # Sum over CAs (joint action log prob = sum of individual log probs)
+                log_probs_new = log_probs_new.sum(dim=-1)
                 
                 # Get new values
                 values_new = self.critic(backbone_out.pooled).squeeze(-1)
@@ -483,9 +488,13 @@ class AgentTransformerPPO(BaseAgent):
         buffer = self.rollout_buffers[building_idx]
         if len(buffer) >= self.minibatch_size:
             # Trigger update with current buffer
-            # Use zeros as last_obs since we don't have valid next observation
-            dummy_obs = np.zeros(10)  # Will be replaced with actual shape
-            self._ppo_update(building_idx, dummy_obs)
+            # Use last stored observation as bootstrap (best available approximation)
+            if self._last_obs[building_idx] is not None:
+                last_obs_np = self._last_obs[building_idx].cpu().numpy().squeeze()
+                self._ppo_update(building_idx, last_obs_np)
+            else:
+                # No valid observation available, just clear buffer
+                buffer.clear()
         else:
             # Just clear buffer
             buffer.clear()

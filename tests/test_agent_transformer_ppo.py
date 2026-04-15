@@ -365,7 +365,7 @@ class TestAgentUpdate:
             )
         
         # Buffer should be cleared after update
-        # (depends on implementation)
+        assert len(agent_with_env.rollout_buffers[0]) == 0
 
 
 class TestAgentCheckpoint:

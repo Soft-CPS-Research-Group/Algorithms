@@ -30,7 +30,7 @@ algorithm:
     value_coeff: 0.5
     max_grad_norm: 0.5
     hidden_dim: 128
-    rollout_length: 2048
+    rollout_length: 512
 
 # Simulator configuration
 simulator:
