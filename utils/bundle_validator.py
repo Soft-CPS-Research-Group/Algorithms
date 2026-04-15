@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from loguru import logger
 
-SUPPORTED_ARTIFACT_FORMATS = {"onnx", "rule_based"}
+SUPPORTED_ARTIFACT_FORMATS = {"onnx", "rule_based", "offline_dataset"}
 
 
 class BundleValidationError(ValueError):
@@ -159,13 +159,18 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
                     f"rule_based artifact for agent {agent_index} must be named {expected_name}, "
                     f"got {artifact_path.name}"
                 )
+        elif artifact_format == "offline_dataset":
+            if artifact_path.suffix.lower() != ".csv":
+                raise BundleValidationError(
+                    f"offline_dataset artifact must end with .csv, got {artifact_path_value}"
+                )
 
         if num_agents is not None and agent_index >= num_agents:
             raise BundleValidationError(
                 f"agent.artifacts[{idx}].agent_index={agent_index} is outside topology.num_agents={num_agents}"
             )
 
-    if num_agents is not None and len(artifacts) != num_agents:
+    if num_agents is not None and top_level_format != "offline_dataset" and len(artifacts) != num_agents:
         raise BundleValidationError(
             "Number of exported artifacts must match topology.num_agents "
             f"(artifacts={len(artifacts)}, num_agents={num_agents})"

@@ -1,0 +1,93 @@
+# Local EV Data-Collection RBC template.
+# Runs BasicElectricVehicleRBC_ReferenceController through the full platform
+# integration and records transitions for Building 5 (agent index 4) into a
+# CSV suitable for offline RL training.
+
+# Human-readable experiment metadata used across MLflow, logs, and manifests.
+metadata:
+  experiment_name: "ev_data_collection"
+  run_name: "EV Data Collection RBC"
+
+# Runtime values are injected automatically by run_experiment.py.
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+# Tracking controls — MLflow disabled for lightweight local collection.
+tracking:
+  mlflow_enabled: false
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 10
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 100
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+# Checkpointing disabled — RBC is stateless.
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: null
+
+# Bundle metadata/options.
+bundle:
+  bundle_version: null
+  description: "Offline RL dataset collected with BasicElectricVehicleRBC_ReferenceController"
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+  per_agent_artifact_config: {}
+
+# Simulator wiring: full year, 3 episodes, CityLearn base reward.
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
+  central_agent: false
+  reward_function: RewardFunction
+  episodes: 3
+  simulation_start_time_step: null
+  simulation_end_time_step: null
+  episode_time_steps: null
+  export:
+    mode: none
+    export_kpis_on_episode_end: false
+    session_name: null
+
+# Training schedule — every step triggers update() so transitions are captured.
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 0
+
+# Topology is environment-derived at runtime.
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+# Algorithm family and hyperparameters.
+algorithm:
+  name: "EVDataCollectionRBC"
+  hyperparameters:
+    target_building_index: 4
+  networks: null
+  replay_buffer: null
+  exploration: null
+
+# No worker-specific overrides for local execution.
+execution: null

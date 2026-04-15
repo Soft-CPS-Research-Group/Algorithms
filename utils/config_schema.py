@@ -183,6 +183,18 @@ class RuleBasedHyperparameters(BaseModel):
     non_flexible_chargers: List[str] = Field(default_factory=list)
 
 
+class EVDataCollectionRBCHyperparameters(BaseModel):
+    target_building_index: int = Field(default=4, ge=0, description="0-based agent index of the building to collect transitions for")
+
+
+class EVDataCollectionRBCAlgorithmConfig(BaseModel):
+    name: Literal["EVDataCollectionRBC"]
+    hyperparameters: EVDataCollectionRBCHyperparameters = EVDataCollectionRBCHyperparameters()
+    networks: Optional[AlgorithmNetworks] = None
+    replay_buffer: Optional[ReplayBufferConfig] = None
+    exploration: Optional[ExplorationParams] = None
+
+
 class TopologyConfig(BaseModel):
     num_agents: Optional[int] = None
     observation_dimensions: Optional[List[int]] = None
@@ -301,7 +313,7 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig, EVDataCollectionRBCAlgorithmConfig]
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
