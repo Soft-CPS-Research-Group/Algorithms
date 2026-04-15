@@ -55,6 +55,55 @@ class TokenizerConfig(BaseModel):
     nfc: NFCConfig
 
 
+# ---------------------------------------------------------------------------
+# TransformerPPO Algorithm Config Schema
+# ---------------------------------------------------------------------------
+
+
+class TransformerConfig(BaseModel):
+    """Configuration for Transformer backbone architecture."""
+
+    d_model: int = Field(..., gt=0, description="Embedding dimension")
+    nhead: int = Field(..., gt=0, description="Number of attention heads")
+    num_layers: int = Field(..., gt=0, description="Number of encoder layers")
+    dim_feedforward: int = Field(256, gt=0, description="Feedforward network dimension")
+    dropout: float = Field(0.1, ge=0.0, le=1.0, description="Dropout rate")
+
+    @field_validator("nhead")
+    @classmethod
+    def nhead_divides_d_model(cls, v: int, info) -> int:
+        """Validate that nhead divides d_model evenly."""
+        d_model = info.data.get("d_model")
+        if d_model is not None and d_model % v != 0:
+            raise ValueError(f"nhead ({v}) must divide d_model ({d_model}) evenly")
+        return v
+
+
+class TransformerPPOHyperparameters(BaseModel):
+    """Hyperparameters for TransformerPPO agent."""
+
+    learning_rate: float = Field(3e-4, gt=0, description="Learning rate")
+    gamma: float = Field(0.99, ge=0.0, le=1.0, description="Discount factor")
+    gae_lambda: float = Field(0.95, ge=0.0, le=1.0, description="GAE lambda")
+    clip_eps: float = Field(0.2, gt=0, description="PPO clipping epsilon")
+    ppo_epochs: int = Field(4, gt=0, description="PPO epochs per update")
+    minibatch_size: int = Field(64, gt=0, description="Minibatch size")
+    entropy_coeff: float = Field(0.01, ge=0.0, description="Entropy coefficient")
+    value_coeff: float = Field(0.5, gt=0, description="Value loss coefficient")
+    max_grad_norm: float = Field(0.5, gt=0, description="Max gradient norm for clipping")
+    hidden_dim: int = Field(128, gt=0, description="Hidden dimension for actor/critic heads")
+    rollout_length: int = Field(2048, gt=0, description="Steps before PPO update")
+
+
+class TransformerPPOAlgorithmConfig(BaseModel):
+    """Full algorithm configuration for TransformerPPO agent."""
+
+    name: Literal["AgentTransformerPPO"] = "AgentTransformerPPO"
+    tokenizer_config_path: str = Field(..., description="Path to tokenizer config JSON")
+    transformer: TransformerConfig
+    hyperparameters: TransformerPPOHyperparameters
+
+
 class MetadataConfig(BaseModel):
     experiment_name: str = Field(..., min_length=1, description="Name registered in MLflow")
     run_name: str = Field(..., min_length=1, description="Friendly name for the MLflow run")

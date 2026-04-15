@@ -112,3 +112,83 @@ class TestTokenizerConfigSchema:
         
         with pytest.raises(ValueError):
             TokenizerConfig(**invalid_config)
+
+
+class TestTransformerPPOConfigSchema:
+    """Tests for TransformerPPO algorithm config schema."""
+
+    def test_transformer_config_valid(self) -> None:
+        """Valid Transformer config should parse successfully."""
+        from utils.config_schema import TransformerConfig
+        
+        config = TransformerConfig(
+            d_model=64,
+            nhead=4,
+            num_layers=2,
+            dim_feedforward=128,
+            dropout=0.1,
+        )
+        
+        assert config.d_model == 64
+        assert config.nhead == 4
+        assert config.num_layers == 2
+
+    def test_transformer_config_invalid_nhead(self) -> None:
+        """nhead must divide d_model evenly."""
+        from utils.config_schema import TransformerConfig
+        
+        with pytest.raises(ValueError):
+            TransformerConfig(
+                d_model=64,
+                nhead=5,  # 64 % 5 != 0
+                num_layers=2,
+            )
+
+    def test_transformer_ppo_hyperparameters_valid(self) -> None:
+        """Valid PPO hyperparameters should parse successfully."""
+        from utils.config_schema import TransformerPPOHyperparameters
+        
+        config = TransformerPPOHyperparameters(
+            learning_rate=3e-4,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_eps=0.2,
+            ppo_epochs=4,
+            minibatch_size=64,
+            entropy_coeff=0.01,
+            value_coeff=0.5,
+            max_grad_norm=0.5,
+        )
+        
+        assert config.gamma == 0.99
+        assert config.clip_eps == 0.2
+
+    def test_transformer_ppo_algorithm_config_valid(self) -> None:
+        """Full TransformerPPO algorithm config should parse."""
+        from utils.config_schema import TransformerPPOAlgorithmConfig
+        
+        config = TransformerPPOAlgorithmConfig(
+            name="AgentTransformerPPO",
+            tokenizer_config_path="configs/tokenizers/default.json",
+            transformer={
+                "d_model": 64,
+                "nhead": 4,
+                "num_layers": 2,
+                "dim_feedforward": 128,
+                "dropout": 0.1,
+            },
+            hyperparameters={
+                "learning_rate": 3e-4,
+                "gamma": 0.99,
+                "gae_lambda": 0.95,
+                "clip_eps": 0.2,
+                "ppo_epochs": 4,
+                "minibatch_size": 64,
+                "entropy_coeff": 0.01,
+                "value_coeff": 0.5,
+                "max_grad_norm": 0.5,
+            },
+        )
+        
+        assert config.name == "AgentTransformerPPO"
+        assert config.transformer.d_model == 64
