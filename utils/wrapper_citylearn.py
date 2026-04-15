@@ -624,3 +624,115 @@ class Wrapper_CityLearn(RLC):
 
         logger.debug("Encoders initialised from external configuration")
         return encoders
+
+    def _setup_transformer_enrichers(self, tokenizer_config: Dict[str, Any]) -> None:
+        """Set up observation enrichers for Transformer agents.
+        
+        Called when the agent is a Transformer-based agent (e.g., AgentTransformerPPO).
+        Creates per-building enrichers that inject marker values into observations.
+        
+        Args:
+            tokenizer_config: Tokenizer configuration dict.
+        """
+        from algorithms.utils.observation_enricher import ObservationEnricher
+        
+        self._is_transformer_agent = True
+        self._enrichers: List[Optional[ObservationEnricher]] = []
+        self._tokenizer_config = tokenizer_config
+        
+        for i in range(len(self.observation_names)):
+            enricher = ObservationEnricher(tokenizer_config)
+            self._enrichers.append(enricher)
+            
+    def _enrich_observation_names(self, building_idx: int) -> None:
+        """Enrich observation names for a building (Transformer agents only).
+        
+        Called once per topology. Updates the enricher's cache and prepares
+        marker positions for value enrichment.
+        
+        Args:
+            building_idx: Index of the building.
+        """
+        if not getattr(self, '_is_transformer_agent', False):
+            return
+            
+        enricher = self._enrichers[building_idx]
+        if enricher is None:
+            return
+            
+        # Get current observation and action names
+        obs_names = self.observation_names[building_idx]
+        action_names = self.action_names[building_idx]
+        
+        # Enrich names (caches result)
+        enrichment = enricher.enrich_names(obs_names, action_names)
+        
+        # Store enriched names for encoder rebuilding
+        if not hasattr(self, '_enriched_observation_names'):
+            self._enriched_observation_names = {}
+        self._enriched_observation_names[building_idx] = enrichment.enriched_names
+        
+    def _enrich_observation_values(
+        self, building_idx: int, raw_values: List[float]
+    ) -> List[float]:
+        """Enrich observation values with marker values (Transformer agents only).
+        
+        Args:
+            building_idx: Index of the building.
+            raw_values: Raw observation values from CityLearn.
+            
+        Returns:
+            Enriched values with markers inserted, or raw values if not Transformer.
+        """
+        if not getattr(self, '_is_transformer_agent', False):
+            return raw_values
+            
+        enricher = self._enrichers[building_idx]
+        if enricher is None:
+            return raw_values
+            
+        return enricher.enrich_values(raw_values)
+        
+    def _check_topology_change(self, building_idx: int) -> bool:
+        """Check if topology changed for a building (Transformer agents only).
+        
+        Args:
+            building_idx: Index of the building.
+            
+        Returns:
+            True if topology changed, False otherwise.
+        """
+        if not getattr(self, '_is_transformer_agent', False):
+            return False
+            
+        enricher = self._enrichers[building_idx]
+        if enricher is None:
+            return False
+            
+        obs_names = self.observation_names[building_idx]
+        action_names = self.action_names[building_idx]
+        
+        return enricher.topology_changed(obs_names, action_names)
+        
+    def _handle_topology_change(self, building_idx: int) -> None:
+        """Handle topology change for a building (Transformer agents only).
+        
+        1. Re-enrich names with new topology
+        2. Rebuild encoders
+        3. Notify agent
+        
+        Args:
+            building_idx: Index of the building.
+        """
+        if not getattr(self, '_is_transformer_agent', False):
+            return
+            
+        # Re-enrich names
+        self._enrich_observation_names(building_idx)
+        
+        # Rebuild encoders for this building
+        # (Implementation depends on existing encoder structure)
+        
+        # Notify agent if it has the method
+        if hasattr(self.model, 'on_topology_change'):
+            self.model.on_topology_change(building_idx)
