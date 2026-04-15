@@ -91,3 +91,42 @@ class ActorHead(nn.Module):
         log_probs = log_probs.squeeze(-1)  # [batch, N_ca]
         
         return actions, log_probs, means
+
+
+class CriticHead(nn.Module):
+    """Critic head that produces state value from pooled embedding.
+
+    Takes the mean-pooled representation of all tokens and outputs
+    a scalar value estimate V(s).
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        hidden_dim: int,
+    ) -> None:
+        """Initialize the critic head.
+
+        Args:
+            d_model: Input embedding dimension.
+            hidden_dim: Hidden layer dimension.
+        """
+        super().__init__()
+        
+        self.mlp = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, pooled: torch.Tensor) -> torch.Tensor:
+        """Produce state value from pooled embedding.
+
+        Args:
+            pooled: [batch, d_model] mean-pooled token embeddings.
+
+        Returns:
+            values: [batch, 1] state value estimates.
+        """
+        return self.mlp(pooled)

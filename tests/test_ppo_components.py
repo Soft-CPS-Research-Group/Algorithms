@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from algorithms.utils.ppo_components import ActorHead
+from algorithms.utils.ppo_components import ActorHead, CriticHead
 
 
 class TestActorHead:
@@ -74,3 +74,38 @@ class TestActorHead:
         # Just check they're valid actions
         assert (actions1 >= -1.0).all() and (actions1 <= 1.0).all()
         assert (actions2 >= -1.0).all() and (actions2 <= 1.0).all()
+
+
+class TestCriticHead:
+    """Tests for CriticHead class."""
+
+    def test_critic_creation(self) -> None:
+        """CriticHead should create with correct architecture."""
+        critic = CriticHead(d_model=64, hidden_dim=128)
+        
+        assert critic is not None
+        assert isinstance(critic, nn.Module)
+
+    def test_critic_output_shape(self) -> None:
+        """Critic should output scalar value per batch."""
+        d_model = 64
+        critic = CriticHead(d_model=d_model, hidden_dim=128)
+
+        batch_size = 2
+        pooled = torch.randn(batch_size, d_model)
+
+        values = critic(pooled)
+
+        assert values.shape == (batch_size, 1)
+
+    def test_critic_gradient_flow(self) -> None:
+        """Gradients should flow through critic."""
+        d_model = 64
+        critic = CriticHead(d_model=d_model, hidden_dim=128)
+
+        pooled = torch.randn(2, d_model, requires_grad=True)
+        values = critic(pooled)
+        loss = values.sum()
+        loss.backward()
+
+        assert pooled.grad is not None
