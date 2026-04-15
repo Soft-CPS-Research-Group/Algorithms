@@ -366,3 +366,92 @@ class TestAgentUpdate:
         
         # Buffer should be cleared after update
         # (depends on implementation)
+
+
+class TestAgentCheckpoint:
+    """Tests for AgentTransformerPPO checkpoint methods."""
+
+    @pytest.fixture
+    def sample_config(self, tmp_path: Path) -> Dict[str, Any]:
+        """Create sample config."""
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {},
+            "nfc": {
+                "demand_features": [],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 0,
+            },
+        }
+        tokenizer_path = tmp_path / "tokenizer.json"
+        with open(tokenizer_path, "w") as f:
+            json.dump(tokenizer_config, f)
+        
+        return {
+            "algorithm": {
+                "name": "AgentTransformerPPO",
+                "tokenizer_config_path": str(tokenizer_path),
+                "transformer": {"d_model": 32, "nhead": 2, "num_layers": 1},
+                "hyperparameters": {
+                    "learning_rate": 3e-4,
+                    "gamma": 0.99,
+                    "hidden_dim": 32,
+                },
+            }
+        }
+
+    def test_save_checkpoint(self, sample_config: Dict[str, Any], tmp_path: Path) -> None:
+        """save_checkpoint should create checkpoint file."""
+        from algorithms.agents.transformer_ppo_agent import AgentTransformerPPO
+        
+        agent = AgentTransformerPPO(sample_config)
+        
+        checkpoint_dir = tmp_path / "checkpoints"
+        checkpoint_dir.mkdir()
+        
+        agent.save_checkpoint(checkpoint_dir, step=100)
+        
+        checkpoint_file = checkpoint_dir / "checkpoint_step_100.pt"
+        assert checkpoint_file.exists()
+
+    def test_load_checkpoint(self, sample_config: Dict[str, Any], tmp_path: Path) -> None:
+        """load_checkpoint should restore agent state."""
+        from algorithms.agents.transformer_ppo_agent import AgentTransformerPPO
+        
+        # Create and save agent
+        agent1 = AgentTransformerPPO(sample_config)
+        
+        checkpoint_dir = tmp_path / "checkpoints"
+        checkpoint_dir.mkdir()
+        agent1.save_checkpoint(checkpoint_dir, step=100)
+        
+        # Create new agent and load
+        agent2 = AgentTransformerPPO(sample_config)
+        agent2.load_checkpoint(checkpoint_dir / "checkpoint_step_100.pt")
+        
+        # Check weights are the same
+        for p1, p2 in zip(agent1.all_params, agent2.all_params):
+            assert torch.allclose(p1, p2)
+
+    def test_export_artifacts(self, sample_config: Dict[str, Any], tmp_path: Path) -> None:
+        """export_artifacts should return manifest metadata."""
+        from algorithms.agents.transformer_ppo_agent import AgentTransformerPPO
+        
+        agent = AgentTransformerPPO(sample_config)
+        
+        output_dir = tmp_path / "artifacts"
+        output_dir.mkdir()
+        
+        manifest = agent.export_artifacts(output_dir)
+        
+        assert isinstance(manifest, dict)
+        assert "model_path" in manifest or "checkpoint_path" in manifest
+

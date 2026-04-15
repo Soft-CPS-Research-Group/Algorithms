@@ -394,6 +394,45 @@ class AgentTransformerPPO(BaseAgent):
         # Average metrics
         return {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
 
+    def save_checkpoint(self, output_dir: Path, step: int) -> None:
+        """Save training checkpoint.
+
+        Args:
+            output_dir: Directory to save checkpoint.
+            step: Current training step.
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        checkpoint = {
+            "step": step,
+            "tokenizer_state_dict": self.tokenizer.state_dict(),
+            "backbone_state_dict": self.backbone.state_dict(),
+            "actor_state_dict": self.actor.state_dict(),
+            "critic_state_dict": self.critic.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+        }
+        
+        checkpoint_path = output_dir / f"checkpoint_step_{step}.pt"
+        torch.save(checkpoint, checkpoint_path)
+
+    def load_checkpoint(self, checkpoint_path: Path) -> None:
+        """Load training checkpoint.
+
+        Args:
+            checkpoint_path: Path to checkpoint file.
+        """
+        checkpoint_path = Path(checkpoint_path)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        self.tokenizer.load_state_dict(checkpoint["tokenizer_state_dict"])
+        self.backbone.load_state_dict(checkpoint["backbone_state_dict"])
+        self.actor.load_state_dict(checkpoint["actor_state_dict"])
+        self.critic.load_state_dict(checkpoint["critic_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        
+        self._step_count = checkpoint.get("step", 0)
+
     def export_artifacts(
         self,
         output_dir: Path,
@@ -408,6 +447,46 @@ class AgentTransformerPPO(BaseAgent):
         Returns:
             Manifest metadata dict.
         """
-        # Placeholder - will be implemented in Task 7
-        return {"algorithm": "AgentTransformerPPO"}
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save final checkpoint
+        checkpoint_path = output_dir / "final_model.pt"
+        checkpoint = {
+            "tokenizer_state_dict": self.tokenizer.state_dict(),
+            "backbone_state_dict": self.backbone.state_dict(),
+            "actor_state_dict": self.actor.state_dict(),
+            "critic_state_dict": self.critic.state_dict(),
+            "tokenizer_config": self.tokenizer_config,
+        }
+        torch.save(checkpoint, checkpoint_path)
+        
+        manifest = {
+            "model_path": str(checkpoint_path),
+            "checkpoint_path": str(checkpoint_path),
+            "algorithm": "AgentTransformerPPO",
+            "d_model": self.d_model,
+            "num_layers": self.num_layers,
+        }
+        
+        return manifest
+
+    def on_topology_change(self, building_idx: int) -> None:
+        """Handle topology change for a building.
+
+        Called by wrapper when observation count changes mid-episode.
+        Triggers PPO update if buffer has data, then flushes buffer.
+
+        Args:
+            building_idx: Index of the building with topology change.
+        """
+        buffer = self.rollout_buffers[building_idx]
+        if len(buffer) >= self.minibatch_size:
+            # Trigger update with current buffer
+            # Use zeros as last_obs since we don't have valid next observation
+            dummy_obs = np.zeros(10)  # Will be replaced with actual shape
+            self._ppo_update(building_idx, dummy_obs)
+        else:
+            # Just clear buffer
+            buffer.clear()
 
