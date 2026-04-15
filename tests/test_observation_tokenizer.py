@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+from typing import Any, Dict
 
 from algorithms.utils.observation_tokenizer import TokenizedObservation
 
@@ -129,3 +130,126 @@ class TestGroupExtraction:
         assert len(ca_groups[0]) == 2  # 2 CAs
         assert torch.allclose(ca_groups[0][0], torch.tensor([0.5]))  # First CA: 1 feature
         assert torch.allclose(ca_groups[0][1], torch.tensor([0.8, 0.9]))  # Second CA: 2 features
+
+
+class TestObservationTokenizer:
+    """Tests for ObservationTokenizer class."""
+
+    @pytest.fixture
+    def sample_tokenizer_config(self) -> Dict[str, Any]:
+        """Sample tokenizer config for testing."""
+        return {
+            "marker_values": {
+                "ca_base": 1000,
+                "sro_base": 2000,
+                "nfc": 3001,
+            },
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                },
+                "ev_charger": {
+                    "features": ["electric_vehicle_soc"],
+                    "action_name": "electric_vehicle_storage",
+                    "input_dim": 2,
+                },
+            },
+            "sro_types": {
+                "temporal": {
+                    "features": ["month", "hour"],
+                    "input_dim": 4,
+                },
+                "pricing": {
+                    "features": ["electricity_pricing"],
+                    "input_dim": 1,
+                },
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": ["solar_generation"],
+                "extra_features": [],
+                "input_dim": 2,
+            },
+        }
+
+    def test_tokenizer_creation(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Tokenizer should create projections for all types."""
+        from algorithms.utils.observation_tokenizer import ObservationTokenizer
+
+        tokenizer = ObservationTokenizer(sample_tokenizer_config, d_model=64)
+
+        # Check CA projections exist
+        assert "battery" in tokenizer.ca_projections
+        assert "ev_charger" in tokenizer.ca_projections
+
+        # Check SRO projections exist
+        assert "temporal" in tokenizer.sro_projections
+        assert "pricing" in tokenizer.sro_projections
+
+        # Check NFC projection exists
+        assert tokenizer.nfc_projection is not None
+
+    def test_tokenizer_projection_shapes(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Projections should have correct input/output dimensions."""
+        from algorithms.utils.observation_tokenizer import ObservationTokenizer
+
+        d_model = 64
+        tokenizer = ObservationTokenizer(sample_tokenizer_config, d_model=d_model)
+
+        # Battery: input_dim=1 -> d_model
+        assert tokenizer.ca_projections["battery"].in_features == 1
+        assert tokenizer.ca_projections["battery"].out_features == d_model
+
+        # EV charger: input_dim=2 -> d_model
+        assert tokenizer.ca_projections["ev_charger"].in_features == 2
+        assert tokenizer.ca_projections["ev_charger"].out_features == d_model
+
+        # Temporal: input_dim=4 -> d_model
+        assert tokenizer.sro_projections["temporal"].in_features == 4
+        assert tokenizer.sro_projections["temporal"].out_features == d_model
+
+    def test_tokenizer_forward_single_ca(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Forward pass should produce correctly shaped token tensors."""
+        from algorithms.utils.observation_tokenizer import ObservationTokenizer
+
+        d_model = 64
+        tokenizer = ObservationTokenizer(sample_tokenizer_config, d_model=d_model)
+
+        # Encoded: [CA_1001(battery), soc, SRO_2001(temporal), m, h, d, t, SRO_2002(pricing), p, NFC_3001, load, gen]
+        # Battery has 1 feature, temporal has 4, pricing has 1, nfc has 2
+        encoded = torch.tensor([[
+            1001.0, 0.5,  # CA battery: marker + 1 feature
+            2001.0, 0.1, 0.2, 0.3, 0.4,  # SRO temporal: marker + 4 features
+            2002.0, 0.8,  # SRO pricing: marker + 1 feature
+            3001.0, 100.0, 50.0,  # NFC: marker + 2 features
+        ]])
+
+        result = tokenizer(encoded)
+
+        assert result.ca_tokens.shape == (1, 1, d_model)  # 1 batch, 1 CA, d_model
+        assert result.sro_tokens.shape == (1, 2, d_model)  # 1 batch, 2 SROs, d_model
+        assert result.nfc_token.shape == (1, 1, d_model)  # 1 batch, 1 NFC, d_model
+        assert result.n_ca == 1
+
+    def test_tokenizer_forward_multi_ca(self, sample_tokenizer_config: Dict[str, Any]) -> None:
+        """Forward pass should handle multiple CAs."""
+        from algorithms.utils.observation_tokenizer import ObservationTokenizer
+
+        d_model = 64
+        tokenizer = ObservationTokenizer(sample_tokenizer_config, d_model=d_model)
+
+        # 2 CAs: battery (1 feature) + ev_charger (2 features)
+        encoded = torch.tensor([[
+            1001.0, 0.5,  # CA battery: marker + 1 feature
+            1002.0, 0.8, 0.9,  # CA ev_charger: marker + 2 features
+            2001.0, 0.1, 0.2, 0.3, 0.4,  # SRO temporal
+            3001.0, 100.0, 50.0,  # NFC
+        ]])
+
+        result = tokenizer(encoded)
+
+        assert result.ca_tokens.shape == (1, 2, d_model)  # 2 CAs
+        assert result.n_ca == 2
+        assert len(result.ca_types) == 2

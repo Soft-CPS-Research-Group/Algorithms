@@ -158,3 +158,183 @@ def _extract_groups(
         nfc_groups.append(batch_nfc_group)
 
     return ca_groups, sro_groups, nfc_groups
+
+
+class ObservationTokenizer(nn.Module):
+    """Tokenizes encoded observations with marker values into typed token embeddings.
+
+    Scans for marker values, extracts feature groups, and projects each group
+    to d_model via per-type Linear layers.
+    """
+
+    def __init__(
+        self,
+        tokenizer_config: Dict[str, Any],
+        d_model: int,
+    ) -> None:
+        """Initialize the tokenizer with config and embedding dimension.
+
+        Args:
+            tokenizer_config: Loaded from configs/tokenizers/default.json.
+                Contains ca_types, sro_types, nfc with input_dim per type.
+            d_model: Embedding dimension for all tokens.
+        """
+        super().__init__()
+        self.d_model = d_model
+        self._config = tokenizer_config
+
+        # Extract marker values
+        marker_values = tokenizer_config.get("marker_values", {})
+        self.ca_base = marker_values.get("ca_base", 1000)
+        self.sro_base = marker_values.get("sro_base", 2000)
+        self.nfc_marker = marker_values.get("nfc", 3001)
+
+        # Extract type configs
+        ca_config = tokenizer_config.get("ca_types", {})
+        sro_config = tokenizer_config.get("sro_types", {})
+        nfc_config = tokenizer_config.get("nfc", {})
+
+        # Create CA projections (one per type)
+        self.ca_projections = nn.ModuleDict()
+        self._ca_type_order = list(ca_config.keys())  # Preserve order
+        for ca_type, spec in ca_config.items():
+            input_dim = spec.get("input_dim", 1)
+            self.ca_projections[ca_type] = nn.Linear(input_dim, d_model)
+
+        # Create SRO projections (one per type)
+        self.sro_projections = nn.ModuleDict()
+        self._sro_type_order = list(sro_config.keys())  # Preserve order
+        for sro_type, spec in sro_config.items():
+            input_dim = spec.get("input_dim", 1)
+            if input_dim > 0:
+                self.sro_projections[sro_type] = nn.Linear(input_dim, d_model)
+
+        # Create NFC projection
+        nfc_input_dim = nfc_config.get("input_dim", 1)
+        self.nfc_projection = nn.Linear(nfc_input_dim, d_model) if nfc_input_dim > 0 else None
+
+        # Build input_dim -> type mapping for CA type inference
+        self._ca_dim_to_type: Dict[int, str] = {}
+        for ca_type, spec in ca_config.items():
+            input_dim = spec.get("input_dim", 1)
+            self._ca_dim_to_type[input_dim] = ca_type
+
+        # Build input_dim -> type mapping for SRO type inference
+        self._sro_dim_to_type: Dict[int, str] = {}
+        for sro_type, spec in sro_config.items():
+            input_dim = spec.get("input_dim", 1)
+            self._sro_dim_to_type[input_dim] = sro_type
+
+    def forward(self, encoded_obs: torch.Tensor) -> TokenizedObservation:
+        """Tokenize encoded observations.
+
+        Args:
+            encoded_obs: [batch, obs_dim] flat encoded observation with markers.
+
+        Returns:
+            TokenizedObservation with ca_tokens, sro_tokens, nfc_token, metadata.
+        """
+        batch_size = encoded_obs.shape[0]
+        device = encoded_obs.device
+
+        # Find marker positions
+        ca_positions, sro_positions, nfc_positions = _find_marker_positions(
+            encoded_obs, self.ca_base, self.sro_base, self.nfc_marker
+        )
+
+        # Extract groups
+        ca_groups, sro_groups, nfc_groups = _extract_groups(
+            encoded_obs, ca_positions, sro_positions, nfc_positions
+        )
+
+        # Project CA groups
+        all_ca_tokens: List[torch.Tensor] = []
+        all_ca_types: List[str] = []
+
+        for b in range(batch_size):
+            batch_ca_tokens: List[torch.Tensor] = []
+            for features in ca_groups[b]:
+                # Infer type from feature count
+                feature_count = features.shape[0]
+                ca_type = self._ca_dim_to_type.get(feature_count)
+                
+                if ca_type is not None and ca_type in self.ca_projections:
+                    projection = self.ca_projections[ca_type]
+                    token = projection(features.unsqueeze(0))  # [1, d_model]
+                    batch_ca_tokens.append(token)
+                    if b == 0:  # Only collect types once
+                        all_ca_types.append(ca_type)
+                else:
+                    # Unknown type - use first available projection as fallback
+                    if self._ca_type_order:
+                        fallback_type = self._ca_type_order[0]
+                        # Pad or truncate features to match expected dim
+                        expected_dim = self.ca_projections[fallback_type].in_features
+                        if feature_count < expected_dim:
+                            features = torch.cat([
+                                features,
+                                torch.zeros(expected_dim - feature_count, device=device)
+                            ])
+                        elif feature_count > expected_dim:
+                            features = features[:expected_dim]
+                        token = self.ca_projections[fallback_type](features.unsqueeze(0))
+                        batch_ca_tokens.append(token)
+                        if b == 0:
+                            all_ca_types.append(fallback_type)
+
+            if batch_ca_tokens:
+                all_ca_tokens.append(torch.cat(batch_ca_tokens, dim=0))
+            else:
+                all_ca_tokens.append(torch.zeros(0, self.d_model, device=device))
+
+        # Stack CA tokens across batch
+        n_ca = len(ca_groups[0]) if ca_groups else 0
+        if n_ca > 0:
+            ca_tokens = torch.stack([t for t in all_ca_tokens], dim=0)  # [batch, n_ca, d_model]
+        else:
+            ca_tokens = torch.zeros(batch_size, 0, self.d_model, device=device)
+
+        # Project SRO groups
+        all_sro_tokens: List[torch.Tensor] = []
+        for b in range(batch_size):
+            batch_sro_tokens: List[torch.Tensor] = []
+            for features in sro_groups[b]:
+                feature_count = features.shape[0]
+                sro_type = self._sro_dim_to_type.get(feature_count)
+                
+                if sro_type is not None and sro_type in self.sro_projections:
+                    projection = self.sro_projections[sro_type]
+                    token = projection(features.unsqueeze(0))
+                    batch_sro_tokens.append(token)
+
+            if batch_sro_tokens:
+                all_sro_tokens.append(torch.cat(batch_sro_tokens, dim=0))
+            else:
+                all_sro_tokens.append(torch.zeros(0, self.d_model, device=device))
+
+        n_sro = len(sro_groups[0]) if sro_groups else 0
+        if n_sro > 0:
+            sro_tokens = torch.stack(all_sro_tokens, dim=0)
+        else:
+            sro_tokens = torch.zeros(batch_size, 0, self.d_model, device=device)
+
+        # Project NFC group
+        if self.nfc_projection is not None and any(g.numel() > 0 for g in nfc_groups):
+            nfc_tokens_list = []
+            for b in range(batch_size):
+                if nfc_groups[b].numel() > 0:
+                    nfc_token = self.nfc_projection(nfc_groups[b].unsqueeze(0))
+                else:
+                    nfc_token = torch.zeros(1, self.d_model, device=device)
+                nfc_tokens_list.append(nfc_token)
+            nfc_token = torch.stack(nfc_tokens_list, dim=0)  # [batch, 1, d_model]
+        else:
+            nfc_token = torch.zeros(batch_size, 1, self.d_model, device=device)
+
+        return TokenizedObservation(
+            ca_tokens=ca_tokens,
+            sro_tokens=sro_tokens,
+            nfc_token=nfc_token,
+            ca_types=all_ca_types,
+            n_ca=n_ca,
+        )
