@@ -81,3 +81,51 @@ class TestMarkerScanning:
         assert ca_positions[1] == [0, 1]
         assert sro_positions[0] == [2]
         assert sro_positions[1] == [2]
+
+
+class TestGroupExtraction:
+    """Tests for extracting feature groups from encoded tensor."""
+
+    def test_extract_groups_single_ca(self) -> None:
+        """Should extract features between markers as groups."""
+        from algorithms.utils.observation_tokenizer import _extract_groups
+
+        # [CA_1001, val1, SRO_2001, val2, val3, NFC_3001, val4]
+        encoded = torch.tensor([[1001.0, 0.5, 2001.0, 0.1, 0.2, 3001.0, 0.9]])
+        ca_positions = [[0]]
+        sro_positions = [[2]]
+        nfc_position = [5]
+
+        ca_groups, sro_groups, nfc_group = _extract_groups(
+            encoded, ca_positions, sro_positions, nfc_position
+        )
+
+        # CA group: features at positions 1 (between marker at 0 and next marker at 2)
+        assert len(ca_groups) == 1  # 1 batch
+        assert len(ca_groups[0]) == 1  # 1 CA
+        assert torch.allclose(ca_groups[0][0], torch.tensor([0.5]))
+
+        # SRO group: features at positions 3, 4
+        assert len(sro_groups[0]) == 1  # 1 SRO
+        assert torch.allclose(sro_groups[0][0], torch.tensor([0.1, 0.2]))
+
+        # NFC group: feature at position 6
+        assert torch.allclose(nfc_group[0], torch.tensor([0.9]))
+
+    def test_extract_groups_multi_ca(self) -> None:
+        """Should handle multiple CA groups."""
+        from algorithms.utils.observation_tokenizer import _extract_groups
+
+        # [CA_1001, val1, CA_1002, val2, val3, SRO_2001, val4]
+        encoded = torch.tensor([[1001.0, 0.5, 1002.0, 0.8, 0.9, 2001.0, 0.1]])
+        ca_positions = [[0, 2]]
+        sro_positions = [[5]]
+        nfc_position = [None]
+
+        ca_groups, sro_groups, nfc_group = _extract_groups(
+            encoded, ca_positions, sro_positions, nfc_position
+        )
+
+        assert len(ca_groups[0]) == 2  # 2 CAs
+        assert torch.allclose(ca_groups[0][0], torch.tensor([0.5]))  # First CA: 1 feature
+        assert torch.allclose(ca_groups[0][1], torch.tensor([0.8, 0.9]))  # Second CA: 2 features

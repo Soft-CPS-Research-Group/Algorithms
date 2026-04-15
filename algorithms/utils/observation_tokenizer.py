@@ -84,3 +84,77 @@ def _find_marker_positions(
         nfc_positions.append(nfc_pos)
 
     return ca_positions, sro_positions, nfc_positions
+
+
+def _extract_groups(
+    encoded: torch.Tensor,
+    ca_positions: List[List[int]],
+    sro_positions: List[List[int]],
+    nfc_positions: List[Optional[int]],
+) -> Tuple[List[List[torch.Tensor]], List[List[torch.Tensor]], List[torch.Tensor]]:
+    """Extract feature groups from encoded tensor based on marker positions.
+
+    Features between a marker and the next marker (or end of tensor) belong to that group.
+
+    Args:
+        encoded: [batch, obs_dim] encoded observation tensor.
+        ca_positions: CA marker positions per batch.
+        sro_positions: SRO marker positions per batch.
+        nfc_positions: NFC marker position per batch (or None).
+
+    Returns:
+        Tuple of:
+            - ca_groups: List of lists of tensors, [batch][ca_idx] -> features tensor
+            - sro_groups: List of lists of tensors, [batch][sro_idx] -> features tensor
+            - nfc_group: List of tensors, [batch] -> features tensor (empty if no NFC)
+    """
+    batch_size = encoded.shape[0]
+    obs_dim = encoded.shape[1]
+    
+    ca_groups: List[List[torch.Tensor]] = []
+    sro_groups: List[List[torch.Tensor]] = []
+    nfc_groups: List[torch.Tensor] = []
+
+    for b in range(batch_size):
+        row = encoded[b]
+        
+        # Collect all marker positions to determine group boundaries
+        all_markers: List[Tuple[int, str, int]] = []  # (position, type, index)
+        
+        for idx, pos in enumerate(ca_positions[b]):
+            all_markers.append((pos, "ca", idx))
+        for idx, pos in enumerate(sro_positions[b]):
+            all_markers.append((pos, "sro", idx))
+        if nfc_positions[b] is not None:
+            all_markers.append((nfc_positions[b], "nfc", 0))
+        
+        # Sort by position
+        all_markers.sort(key=lambda x: x[0])
+        
+        # Extract groups
+        batch_ca_groups: List[torch.Tensor] = []
+        batch_sro_groups: List[torch.Tensor] = []
+        batch_nfc_group: torch.Tensor = torch.tensor([])
+        
+        for i, (pos, marker_type, _) in enumerate(all_markers):
+            # Find end position (next marker or end of tensor)
+            if i + 1 < len(all_markers):
+                end_pos = all_markers[i + 1][0]
+            else:
+                end_pos = obs_dim
+            
+            # Extract features (skip the marker itself)
+            features = row[pos + 1:end_pos]
+            
+            if marker_type == "ca":
+                batch_ca_groups.append(features)
+            elif marker_type == "sro":
+                batch_sro_groups.append(features)
+            elif marker_type == "nfc":
+                batch_nfc_group = features
+        
+        ca_groups.append(batch_ca_groups)
+        sro_groups.append(batch_sro_groups)
+        nfc_groups.append(batch_nfc_group)
+
+    return ca_groups, sro_groups, nfc_groups
