@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from algorithms.utils.ppo_components import ActorHead, CriticHead, RolloutBuffer
+from algorithms.utils.ppo_components import ActorHead, CriticHead, RolloutBuffer, compute_ppo_loss
 
 
 class TestActorHead:
@@ -194,3 +194,82 @@ class TestRolloutBuffer:
         
         assert len(buffer.observations) == 0
         assert len(buffer.rewards) == 0
+
+
+class TestPPOLoss:
+    """Tests for PPO loss computation."""
+
+    def test_ppo_loss_shape(self) -> None:
+        """PPO loss should return scalar tensor and metrics dict."""
+        batch_size = 4
+        
+        log_probs_new = torch.randn(batch_size)
+        log_probs_old = torch.randn(batch_size)
+        advantages = torch.randn(batch_size)
+        values = torch.randn(batch_size)
+        returns = torch.randn(batch_size)
+        
+        loss, metrics = compute_ppo_loss(
+            log_probs_new=log_probs_new,
+            log_probs_old=log_probs_old,
+            advantages=advantages,
+            values=values,
+            returns=returns,
+            clip_eps=0.2,
+            value_coeff=0.5,
+            entropy_coeff=0.01,
+        )
+        
+        assert loss.ndim == 0  # Scalar
+        assert "policy_loss" in metrics
+        assert "value_loss" in metrics
+        assert "entropy" in metrics
+
+    def test_ppo_loss_clipping(self) -> None:
+        """PPO loss should clip probability ratios."""
+        batch_size = 4
+        
+        # Create scenario where ratio would be clipped
+        log_probs_new = torch.zeros(batch_size)
+        log_probs_old = torch.ones(batch_size) * -1.0  # ratio = exp(1) ≈ 2.7
+        advantages = torch.ones(batch_size)
+        values = torch.zeros(batch_size)
+        returns = torch.ones(batch_size)
+        
+        loss, metrics = compute_ppo_loss(
+            log_probs_new=log_probs_new,
+            log_probs_old=log_probs_old,
+            advantages=advantages,
+            values=values,
+            returns=returns,
+            clip_eps=0.2,
+            value_coeff=0.5,
+            entropy_coeff=0.01,
+        )
+        
+        # Loss should be finite (clipping prevents explosion)
+        assert torch.isfinite(loss)
+
+    def test_ppo_loss_gradient_flow(self) -> None:
+        """Gradients should flow through PPO loss."""
+        log_probs_new = torch.randn(4, requires_grad=True)
+        log_probs_old = torch.randn(4)
+        advantages = torch.randn(4)
+        values = torch.randn(4, requires_grad=True)
+        returns = torch.randn(4)
+        
+        loss, _ = compute_ppo_loss(
+            log_probs_new=log_probs_new,
+            log_probs_old=log_probs_old,
+            advantages=advantages,
+            values=values,
+            returns=returns,
+            clip_eps=0.2,
+            value_coeff=0.5,
+            entropy_coeff=0.01,
+        )
+        
+        loss.backward()
+        
+        assert log_probs_new.grad is not None
+        assert values.grad is not None

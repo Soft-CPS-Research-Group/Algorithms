@@ -269,3 +269,57 @@ class RolloutBuffer:
     def __len__(self) -> int:
         """Return number of stored transitions."""
         return len(self.observations)
+
+
+def compute_ppo_loss(
+    log_probs_new: torch.Tensor,
+    log_probs_old: torch.Tensor,
+    advantages: torch.Tensor,
+    values: torch.Tensor,
+    returns: torch.Tensor,
+    clip_eps: float,
+    value_coeff: float,
+    entropy_coeff: float,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """Compute PPO clipped surrogate loss.
+
+    Args:
+        log_probs_new: Log probabilities under current policy.
+        log_probs_old: Log probabilities under old policy (detached).
+        advantages: GAE advantages (normalized).
+        values: Value estimates from critic.
+        returns: Discounted returns.
+        clip_eps: Clipping epsilon for probability ratio.
+        value_coeff: Coefficient for value loss.
+        entropy_coeff: Coefficient for entropy bonus.
+
+    Returns:
+        Tuple of:
+            - total_loss: Combined loss for backprop.
+            - metrics: Dict with policy_loss, value_loss, entropy.
+    """
+    # Probability ratio
+    ratio = torch.exp(log_probs_new - log_probs_old)
+    
+    # Clipped surrogate objective
+    surr1 = ratio * advantages
+    surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * advantages
+    policy_loss = -torch.min(surr1, surr2).mean()
+    
+    # Value loss (MSE)
+    value_loss = F.mse_loss(values, returns)
+    
+    # Entropy bonus (approximate using log_probs)
+    # For squashed Gaussian, entropy is complex; use simple approximation
+    entropy = -log_probs_new.mean()
+    
+    # Combined loss
+    total_loss = policy_loss + value_coeff * value_loss - entropy_coeff * entropy
+    
+    metrics = {
+        "policy_loss": policy_loss.item(),
+        "value_loss": value_loss.item(),
+        "entropy": entropy.item(),
+    }
+    
+    return total_loss, metrics
