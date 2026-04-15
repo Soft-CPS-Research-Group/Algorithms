@@ -178,8 +178,51 @@ class AgentTransformerPPO(BaseAgent):
         Returns:
             List of action arrays per building.
         """
-        # Placeholder - will be implemented in Task 5
-        raise NotImplementedError("predict() will be implemented in Task 5")
+        self.tokenizer.eval()
+        self.backbone.eval()
+        self.actor.eval()
+        self.critic.eval()
+        
+        all_actions: List[np.ndarray] = []
+        
+        with torch.no_grad() if deterministic else torch.enable_grad():
+            for b_idx, obs in enumerate(observations):
+                # Convert to tensor
+                obs_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device)
+                if obs_tensor.ndim == 1:
+                    obs_tensor = obs_tensor.unsqueeze(0)  # Add batch dim
+                
+                # Tokenize
+                tokenized = self.tokenizer(obs_tensor)
+                
+                # Transformer backbone
+                backbone_out = self.backbone(
+                    tokenized.ca_tokens,
+                    tokenized.sro_tokens,
+                    tokenized.nfc_token,
+                )
+                
+                # Actor head
+                actions, log_probs, _ = self.actor(
+                    backbone_out.ca_embeddings,
+                    deterministic=deterministic,
+                )
+                
+                # Critic head (for storing value in buffer during training)
+                value = self.critic(backbone_out.pooled)
+                
+                # Store for update step
+                if not deterministic:
+                    self._last_values[b_idx] = value
+                    self._last_log_probs[b_idx] = log_probs
+                    self._last_obs = obs_tensor
+                    self._last_actions = actions
+                
+                # Convert to numpy
+                actions_np = actions.squeeze(0).detach().cpu().numpy()  # Remove batch dim
+                all_actions.append(actions_np)
+        
+        return all_actions
 
     def update(
         self,
