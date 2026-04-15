@@ -35,3 +35,52 @@ class TokenizedObservation:
     nfc_token: torch.Tensor
     ca_types: List[str]
     n_ca: int
+
+
+def _find_marker_positions(
+    encoded: torch.Tensor,
+    ca_base: int,
+    sro_base: int,
+    nfc_marker: int,
+) -> Tuple[List[List[int]], List[List[int]], List[Optional[int]]]:
+    """Find positions of marker values in encoded tensor.
+
+    Args:
+        encoded: [batch, obs_dim] encoded observation tensor.
+        ca_base: Base value for CA markers (e.g., 1000 -> markers are 1001, 1002, ...).
+        sro_base: Base value for SRO markers (e.g., 2000 -> markers are 2001, 2002, ...).
+        nfc_marker: Exact marker value for NFC (e.g., 3001).
+
+    Returns:
+        Tuple of:
+            - ca_positions: List of lists, one per batch, containing CA marker positions.
+            - sro_positions: List of lists, one per batch, containing SRO marker positions.
+            - nfc_position: List, one per batch, containing NFC marker position (or None).
+    """
+    batch_size = encoded.shape[0]
+    ca_positions: List[List[int]] = []
+    sro_positions: List[List[int]] = []
+    nfc_positions: List[Optional[int]] = []
+
+    for b in range(batch_size):
+        row = encoded[b]
+        ca_pos: List[int] = []
+        sro_pos: List[int] = []
+        nfc_pos: Optional[int] = None
+
+        for i, val in enumerate(row.tolist()):
+            # Check if value is a CA marker (ca_base < val < ca_base + 1000)
+            if ca_base < val < ca_base + 1000:
+                ca_pos.append(i)
+            # Check if value is an SRO marker (sro_base < val < sro_base + 1000)
+            elif sro_base < val < sro_base + 1000:
+                sro_pos.append(i)
+            # Check if value is NFC marker
+            elif abs(val - nfc_marker) < 0.01:  # Float comparison tolerance
+                nfc_pos = i
+
+        ca_positions.append(ca_pos)
+        sro_positions.append(sro_pos)
+        nfc_positions.append(nfc_pos)
+
+    return ca_positions, sro_positions, nfc_positions
