@@ -110,49 +110,49 @@ def _extract_groups(
     """
     batch_size = encoded.shape[0]
     obs_dim = encoded.shape[1]
-    
+
     ca_groups: List[List[torch.Tensor]] = []
     sro_groups: List[List[torch.Tensor]] = []
     nfc_groups: List[torch.Tensor] = []
 
     for b in range(batch_size):
         row = encoded[b]
-        
+
         # Collect all marker positions to determine group boundaries
         all_markers: List[Tuple[int, str, int]] = []  # (position, type, index)
-        
+
         for idx, pos in enumerate(ca_positions[b]):
             all_markers.append((pos, "ca", idx))
         for idx, pos in enumerate(sro_positions[b]):
             all_markers.append((pos, "sro", idx))
         if nfc_positions[b] is not None:
             all_markers.append((nfc_positions[b], "nfc", 0))
-        
+
         # Sort by position
         all_markers.sort(key=lambda x: x[0])
-        
+
         # Extract groups
         batch_ca_groups: List[torch.Tensor] = []
         batch_sro_groups: List[torch.Tensor] = []
         batch_nfc_group: torch.Tensor = torch.tensor([])
-        
+
         for i, (pos, marker_type, _) in enumerate(all_markers):
             # Find end position (next marker or end of tensor)
             if i + 1 < len(all_markers):
                 end_pos = all_markers[i + 1][0]
             else:
                 end_pos = obs_dim
-            
+
             # Extract features (skip the marker itself)
             features = row[pos + 1:end_pos]
-            
+
             if marker_type == "ca":
                 batch_ca_groups.append(features)
             elif marker_type == "sro":
                 batch_sro_groups.append(features)
             elif marker_type == "nfc":
                 batch_nfc_group = features
-        
+
         ca_groups.append(batch_ca_groups)
         sro_groups.append(batch_sro_groups)
         nfc_groups.append(batch_nfc_group)
@@ -257,7 +257,7 @@ class ObservationTokenizer(nn.Module):
                 # Infer type from feature count
                 feature_count = features.shape[0]
                 ca_type = self._ca_dim_to_type.get(feature_count)
-                
+
                 if ca_type is not None and ca_type in self.ca_projections:
                     projection = self.ca_projections[ca_type]
                     token = projection(features.unsqueeze(0))  # [1, d_model]
@@ -301,7 +301,7 @@ class ObservationTokenizer(nn.Module):
             for features in sro_groups[b]:
                 feature_count = features.shape[0]
                 sro_type = self._sro_dim_to_type.get(feature_count)
-                
+
                 if sro_type is not None and sro_type in self.sro_projections:
                     projection = self.sro_projections[sro_type]
                     token = projection(features.unsqueeze(0))

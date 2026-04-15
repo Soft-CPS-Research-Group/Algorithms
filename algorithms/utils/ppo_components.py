@@ -37,14 +37,14 @@ class ActorHead(nn.Module):
             log_std_init: Initial value for log standard deviation.
         """
         super().__init__()
-        
+
         self.mlp = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, 1),
         )
-        
+
         # Learnable log standard deviation (shared across all CAs)
         self.log_std = nn.Parameter(torch.tensor(log_std_init))
 
@@ -67,29 +67,29 @@ class ActorHead(nn.Module):
         """
         # Get action means
         means = self.mlp(ca_embeddings)  # [batch, N_ca, 1]
-        
+
         # Get standard deviation
         std = torch.exp(self.log_std).expand_as(means)
-        
+
         # Create normal distribution
         dist = Normal(means, std)
-        
+
         if deterministic:
             # Use mean action
             pre_tanh_action = means
         else:
             # Sample from distribution
             pre_tanh_action = dist.rsample()
-        
+
         # Apply tanh squashing
         actions = torch.tanh(pre_tanh_action)
-        
+
         # Compute log probability with tanh correction
         log_probs = dist.log_prob(pre_tanh_action)
         # Correction for tanh squashing: log(1 - tanh(x)^2)
         log_probs = log_probs - torch.log(1 - actions.pow(2) + 1e-6)
         log_probs = log_probs.squeeze(-1)  # [batch, N_ca]
-        
+
         return actions, log_probs, means
 
 
@@ -112,7 +112,7 @@ class CriticHead(nn.Module):
             hidden_dim: Hidden layer dimension.
         """
         super().__init__()
-        
+
         self.mlp = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, hidden_dim),
@@ -159,14 +159,14 @@ class RolloutBuffer:
         """
         self.gamma = gamma
         self.gae_lambda = gae_lambda
-        
+
         self.observations: List[torch.Tensor] = []
         self.actions: List[torch.Tensor] = []
         self.log_probs: List[torch.Tensor] = []
         self.rewards: List[float] = []
         self.values: List[torch.Tensor] = []
         self.dones: List[bool] = []
-        
+
         self.advantages: Optional[torch.Tensor] = None
         self.returns: Optional[torch.Tensor] = None
 
@@ -205,14 +205,14 @@ class RolloutBuffer:
         n = len(self.rewards)
         advantages = torch.zeros(n)
         returns = torch.zeros(n)
-        
+
         # Convert values to tensor
         values = torch.stack([v.squeeze() for v in self.values])
-        
+
         # GAE computation (reverse order)
         gae = torch.tensor(0.0)
         next_value = last_value.squeeze()
-        
+
         for t in reversed(range(n)):
             mask = 1.0 - float(self.dones[t])
             delta = self.rewards[t] + self.gamma * next_value * mask - values[t]
@@ -220,10 +220,10 @@ class RolloutBuffer:
             advantages[t] = gae
             returns[t] = gae + values[t]
             next_value = values[t]
-        
+
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        
+
         self.advantages = advantages
         self.returns = returns
 
@@ -238,14 +238,14 @@ class RolloutBuffer:
         """
         if self.advantages is None or self.returns is None:
             raise RuntimeError("Must call compute_returns_and_advantages first")
-        
+
         n = len(self.observations)
         indices = torch.randperm(n)
-        
+
         for start in range(0, n, batch_size):
             end = min(start + batch_size, n)
             batch_indices = indices[start:end]
-            
+
             yield Batch(
                 observations=torch.stack([self.observations[i] for i in batch_indices]),
                 actions=torch.stack([self.actions[i] for i in batch_indices]),
@@ -300,26 +300,26 @@ def compute_ppo_loss(
     """
     # Probability ratio
     ratio = torch.exp(log_probs_new - log_probs_old)
-    
+
     # Clipped surrogate objective
     surr1 = ratio * advantages
     surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * advantages
     policy_loss = -torch.min(surr1, surr2).mean()
-    
+
     # Value loss (MSE)
     value_loss = F.mse_loss(values, returns)
-    
+
     # Entropy bonus (approximate using log_probs)
     # For squashed Gaussian, entropy is complex; use simple approximation
     entropy = -log_probs_new.mean()
-    
+
     # Combined loss
     total_loss = policy_loss + value_coeff * value_loss - entropy_coeff * entropy
-    
+
     metrics = {
         "policy_loss": policy_loss.item(),
         "value_loss": value_loss.item(),
         "entropy": entropy.item(),
     }
-    
+
     return total_loss, metrics

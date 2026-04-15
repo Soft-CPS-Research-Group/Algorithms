@@ -13,7 +13,7 @@ class TestActorHead:
     def test_actor_creation(self) -> None:
         """ActorHead should create with correct architecture."""
         actor = ActorHead(d_model=64, hidden_dim=128)
-        
+
         assert actor is not None
         assert isinstance(actor, nn.Module)
 
@@ -49,7 +49,7 @@ class TestActorHead:
         actor = ActorHead(d_model=d_model, hidden_dim=128)
 
         ca_embeddings = torch.randn(1, 2, d_model)
-        
+
         # Multiple calls in deterministic mode should return same result
         actions1, _, means1 = actor(ca_embeddings, deterministic=True)
         actions2, _, means2 = actor(ca_embeddings, deterministic=True)
@@ -63,7 +63,7 @@ class TestActorHead:
         actor = ActorHead(d_model=d_model, hidden_dim=128)
 
         ca_embeddings = torch.randn(1, 2, d_model)
-        
+
         # Multiple calls should likely return different results (probabilistic)
         torch.manual_seed(42)
         actions1, _, _ = actor(ca_embeddings, deterministic=False)
@@ -82,7 +82,7 @@ class TestCriticHead:
     def test_critic_creation(self) -> None:
         """CriticHead should create with correct architecture."""
         critic = CriticHead(d_model=64, hidden_dim=128)
-        
+
         assert critic is not None
         assert isinstance(critic, nn.Module)
 
@@ -117,14 +117,14 @@ class TestRolloutBuffer:
     def test_buffer_creation(self) -> None:
         """RolloutBuffer should create with specified hyperparameters."""
         buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
-        
+
         assert buffer.gamma == 0.99
         assert buffer.gae_lambda == 0.95
 
     def test_buffer_add_transition(self) -> None:
         """Buffer should store transitions."""
         buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
-        
+
         buffer.add(
             observation=torch.randn(10),
             action=torch.randn(2),
@@ -133,14 +133,14 @@ class TestRolloutBuffer:
             value=torch.tensor(0.5),
             done=False,
         )
-        
+
         assert len(buffer.observations) == 1
         assert len(buffer.rewards) == 1
 
     def test_buffer_compute_gae(self) -> None:
         """Buffer should compute GAE advantages."""
         buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
-        
+
         # Add a few transitions
         for i in range(5):
             buffer.add(
@@ -151,9 +151,9 @@ class TestRolloutBuffer:
                 value=torch.tensor(0.5),
                 done=(i == 4),  # Last one is terminal
             )
-        
+
         buffer.compute_returns_and_advantages(last_value=torch.tensor(0.0))
-        
+
         assert buffer.advantages is not None
         assert buffer.returns is not None
         assert len(buffer.advantages) == 5
@@ -161,7 +161,7 @@ class TestRolloutBuffer:
     def test_buffer_get_batches(self) -> None:
         """Buffer should yield minibatches."""
         buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
-        
+
         for i in range(10):
             buffer.add(
                 observation=torch.randn(10),
@@ -171,16 +171,16 @@ class TestRolloutBuffer:
                 value=torch.tensor(0.5),
                 done=False,
             )
-        
+
         buffer.compute_returns_and_advantages(last_value=torch.tensor(0.0))
-        
+
         batches = list(buffer.get_batches(batch_size=4))
         assert len(batches) >= 2  # At least 2 batches of size 4 from 10 samples
 
     def test_buffer_clear(self) -> None:
         """Buffer should clear all data."""
         buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
-        
+
         buffer.add(
             observation=torch.randn(10),
             action=torch.randn(2),
@@ -189,9 +189,9 @@ class TestRolloutBuffer:
             value=torch.tensor(0.5),
             done=False,
         )
-        
+
         buffer.clear()
-        
+
         assert len(buffer.observations) == 0
         assert len(buffer.rewards) == 0
 
@@ -202,13 +202,13 @@ class TestPPOLoss:
     def test_ppo_loss_shape(self) -> None:
         """PPO loss should return scalar tensor and metrics dict."""
         batch_size = 4
-        
+
         log_probs_new = torch.randn(batch_size)
         log_probs_old = torch.randn(batch_size)
         advantages = torch.randn(batch_size)
         values = torch.randn(batch_size)
         returns = torch.randn(batch_size)
-        
+
         loss, metrics = compute_ppo_loss(
             log_probs_new=log_probs_new,
             log_probs_old=log_probs_old,
@@ -219,7 +219,7 @@ class TestPPOLoss:
             value_coeff=0.5,
             entropy_coeff=0.01,
         )
-        
+
         assert loss.ndim == 0  # Scalar
         assert "policy_loss" in metrics
         assert "value_loss" in metrics
@@ -228,14 +228,14 @@ class TestPPOLoss:
     def test_ppo_loss_clipping(self) -> None:
         """PPO loss should clip probability ratios."""
         batch_size = 4
-        
+
         # Create scenario where ratio would be clipped
         log_probs_new = torch.zeros(batch_size)
         log_probs_old = torch.ones(batch_size) * -1.0  # ratio = exp(1) ≈ 2.7
         advantages = torch.ones(batch_size)
         values = torch.zeros(batch_size)
         returns = torch.ones(batch_size)
-        
+
         loss, metrics = compute_ppo_loss(
             log_probs_new=log_probs_new,
             log_probs_old=log_probs_old,
@@ -246,7 +246,7 @@ class TestPPOLoss:
             value_coeff=0.5,
             entropy_coeff=0.01,
         )
-        
+
         # Loss should be finite (clipping prevents explosion)
         assert torch.isfinite(loss)
 
@@ -257,7 +257,7 @@ class TestPPOLoss:
         advantages = torch.randn(4)
         values = torch.randn(4, requires_grad=True)
         returns = torch.randn(4)
-        
+
         loss, _ = compute_ppo_loss(
             log_probs_new=log_probs_new,
             log_probs_old=log_probs_old,
@@ -268,8 +268,8 @@ class TestPPOLoss:
             value_coeff=0.5,
             entropy_coeff=0.01,
         )
-        
+
         loss.backward()
-        
+
         assert log_probs_new.grad is not None
         assert values.grad is not None
