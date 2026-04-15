@@ -130,3 +130,142 @@ class CriticHead(nn.Module):
             values: [batch, 1] state value estimates.
         """
         return self.mlp(pooled)
+
+
+@dataclass
+class Batch:
+    """A minibatch of transitions for PPO update."""
+    observations: torch.Tensor
+    actions: torch.Tensor
+    log_probs: torch.Tensor
+    advantages: torch.Tensor
+    returns: torch.Tensor
+    values: torch.Tensor
+
+
+class RolloutBuffer:
+    """On-policy rollout buffer for PPO.
+
+    Stores transitions from the current policy, computes GAE advantages,
+    and provides minibatch iteration for PPO updates.
+    """
+
+    def __init__(self, gamma: float, gae_lambda: float) -> None:
+        """Initialize the rollout buffer.
+
+        Args:
+            gamma: Discount factor.
+            gae_lambda: GAE lambda parameter.
+        """
+        self.gamma = gamma
+        self.gae_lambda = gae_lambda
+        
+        self.observations: List[torch.Tensor] = []
+        self.actions: List[torch.Tensor] = []
+        self.log_probs: List[torch.Tensor] = []
+        self.rewards: List[float] = []
+        self.values: List[torch.Tensor] = []
+        self.dones: List[bool] = []
+        
+        self.advantages: Optional[torch.Tensor] = None
+        self.returns: Optional[torch.Tensor] = None
+
+    def add(
+        self,
+        observation: torch.Tensor,
+        action: torch.Tensor,
+        log_prob: torch.Tensor,
+        reward: float,
+        value: torch.Tensor,
+        done: bool,
+    ) -> None:
+        """Add a transition to the buffer.
+
+        Args:
+            observation: Encoded observation tensor.
+            action: Action tensor.
+            log_prob: Log probability of the action.
+            reward: Reward received.
+            value: Value estimate from critic.
+            done: Whether episode terminated.
+        """
+        self.observations.append(observation.detach())
+        self.actions.append(action.detach())
+        self.log_probs.append(log_prob.detach())
+        self.rewards.append(reward)
+        self.values.append(value.detach())
+        self.dones.append(done)
+
+    def compute_returns_and_advantages(self, last_value: torch.Tensor) -> None:
+        """Compute GAE advantages and discounted returns.
+
+        Args:
+            last_value: Value estimate for the state after the last transition.
+        """
+        n = len(self.rewards)
+        advantages = torch.zeros(n)
+        returns = torch.zeros(n)
+        
+        # Convert values to tensor
+        values = torch.stack([v.squeeze() for v in self.values])
+        
+        # GAE computation (reverse order)
+        gae = torch.tensor(0.0)
+        next_value = last_value.squeeze()
+        
+        for t in reversed(range(n)):
+            mask = 1.0 - float(self.dones[t])
+            delta = self.rewards[t] + self.gamma * next_value * mask - values[t]
+            gae = delta + self.gamma * self.gae_lambda * mask * gae
+            advantages[t] = gae
+            returns[t] = gae + values[t]
+            next_value = values[t]
+        
+        # Normalize advantages
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        
+        self.advantages = advantages
+        self.returns = returns
+
+    def get_batches(self, batch_size: int) -> Iterator[Batch]:
+        """Yield minibatches for PPO update.
+
+        Args:
+            batch_size: Size of each minibatch.
+
+        Yields:
+            Batch objects containing transition data.
+        """
+        if self.advantages is None or self.returns is None:
+            raise RuntimeError("Must call compute_returns_and_advantages first")
+        
+        n = len(self.observations)
+        indices = torch.randperm(n)
+        
+        for start in range(0, n, batch_size):
+            end = min(start + batch_size, n)
+            batch_indices = indices[start:end]
+            
+            yield Batch(
+                observations=torch.stack([self.observations[i] for i in batch_indices]),
+                actions=torch.stack([self.actions[i] for i in batch_indices]),
+                log_probs=torch.stack([self.log_probs[i] for i in batch_indices]),
+                advantages=self.advantages[batch_indices],
+                returns=self.returns[batch_indices],
+                values=torch.stack([self.values[i].squeeze() for i in batch_indices]),
+            )
+
+    def clear(self) -> None:
+        """Clear all stored data."""
+        self.observations.clear()
+        self.actions.clear()
+        self.log_probs.clear()
+        self.rewards.clear()
+        self.values.clear()
+        self.dones.clear()
+        self.advantages = None
+        self.returns = None
+
+    def __len__(self) -> int:
+        """Return number of stored transitions."""
+        return len(self.observations)

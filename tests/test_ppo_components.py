@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from algorithms.utils.ppo_components import ActorHead, CriticHead
+from algorithms.utils.ppo_components import ActorHead, CriticHead, RolloutBuffer
 
 
 class TestActorHead:
@@ -109,3 +109,88 @@ class TestCriticHead:
         loss.backward()
 
         assert pooled.grad is not None
+
+
+class TestRolloutBuffer:
+    """Tests for RolloutBuffer class."""
+
+    def test_buffer_creation(self) -> None:
+        """RolloutBuffer should create with specified hyperparameters."""
+        buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
+        
+        assert buffer.gamma == 0.99
+        assert buffer.gae_lambda == 0.95
+
+    def test_buffer_add_transition(self) -> None:
+        """Buffer should store transitions."""
+        buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
+        
+        buffer.add(
+            observation=torch.randn(10),
+            action=torch.randn(2),
+            log_prob=torch.tensor(-0.5),
+            reward=1.0,
+            value=torch.tensor(0.5),
+            done=False,
+        )
+        
+        assert len(buffer.observations) == 1
+        assert len(buffer.rewards) == 1
+
+    def test_buffer_compute_gae(self) -> None:
+        """Buffer should compute GAE advantages."""
+        buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
+        
+        # Add a few transitions
+        for i in range(5):
+            buffer.add(
+                observation=torch.randn(10),
+                action=torch.randn(2),
+                log_prob=torch.tensor(-0.5),
+                reward=1.0,
+                value=torch.tensor(0.5),
+                done=(i == 4),  # Last one is terminal
+            )
+        
+        buffer.compute_returns_and_advantages(last_value=torch.tensor(0.0))
+        
+        assert buffer.advantages is not None
+        assert buffer.returns is not None
+        assert len(buffer.advantages) == 5
+
+    def test_buffer_get_batches(self) -> None:
+        """Buffer should yield minibatches."""
+        buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
+        
+        for i in range(10):
+            buffer.add(
+                observation=torch.randn(10),
+                action=torch.randn(2),
+                log_prob=torch.tensor(-0.5),
+                reward=1.0,
+                value=torch.tensor(0.5),
+                done=False,
+            )
+        
+        buffer.compute_returns_and_advantages(last_value=torch.tensor(0.0))
+        
+        batches = list(buffer.get_batches(batch_size=4))
+        assert len(batches) >= 2  # At least 2 batches of size 4 from 10 samples
+
+    def test_buffer_clear(self) -> None:
+        """Buffer should clear all data."""
+        buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
+        
+        buffer.add(
+            observation=torch.randn(10),
+            action=torch.randn(2),
+            log_prob=torch.tensor(-0.5),
+            reward=1.0,
+            value=torch.tensor(0.5),
+            done=False,
+        )
+        
+        buffer.clear()
+        
+        assert len(buffer.observations) == 0
+        assert len(buffer.rewards) == 0
