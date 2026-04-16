@@ -58,6 +58,125 @@ class TestWrapperEnricherSetup:
         # Non-Transformer agents skip enrichment entirely
         pass
 
+    def test_wrapper_detects_transformer_agent_and_initializes_enrichers(self) -> None:
+        """Wrapper should detect Transformer agent and initialize enrichers."""
+        from algorithms.agents.transformer_ppo_agent import AgentTransformerPPO
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+        import tempfile
+        import json
+        import os
+        
+        # Create tokenizer config
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(tokenizer_config, f)
+            tokenizer_path = f.name
+        
+        try:
+            # Create agent
+            agent_config = {
+                "algorithm": {
+                    "name": "AgentTransformerPPO",
+                    "tokenizer_config_path": tokenizer_path,
+                    "transformer": {"d_model": 64, "nhead": 4, "num_layers": 2},
+                    "hyperparameters": {
+                        "learning_rate": 3e-4,
+                        "gamma": 0.99,
+                        "gae_lambda": 0.95,
+                        "clip_eps": 0.2,
+                        "ppo_epochs": 4,
+                        "minibatch_size": 64,
+                        "entropy_coeff": 0.01,
+                        "value_coeff": 0.5,
+                        "max_grad_norm": 0.5,
+                        "hidden_dim": 128,
+                        "rollout_length": 2048,
+                    },
+                }
+            }
+            
+            agent = AgentTransformerPPO(agent_config)
+            
+            # Create wrapper config
+            wrapper_config = {
+                "training": {},
+                "simulator": {},
+                "checkpointing": {},
+                "tracking": {},
+                "runtime": {},
+            }
+            
+            # Create minimal mock environment (similar to test_encoder_rules.py)
+            class MinimalEnv:
+                def __init__(self):
+                    self.observation_names = [["electrical_storage_soc", "non_shiftable_load", "month"]]
+                    self.action_names = [["electrical_storage"]]
+                    self.observation_space = [
+                        type("space", (), {
+                            "high": np.array([1.0, 1000.0, 12.0]),
+                            "low": np.array([0.0, 0.0, 1.0]),
+                        })()
+                    ]
+                    self.action_space = [
+                        type("space", (), {
+                            "high": np.array([1.0]),
+                            "low": np.array([-1.0]),
+                        })()
+                    ]
+                    self.reward_function = type("reward", (), {"__dict__": {}})()
+                    self.time_steps = 8760
+                    self.seconds_per_time_step = 3600
+                    self.time_step_ratio = 1.0
+                    self.random_seed = 0
+                    self.episode_tracker = type("tracker", (), {"episode_time_steps": self.time_steps})()
+                    self.unwrapped = self
+                
+                def reset(self):
+                    return [np.array([0.5, 100.0, 6.0])], {}
+                
+                def get_metadata(self):
+                    return {"buildings": [{}]}
+            
+            mock_env = MinimalEnv()
+            
+            # Create wrapper (signature: env, model, config, job_id, progress_path)
+            wrapper = Wrapper_CityLearn(
+                env=mock_env,
+                model=agent,
+                config=wrapper_config,
+                job_id="test"
+            )
+            
+            # Verify enrichers were initialized
+            assert hasattr(wrapper, '_is_transformer_agent')
+            assert wrapper._is_transformer_agent is True
+            assert hasattr(wrapper, '_enrichers')
+            assert len(wrapper._enrichers) == 1
+            assert wrapper._enrichers[0] is not None
+        finally:
+            # Cleanup temp file
+            if os.path.exists(tokenizer_path):
+                os.unlink(tokenizer_path)
+
 
 class TestWrapperEnrichment:
     """Tests for observation enrichment in wrapper."""

@@ -119,6 +119,14 @@ class Wrapper_CityLearn(RLC):
         """
         super().__init__(env, **kwargs)
         self.model = model
+        
+        # Initialize enrichers for Transformer agents
+        if hasattr(self.model, 'is_transformer_agent') and self.model.is_transformer_agent:
+            self._setup_transformer_enrichers(self.model.tokenizer_config)
+            # Initialize enrichment for each building
+            for i in range(len(self.observation_names)):
+                self._enrich_observation_names(i)
+        
         self.job_id = job_id
         self.initial_exploration_done = False
         self.update_step = False
@@ -730,8 +738,12 @@ class Wrapper_CityLearn(RLC):
         # Re-enrich names
         self._enrich_observation_names(building_idx)
         
-        # Rebuild encoders for this building
-        # (Implementation depends on existing encoder structure)
+        # TODO: Rebuild encoders for this building
+        # Currently deferred because:
+        # 1. Encoder structure (configs/encoders/default.json) is static per simulation
+        # 2. Topology changes are rare in practice (only when CA count changes)
+        # 3. Agent handles variable topology via sequence modeling (TransformerPPO)
+        # Future: Implement encoder rebuild if dynamic encoder updates are needed
         
         # Notify agent if it has the method
         if hasattr(self.model, 'on_topology_change'):
