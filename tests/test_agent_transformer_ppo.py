@@ -455,3 +455,133 @@ class TestAgentCheckpoint:
         assert isinstance(manifest, dict)
         assert "model_path" in manifest or "checkpoint_path" in manifest
 
+
+class TestAgentTopologyChange:
+    """Tests for AgentTransformerPPO topology change handling."""
+
+    @pytest.fixture
+    def sample_config(self, tmp_path: Path) -> Dict[str, Any]:
+        """Create sample config."""
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+        tokenizer_path = tmp_path / "tokenizer.json"
+        with open(tokenizer_path, "w") as f:
+            json.dump(tokenizer_config, f)
+        
+        return {
+            "algorithm": {
+                "name": "AgentTransformerPPO",
+                "tokenizer_config_path": str(tokenizer_path),
+                "transformer": {"d_model": 32, "nhead": 2, "num_layers": 1},
+                "hyperparameters": {
+                    "learning_rate": 3e-4,
+                    "gamma": 0.99,
+                    "ppo_epochs": 1,
+                    "minibatch_size": 2,
+                    "hidden_dim": 32,
+                    "rollout_length": 4,
+                },
+            }
+        }
+
+    @pytest.fixture
+    def agent_with_env(self, sample_config: Dict[str, Any]) -> "AgentTransformerPPO":
+        """Create agent with attached environment."""
+        from algorithms.agents.transformer_ppo_agent import AgentTransformerPPO
+        
+        agent = AgentTransformerPPO(sample_config)
+        agent.attach_environment(
+            observation_names=[["month", "electrical_storage_soc", "non_shiftable_load"]],
+            action_names=[["electrical_storage"]],
+            action_space=[MagicMock()],
+            observation_space=[MagicMock()],
+            metadata={},
+        )
+        return agent
+
+    def test_on_topology_change_with_empty_buffer(self, agent_with_env: "AgentTransformerPPO") -> None:
+        """on_topology_change should handle empty buffer gracefully."""
+        # Buffer is empty initially
+        assert len(agent_with_env.rollout_buffers[0]) == 0
+        
+        # Should not crash
+        agent_with_env.on_topology_change(building_idx=0)
+        
+        # Buffer should still be empty (or cleared)
+        assert len(agent_with_env.rollout_buffers[0]) == 0
+
+    def test_on_topology_change_with_data(self, agent_with_env: "AgentTransformerPPO") -> None:
+        """on_topology_change should trigger update if buffer has enough data."""
+        # Create sample observation
+        obs = np.array([[
+            1001.0, 0.5,  # CA: battery
+            2001.0, 0.5, 0.5,  # SRO: temporal
+            3001.0, 100.0,  # NFC
+        ]])
+        
+        # Generate actions and populate buffer with enough samples
+        for _ in range(agent_with_env.minibatch_size):
+            actions = agent_with_env.predict([obs], deterministic=False)
+            agent_with_env.update(
+                observations=[obs],
+                actions=actions,
+                rewards=[1.0],
+                next_observations=[obs],
+                terminated=[False],
+                truncated=[False],
+                update_target_step=False,
+                global_learning_step=0,
+                update_step=False,
+                initial_exploration_done=True,
+            )
+        
+        # Buffer should have data now
+        buffer_len_before = len(agent_with_env.rollout_buffers[0])
+        assert buffer_len_before >= agent_with_env.minibatch_size
+        
+        # Trigger topology change - should not crash
+        agent_with_env.on_topology_change(building_idx=0)
+        
+        # Buffer should be cleared after update
+        assert len(agent_with_env.rollout_buffers[0]) == 0
+
+    def test_on_topology_change_without_last_obs(self, agent_with_env: "AgentTransformerPPO") -> None:
+        """on_topology_change should handle missing last observation."""
+        # Manually populate buffer without setting _last_obs
+        buffer = agent_with_env.rollout_buffers[0]
+        for _ in range(agent_with_env.minibatch_size):
+            buffer.add(
+                observation=torch.randn(6),  # Match expected dims
+                action=torch.tensor([0.5]),
+                log_prob=torch.tensor(0.0),
+                reward=1.0,
+                value=torch.tensor(0.5),
+                done=False,
+            )
+        
+        # Clear last_obs to simulate edge case
+        agent_with_env._last_obs[0] = None
+        
+        # Should not crash - just clear buffer
+        agent_with_env.on_topology_change(building_idx=0)
+        
+        # Buffer should be cleared
+        assert len(agent_with_env.rollout_buffers[0]) == 0
+
