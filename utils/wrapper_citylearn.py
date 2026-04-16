@@ -755,12 +755,35 @@ class Wrapper_CityLearn(RLC):
         # Re-enrich names
         self._enrich_observation_names(building_idx)
         
-        # TODO: Rebuild encoders for this building
-        # Currently deferred because:
-        # 1. Encoder structure (configs/encoders/default.json) is static per simulation
-        # 2. Topology changes are rare in practice (only when CA count changes)
-        # 3. Agent handles variable topology via sequence modeling (TransformerPPO)
-        # Future: Implement encoder rebuild if dynamic encoder updates are needed
+        # Encoder rebuilding for topology changes:
+        # 
+        # DECISION: Deferred for production v1 based on the following analysis:
+        # 
+        # 1. Static encoder structure: The encoder configuration (configs/encoders/default.json)
+        #    defines normalization/encoding rules that are feature-type specific, not
+        #    feature-count specific. Adding/removing a CA doesn't change how that CA's
+        #    features should be encoded.
+        # 
+        # 2. Enricher handles dimension changes: The ObservationEnricher dynamically adjusts
+        #    marker injection positions when topology changes. The enriched observation
+        #    vector grows/shrinks naturally, and existing encoder specs still apply to
+        #    their respective features.
+        # 
+        # 3. Tokenizer handles variable cardinality: The ObservationTokenizer scans for
+        #    markers at runtime, so it automatically adapts to different numbers of CAs
+        #    without needing encoder updates.
+        # 
+        # 4. Rare in practice: Topology changes (CAs connecting/disconnecting mid-episode)
+        #    are currently not supported by the CityLearn environment. This would only
+        #    matter if the environment is extended to support dynamic EV charger connections.
+        # 
+        # FUTURE WORK: If encoder rebuilding becomes necessary (e.g., for environment-specific
+        # normalization stats that depend on observation count), implement by:
+        # - Call self._enrich_observation_names(building_idx) (already done above)
+        # - Extract enrichment.marker_encoder_specs
+        # - Merge with existing encoder specs
+        # - Rebuild self.encoders[building_idx] with merged specs
+        # - Clear any cached encoder state
         
         # Notify agent if it has the method
         if hasattr(self.model, 'on_topology_change'):
