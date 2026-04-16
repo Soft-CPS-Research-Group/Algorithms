@@ -30,15 +30,21 @@ algorithm:
     value_coeff: 0.5
     max_grad_norm: 0.5
     hidden_dim: 128
-    rollout_length: 512
+    rollout_length: 512  # Reduced from 2048 for faster updates in smaller environments
+
 
 # Simulator configuration
+# NOTE: Update dataset_name and dataset_path to match your environment
+# Example datasets:
+#   - citylearn_challenge_2022_phase_all
+#   - citylearn_challenge_2022_phase_all_plus_evs (requires EV-enabled schema)
 simulator:
-  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
-  dataset_path: datasets/citylearn_challenge_2022_phase_all_plus_evs
+  dataset_name: citylearn_challenge_2022_phase_all
+  dataset_path: datasets/citylearn_challenge_2022_phase_all
   central_agent: false
   reward_function: default
   episodes: 100
+
 
 # Training configuration
 training:

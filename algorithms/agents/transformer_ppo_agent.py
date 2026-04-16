@@ -101,7 +101,7 @@ class AgentTransformerPPO(BaseAgent):
         self.critic = CriticHead(d_model=self.d_model, hidden_dim=self.hidden_dim)
         
         # Combine all parameters for optimizer
-        self.all_params = (
+        self.all_params: List[torch.nn.Parameter] = (
             list(self.tokenizer.parameters()) +
             list(self.backbone.parameters()) +
             list(self.actor.parameters()) +
@@ -189,7 +189,8 @@ class AgentTransformerPPO(BaseAgent):
         
         all_actions: List[np.ndarray] = []
         
-        with torch.no_grad():
+        context = torch.no_grad() if deterministic else torch.enable_grad()
+        with context:
             for b_idx, obs in enumerate(observations):
                 # Convert to tensor
                 obs_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device)
@@ -428,7 +429,7 @@ class AgentTransformerPPO(BaseAgent):
             checkpoint_path: Path to checkpoint file.
         """
         checkpoint_path = Path(checkpoint_path)
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
         
         self.tokenizer.load_state_dict(checkpoint["tokenizer_state_dict"])
         self.backbone.load_state_dict(checkpoint["backbone_state_dict"])
