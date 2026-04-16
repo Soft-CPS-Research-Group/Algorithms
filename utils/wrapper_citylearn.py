@@ -243,6 +243,13 @@ class Wrapper_CityLearn(RLC):
             start_episode_time = time.time()
             deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
             observations, _ = self.env.reset()
+            
+            # Check for topology changes at episode start (Transformer agents only)
+            if getattr(self, '_is_transformer_agent', False):
+                for building_idx in range(len(self.observation_names)):
+                    if self._check_topology_change(building_idx):
+                        self._handle_topology_change(building_idx)
+            
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             terminated = False
@@ -266,6 +273,12 @@ class Wrapper_CityLearn(RLC):
                 # Apply actions to CityLearn environment
                 next_observations, rewards, terminated, truncated, _ = self.env.step(actions)
                 rewards_list.append(rewards)
+                
+                # Check for topology changes (Transformer agents only)
+                if getattr(self, '_is_transformer_agent', False):
+                    for building_idx in range(len(self.observation_names)):
+                        if self._check_topology_change(building_idx):
+                            self._handle_topology_change(building_idx)
 
                 # Update model if not in deterministic mode
                 if not deterministic:
@@ -493,6 +506,10 @@ class Wrapper_CityLearn(RLC):
 
     def get_encoded_observations(self, index: int, observations: List[float]) -> np.ndarray:
         """Optimized encoding function using NumPy with proper type handling."""
+
+        # Enrich observations for Transformer agents
+        if getattr(self, '_is_transformer_agent', False):
+            observations = self._enrich_observation_values(index, observations)
 
         obs_array = np.array(observations, dtype=np.float64)  # Ensure numeric type
 

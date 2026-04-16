@@ -292,3 +292,63 @@ class TestWrapperTopologyChange:
         obs_names_v2 = ["electrical_storage_soc", "electric_vehicle_soc"]
         action_names_v2 = ["electrical_storage", "electric_vehicle_storage"]
         assert enricher.topology_changed(obs_names_v2, action_names_v2)
+
+
+class TestWrapperObservationProcessingFlow:
+    """Tests for observation enrichment in processing flow."""
+
+    def test_wrapper_enriches_observations_during_processing(self) -> None:
+        """Wrapper should call enricher during observation processing."""
+        from algorithms.utils.observation_enricher import ObservationEnricher
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+        from unittest.mock import MagicMock
+        
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+        
+        # Create wrapper with enricher
+        wrapper = MagicMock(spec=Wrapper_CityLearn)
+        wrapper._is_transformer_agent = True
+        wrapper._enrichers = [ObservationEnricher(tokenizer_config)]
+        wrapper.observation_names = [["electrical_storage_soc", "non_shiftable_load", "month"]]
+        wrapper.action_names = [["electrical_storage"]]
+        
+        # Initialize enricher
+        wrapper._enrichers[0].enrich_names(
+            wrapper.observation_names[0],
+            wrapper.action_names[0]
+        )
+        
+        # Call the actual method
+        wrapper._enrich_observation_values = Wrapper_CityLearn._enrich_observation_values.__get__(wrapper)
+        
+        raw_values = [0.5, 100.0, 6.0]
+        enriched_values = wrapper._enrich_observation_values(0, raw_values)
+        
+        # Verify markers were injected
+        assert 1001.0 in enriched_values  # CA marker
+        assert 2001.0 in enriched_values  # SRO marker
+        assert 3001.0 in enriched_values  # NFC marker
+        assert len(enriched_values) > len(raw_values)
+
+    def test_observations_flow_through_enrichment(self) -> None:
+        """Verify observations are enriched in actual step flow."""
+        # This will be implemented in Task 4 as full E2E test
+        pass
