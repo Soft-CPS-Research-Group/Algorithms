@@ -9,11 +9,50 @@ import pytest
 import numpy as np
 from pathlib import Path
 from typing import Any, Dict
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 class TestWrapperAgentIntegration:
     """Integration tests for wrapper + agent interaction."""
+
+    @staticmethod
+    def _build_minimal_env() -> Any:
+        class MinimalEnv:
+            def __init__(self):
+                self.observation_names = [["electrical_storage_soc", "non_shiftable_load", "month"]]
+                self.action_names = [["electrical_storage"]]
+                self.observation_space = [
+                    type(
+                        "space",
+                        (),
+                        {
+                            "high": np.array([1.0, 1000.0, 12.0]),
+                            "low": np.array([0.0, 0.0, 1.0]),
+                        },
+                    )()
+                ]
+                self.action_space = [
+                    type(
+                        "space",
+                        (),
+                        {
+                            "high": np.array([1.0]),
+                            "low": np.array([-1.0]),
+                        },
+                    )()
+                ]
+                self.reward_function = type("reward", (), {"__dict__": {}})()
+                self.time_steps = 8760
+                self.seconds_per_time_step = 3600
+                self.time_step_ratio = 1.0
+                self.random_seed = 0
+                self.episode_tracker = type("tracker", (), {"episode_time_steps": self.time_steps})()
+                self.unwrapped = self
+
+            def get_metadata(self):
+                return {"buildings": [{}]}
+
+        return MinimalEnv()
 
     @pytest.fixture
     def integration_setup(self, tmp_path: Path) -> Dict[str, Any]:
@@ -86,35 +125,7 @@ class TestWrapperAgentIntegration:
         
         agent = integration_setup["agent"]
         
-        # Create minimal mock environment
-        class MinimalEnv:
-            def __init__(self):
-                self.observation_names = [["electrical_storage_soc", "non_shiftable_load", "month"]]
-                self.action_names = [["electrical_storage"]]
-                self.observation_space = [
-                    type("space", (), {
-                        "high": np.array([1.0, 1000.0, 12.0]),
-                        "low": np.array([0.0, 0.0, 1.0]),
-                    })()
-                ]
-                self.action_space = [
-                    type("space", (), {
-                        "high": np.array([1.0]),
-                        "low": np.array([-1.0]),
-                    })()
-                ]
-                self.reward_function = type("reward", (), {"__dict__": {}})()
-                self.time_steps = 8760
-                self.seconds_per_time_step = 3600
-                self.time_step_ratio = 1.0
-                self.random_seed = 0
-                self.episode_tracker = type("tracker", (), {"episode_time_steps": self.time_steps})()
-                self.unwrapped = self
-            
-            def get_metadata(self):
-                return {"buildings": [{}]}
-        
-        mock_env = MinimalEnv()
+        mock_env = self._build_minimal_env()
         
         wrapper_config = {
             "environment": {"buildings": ["Building_1"]},
@@ -159,6 +170,66 @@ class TestWrapperAgentIntegration:
         assert 2001.0 in enriched_obs  # SRO marker
         assert 3001.0 in enriched_obs  # NFC marker
 
+    def test_predict_path_preserves_markers_when_model_set_after_init(
+        self, integration_setup: Dict[str, Any]
+    ) -> None:
+        """Wrapper should preserve markers through predict after set_model."""
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+
+        agent = integration_setup["agent"]
+
+        wrapper_config = {
+            "environment": {"buildings": ["Building_1"]},
+            "algorithm": integration_setup["agent_config"]["algorithm"],
+            "training": {},
+            "simulator": {},
+            "checkpointing": {},
+            "tracking": {},
+            "runtime": {},
+        }
+
+        wrapper = Wrapper_CityLearn(
+            env=self._build_minimal_env(),
+            model=None,
+            config=wrapper_config,
+            job_id="test",
+        )
+
+        assert wrapper._is_transformer_agent is False
+        wrapper.set_model(agent)
+        assert wrapper._is_transformer_agent is True
+
+        raw_obs = [[0.5, 100.0, 6.0]]
+        encoded_obs = wrapper.get_all_encoded_observations(raw_obs)
+
+        assert len(encoded_obs) == 1
+        assert any(np.isclose(encoded_obs[0], 1001.0))
+        assert any(np.isclose(encoded_obs[0], 2001.0))
+        assert any(np.isclose(encoded_obs[0], 3001.0))
+
+        captured_predict_input = None
+        original_predict = agent.predict
+
+        def capturing_predict(observations, deterministic=None):
+            nonlocal captured_predict_input
+            captured_predict_input = observations
+            return original_predict(observations, deterministic=deterministic)
+
+        agent.predict = capturing_predict
+        actions = wrapper.predict(raw_obs, deterministic=True)
+
+        assert captured_predict_input is not None
+        assert len(captured_predict_input) == 1
+        np.testing.assert_allclose(np.asarray(captured_predict_input), np.asarray(encoded_obs))
+        assert any(np.isclose(captured_predict_input[0], 1001.0))
+        assert any(np.isclose(captured_predict_input[0], 2001.0))
+        assert any(np.isclose(captured_predict_input[0], 3001.0))
+
+        assert len(actions) == 1
+        assert actions[0].shape[-1] == 1
+        assert (actions[0] >= -1.0).all()
+        assert (actions[0] <= 1.0).all()
+
     def test_agent_processes_enriched_observations(
         self, integration_setup: Dict[str, Any]
     ) -> None:
@@ -176,11 +247,11 @@ class TestWrapperAgentIntegration:
         
         # Create enriched observation with markers
         # Structure: [CA_1001, soc, SRO_2001, month_enc, NFC_3001, load]
-        enriched_obs = np.array([[
+        enriched_obs = np.array([
             1001.0, 0.5,  # CA: battery
             2001.0, 0.5, 0.5,  # SRO: temporal (2 dims encoded)
             3001.0, 100.0,  # NFC
-        ]])
+        ])
         
         actions = agent.predict([enriched_obs], deterministic=True)
         
@@ -207,7 +278,10 @@ class TestWrapperAgentIntegration:
         assert hasattr(agent, 'on_topology_change')
         
         # Call it (should not crash)
+        buffer = agent.rollout_buffers[0]
+        assert len(buffer) == 0
+
         agent.on_topology_change(0)
-        
-        # Verify buffer was handled (no exception means success)
-        assert True
+
+        # Verify empty buffer remains empty after topology change handling
+        assert len(buffer) == 0

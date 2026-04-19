@@ -12,6 +12,45 @@ import numpy as np
 class TestWrapperEnricherSetup:
     """Tests for enricher setup in wrapper."""
 
+    class _MinimalEnv:
+        def __init__(self):
+            self.observation_names = [["electrical_storage_soc", "non_shiftable_load", "month"]]
+            self.action_names = [["electrical_storage"]]
+            self.observation_space = [
+                type(
+                    "space",
+                    (),
+                    {
+                        "high": np.array([1.0, 1000.0, 12.0]),
+                        "low": np.array([0.0, 0.0, 1.0]),
+                    },
+                )()
+            ]
+            self.action_space = [
+                type(
+                    "space",
+                    (),
+                    {
+                        "high": np.array([1.0]),
+                        "low": np.array([-1.0]),
+                    },
+                )()
+            ]
+            self.reward_function = type("reward", (), {"__dict__": {}})()
+            self.time_steps = 8760
+            self.seconds_per_time_step = 3600
+            self.time_step_ratio = 1.0
+            self.random_seed = 0
+            self.building_names = ["Building_1"]
+            self.episode_tracker = type("tracker", (), {"episode_time_steps": self.time_steps})()
+            self.unwrapped = self
+
+        def reset(self):
+            return [np.array([0.5, 100.0, 6.0])], {}
+
+        def get_metadata(self):
+            return {"buildings": [{}]}
+
     @pytest.fixture
     def sample_tokenizer_config(self) -> Dict[str, Any]:
         """Sample tokenizer config."""
@@ -125,38 +164,7 @@ class TestWrapperEnricherSetup:
                 "runtime": {},
             }
             
-            # Create minimal mock environment (similar to test_encoder_rules.py)
-            class MinimalEnv:
-                def __init__(self):
-                    self.observation_names = [["electrical_storage_soc", "non_shiftable_load", "month"]]
-                    self.action_names = [["electrical_storage"]]
-                    self.observation_space = [
-                        type("space", (), {
-                            "high": np.array([1.0, 1000.0, 12.0]),
-                            "low": np.array([0.0, 0.0, 1.0]),
-                        })()
-                    ]
-                    self.action_space = [
-                        type("space", (), {
-                            "high": np.array([1.0]),
-                            "low": np.array([-1.0]),
-                        })()
-                    ]
-                    self.reward_function = type("reward", (), {"__dict__": {}})()
-                    self.time_steps = 8760
-                    self.seconds_per_time_step = 3600
-                    self.time_step_ratio = 1.0
-                    self.random_seed = 0
-                    self.episode_tracker = type("tracker", (), {"episode_time_steps": self.time_steps})()
-                    self.unwrapped = self
-                
-                def reset(self):
-                    return [np.array([0.5, 100.0, 6.0])], {}
-                
-                def get_metadata(self):
-                    return {"buildings": [{}]}
-            
-            mock_env = MinimalEnv()
+            mock_env = self._MinimalEnv()
             
             # Create wrapper (signature: env, model, config, job_id, progress_path)
             wrapper = Wrapper_CityLearn(
@@ -176,6 +184,468 @@ class TestWrapperEnricherSetup:
             # Cleanup temp file
             if os.path.exists(tokenizer_path):
                 os.unlink(tokenizer_path)
+
+    def test_wrapper_initializes_transformer_enrichers_when_model_set_later(self) -> None:
+        """Wrapper should initialize enrichers when Transformer model is attached via set_model."""
+        from algorithms.agents.transformer_ppo_agent import AgentTransformerPPO
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+        import tempfile
+        import json
+        import os
+
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(tokenizer_config, f)
+            tokenizer_path = f.name
+
+        try:
+            agent_config = {
+                "algorithm": {
+                    "name": "AgentTransformerPPO",
+                    "tokenizer_config_path": tokenizer_path,
+                    "transformer": {"d_model": 64, "nhead": 4, "num_layers": 2},
+                    "hyperparameters": {
+                        "learning_rate": 3e-4,
+                        "gamma": 0.99,
+                        "gae_lambda": 0.95,
+                        "clip_eps": 0.2,
+                        "ppo_epochs": 4,
+                        "minibatch_size": 64,
+                        "entropy_coeff": 0.01,
+                        "value_coeff": 0.5,
+                        "max_grad_norm": 0.5,
+                        "hidden_dim": 128,
+                        "rollout_length": 2048,
+                    },
+                }
+            }
+            agent = AgentTransformerPPO(agent_config)
+
+            wrapper_config = {
+                "training": {},
+                "simulator": {},
+                "checkpointing": {},
+                "tracking": {},
+                "runtime": {},
+            }
+
+            mock_env = self._MinimalEnv()
+            wrapper = Wrapper_CityLearn(
+                env=mock_env,
+                model=None,
+                config=wrapper_config,
+                job_id="test",
+            )
+
+            wrapper.set_model(agent)
+
+            assert hasattr(wrapper, "_is_transformer_agent")
+            assert wrapper._is_transformer_agent is True
+            assert hasattr(wrapper, "_enrichers")
+            assert len(wrapper._enrichers) == 1
+            assert wrapper._enrichers[0] is not None
+        finally:
+            if os.path.exists(tokenizer_path):
+                os.unlink(tokenizer_path)
+
+    def test_set_model_rebuilds_encoders_for_enriched_observation_names(self) -> None:
+        """set_model should rebuild encoders so marker slots are encoded too."""
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+        transformer_model = type(
+            "TransformerLikeModel",
+            (),
+            {"is_transformer_agent": True, "tokenizer_config": tokenizer_config},
+        )()
+
+        wrapper_config = {
+            "training": {},
+            "simulator": {},
+            "checkpointing": {},
+            "tracking": {},
+            "runtime": {},
+        }
+
+        wrapper = Wrapper_CityLearn(
+            env=self._MinimalEnv(),
+            model=None,
+            config=wrapper_config,
+            job_id="test",
+        )
+
+        raw_encoder_count = len(wrapper.encoders[0])
+        wrapper.set_model(transformer_model)
+
+        enriched_encoder_count = len(wrapper.encoders[0])
+        assert enriched_encoder_count > raw_encoder_count
+        assert enriched_encoder_count == len(wrapper._enriched_observation_names[0])
+
+    def test_set_model_preserves_markers_and_encoded_length_matches_enriched_names(self) -> None:
+        """Encoded observations should preserve markers and include all enriched slots."""
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+        transformer_model = type(
+            "TransformerLikeModel",
+            (),
+            {"is_transformer_agent": True, "tokenizer_config": tokenizer_config},
+        )()
+
+        wrapper_config = {
+            "training": {},
+            "simulator": {},
+            "checkpointing": {},
+            "tracking": {},
+            "runtime": {},
+        }
+
+        wrapper = Wrapper_CityLearn(
+            env=self._MinimalEnv(),
+            model=None,
+            config=wrapper_config,
+            job_id="test",
+        )
+
+        wrapper.set_model(transformer_model)
+        raw_values = [0.5, 100.0, 6.0]
+        encoded = wrapper.get_encoded_observations(0, raw_values)
+        marker_values = tokenizer_config["marker_values"]
+        expected_markers = (
+            float(marker_values["ca_base"] + 1),
+            float(marker_values["sro_base"] + 1),
+            float(marker_values["nfc"]),
+        )
+        expected_encoded_len = 7
+
+        for expected_marker in expected_markers:
+            assert expected_marker in encoded
+        assert len(encoded) == expected_encoded_len
+
+    def test_wrapper_clears_transformer_state_when_switching_to_non_transformer_model(self) -> None:
+        """set_model should clear enrichment state when switching away from Transformer model."""
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+        transformer_model = type(
+            "TransformerLikeModel",
+            (),
+            {"is_transformer_agent": True, "tokenizer_config": tokenizer_config},
+        )()
+
+        wrapper_config = {
+            "training": {},
+            "simulator": {},
+            "checkpointing": {},
+            "tracking": {},
+            "runtime": {},
+        }
+
+        wrapper = Wrapper_CityLearn(
+            env=self._MinimalEnv(),
+            model=None,
+            config=wrapper_config,
+            job_id="test",
+        )
+
+        wrapper.set_model(transformer_model)
+        assert wrapper._is_transformer_agent is True
+        assert len(wrapper._enrichers) == 1
+
+        wrapper.set_model(object())
+
+        assert wrapper._is_transformer_agent is False
+        assert wrapper._enrichers == []
+        assert wrapper._tokenizer_config is None
+        assert wrapper._enriched_observation_names == {}
+
+    def test_wrapper_raises_for_transformer_model_without_tokenizer_config(self) -> None:
+        """set_model should raise a clear error when tokenizer_config is missing."""
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+
+        transformer_without_tokenizer = type(
+            "TransformerLikeModelWithoutTokenizer",
+            (),
+            {"is_transformer_agent": True},
+        )()
+
+        wrapper_config = {
+            "training": {},
+            "simulator": {},
+            "checkpointing": {},
+            "tracking": {},
+            "runtime": {},
+        }
+
+        wrapper = Wrapper_CityLearn(
+            env=self._MinimalEnv(),
+            model=None,
+            config=wrapper_config,
+            job_id="test",
+        )
+
+        with pytest.raises(ValueError, match="tokenizer_config"):
+            wrapper.set_model(transformer_without_tokenizer)
+
+    def test_set_model_is_atomic_when_transformer_config_invalid(self) -> None:
+        """set_model should keep previous model and transformer state on config validation failure."""
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+        valid_transformer_model = type(
+            "TransformerLikeModel",
+            (),
+            {"is_transformer_agent": True, "tokenizer_config": tokenizer_config},
+        )()
+        invalid_transformer_model = type(
+            "TransformerLikeModelWithoutTokenizer",
+            (),
+            {"is_transformer_agent": True},
+        )()
+
+        wrapper_config = {
+            "training": {},
+            "simulator": {},
+            "checkpointing": {},
+            "tracking": {},
+            "runtime": {},
+        }
+
+        wrapper = Wrapper_CityLearn(
+            env=self._MinimalEnv(),
+            model=None,
+            config=wrapper_config,
+            job_id="test",
+        )
+        wrapper.set_model(valid_transformer_model)
+
+        assert wrapper.model is valid_transformer_model
+        assert wrapper._is_transformer_agent is True
+        assert wrapper._tokenizer_config == tokenizer_config
+        assert len(wrapper._enrichers) == 1
+        assert wrapper._enrichers[0] is not None
+        assert 0 in wrapper._enriched_observation_names
+
+        with pytest.raises(ValueError, match="tokenizer_config"):
+            wrapper.set_model(invalid_transformer_model)
+
+        assert wrapper.model is valid_transformer_model
+        assert wrapper._is_transformer_agent is True
+        assert wrapper._tokenizer_config == tokenizer_config
+        assert len(wrapper._enrichers) == 1
+        assert wrapper._enrichers[0] is not None
+        assert 0 in wrapper._enriched_observation_names
+
+    def test_set_model_calls_attach_environment_when_available(self) -> None:
+        """set_model should call attach_environment exactly once with wrapper metadata."""
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+
+        class FakeModel:
+            is_transformer_agent = False
+
+            def __init__(self):
+                self.calls = []
+
+            def attach_environment(self, **kwargs):
+                self.calls.append(kwargs)
+
+        wrapper_config = {
+            "training": {},
+            "simulator": {},
+            "checkpointing": {},
+            "tracking": {},
+            "runtime": {},
+        }
+
+        wrapper = Wrapper_CityLearn(
+            env=self._MinimalEnv(),
+            model=None,
+            config=wrapper_config,
+            job_id="test",
+        )
+
+        model = FakeModel()
+        wrapper.set_model(model)
+
+        assert len(model.calls) == 1
+        call = model.calls[0]
+        assert call["observation_names"] == wrapper.observation_names
+        assert call["action_names"] == wrapper.action_names
+        assert call["action_space"] == wrapper.action_space
+        assert call["observation_space"] == wrapper.observation_space
+        assert set(call["metadata"].keys()) == {"seconds_per_time_step", "building_names"}
+
+    def test_set_model_rolls_back_when_attach_environment_raises(self) -> None:
+        """set_model should be atomic when attach_environment fails."""
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+        valid_transformer_model = type(
+            "TransformerLikeModel",
+            (),
+            {"is_transformer_agent": True, "tokenizer_config": tokenizer_config},
+        )()
+
+        class BrokenAttachModel:
+            is_transformer_agent = False
+
+            def attach_environment(self, **kwargs):
+                raise RuntimeError("boom")
+
+        wrapper_config = {
+            "training": {},
+            "simulator": {},
+            "checkpointing": {},
+            "tracking": {},
+            "runtime": {},
+        }
+
+        wrapper = Wrapper_CityLearn(
+            env=self._MinimalEnv(),
+            model=None,
+            config=wrapper_config,
+            job_id="test",
+        )
+        wrapper.set_model(valid_transformer_model)
+
+        expected_enrichers = list(wrapper._enrichers)
+        expected_enriched_observation_names = dict(wrapper._enriched_observation_names)
+        expected_encoder_count = len(wrapper.encoders[0])
+        expected_encoded = wrapper.get_encoded_observations(0, [0.5, 100.0, 6.0])
+
+        with pytest.raises(RuntimeError, match="boom"):
+            wrapper.set_model(BrokenAttachModel())
+
+        assert wrapper.model is valid_transformer_model
+        assert wrapper._is_transformer_agent is True
+        assert wrapper._tokenizer_config == tokenizer_config
+        assert wrapper._enrichers == expected_enrichers
+        assert wrapper._enriched_observation_names == expected_enriched_observation_names
+        assert len(wrapper.encoders[0]) == expected_encoder_count
+        encoded_after_rollback = wrapper.get_encoded_observations(0, [0.5, 100.0, 6.0])
+        np.testing.assert_allclose(encoded_after_rollback, expected_encoded)
+        marker_values = tokenizer_config["marker_values"]
+        expected_markers = (
+            float(marker_values["ca_base"] + 1),
+            float(marker_values["sro_base"] + 1),
+            float(marker_values["nfc"]),
+        )
+        for expected_marker in expected_markers:
+            assert expected_marker in encoded_after_rollback
 
 
 class TestWrapperEnrichment:
@@ -219,11 +689,16 @@ class TestWrapperEnrichment:
         
         observation_values = [6.0, 0.75, 100.0]
         enriched_values = enricher.enrich_values(observation_values)
-        
+        marker_values = sample_tokenizer_config["marker_values"]
+        expected_markers = (
+            float(marker_values["ca_base"] + 1),
+            float(marker_values["sro_base"] + 1),
+            float(marker_values["nfc"]),
+        )
+
         # Should contain marker values
-        assert 1001.0 in enriched_values  # CA marker
-        assert 2001.0 in enriched_values  # SRO marker
-        assert 3001.0 in enriched_values  # NFC marker
+        for expected_marker in expected_markers:
+            assert expected_marker in enriched_values
 
     def test_marker_encoder_specs_generated(
         self, sample_tokenizer_config: Dict[str, Any]
@@ -293,6 +768,83 @@ class TestWrapperTopologyChange:
         action_names_v2 = ["electrical_storage", "electric_vehicle_storage"]
         assert enricher.topology_changed(obs_names_v2, action_names_v2)
 
+    def test_handle_topology_change_rebuilds_encoders_for_enriched_names(self) -> None:
+        """Topology change handler should rebuild encoders and keep marker slots."""
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                },
+                "ev_charger": {
+                    "features": ["electric_vehicle_soc"],
+                    "action_name": "electric_vehicle_storage",
+                    "input_dim": 2,
+                },
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+        transformer_model = type(
+            "TransformerLikeModel",
+            (),
+            {"is_transformer_agent": True, "tokenizer_config": tokenizer_config},
+        )()
+
+        wrapper = Wrapper_CityLearn(
+            env=TestWrapperEnricherSetup._MinimalEnv(),
+            model=transformer_model,
+            config={
+                "training": {},
+                "simulator": {},
+                "checkpointing": {},
+                "tracking": {},
+                "runtime": {},
+            },
+            job_id="test",
+        )
+
+        wrapper.observation_names[0] = [
+            "electrical_storage_soc",
+            "electric_vehicle_soc",
+            "non_shiftable_load",
+            "month",
+        ]
+        wrapper.action_names[0] = ["electrical_storage", "electric_vehicle_storage"]
+        wrapper.observation_space[0] = type(
+            "space",
+            (),
+            {
+                "high": np.array([1.0, 1.0, 1200.0, 12.0]),
+                "low": np.array([0.0, 0.0, 0.0, 1.0]),
+            },
+        )()
+
+        wrapper._handle_topology_change(0)
+
+        assert len(wrapper.encoders[0]) == len(wrapper._enriched_observation_names[0])
+        encoded = wrapper.get_encoded_observations(0, [0.4, 0.7, 150.0, 7.0])
+        marker_values = tokenizer_config["marker_values"]
+        expected_markers = (
+            float(marker_values["ca_base"] + 1),
+            float(marker_values["sro_base"] + 1),
+            float(marker_values["nfc"]),
+        )
+        for expected_marker in expected_markers:
+            assert expected_marker in encoded
+
 
 class TestWrapperObservationProcessingFlow:
     """Tests for observation enrichment in processing flow."""
@@ -341,11 +893,16 @@ class TestWrapperObservationProcessingFlow:
         
         raw_values = [0.5, 100.0, 6.0]
         enriched_values = wrapper._enrich_observation_values(0, raw_values)
-        
+        marker_values = tokenizer_config["marker_values"]
+        expected_markers = (
+            float(marker_values["ca_base"] + 1),
+            float(marker_values["sro_base"] + 1),
+            float(marker_values["nfc"]),
+        )
+
         # Verify markers were injected
-        assert 1001.0 in enriched_values  # CA marker
-        assert 2001.0 in enriched_values  # SRO marker
-        assert 3001.0 in enriched_values  # NFC marker
+        for expected_marker in expected_markers:
+            assert expected_marker in enriched_values
         assert len(enriched_values) > len(raw_values)
 
     def test_observations_flow_through_enrichment(self) -> None:

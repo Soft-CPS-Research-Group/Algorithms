@@ -1,6 +1,10 @@
 {
   "rules": [
     {
+      "match": {"prefixes": ["__marker_"]},
+      "encoder": {"type": "NoNormalization"}
+    },
+    {
       "match": {"equals": ["month", "hour"]},
       "encoder": {
         "type": "PeriodicNormalization",

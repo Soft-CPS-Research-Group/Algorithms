@@ -99,6 +99,15 @@ def _build_encoder(rule: Dict[str, Any], space: Any, index: int) -> Encoder:
     params = {key: _resolve_param(value, space, index) for key, value in raw_params.items()}
     return encoder_cls(**params) if params else encoder_cls()
 
+
+def _parse_marker_value(name: str) -> Optional[float]:
+    if name.startswith("__marker_") and name.endswith("__"):
+        try:
+            return float(name[9:-2])
+        except ValueError:
+            return None
+    return None
+
 class Wrapper_CityLearn(RLC):
     def __init__(
         self,
@@ -119,13 +128,7 @@ class Wrapper_CityLearn(RLC):
         """
         super().__init__(env, **kwargs)
         self.model = model
-        
-        # Initialize enrichers for Transformer agents
-        if hasattr(self.model, 'is_transformer_agent') and self.model.is_transformer_agent:
-            self._setup_transformer_enrichers(self.model.tokenizer_config)
-            # Initialize enrichment for each building
-            for i in range(len(self.observation_names)):
-                self._enrich_observation_names(i)
+        self._configure_model_transformer_state()
         
         self.job_id = job_id
         self.initial_exploration_done = False
@@ -207,22 +210,64 @@ class Wrapper_CityLearn(RLC):
         """
         Set the model after initialization.
         """
-        self.model = model
-        metadata = {
-            "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
-            "building_names": getattr(self.env, "building_names", None),
+        previous_model = self.model
+        previous_transformer_state = {
+            "is_transformer_agent": getattr(self, "_is_transformer_agent", False),
+            "enrichers": list(getattr(self, "_enrichers", [])),
+            "tokenizer_config": getattr(self, "_tokenizer_config", None),
+            "enriched_observation_names": dict(getattr(self, "_enriched_observation_names", {})),
+            "encoders": [list(group) for group in getattr(self, "encoders", [])],
         }
+
         try:
-            self.model.attach_environment(
-                observation_names=self.observation_names,
-                action_names=self.action_names,
-                action_space=self.action_space,
-                observation_space=self.observation_space,
-                metadata=metadata,
+            self.model = model
+            self._configure_model_transformer_state()
+
+            metadata = {
+                "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
+                "building_names": getattr(self.env, "building_names", None),
+            }
+            attach_environment = getattr(self.model, "attach_environment", None)
+            if callable(attach_environment):
+                attach_environment(
+                    observation_names=self.observation_names,
+                    action_names=self.action_names,
+                    action_space=self.action_space,
+                    observation_space=self.observation_space,
+                    metadata=metadata,
+                )
+        except Exception:
+            self.model = previous_model
+            self._is_transformer_agent = previous_transformer_state["is_transformer_agent"]
+            self._enrichers = previous_transformer_state["enrichers"]
+            self._tokenizer_config = previous_transformer_state["tokenizer_config"]
+            self._enriched_observation_names = previous_transformer_state["enriched_observation_names"]
+            self.encoders = previous_transformer_state["encoders"]
+            raise
+
+    def _clear_transformer_state(self) -> None:
+        self._is_transformer_agent = False
+        self._enrichers = []
+        self._tokenizer_config = None
+        self._enriched_observation_names = {}
+        self.encoders = self.set_encoders()
+
+    def _configure_model_transformer_state(self) -> None:
+        if not getattr(self.model, "is_transformer_agent", False):
+            self._clear_transformer_state()
+            return
+
+        tokenizer_config = getattr(self.model, "tokenizer_config", None)
+        if tokenizer_config is None:
+            raise ValueError(
+                "Transformer agent requires tokenizer_config; "
+                "set model.tokenizer_config before attaching it to the wrapper."
             )
-        except AttributeError:
-            # Older agents may not implement attach_environment.
-            pass
+
+        self._setup_transformer_enrichers(tokenizer_config)
+        for i in range(len(self.observation_names)):
+            self._enrich_observation_names(i)
+            self._rebuild_encoders_for_enriched_names(i)
 
 
     def learn(self, episodes=None, deterministic=None, deterministic_finish=None):
@@ -614,41 +659,95 @@ class Wrapper_CityLearn(RLC):
         }
 
 
-    def set_encoders(self) -> List[List[Encoder]]:
-        r"""Instantiate observation encoders from the shared JSON configuration."""
-
+    def _build_encoder_group(self, observation_group: List[str], space: Any) -> List[Encoder]:
         rules = _load_encoder_rules()
-        encoders: List[List[Encoder]] = []
         missing: List[str] = []
+        group_encoders: List[Encoder] = []
 
-        for observation_group, space in zip(self.observation_names, self.observation_space):
-            group_encoders: List[Encoder] = []
-            for index, name in enumerate(observation_group):
-                rule = next((r for r in rules if _matches_rule(name, r.get("match", {}))), None)
-                if rule is None:
-                    missing.append(name)
-                    continue
+        for index, name in enumerate(observation_group):
+            rule = next((r for r in rules if _matches_rule(name, r.get("match", {}))), None)
+            if rule is None:
+                missing.append(name)
+                continue
 
-                if rule.get("warn_on_use"):
-                    logger.warning("Encoder rule warning for observation '{}'", name)
+            if rule.get("warn_on_use"):
+                logger.warning("Encoder rule warning for observation '{}'", name)
 
-                encoder = _build_encoder(rule, space, index)
-                group_encoders.append(encoder)
+            encoder = _build_encoder(rule, space, index)
+            group_encoders.append(encoder)
 
-            if len(group_encoders) != len(observation_group):
-                raise ValueError(
-                    "Failed to build encoders for all observations: "
-                    f"expected {len(observation_group)}, built {len(group_encoders)}"
-                )
-            encoders.append(group_encoders)
+        if len(group_encoders) != len(observation_group):
+            raise ValueError(
+                "Failed to build encoders for all observations: "
+                f"expected {len(observation_group)}, built {len(group_encoders)}"
+            )
 
         if missing:
             raise ValueError(
                 "No encoder rule defined for observations: " + ", ".join(sorted(set(missing)))
             )
 
+        return group_encoders
+
+    def set_encoders(self) -> List[List[Encoder]]:
+        r"""Instantiate observation encoders from the shared JSON configuration."""
+
+        encoders: List[List[Encoder]] = []
+
+        for observation_group, space in zip(self.observation_names, self.observation_space):
+            group_encoders = self._build_encoder_group(observation_group, space)
+            encoders.append(group_encoders)
+
         logger.debug("Encoders initialised from external configuration")
         return encoders
+
+    def _rebuild_encoders_for_enriched_names(self, building_idx: int) -> None:
+        """Rebuild encoders for enriched names, including marker slots."""
+        enriched_names = self._enriched_observation_names.get(building_idx)
+        if not enriched_names:
+            return
+
+        raw_names = list(self.observation_names[building_idx])
+        raw_space = self.observation_space[building_idx]
+        raw_high = np.asarray(raw_space.high, dtype=np.float64)
+        raw_low = np.asarray(raw_space.low, dtype=np.float64)
+
+        name_to_indices: Dict[str, List[int]] = {}
+        for index, name in enumerate(raw_names):
+            if name not in name_to_indices:
+                name_to_indices[name] = []
+            name_to_indices[name].append(index)
+
+        enriched_high: List[float] = []
+        enriched_low: List[float] = []
+
+        for name in enriched_names:
+            marker_value = _parse_marker_value(name)
+            if marker_value is not None:
+                enriched_high.append(marker_value)
+                enriched_low.append(marker_value)
+                continue
+
+            indices = name_to_indices.get(name)
+            if not indices:
+                raise ValueError(
+                    f"Cannot rebuild encoder space for enriched feature '{name}' in building {building_idx}"
+                )
+
+            raw_index = indices.pop(0)
+            enriched_high.append(float(raw_high[raw_index]))
+            enriched_low.append(float(raw_low[raw_index]))
+
+        enriched_space = type(
+            "space",
+            (),
+            {
+                "high": np.asarray(enriched_high, dtype=np.float64),
+                "low": np.asarray(enriched_low, dtype=np.float64),
+            },
+        )()
+
+        self.encoders[building_idx] = self._build_encoder_group(enriched_names, enriched_space)
 
     def _setup_transformer_enrichers(self, tokenizer_config: Dict[str, Any]) -> None:
         """Set up observation enrichers for Transformer agents.
@@ -754,36 +853,7 @@ class Wrapper_CityLearn(RLC):
             
         # Re-enrich names
         self._enrich_observation_names(building_idx)
-        
-        # Encoder rebuilding for topology changes:
-        # 
-        # DECISION: Deferred for production v1 based on the following analysis:
-        # 
-        # 1. Static encoder structure: The encoder configuration (configs/encoders/default.json)
-        #    defines normalization/encoding rules that are feature-type specific, not
-        #    feature-count specific. Adding/removing a CA doesn't change how that CA's
-        #    features should be encoded.
-        # 
-        # 2. Enricher handles dimension changes: The ObservationEnricher dynamically adjusts
-        #    marker injection positions when topology changes. The enriched observation
-        #    vector grows/shrinks naturally, and existing encoder specs still apply to
-        #    their respective features.
-        # 
-        # 3. Tokenizer handles variable cardinality: The ObservationTokenizer scans for
-        #    markers at runtime, so it automatically adapts to different numbers of CAs
-        #    without needing encoder updates.
-        # 
-        # 4. Rare in practice: Topology changes (CAs connecting/disconnecting mid-episode)
-        #    are currently not supported by the CityLearn environment. This would only
-        #    matter if the environment is extended to support dynamic EV charger connections.
-        # 
-        # FUTURE WORK: If encoder rebuilding becomes necessary (e.g., for environment-specific
-        # normalization stats that depend on observation count), implement by:
-        # - Call self._enrich_observation_names(building_idx) (already done above)
-        # - Extract enrichment.marker_encoder_specs
-        # - Merge with existing encoder specs
-        # - Rebuild self.encoders[building_idx] with merged specs
-        # - Clear any cached encoder state
+        self._rebuild_encoders_for_enriched_names(building_idx)
         
         # Notify agent if it has the method
         if hasattr(self.model, 'on_topology_change'):
