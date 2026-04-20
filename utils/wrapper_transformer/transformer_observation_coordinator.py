@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from loguru import logger
-
+from algorithms.utils.observation_enricher import ObservationEnricher
 
 def parse_marker_value(name: str) -> Optional[float]:
     """Parse a marker feature name (e.g. ``__marker_1001__``) into a float."""
@@ -38,6 +38,9 @@ class TransformerObservationCoordinator:
     def configure_model_transformer_state(wrapper: Any) -> None:
         if not getattr(wrapper.model, "is_transformer_agent", False):
             TransformerObservationCoordinator.clear_transformer_state(wrapper)
+            logger.info(
+                "Model is not a transformer agent; cleared transformer state for wrapper."
+            )
             return
 
         tokenizer_config = getattr(wrapper.model, "tokenizer_config", None)
@@ -57,13 +60,13 @@ class TransformerObservationCoordinator:
 
     @staticmethod
     def setup_transformer_enrichers(wrapper: Any, tokenizer_config: Dict[str, Any]) -> None:
-        from algorithms.utils.observation_enricher import ObservationEnricher
 
         wrapper._is_transformer_agent = True
         wrapper._enrichers = []
         wrapper._tokenizer_config = tokenizer_config
         wrapper._marker_registry_by_building = {}
 
+        # Initialize an enricher for each building's observation space
         for _ in range(len(wrapper.observation_names)):
             wrapper._enrichers.append(ObservationEnricher(tokenizer_config))
 
@@ -74,23 +77,26 @@ class TransformerObservationCoordinator:
 
     @staticmethod
     def enrich_observation_names(wrapper: Any, building_idx: int) -> None:
-        if not getattr(wrapper, "_is_transformer_agent", False):
-            return
 
         enricher = wrapper._enrichers[building_idx]
         if enricher is None:
+            logger.debug(
+                "No enricher found for building {}; skipping observation name enrichment.",
+                building_idx,
+            )
             return
 
+        # Get enrichment result which includes enriched names and marker-to-type mapping
         obs_names = wrapper.observation_names[building_idx]
         action_names = wrapper.action_names[building_idx]
-        enrichment = enricher.enrich_names(obs_names, action_names)
+        enrichment_result = enricher.enrich_names(obs_names, action_names)
 
         if not hasattr(wrapper, "_enriched_observation_names"):
             wrapper._enriched_observation_names = {}
-        wrapper._enriched_observation_names[building_idx] = enrichment.enriched_names
+        wrapper._enriched_observation_names[building_idx] = enrichment_result.enriched_names
 
         marker_registry: Dict[float, Tuple[str, str, Optional[str]]] = {}
-        for marker_name, marker_type in enrichment.marker_to_type.items():
+        for marker_name, marker_type in enrichment_result.marker_to_type.items():
             marker_value = parse_marker_value(marker_name)
             if marker_value is None:
                 continue
@@ -113,7 +119,7 @@ class TransformerObservationCoordinator:
             "Enriched observation names for building {} (raw={}, enriched={}).",
             building_idx,
             len(obs_names),
-            len(enrichment.enriched_names),
+            len(enrichment_result.enriched_names),
         )
 
     @staticmethod
