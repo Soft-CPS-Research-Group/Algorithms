@@ -15,7 +15,6 @@ from loguru import logger
 from algorithms.agents.base_agent import BaseAgent
 from utils.wrapper_transformer.transformer_observation_coordinator import (
     TransformerObservationCoordinator,
-    parse_marker_value,
 )
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
@@ -104,9 +103,6 @@ def _build_encoder(rule: Dict[str, Any], space: Any, index: int) -> Encoder:
     return encoder_cls(**params) if params else encoder_cls()
 
 
-def _parse_marker_value(name: str) -> Optional[float]:
-    return parse_marker_value(name)
-
 class Wrapper_CityLearn(RLC):
     def __init__(
         self,
@@ -127,7 +123,7 @@ class Wrapper_CityLearn(RLC):
         """
         super().__init__(env, **kwargs)
         self.model = model
-        self._configure_model_transformer_state()
+        TransformerObservationCoordinator.configure_model_transformer_state(self)
         
         self.job_id = job_id
         self.initial_exploration_done = False
@@ -221,7 +217,7 @@ class Wrapper_CityLearn(RLC):
 
         try:
             self.model = model
-            self._configure_model_transformer_state()
+            TransformerObservationCoordinator.configure_model_transformer_state(self)
 
             metadata = {
                 "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
@@ -245,12 +241,6 @@ class Wrapper_CityLearn(RLC):
             self._marker_registry_by_building = previous_transformer_state["marker_registry_by_building"]
             self.encoders = previous_transformer_state["encoders"]
             raise
-
-    def _clear_transformer_state(self) -> None:
-        TransformerObservationCoordinator.clear_transformer_state(self)
-
-    def _configure_model_transformer_state(self) -> None:
-        TransformerObservationCoordinator.configure_model_transformer_state(self)
 
     def _refresh_runtime_topology_views(self) -> None:
         """Refresh wrapper topology metadata from the live environment."""
@@ -303,8 +293,8 @@ class Wrapper_CityLearn(RLC):
             # Check for topology changes at episode start (Transformer agents only)
             if getattr(self, '_is_transformer_agent', False):
                 for building_idx in range(len(self.observation_names)):
-                    if self._check_topology_change(building_idx):
-                        self._handle_topology_change(building_idx)
+                    if TransformerObservationCoordinator.check_topology_change(self, building_idx):
+                        TransformerObservationCoordinator.handle_topology_change(self, building_idx)
             
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
@@ -336,8 +326,8 @@ class Wrapper_CityLearn(RLC):
                 # Check for topology changes (Transformer agents only)
                 if getattr(self, '_is_transformer_agent', False):
                     for building_idx in range(len(self.observation_names)):
-                        if self._check_topology_change(building_idx):
-                            self._handle_topology_change(building_idx)
+                        if TransformerObservationCoordinator.check_topology_change(self, building_idx):
+                            TransformerObservationCoordinator.handle_topology_change(self, building_idx)
 
                 # Update model if not in deterministic mode
                 if not deterministic:
@@ -568,7 +558,11 @@ class Wrapper_CityLearn(RLC):
 
         # Enrich observations for Transformer agents
         if getattr(self, '_is_transformer_agent', False):
-            observations = self._enrich_observation_values(index, observations)
+            observations = TransformerObservationCoordinator.enrich_observation_values(
+                self,
+                index,
+                observations,
+            )
 
         obs_array = np.array(observations, dtype=np.float64)  # Ensure numeric type
 
@@ -714,70 +708,3 @@ class Wrapper_CityLearn(RLC):
 
         logger.debug("Encoders initialised from external configuration")
         return encoders
-
-    def _rebuild_encoders_for_enriched_names(self, building_idx: int) -> None:
-        """Rebuild encoders for enriched names, including marker slots."""
-        TransformerObservationCoordinator.rebuild_encoders_for_enriched_names(self, building_idx)
-
-    def _setup_transformer_enrichers(self, tokenizer_config: Dict[str, Any]) -> None:
-        """Set up observation enrichers for Transformer agents.
-        
-        Called when the agent is a Transformer-based agent (e.g., AgentTransformerPPO).
-        Creates per-building enrichers that inject marker values into observations.
-        
-        Args:
-            tokenizer_config: Tokenizer configuration dict.
-        """
-        TransformerObservationCoordinator.setup_transformer_enrichers(self, tokenizer_config)
-            
-    def _enrich_observation_names(self, building_idx: int) -> None:
-        """Enrich observation names for a building (Transformer agents only).
-        
-        Called once per topology. Updates the enricher's cache and prepares
-        marker positions for value enrichment.
-        
-        Args:
-            building_idx: Index of the building.
-        """
-        TransformerObservationCoordinator.enrich_observation_names(self, building_idx)
-        
-    def _enrich_observation_values(
-        self, building_idx: int, raw_values: List[float]
-    ) -> List[float]:
-        """Enrich observation values with marker values (Transformer agents only).
-        
-        Args:
-            building_idx: Index of the building.
-            raw_values: Raw observation values from CityLearn.
-            
-        Returns:
-            Enriched values with markers inserted, or raw values if not Transformer.
-        """
-        return TransformerObservationCoordinator.enrich_observation_values(
-            self,
-            building_idx,
-            raw_values,
-        )
-        
-    def _check_topology_change(self, building_idx: int) -> bool:
-        """Check if topology changed for a building (Transformer agents only).
-        
-        Args:
-            building_idx: Index of the building.
-            
-        Returns:
-            True if topology changed, False otherwise.
-        """
-        return TransformerObservationCoordinator.check_topology_change(self, building_idx)
-
-    def _handle_topology_change(self, building_idx: int) -> None:
-        """Handle topology change for a building (Transformer agents only).
-        
-        1. Re-enrich names with new topology
-        2. Rebuild encoders
-        3. Notify agent
-        
-        Args:
-            building_idx: Index of the building.
-        """
-        TransformerObservationCoordinator.handle_topology_change(self, building_idx)

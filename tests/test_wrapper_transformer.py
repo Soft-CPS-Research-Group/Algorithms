@@ -893,7 +893,9 @@ class TestWrapperTopologyChange:
             },
         )()
 
-        wrapper._handle_topology_change(0)
+        from utils.wrapper_transformer import TransformerObservationCoordinator
+
+        TransformerObservationCoordinator.handle_topology_change(wrapper, 0)
 
         assert len(wrapper.encoders[0]) == len(wrapper._enriched_observation_names[0])
         encoded = wrapper.get_encoded_observations(0, [0.4, 0.7, 150.0, 7.0])
@@ -913,7 +915,7 @@ class TestWrapperObservationProcessingFlow:
     def test_wrapper_enriches_observations_during_processing(self) -> None:
         """Wrapper should call enricher during observation processing."""
         from algorithms.utils.observation_enricher import ObservationEnricher
-        from utils.wrapper_citylearn import Wrapper_CityLearn
+        from utils.wrapper_transformer import TransformerObservationCoordinator
         from unittest.mock import MagicMock
         
         tokenizer_config = {
@@ -937,7 +939,7 @@ class TestWrapperObservationProcessingFlow:
         }
         
         # Create wrapper with enricher
-        wrapper = MagicMock(spec=Wrapper_CityLearn)
+        wrapper = MagicMock()
         wrapper._is_transformer_agent = True
         wrapper._enrichers = [ObservationEnricher(tokenizer_config)]
         wrapper.observation_names = [["electrical_storage_soc", "non_shiftable_load", "month"]]
@@ -949,11 +951,12 @@ class TestWrapperObservationProcessingFlow:
             wrapper.action_names[0]
         )
         
-        # Call the actual method
-        wrapper._enrich_observation_values = Wrapper_CityLearn._enrich_observation_values.__get__(wrapper)
-        
         raw_values = [0.5, 100.0, 6.0]
-        enriched_values = wrapper._enrich_observation_values(0, raw_values)
+        enriched_values = TransformerObservationCoordinator.enrich_observation_values(
+            wrapper,
+            0,
+            raw_values,
+        )
         marker_values = tokenizer_config["marker_values"]
         expected_markers = (
             float(marker_values["ca_base"] + 1),
