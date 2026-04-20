@@ -123,7 +123,13 @@ class Wrapper_CityLearn(RLC):
         """
         super().__init__(env, **kwargs)
         self.model = model
-        TransformerObservationCoordinator.configure_model_transformer_state(self)
+        
+        # Initialize transformer state attributes
+        self._is_transformer_agent = False
+        self._enrichers = []
+        self._tokenizer_config = None
+        self._enriched_observation_names = {}
+        self._marker_registry_by_building = {}
         
         self.job_id = job_id
         self.initial_exploration_done = False
@@ -187,6 +193,10 @@ class Wrapper_CityLearn(RLC):
         if not hasattr(self, "encoders") or not getattr(self, "encoders"):
             self.encoders = self.set_encoders()
 
+        # Configure transformer state if model is provided at construction time
+        if self.model is not None:
+            TransformerObservationCoordinator.configure_model_transformer_state(self)
+
     @staticmethod
     def _coerce_positive_int(value) -> Optional[int]:
         try:
@@ -203,44 +213,26 @@ class Wrapper_CityLearn(RLC):
 
     def set_model(self, model: BaseAgent):
         """
-        Set the model after initialization.
+        Set the model after initialization and configure transformer state if applicable.
         """
-        previous_model = self.model
-        previous_transformer_state = {
-            "is_transformer_agent": getattr(self, "_is_transformer_agent", False),
-            "enrichers": list(getattr(self, "_enrichers", [])),
-            "tokenizer_config": getattr(self, "_tokenizer_config", None),
-            "enriched_observation_names": dict(getattr(self, "_enriched_observation_names", {})),
-            "marker_registry_by_building": dict(getattr(self, "_marker_registry_by_building", {})),
-            "encoders": [list(group) for group in getattr(self, "encoders", [])],
+        self.model = model
+        logger.info("Setting model: {}", type(model).__name__)
+        TransformerObservationCoordinator.configure_model_transformer_state(self)
+
+        metadata = {
+            "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
+            "building_names": getattr(self.env, "building_names", None),
         }
-
-        try:
-            self.model = model
-            TransformerObservationCoordinator.configure_model_transformer_state(self)
-
-            metadata = {
-                "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
-                "building_names": getattr(self.env, "building_names", None),
-            }
-            attach_environment = getattr(self.model, "attach_environment", None)
-            if callable(attach_environment):
-                attach_environment(
-                    observation_names=self.observation_names,
-                    action_names=self.action_names,
-                    action_space=self.action_space,
-                    observation_space=self.observation_space,
-                    metadata=metadata,
-                )
-        except Exception:
-            self.model = previous_model
-            self._is_transformer_agent = previous_transformer_state["is_transformer_agent"]
-            self._enrichers = previous_transformer_state["enrichers"]
-            self._tokenizer_config = previous_transformer_state["tokenizer_config"]
-            self._enriched_observation_names = previous_transformer_state["enriched_observation_names"]
-            self._marker_registry_by_building = previous_transformer_state["marker_registry_by_building"]
-            self.encoders = previous_transformer_state["encoders"]
-            raise
+        attach_environment = getattr(self.model, "attach_environment", None)
+        if callable(attach_environment):
+            attach_environment(
+                observation_names=self.observation_names,
+                action_names=self.action_names,
+                action_space=self.action_space,
+                observation_space=self.observation_space,
+                metadata=metadata,
+            )
+            logger.debug("Called attach_environment on model.")
 
     def _refresh_runtime_topology_views(self) -> None:
         """Refresh wrapper topology metadata from the live environment."""
