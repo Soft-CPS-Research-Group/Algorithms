@@ -570,6 +570,67 @@ class TestWrapperEnricherSetup:
         assert call["observation_space"] == wrapper.observation_space
         assert set(call["metadata"].keys()) == {"seconds_per_time_step", "building_names"}
 
+    def test_set_model_syncs_marker_registry_when_supported(self) -> None:
+        """set_model should pass marker registry metadata to Transformer-capable models."""
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+
+        tokenizer_config = {
+            "marker_values": {"ca_base": 1000, "sro_base": 2000, "nfc": 3001},
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                }
+            },
+            "sro_types": {
+                "temporal": {"features": ["month"], "input_dim": 2},
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+        class FakeTransformerModel:
+            is_transformer_agent = True
+            tokenizer_config: Dict[str, Any] = {}
+
+            def __init__(self):
+                self.marker_registry_calls = []
+
+            def attach_environment(self, **kwargs):
+                return None
+
+            def update_marker_registry(self, building_idx, marker_registry):
+                self.marker_registry_calls.append((building_idx, dict(marker_registry)))
+
+        FakeTransformerModel.tokenizer_config = tokenizer_config
+
+        wrapper = Wrapper_CityLearn(
+            env=self._MinimalEnv(),
+            model=None,
+            config={
+                "training": {},
+                "simulator": {},
+                "checkpointing": {},
+                "tracking": {},
+                "runtime": {},
+            },
+            job_id="test",
+        )
+
+        model = FakeTransformerModel()
+        wrapper.set_model(model)
+
+        assert model.marker_registry_calls
+        building_idx, marker_registry = model.marker_registry_calls[-1]
+        assert building_idx == 0
+        assert 1001.0 in marker_registry
+        assert marker_registry[1001.0] == ("ca", "battery", None)
+
     def test_set_model_rolls_back_when_attach_environment_raises(self) -> None:
         """set_model should be atomic when attach_environment fails."""
         from utils.wrapper_citylearn import Wrapper_CityLearn

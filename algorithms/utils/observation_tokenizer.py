@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+from loguru import logger
 
 
 @dataclass
@@ -35,6 +36,24 @@ class TokenizedObservation:
     nfc_token: torch.Tensor
     ca_types: List[str]
     n_ca: int
+
+
+MarkerTypeInfo = Tuple[str, str, Optional[str]]
+
+
+def _lookup_marker_type(
+    marker_registry: Dict[float, MarkerTypeInfo],
+    marker_value: float,
+) -> Optional[MarkerTypeInfo]:
+    """Lookup marker type metadata with light tolerance for numeric keys."""
+    if marker_value in marker_registry:
+        return marker_registry[marker_value]
+
+    rounded_marker = float(int(round(marker_value)))
+    if rounded_marker in marker_registry:
+        return marker_registry[rounded_marker]
+
+    return None
 
 
 def _find_marker_positions(
@@ -225,11 +244,33 @@ class ObservationTokenizer(nn.Module):
             input_dim = spec.get("input_dim", 1)
             self._sro_dim_to_type[input_dim] = sro_type
 
-    def forward(self, encoded_obs: torch.Tensor) -> TokenizedObservation:
+        # Warning deduplication caches for noisy per-step mismatches.
+        self._warned_ca_dim_mismatch: set[Tuple[str, int, int]] = set()
+        self._warned_ca_fallback: set[int] = set()
+        self._warned_sro_dim_mismatch: set[Tuple[str, int, int]] = set()
+        self._warned_sro_skip: set[int] = set()
+        self._warned_nfc_truncation: set[Tuple[int, int]] = set()
+
+        logger.info(
+            "Initialized ObservationTokenizer (d_model={}, CA types={}, SRO types={}, nfc_input_dim={})",
+            d_model,
+            len(self._ca_type_order),
+            len(self._sro_type_order),
+            nfc_input_dim,
+        )
+
+    def forward(
+        self,
+        encoded_obs: torch.Tensor,
+        marker_registry: Optional[Dict[float, MarkerTypeInfo]] = None,
+    ) -> TokenizedObservation:
         """Tokenize encoded observations.
 
         Args:
             encoded_obs: [batch, obs_dim] flat encoded observation with markers.
+            marker_registry: Optional mapping marker value -> (family, type_name, device_id).
+                When provided, projection type selection uses explicit marker metadata
+                rather than relying only on group feature count.
 
         Returns:
             TokenizedObservation with ca_tokens, sro_tokens, nfc_token, metadata.
@@ -242,10 +283,23 @@ class ObservationTokenizer(nn.Module):
             encoded_obs, self.ca_base, self.sro_base, self.nfc_marker
         )
 
+        if not any(ca_positions):
+            logger.warning("ObservationTokenizer did not find CA markers in current batch.")
+
         # Extract groups
         ca_groups, sro_groups, nfc_groups = _extract_groups(
             encoded_obs, ca_positions, sro_positions, nfc_positions
         )
+
+        resolved_registry = marker_registry or {}
+        ca_marker_values = [
+            [float(encoded_obs[b, pos].item()) for pos in ca_positions[b]]
+            for b in range(batch_size)
+        ]
+        sro_marker_values = [
+            [float(encoded_obs[b, pos].item()) for pos in sro_positions[b]]
+            for b in range(batch_size)
+        ]
 
         # Project CA groups
         all_ca_tokens: List[torch.Tensor] = []
@@ -253,13 +307,54 @@ class ObservationTokenizer(nn.Module):
 
         for b in range(batch_size):
             batch_ca_tokens: List[torch.Tensor] = []
-            for features in ca_groups[b]:
-                # Infer type from feature count
-                feature_count = features.shape[0]
-                ca_type = self._ca_dim_to_type.get(feature_count)
+            for ca_idx, features in enumerate(ca_groups[b]):
+                feature_count = int(features.shape[0])
+                marker_value: Optional[float] = None
+                if ca_idx < len(ca_marker_values[b]):
+                    marker_value = ca_marker_values[b][ca_idx]
+
+                ca_type: Optional[str] = None
+                if marker_value is not None and resolved_registry:
+                    marker_info = _lookup_marker_type(resolved_registry, marker_value)
+                    if marker_info is not None:
+                        family, type_name, _ = marker_info
+                        if family == "ca" and type_name in self.ca_projections:
+                            ca_type = type_name
+
+                if ca_type is None:
+                    ca_type = self._ca_dim_to_type.get(feature_count)
 
                 if ca_type is not None and ca_type in self.ca_projections:
                     projection = self.ca_projections[ca_type]
+                    expected_dim = int(projection.in_features)
+                    if feature_count < expected_dim:
+                        mismatch_key = (ca_type, feature_count, expected_dim)
+                        if mismatch_key not in self._warned_ca_dim_mismatch:
+                            logger.warning(
+                                "CA token '{}' feature size {} is smaller than configured input_dim {}. "
+                                "Padding with zeros.",
+                                ca_type,
+                                feature_count,
+                                expected_dim,
+                            )
+                            self._warned_ca_dim_mismatch.add(mismatch_key)
+                        features = torch.cat([
+                            features,
+                            torch.zeros(expected_dim - feature_count, device=device)
+                        ])
+                    elif feature_count > expected_dim:
+                        mismatch_key = (ca_type, feature_count, expected_dim)
+                        if mismatch_key not in self._warned_ca_dim_mismatch:
+                            logger.warning(
+                                "CA token '{}' feature size {} exceeds configured input_dim {}. "
+                                "Truncating trailing values.",
+                                ca_type,
+                                feature_count,
+                                expected_dim,
+                            )
+                            self._warned_ca_dim_mismatch.add(mismatch_key)
+                        features = features[:expected_dim]
+
                     token = projection(features.unsqueeze(0))  # [1, d_model]
                     batch_ca_tokens.append(token)
                     if b == 0:  # Only collect types once
@@ -268,6 +363,13 @@ class ObservationTokenizer(nn.Module):
                     # Unknown type - use first available projection as fallback
                     if self._ca_type_order:
                         fallback_type = self._ca_type_order[0]
+                        if feature_count not in self._warned_ca_fallback:
+                            logger.warning(
+                                "Unknown CA token feature size {}. Falling back to '{}' projection.",
+                                feature_count,
+                                fallback_type,
+                            )
+                            self._warned_ca_fallback.add(feature_count)
                         # Pad or truncate features to match expected dim
                         expected_dim = self.ca_projections[fallback_type].in_features
                         if feature_count < expected_dim:
@@ -298,14 +400,63 @@ class ObservationTokenizer(nn.Module):
         all_sro_tokens: List[torch.Tensor] = []
         for b in range(batch_size):
             batch_sro_tokens: List[torch.Tensor] = []
-            for features in sro_groups[b]:
-                feature_count = features.shape[0]
-                sro_type = self._sro_dim_to_type.get(feature_count)
+            for sro_idx, features in enumerate(sro_groups[b]):
+                feature_count = int(features.shape[0])
+                marker_value: Optional[float] = None
+                if sro_idx < len(sro_marker_values[b]):
+                    marker_value = sro_marker_values[b][sro_idx]
+
+                sro_type: Optional[str] = None
+                if marker_value is not None and resolved_registry:
+                    marker_info = _lookup_marker_type(resolved_registry, marker_value)
+                    if marker_info is not None:
+                        family, type_name, _ = marker_info
+                        if family == "sro" and type_name in self.sro_projections:
+                            sro_type = type_name
+
+                if sro_type is None:
+                    sro_type = self._sro_dim_to_type.get(feature_count)
 
                 if sro_type is not None and sro_type in self.sro_projections:
                     projection = self.sro_projections[sro_type]
+                    expected_dim = int(projection.in_features)
+                    if feature_count < expected_dim:
+                        mismatch_key = (sro_type, feature_count, expected_dim)
+                        if mismatch_key not in self._warned_sro_dim_mismatch:
+                            logger.warning(
+                                "SRO token '{}' feature size {} is smaller than configured input_dim {}. "
+                                "Padding with zeros.",
+                                sro_type,
+                                feature_count,
+                                expected_dim,
+                            )
+                            self._warned_sro_dim_mismatch.add(mismatch_key)
+                        features = torch.cat([
+                            features,
+                            torch.zeros(expected_dim - feature_count, device=device)
+                        ])
+                    elif feature_count > expected_dim:
+                        mismatch_key = (sro_type, feature_count, expected_dim)
+                        if mismatch_key not in self._warned_sro_dim_mismatch:
+                            logger.warning(
+                                "SRO token '{}' feature size {} exceeds configured input_dim {}. "
+                                "Truncating trailing values.",
+                                sro_type,
+                                feature_count,
+                                expected_dim,
+                            )
+                            self._warned_sro_dim_mismatch.add(mismatch_key)
+                        features = features[:expected_dim]
+
                     token = projection(features.unsqueeze(0))
                     batch_sro_tokens.append(token)
+                else:
+                    if feature_count not in self._warned_sro_skip:
+                        logger.warning(
+                            "Skipping SRO token with unsupported feature size {}.",
+                            feature_count,
+                        )
+                        self._warned_sro_skip.add(feature_count)
 
             if batch_sro_tokens:
                 all_sro_tokens.append(torch.cat(batch_sro_tokens, dim=0))
@@ -321,9 +472,29 @@ class ObservationTokenizer(nn.Module):
         # Project NFC group
         if self.nfc_projection is not None and any(g.numel() > 0 for g in nfc_groups):
             nfc_tokens_list = []
+            expected_nfc_dim = self.nfc_projection.in_features
             for b in range(batch_size):
                 if nfc_groups[b].numel() > 0:
-                    nfc_token = self.nfc_projection(nfc_groups[b].unsqueeze(0))
+                    nfc_features = nfc_groups[b]
+                    feature_count = nfc_features.shape[0]
+                    if feature_count < expected_nfc_dim:
+                        nfc_features = torch.cat([
+                            nfc_features,
+                            torch.zeros(expected_nfc_dim - feature_count, device=device),
+                        ])
+                    elif feature_count > expected_nfc_dim:
+                        truncation_key = (feature_count, expected_nfc_dim)
+                        if truncation_key not in self._warned_nfc_truncation:
+                            logger.warning(
+                                "NFC token feature size {} exceeds configured input_dim {}. "
+                                "Truncating trailing values.",
+                                feature_count,
+                                expected_nfc_dim,
+                            )
+                            self._warned_nfc_truncation.add(truncation_key)
+                        nfc_features = nfc_features[:expected_nfc_dim]
+
+                    nfc_token = self.nfc_projection(nfc_features.unsqueeze(0))
                 else:
                     nfc_token = torch.zeros(1, self.d_model, device=device)
                 nfc_tokens_list.append(nfc_token)

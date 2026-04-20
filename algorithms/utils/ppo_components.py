@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from loguru import logger
 from torch.distributions import Normal
 
 
@@ -47,6 +48,12 @@ class ActorHead(nn.Module):
 
         # Learnable log standard deviation (shared across all CAs)
         self.log_std = nn.Parameter(torch.tensor(log_std_init))
+        logger.info(
+            "Initialized ActorHead (d_model={}, hidden_dim={}, log_std_init={})",
+            d_model,
+            hidden_dim,
+            log_std_init,
+        )
 
     def forward(
         self,
@@ -119,6 +126,7 @@ class CriticHead(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_dim, 1),
         )
+        logger.info("Initialized CriticHead (d_model={}, hidden_dim={})", d_model, hidden_dim)
 
     def forward(self, pooled: torch.Tensor) -> torch.Tensor:
         """Produce state value from pooled embedding.
@@ -169,6 +177,7 @@ class RolloutBuffer:
 
         self.advantages: Optional[torch.Tensor] = None
         self.returns: Optional[torch.Tensor] = None
+        logger.debug("Initialized RolloutBuffer (gamma={}, gae_lambda={})", gamma, gae_lambda)
 
     def add(
         self,
@@ -195,6 +204,7 @@ class RolloutBuffer:
         self.rewards.append(reward)
         self.values.append(value.detach())
         self.dones.append(done)
+        logger.debug("Added transition to RolloutBuffer (size={})", len(self.observations))
 
     def compute_returns_and_advantages(self, last_value: torch.Tensor) -> None:
         """Compute GAE advantages and discounted returns.
@@ -226,6 +236,7 @@ class RolloutBuffer:
 
         self.advantages = advantages
         self.returns = returns
+        logger.debug("Computed rollout returns/advantages for {} transition(s)", n)
 
     def get_batches(self, batch_size: int) -> Iterator[Batch]:
         """Yield minibatches for PPO update.
@@ -265,6 +276,7 @@ class RolloutBuffer:
         self.dones.clear()
         self.advantages = None
         self.returns = None
+        logger.debug("Cleared RolloutBuffer")
 
     def __len__(self) -> int:
         """Return number of stored transitions."""
@@ -321,5 +333,12 @@ def compute_ppo_loss(
         "value_loss": value_loss.item(),
         "entropy": entropy.item(),
     }
+
+    logger.debug(
+        "Computed PPO loss (policy_loss={:.6f}, value_loss={:.6f}, entropy={:.6f})",
+        metrics["policy_loss"],
+        metrics["value_loss"],
+        metrics["entropy"],
+    )
 
     return total_loss, metrics

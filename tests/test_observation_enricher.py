@@ -133,6 +133,15 @@ class TestFeatureMatching:
             ["electric_vehicle", "charger"]
         )
 
+    def test_feature_matches_pattern_with_inserted_device_tokens(self) -> None:
+        """Feature matching should tolerate inserted device-id tokens."""
+        from algorithms.utils.observation_enricher import _feature_matches_patterns
+
+        assert _feature_matches_patterns(
+            "connected_electric_vehicle_at_charger_charger_1_1_required_soc_departure",
+            ["connected_electric_vehicle_at_charger_required_soc_departure"],
+        )
+
     def test_feature_no_match(self) -> None:
         """Feature doesn't match if no pattern is substring."""
         from algorithms.utils.observation_enricher import _feature_matches_patterns
@@ -410,8 +419,28 @@ class TestObservationEnricherEnrichNames:
         
         result1 = enricher.enrich_names(observation_names, action_names)
         result2 = enricher.enrich_names(observation_names, action_names)
-        
+
         assert result1 is result2  # Same object (cached)
+
+    def test_enrich_names_places_unclassified_before_markers(
+        self,
+        sample_tokenizer_config: Dict[str, Any],
+    ) -> None:
+        """Unclassified features should be kept outside tokenized marker groups."""
+        enricher = ObservationEnricher(sample_tokenizer_config)
+
+        observation_names = [
+            "unknown_feature",
+            "month",
+            "electrical_storage_soc",
+            "non_shiftable_load",
+        ]
+        action_names = ["electrical_storage"]
+
+        result = enricher.enrich_names(observation_names, action_names)
+
+        assert result.enriched_names[0] == "unknown_feature"
+        assert "__marker_1001__" in result.enriched_names
 
 
 class TestObservationEnricherEnrichValues:
@@ -695,4 +724,3 @@ class TestEnricherIntegration:
         assert 1001.0 in enriched_values
         assert 2001.0 in enriched_values
         assert 3001.0 in enriched_values
-

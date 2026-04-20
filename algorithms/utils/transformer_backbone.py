@@ -12,6 +12,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from loguru import logger
 
 
 @dataclass
@@ -73,6 +74,14 @@ class TransformerBackbone(nn.Module):
             norm_first=True,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        logger.info(
+            "Initialized TransformerBackbone (d_model={}, nhead={}, layers={}, ff_dim={}, dropout={})",
+            d_model,
+            nhead,
+            num_layers,
+            dim_feedforward,
+            dropout,
+        )
 
     def forward(
         self,

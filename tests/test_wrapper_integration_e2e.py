@@ -226,7 +226,8 @@ class TestWrapperAgentIntegration:
         assert any(np.isclose(captured_predict_input[0], 3001.0))
 
         assert len(actions) == 1
-        assert actions[0].shape[-1] == 1
+        assert actions[0].ndim == 1
+        assert actions[0].shape[0] == 1
         assert (actions[0] >= -1.0).all()
         assert (actions[0] <= 1.0).all()
 
@@ -256,7 +257,8 @@ class TestWrapperAgentIntegration:
         actions = agent.predict([enriched_obs], deterministic=True)
         
         assert len(actions) == 1
-        assert actions[0].shape[-1] == 1  # One action per CA
+        assert actions[0].ndim == 1
+        assert actions[0].shape[0] == 1  # One action for one CA
         assert (actions[0] >= -1.0).all()
         assert (actions[0] <= 1.0).all()
 

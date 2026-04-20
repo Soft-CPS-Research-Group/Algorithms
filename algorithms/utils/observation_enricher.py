@@ -9,9 +9,13 @@ wrapper and the production inference preprocessor.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -108,9 +112,29 @@ def _feature_matches_patterns(feature_name: str, patterns: List[str]) -> bool:
         patterns: List of pattern substrings to match against.
 
     Returns:
-        True if any pattern is a substring of feature_name.
+        True if any pattern is a substring of feature_name, or if all pattern
+        tokens appear in order in feature_name tokens (allowing inserted
+        device-id tokens such as ``charger_1_1``).
     """
-    return any(pattern in feature_name for pattern in patterns)
+    feature_tokens = [token for token in feature_name.split("_") if token]
+
+    for pattern in patterns:
+        if pattern in feature_name:
+            return True
+
+        pattern_tokens = [token for token in pattern.split("_") if token]
+        if not pattern_tokens:
+            continue
+
+        # Ordered-subsequence match to tolerate injected identifiers in names.
+        token_idx = 0
+        for feature_token in feature_tokens:
+            if feature_token == pattern_tokens[token_idx]:
+                token_idx += 1
+                if token_idx == len(pattern_tokens):
+                    return True
+
+    return False
 
 
 def _contains_device_id(feature_name: str, device_id: str) -> bool:
@@ -218,6 +242,12 @@ class ObservationEnricher:
         self._insertion_positions: List[int] = []
         self._marker_values_list: List[float] = []
 
+        logger.debug(
+            "ObservationEnricher initialized with %d CA type(s), %d SRO type(s).",
+            len(self._ca_config),
+            len(self._sro_config),
+        )
+
     def enrich_names(
         self,
         observation_names: List[str],
@@ -237,7 +267,14 @@ class ObservationEnricher:
         # Check cache
         cache_key = (tuple(observation_names), tuple(action_names))
         if cache_key == self._cache_key and self._cached_result is not None:
+            logger.debug("ObservationEnricher cache hit for current topology.")
             return self._cached_result
+
+        logger.debug(
+            "Enriching observations for topology (observations=%d, actions=%d).",
+            len(observation_names),
+            len(action_names),
+        )
 
         # Extract device IDs from action names
         device_ids_by_type = _extract_device_ids(action_names, self._ca_config)
@@ -298,6 +335,17 @@ class ObservationEnricher:
 
         ca_groups.sort(key=ca_sort_key)
 
+        # Add unclassified features before any marker.
+        # Keeping unmatched fields before the first marker guarantees they
+        # remain in the encoded observation while staying outside token groups.
+        if unclassified:
+            enriched_names.extend(unclassified)
+            logger.warning(
+                "ObservationEnricher found %d unclassified feature(s): %s",
+                len(unclassified),
+                ", ".join(unclassified),
+            )
+
         # Add CA groups
         for (family, type_name, device_id), features in ca_groups:
             marker_value = ca_base + ca_counter
@@ -346,8 +394,12 @@ class ObservationEnricher:
             
             enriched_names.extend(features)
 
-        # Add unclassified features at the end (no marker)
-        enriched_names.extend(unclassified)
+        logger.debug(
+            "Observation enrichment complete (raw=%d, enriched=%d, markers=%d).",
+            len(observation_names),
+            len(enriched_names),
+            len(marker_values_list),
+        )
 
         # Cache result
         result = EnrichmentResult(
@@ -396,6 +448,12 @@ class ObservationEnricher:
                 # Regular feature - look up value by name
                 enriched_values.append(value_map[name])
 
+        logger.debug(
+            "Enriched observation values (raw=%d, enriched=%d).",
+            len(observation_values),
+            len(enriched_values),
+        )
+
         return enriched_values
 
     def topology_changed(
@@ -414,7 +472,15 @@ class ObservationEnricher:
             False if topology matches cached state.
         """
         if self._cache_key is None:
+            logger.debug("Topology check reports changed because cache is empty.")
             return True
 
         current_key = (tuple(observation_names), tuple(action_names))
-        return current_key != self._cache_key
+        changed = current_key != self._cache_key
+        if changed:
+            logger.info(
+                "Topology change detected (observations=%d, actions=%d).",
+                len(observation_names),
+                len(action_names),
+            )
+        return changed

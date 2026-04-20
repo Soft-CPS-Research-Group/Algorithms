@@ -16,14 +16,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from loguru import logger
 
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.constants import DEFAULT_ONNX_OPSET
 from algorithms.utils.observation_tokenizer import ObservationTokenizer
 from algorithms.utils.transformer_backbone import TransformerBackbone
 from algorithms.utils.ppo_components import (
@@ -32,6 +34,49 @@ from algorithms.utils.ppo_components import (
     RolloutBuffer,
     compute_ppo_loss,
 )
+
+
+class _DeterministicActorExport(nn.Module):
+    """Minimal export wrapper for deterministic actor inference."""
+
+    def __init__(self, actor: ActorHead) -> None:
+        super().__init__()
+        self.actor = actor
+
+    def forward(self, ca_embeddings: torch.Tensor) -> torch.Tensor:
+        means = self.actor.mlp(ca_embeddings)
+        return torch.tanh(means)
+
+
+class _DeterministicPolicyExport(nn.Module):
+    """End-to-end deterministic policy export module.
+
+    Input is an encoded observation tensor containing marker values.
+    Output is deterministic actions in [-1, 1].
+    """
+
+    def __init__(
+        self,
+        tokenizer: ObservationTokenizer,
+        backbone: TransformerBackbone,
+        actor: ActorHead,
+        marker_registry: Optional[Dict[float, tuple[str, str, Optional[str]]]] = None,
+    ) -> None:
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.backbone = backbone
+        self.actor = actor
+        self.marker_registry = marker_registry or {}
+
+    def forward(self, encoded_obs: torch.Tensor) -> torch.Tensor:
+        tokenized = self.tokenizer(encoded_obs, marker_registry=self.marker_registry)
+        backbone_out = self.backbone(
+            tokenized.ca_tokens,
+            tokenized.sro_tokens,
+            tokenized.nfc_token,
+        )
+        means = self.actor.mlp(backbone_out.ca_embeddings)
+        return torch.tanh(means)
 
 
 class AgentTransformerPPO(BaseAgent):
@@ -123,6 +168,15 @@ class AgentTransformerPPO(BaseAgent):
         self._last_log_probs: List[Optional[torch.Tensor]] = []
         self._last_obs: List[Optional[torch.Tensor]] = []
         self._last_actions: List[Optional[torch.Tensor]] = []
+        self._marker_registry_by_building: List[Dict[float, tuple[str, str, Optional[str]]]] = []
+
+        logger.info(
+            "Initialized AgentTransformerPPO (d_model={}, nhead={}, layers={}, device={})",
+            self.d_model,
+            self.nhead,
+            self.num_layers,
+            self.device,
+        )
 
     def _move_to_device(self) -> None:
         """Move all modules to the configured device."""
@@ -130,6 +184,178 @@ class AgentTransformerPPO(BaseAgent):
         self.backbone.to(self.device)
         self.actor.to(self.device)
         self.critic.to(self.device)
+        logger.debug("Moved TransformerPPO modules to device {}", self.device)
+
+    def _as_done_flags(
+        self,
+        value: bool | List[bool] | np.ndarray,
+        *,
+        name: str,
+    ) -> List[bool]:
+        """Normalize done-like values to one boolean flag per building."""
+        if isinstance(value, np.ndarray):
+            value = value.tolist()
+
+        if isinstance(value, list):
+            if len(value) != self._num_buildings:
+                logger.warning(
+                    "{} length ({}) does not match number of buildings ({}); "
+                    "broadcasting best-effort.",
+                    name,
+                    len(value),
+                    self._num_buildings,
+                )
+                if not value:
+                    return [False] * self._num_buildings
+                return [bool(value[min(i, len(value) - 1)]) for i in range(self._num_buildings)]
+            return [bool(v) for v in value]
+
+        return [bool(value)] * self._num_buildings
+
+    def _build_export_dummy_observation(self, agent_index: int) -> torch.Tensor:
+        """Build a safe dummy encoded observation for ONNX export."""
+        if (
+            0 <= agent_index < len(self._last_obs)
+            and self._last_obs[agent_index] is not None
+        ):
+            cached = self._last_obs[agent_index].detach().to(self.device)
+            if cached.ndim == 1:
+                return cached.unsqueeze(0)
+            if cached.ndim == 2:
+                return cached[:1]
+
+        marker_values = self.tokenizer_config.get("marker_values", {})
+        ca_base = float(marker_values.get("ca_base", 1000))
+        sro_base = float(marker_values.get("sro_base", 2000))
+        nfc_marker = float(marker_values.get("nfc", 3001))
+
+        values: List[float] = []
+
+        # Include one CA token using the first configured CA type.
+        ca_types = self.tokenizer_config.get("ca_types", {})
+        if ca_types:
+            first_ca_spec = next(iter(ca_types.values()))
+            ca_dim = int(first_ca_spec.get("input_dim", 1))
+            values.append(ca_base + 1.0)
+            values.extend([0.0] * max(ca_dim, 0))
+
+        # Include all configured SRO tokens in order.
+        sro_types = self.tokenizer_config.get("sro_types", {})
+        for idx, spec in enumerate(sro_types.values(), start=1):
+            sro_dim = int(spec.get("input_dim", 0))
+            if sro_dim <= 0:
+                continue
+            values.append(sro_base + float(idx))
+            values.extend([0.0] * sro_dim)
+
+        # Include NFC token if configured.
+        nfc_dim = int((self.tokenizer_config.get("nfc", {}) or {}).get("input_dim", 0))
+        if nfc_dim > 0:
+            values.append(nfc_marker)
+            values.extend([0.0] * nfc_dim)
+
+        if not values:
+            # Defensive fallback in degenerate configs.
+            values = [ca_base + 1.0, 0.0]
+
+        return torch.tensor([values], dtype=torch.float32, device=self.device)
+
+    def _export_end_to_end_onnx(self, export_root: Path) -> List[Dict[str, Any]]:
+        """Export end-to-end deterministic policy ONNX per building."""
+        num_exports = max(self._num_buildings, 1)
+        onnx_dir = export_root / "onnx_models"
+        onnx_dir.mkdir(parents=True, exist_ok=True)
+
+        artifacts: List[Dict[str, Any]] = []
+
+        for agent_index in range(num_exports):
+            dummy_obs = self._build_export_dummy_observation(agent_index)
+            export_path = onnx_dir / f"agent_{agent_index}.onnx"
+            export_module = _DeterministicPolicyExport(
+                tokenizer=self.tokenizer,
+                backbone=self.backbone,
+                actor=self.actor,
+                marker_registry=self._marker_registry_for_building(agent_index),
+            ).to(self.device)
+            export_module.eval()
+
+            try:
+                previous_fastpath = torch.backends.mha.get_fastpath_enabled()
+                torch.backends.mha.set_fastpath_enabled(False)
+                try:
+                    with torch.no_grad():
+                        torch.onnx.export(
+                            export_module,
+                            dummy_obs,
+                            str(export_path),
+                            export_params=True,
+                            opset_version=max(DEFAULT_ONNX_OPSET, 17),
+                            do_constant_folding=True,
+                            input_names=[f"observation_agent_{agent_index}"],
+                            output_names=[f"action_agent_{agent_index}"],
+                            dynamic_axes={
+                                f"observation_agent_{agent_index}": {0: "batch_size"},
+                                f"action_agent_{agent_index}": {0: "batch_size", 1: "n_ca"},
+                            },
+                        )
+                finally:
+                    torch.backends.mha.set_fastpath_enabled(previous_fastpath)
+
+                logger.info(
+                    "Exported end-to-end TransformerPPO ONNX for agent {} at {}",
+                    agent_index,
+                    export_path,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "End-to-end ONNX export failed for agent {} ({}); "
+                    "falling back to actor-only ONNX export.",
+                    agent_index,
+                    exc,
+                )
+                try:
+                    actor_fallback = _DeterministicActorExport(self.actor).to(self.device).eval()
+                    dummy_ca_embeddings = torch.randn(1, 1, self.d_model, device=self.device)
+                    with torch.no_grad():
+                        torch.onnx.export(
+                            actor_fallback,
+                            dummy_ca_embeddings,
+                            str(export_path),
+                            export_params=True,
+                            opset_version=DEFAULT_ONNX_OPSET,
+                            do_constant_folding=True,
+                            input_names=[f"ca_embeddings_agent_{agent_index}"],
+                            output_names=[f"action_agent_{agent_index}"],
+                            dynamic_axes={
+                                f"ca_embeddings_agent_{agent_index}": {0: "batch_size", 1: "n_ca"},
+                                f"action_agent_{agent_index}": {0: "batch_size", 1: "n_ca"},
+                            },
+                        )
+                    logger.warning(
+                        "Exported actor-only fallback ONNX for agent {} at {}",
+                        agent_index,
+                        export_path,
+                    )
+                except Exception as fallback_exc:
+                    logger.error(
+                        "ONNX fallback export also failed for agent {} ({}).",
+                        agent_index,
+                        fallback_exc,
+                    )
+                    raise RuntimeError(
+                        f"Failed to export ONNX artifact for agent {agent_index}."
+                    ) from fallback_exc
+
+            artifacts.append(
+                {
+                    "agent_index": agent_index,
+                    "path": str(export_path.relative_to(export_root)),
+                    "format": "onnx",
+                    "config": {},
+                }
+            )
+
+        return artifacts
 
     def attach_environment(
         self,
@@ -166,6 +392,41 @@ class AgentTransformerPPO(BaseAgent):
         self._last_log_probs = [None] * self._num_buildings
         self._last_obs = [None] * self._num_buildings
         self._last_actions = [None] * self._num_buildings
+        previous_marker_registry = list(self._marker_registry_by_building)
+        self._marker_registry_by_building = [dict() for _ in range(self._num_buildings)]
+        for idx in range(min(len(previous_marker_registry), self._num_buildings)):
+            if previous_marker_registry[idx]:
+                self._marker_registry_by_building[idx] = dict(previous_marker_registry[idx])
+        logger.info(
+            "Attached environment metadata to TransformerPPO agent (buildings={})",
+            self._num_buildings,
+        )
+
+    def update_marker_registry(
+        self,
+        building_idx: int,
+        marker_registry: Dict[float, tuple[str, str, Optional[str]]],
+    ) -> None:
+        """Update marker-value registry for a building topology."""
+        if building_idx < 0:
+            return
+
+        if building_idx >= len(self._marker_registry_by_building):
+            self._marker_registry_by_building.extend(
+                {} for _ in range(building_idx + 1 - len(self._marker_registry_by_building))
+            )
+
+        self._marker_registry_by_building[building_idx] = dict(marker_registry)
+
+    def _marker_registry_for_building(
+        self,
+        building_idx: int,
+    ) -> Optional[Dict[float, tuple[str, str, Optional[str]]]]:
+        if 0 <= building_idx < len(self._marker_registry_by_building):
+            marker_registry = self._marker_registry_by_building[building_idx]
+            if marker_registry:
+                return marker_registry
+        return None
 
     def predict(
         self,
@@ -182,6 +443,12 @@ class AgentTransformerPPO(BaseAgent):
         Returns:
             List of action arrays per building.
         """
+        logger.debug(
+            "Predict called for {} building(s), deterministic={}",
+            len(observations),
+            deterministic,
+        )
+
         self.tokenizer.eval()
         self.backbone.eval()
         self.actor.eval()
@@ -198,7 +465,10 @@ class AgentTransformerPPO(BaseAgent):
                     obs_tensor = obs_tensor.unsqueeze(0)  # Add batch dim
                 
                 # Tokenize
-                tokenized = self.tokenizer(obs_tensor)
+                tokenized = self.tokenizer(
+                    obs_tensor,
+                    marker_registry=self._marker_registry_for_building(b_idx),
+                )
                 
                 # Transformer backbone
                 backbone_out = self.backbone(
@@ -224,9 +494,15 @@ class AgentTransformerPPO(BaseAgent):
                     self._last_actions[b_idx] = actions
                 
                 # Convert to numpy
-                actions_np = actions.squeeze(0).detach().cpu().numpy()  # Remove batch dim
+                actions_np = actions.squeeze(0).squeeze(-1).detach().cpu().numpy()  # [N_ca]
                 all_actions.append(actions_np)
-        
+
+                logger.debug(
+                    "Predicted action tensor for building {} with shape {}",
+                    b_idx,
+                    actions_np.shape,
+                )
+
         return all_actions
 
     def update(
@@ -235,8 +511,8 @@ class AgentTransformerPPO(BaseAgent):
         actions: List[np.ndarray],
         rewards: List[float],
         next_observations: List[np.ndarray],
-        terminated: List[bool],
-        truncated: List[bool],
+        terminated: bool | List[bool] | np.ndarray,
+        truncated: bool | List[bool] | np.ndarray,
         *,
         update_target_step: bool,
         global_learning_step: int,
@@ -253,8 +529,8 @@ class AgentTransformerPPO(BaseAgent):
             actions: Actions taken per building.
             rewards: Rewards received per building.
             next_observations: Next observations per building.
-            terminated: Episode termination flags per building.
-            truncated: Episode truncation flags per building.
+            terminated: Episode termination flag(s), scalar or per building.
+            truncated: Episode truncation flag(s), scalar or per building.
             update_target_step: Ignored (no target network in PPO).
             global_learning_step: Current learning step.
             update_step: Whether to perform PPO update.
@@ -264,13 +540,24 @@ class AgentTransformerPPO(BaseAgent):
             Metrics dict (empty if no update performed).
         """
         metrics: Dict[str, float] = {}
-        
+
         if not initial_exploration_done:
+            logger.debug(
+                "Skipping update at global step {} because initial exploration is not done.",
+                global_learning_step,
+            )
             return metrics
-        
+
+        terminated_flags = self._as_done_flags(terminated, name="terminated")
+        truncated_flags = self._as_done_flags(truncated, name="truncated")
+
         # Store transitions in buffers
         for b_idx in range(self._num_buildings):
             if self._last_values[b_idx] is None:
+                logger.debug(
+                    "Skipping transition storage for building {} because no cached value/log-prob is available.",
+                    b_idx,
+                )
                 continue
                 
             obs_tensor = torch.tensor(
@@ -283,8 +570,8 @@ class AgentTransformerPPO(BaseAgent):
                 actions[b_idx], dtype=torch.float32, device=self.device
             )
             
-            done = terminated[b_idx] or truncated[b_idx]
-            
+            done = terminated_flags[b_idx] or truncated_flags[b_idx]
+
             self.rollout_buffers[b_idx].add(
                 observation=obs_tensor.squeeze(0),
                 action=action_tensor.squeeze(0) if action_tensor.ndim > 1 else action_tensor,
@@ -293,9 +580,15 @@ class AgentTransformerPPO(BaseAgent):
                 value=self._last_values[b_idx].squeeze(),
                 done=done,
             )
-        
+
+            logger.debug(
+                "Stored transition for building {} (buffer size={})",
+                b_idx,
+                len(self.rollout_buffers[b_idx]),
+            )
+
         self._step_count += 1
-        
+
         # Perform PPO update if requested and buffer is ready
         if update_step:
             for b_idx in range(self._num_buildings):
@@ -304,7 +597,16 @@ class AgentTransformerPPO(BaseAgent):
                     update_metrics = self._ppo_update(b_idx, next_observations[b_idx])
                     for k, v in update_metrics.items():
                         metrics[f"building_{b_idx}/{k}"] = v
-        
+                else:
+                    logger.debug(
+                        "Skipping PPO update for building {} (buffer size={} < minibatch_size={})",
+                        b_idx,
+                        len(buffer),
+                        self.minibatch_size,
+                    )
+        else:
+            logger.debug("Update step flag is false at global step {}; not running PPO update.", global_learning_step)
+
         return metrics
 
     def _ppo_update(
@@ -320,7 +622,13 @@ class AgentTransformerPPO(BaseAgent):
             Metrics from the update.
         """
         buffer = self.rollout_buffers[building_idx]
-        
+
+        logger.debug(
+            "Starting PPO update for building {} with {} buffered transitions.",
+            building_idx,
+            len(buffer),
+        )
+
         # Compute last value for GAE
         with torch.no_grad():
             last_obs_tensor = torch.tensor(
@@ -329,7 +637,10 @@ class AgentTransformerPPO(BaseAgent):
             if last_obs_tensor.ndim == 1:
                 last_obs_tensor = last_obs_tensor.unsqueeze(0)
             
-            tokenized = self.tokenizer(last_obs_tensor)
+            tokenized = self.tokenizer(
+                last_obs_tensor,
+                marker_registry=self._marker_registry_for_building(building_idx),
+            )
             backbone_out = self.backbone(
                 tokenized.ca_tokens,
                 tokenized.sro_tokens,
@@ -355,7 +666,10 @@ class AgentTransformerPPO(BaseAgent):
         for _ in range(self.ppo_epochs):
             for batch in buffer.get_batches(self.minibatch_size):
                 # Forward pass
-                tokenized = self.tokenizer(batch.observations)
+                tokenized = self.tokenizer(
+                    batch.observations,
+                    marker_registry=self._marker_registry_for_building(building_idx),
+                )
                 backbone_out = self.backbone(
                     tokenized.ca_tokens,
                     tokenized.sro_tokens,
@@ -398,7 +712,13 @@ class AgentTransformerPPO(BaseAgent):
         buffer.clear()
         
         # Average metrics
-        return {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
+        averaged = {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
+        logger.info(
+            "Completed PPO update for building {} with metrics {}",
+            building_idx,
+            averaged,
+        )
+        return averaged
 
     def save_checkpoint(self, output_dir: Path, step: int) -> None:
         """Save training checkpoint.
@@ -418,9 +738,10 @@ class AgentTransformerPPO(BaseAgent):
             "critic_state_dict": self.critic.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
         }
-        
+
         checkpoint_path = output_dir / f"checkpoint_step_{step}.pt"
         torch.save(checkpoint, checkpoint_path)
+        logger.info("TransformerPPO checkpoint saved at step {} -> {}", step, checkpoint_path)
 
     def load_checkpoint(self, checkpoint_path: Path) -> None:
         """Load training checkpoint.
@@ -436,8 +757,9 @@ class AgentTransformerPPO(BaseAgent):
         self.actor.load_state_dict(checkpoint["actor_state_dict"])
         self.critic.load_state_dict(checkpoint["critic_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        
+
         self._step_count = checkpoint.get("step", 0)
+        logger.info("TransformerPPO checkpoint loaded from {}", checkpoint_path)
 
     def export_artifacts(
         self,
@@ -466,15 +788,21 @@ class AgentTransformerPPO(BaseAgent):
             "tokenizer_config": self.tokenizer_config,
         }
         torch.save(checkpoint, checkpoint_path)
-        
+
+        artifacts = self._export_end_to_end_onnx(output_dir)
+
         manifest = {
+            "format": "onnx",
+            "artifacts": artifacts,
             "model_path": str(checkpoint_path),
             "checkpoint_path": str(checkpoint_path),
             "algorithm": "AgentTransformerPPO",
             "d_model": self.d_model,
             "num_layers": self.num_layers,
         }
-        
+
+        logger.info("TransformerPPO artifacts exported to {}", output_dir)
+
         return manifest
 
     def on_topology_change(self, building_idx: int) -> None:
@@ -487,6 +815,11 @@ class AgentTransformerPPO(BaseAgent):
             building_idx: Index of the building with topology change.
         """
         buffer = self.rollout_buffers[building_idx]
+        logger.info(
+            "Topology change received for building {} (buffer size={})",
+            building_idx,
+            len(buffer),
+        )
         if len(buffer) >= self.minibatch_size:
             # Trigger update with current buffer
             # Use last stored observation as bootstrap (best available approximation)
@@ -496,7 +829,15 @@ class AgentTransformerPPO(BaseAgent):
             else:
                 # No valid observation available, just clear buffer
                 buffer.clear()
+                logger.warning(
+                    "Topology change for building {} had sufficient buffered data but no "
+                    "cached last observation; cleared buffer without PPO update.",
+                    building_idx,
+                )
         else:
             # Just clear buffer
             buffer.clear()
-
+            logger.debug(
+                "Cleared buffer for building {} due to topology change (insufficient samples).",
+                building_idx,
+            )

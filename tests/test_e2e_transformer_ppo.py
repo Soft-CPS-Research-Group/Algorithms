@@ -257,7 +257,7 @@ class TestE2EVariableTopology:
         ]])
         
         actions_1ca = agent.predict([obs_1ca], deterministic=False)
-        assert actions_1ca[0].shape == (1, 1)  # (1 CA, 1 action per CA)
+        assert actions_1ca[0].shape == (1,)  # (1 CA)
         
         # Test with 2 CAs (battery + EV)
         obs_2ca = np.array([[
@@ -268,4 +268,4 @@ class TestE2EVariableTopology:
         ]])
         
         actions_2ca = agent.predict([obs_2ca], deterministic=False)
-        assert actions_2ca[0].shape == (2, 1)  # (2 CAs, 1 action per CA)
+        assert actions_2ca[0].shape == (2,)  # (2 CAs)

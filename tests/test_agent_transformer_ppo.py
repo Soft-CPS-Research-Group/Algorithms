@@ -188,7 +188,8 @@ class TestAgentPredict:
         actions = agent_with_env.predict([encoded_obs], deterministic=False)
         
         assert len(actions) == 1  # One building
-        assert actions[0].shape[-1] == 1  # One action per CA
+        assert actions[0].ndim == 1
+        assert actions[0].shape[0] == 1  # One action for one CA
 
     def test_predict_deterministic(self, agent_with_env: Any) -> None:
         """Deterministic predict should return same actions."""
@@ -216,6 +217,75 @@ class TestAgentPredict:
             actions = agent_with_env.predict([encoded_obs], deterministic=False)
             assert (actions[0] >= -1.0).all()
             assert (actions[0] <= 1.0).all()
+
+    def test_predict_passes_marker_registry_to_tokenizer(self, agent_with_env: Any) -> None:
+        """predict() should pass per-building marker registry to tokenizer."""
+        from unittest.mock import patch
+
+        encoded_obs = np.array([[
+            1001.0, 0.5,
+            2001.0, 0.5, 0.5, 0.5, 0.5,
+            3001.0, 100.0,
+        ]])
+        marker_registry = {
+            1001.0: ("ca", "battery", None),
+            2001.0: ("sro", "temporal", None),
+            3001.0: ("nfc", "nfc", None),
+        }
+        agent_with_env.update_marker_registry(0, marker_registry)
+
+        with patch.object(
+            agent_with_env.tokenizer,
+            "forward",
+            wraps=agent_with_env.tokenizer.forward,
+        ) as tokenizer_forward_spy:
+            actions = agent_with_env.predict([encoded_obs], deterministic=True)
+
+        assert len(actions) == 1
+        assert tokenizer_forward_spy.call_count >= 1
+        _, kwargs = tokenizer_forward_spy.call_args
+        assert kwargs.get("marker_registry") == marker_registry
+
+    def test_predict_keeps_marker_registry_set_before_attach_environment(
+        self,
+        sample_config: Dict[str, Any],
+    ) -> None:
+        """attach_environment should preserve marker registry received before attach."""
+        from unittest.mock import patch
+        from algorithms.agents.transformer_ppo_agent import AgentTransformerPPO
+
+        agent = AgentTransformerPPO(sample_config)
+        marker_registry = {
+            1001.0: ("ca", "battery", None),
+            2001.0: ("sro", "temporal", None),
+            3001.0: ("nfc", "nfc", None),
+        }
+
+        # This mirrors the wrapper flow where registry can be pushed before attach_environment().
+        agent.update_marker_registry(0, marker_registry)
+        agent.attach_environment(
+            observation_names=[["month", "hour", "electrical_storage_soc", "non_shiftable_load"]],
+            action_names=[["electrical_storage"]],
+            action_space=[MagicMock()],
+            observation_space=[MagicMock()],
+            metadata={},
+        )
+
+        encoded_obs = np.array([[
+            1001.0, 0.5,
+            2001.0, 0.5, 0.5, 0.5, 0.5,
+            3001.0, 100.0,
+        ]])
+
+        with patch.object(
+            agent.tokenizer,
+            "forward",
+            wraps=agent.tokenizer.forward,
+        ) as tokenizer_forward_spy:
+            agent.predict([encoded_obs], deterministic=True)
+
+        _, kwargs = tokenizer_forward_spy.call_args
+        assert kwargs.get("marker_registry") == marker_registry
 
 
 class TestAgentUpdate:
@@ -337,8 +407,34 @@ class TestAgentUpdate:
             update_step=False,
             initial_exploration_done=True,
         )
-        
+
         assert isinstance(metrics, dict)
+
+    def test_update_accepts_scalar_done_flags(self, agent_with_env: Any) -> None:
+        """update() should accept scalar terminated/truncated flags from wrapper."""
+        encoded_obs = np.array([[
+            1001.0, 0.5,
+            2001.0, 0.5, 0.5, 0.5, 0.5,
+            3001.0, 100.0,
+        ]])
+
+        agent_with_env.predict([encoded_obs], deterministic=False)
+
+        metrics = agent_with_env.update(
+            observations=[encoded_obs],
+            actions=[np.array([[0.5]])],
+            rewards=[1.0],
+            next_observations=[encoded_obs],
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=1,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+        assert isinstance(metrics, dict)
+        assert len(agent_with_env.rollout_buffers[0]) == 1
 
     def test_update_triggers_ppo_update(self, agent_with_env: Any) -> None:
         """update() should trigger PPO update when buffer is full."""
@@ -584,4 +680,3 @@ class TestAgentTopologyChange:
         
         # Buffer should be cleared
         assert len(agent_with_env.rollout_buffers[0]) == 0
-

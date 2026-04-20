@@ -3,6 +3,7 @@
 import pytest
 import torch
 from typing import Any, Dict
+from unittest.mock import patch
 
 from algorithms.utils.observation_tokenizer import TokenizedObservation
 
@@ -253,3 +254,97 @@ class TestObservationTokenizer:
         assert result.ca_tokens.shape == (1, 2, d_model)  # 2 CAs
         assert result.n_ca == 2
         assert len(result.ca_types) == 2
+
+    def test_tokenizer_handles_extra_tail_features_after_nfc_marker(
+        self,
+        sample_tokenizer_config: Dict[str, Any],
+    ) -> None:
+        """Tokenizer should ignore trailing non-tokenized features after NFC payload."""
+        from algorithms.utils.observation_tokenizer import ObservationTokenizer
+
+        d_model = 64
+        tokenizer = ObservationTokenizer(sample_tokenizer_config, d_model=d_model)
+
+        # Tail features after NFC marker can appear when unmatched observation
+        # fields are preserved by the enricher but are not tokenized.
+        encoded = torch.tensor([[
+            1001.0, 0.5,
+            2001.0, 0.1, 0.2, 0.3, 0.4,
+            3001.0, 100.0, 50.0,
+            999.0, 888.0,
+        ]])
+
+        result = tokenizer(encoded)
+
+        assert result.ca_tokens.shape == (1, 1, d_model)
+        assert result.sro_tokens.shape == (1, 1, d_model)
+        assert result.nfc_token.shape == (1, 1, d_model)
+
+    def test_tokenizer_uses_explicit_marker_registry_for_type_resolution(self) -> None:
+        """Tokenizer should use marker registry instead of CA-dimension fallback."""
+        from algorithms.utils.observation_tokenizer import ObservationTokenizer
+
+        tokenizer_config = {
+            "marker_values": {
+                "ca_base": 1000,
+                "sro_base": 2000,
+                "nfc": 3001,
+            },
+            "ca_types": {
+                "battery": {
+                    "features": ["electrical_storage_soc"],
+                    "action_name": "electrical_storage",
+                    "input_dim": 1,
+                },
+                "washing_machine": {
+                    "features": ["washing_machine_start_time_step"],
+                    "action_name": "washing_machine",
+                    "input_dim": 3,
+                },
+            },
+            "sro_types": {
+                "temporal": {
+                    "features": ["month", "hour"],
+                    "input_dim": 2,
+                },
+            },
+            "nfc": {
+                "demand_features": ["non_shiftable_load"],
+                "generation_features": [],
+                "extra_features": [],
+                "input_dim": 1,
+            },
+        }
+
+        tokenizer = ObservationTokenizer(tokenizer_config, d_model=32)
+
+        # washing_machine token carries only 2 features even though config expects 3.
+        # Explicit marker registry should still route to washing_machine projection.
+        encoded = torch.tensor([[
+            1001.0, 0.4,
+            1002.0, 1.0, 2.0,
+            2001.0, 0.5, 0.8,
+            3001.0, 120.0,
+        ]])
+        marker_registry = {
+            1001.0: ("ca", "battery", None),
+            1002.0: ("ca", "washing_machine", "washing_machine_1"),
+            2001.0: ("sro", "temporal", None),
+            3001.0: ("nfc", "nfc", None),
+        }
+
+        with patch("algorithms.utils.observation_tokenizer.logger.warning") as warning_mock:
+            result = tokenizer(encoded, marker_registry=marker_registry)
+
+        assert result.n_ca == 2
+        assert result.ca_tokens.shape == (1, 2, 32)
+        assert result.sro_tokens.shape == (1, 1, 32)
+        assert result.nfc_token.shape == (1, 1, 32)
+        assert result.ca_types == ["battery", "washing_machine"]
+
+        warning_messages = [
+            call.args[0]
+            for call in warning_mock.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+        assert not any("Unknown CA token feature size" in message for message in warning_messages)
