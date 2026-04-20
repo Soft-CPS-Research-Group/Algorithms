@@ -13,6 +13,10 @@ from citylearn.citylearn import CityLearnEnv
 from loguru import logger
 
 from algorithms.agents.base_agent import BaseAgent
+from utils.wrapper_transformer.transformer_observation_coordinator import (
+    TransformerObservationCoordinator,
+    parse_marker_value,
+)
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
 from utils.preprocessing import (
@@ -101,12 +105,7 @@ def _build_encoder(rule: Dict[str, Any], space: Any, index: int) -> Encoder:
 
 
 def _parse_marker_value(name: str) -> Optional[float]:
-    if name.startswith("__marker_") and name.endswith("__"):
-        try:
-            return float(name[9:-2])
-        except ValueError:
-            return None
-    return None
+    return parse_marker_value(name)
 
 class Wrapper_CityLearn(RLC):
     def __init__(
@@ -248,29 +247,10 @@ class Wrapper_CityLearn(RLC):
             raise
 
     def _clear_transformer_state(self) -> None:
-        self._is_transformer_agent = False
-        self._enrichers = []
-        self._tokenizer_config = None
-        self._enriched_observation_names = {}
-        self._marker_registry_by_building = {}
-        self.encoders = self.set_encoders()
+        TransformerObservationCoordinator.clear_transformer_state(self)
 
     def _configure_model_transformer_state(self) -> None:
-        if not getattr(self.model, "is_transformer_agent", False):
-            self._clear_transformer_state()
-            return
-
-        tokenizer_config = getattr(self.model, "tokenizer_config", None)
-        if tokenizer_config is None:
-            raise ValueError(
-                "Transformer agent requires tokenizer_config; "
-                "set model.tokenizer_config before attaching it to the wrapper."
-            )
-
-        self._setup_transformer_enrichers(tokenizer_config)
-        for i in range(len(self.observation_names)):
-            self._enrich_observation_names(i)
-            self._rebuild_encoders_for_enriched_names(i)
+        TransformerObservationCoordinator.configure_model_transformer_state(self)
 
     def _refresh_runtime_topology_views(self) -> None:
         """Refresh wrapper topology metadata from the live environment."""
@@ -737,51 +717,7 @@ class Wrapper_CityLearn(RLC):
 
     def _rebuild_encoders_for_enriched_names(self, building_idx: int) -> None:
         """Rebuild encoders for enriched names, including marker slots."""
-        enriched_names = self._enriched_observation_names.get(building_idx)
-        if not enriched_names:
-            return
-
-        raw_names = list(self.observation_names[building_idx])
-        raw_space = self.observation_space[building_idx]
-        raw_high = np.asarray(raw_space.high, dtype=np.float64)
-        raw_low = np.asarray(raw_space.low, dtype=np.float64)
-
-        name_to_indices: Dict[str, List[int]] = {}
-        for index, name in enumerate(raw_names):
-            if name not in name_to_indices:
-                name_to_indices[name] = []
-            name_to_indices[name].append(index)
-
-        enriched_high: List[float] = []
-        enriched_low: List[float] = []
-
-        for name in enriched_names:
-            marker_value = _parse_marker_value(name)
-            if marker_value is not None:
-                enriched_high.append(marker_value)
-                enriched_low.append(marker_value)
-                continue
-
-            indices = name_to_indices.get(name)
-            if not indices:
-                raise ValueError(
-                    f"Cannot rebuild encoder space for enriched feature '{name}' in building {building_idx}"
-                )
-
-            raw_index = indices.pop(0)
-            enriched_high.append(float(raw_high[raw_index]))
-            enriched_low.append(float(raw_low[raw_index]))
-
-        enriched_space = type(
-            "space",
-            (),
-            {
-                "high": np.asarray(enriched_high, dtype=np.float64),
-                "low": np.asarray(enriched_low, dtype=np.float64),
-            },
-        )()
-
-        self.encoders[building_idx] = self._build_encoder_group(enriched_names, enriched_space)
+        TransformerObservationCoordinator.rebuild_encoders_for_enriched_names(self, building_idx)
 
     def _setup_transformer_enrichers(self, tokenizer_config: Dict[str, Any]) -> None:
         """Set up observation enrichers for Transformer agents.
@@ -792,21 +728,7 @@ class Wrapper_CityLearn(RLC):
         Args:
             tokenizer_config: Tokenizer configuration dict.
         """
-        from algorithms.utils.observation_enricher import ObservationEnricher
-        
-        self._is_transformer_agent = True
-        self._enrichers: List[Optional[ObservationEnricher]] = []
-        self._tokenizer_config = tokenizer_config
-        self._marker_registry_by_building: Dict[int, Dict[float, Tuple[str, str, Optional[str]]]] = {}
-        
-        for i in range(len(self.observation_names)):
-            enricher = ObservationEnricher(tokenizer_config)
-            self._enrichers.append(enricher)
-
-        logger.info(
-            "Initialized Transformer observation enrichers for {} building(s).",
-            len(self._enrichers),
-        )
+        TransformerObservationCoordinator.setup_transformer_enrichers(self, tokenizer_config)
             
     def _enrich_observation_names(self, building_idx: int) -> None:
         """Enrich observation names for a building (Transformer agents only).
@@ -817,51 +739,7 @@ class Wrapper_CityLearn(RLC):
         Args:
             building_idx: Index of the building.
         """
-        if not getattr(self, '_is_transformer_agent', False):
-            return
-            
-        enricher = self._enrichers[building_idx]
-        if enricher is None:
-            return
-            
-        # Get current observation and action names
-        obs_names = self.observation_names[building_idx]
-        action_names = self.action_names[building_idx]
-        
-        # Enrich names (caches result)
-        enrichment = enricher.enrich_names(obs_names, action_names)
-        
-        # Store enriched names for encoder rebuilding
-        if not hasattr(self, '_enriched_observation_names'):
-            self._enriched_observation_names = {}
-        self._enriched_observation_names[building_idx] = enrichment.enriched_names
-
-        marker_registry: Dict[float, Tuple[str, str, Optional[str]]] = {}
-        for marker_name, marker_type in enrichment.marker_to_type.items():
-            marker_value = _parse_marker_value(marker_name)
-            if marker_value is None:
-                continue
-            marker_registry[marker_value] = marker_type
-
-        if not hasattr(self, "_marker_registry_by_building"):
-            self._marker_registry_by_building = {}
-        self._marker_registry_by_building[building_idx] = marker_registry
-
-        update_marker_registry = getattr(self.model, "update_marker_registry", None)
-        if callable(update_marker_registry):
-            update_marker_registry(building_idx, marker_registry)
-            logger.debug(
-                "Updated marker registry for building {} (entries={}).",
-                building_idx,
-                len(marker_registry),
-            )
-
-        logger.debug(
-            "Enriched observation names for building {} (raw={}, enriched={}).",
-            building_idx,
-            len(obs_names),
-            len(enrichment.enriched_names),
-        )
+        TransformerObservationCoordinator.enrich_observation_names(self, building_idx)
         
     def _enrich_observation_values(
         self, building_idx: int, raw_values: List[float]
@@ -875,14 +753,11 @@ class Wrapper_CityLearn(RLC):
         Returns:
             Enriched values with markers inserted, or raw values if not Transformer.
         """
-        if not getattr(self, '_is_transformer_agent', False):
-            return raw_values
-            
-        enricher = self._enrichers[building_idx]
-        if enricher is None:
-            return raw_values
-            
-        return enricher.enrich_values(raw_values)
+        return TransformerObservationCoordinator.enrich_observation_values(
+            self,
+            building_idx,
+            raw_values,
+        )
         
     def _check_topology_change(self, building_idx: int) -> bool:
         """Check if topology changed for a building (Transformer agents only).
@@ -893,17 +768,7 @@ class Wrapper_CityLearn(RLC):
         Returns:
             True if topology changed, False otherwise.
         """
-        if not getattr(self, '_is_transformer_agent', False):
-            return False
-            
-        enricher = self._enrichers[building_idx]
-        if enricher is None:
-            return False
-            
-        obs_names = self.observation_names[building_idx]
-        action_names = self.action_names[building_idx]
-        
-        return enricher.topology_changed(obs_names, action_names)
+        return TransformerObservationCoordinator.check_topology_change(self, building_idx)
 
     def _handle_topology_change(self, building_idx: int) -> None:
         """Handle topology change for a building (Transformer agents only).
@@ -915,22 +780,4 @@ class Wrapper_CityLearn(RLC):
         Args:
             building_idx: Index of the building.
         """
-        if not getattr(self, '_is_transformer_agent', False):
-            return
-
-        logger.info("Handling topology change for building {}.", building_idx)
-
-        # Re-enrich names
-        self._enrich_observation_names(building_idx)
-        self._rebuild_encoders_for_enriched_names(building_idx)
-
-        logger.debug(
-            "Rebuilt encoders for building {} after topology change (encoder_count={}).",
-            building_idx,
-            len(self.encoders[building_idx]),
-        )
-
-        # Notify agent if it has the method
-        if hasattr(self.model, 'on_topology_change'):
-            self.model.on_topology_change(building_idx)
-            logger.info("Notified model about topology change for building {}.", building_idx)
+        TransformerObservationCoordinator.handle_topology_change(self, building_idx)
