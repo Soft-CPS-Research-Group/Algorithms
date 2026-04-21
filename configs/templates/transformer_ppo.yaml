@@ -1,0 +1,54 @@
+# TransformerPPO Algorithm Configuration Template
+#
+# This template provides default values for the TransformerPPO agent.
+# Copy and modify as needed for your experiments.
+
+metadata:
+  experiment_name: transformer_ppo_experiment
+  run_name: transformer_ppo_run
+  description: TransformerPPO agent for energy management
+
+algorithm:
+  name: AgentTransformerPPO
+  tokenizer_config_path: configs/tokenizers/default.json
+  
+  transformer:
+    d_model: 64
+    nhead: 4
+    num_layers: 2
+    dim_feedforward: 128
+    dropout: 0.1
+  
+  hyperparameters:
+    learning_rate: 3.0e-4
+    gamma: 0.99
+    gae_lambda: 0.95
+    clip_eps: 0.2
+    ppo_epochs: 4
+    minibatch_size: 64
+    entropy_coeff: 0.01
+    value_coeff: 0.5
+    max_grad_norm: 0.5
+    hidden_dim: 128
+    rollout_length: 512  # Reduced from 2048 for faster updates in smaller environments
+
+
+# Simulator configuration
+# NOTE: Update dataset_name and dataset_path to match your environment
+# Example datasets:
+#   - citylearn_challenge_2022_phase_all
+#   - citylearn_challenge_2022_phase_all_plus_evs (requires EV-enabled schema)
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all
+  dataset_path: datasets/citylearn_challenge_2022_phase_all
+  central_agent: false
+  reward_function: default
+  episodes: 100
+
+
+# Training configuration
+training:
+  total_episodes: 100
+  checkpoint_interval: 10
+  log_interval: 1
+

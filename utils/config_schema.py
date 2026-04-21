@@ -9,6 +9,101 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from typing_extensions import Literal
 
 
+# ---------------------------------------------------------------------------
+# Tokenizer Config Schema (for TransformerPPO)
+# ---------------------------------------------------------------------------
+
+
+class MarkerValuesConfig(BaseModel):
+    """Configuration for marker values used in observation enrichment."""
+
+    ca_base: int = Field(..., gt=0, description="Base marker value for CA tokens (e.g., 1000)")
+    sro_base: int = Field(..., gt=0, description="Base marker value for SRO tokens (e.g., 2000)")
+    nfc: int = Field(..., gt=0, description="Marker value for NFC token (e.g., 3001)")
+
+
+class CATypeConfig(BaseModel):
+    """Configuration for a Controllable Asset type."""
+
+    features: List[str] = Field(..., description="Feature name patterns for this CA type")
+    action_name: str = Field(..., description="Action name pattern for this CA type")
+    input_dim: int = Field(..., gt=0, description="Post-encoding dimension for this CA type")
+
+
+class SROTypeConfig(BaseModel):
+    """Configuration for a Shared Read-Only observation type."""
+
+    features: List[str] = Field(..., description="Feature name patterns for this SRO type")
+    input_dim: int = Field(..., ge=0, description="Post-encoding dimension for this SRO type")
+
+
+class NFCConfig(BaseModel):
+    """Configuration for Non-Flexible Context (residual load) token."""
+
+    demand_features: List[str] = Field(default_factory=list, description="Demand feature patterns")
+    generation_features: List[str] = Field(default_factory=list, description="Generation feature patterns")
+    extra_features: List[str] = Field(default_factory=list, description="Extra feature patterns")
+    input_dim: int = Field(..., ge=0, description="Post-encoding dimension for NFC")
+
+
+class TokenizerConfig(BaseModel):
+    """Full tokenizer configuration for TransformerPPO agent."""
+
+    marker_values: MarkerValuesConfig
+    ca_types: Dict[str, CATypeConfig] = Field(default_factory=dict)
+    sro_types: Dict[str, SROTypeConfig] = Field(default_factory=dict)
+    nfc: NFCConfig
+
+
+# ---------------------------------------------------------------------------
+# TransformerPPO Algorithm Config Schema
+# ---------------------------------------------------------------------------
+
+
+class TransformerConfig(BaseModel):
+    """Configuration for Transformer backbone architecture."""
+
+    d_model: int = Field(..., gt=0, description="Embedding dimension")
+    nhead: int = Field(..., gt=0, description="Number of attention heads")
+    num_layers: int = Field(..., gt=0, description="Number of encoder layers")
+    dim_feedforward: int = Field(256, gt=0, description="Feedforward network dimension")
+    dropout: float = Field(0.1, ge=0.0, le=1.0, description="Dropout rate")
+
+    @field_validator("nhead")
+    @classmethod
+    def nhead_divides_d_model(cls, v: int, info) -> int:
+        """Validate that nhead divides d_model evenly."""
+        d_model = info.data.get("d_model")
+        if d_model is not None and d_model % v != 0:
+            raise ValueError(f"nhead ({v}) must divide d_model ({d_model}) evenly")
+        return v
+
+
+class TransformerPPOHyperparameters(BaseModel):
+    """Hyperparameters for TransformerPPO agent."""
+
+    learning_rate: float = Field(3e-4, gt=0, description="Learning rate")
+    gamma: float = Field(0.99, ge=0.0, le=1.0, description="Discount factor")
+    gae_lambda: float = Field(0.95, ge=0.0, le=1.0, description="GAE lambda")
+    clip_eps: float = Field(0.2, gt=0, description="PPO clipping epsilon")
+    ppo_epochs: int = Field(4, gt=0, description="PPO epochs per update")
+    minibatch_size: int = Field(64, gt=0, description="Minibatch size")
+    entropy_coeff: float = Field(0.01, ge=0.0, description="Entropy coefficient")
+    value_coeff: float = Field(0.5, gt=0, description="Value loss coefficient")
+    max_grad_norm: float = Field(0.5, gt=0, description="Max gradient norm for clipping")
+    hidden_dim: int = Field(128, gt=0, description="Hidden dimension for actor/critic heads")
+    rollout_length: int = Field(2048, gt=0, description="Steps before PPO update")
+
+
+class TransformerPPOAlgorithmConfig(BaseModel):
+    """Full algorithm configuration for TransformerPPO agent."""
+
+    name: Literal["AgentTransformerPPO"] = "AgentTransformerPPO"
+    tokenizer_config_path: str = Field(..., description="Path to tokenizer config JSON")
+    transformer: TransformerConfig
+    hyperparameters: TransformerPPOHyperparameters
+
+
 class MetadataConfig(BaseModel):
     experiment_name: str = Field(..., min_length=1, description="Name registered in MLflow")
     run_name: str = Field(..., min_length=1, description="Friendly name for the MLflow run")
@@ -301,7 +396,7 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig, TransformerPPOAlgorithmConfig]
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 

@@ -2,7 +2,7 @@ import json
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import mlflow
 import numpy as np
@@ -13,6 +13,9 @@ from citylearn.citylearn import CityLearnEnv
 from loguru import logger
 
 from algorithms.agents.base_agent import BaseAgent
+from utils.wrapper_transformer.transformer_observation_coordinator import (
+    TransformerObservationCoordinator,
+)
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
 from utils.preprocessing import (
@@ -99,6 +102,7 @@ def _build_encoder(rule: Dict[str, Any], space: Any, index: int) -> Encoder:
     params = {key: _resolve_param(value, space, index) for key, value in raw_params.items()}
     return encoder_cls(**params) if params else encoder_cls()
 
+
 class Wrapper_CityLearn(RLC):
     def __init__(
         self,
@@ -119,6 +123,14 @@ class Wrapper_CityLearn(RLC):
         """
         super().__init__(env, **kwargs)
         self.model = model
+        
+        # Initialize transformer state attributes
+        self._is_transformer_agent = False
+        self._enrichers = []
+        self._tokenizer_config = None
+        self._enriched_observation_names = {}
+        self._marker_registry_by_building = {}
+        
         self.job_id = job_id
         self.initial_exploration_done = False
         self.update_step = False
@@ -181,6 +193,10 @@ class Wrapper_CityLearn(RLC):
         if not hasattr(self, "encoders") or not getattr(self, "encoders"):
             self.encoders = self.set_encoders()
 
+        # Configure transformer state if model is provided at construction time
+        if self.model is not None:
+            TransformerObservationCoordinator.configure_model_transformer_state(self)
+
     @staticmethod
     def _coerce_positive_int(value) -> Optional[int]:
         try:
@@ -197,24 +213,51 @@ class Wrapper_CityLearn(RLC):
 
     def set_model(self, model: BaseAgent):
         """
-        Set the model after initialization.
+        Set the model after initialization and configure transformer state if applicable.
         """
         self.model = model
+        logger.info("Setting model: {}", type(model).__name__)
+        TransformerObservationCoordinator.configure_model_transformer_state(self)
+
         metadata = {
             "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "building_names": getattr(self.env, "building_names", None),
         }
-        try:
-            self.model.attach_environment(
+        attach_environment = getattr(self.model, "attach_environment", None)
+        if callable(attach_environment):
+            attach_environment(
                 observation_names=self.observation_names,
                 action_names=self.action_names,
                 action_space=self.action_space,
                 observation_space=self.observation_space,
                 metadata=metadata,
             )
-        except AttributeError:
-            # Older agents may not implement attach_environment.
-            pass
+            logger.debug("Called attach_environment on model.")
+
+    def _refresh_runtime_topology_views(self) -> None:
+        """Refresh wrapper topology metadata from the live environment."""
+        previous_obs_dims = [len(names) for names in getattr(self, "observation_names", [])]
+        previous_action_dims = [len(names) for names in getattr(self, "action_names", [])]
+
+        self.observation_names = self.env.observation_names
+        self.action_names = self.env.unwrapped.action_names
+        self.observation_space = self.env.observation_space
+        self.action_space = self.env.action_space
+
+        current_obs_dims = [len(names) for names in self.observation_names]
+        current_action_dims = [len(names) for names in self.action_names]
+
+        if previous_obs_dims and (
+            current_obs_dims != previous_obs_dims
+            or current_action_dims != previous_action_dims
+        ):
+            logger.info(
+                "Runtime topology metadata refreshed (obs_dims {} -> {}, action_dims {} -> {}).",
+                previous_obs_dims,
+                current_obs_dims,
+                previous_action_dims,
+                current_action_dims,
+            )
 
 
     def learn(self, episodes=None, deterministic=None, deterministic_finish=None):
@@ -235,6 +278,16 @@ class Wrapper_CityLearn(RLC):
             start_episode_time = time.time()
             deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
             observations, _ = self.env.reset()
+
+            # Keep wrapper topology metadata in sync with live environment.
+            self._refresh_runtime_topology_views()
+            
+            # Check for topology changes at episode start (Transformer agents only)
+            if getattr(self, '_is_transformer_agent', False):
+                for building_idx in range(len(self.observation_names)):
+                    if TransformerObservationCoordinator.check_topology_change(self, building_idx):
+                        TransformerObservationCoordinator.handle_topology_change(self, building_idx)
+            
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             terminated = False
@@ -258,6 +311,15 @@ class Wrapper_CityLearn(RLC):
                 # Apply actions to CityLearn environment
                 next_observations, rewards, terminated, truncated, _ = self.env.step(actions)
                 rewards_list.append(rewards)
+
+                # Keep wrapper topology metadata in sync with live environment.
+                self._refresh_runtime_topology_views()
+                
+                # Check for topology changes (Transformer agents only)
+                if getattr(self, '_is_transformer_agent', False):
+                    for building_idx in range(len(self.observation_names)):
+                        if TransformerObservationCoordinator.check_topology_change(self, building_idx):
+                            TransformerObservationCoordinator.handle_topology_change(self, building_idx)
 
                 # Update model if not in deterministic mode
                 if not deterministic:
@@ -486,6 +548,14 @@ class Wrapper_CityLearn(RLC):
     def get_encoded_observations(self, index: int, observations: List[float]) -> np.ndarray:
         """Optimized encoding function using NumPy with proper type handling."""
 
+        # Enrich observations for Transformer agents
+        if getattr(self, '_is_transformer_agent', False):
+            observations = TransformerObservationCoordinator.enrich_observation_values(
+                self,
+                index,
+                observations,
+            )
+
         obs_array = np.array(observations, dtype=np.float64)  # Ensure numeric type
 
         # Apply encoding transformation correctly
@@ -589,38 +659,44 @@ class Wrapper_CityLearn(RLC):
         }
 
 
-    def set_encoders(self) -> List[List[Encoder]]:
-        r"""Instantiate observation encoders from the shared JSON configuration."""
-
+    def _build_encoder_group(self, observation_group: List[str], space: Any) -> List[Encoder]:
         rules = _load_encoder_rules()
-        encoders: List[List[Encoder]] = []
         missing: List[str] = []
+        group_encoders: List[Encoder] = []
 
-        for observation_group, space in zip(self.observation_names, self.observation_space):
-            group_encoders: List[Encoder] = []
-            for index, name in enumerate(observation_group):
-                rule = next((r for r in rules if _matches_rule(name, r.get("match", {}))), None)
-                if rule is None:
-                    missing.append(name)
-                    continue
+        for index, name in enumerate(observation_group):
+            rule = next((r for r in rules if _matches_rule(name, r.get("match", {}))), None)
+            if rule is None:
+                missing.append(name)
+                continue
 
-                if rule.get("warn_on_use"):
-                    logger.warning("Encoder rule warning for observation '{}'", name)
+            if rule.get("warn_on_use"):
+                logger.warning("Encoder rule warning for observation '{}'", name)
 
-                encoder = _build_encoder(rule, space, index)
-                group_encoders.append(encoder)
+            encoder = _build_encoder(rule, space, index)
+            group_encoders.append(encoder)
 
-            if len(group_encoders) != len(observation_group):
-                raise ValueError(
-                    "Failed to build encoders for all observations: "
-                    f"expected {len(observation_group)}, built {len(group_encoders)}"
-                )
-            encoders.append(group_encoders)
+        if len(group_encoders) != len(observation_group):
+            raise ValueError(
+                "Failed to build encoders for all observations: "
+                f"expected {len(observation_group)}, built {len(group_encoders)}"
+            )
 
         if missing:
             raise ValueError(
                 "No encoder rule defined for observations: " + ", ".join(sorted(set(missing)))
             )
+
+        return group_encoders
+
+    def set_encoders(self) -> List[List[Encoder]]:
+        r"""Instantiate observation encoders from the shared JSON configuration."""
+
+        encoders: List[List[Encoder]] = []
+
+        for observation_group, space in zip(self.observation_names, self.observation_space):
+            group_encoders = self._build_encoder_group(observation_group, space)
+            encoders.append(group_encoders)
 
         logger.debug("Encoders initialised from external configuration")
         return encoders
