@@ -195,6 +195,23 @@ class EVDataCollectionRBCAlgorithmConfig(BaseModel):
     exploration: Optional[ExplorationParams] = None
 
 
+class OfflineBCHyperparameters(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_path: str = Field(..., min_length=1, description="Path to trained BC checkpoint (model.pth)")
+    stats_path: str = Field(..., min_length=1, description="Path to normalization_stats.json from training")
+    target_building_index: int = Field(default=4, ge=0, description="0-based agent index controlled by the BC policy")
+    device: str = Field(default="auto", description="'auto', 'cpu' or 'cuda'")
+
+
+class OfflineBCAlgorithmConfig(BaseModel):
+    name: Literal["OfflineBC"]
+    hyperparameters: OfflineBCHyperparameters
+    networks: Optional[AlgorithmNetworks] = None
+    replay_buffer: Optional[ReplayBufferConfig] = None
+    exploration: Optional[ExplorationParams] = None
+
+
 class TopologyConfig(BaseModel):
     num_agents: Optional[int] = None
     observation_dimensions: Optional[List[int]] = None
@@ -313,7 +330,7 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig, EVDataCollectionRBCAlgorithmConfig]
+    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig, EVDataCollectionRBCAlgorithmConfig, OfflineBCAlgorithmConfig]
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 

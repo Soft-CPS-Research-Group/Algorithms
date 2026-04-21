@@ -1,0 +1,37 @@
+# Behavioral Cloning training configuration template.
+#
+# Used by `scripts/train_offline_bc.py` to fit a BC policy on the offline
+# dataset produced by `EVDataCollectionRBC` (Milestone 1).
+
+dataset:
+  # Default dataset path; can be overridden with `--dataset` on the CLI.
+  path: datasets/offline_rl/offline_dataset.csv
+
+hyperparameters:
+  # Architecture: MLP obs_dim -> 256 -> 256 -> action_dim with ReLU + Tanh head.
+  hidden_layers: [256, 256]
+
+  # Adam learning rate ("Karpathy constant").
+  learning_rate: 0.0003
+
+  # Mini-batch size for SGD updates.
+  batch_size: 256
+
+  # Number of full passes over the training set.
+  epochs: 50
+
+  # Fraction of EPISODES (not transitions) reserved for validation.
+  # With 3 episodes recorded, val_fraction=0.34 -> 2 train / 1 val episode.
+  val_fraction: 0.34
+
+  # RNG seed for reproducible weight init and shuffling.
+  seed: 22
+
+  # "auto" -> CUDA if available, else CPU. Override with "cpu" or "cuda".
+  device: auto
+
+tracking:
+  # Set to false to skip MLflow logging entirely.
+  mlflow_enabled: true
+  mlflow_experiment: offline_bc
+  # mlflow_run_name: my-bc-run

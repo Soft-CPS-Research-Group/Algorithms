@@ -9,12 +9,14 @@ from loguru import logger
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.ev_data_collection_agent import EVDataCollectionRBC
 from algorithms.agents.maddpg_agent import MADDPG
+from algorithms.agents.offline_bc_agent import OfflineBCAgent
 from algorithms.agents.rbc_agent import RuleBasedPolicy
 
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "MADDPG": MADDPG,
     "RuleBasedPolicy": RuleBasedPolicy,
     "EVDataCollectionRBC": EVDataCollectionRBC,
+    "OfflineBC": OfflineBCAgent,
 }
 
 PLACEHOLDER_ALGORITHMS = {

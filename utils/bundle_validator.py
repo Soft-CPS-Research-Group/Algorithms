@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from loguru import logger
 
-SUPPORTED_ARTIFACT_FORMATS = {"onnx", "rule_based", "offline_dataset"}
+SUPPORTED_ARTIFACT_FORMATS = {"onnx", "rule_based", "offline_dataset", "behavioral_cloning"}
 
 
 class BundleValidationError(ValueError):
@@ -170,7 +170,11 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
                 f"agent.artifacts[{idx}].agent_index={agent_index} is outside topology.num_agents={num_agents}"
             )
 
-    if num_agents is not None and top_level_format != "offline_dataset" and len(artifacts) != num_agents:
+    if (
+        num_agents is not None
+        and top_level_format not in ("offline_dataset", "behavioral_cloning")
+        and len(artifacts) != num_agents
+    ):
         raise BundleValidationError(
             "Number of exported artifacts must match topology.num_agents "
             f"(artifacts={len(artifacts)}, num_agents={num_agents})"

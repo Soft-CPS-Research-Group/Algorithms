@@ -1,0 +1,87 @@
+# Local evaluation template for the trained Behavioral Cloning policy.
+# Replays the same CityLearn setup used by `ev_data_collection_local.yaml`
+# but plugs the BC policy in for Building 5 (agent index 4).
+
+metadata:
+  experiment_name: "offline_bc_eval"
+  run_name: "Offline BC Eval"
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: false
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 10
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 100
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: null
+
+bundle:
+  bundle_version: null
+  description: "Offline BC policy evaluated on CityLearn (Building 5)"
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+  per_agent_artifact_config: {}
+
+# Same simulator wiring as the data-collection run, so episodes are comparable.
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
+  central_agent: false
+  reward_function: RewardFunction
+  episodes: 1
+  simulation_start_time_step: null
+  simulation_end_time_step: null
+  episode_time_steps: null
+  export:
+    mode: none
+    export_kpis_on_episode_end: false
+    session_name: null
+
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 0
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+algorithm:
+  name: "OfflineBC"
+  hyperparameters:
+    # Update these paths to point at the trained run you want to evaluate.
+    model_path: runs/offline_bc/bc-v1/model.pth
+    stats_path: runs/offline_bc/bc-v1/normalization_stats.json
+    target_building_index: 4
+    device: auto
+  networks: null
+  replay_buffer: null
+  exploration: null
+
+execution: null
