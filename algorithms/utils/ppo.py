@@ -125,14 +125,25 @@ class PPOActorCritic(nn.Module):
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
 
-        # Gaussian distribution over actions.
+        # Gaussian distribution over the *pre-squash* (raw) action space.
         dist = Normal(action_mean, action_std)
 
         if action is None:
-            action = dist.sample()
+            # Rollout: sample raw action and squash to (-1, 1) with tanh.
+            raw_action = dist.sample()
+            action = torch.tanh(raw_action)
+        else:
+            # PPO update: invert tanh to recover the raw action that was stored.
+            # Clamp avoids atanh(±1) = ±inf at the boundary.
+            raw_action = torch.atanh(action.clamp(-1 + 1e-6, 1 - 1e-6))
 
+        # Log-prob with Jacobian correction for the tanh change-of-variables:
+        #   log π_squashed(a) = log π_raw(atanh(a)) - Σ log(1 - a²)
         # sum() over action_dim so log_prob is scalar per sample.
-        log_prob = dist.log_prob(action).sum(dim=-1)
+        log_prob = (
+            dist.log_prob(raw_action).sum(dim=-1)
+            - torch.log(1 - action.pow(2) + 1e-6).sum(dim=-1)
+        )
         entropy = dist.entropy().sum(dim=-1)
 
         value = self.critic(x)
