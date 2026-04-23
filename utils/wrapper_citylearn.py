@@ -2,17 +2,19 @@ import json
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import mlflow
 import numpy as np
 import psutil
 import torch
+from citylearn.base import Environment
 from citylearn.agents.rlc import RLC
 from citylearn.citylearn import CityLearnEnv
 from loguru import logger
 
 from algorithms.agents.base_agent import BaseAgent
+from utils.entity_adapter import EntityContractAdapter
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
 from utils.preprocessing import (
@@ -140,15 +142,44 @@ class Wrapper_CityLearn(RLC):
         - model: BaseAgent instance implementing custom predict and update logic.
         - **kwargs: Additional arguments passed to the RLC constructor.
         """
-        super().__init__(env, **kwargs)
+        config = config or {}
+        simulator_cfg = config.get("simulator", {})
+        interface_mode = str(simulator_cfg.get("interface", getattr(env, "interface", "flat"))).strip().lower() or "flat"
+        self._entity_interface_mode = interface_mode == "entity"
+        self._entity_topology_mode = str(
+            simulator_cfg.get("topology_mode", getattr(env, "topology_mode", "static"))
+        ).strip().lower() or "static"
+        self._entity_dynamic_mode = self._entity_interface_mode and self._entity_topology_mode == "dynamic"
+        self._algorithm_name = str((config.get("algorithm", {}) or {}).get("name", "")).strip()
+        self._entity_topology_version: Optional[int] = None
+        self._entity_adapter: Optional[EntityContractAdapter] = None
         self.model = model
+
+        entity_encoding_cfg = simulator_cfg.get("entity_encoding", {}) or {}
+        default_entity_encoding_enabled = self._entity_interface_mode
+        self._entity_encoding_enabled = bool(
+            entity_encoding_cfg.get("enabled", default_entity_encoding_enabled)
+        )
+        self._entity_encoding_clip = bool(entity_encoding_cfg.get("clip", True))
+        self._entity_encoding_policy = str(entity_encoding_cfg.get("normalization", "minmax_space"))
+        if self._entity_encoding_policy != "minmax_space":
+            logger.warning(
+                "Unsupported entity encoding policy '{}'; falling back to 'minmax_space'.",
+                self._entity_encoding_policy,
+            )
+            self._entity_encoding_policy = "minmax_space"
+
+        if self._entity_interface_mode:
+            self._initialize_entity_agent_state(env=env)
+        else:
+            super().__init__(env, **kwargs)
+
         self.job_id = job_id
         self.initial_exploration_done = False
         self.update_step = False
         self.update_target_step = False
         self.global_step = 0
         training_cfg = config.get("training", {})
-        simulator_cfg = config.get("simulator", {})
         checkpoint_cfg = config.get("checkpointing", {})
         tracking_cfg = config.get("tracking", {})
         wrapper_reward_cfg = simulator_cfg.get("wrapper_reward", {})
@@ -234,6 +265,125 @@ class Wrapper_CityLearn(RLC):
         if not hasattr(self, "encoders") or not getattr(self, "encoders"):
             self.encoders = self.set_encoders()
 
+    def _initialize_entity_agent_state(self, env: CityLearnEnv) -> None:
+        self.env = env
+        self.observation_names = []
+        self.action_names = []
+        self.observation_space = []
+        self.action_space = []
+        self.episode_time_steps = int(getattr(self.env.unwrapped, "time_steps", 0) or 0)
+        self.building_metadata = (self.env.unwrapped.get_metadata() or {}).get("buildings", [])
+
+        Environment.__init__(
+            self,
+            seconds_per_time_step=getattr(self.env.unwrapped, "seconds_per_time_step", None),
+            random_seed=getattr(self.env.unwrapped, "random_seed", None),
+            episode_tracker=getattr(self.env.unwrapped, "episode_tracker", None),
+            time_step_ratio=getattr(self.env.unwrapped, "time_step_ratio", None),
+        )
+
+        # Keep RLC state available for methods shared with the flat path.
+        self.hidden_dimension = None
+        self.discount = None
+        self.tau = None
+        self.alpha = None
+        self.lr = None
+        self.batch_size = None
+        self.replay_buffer_capacity = None
+        self.standardize_start_time_step = None
+        self.end_exploration_time_step = None
+        self.action_scaling_coefficient = None
+        self.reward_scaling = None
+        self.update_per_time_step = None
+
+        self._entity_adapter = EntityContractAdapter(
+            self.env,
+            normalization_enabled=self._entity_encoding_enabled and self._entity_encoding_policy == "minmax_space",
+            clip=self._entity_encoding_clip,
+        )
+
+        initial_observations, _ = self.env.reset()
+        self._apply_entity_layout(initial_observations, force_attach=False)
+        self.reset()
+
+    def _apply_entity_layout(self, observation_payload: Mapping[str, Any], force_attach: bool) -> List[np.ndarray]:
+        if not self._entity_interface_mode or self._entity_adapter is None:
+            return []
+
+        previous_version = self._entity_topology_version
+        agent_observations, observation_names, observation_spaces = self._entity_adapter.to_agent_observations(observation_payload)
+        self._entity_topology_version = self._entity_adapter.topology_version
+
+        self.observation_names = observation_names
+        self.observation_space = observation_spaces
+        self.action_space = list(getattr(self.env, "flat_action_space", []))
+        self.action_names = [list(names) for names in getattr(self.env, "action_names", [])]
+        if len(self.action_names) < len(self.action_space):
+            self.action_names.extend([[] for _ in range(len(self.action_space) - len(self.action_names))])
+        elif len(self.action_names) > len(self.action_space):
+            self.action_names = self.action_names[: len(self.action_space)]
+        self.episode_time_steps = int(getattr(self.episode_tracker, "episode_time_steps", self.episode_time_steps))
+        self.encoders = self.set_encoders()
+
+        topology_changed = (
+            force_attach
+            or previous_version is None
+            or self._entity_topology_version != previous_version
+        )
+        if topology_changed and self._entity_dynamic_mode and self._algorithm_name == "MADDPG" and previous_version is not None:
+            raise ValueError(
+                "MADDPG supports entity interface only with topology_mode='static'. "
+                "Detected topology change during runtime."
+            )
+
+        if topology_changed and self.model is not None:
+            self._attach_model_environment_metadata()
+
+        return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
+
+    def _attach_model_environment_metadata(self) -> None:
+        if self.model is None:
+            return
+
+        metadata = {
+            "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
+            "building_names": getattr(self.env, "building_names", None),
+            "interface": getattr(self.env, "interface", None),
+            "topology_mode": getattr(self.env, "topology_mode", None),
+            "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
+        }
+
+        try:
+            self.model.attach_environment(
+                observation_names=self.observation_names,
+                action_names=self.action_names,
+                action_space=self.action_space,
+                observation_space=self.observation_space,
+                metadata=metadata,
+            )
+        except AttributeError:
+            pass
+
+    @property
+    def observation_dimension(self) -> List[int]:
+        dimensions: List[int] = []
+        for space in self.observation_space:
+            if hasattr(space, "low"):
+                dimensions.append(int(np.asarray(space.low).reshape(-1).shape[0]))
+            else:
+                dimensions.append(0)
+        return dimensions
+
+    @property
+    def action_dimension(self) -> List[int]:
+        dimensions: List[int] = []
+        for space in self.action_space:
+            if hasattr(space, "low"):
+                dimensions.append(int(np.asarray(space.low).reshape(-1).shape[0]))
+            else:
+                dimensions.append(0)
+        return dimensions
+
     @staticmethod
     def _coerce_positive_int(value) -> Optional[int]:
         try:
@@ -253,21 +403,7 @@ class Wrapper_CityLearn(RLC):
         Set the model after initialization.
         """
         self.model = model
-        metadata = {
-            "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
-            "building_names": getattr(self.env, "building_names", None),
-        }
-        try:
-            self.model.attach_environment(
-                observation_names=self.observation_names,
-                action_names=self.action_names,
-                action_space=self.action_space,
-                observation_space=self.observation_space,
-                metadata=metadata,
-            )
-        except AttributeError:
-            # Older agents may not implement attach_environment.
-            pass
+        self._attach_model_environment_metadata()
 
 
     def learn(self, episodes=None, deterministic=None, deterministic_finish=None):
@@ -287,7 +423,11 @@ class Wrapper_CityLearn(RLC):
         for episode in range(episodes):
             start_episode_time = time.time()
             deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
-            observations, _ = self.env.reset()
+            raw_observations, _ = self.env.reset()
+            if self._entity_interface_mode:
+                observations = self._apply_entity_layout(raw_observations, force_attach=True)
+            else:
+                observations = raw_observations
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             terminated = False
@@ -307,11 +447,17 @@ class Wrapper_CityLearn(RLC):
 
                 actions = self.predict(observations, deterministic=deterministic)
                 actions = self._clip_actions(actions)
-                self.actions = actions
+                if not self._entity_interface_mode:
+                    self.actions = actions
                 logger.debug("Predicted actions: {}", actions)
 
                 # Apply actions to CityLearn environment
-                next_observations, rewards, terminated, truncated, _ = self.env.step(actions)
+                env_actions = self._to_env_actions(actions)
+                next_observations_raw, rewards, terminated, truncated, _ = self.env.step(env_actions)
+                if self._entity_interface_mode:
+                    next_observations = self._apply_entity_layout(next_observations_raw, force_attach=False)
+                else:
+                    next_observations = next_observations_raw
                 rewards = self._shape_rewards(rewards, next_observations)
                 rewards_list.append(rewards)
 
@@ -419,13 +565,47 @@ class Wrapper_CityLearn(RLC):
                 )
 
             # Compute rewards statistics for this episode
-            rewards_array = np.array(rewards_list, dtype='float')  # (time_steps, num_agents)
-            rewards_summary = {
-                'sum': rewards_array.sum(axis=0),  # Sum per agent
-                'mean': rewards_array.mean(axis=0),
-                'min': rewards_array.min(axis=0),
-                'max': rewards_array.max(axis=0)
-            }
+            reward_vectors = [np.asarray(step_rewards, dtype=np.float64).reshape(-1) for step_rewards in rewards_list]
+            if len(reward_vectors) == 0:
+                rewards_array = np.zeros((0, 0), dtype=np.float64)
+            else:
+                max_agents = max(vector.shape[0] for vector in reward_vectors)
+                rewards_array = np.full((len(reward_vectors), max_agents), np.nan, dtype=np.float64)
+                for row, vector in enumerate(reward_vectors):
+                    rewards_array[row, : vector.shape[0]] = vector
+
+            if rewards_array.size == 0:
+                rewards_summary = {
+                    "sum": np.array([], dtype=np.float64),
+                    "mean": np.array([], dtype=np.float64),
+                    "min": np.array([], dtype=np.float64),
+                    "max": np.array([], dtype=np.float64),
+                }
+            else:
+                valid_mask = ~np.isnan(rewards_array)
+                valid_counts = valid_mask.sum(axis=0)
+                sums = np.nansum(rewards_array, axis=0)
+                means = np.divide(sums, np.maximum(valid_counts, 1), where=np.maximum(valid_counts, 1) > 0)
+                mins = np.array(
+                    [
+                        np.nanmin(rewards_array[:, i]) if valid_counts[i] > 0 else 0.0
+                        for i in range(rewards_array.shape[1])
+                    ],
+                    dtype=np.float64,
+                )
+                maxs = np.array(
+                    [
+                        np.nanmax(rewards_array[:, i]) if valid_counts[i] > 0 else 0.0
+                        for i in range(rewards_array.shape[1])
+                    ],
+                    dtype=np.float64,
+                )
+                rewards_summary = {
+                    "sum": sums,
+                    "mean": means,
+                    "min": mins,
+                    "max": maxs,
+                }
 
             # Store rewards for global tracking
             total_rewards_across_episodes.append(rewards_summary['sum'])
@@ -455,15 +635,48 @@ class Wrapper_CityLearn(RLC):
             )
 
         # Aggregate rewards across episodes
-        total_rewards_across_episodes = np.array(total_rewards_across_episodes)  # Shape: (episodes, num_agents)
+        if len(total_rewards_across_episodes) == 0:
+            total_rewards_matrix = np.zeros((0, 0), dtype=np.float64)
+        else:
+            max_agents = max(np.asarray(values).reshape(-1).shape[0] for values in total_rewards_across_episodes)
+            total_rewards_matrix = np.full((len(total_rewards_across_episodes), max_agents), np.nan, dtype=np.float64)
+            for row, values in enumerate(total_rewards_across_episodes):
+                vector = np.asarray(values, dtype=np.float64).reshape(-1)
+                total_rewards_matrix[row, : vector.shape[0]] = vector
 
         # Compute overall statistics across episodes
-        overall_rewards_summary = {
-            'sum': total_rewards_across_episodes.sum(axis=0),
-            'mean': total_rewards_across_episodes.mean(axis=0),
-            'min': total_rewards_across_episodes.min(axis=0),
-            'max': total_rewards_across_episodes.max(axis=0)
-        }
+        if total_rewards_matrix.size == 0:
+            overall_rewards_summary = {
+                "sum": np.array([], dtype=np.float64),
+                "mean": np.array([], dtype=np.float64),
+                "min": np.array([], dtype=np.float64),
+                "max": np.array([], dtype=np.float64),
+            }
+        else:
+            valid_mask = ~np.isnan(total_rewards_matrix)
+            valid_counts = valid_mask.sum(axis=0)
+            sums = np.nansum(total_rewards_matrix, axis=0)
+            means = np.divide(sums, np.maximum(valid_counts, 1), where=np.maximum(valid_counts, 1) > 0)
+            mins = np.array(
+                [
+                    np.nanmin(total_rewards_matrix[:, i]) if valid_counts[i] > 0 else 0.0
+                    for i in range(total_rewards_matrix.shape[1])
+                ],
+                dtype=np.float64,
+            )
+            maxs = np.array(
+                [
+                    np.nanmax(total_rewards_matrix[:, i]) if valid_counts[i] > 0 else 0.0
+                    for i in range(total_rewards_matrix.shape[1])
+                ],
+                dtype=np.float64,
+            )
+            overall_rewards_summary = {
+                "sum": sums,
+                "mean": means,
+                "min": mins,
+                "max": maxs,
+            }
 
         # Log overall statistics
         overall_metrics = {}
@@ -493,9 +706,21 @@ class Wrapper_CityLearn(RLC):
             encoded_observations = self.get_all_encoded_observations(observations)
 
         actions = self.model.predict(encoded_observations, deterministic)
-        self.actions = actions
-        self.next_time_step()
+        if not self._entity_interface_mode:
+            self.actions = actions
+            self.next_time_step()
+        else:
+            Environment.next_time_step(self)
         return actions
+
+    def _to_env_actions(self, actions: List[List[float]]) -> Any:
+        if not self._entity_interface_mode:
+            return actions
+
+        if self._entity_adapter is None:
+            raise RuntimeError("Entity adapter is not initialized.")
+
+        return self._entity_adapter.to_entity_actions(actions, self.action_names)
 
     def _clip_actions(self, actions: List[List[float]]) -> List[List[float]]:
         """Clip model actions to each agent action-space bounds."""
@@ -722,6 +947,19 @@ class Wrapper_CityLearn(RLC):
     def get_encoded_observations(self, index: int, observations: List[float]) -> np.ndarray:
         """Optimized encoding function using NumPy with proper type handling."""
 
+        if self._entity_interface_mode:
+            if index >= len(self.observation_space):
+                return np.nan_to_num(np.asarray(observations, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+            if self._entity_adapter is None:
+                return np.nan_to_num(np.asarray(observations, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+
+            return self._entity_adapter.normalize_observation(
+                agent_index=index,
+                observation=observations,
+                observation_names=self.observation_names[index] if index < len(self.observation_names) else [],
+                observation_space=self.observation_space[index],
+            ).astype(np.float64)
+
         obs_array = np.array(observations, dtype=np.float64)  # Ensure numeric type
 
         # Apply encoding transformation correctly
@@ -818,6 +1056,14 @@ class Wrapper_CityLearn(RLC):
             "action_names": flat_action_names,
             "action_names_by_agent": action_names_by_agent,
             "building_names": building_names,
+            "interface": getattr(self.env, "interface", "flat"),
+            "topology_mode": getattr(self.env, "topology_mode", "static"),
+            "entity_encoding": {
+                "enabled": bool(self._entity_encoding_enabled),
+                "normalization": self._entity_encoding_policy,
+                "clip": bool(self._entity_encoding_clip),
+            },
+            "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
             "reward_function": {
                 "name": reward_fn.__class__.__name__ if reward_fn else None,
                 "params": reward_config,
@@ -839,6 +1085,13 @@ class Wrapper_CityLearn(RLC):
 
     def set_encoders(self) -> List[List[Encoder]]:
         r"""Instantiate observation encoders from the shared JSON configuration."""
+
+        if self._entity_interface_mode:
+            # Entity mode normalization is handled directly from observation space bounds.
+            return [
+                [NoNormalization() for _ in observation_group]
+                for observation_group in self.observation_names
+            ]
 
         rules = _load_encoder_rules()
         encoders: List[List[Encoder]] = []

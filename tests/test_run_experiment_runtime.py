@@ -354,6 +354,8 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert simulator_cfg["episode_time_steps"] == 24
     assert captured_env_kwargs["schema"] == "dummy.json"
     assert captured_env_kwargs["offline"] is True
+    assert captured_env_kwargs["interface"] == "flat"
+    assert captured_env_kwargs["topology_mode"] == "static"
     assert captured_env_kwargs["render_mode"] == "end"
     assert captured_env_kwargs["export_kpis_on_episode_end"] is True
     assert captured_env_kwargs["render_session_name"] == "job-session"

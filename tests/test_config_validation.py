@@ -150,6 +150,49 @@ def test_validate_config_rejects_invalid_simulation_window(base_config):
         validate_config(config)
 
 
+def test_validate_config_rejects_dynamic_topology_without_entity_interface(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "flat"
+    config["simulator"]["topology_mode"] = "dynamic"
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
+def test_validate_config_rejects_maddpg_with_entity_dynamic(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["topology_mode"] = "dynamic"
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
+def test_validate_config_accepts_rule_based_with_entity_dynamic(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["topology_mode"] = "dynamic"
+    config["simulator"]["dataset_name"] = "citylearn_three_phase_dynamic_topology_demo_v1"
+    config["simulator"]["dataset_path"] = "./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json"
+    config["algorithm"] = {
+        "name": "RuleBasedPolicy",
+        "hyperparameters": {
+            "pv_charge_threshold": 0.0,
+            "flexibility_hours": 3.0,
+            "emergency_hours": 1.0,
+            "pv_preferred_charge_rate": 0.6,
+            "flex_trickle_charge": 0.0,
+            "min_charge_rate": 0.0,
+            "emergency_charge_rate": 1.0,
+            "energy_epsilon": 1e-3,
+            "default_capacity_kwh": 60.0,
+            "non_flexible_chargers": [],
+        },
+        "networks": None,
+        "replay_buffer": None,
+        "exploration": None,
+    }
+    validate_config(config)
+
+
 def test_validate_config_rejects_invalid_mlflow_artifacts_profile(base_config):
     config = copy.deepcopy(base_config)
     config["tracking"]["mlflow_artifacts_profile"] = "all"

@@ -57,6 +57,12 @@ simulator:
   # Dataset comes from inside the image (not /data/datasets).
   dataset_path: /app/datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
   central_agent: false
+  interface: flat
+  topology_mode: static
+  entity_encoding:
+    enabled: false
+    normalization: minmax_space
+    clip: true
   reward_function: RewardFunction
   reward_function_kwargs: {}
   episodes: 1

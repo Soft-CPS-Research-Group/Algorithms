@@ -134,6 +134,30 @@ def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
     return dataset_path_value
 
 
+def _validate_dynamic_entity_schema_input(
+    schema_input: Any,
+    *,
+    interface: str,
+    topology_mode: str,
+) -> None:
+    """Fail fast when dynamic entity mode is requested with incompatible schema payload."""
+    if str(interface).strip().lower() != "entity" or str(topology_mode).strip().lower() != "dynamic":
+        return
+
+    if not isinstance(schema_input, dict):
+        raise ValueError(
+            "simulator.interface='entity' with simulator.topology_mode='dynamic' requires a local JSON schema payload."
+        )
+
+    schema_interface = str(schema_input.get("interface", "")).strip().lower()
+    if schema_interface and schema_interface != "entity":
+        raise ValueError("Dynamic topology schema must declare interface='entity'.")
+
+    topology_events = schema_input.get("topology_events")
+    if not isinstance(topology_events, list):
+        raise ValueError("Dynamic topology schema must include a topology_events list.")
+
+
 def _resolve_tracking_uri(runtime: dict[str, Any], fallback_mlflow_dir: Path) -> str:
     """Resolve MLflow tracking URI with env-first precedence."""
     env_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
@@ -521,9 +545,18 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         simulator_cfg = config["simulator"]
         export_cfg = simulator_cfg.get("export", {})
         schema_input = _resolve_citylearn_schema_input(simulator_cfg["dataset_path"])
+        interface_mode = str(simulator_cfg.get("interface", "flat")).strip().lower() or "flat"
+        topology_mode = str(simulator_cfg.get("topology_mode", "static")).strip().lower() or "static"
+        _validate_dynamic_entity_schema_input(
+            schema_input,
+            interface=interface_mode,
+            topology_mode=topology_mode,
+        )
         env_kwargs = {
             "schema": schema_input,
             "central_agent": simulator_cfg["central_agent"],
+            "interface": interface_mode,
+            "topology_mode": topology_mode,
             "reward_function": reward_cls,
             "offline": True,
             "render_mode": export_cfg.get("mode", "none"),
@@ -561,6 +594,17 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             config.get("topology", {}).get("action_dimensions"),
         )
         set_default_config(config, ["simulator", "reward_function_kwargs"], {})
+        set_default_config(config, ["simulator", "interface"], "flat")
+        set_default_config(config, ["simulator", "topology_mode"], "static")
+        set_default_config(
+            config,
+            ["simulator", "entity_encoding"],
+            {
+                "enabled": bool(str(config.get("simulator", {}).get("interface", "flat")).strip().lower() == "entity"),
+                "normalization": "minmax_space",
+                "clip": True,
+            },
+        )
         set_default_config(
             config,
             ["simulator", "wrapper_reward"],

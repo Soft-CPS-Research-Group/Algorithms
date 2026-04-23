@@ -104,10 +104,18 @@ class WrapperRewardConfig(BaseModel):
         return self
 
 
+class EntityEncodingConfig(BaseModel):
+    enabled: Optional[bool] = None
+    normalization: Literal["minmax_space"] = "minmax_space"
+    clip: bool = True
+
+
 class SimulatorConfig(BaseModel):
     dataset_name: str
     dataset_path: str
     central_agent: bool = False
+    interface: Literal["flat", "entity"] = "flat"
+    topology_mode: Literal["static", "dynamic"] = "static"
     reward_function: str
     reward_function_kwargs: Dict[str, Any] = Field(default_factory=dict)
     episodes: int = Field(default=1, ge=1)
@@ -116,6 +124,7 @@ class SimulatorConfig(BaseModel):
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
     export: SimulatorExportConfig = SimulatorExportConfig()
     wrapper_reward: WrapperRewardConfig = WrapperRewardConfig()
+    entity_encoding: EntityEncodingConfig = EntityEncodingConfig()
 
     @field_validator("episode_time_steps")
     @classmethod
@@ -144,6 +153,13 @@ class SimulatorConfig(BaseModel):
             and self.simulation_end_time_step < self.simulation_start_time_step
         ):
             raise ValueError("simulator.simulation_end_time_step must be >= simulation_start_time_step")
+
+        if self.topology_mode == "dynamic" and self.interface != "entity":
+            raise ValueError("simulator.topology_mode='dynamic' requires simulator.interface='entity'")
+
+        if self.entity_encoding.enabled is None:
+            self.entity_encoding.enabled = self.interface == "entity"
+
         return self
 
 
@@ -330,6 +346,15 @@ class ProjectConfig(BaseModel):
     bundle: BundleConfig = BundleConfig()
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_cross_constraints(self) -> "ProjectConfig":
+        if self.algorithm.name == "MADDPG" and self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
+            raise ValueError(
+                "algorithm.name='MADDPG' does not support simulator.interface='entity' with simulator.topology_mode='dynamic'."
+            )
+
+        return self
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain dictionary using original key names (aliases)."""

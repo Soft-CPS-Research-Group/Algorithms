@@ -63,6 +63,12 @@ simulator:
   dataset_name: citylearn_challenge_2022_phase_all_plus_evs
   dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
   central_agent: false
+  interface: flat
+  topology_mode: static
+  entity_encoding:
+    enabled: false
+    normalization: minmax_space
+    clip: true
   reward_function: CostHardConstraintReward
   reward_function_kwargs:
     export_credit_ratio: 0.8
