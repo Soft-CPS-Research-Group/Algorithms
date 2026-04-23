@@ -1,0 +1,16 @@
+{
+  "rbc": {
+    "steps": 8759,
+    "reward_sum_target": -17377.828017364274,
+    "reward_mean_target": -1.983996805270496,
+    "reward_sum_district": -117932.81980105245,
+    "reward_mean_district": -13.46418766994548
+  },
+  "bc": {
+    "steps": 8759,
+    "reward_sum_target": -17232.130737325155,
+    "reward_mean_target": -1.9673627968175766,
+    "reward_sum_district": -117787.12252101334,
+    "reward_mean_district": -13.447553661492561
+  }
+}
