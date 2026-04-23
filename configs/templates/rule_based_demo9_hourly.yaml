@@ -1,0 +1,104 @@
+# Local RuleBasedPolicy template for demo_9 (classic flat/static hourly run).
+
+metadata:
+  experiment_name: "rule_based_demo9_hourly"
+  run_name: "Rule Based Demo9 Hourly"
+  community_name: "demo_9"
+  description: "Rule-based run on demo_9 dataset (flat/static, 8760 hourly steps)"
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 10
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "rule_based_checkpoint.json"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: null
+
+bundle:
+  bundle_version: null
+  description: "RBC demo_9 hourly full-episode run"
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+  per_agent_artifact_config: {}
+
+simulator:
+  dataset_name: demo_9
+  dataset_path: ./datasets/demo_9/schema.json
+  central_agent: false
+  interface: flat
+  topology_mode: static
+  entity_encoding:
+    enabled: false
+    normalization: minmax_space
+    clip: true
+  reward_function: RewardFunction
+  reward_function_kwargs: {}
+  episodes: 1
+  simulation_start_time_step: null
+  simulation_end_time_step: null
+  episode_time_steps: null
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    session_name: null
+  wrapper_reward:
+    enabled: false
+    profile: cost_limits_v1
+    clip_enabled: true
+    clip_min: -10.0
+    clip_max: 10.0
+    squash: none
+
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 0
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+algorithm:
+  name: "RuleBasedPolicy"
+  hyperparameters:
+    pv_charge_threshold: 2.0
+    flexibility_hours: 3.0
+    emergency_hours: 1.0
+    pv_preferred_charge_rate: 0.7
+    flex_trickle_charge: 0.0
+    min_charge_rate: 0.0
+    emergency_charge_rate: 1.0
+    default_capacity_kwh: 60.0
+    non_flexible_chargers: []
+  networks: null
+  replay_buffer: null
+  exploration: null
+
+execution: null
