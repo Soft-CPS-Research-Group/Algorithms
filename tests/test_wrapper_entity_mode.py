@@ -26,9 +26,12 @@ class _DummyEntityEnv:
         self.unwrapped = self
         self.time_steps = 24
         self._version = 0
+        self._expose_building_names = True
 
     @property
     def building_names(self) -> List[str]:
+        if not self._expose_building_names:
+            raise AttributeError("building_names unavailable")
         return self._building_ids(self._version)
 
     @property
@@ -239,3 +242,17 @@ def test_wrapper_entity_converts_flat_actions_into_entity_tables():
     assert payload["tables"]["charger"].shape == (1, 1)
     assert payload["tables"]["building"][0, 0] == pytest.approx(0.3, abs=1e-6)
     assert payload["tables"]["charger"][0, 0] == pytest.approx(0.8, abs=1e-6)
+
+
+def test_wrapper_entity_building_names_fallbacks_to_entity_specs():
+    env = _DummyEntityEnv()
+    env._expose_building_names = False
+
+    wrapper = Wrapper_CityLearn(env=env, config=_entity_config(), job_id="entity-building-names")
+    info = wrapper.describe_environment()
+    assert info["building_names"] == ["B1"]
+
+    env._version = 1
+    wrapper._apply_entity_layout(env._observation_payload(version=1), force_attach=False)
+    updated_info = wrapper.describe_environment()
+    assert updated_info["building_names"] == ["B1", "B2"]

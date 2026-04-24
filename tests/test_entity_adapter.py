@@ -156,6 +156,25 @@ def test_entity_adapter_minmax_normalization_with_invalid_bounds_passthrough():
     assert encoded[pv_idx] == pytest.approx(observations[0][pv_idx], abs=1e-6)
 
 
+def test_entity_adapter_observation_dimension_is_stable_when_ev_links_toggle():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)
+
+    payload_a = _sample_observation_payload()
+    obs_a, names_a, spaces_a = adapter.to_agent_observations(payload_a)
+
+    payload_b = _sample_observation_payload()
+    payload_b["edges"]["charger_to_ev_connected_mask"] = np.array([0.0, 0.0], dtype=np.float32)
+    payload_b["edges"]["charger_to_ev_incoming_mask"] = np.array([0.0, 0.0], dtype=np.float32)
+    payload_b["tables"]["ev"] = np.array([[0.0], [0.0]], dtype=np.float32)
+    obs_b, names_b, spaces_b = adapter.to_agent_observations(payload_b)
+
+    assert len(obs_a) == len(obs_b)
+    assert names_a[0] == names_b[0]
+    assert spaces_a[0].shape == spaces_b[0].shape
+    assert obs_a[0].shape[0] == obs_b[0].shape[0]
+
+
 def test_entity_adapter_decodes_agent_actions_to_entity_tables():
     env = _DummyEntityEnv()
     adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)
@@ -177,3 +196,51 @@ def test_entity_adapter_decodes_agent_actions_to_entity_tables():
     assert building_table[1, 0] == pytest.approx(0.5, abs=1e-6)
     assert charger_table[0, 0] == pytest.approx(0.75, abs=1e-6)
     assert charger_table[1, 0] == pytest.approx(0.10, abs=1e-6)
+
+
+def test_entity_adapter_decodes_namespaced_charger_actions():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)
+
+    action_payload = adapter.to_entity_actions(
+        actions=[
+            [0.15, 0.65],
+            [0.35, 0.45],
+        ],
+        action_names=[
+            ["electrical_storage", "charger::B1/C1::electric_vehicle_storage"],
+            ["electrical_storage", "B2/C2::electric_vehicle_storage"],
+        ],
+    )
+
+    building_table = action_payload["tables"]["building"]
+    charger_table = action_payload["tables"]["charger"]
+
+    assert building_table[0, 0] == pytest.approx(0.15, abs=1e-6)
+    assert building_table[1, 0] == pytest.approx(0.35, abs=1e-6)
+    assert charger_table[0, 0] == pytest.approx(0.65, abs=1e-6)
+    assert charger_table[1, 0] == pytest.approx(0.45, abs=1e-6)
+
+
+def test_entity_adapter_decodes_direct_charger_feature_when_unique_per_building():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)
+
+    action_payload = adapter.to_entity_actions(
+        actions=[
+            [0.20, 0.90],
+            [0.40, 0.30],
+        ],
+        action_names=[
+            ["electrical_storage", "electric_vehicle_storage"],
+            ["electrical_storage", "electric_vehicle_storage"],
+        ],
+    )
+
+    building_table = action_payload["tables"]["building"]
+    charger_table = action_payload["tables"]["charger"]
+
+    assert building_table[0, 0] == pytest.approx(0.20, abs=1e-6)
+    assert building_table[1, 0] == pytest.approx(0.40, abs=1e-6)
+    assert charger_table[0, 0] == pytest.approx(0.90, abs=1e-6)
+    assert charger_table[1, 0] == pytest.approx(0.30, abs=1e-6)

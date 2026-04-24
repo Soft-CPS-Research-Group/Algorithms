@@ -689,6 +689,13 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         logger.info("Result payload written to {}", result_path)
 
         artifacts_root = path_info["bundle_dir"].resolve()
+        # Dynamic entity mode can change agent cardinality at runtime.
+        # Persist final topology before exporting artifacts/manifest.
+        final_topology = config.setdefault("topology", {})
+        final_topology["observation_dimensions"] = wrapper.observation_dimension
+        final_topology["action_dimensions"] = wrapper.action_dimension
+        final_topology["num_agents"] = len(wrapper.action_space)
+
         environment_metadata = wrapper.describe_environment()
         agent_metadata = agent.export_artifacts(
             output_dir=str(artifacts_root),

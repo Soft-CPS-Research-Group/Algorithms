@@ -345,9 +345,10 @@ class Wrapper_CityLearn(RLC):
         if self.model is None:
             return
 
+        building_names = self._resolve_building_names()
         metadata = {
             "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
-            "building_names": getattr(self.env, "building_names", None),
+            "building_names": building_names,
             "interface": getattr(self.env, "interface", None),
             "topology_mode": getattr(self.env, "topology_mode", None),
             "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
@@ -363,6 +364,22 @@ class Wrapper_CityLearn(RLC):
             )
         except AttributeError:
             pass
+
+    def _resolve_building_names(self) -> Optional[List[str]]:
+        raw_building_names = getattr(self.env, "building_names", None)
+        if isinstance(raw_building_names, list):
+            return [str(name) for name in raw_building_names]
+
+        if self._entity_interface_mode:
+            specs = getattr(self.env, "entity_specs", None)
+            if isinstance(specs, Mapping):
+                table_specs = specs.get("tables", {}) if isinstance(specs.get("tables", {}), Mapping) else {}
+                building_table = table_specs.get("building", {}) if isinstance(table_specs.get("building", {}), Mapping) else {}
+                building_ids = building_table.get("ids")
+                if isinstance(building_ids, list):
+                    return [str(name) for name in building_ids]
+
+        return None
 
     @property
     def observation_dimension(self) -> List[int]:
@@ -1044,10 +1061,7 @@ class Wrapper_CityLearn(RLC):
                 elif isinstance(value, (list, tuple)):
                     reward_config[key] = list(value)
 
-        raw_building_names = getattr(self.env, "building_names", None)
-        building_names = None
-        if isinstance(raw_building_names, list):
-            building_names = [str(name) for name in raw_building_names]
+        building_names = self._resolve_building_names()
 
         return {
             "observation_names": self.observation_names,

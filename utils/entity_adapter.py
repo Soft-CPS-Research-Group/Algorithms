@@ -265,27 +265,33 @@ class EntityContractAdapter:
                         ("charger", feature),
                     )
 
-                connected_ev_row = charger_connected_ev.get(row)
-                if connected_ev_row is not None:
+                def add_ev_context_features(context_label: str, ev_row: Optional[int]) -> None:
+                    fallback_row = row if ev_table.shape[0] > row else 0
                     for col, feature in enumerate(self._ev_features):
+                        value = 0.0
+                        low_value = -1.0e6
+                        high_value = 1.0e6
+
+                        if ev_row is not None and ev_table.shape[0] > ev_row and ev_table.shape[1] > col:
+                            value = ev_table[ev_row, col]
+                        if ev_low.shape[0] > fallback_row and ev_low.shape[1] > col:
+                            low_value = ev_low[fallback_row, col]
+                        if ev_high.shape[0] > fallback_row and ev_high.shape[1] > col:
+                            high_value = ev_high[fallback_row, col]
+
                         add_feature(
-                            f"charger::{charger_id}::connected_ev::{feature}",
-                            ev_table[connected_ev_row, col] if ev_table.shape[0] > connected_ev_row and ev_table.shape[1] > col else 0.0,
-                            ev_low[connected_ev_row, col] if ev_low.shape[0] > connected_ev_row and ev_low.shape[1] > col else -1.0e6,
-                            ev_high[connected_ev_row, col] if ev_high.shape[0] > connected_ev_row and ev_high.shape[1] > col else 1.0e6,
+                            f"charger::{charger_id}::{context_label}::{feature}",
+                            value,
+                            low_value,
+                            high_value,
                             ("ev", feature),
                         )
 
+                connected_ev_row = charger_connected_ev.get(row)
+                add_ev_context_features("connected_ev", connected_ev_row)
+
                 incoming_ev_row = charger_incoming_ev.get(row)
-                if incoming_ev_row is not None:
-                    for col, feature in enumerate(self._ev_features):
-                        add_feature(
-                            f"charger::{charger_id}::incoming_ev::{feature}",
-                            ev_table[incoming_ev_row, col] if ev_table.shape[0] > incoming_ev_row and ev_table.shape[1] > col else 0.0,
-                            ev_low[incoming_ev_row, col] if ev_low.shape[0] > incoming_ev_row and ev_low.shape[1] > col else -1.0e6,
-                            ev_high[incoming_ev_row, col] if ev_high.shape[0] > incoming_ev_row and ev_high.shape[1] > col else 1.0e6,
-                            ("ev", feature),
-                        )
+                add_ev_context_features("incoming_ev", incoming_ev_row)
 
             # Operational counters per building.
             add_feature("active_chargers_count", float(len(building_chargers)), 0.0, float(max(len(self._charger_ids), 1)), ("meta", "active_chargers_count"))
@@ -385,6 +391,98 @@ class EntityContractAdapter:
 
         return np.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
 
+    @staticmethod
+    def _charger_rows_by_building(charger_ids: Sequence[str]) -> Dict[str, List[int]]:
+        mapping: Dict[str, List[int]] = {}
+        for row, charger_id in enumerate(charger_ids):
+            if not isinstance(charger_id, str) or "/" not in charger_id:
+                continue
+            building_name = charger_id.split("/", 1)[0]
+            mapping.setdefault(building_name, []).append(row)
+        return mapping
+
+    def _match_charger_row(
+        self,
+        *,
+        building_name: str,
+        candidate: str,
+        allowed_rows: Sequence[int],
+    ) -> Optional[int]:
+        raw = str(candidate or "").strip()
+        if not raw:
+            return None
+
+        normalized = raw
+        if normalized.startswith("charger::"):
+            normalized = normalized[len("charger::") :]
+
+        candidates: List[str] = [normalized]
+        if "/" not in normalized:
+            candidates.insert(0, f"{building_name}/{normalized}")
+        elif normalized.startswith(f"{building_name}/"):
+            suffix = normalized[len(building_name) + 1 :]
+            if suffix:
+                candidates.append(suffix)
+
+        allowed = set(int(row) for row in allowed_rows)
+        for charger_id in candidates:
+            row = self._charger_row_by_id.get(charger_id)
+            if row is None:
+                continue
+            if allowed and row not in allowed:
+                continue
+            return int(row)
+
+        return None
+
+    def _resolve_charger_action_target(
+        self,
+        *,
+        action_name: str,
+        building_name: str,
+        building_charger_rows: Sequence[int],
+    ) -> Tuple[Optional[int], Optional[str]]:
+        action = str(action_name or "").strip()
+        if not action or not self._charger_action_features:
+            return None, None
+
+        if action in self._charger_action_col_by_name:
+            if len(building_charger_rows) == 1:
+                return int(building_charger_rows[0]), action
+            return None, None
+
+        for feature in self._charger_action_features:
+            prefix = f"{feature}_"
+            if action.startswith(prefix):
+                row = self._match_charger_row(
+                    building_name=building_name,
+                    candidate=action[len(prefix) :],
+                    allowed_rows=building_charger_rows,
+                )
+                if row is not None:
+                    return row, feature
+
+            suffix_token = f"::{feature}"
+            if action.endswith(suffix_token):
+                charger_ref = action[: -len(suffix_token)]
+                if charger_ref.startswith("charger::"):
+                    charger_ref = charger_ref[len("charger::") :]
+
+                row = self._match_charger_row(
+                    building_name=building_name,
+                    candidate=charger_ref,
+                    allowed_rows=building_charger_rows,
+                )
+                if row is not None:
+                    return row, feature
+
+        if len(building_charger_rows) == 1:
+            for feature in self._charger_action_features:
+                if feature in action:
+                    return int(building_charger_rows[0]), feature
+
+        return None, None
+
     def to_entity_actions(
         self,
         actions: Sequence[Sequence[float]],
@@ -404,6 +502,7 @@ class EntityContractAdapter:
             name: idx for idx, name in enumerate(self._charger_action_features)
         }
         self._charger_row_by_id = {entity_id: row for row, entity_id in enumerate(charger_ids)}
+        charger_rows_by_building = self._charger_rows_by_building(charger_ids)
 
         building_table = np.zeros(
             (len(building_ids), len(self._building_action_features)),
@@ -420,6 +519,7 @@ class EntityContractAdapter:
 
             names = action_names[building_index]
             building_name = building_ids[building_index]
+            building_charger_rows = charger_rows_by_building.get(building_name, [])
 
             for position, action_name in enumerate(names):
                 value = 0.0
@@ -431,30 +531,17 @@ class EntityContractAdapter:
                     building_table[building_index, col] = value
                     continue
 
-                if not str(action_name).startswith("electric_vehicle_storage_"):
+                charger_row, charger_feature = self._resolve_charger_action_target(
+                    action_name=str(action_name),
+                    building_name=building_name,
+                    building_charger_rows=building_charger_rows,
+                )
+                if charger_row is None or charger_feature is None:
                     continue
 
-                suffix = str(action_name)[len("electric_vehicle_storage_"):]
-                candidates = [
-                    f"{building_name}/{suffix}",
-                    suffix,
-                ]
-                if suffix.startswith(f"{building_name}/"):
-                    candidates.insert(0, suffix)
-
-                charger_row = None
-                for candidate in candidates:
-                    if candidate in self._charger_row_by_id:
-                        charger_row = self._charger_row_by_id[candidate]
-                        break
-
-                if charger_row is None:
+                charger_col = self._charger_action_col_by_name.get(charger_feature)
+                if charger_col is None:
                     continue
-
-                if not self._charger_action_features:
-                    continue
-
-                charger_col = self._charger_action_col_by_name.get("electric_vehicle_storage", 0)
                 charger_table[charger_row, charger_col] = value
 
         return {

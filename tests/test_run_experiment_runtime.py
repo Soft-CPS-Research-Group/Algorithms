@@ -119,6 +119,31 @@ class _DummyWrapperWithLocalMetrics(_DummyWrapper):
             self.local_metrics_logger.log({"sample_metric": 1.0}, 0)
 
 
+class _DummyDynamicWrapper(_DummyWrapper):
+    def learn(self, **kwargs):
+        self.learn_calls.append(kwargs)
+        # Simulate topology growth during runtime (e.g., dynamic entity mode).
+        self.observation_dimension = [2, 2]
+        self.action_dimension = [1, 1]
+        self.action_space = [object(), object()]
+
+    def describe_environment(self):
+        return {
+            "observation_names": [["feat_1", "feat_2"], ["feat_1", "feat_2"]],
+            "encoders": [
+                [{"type": "NoNormalization", "params": {}}, {"type": "NoNormalization", "params": {}}],
+                [{"type": "NoNormalization", "params": {}}, {"type": "NoNormalization", "params": {}}],
+            ],
+            "action_bounds": [
+                {"low": [0.0], "high": [1.0]},
+                {"low": [0.0], "high": [1.0]},
+            ],
+            "action_names": ["action_0"],
+            "action_names_by_agent": {"0": ["action_0"], "1": ["action_0"]},
+            "reward_function": {"name": "RewardFunction", "params": {}},
+        }
+
+
 class _DummyAgent:
     def export_artifacts(self, output_dir: str, context: dict | None = None):
         _ = context
@@ -138,6 +163,28 @@ class _DummyAgent:
                 }
             ],
         }
+
+
+class _DummyDynamicAgent(_DummyAgent):
+    def export_artifacts(self, output_dir: str, context: dict | None = None):
+        _ = context
+        output_root = Path(output_dir) / "onnx_models"
+        output_root.mkdir(parents=True, exist_ok=True)
+        artifacts = []
+        for agent_index in (0, 1):
+            output_path = output_root / f"agent_{agent_index}.onnx"
+            output_path.write_bytes(b"dummy")
+            artifacts.append(
+                {
+                    "agent_index": agent_index,
+                    "path": f"onnx_models/agent_{agent_index}.onnx",
+                    "format": "onnx",
+                    "observation_dimension": 2,
+                    "action_dimension": 1,
+                    "config": {},
+                }
+            )
+        return {"format": "onnx", "artifacts": artifacts}
 
 
 class _DummyResumeAgent(_DummyAgent):
@@ -373,6 +420,29 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     # Input config file must remain unchanged; resolved values are written separately.
     unchanged_input = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert unchanged_input == config
+
+
+def test_run_experiment_refreshes_topology_after_dynamic_changes(monkeypatch, tmp_path):
+    config = _build_enabled_config(artifact_profile="minimal")
+    config["tracking"]["mlflow_enabled"] = False
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    monkeypatch.setattr(runner, "validate_config", lambda raw: _DummyConfigModel(raw))
+    monkeypatch.setattr(runner, "start_mlflow_run", lambda config: None)
+    monkeypatch.setattr(runner, "end_mlflow_run", lambda: None)
+    monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
+    monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
+    monkeypatch.setattr(runner, "Wrapper", _DummyDynamicWrapper)
+    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyDynamicAgent())
+
+    runner.run_experiment(str(config_path), "job-dynamic-topology", tmp_path)
+
+    manifest = json.loads(
+        (tmp_path / "jobs" / "job-dynamic-topology" / "bundle" / "artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["topology"]["num_agents"] == 2
+    assert len(manifest["agent"]["artifacts"]) == 2
 
 
 def test_run_experiment_mlflow_disabled_keeps_local_metrics_fallback(monkeypatch, tmp_path):
