@@ -18,6 +18,8 @@ orchestration, logging, and packaging.
   expects and how to load them.
 - 🧭 [Simulator limits](docs/simulator_limits.md): what is and is not supported in
   this phase (resume, stepping contracts, next backlog).
+- 🧱 [Entity Interface Playbook (PT)](docs/entity_interface_playbook_pt.md):
+  practical guide for `interface=entity` (including dynamic topology).
 
 ## Prerequisites
 
@@ -129,6 +131,7 @@ Use this diagram as the mental model when wiring CI or new algorithms.
 - Templates under `configs/templates/*.yaml` provide algorithm x environment
   starting points:
   `maddpg_local.yaml`,
+  `rule_based_entity_dynamic_local.yaml`,
   `rule_based_local.yaml`,
   `rule_based_docker_internal_2000.yaml`,
   `single_agent_local.yaml`,
