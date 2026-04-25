@@ -233,6 +233,34 @@ class EVDataCollectionRBCAlgorithmConfig(BaseModel):
     exploration: Optional[ExplorationParams] = None
 
 
+class DistrictDataCollectionRBCHyperparameters(BaseModel):
+    noise_sigma: float = Field(
+        default=0.1,
+        ge=0.0,
+        description="Std-dev of Gaussian action noise on noisy episodes (clipped to [-1, 1]).",
+    )
+    noisy_episode_indices: List[int] = Field(
+        default_factory=lambda: [7, 8, 9],
+        description="0-based episode indices that should use noisy actions; others run clean RBC.",
+    )
+    seed: int = Field(
+        default=22,
+        description="Base seed; per-episode RNG uses seed + episode_index for reproducibility.",
+    )
+    rbc_hyperparameters: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional overrides forwarded to the inner RuleBasedPolicy.",
+    )
+
+
+class DistrictDataCollectionRBCAlgorithmConfig(BaseModel):
+    name: Literal["DistrictDataCollectionRBC"]
+    hyperparameters: DistrictDataCollectionRBCHyperparameters = DistrictDataCollectionRBCHyperparameters()
+    networks: Optional[AlgorithmNetworks] = None
+    replay_buffer: Optional[ReplayBufferConfig] = None
+    exploration: Optional[ExplorationParams] = None
+
+
 class OfflineBCHyperparameters(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
@@ -370,7 +398,7 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig, EVDataCollectionRBCAlgorithmConfig, OfflineBCAlgorithmConfig]
+    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig, EVDataCollectionRBCAlgorithmConfig, DistrictDataCollectionRBCAlgorithmConfig, OfflineBCAlgorithmConfig]
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 

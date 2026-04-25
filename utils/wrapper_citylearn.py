@@ -352,6 +352,7 @@ class Wrapper_CityLearn(RLC):
             "interface": getattr(self.env, "interface", None),
             "topology_mode": getattr(self.env, "topology_mode", None),
             "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
+            "topology_version": self._entity_topology_version,
         }
 
         try:

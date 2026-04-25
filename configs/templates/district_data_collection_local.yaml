@@ -1,0 +1,92 @@
+# Local District Data-Collection RBC template (Milestone 2).
+# Runs RuleBasedPolicy across the whole district of the dynamic-topology demo
+# dataset, with optional Gaussian noise injection on selected episodes, and
+# records one CSV of per-step transitions per building under the job dir.
+
+metadata:
+  experiment_name: "district_data_collection"
+  run_name: "District Data Collection RBC (M2)"
+
+# Runtime values are injected automatically by run_experiment.py.
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+# Tracking controls — MLflow disabled for lightweight local collection.
+tracking:
+  mlflow_enabled: false
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 10
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 500
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+# Checkpointing disabled — RBC is stateless.
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: null
+
+bundle:
+  bundle_version: null
+  description: "Offline RL dataset (district-wide, M2): 7 clean + 3 noisy episodes."
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+  per_agent_artifact_config: {}
+
+# Simulator wiring: dynamic-topology demo dataset, full year, 10 episodes,
+# V2GPenaltyReward (fail-fast: re-run with RewardFunction if it errors).
+simulator:
+  dataset_name: citylearn_three_phase_dynamic_topology_demo_v1
+  dataset_path: ./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json
+  central_agent: false
+  reward_function: V2GPenaltyReward
+  episodes: 10
+  simulation_start_time_step: null
+  simulation_end_time_step: null
+  episode_time_steps: null
+  export:
+    mode: none
+    export_kpis_on_episode_end: false
+    session_name: null
+
+# Every-step updates so transitions are captured exhaustively.
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 0
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+algorithm:
+  name: "DistrictDataCollectionRBC"
+  hyperparameters:
+    noise_sigma: 0.1
+    noisy_episode_indices: [7, 8, 9]
+    seed: 22
+    rbc_hyperparameters: {}
+  networks: null
+  replay_buffer: null
+  exploration: null
+
+execution: null
