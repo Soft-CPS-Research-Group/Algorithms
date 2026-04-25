@@ -52,3 +52,22 @@ def test_progress_tracker_fallback_percentage_without_global_total(tmp_path):
     assert payload["step_current"] == 24
     assert payload["progress_pct"] == 100.0
     assert payload["status"] == "completed"
+
+
+def test_progress_tracker_completed_status_forces_100_with_global_total(tmp_path):
+    progress_path = tmp_path / "progress" / "progress.json"
+    tracker = ProgressTracker(str(progress_path))
+
+    tracker.update(
+        episode=0,
+        step=9,
+        global_step=50,
+        episode_total=1,
+        step_total=100,
+        global_step_total=100,
+        status="completed",
+    )
+
+    payload = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert payload["progress_pct"] == 100.0
+    assert payload["status"] == "completed"

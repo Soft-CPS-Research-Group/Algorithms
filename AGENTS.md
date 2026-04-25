@@ -111,6 +111,28 @@ export_artifacts() → runs/jobs/<job_id>/
 
 > Encoders keep training and serving consistent; usually unchanged after initial setup.
 
+## Entity Interface (New Contract)
+
+When `simulator.interface: entity`, the wrapper uses the CityLearn entity contract
+instead of legacy flat vectors.
+
+- Input from simulator: entity payload (`tables`, `edges`, `meta`) at `reset/step`.
+- Adaptation layer: `utils/entity_adapter.py` converts entity payload to per-agent vectors.
+- Actions from agent: still returned as `List[List[float]]` (one vector per agent).
+- Output to simulator: wrapper converts agent vectors back into entity action tables.
+
+Where this happens:
+- Mode detection: `Wrapper_CityLearn.__init__` (`_entity_interface_mode`).
+- Observation conversion: `_apply_entity_layout(...)`.
+- Action conversion to simulator payload: `_to_env_actions(...)`.
+- Environment metadata for agents (`entity_specs` included): `_attach_model_environment_metadata(...)`.
+
+Dynamic topology notes:
+- If `simulator.topology_mode: dynamic`, topology can change during runtime.
+- Wrapper rebuilds layout automatically on `topology_version` change.
+- Current guardrail: `MADDPG` in `entity+dynamic` raises fail-fast on runtime topology mutation.
+  Use `RuleBasedPolicy` (or another dynamic-ready agent) for dynamic topology scenarios.
+
 ## Outputs
 
 After training completes, all artifacts are organized in a job-specific directory:

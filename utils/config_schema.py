@@ -12,6 +12,11 @@ from typing_extensions import Literal
 class MetadataConfig(BaseModel):
     experiment_name: str = Field(..., min_length=1, description="Name registered in MLflow")
     run_name: str = Field(..., min_length=1, description="Friendly name for the MLflow run")
+    community_name: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        description="Optional community/site identifier for the run",
+    )
     description: Optional[str] = Field(default=None, description="Optional human-readable bundle description")
     bundle_version: Optional[str] = Field(default=None, description="Optional bundle version string")
     alias_mapping_path: Optional[str] = Field(
@@ -84,16 +89,42 @@ class SimulatorExportConfig(BaseModel):
     session_name: Optional[str] = None
 
 
+class WrapperRewardConfig(BaseModel):
+    enabled: bool = False
+    profile: Literal["cost_limits_v1"] = "cost_limits_v1"
+    clip_enabled: bool = True
+    clip_min: float = -10.0
+    clip_max: float = 10.0
+    squash: Literal["none", "tanh"] = "none"
+
+    @model_validator(mode="after")
+    def validate_clip_range(self) -> "WrapperRewardConfig":
+        if self.clip_max < self.clip_min:
+            raise ValueError("simulator.wrapper_reward.clip_max must be >= clip_min")
+        return self
+
+
+class EntityEncodingConfig(BaseModel):
+    enabled: Optional[bool] = None
+    normalization: Literal["minmax_space"] = "minmax_space"
+    clip: bool = True
+
+
 class SimulatorConfig(BaseModel):
     dataset_name: str
     dataset_path: str
     central_agent: bool = False
+    interface: Literal["flat", "entity"] = "flat"
+    topology_mode: Literal["static", "dynamic"] = "static"
     reward_function: str
+    reward_function_kwargs: Dict[str, Any] = Field(default_factory=dict)
     episodes: int = Field(default=1, ge=1)
     simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
     simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
     export: SimulatorExportConfig = SimulatorExportConfig()
+    wrapper_reward: WrapperRewardConfig = WrapperRewardConfig()
+    entity_encoding: EntityEncodingConfig = EntityEncodingConfig()
 
     @field_validator("episode_time_steps")
     @classmethod
@@ -122,6 +153,13 @@ class SimulatorConfig(BaseModel):
             and self.simulation_end_time_step < self.simulation_start_time_step
         ):
             raise ValueError("simulator.simulation_end_time_step must be >= simulation_start_time_step")
+
+        if self.topology_mode == "dynamic" and self.interface != "entity":
+            raise ValueError("simulator.topology_mode='dynamic' requires simulator.interface='entity'")
+
+        if self.entity_encoding.enabled is None:
+            self.entity_encoding.enabled = self.interface == "entity"
+
         return self
 
 
@@ -251,6 +289,8 @@ class DeucalionExecutionConfig(BaseModel):
     mem_gb: Optional[int] = Field(default=None, ge=1)
     gpus: Optional[int] = Field(default=None, ge=0)
     sif_path: Optional[str] = None
+    sif_image: Optional[str] = None
+    sif_version: Optional[str] = None
     modules: List[str] = Field(default_factory=list)
     required_paths: List[str] = Field(default_factory=list)
     command_mode: Literal["run", "exec"] = "run"
@@ -335,6 +375,15 @@ class ProjectConfig(BaseModel):
     bundle: BundleConfig = BundleConfig()
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_cross_constraints(self) -> "ProjectConfig":
+        if self.algorithm.name == "MADDPG" and self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
+            raise ValueError(
+                "algorithm.name='MADDPG' does not support simulator.interface='entity' with simulator.topology_mode='dynamic'."
+            )
+
+        return self
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain dictionary using original key names (aliases)."""

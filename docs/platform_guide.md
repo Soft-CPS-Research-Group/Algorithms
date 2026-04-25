@@ -34,12 +34,23 @@ Key responsibilities:
 - **Wrapper_CityLearn** hides CityLearn-specific plumbing. It encodes observations, logs metrics, writes progress files, schedules checkpoints, and exposes environment metadata for inference. Encoders are built from `configs/encoders/default.json`.
 - **BaseAgent + registry** define the contract students must fulfil. Algorithms handle model logic, replay buffers, ONNX export (using `DEFAULT_ONNX_OPSET`), and provide metadata consumed by the manifest. The `update` method must accept the scheduler-aware signature (`observations`, `actions`, `rewards`, `next_observations`, `terminated`, `truncated`, `update_step`, `update_target_step`, `initial_exploration_done`, `global_learning_step`), and exploration ownership belongs to the algorithm (`BaseAgent.is_initial_exploration_done`).
 
+### 1.1 Interface modes (`flat` vs `entity`)
+
+- `flat`: legacy vector contract with fixed dimensions per episode.
+- `entity`: table/edge contract (`tables`, `edges`, `meta`) adapted by
+  `utils/entity_adapter.py` into per-agent vectors.
+- `dynamic topology`: requires `interface=entity`; the wrapper rebuilds layout on
+  `topology_version` changes.
+
+For a practical PT-oriented walkthrough (including code call points and team
+message text), see [`docs/entity_interface_playbook_pt.md`](entity_interface_playbook_pt.md).
+
 ## 2. Configuration & Schema
 
 All configurations are validated against `utils/config_schema.py` before training begins.
 
 Sections:
-- `metadata`: experiment and run identifiers (used in MLflow).
+- `metadata`: experiment/run identifiers plus optional catalog fields (`community_name`, `description`, etc.).
 - `runtime`: paths injected at runtime (leave null in files).
 - `tracking`: log level, MLflow toggle.
 - `checkpointing`: resume/transfer-learning parameters and cadence.
@@ -107,7 +118,7 @@ This manifest enables a separate inference service to apply the same preprocessi
 ### Manifest Fields in Detail
 
 - `manifest_version`: increment when the structure changes to keep inference code compatible.
-- `metadata`: mirrors the config’s experiment name/run name so manifests can be catalogued.
+- `metadata`: mirrors config metadata (for example `experiment_name`, `run_name`, `community_name`) so manifests can be catalogued.
 - `topology`: injected by the wrapper; contains agent counts and per-agent observation/action dimensionality.
 - `environment`: detailed encoder definitions (type + params), action names/bounds, reward configuration.
 - `agent`: metadata returned by the agent with one artifact entry per agent (`agent_index`, `path`, `format`, `config`), plus optional dimensions for ONNX exports.

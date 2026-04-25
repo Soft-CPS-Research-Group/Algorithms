@@ -19,6 +19,12 @@ def test_validate_config_success(base_config):
     validate_config(base_config)
 
 
+def test_validate_config_accepts_metadata_community_name(base_config):
+    config = copy.deepcopy(base_config)
+    config["metadata"]["community_name"] = "porto_cluster_a"
+    validate_config(config)
+
+
 def test_validate_config_missing_algorithm(base_config):
     config = copy.deepcopy(base_config)
     config["algorithm"] = None
@@ -100,6 +106,27 @@ def test_validate_config_accepts_simulator_export_and_time_controls(base_config)
     validate_config(config)
 
 
+def test_validate_config_accepts_wrapper_reward_overrides(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["wrapper_reward"] = {
+        "enabled": True,
+        "profile": "cost_limits_v1",
+        "clip_enabled": True,
+        "clip_min": -5.0,
+        "clip_max": 5.0,
+        "squash": "tanh",
+    }
+    validate_config(config)
+
+
+def test_validate_config_rejects_wrapper_reward_invalid_clip_range(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["wrapper_reward"]["clip_min"] = 1.0
+    config["simulator"]["wrapper_reward"]["clip_max"] = -1.0
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
 def test_validate_config_rejects_invalid_simulator_export_mode(base_config):
     config = copy.deepcopy(base_config)
     config["simulator"]["export"] = {
@@ -121,6 +148,49 @@ def test_validate_config_rejects_invalid_simulation_window(base_config):
     config["simulator"]["episodes"] = 0
     with pytest.raises(Exception):
         validate_config(config)
+
+
+def test_validate_config_rejects_dynamic_topology_without_entity_interface(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "flat"
+    config["simulator"]["topology_mode"] = "dynamic"
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
+def test_validate_config_rejects_maddpg_with_entity_dynamic(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["topology_mode"] = "dynamic"
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
+def test_validate_config_accepts_rule_based_with_entity_dynamic(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["topology_mode"] = "dynamic"
+    config["simulator"]["dataset_name"] = "citylearn_three_phase_dynamic_topology_demo_v1"
+    config["simulator"]["dataset_path"] = "./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json"
+    config["algorithm"] = {
+        "name": "RuleBasedPolicy",
+        "hyperparameters": {
+            "pv_charge_threshold": 0.0,
+            "flexibility_hours": 3.0,
+            "emergency_hours": 1.0,
+            "pv_preferred_charge_rate": 0.6,
+            "flex_trickle_charge": 0.0,
+            "min_charge_rate": 0.0,
+            "emergency_charge_rate": 1.0,
+            "energy_epsilon": 1e-3,
+            "default_capacity_kwh": 60.0,
+            "non_flexible_chargers": [],
+        },
+        "networks": None,
+        "replay_buffer": None,
+        "exploration": None,
+    }
+    validate_config(config)
 
 
 def test_validate_config_rejects_invalid_mlflow_artifacts_profile(base_config):
