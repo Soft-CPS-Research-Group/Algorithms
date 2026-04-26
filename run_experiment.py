@@ -17,8 +17,10 @@ from loguru import logger
 from pydantic import ValidationError
 
 from citylearn.citylearn import CityLearnEnv
-from citylearn.reward_function import RewardFunction
-from reward_function.V2G_Reward import V2GPenaltyReward
+from reward_function.registry import (
+    REWARD_FUNCTION_MAP,
+    get_available_reward_function_names,
+)
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.registry import (
     build_unsupported_algorithm_message,
@@ -31,12 +33,6 @@ from utils.wrapper_citylearn import Wrapper_CityLearn as Wrapper
 from utils.artifact_manifest import build_manifest, write_manifest
 from utils.bundle_validator import validate_bundle_contract
 from utils.config_schema import validate_config
-
-# Available reward functions keyed by config name
-REWARD_FUNCTION_MAP = {
-    "V2GPenaltyReward": V2GPenaltyReward,
-    "RewardFunction": RewardFunction,
-}
 
 DEFAULT_LOCAL_BASE = Path(os.environ.get("OPEVA_BASE_DIR", "./runs"))
 
@@ -74,13 +70,15 @@ def _derive_job_id(job_id: Optional[str]) -> str:
 
 def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
     job_dir = base_dir / "jobs" / job_id
+    bundle_dir = job_dir / "bundle"
     results_dir = job_dir / "results"
     progress_dir = job_dir / "progress"
     paths = {
         "job_dir": job_dir,
+        "bundle_dir": bundle_dir,
         "log_dir": job_dir / "logs",
         "checkpoints_dir": job_dir / "checkpoints",
-        "onnx_dir": job_dir / "onnx_models",
+        "onnx_dir": bundle_dir / "onnx_models",
         "results_dir": results_dir,
         "simulation_data_dir": results_dir / "simulation_data",
         "progress_dir": progress_dir,
@@ -89,7 +87,7 @@ def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
         "progress_path": progress_dir / "progress.json",
         "mlflow_dir": base_dir / "mlflow" / "mlruns",
         "job_info_path": job_dir / "job_info.json",
-        "artifact_manifest_path": job_dir / "artifact_manifest.json",
+        "artifact_manifest_path": bundle_dir / "artifact_manifest.json",
         "resolved_config_path": job_dir / "config.resolved.yaml",
     }
 
@@ -106,6 +104,58 @@ def _write_resolved_config(config: dict, output_path: Path) -> None:
     """Persist the runtime-resolved configuration for reproducibility."""
     with output_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(config, handle, sort_keys=False)
+
+
+def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
+    """Prefer local schema payloads to avoid remote dataset-index lookups.
+
+    CityLearn may query remote dataset registries when receiving a string schema
+    identifier/path. If the provided path exists locally, loading and passing the
+    JSON payload avoids those external calls (important on restricted HPC nodes).
+    """
+    if not isinstance(dataset_path_value, str):
+        return dataset_path_value
+
+    candidate = Path(dataset_path_value)
+    if not candidate.exists():
+        return dataset_path_value
+
+    try:
+        with candidate.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return dataset_path_value
+
+    if isinstance(payload, dict):
+        if payload.get("root_directory") in (None, ""):
+            payload["root_directory"] = str(candidate.resolve().parent)
+        return payload
+
+    return dataset_path_value
+
+
+def _validate_dynamic_entity_schema_input(
+    schema_input: Any,
+    *,
+    interface: str,
+    topology_mode: str,
+) -> None:
+    """Fail fast when dynamic entity mode is requested with incompatible schema payload."""
+    if str(interface).strip().lower() != "entity" or str(topology_mode).strip().lower() != "dynamic":
+        return
+
+    if not isinstance(schema_input, dict):
+        raise ValueError(
+            "simulator.interface='entity' with simulator.topology_mode='dynamic' requires a local JSON schema payload."
+        )
+
+    schema_interface = str(schema_input.get("interface", "")).strip().lower()
+    if schema_interface and schema_interface != "entity":
+        raise ValueError("Dynamic topology schema must declare interface='entity'.")
+
+    topology_events = schema_input.get("topology_events")
+    if not isinstance(topology_events, list):
+        raise ValueError("Dynamic topology schema must include a topology_events list.")
 
 
 def _resolve_tracking_uri(runtime: dict[str, Any], fallback_mlflow_dir: Path) -> str:
@@ -357,12 +407,22 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         raise ValueError(message)
 
     metadata = config.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    job_name_override = (os.environ.get("OPEVA_JOB_NAME") or "").strip()
+    if job_name_override:
+        metadata["run_name"] = job_name_override
+        config["metadata"] = metadata
     runtime = config.setdefault("runtime", {})
     tracking = config.get("tracking", {})
     artifact_profile = str(tracking.get("mlflow_artifacts_profile", "minimal")).strip().lower() or "minimal"
     mlflow_enabled = bool(tracking.get("mlflow_enabled", True))
     log_level = str(tracking.get("log_level", "INFO")).upper()
     active_log_file = path_info["log_dir"] / f"{job_id}.log"
+    # Keep a single canonical log file per job (`<job_id>.log`).
+    # The worker already captures container stdout/stderr separately, so
+    # removing default sinks avoids duplicate lines in the same file.
+    logger.remove()
     file_sink_id = logger.add(str(active_log_file), level=log_level)
     logger.info("Logging bootstrap to {}", active_log_file)
 
@@ -417,21 +477,6 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         runtime["experiment_id"] = experiment_id
         runtime["mlflow_run_url"] = _build_mlflow_run_url(mlflow_ui_base_url, experiment_id, run_id if run else None)
 
-        target_log_file = path_info["log_dir"] / f"{run_id}.log"
-        if target_log_file != active_log_file:
-            try:
-                if target_log_file.exists():
-                    target_log_file.unlink()
-                if active_log_file.exists():
-                    active_log_file.replace(target_log_file)
-                active_log_file = target_log_file
-            except OSError as exc:
-                logger.warning(
-                    "Could not rename log file {} -> {}: {}",
-                    active_log_file,
-                    target_log_file,
-                    exc,
-                )
         logger.info("Logging to {}", active_log_file)
 
         # Persist job metadata for orchestrators/consumers.
@@ -444,6 +489,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             {
                 "job_id": job_id,
                 "job_dir": str(path_info["job_dir"]),
+                "bundle_dir": str(path_info["bundle_dir"]),
                 "run_id": run_id,
                 "run_name": run_name,
                 "mlflow_run_id": run_id if mlflow_enabled else None,
@@ -493,18 +539,33 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         reward_key = config["simulator"]["reward_function"]
         reward_cls = REWARD_FUNCTION_MAP.get(reward_key)
         if reward_cls is None:
-            raise ValueError(f"Unsupported reward function '{reward_key}'.")
+            available = ", ".join(get_available_reward_function_names())
+            raise ValueError(f"Unsupported reward function '{reward_key}'. Available reward functions: {available}.")
 
         simulator_cfg = config["simulator"]
         export_cfg = simulator_cfg.get("export", {})
+        schema_input = _resolve_citylearn_schema_input(simulator_cfg["dataset_path"])
+        interface_mode = str(simulator_cfg.get("interface", "flat")).strip().lower() or "flat"
+        topology_mode = str(simulator_cfg.get("topology_mode", "static")).strip().lower() or "static"
+        _validate_dynamic_entity_schema_input(
+            schema_input,
+            interface=interface_mode,
+            topology_mode=topology_mode,
+        )
         env_kwargs = {
-            "schema": simulator_cfg["dataset_path"],
+            "schema": schema_input,
             "central_agent": simulator_cfg["central_agent"],
+            "interface": interface_mode,
+            "topology_mode": topology_mode,
             "reward_function": reward_cls,
+            "offline": True,
             "render_mode": export_cfg.get("mode", "none"),
             "export_kpis_on_episode_end": export_cfg.get("export_kpis_on_episode_end", False),
             "render_directory": str(path_info["simulation_data_dir"]),
         }
+        reward_function_kwargs = simulator_cfg.get("reward_function_kwargs")
+        if isinstance(reward_function_kwargs, dict) and reward_function_kwargs:
+            env_kwargs["reward_function_kwargs"] = reward_function_kwargs
         if export_cfg.get("session_name"):
             env_kwargs["render_session_name"] = export_cfg["session_name"]
 
@@ -532,6 +593,30 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             config.get("topology", {}).get("observation_dimensions"),
             config.get("topology", {}).get("action_dimensions"),
         )
+        set_default_config(config, ["simulator", "reward_function_kwargs"], {})
+        set_default_config(config, ["simulator", "interface"], "flat")
+        set_default_config(config, ["simulator", "topology_mode"], "static")
+        set_default_config(
+            config,
+            ["simulator", "entity_encoding"],
+            {
+                "enabled": bool(str(config.get("simulator", {}).get("interface", "flat")).strip().lower() == "entity"),
+                "normalization": "minmax_space",
+                "clip": True,
+            },
+        )
+        set_default_config(
+            config,
+            ["simulator", "wrapper_reward"],
+            {
+                "enabled": False,
+                "profile": "cost_limits_v1",
+                "clip_enabled": True,
+                "clip_min": -10.0,
+                "clip_max": 10.0,
+                "squash": "none",
+            },
+        )
 
         resolved_config_path = path_info["resolved_config_path"]
         _write_resolved_config(config, resolved_config_path)
@@ -549,33 +634,68 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         logger.info("Starting training loop")
         wrapper.learn(episodes=int(simulator_cfg.get("episodes", 1) or 1))
 
-        kpi_metrics = {}
-        if export_cfg.get("export_kpis_on_episode_end", False):
-            result_payload = {
-                "status": "completed",
-                "kpi_source": "simulator_export",
-                "export_kpis_on_episode_end": True,
-                "simulation_data_dir": str(path_info["simulation_data_dir"]),
-            }
-            logger.info("KPI evaluation delegated to simulator export; skipping explicit env.evaluate().")
+        # Ensure progress file reaches terminal state with 100% completion.
+        completed_episodes = int(simulator_cfg.get("episodes", 1) or 1)
+        final_step_total = int(getattr(wrapper, "episode_time_steps", 0) or 0)
+        final_step = max(0, final_step_total - 1)
+        final_global_step = max(0, int(getattr(wrapper, "global_step", 0) or 0))
+        final_global_step_total = (
+            completed_episodes * final_step_total if final_step_total > 0 else None
+        )
+        if getattr(wrapper, "progress_tracker", None) is not None:
+            wrapper.progress_tracker.update(
+                episode=max(0, completed_episodes - 1),
+                step=final_step,
+                global_step=final_global_step,
+                episode_total=completed_episodes,
+                step_total=final_step_total if final_step_total > 0 else None,
+                global_step_total=final_global_step_total,
+                status="completed",
+                force_complete=True,
+            )
+
+        kpi_source = "simulator_export" if export_cfg.get("export_kpis_on_episode_end", False) else "not_collected"
+        if kpi_source == "simulator_export":
+            logger.info("KPI extraction delegated to simulator export files.")
         else:
-            result_payload = {
-                "status": "completed",
-                "kpi_source": "disabled",
-                "message": (
-                    "KPI evaluation is disabled. Enable simulator.export.export_kpis_on_episode_end "
-                    "to export KPIs directly from the environment."
-                ),
-                "simulation_data_dir": str(path_info["simulation_data_dir"]),
+            logger.info("No KPI extraction performed during run; use exported artifacts for ad hoc comparison.")
+
+        wrapper_reward_metadata = (
+            wrapper.get_wrapper_reward_metadata()
+            if hasattr(wrapper, "get_wrapper_reward_metadata")
+            else {
+                "enabled": bool((simulator_cfg.get("wrapper_reward") or {}).get("enabled", False)),
+                "profile": str((simulator_cfg.get("wrapper_reward") or {}).get("profile", "cost_limits_v1")),
+                "version": None,
+                "clip_enabled": bool((simulator_cfg.get("wrapper_reward") or {}).get("clip_enabled", True)),
+                "clip_min": (simulator_cfg.get("wrapper_reward") or {}).get("clip_min", -10.0),
+                "clip_max": (simulator_cfg.get("wrapper_reward") or {}).get("clip_max", 10.0),
+                "squash": str((simulator_cfg.get("wrapper_reward") or {}).get("squash", "none")),
             }
-            logger.info("KPI evaluation disabled by config; skipping explicit env.evaluate().")
+        )
+
+        result_payload = {
+            "status": "completed",
+            "kpi_source": kpi_source,
+            "export_kpis_on_episode_end": bool(export_cfg.get("export_kpis_on_episode_end", False)),
+            "simulation_data_dir": str(path_info["simulation_data_dir"]),
+            "wrapper_reward_profile": wrapper_reward_metadata.get("profile"),
+            "wrapper_reward_version": wrapper_reward_metadata.get("version"),
+        }
 
         result_path = path_info["result_path"]
         with open(result_path, "w", encoding="utf-8") as result_file:
             json.dump(result_payload, result_file, indent=2)
         logger.info("Result payload written to {}", result_path)
 
-        artifacts_root = path_info["job_dir"].resolve()
+        artifacts_root = path_info["bundle_dir"].resolve()
+        # Dynamic entity mode can change agent cardinality at runtime.
+        # Persist final topology before exporting artifacts/manifest.
+        final_topology = config.setdefault("topology", {})
+        final_topology["observation_dimensions"] = wrapper.observation_dimension
+        final_topology["action_dimensions"] = wrapper.action_dimension
+        final_topology["num_agents"] = len(wrapper.action_space)
+
         environment_metadata = wrapper.describe_environment()
         agent_metadata = agent.export_artifacts(
             output_dir=str(artifacts_root),
@@ -598,7 +718,8 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "tracking_uri": tracking_uri,
             "mlflow_enabled": mlflow_enabled,
             "artifact_profile": artifact_profile,
-            "kpi_metric_count": len(kpi_metrics),
+            "kpi_metric_count": 0,
+            "bundle_dir": str(path_info["bundle_dir"]),
             "timestamp": datetime.utcnow().isoformat() + "Z",
         }
         summary_path = path_info["summary_path"]

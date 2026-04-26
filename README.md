@@ -18,6 +18,8 @@ orchestration, logging, and packaging.
   expects and how to load them.
 - 🧭 [Simulator limits](docs/simulator_limits.md): what is and is not supported in
   this phase (resume, stepping contracts, next backlog).
+- 🧱 [Entity Interface Playbook (PT)](docs/entity_interface_playbook_pt.md):
+  practical guide for `interface=entity` (including dynamic topology).
 
 ## Prerequisites
 
@@ -129,14 +131,11 @@ Use this diagram as the mental model when wiring CI or new algorithms.
 - Templates under `configs/templates/*.yaml` provide algorithm x environment
   starting points:
   `maddpg_local.yaml`,
-  `maddpg_deucalion_cpu.yaml`,
-  `maddpg_deucalion_gpu.yaml`,
+  `rule_based_entity_dynamic_local.yaml`,
   `rule_based_local.yaml`,
-  `rule_based_deucalion_cpu.yaml`,
-  `rule_based_deucalion_gpu.yaml`,
+  `rule_based_docker_internal_2000.yaml`,
   `single_agent_local.yaml`,
-  `single_agent_deucalion_cpu.yaml`,
-  `single_agent_deucalion_gpu.yaml`.
+  all executor/runtime specifics now chosen at launch time (UI/payload), not in template YAML.
 
 Important knobs:
 
@@ -158,6 +157,7 @@ Important knobs:
 - `simulator.episodes` – number of training episodes to execute.
 - `simulator.export.*` – CityLearn export controls:
   `mode` (`none|during|end`), KPI CSV toggle, optional fixed session name.
+- `metadata.community_name` – optional business/domain grouping key (useful for UI filtering/catalogs).
 - `bundle.*` – manifest/export metadata (`bundle_version`, `description`,
   `alias_mapping_path`) and default `artifact.config` knobs (for example
   `require_observations_envelope`).

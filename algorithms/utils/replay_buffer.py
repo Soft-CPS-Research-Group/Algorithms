@@ -11,6 +11,7 @@ def _maybe_pin_memory(tensor: torch.Tensor) -> torch.Tensor:
         return tensor.pin_memory()
     return tensor
 
+
 class MultiAgentReplayBuffer:
     def __init__(self, capacity, num_agents, batch_size):
         """
@@ -25,7 +26,8 @@ class MultiAgentReplayBuffer:
         self.capacity = capacity
         self.num_agents = num_agents
         self.batch_size = batch_size
-        self.buffers = [deque(maxlen=capacity) for _ in range(num_agents)]  # Store data in CPU memory
+        # Store joint transitions so sampling preserves alignment across agents.
+        self.buffer = deque(maxlen=capacity)
 
     def push(self, states, actions, rewards, next_states, done):
         """
@@ -38,21 +40,27 @@ class MultiAgentReplayBuffer:
             next_states (list): List of next states per agent.
             done (bool): Single done flag shared across all agents.
         """
-        for agent_idx in range(self.num_agents):
-            state_tensor = _maybe_pin_memory(torch.tensor(states[agent_idx], dtype=torch.float32))
-            action_tensor = _maybe_pin_memory(torch.tensor(actions[agent_idx], dtype=torch.float32))
-            reward_tensor = _maybe_pin_memory(
-                torch.tensor(rewards[agent_idx], dtype=torch.float32).unsqueeze(0)
-            )
-            next_state_tensor = _maybe_pin_memory(torch.tensor(next_states[agent_idx], dtype=torch.float32))
+        # Keep transitions on pageable CPU memory and pin only sampled batches.
+        # This avoids long-lived pinned allocations that can hurt host memory performance.
+        state_tensors = [
+            torch.tensor(states[agent_idx], dtype=torch.float32)
+            for agent_idx in range(self.num_agents)
+        ]
+        action_tensors = [
+            torch.tensor(actions[agent_idx], dtype=torch.float32)
+            for agent_idx in range(self.num_agents)
+        ]
+        reward_tensors = [
+            torch.tensor(rewards[agent_idx], dtype=torch.float32).unsqueeze(0)
+            for agent_idx in range(self.num_agents)
+        ]
+        next_state_tensors = [
+            torch.tensor(next_states[agent_idx], dtype=torch.float32)
+            for agent_idx in range(self.num_agents)
+        ]
+        done_tensor = torch.tensor(float(done), dtype=torch.float32).unsqueeze(0)
 
-            # Convert done flag (terminated or truncated) to a single tensor.
-            terminated_tensor = _maybe_pin_memory(
-                torch.tensor(done, dtype=torch.float32).unsqueeze(-1)
-            )
-
-            self.buffers[agent_idx].append(
-                (state_tensor, action_tensor, reward_tensor, next_state_tensor, terminated_tensor))
+        self.buffer.append((state_tensors, action_tensors, reward_tensors, next_state_tensors, done_tensor))
 
     def sample(self):
         """
@@ -64,42 +72,75 @@ class MultiAgentReplayBuffer:
         if len(self) < self.batch_size:
             raise ValueError("Not enough samples in the buffer to sample a batch.")
 
-        states, actions, rewards, next_states, terminated = [], [], [], [], []
-        for agent_idx in range(self.num_agents):
-            batch = random.sample(self.buffers[agent_idx], self.batch_size)
-            states_agent, actions_agent, rewards_agent, next_states_agent, terminated_agent = zip(*batch)
+        batch = random.sample(self.buffer, self.batch_size)
+        states_batch, actions_batch, rewards_batch, next_states_batch, dones_batch = zip(*batch)
 
-            states.append(torch.stack(states_agent))
-            actions.append(torch.stack(actions_agent))
-            rewards.append(torch.stack(rewards_agent))
-            next_states.append(torch.stack(next_states_agent))
-            terminated.append(torch.stack(terminated_agent))  # ✅ Convert to tensor here
+        states = [
+            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in states_batch]))
+            for agent_idx in range(self.num_agents)
+        ]
+        actions = [
+            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in actions_batch]))
+            for agent_idx in range(self.num_agents)
+        ]
+        rewards = [
+            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in rewards_batch]))
+            for agent_idx in range(self.num_agents)
+        ]
+        next_states = [
+            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in next_states_batch]))
+            for agent_idx in range(self.num_agents)
+        ]
 
-        # ✅ Fix: Convert dones_all from list to tensor immediately (avoid `.to()` issues)
-        terminated = torch.stack(terminated)
+        # Keep historical shape: [num_agents, batch_size, 1].
+        done_tensor = _maybe_pin_memory(torch.stack(dones_batch))
+        done_tensor = done_tensor.unsqueeze(0).expand(self.num_agents, -1, -1)
 
-        return states, actions, rewards, next_states, terminated
+        return states, actions, rewards, next_states, done_tensor
 
     def get_state(self):
         """Return a serialisable snapshot of the replay buffer."""
-        return [list(buffer) for buffer in self.buffers]
+        return {
+            "format": "joint_transitions_v2",
+            "buffer": list(self.buffer),
+        }
 
     def set_state(self, state):
         """Restore buffer contents from :meth:`get_state`."""
         if state is None:
             return
-        if len(state) != self.num_agents:
-            raise ValueError("State does not match number of agents in replay buffer.")
+        self.buffer = deque(maxlen=self.capacity)
 
-        self.buffers = [deque(maxlen=self.capacity) for _ in range(self.num_agents)]
-        for agent_idx, experiences in enumerate(state):
-            buffer = self.buffers[agent_idx]
+        if isinstance(state, dict) and "buffer" in state:
+            experiences = state["buffer"]
             for experience in experiences:
-                buffer.append(experience)
+                self.buffer.append(experience)
+            return
+
+        # Backward compatibility for older checkpoints where each agent had its own deque.
+        if isinstance(state, list) and len(state) == self.num_agents:
+            agent_buffers = state
+            min_len = min(len(agent_buffer) for agent_buffer in agent_buffers) if agent_buffers else 0
+            for transition_idx in range(min_len):
+                per_agent = [agent_buffers[agent_idx][transition_idx] for agent_idx in range(self.num_agents)]
+                states = [entry[0] for entry in per_agent]
+                actions = [entry[1] for entry in per_agent]
+                rewards = [entry[2] for entry in per_agent]
+                next_states = [entry[3] for entry in per_agent]
+                done = per_agent[0][4]
+                self.buffer.append((states, actions, rewards, next_states, done))
+            return
+
+        if isinstance(state, list):
+            for experience in state:
+                self.buffer.append(experience)
+            return
+
+        raise ValueError("Unsupported replay buffer state format.")
 
     def __len__(self):
-        """Get the current size of the smallest buffer."""
-        return min(len(buffer) for buffer in self.buffers)
+        """Get the current replay size."""
+        return len(self.buffer)
 
 
 class PrioritizedReplayBuffer:

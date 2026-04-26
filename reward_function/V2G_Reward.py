@@ -1,9 +1,7 @@
+import numpy as np
 from typing import Any, List, Mapping, Union
 from citylearn.reward_function import RewardFunction
 
-from typing import Any, List, Mapping, Union
-import numpy as np
-from citylearn.reward_function import RewardFunction
 
 class V2GPenaltyReward(RewardFunction):
     """Rewards with considerations for car charging and for MADDPG Mixed environments."""

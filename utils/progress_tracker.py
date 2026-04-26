@@ -27,6 +27,7 @@ class ProgressTracker:
         step_total: Optional[int] = None,
         global_step_total: Optional[int] = None,
         status: Optional[str] = None,
+        force_complete: bool = False,
     ) -> None:
         if not self.progress_path:
             return
@@ -69,6 +70,9 @@ class ProgressTracker:
 
         if status:
             payload["status"] = status
+
+        if force_complete or (isinstance(status, str) and status.lower() == "completed"):
+            payload["progress_pct"] = 100.0
 
         if rewards is not None:
             payload["rewards"] = list(rewards)

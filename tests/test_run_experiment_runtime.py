@@ -19,6 +19,28 @@ class _DummyConfigModel:
 
 
 class _DummyKpiTable:
+    def __init__(self):
+        self.rows = [
+            {
+                "cost_function": "community_settled_cost_total_eur",
+                "value": 10.0,
+                "name": "District",
+                "level": "district",
+            },
+            {
+                "cost_function": "electrical_service_violation_total_kwh",
+                "value": 2.5,
+                "name": "District",
+                "level": "district",
+            },
+            {
+                "cost_function": "ev_departure_success_rate",
+                "value": 0.97,
+                "name": "District",
+                "level": "district",
+            },
+        ]
+
     def pivot(self, **_kwargs):
         return self
 
@@ -31,8 +53,10 @@ class _DummyKpiTable:
     def stack(self, **_kwargs):
         return {("cost", "building"): 1.23}
 
-    def to_dict(self):
-        return {"cost": {"building": 1.23}}
+    def to_dict(self, *args, **kwargs):
+        if kwargs.get("orient") == "records":
+            return list(self.rows)
+        return {row["cost_function"]: row["value"] for row in self.rows}
 
 
 class _DummyEnv:
@@ -52,15 +76,26 @@ class _DummyWrapper:
         self.action_dimension = [1]
         self.action_space = [object()]
         self.local_metrics_logger = None
-        self.learn_call_kwargs = None
+        self.learn_calls = []
         _DummyWrapper.last_instance = self
 
     def set_model(self, _agent):
         return None
 
     def learn(self, **kwargs):
-        self.learn_call_kwargs = kwargs
+        self.learn_calls.append(kwargs)
         return None
+
+    def get_wrapper_reward_metadata(self):
+        return {
+            "enabled": False,
+            "profile": "cost_limits_v1",
+            "version": "cost_limits_v1.0.0",
+            "clip_enabled": True,
+            "clip_min": -10.0,
+            "clip_max": 10.0,
+            "squash": "none",
+        }
 
     def describe_environment(self):
         return {
@@ -79,9 +114,34 @@ class _DummyWrapperWithLocalMetrics(_DummyWrapper):
         self.local_metrics_logger = LocalMetricsLogger(config.get("runtime", {}).get("log_dir"))
 
     def learn(self, **kwargs):
-        self.learn_call_kwargs = kwargs
+        self.learn_calls.append(kwargs)
         if self.local_metrics_logger:
             self.local_metrics_logger.log({"sample_metric": 1.0}, 0)
+
+
+class _DummyDynamicWrapper(_DummyWrapper):
+    def learn(self, **kwargs):
+        self.learn_calls.append(kwargs)
+        # Simulate topology growth during runtime (e.g., dynamic entity mode).
+        self.observation_dimension = [2, 2]
+        self.action_dimension = [1, 1]
+        self.action_space = [object(), object()]
+
+    def describe_environment(self):
+        return {
+            "observation_names": [["feat_1", "feat_2"], ["feat_1", "feat_2"]],
+            "encoders": [
+                [{"type": "NoNormalization", "params": {}}, {"type": "NoNormalization", "params": {}}],
+                [{"type": "NoNormalization", "params": {}}, {"type": "NoNormalization", "params": {}}],
+            ],
+            "action_bounds": [
+                {"low": [0.0], "high": [1.0]},
+                {"low": [0.0], "high": [1.0]},
+            ],
+            "action_names": ["action_0"],
+            "action_names_by_agent": {"0": ["action_0"], "1": ["action_0"]},
+            "reward_function": {"name": "RewardFunction", "params": {}},
+        }
 
 
 class _DummyAgent:
@@ -103,6 +163,28 @@ class _DummyAgent:
                 }
             ],
         }
+
+
+class _DummyDynamicAgent(_DummyAgent):
+    def export_artifacts(self, output_dir: str, context: dict | None = None):
+        _ = context
+        output_root = Path(output_dir) / "onnx_models"
+        output_root.mkdir(parents=True, exist_ok=True)
+        artifacts = []
+        for agent_index in (0, 1):
+            output_path = output_root / f"agent_{agent_index}.onnx"
+            output_path.write_bytes(b"dummy")
+            artifacts.append(
+                {
+                    "agent_index": agent_index,
+                    "path": f"onnx_models/agent_{agent_index}.onnx",
+                    "format": "onnx",
+                    "observation_dimension": 2,
+                    "action_dimension": 1,
+                    "config": {},
+                }
+            )
+        return {"format": "onnx", "artifacts": artifacts}
 
 
 class _DummyResumeAgent(_DummyAgent):
@@ -148,6 +230,7 @@ def _build_enabled_config(*, artifact_profile: str) -> dict:
             "dataset_path": "dummy.json",
             "central_agent": False,
             "reward_function": "RewardFunction",
+            "reward_function_kwargs": {},
             "episodes": 3,
             "simulation_start_time_step": None,
             "simulation_end_time_step": None,
@@ -156,6 +239,14 @@ def _build_enabled_config(*, artifact_profile: str) -> dict:
                 "mode": "none",
                 "export_kpis_on_episode_end": False,
                 "session_name": None,
+            },
+            "wrapper_reward": {
+                "enabled": False,
+                "profile": "cost_limits_v1",
+                "clip_enabled": True,
+                "clip_min": -10.0,
+                "clip_max": 10.0,
+                "squash": "none",
             },
         },
         "training": {
@@ -207,6 +298,7 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
             "dataset_path": "dummy.json",
             "central_agent": False,
             "reward_function": "RewardFunction",
+            "reward_function_kwargs": {},
             "episodes": 2,
             "simulation_start_time_step": 12,
             "simulation_end_time_step": 48,
@@ -215,6 +307,14 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
                 "mode": "end",
                 "export_kpis_on_episode_end": True,
                 "session_name": "job-session",
+            },
+            "wrapper_reward": {
+                "enabled": False,
+                "profile": "cost_limits_v1",
+                "clip_enabled": True,
+                "clip_min": -10.0,
+                "clip_max": 10.0,
+                "squash": "none",
             },
         },
         "training": {
@@ -254,17 +354,20 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
 
     runner.run_experiment(str(config_path), "job-mlflow-off", tmp_path)
     assert _DummyWrapper.last_instance is not None
-    assert _DummyWrapper.last_instance.learn_call_kwargs == {"episodes": 2}
+    assert _DummyWrapper.last_instance.learn_calls[0] == {"episodes": 2}
+    assert _DummyWrapper.last_instance.learn_calls == [{"episodes": 2}]
 
     job_root = tmp_path / "jobs" / "job-mlflow-off"
+    bundle_root = job_root / "bundle"
     assert (job_root / "logs").exists()
-    log_path = job_root / "logs" / "local-job-mlflow-off.log"
+    log_path = job_root / "logs" / "job-mlflow-off.log"
     assert log_path.exists()
     assert "Starting experiment" in log_path.read_text(encoding="utf-8")
     assert (job_root / "progress" / "progress.json").exists()
     assert (job_root / "results" / "result.json").exists()
-    assert (job_root / "onnx_models" / "agent_0.onnx").exists()
-    assert (job_root / "artifact_manifest.json").exists()
+    assert (bundle_root / "onnx_models" / "agent_0.onnx").exists()
+    assert (bundle_root / "artifact_manifest.json").exists()
+    assert not (bundle_root / "config.resolved.yaml").exists()
     assert (job_root / "job_info.json").exists()
     assert (job_root / "config.resolved.yaml").exists()
     assert (job_root / "results" / "summary.json").exists()
@@ -297,6 +400,9 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert simulator_cfg["simulation_end_time_step"] == 48
     assert simulator_cfg["episode_time_steps"] == 24
     assert captured_env_kwargs["schema"] == "dummy.json"
+    assert captured_env_kwargs["offline"] is True
+    assert captured_env_kwargs["interface"] == "flat"
+    assert captured_env_kwargs["topology_mode"] == "static"
     assert captured_env_kwargs["render_mode"] == "end"
     assert captured_env_kwargs["export_kpis_on_episode_end"] is True
     assert captured_env_kwargs["render_session_name"] == "job-session"
@@ -308,10 +414,35 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert result_payload["status"] == "completed"
     assert result_payload["kpi_source"] == "simulator_export"
     assert result_payload["export_kpis_on_episode_end"] is True
+    assert result_payload["wrapper_reward_profile"] == "cost_limits_v1"
+    assert result_payload["wrapper_reward_version"] == "cost_limits_v1.0.0"
 
     # Input config file must remain unchanged; resolved values are written separately.
     unchanged_input = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert unchanged_input == config
+
+
+def test_run_experiment_refreshes_topology_after_dynamic_changes(monkeypatch, tmp_path):
+    config = _build_enabled_config(artifact_profile="minimal")
+    config["tracking"]["mlflow_enabled"] = False
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    monkeypatch.setattr(runner, "validate_config", lambda raw: _DummyConfigModel(raw))
+    monkeypatch.setattr(runner, "start_mlflow_run", lambda config: None)
+    monkeypatch.setattr(runner, "end_mlflow_run", lambda: None)
+    monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
+    monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
+    monkeypatch.setattr(runner, "Wrapper", _DummyDynamicWrapper)
+    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyDynamicAgent())
+
+    runner.run_experiment(str(config_path), "job-dynamic-topology", tmp_path)
+
+    manifest = json.loads(
+        (tmp_path / "jobs" / "job-dynamic-topology" / "bundle" / "artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["topology"]["num_agents"] == 2
+    assert len(manifest["agent"]["artifacts"]) == 2
 
 
 def test_run_experiment_mlflow_disabled_keeps_local_metrics_fallback(monkeypatch, tmp_path):
@@ -337,7 +468,7 @@ def test_run_experiment_mlflow_disabled_keeps_local_metrics_fallback(monkeypatch
     assert any("sample_metric" in record.get("metrics", {}) for record in records)
 
 
-def test_run_experiment_writes_disabled_kpi_result_when_export_toggle_off(monkeypatch, tmp_path):
+def test_run_experiment_writes_not_collected_kpi_result_when_export_toggle_off(monkeypatch, tmp_path):
     config = _build_enabled_config(artifact_profile="minimal")
     config["tracking"]["mlflow_enabled"] = False
     config["simulator"]["export"]["export_kpis_on_episode_end"] = False
@@ -354,13 +485,13 @@ def test_run_experiment_writes_disabled_kpi_result_when_export_toggle_off(monkey
 
     runner.run_experiment(str(config_path), "job-kpi-disabled", tmp_path)
     assert _DummyWrapper.last_instance is not None
-    assert _DummyWrapper.last_instance.learn_call_kwargs == {"episodes": 3}
+    assert _DummyWrapper.last_instance.learn_calls == [{"episodes": 3}]
 
     result_payload = json.loads(
         (tmp_path / "jobs" / "job-kpi-disabled" / "results" / "result.json").read_text(encoding="utf-8")
     )
     assert result_payload["status"] == "completed"
-    assert result_payload["kpi_source"] == "disabled"
+    assert result_payload["kpi_source"] == "not_collected"
 
 
 def test_run_experiment_uses_env_tracking_uri_adds_mlflow_identity_and_curated_artifacts(monkeypatch, tmp_path):

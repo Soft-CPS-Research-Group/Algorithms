@@ -62,35 +62,17 @@ class Critic(nn.Module):
         """
         super(Critic, self).__init__()
         self.seed = torch.manual_seed(seed)
-
-        # Initial layer
-        self.fc1 = nn.Linear(state_size, fc_units[0])
-
-        # Concatenation layer (adding action_size to the width)
-        self.fc2 = nn.Linear(fc_units[0] + action_size, fc_units[1] if len(fc_units) > 1 else 1)
-
-        # Additional layers if any
-        self.fc_layers = []
-        for i in range(1, len(fc_units) - 1):
-            self.fc_layers.append(nn.Linear(fc_units[i], fc_units[i + 1]))
-
-        # If there are more than 2 fc_units, the last fc_layer will output the Q-value.
-        # Otherwise, fc2 is responsible for that.
-        if len(fc_units) > 2:
-            self.fc_layers.append(nn.Linear(fc_units[-1], 1))
-
-        # ModuleList to register the layers with PyTorch
-        self.fc_layers = nn.ModuleList(self.fc_layers)
+        self.fc_layers = nn.ModuleList()
+        input_dim = state_size + action_size
+        for hidden_dim in fc_units:
+            self.fc_layers.append(nn.Linear(input_dim, hidden_dim))
+            input_dim = hidden_dim
+        self.q_out = nn.Linear(input_dim, 1)
 
     def forward(self, state, action):
         """Build a critic (value) network that maps (state, action) pairs -> Q-values."""
-        x = F.relu(self.fc1(state))
-
-        # Concatenate the action values with the output from the previous layer
-        x = torch.cat((x, action), dim=1)
-        x = F.relu(self.fc2(x))
-
+        x = torch.cat((state, action), dim=1)
         for fc in self.fc_layers:
             x = F.relu(fc(x))
 
-        return x
+        return self.q_out(x)

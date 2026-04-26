@@ -4,6 +4,8 @@
 metadata:
   experiment_name: "rule_based_docker_internal_dataset"
   run_name: "Rule Based Docker 2000"
+  community_name: "default_community"
+  description: "Rule-based docker run with internal dataset"
 
 # Runtime values are injected automatically by run_experiment.py.
 runtime:
@@ -55,7 +57,14 @@ simulator:
   # Dataset comes from inside the image (not /data/datasets).
   dataset_path: /app/datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
   central_agent: false
+  interface: flat
+  topology_mode: static
+  entity_encoding:
+    enabled: false
+    normalization: minmax_space
+    clip: true
   reward_function: RewardFunction
+  reward_function_kwargs: {}
   episodes: 1
   # ~2000 steps in a single episode.
   simulation_start_time_step: 0
@@ -63,9 +72,16 @@ simulator:
   episode_time_steps: 2000
   # Export controls for simulator CSV/KPI outputs.
   export:
-    mode: none
-    export_kpis_on_episode_end: false
+    mode: end
+    export_kpis_on_episode_end: true
     session_name: null
+  wrapper_reward:
+    enabled: false
+    profile: cost_limits_v1
+    clip_enabled: true
+    clip_min: -10.0
+    clip_max: 10.0
+    squash: none
 
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:

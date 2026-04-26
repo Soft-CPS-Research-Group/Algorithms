@@ -4,6 +4,7 @@
   "metadata": {
     "experiment_name": "citylearn_maddpg_ev",
     "run_name": "baseline_run",
+    "community_name": "boavista_rec",
     "bundle_version": "2026-03-10-v1",
     "description": "Example ONNX bundle for inference integration",
     "alias_mapping_path": "aliases.json"

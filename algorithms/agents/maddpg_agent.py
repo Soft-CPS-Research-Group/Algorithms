@@ -43,11 +43,27 @@ class MADDPG(BaseAgent):
         buffer_cfg = self.config["algorithm"]["replay_buffer"]
         network_cfg = self.config["algorithm"]["networks"]
 
-        self.gamma = exploration_cfg["gamma"]
-        self.tau = exploration_cfg["tau"]
-        self.sigma = exploration_cfg["sigma"]
-        self.bias = exploration_cfg["bias"]
-        self.end_initial_exploration_time_step = int(exploration_cfg.get("end_initial_exploration_time_step", 0) or 0)
+        hyperparams = self.config["algorithm"]["hyperparameters"]
+
+        self.gamma = float(hyperparams.get("gamma", exploration_cfg.get("gamma", 0.99)))
+        self.tau = float(exploration_cfg.get("tau", 0.001))
+        self.sigma = float(exploration_cfg.get("sigma", 0.2))
+        self.sigma_decay = float(exploration_cfg.get("decay", 1.0))
+        self.min_sigma = float(exploration_cfg.get("min_sigma", 0.0))
+        self.bias = float(exploration_cfg.get("bias", 0.0))
+        noise_clip_raw = exploration_cfg.get("noise_clip")
+        self.noise_clip = float(noise_clip_raw) if noise_clip_raw is not None else None
+        if self.noise_clip is not None and self.noise_clip <= 0.0:
+            self.noise_clip = None
+        self.end_initial_exploration_time_step = max(
+            0,
+            int(exploration_cfg.get("end_initial_exploration_time_step", 0) or 0),
+        )
+        self.random_exploration_steps = max(
+            0,
+            int(exploration_cfg.get("random_exploration_steps", self.end_initial_exploration_time_step) or 0),
+        )
+        self.exploration_step = 0
         self.batch_size = buffer_cfg["batch_size"]
         self.lr_actor = float(network_cfg["actor"]["lr"])
         self.lr_critic = float(network_cfg["critic"]["lr"])
@@ -73,7 +89,6 @@ class MADDPG(BaseAgent):
         if self.mlflow_step_sample_interval < 1:
             self.mlflow_step_sample_interval = 1
 
-        hyperparams = self.config["algorithm"]["hyperparameters"]
         topology = self.config.get("topology", {})
 
         self.num_agents = topology.get("num_agents") or hyperparams.get("num_agents")
@@ -86,7 +101,8 @@ class MADDPG(BaseAgent):
         self.replay_buffer = self._initialize_replay_buffer()
         self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
         self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
-        self.scaler = GradScaler(self.device)
+        self.use_amp = self.device.type == "cuda"
+        self.scaler = GradScaler(enabled=self.use_amp)
 
         logger.info("MADDPG initialization complete.")
 
@@ -180,17 +196,15 @@ class MADDPG(BaseAgent):
         global_actions = torch.cat(actions_all, dim=1)
 
         with torch.no_grad():
-            global_next_actions = torch.cat(
-                [self.actor_targets[i](next_states[i]) for i in range(self.num_agents)], dim=1
-            )
+            global_next_actions = torch.cat([self.actor_targets[i](next_states[i]) for i in range(self.num_agents)], dim=1)
             q_targets_next = torch.stack(
                 [critic(global_next_state, global_next_actions) for critic in self.critic_targets]
             )
             q_targets = rewards_all + self.gamma * q_targets_next * (1 - dones_all)
 
         q_expected = torch.stack([critic(global_state, global_actions) for critic in self.critics])
-        with autocast(device_type=self.device.type):
-            critic_loss = mse_loss(q_expected, q_targets.expand_as(q_expected)).mean()
+        with autocast(device_type=self.device.type, enabled=self.use_amp):
+            critic_loss = mse_loss(q_expected, q_targets).mean()
 
         for optimizer in self.critic_optimizers:
             optimizer.zero_grad(set_to_none=True)
@@ -207,15 +221,20 @@ class MADDPG(BaseAgent):
         should_log_step_metrics = self._should_log_training_step(global_learning_step)
 
         for agent_num in range(self.num_agents):
-            critic_loss_value = (
-                q_expected[:, agent_num] - q_targets[:, agent_num].expand_as(q_expected[:, agent_num])
-            ).abs().mean()
+            critic_loss_value = (q_expected[agent_num] - q_targets[agent_num]).abs().mean()
             if should_log_step_metrics and mlflow.active_run():
                 mlflow.log_metric(
                     f"critic_loss_agent_{agent_num}",
                     critic_loss_value.item(),
                     step=global_learning_step,
                 )
+
+        # Compute detached policy actions once and reuse them during actor updates.
+        with torch.no_grad():
+            detached_policy_actions = [
+                actor(state).detach()
+                for actor, state in zip(self.actors, states)
+            ]
 
         total_actor_loss = 0.0
         for agent_num, (actor, critic, actor_optimizer) in enumerate(
@@ -224,12 +243,11 @@ class MADDPG(BaseAgent):
             obs = states[agent_num]
 
             predicted_action = actor(obs)
-            global_predicted_actions = torch.cat(
-                [predicted_action if i == agent_num else actions_all[i].detach() for i in range(self.num_agents)],
-                dim=1,
-            )
+            joint_policy_actions = list(detached_policy_actions)
+            joint_policy_actions[agent_num] = predicted_action
+            global_predicted_actions = torch.cat(joint_policy_actions, dim=1)
 
-            with autocast(device_type=self.device.type):
+            with autocast(device_type=self.device.type, enabled=self.use_amp):
                 actor_loss = -critic(global_state, global_predicted_actions).mean()
 
             actor_optimizer.zero_grad(set_to_none=True)
@@ -238,6 +256,10 @@ class MADDPG(BaseAgent):
             clip_grad_norm_(actor.parameters(), max_norm=1.0)
             self.scaler.step(actor_optimizer)
             self.scaler.update()
+
+            # Keep cached detached actions in sync with sequential actor updates.
+            with torch.no_grad():
+                detached_policy_actions[agent_num] = actor(obs).detach()
 
             total_actor_loss += actor_loss.item()
             logger.debug("Actor {} updated. Loss: {:.4f}.", agent_num, actor_loss.item())
@@ -264,11 +286,11 @@ class MADDPG(BaseAgent):
                 step=global_learning_step,
             )
 
-        logger.info(
-            "Update complete. Avg Critic Loss: {:.4f}, Avg Actor Loss: {:.4f}.",
-            critic_loss.item(),
-            total_actor_loss / self.num_agents,
-        )
+        log_message = "Update complete. Avg Critic Loss: {:.4f}, Avg Actor Loss: {:.4f}."
+        if should_log_step_metrics:
+            logger.info(log_message, critic_loss.item(), total_actor_loss / self.num_agents)
+        else:
+            logger.debug(log_message, critic_loss.item(), total_actor_loss / self.num_agents)
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return global_learning_step >= self.end_initial_exploration_time_step
@@ -289,7 +311,7 @@ class MADDPG(BaseAgent):
 
     def _predict_deterministic(self, observations):
         actions = []
-        with torch.no_grad():
+        with torch.inference_mode():
             for actor, obs in zip(self.actors, observations):
                 action = actor(torch.as_tensor(obs, dtype=torch.float32, device=self.device)).cpu().numpy()
                 actions.append(action)
@@ -297,15 +319,31 @@ class MADDPG(BaseAgent):
         return actions
 
     def _predict_with_exploration(self, observations):
+        self.exploration_step += 1
+        if self.exploration_step <= self.random_exploration_steps:
+            return self._predict_random()
+
         deterministic_actions = self._predict_deterministic(observations)
 
         noisy_actions = []
         for action in deterministic_actions:
-            noise = np.random.normal(scale=self.sigma, size=action.shape) - self.bias
+            noise = np.random.normal(loc=self.bias, scale=self.sigma, size=action.shape)
+            if self.noise_clip is not None and self.noise_clip > 0.0:
+                noise = np.clip(noise, -self.noise_clip, self.noise_clip)
             noisy_actions.append(np.clip(action + noise, -1, 1))
+
+        self.sigma = max(self.min_sigma, self.sigma * self.sigma_decay)
 
         logger.debug("Actions with exploration applied: {}", noisy_actions)
         return [action.tolist() for action in noisy_actions]
+
+    def _predict_random(self) -> List[List[float]]:
+        random_actions = [
+            np.random.uniform(low=-1.0, high=1.0, size=(self.action_dimension[i],)).tolist()
+            for i in range(self.num_agents)
+        ]
+        logger.debug("Random exploration actions predicted: {}", random_actions)
+        return random_actions
 
     def freeze_layers(self, freeze_actor: bool = True, freeze_critic: bool = False) -> None:
         for actor in self.actors:
@@ -341,7 +379,7 @@ class MADDPG(BaseAgent):
         if not checkpoint_file.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
 
-        checkpoint = torch.load(checkpoint_file, map_location=self.device)
+        checkpoint = torch.load(checkpoint_file, map_location=self.device, weights_only=False)
         for i in range(self.num_agents):
             self.actors[i].load_state_dict(checkpoint[f"actor_state_dict_{i}"])
             self.critics[i].load_state_dict(checkpoint[f"critic_state_dict_{i}"])

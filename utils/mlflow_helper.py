@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 
 import mlflow
@@ -130,6 +131,9 @@ def start_mlflow_run(config):
         # Get the experiment name
         experiment_name = metadata_cfg.get("experiment_name", "default_experiment")
         run_name = metadata_cfg.get("run_name", "default_run")
+        job_name_override = (os.environ.get("OPEVA_JOB_NAME") or "").strip()
+        if job_name_override:
+            run_name = job_name_override
 
         # Create or get the experiment in MLflow
         experiment = mlflow.set_experiment(experiment_name)
