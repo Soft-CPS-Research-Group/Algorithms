@@ -1,0 +1,155 @@
+{
+  "seed": 22,
+  "noise_sigma": 0.1,
+  "noisy_episode_indices": [
+    7,
+    8,
+    9
+  ],
+  "episodes_completed": 10,
+  "reward_function": "V2GPenaltyReward",
+  "dataset_schema": "./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json",
+  "topology_versions_seen": [
+    0
+  ],
+  "buildings": [
+    {
+      "agent_index": 0,
+      "name": "agent_0",
+      "num_observations": 37,
+      "num_actions": 3,
+      "rows": 87590
+    },
+    {
+      "agent_index": 1,
+      "name": "agent_1",
+      "num_observations": 28,
+      "num_actions": 1,
+      "rows": 87590
+    },
+    {
+      "agent_index": 2,
+      "name": "agent_2",
+      "num_observations": 28,
+      "num_actions": 1,
+      "rows": 87590
+    },
+    {
+      "agent_index": 3,
+      "name": "agent_3",
+      "num_observations": 35,
+      "num_actions": 2,
+      "rows": 87590
+    },
+    {
+      "agent_index": 4,
+      "name": "agent_4",
+      "num_observations": 35,
+      "num_actions": 2,
+      "rows": 87590
+    },
+    {
+      "agent_index": 5,
+      "name": "agent_5",
+      "num_observations": 28,
+      "num_actions": 1,
+      "rows": 87590
+    },
+    {
+      "agent_index": 6,
+      "name": "agent_6",
+      "num_observations": 35,
+      "num_actions": 2,
+      "rows": 87590
+    },
+    {
+      "agent_index": 7,
+      "name": "agent_7",
+      "num_observations": 28,
+      "num_actions": 1,
+      "rows": 87590
+    },
+    {
+      "agent_index": 8,
+      "name": "agent_8",
+      "num_observations": 28,
+      "num_actions": 1,
+      "rows": 87590
+    },
+    {
+      "agent_index": 9,
+      "name": "agent_9",
+      "num_observations": 35,
+      "num_actions": 2,
+      "rows": 87590
+    },
+    {
+      "agent_index": 10,
+      "name": "agent_10",
+      "num_observations": 28,
+      "num_actions": 1,
+      "rows": 87590
+    },
+    {
+      "agent_index": 11,
+      "name": "agent_11",
+      "num_observations": 35,
+      "num_actions": 2,
+      "rows": 87590
+    },
+    {
+      "agent_index": 12,
+      "name": "agent_12",
+      "num_observations": 28,
+      "num_actions": 1,
+      "rows": 87590
+    },
+    {
+      "agent_index": 13,
+      "name": "agent_13",
+      "num_observations": 28,
+      "num_actions": 1,
+      "rows": 87590
+    },
+    {
+      "agent_index": 14,
+      "name": "agent_14",
+      "num_observations": 57,
+      "num_actions": 3,
+      "rows": 87590
+    },
+    {
+      "agent_index": 15,
+      "name": "agent_15",
+      "num_observations": 28,
+      "num_actions": 1,
+      "rows": 87590
+    },
+    {
+      "agent_index": 16,
+      "name": "agent_16",
+      "num_observations": 28,
+      "num_actions": 1,
+      "rows": 87590
+    }
+  ],
+  "per_building_row_counts": {
+    "agent_0": 87590,
+    "agent_1": 87590,
+    "agent_2": 87590,
+    "agent_3": 87590,
+    "agent_4": 87590,
+    "agent_5": 87590,
+    "agent_6": 87590,
+    "agent_7": 87590,
+    "agent_8": 87590,
+    "agent_9": 87590,
+    "agent_10": 87590,
+    "agent_11": 87590,
+    "agent_12": 87590,
+    "agent_13": 87590,
+    "agent_14": 87590,
+    "agent_15": 87590,
+    "agent_16": 87590
+  }
+}

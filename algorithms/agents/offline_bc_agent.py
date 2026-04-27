@@ -3,11 +3,25 @@
 The policy is loaded from disk (``model.pth`` + ``normalization_stats.json``)
 and applied to a single target building's raw observations. Other agents in
 the multi-agent setting receive zero actions, mirroring the data-collection
-setup (we only train BC for Building 5 / agent index 4).
+setup (we train BC for one specific building only).
 
 This agent does **not** train online: :meth:`update` is a no-op. It exists so
 that the trained policy can be evaluated under exactly the same CityLearn
 conditions as the RBC behaviour policy.
+
+M3 changes
+----------
+
+* **Name-aligned observation reordering.** The training CSV records the
+  ``feature_names`` it was trained on. At inference we look up each training
+  feature in the env's ``observation_names[target_idx]`` and reorder the
+  current observation vector accordingly. This makes the agent robust to
+  dynamic-topology reorderings and to environments whose obs space happens
+  to be a permutation of the training one.
+* **Fail-fast on schema drift.** If any training feature is missing from the
+  env, or if the env's action dimensionality for the target building does
+  not match the trained head, we raise a ``RuntimeError`` with an explicit
+  remediation message instead of silently producing garbage actions.
 """
 
 from __future__ import annotations
@@ -65,18 +79,25 @@ class OfflineBCAgent(BaseAgent):
         self._obs_std = np.asarray(stats[std_key], dtype=np.float32)
         # Avoid divide-by-zero for constant features.
         self._obs_std = np.where(self._obs_std < 1e-8, 1.0, self._obs_std)
-        self._obs_names_train: List[str] = list(stats.get(names_key, [])) if names_key else []
+        self._obs_names_train: List[str] = (
+            list(stats.get(names_key, [])) if names_key else []
+        )
         self._action_names_train: List[str] = list(stats.get("action_names", []))
 
         # Load policy -------------------------------------------------------
-        checkpoint = torch.load(self._model_path, map_location=self._device, weights_only=False)
+        checkpoint = torch.load(
+            self._model_path, map_location=self._device, weights_only=False
+        )
         arch = checkpoint["architecture"]
         self._policy = BCPolicy(
             obs_dim=int(arch["obs_dim"]),
             action_dim=int(arch["action_dim"]),
             hidden_layers=list(arch.get("hidden_layers", [256, 256])),
+            dropout=float(arch.get("dropout", 0.0)),
         ).to(self._device)
-        self._policy.load_state_dict(checkpoint.get("state_dict", checkpoint.get("model_state_dict")))
+        self._policy.load_state_dict(
+            checkpoint.get("state_dict", checkpoint.get("model_state_dict"))
+        )
         self._policy.eval()
 
         self._obs_dim = int(arch["obs_dim"])
@@ -86,12 +107,18 @@ class OfflineBCAgent(BaseAgent):
         self._all_action_names: List[List[str]] = []
         self._target_obs_names: List[str] = []
         self._target_action_names: List[str] = []
+        # Index into env obs[target_idx] for each training feature, in
+        # training order. Built once in attach_environment.
+        self._index_map: Optional[np.ndarray] = None
 
         logger.info(
-            "OfflineBCAgent loaded: model={}, target_building_index={}, device={}",
+            "OfflineBCAgent loaded: model={}, target_building_index={}, device={}, "
+            "obs_dim={}, action_dim={}",
             self._model_path,
             self._target_idx,
             self._device,
+            self._obs_dim,
+            self._action_dim,
         )
 
     # -----------------------------------------------------------------
@@ -109,48 +136,81 @@ class OfflineBCAgent(BaseAgent):
         self._all_action_names = [list(n) for n in action_names]
 
         if self._target_idx >= len(observation_names):
-            logger.warning(
-                "target_building_index={} exceeds agent count {}; falling back to 0",
-                self._target_idx,
-                len(observation_names),
+            raise RuntimeError(
+                f"BC target_building_index={self._target_idx} exceeds env agent "
+                f"count {len(observation_names)}. Re-train BC on the current "
+                "dataset/topology, or set a valid target_building_index."
             )
-            self._target_idx = 0
 
         self._target_obs_names = list(observation_names[self._target_idx])
         self._target_action_names = list(action_names[self._target_idx])
 
-        # Sanity checks vs. training metadata.
-        if len(self._target_obs_names) != self._obs_dim:
-            logger.warning(
-                "Observation dim mismatch: env reports {} but BC was trained on {}",
-                len(self._target_obs_names),
-                self._obs_dim,
-            )
+        # Action-dim mismatch is a hard fail (cannot pad/truncate predictions).
         if len(self._target_action_names) != self._action_dim:
-            logger.warning(
-                "Action dim mismatch: env reports {} but BC was trained on {}",
-                len(self._target_action_names),
-                self._action_dim,
+            raise RuntimeError(
+                "BC action schema mismatch: env reports "
+                f"{len(self._target_action_names)} actions for target building "
+                f"(idx={self._target_idx}) but BC was trained with "
+                f"{self._action_dim}. "
+                "Re-train BC on the current dataset/topology — Building's "
+                "action schema changed since training."
             )
-        if self._obs_names_train and self._obs_names_train != self._target_obs_names:
+
+        # Build index map by name. Requires training stats to include
+        # feature_names (M2+ trainer always does).
+        if not self._obs_names_train:
             logger.warning(
-                "Observation name order differs between training data and current env; "
-                "BC inputs are positional — verify schema compatibility."
+                "Training normalization_stats has no feature_names; falling back "
+                "to positional obs feed. This is brittle under dynamic topology."
             )
+            if len(self._target_obs_names) != self._obs_dim:
+                raise RuntimeError(
+                    f"BC obs dim mismatch: env reports {len(self._target_obs_names)} "
+                    f"but BC was trained with {self._obs_dim}. Re-train BC."
+                )
+            self._index_map = np.arange(self._obs_dim, dtype=np.int64)
+            return
+
+        env_index_by_name = {n: i for i, n in enumerate(self._target_obs_names)}
+        missing = [n for n in self._obs_names_train if n not in env_index_by_name]
+        if missing:
+            raise RuntimeError(
+                "BC obs schema mismatch: training feature(s) not present in env "
+                f"observation_names[{self._target_idx}]: {missing[:10]}"
+                + (f" (+{len(missing) - 10} more)" if len(missing) > 10 else "")
+                + ". Re-train BC on the current dataset/topology — "
+                "Building's observation schema changed since training."
+            )
+        self._index_map = np.asarray(
+            [env_index_by_name[n] for n in self._obs_names_train], dtype=np.int64
+        )
+        logger.info(
+            "BC obs name-alignment OK: {} features mapped (env has {} total at target idx)",
+            len(self._index_map),
+            len(self._target_obs_names),
+        )
 
     def predict(
         self,
         observations: List[npt.NDArray[np.float64]],
         deterministic: bool | None = None,
     ) -> List[List[float]]:
+        if self._index_map is None:
+            raise RuntimeError(
+                "OfflineBCAgent.predict called before attach_environment."
+            )
+
         all_actions: List[List[float]] = []
         for agent_idx, obs in enumerate(observations):
             if agent_idx == self._target_idx:
-                obs_arr = np.asarray(obs, dtype=np.float32)
-                # Standardize then forward.
-                normalized = (obs_arr - self._obs_mean) / self._obs_std
+                obs_arr = np.asarray(obs, dtype=np.float32).reshape(-1)
+                # Reorder env obs to match training feature order.
+                aligned = obs_arr[self._index_map]
+                normalized = (aligned - self._obs_mean) / self._obs_std
                 with torch.no_grad():
-                    tensor = torch.from_numpy(normalized).unsqueeze(0).to(self._device)
+                    tensor = (
+                        torch.from_numpy(normalized).unsqueeze(0).to(self._device)
+                    )
                     action = self._policy(tensor).squeeze(0).cpu().numpy()
                 all_actions.append([float(v) for v in action.tolist()])
             else:

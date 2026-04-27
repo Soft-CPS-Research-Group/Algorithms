@@ -1,8 +1,9 @@
 """MLP policy used for Behavioral Cloning.
 
-Architecture: ``obs_dim → 256 → 256 → action_dim`` with ReLU hidden
-activations and Tanh output activation (so outputs are bounded to
-``[-1, 1]`` — matching the CityLearn action space).
+Architecture: ``obs_dim → hidden... → action_dim`` with ReLU hidden
+activations, optional dropout between hidden layers, and Tanh output
+activation (so outputs are bounded to ``[-1, 1]`` — matching the CityLearn
+action space).
 
 The same class is used by:
 
@@ -27,16 +28,21 @@ class BCPolicy(nn.Module):
         obs_dim: int,
         action_dim: int,
         hidden_layers: Sequence[int] = (256, 256),
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.hidden_layers = list(hidden_layers)
+        self.dropout_p = float(dropout)
 
         layer_sizes: List[int] = [obs_dim, *self.hidden_layers]
         self.hidden = nn.ModuleList(
             nn.Linear(in_dim, out_dim)
             for in_dim, out_dim in zip(layer_sizes[:-1], layer_sizes[1:])
+        )
+        self.dropout = (
+            nn.Dropout(self.dropout_p) if self.dropout_p > 0.0 else nn.Identity()
         )
         self.output = nn.Linear(layer_sizes[-1], action_dim)
 
@@ -45,6 +51,7 @@ class BCPolicy(nn.Module):
         x = obs
         for layer in self.hidden:
             x = F.relu(layer(x))
+            x = self.dropout(x)
         return torch.tanh(self.output(x))
 
     def architecture_summary(self) -> dict:
@@ -55,4 +62,5 @@ class BCPolicy(nn.Module):
             "hidden_layers": list(self.hidden_layers),
             "hidden_activation": "relu",
             "output_activation": "tanh",
+            "dropout": self.dropout_p,
         }

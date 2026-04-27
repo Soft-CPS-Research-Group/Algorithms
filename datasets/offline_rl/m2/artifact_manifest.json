@@ -1,0 +1,4208 @@
+{
+  "manifest_version": 1,
+  "generated_at": "2026-04-25T17:11:36.611844Z",
+  "metadata": {
+    "experiment_name": "district_data_collection",
+    "run_name": "District Data Collection RBC (M2)",
+    "community_name": null,
+    "description": "Offline RL dataset (district-wide, M2): 7 clean + 3 noisy episodes.",
+    "bundle_version": null,
+    "alias_mapping_path": null
+  },
+  "simulator": {
+    "dataset_name": "citylearn_three_phase_dynamic_topology_demo_v1",
+    "dataset_path": "./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json",
+    "central_agent": false,
+    "reward_function": "V2GPenaltyReward"
+  },
+  "training": {
+    "seed": 22,
+    "steps_between_training_updates": 1,
+    "target_update_interval": 0
+  },
+  "topology": {
+    "num_agents": 17,
+    "observation_dimensions": [
+      37,
+      28,
+      28,
+      35,
+      35,
+      28,
+      35,
+      28,
+      28,
+      35,
+      28,
+      35,
+      28,
+      28,
+      57,
+      28,
+      28
+    ],
+    "action_dimensions": [
+      3,
+      1,
+      1,
+      2,
+      2,
+      1,
+      2,
+      1,
+      1,
+      2,
+      1,
+      2,
+      1,
+      1,
+      3,
+      1,
+      1
+    ],
+    "action_space": null
+  },
+  "algorithm": {
+    "name": "DistrictDataCollectionRBC",
+    "hyperparameters": {
+      "noise_sigma": 0.1,
+      "noisy_episode_indices": [
+        7,
+        8,
+        9
+      ],
+      "seed": 22,
+      "rbc_hyperparameters": {}
+    }
+  },
+  "environment": {
+    "observation_names": [
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3",
+        "electric_vehicle_charger_charger_1_1_connected_state",
+        "connected_electric_vehicle_at_charger_charger_1_1_departure_time",
+        "connected_electric_vehicle_at_charger_charger_1_1_required_soc_departure",
+        "connected_electric_vehicle_at_charger_charger_1_1_soc",
+        "connected_electric_vehicle_at_charger_charger_1_1_battery_capacity",
+        "electric_vehicle_charger_charger_1_1_incoming_state",
+        "incoming_electric_vehicle_at_charger_charger_1_1_estimated_arrival_time",
+        "washing_machine_1_start_time_step",
+        "washing_machine_1_end_time_step"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3",
+        "electric_vehicle_charger_charger_4_1_connected_state",
+        "connected_electric_vehicle_at_charger_charger_4_1_departure_time",
+        "connected_electric_vehicle_at_charger_charger_4_1_required_soc_departure",
+        "connected_electric_vehicle_at_charger_charger_4_1_soc",
+        "connected_electric_vehicle_at_charger_charger_4_1_battery_capacity",
+        "electric_vehicle_charger_charger_4_1_incoming_state",
+        "incoming_electric_vehicle_at_charger_charger_4_1_estimated_arrival_time"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3",
+        "electric_vehicle_charger_charger_5_1_connected_state",
+        "connected_electric_vehicle_at_charger_charger_5_1_departure_time",
+        "connected_electric_vehicle_at_charger_charger_5_1_required_soc_departure",
+        "connected_electric_vehicle_at_charger_charger_5_1_soc",
+        "connected_electric_vehicle_at_charger_charger_5_1_battery_capacity",
+        "electric_vehicle_charger_charger_5_1_incoming_state",
+        "incoming_electric_vehicle_at_charger_charger_5_1_estimated_arrival_time"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3",
+        "electric_vehicle_charger_charger_7_1_connected_state",
+        "connected_electric_vehicle_at_charger_charger_7_1_departure_time",
+        "connected_electric_vehicle_at_charger_charger_7_1_required_soc_departure",
+        "connected_electric_vehicle_at_charger_charger_7_1_soc",
+        "connected_electric_vehicle_at_charger_charger_7_1_battery_capacity",
+        "electric_vehicle_charger_charger_7_1_incoming_state",
+        "incoming_electric_vehicle_at_charger_charger_7_1_estimated_arrival_time"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3",
+        "electric_vehicle_charger_charger_10_1_connected_state",
+        "connected_electric_vehicle_at_charger_charger_10_1_departure_time",
+        "connected_electric_vehicle_at_charger_charger_10_1_required_soc_departure",
+        "connected_electric_vehicle_at_charger_charger_10_1_soc",
+        "connected_electric_vehicle_at_charger_charger_10_1_battery_capacity",
+        "electric_vehicle_charger_charger_10_1_incoming_state",
+        "incoming_electric_vehicle_at_charger_charger_10_1_estimated_arrival_time"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3",
+        "electric_vehicle_charger_charger_12_1_connected_state",
+        "connected_electric_vehicle_at_charger_charger_12_1_departure_time",
+        "connected_electric_vehicle_at_charger_charger_12_1_required_soc_departure",
+        "connected_electric_vehicle_at_charger_charger_12_1_soc",
+        "connected_electric_vehicle_at_charger_charger_12_1_battery_capacity",
+        "electric_vehicle_charger_charger_12_1_incoming_state",
+        "incoming_electric_vehicle_at_charger_charger_12_1_estimated_arrival_time"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3",
+        "charging_phase_one_hot_charger_15_1_L1",
+        "charging_phase_one_hot_charger_15_1_L2",
+        "charging_phase_one_hot_charger_15_1_L3",
+        "charging_phase_one_hot_charger_15_2_L1",
+        "charging_phase_one_hot_charger_15_2_L2",
+        "charging_phase_one_hot_charger_15_2_L3",
+        "charging_building_headroom_kw",
+        "charging_phase_L1_headroom_kw",
+        "charging_phase_L2_headroom_kw",
+        "charging_phase_L3_headroom_kw",
+        "charging_building_export_headroom_kw",
+        "charging_phase_L1_export_headroom_kw",
+        "charging_phase_L2_export_headroom_kw",
+        "charging_phase_L3_export_headroom_kw",
+        "charging_constraint_violation_kwh",
+        "electric_vehicle_charger_charger_15_1_connected_state",
+        "connected_electric_vehicle_at_charger_charger_15_1_departure_time",
+        "connected_electric_vehicle_at_charger_charger_15_1_required_soc_departure",
+        "connected_electric_vehicle_at_charger_charger_15_1_soc",
+        "connected_electric_vehicle_at_charger_charger_15_1_battery_capacity",
+        "electric_vehicle_charger_charger_15_1_incoming_state",
+        "incoming_electric_vehicle_at_charger_charger_15_1_estimated_arrival_time",
+        "electric_vehicle_charger_charger_15_2_connected_state",
+        "connected_electric_vehicle_at_charger_charger_15_2_departure_time",
+        "connected_electric_vehicle_at_charger_charger_15_2_required_soc_departure",
+        "connected_electric_vehicle_at_charger_charger_15_2_soc",
+        "connected_electric_vehicle_at_charger_charger_15_2_battery_capacity",
+        "electric_vehicle_charger_charger_15_2_incoming_state",
+        "incoming_electric_vehicle_at_charger_charger_15_2_estimated_arrival_time"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ],
+      [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3"
+      ]
+    ],
+    "encoders": [
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        },
+        {
+          "type": "NormalizeWithMissing",
+          "params": {
+            "x_max": 1.0,
+            "x_min": -0.10000000149011612,
+            "missing_value": -0.1,
+            "default": 0.0
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        },
+        {
+          "type": "NormalizeWithMissing",
+          "params": {
+            "x_max": 1.0,
+            "x_min": -0.10000000149011612,
+            "missing_value": -0.1,
+            "default": 0.0
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        },
+        {
+          "type": "NormalizeWithMissing",
+          "params": {
+            "x_max": 1.0,
+            "x_min": -0.10000000149011612,
+            "missing_value": -0.1,
+            "default": 0.0
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        },
+        {
+          "type": "NormalizeWithMissing",
+          "params": {
+            "x_max": 1.0,
+            "x_min": -0.10000000149011612,
+            "missing_value": -0.1,
+            "default": 0.0
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        },
+        {
+          "type": "NormalizeWithMissing",
+          "params": {
+            "x_max": 1.0,
+            "x_min": -0.10000000149011612,
+            "missing_value": -0.1,
+            "default": 0.0
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        },
+        {
+          "type": "NormalizeWithMissing",
+          "params": {
+            "x_max": 1.0,
+            "x_min": -0.10000000149011612,
+            "missing_value": -0.1,
+            "default": 0.0
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        },
+        {
+          "type": "NormalizeWithMissing",
+          "params": {
+            "x_max": 1.0,
+            "x_min": 0.0,
+            "missing_value": -0.1,
+            "default": 0.0
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        },
+        {
+          "type": "NormalizeWithMissing",
+          "params": {
+            "x_max": 12.0,
+            "x_min": 12.0,
+            "missing_value": -0.1,
+            "default": 0.0
+          }
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              0,
+              1
+            ]
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              -1,
+              -0.1,
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24
+            ]
+          }
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ],
+      [
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 12.0
+          }
+        },
+        {
+          "type": "OnehotEncoding",
+          "params": {
+            "classes": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        },
+        {
+          "type": "PeriodicNormalization",
+          "params": {
+            "x_max": 24.0
+          }
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "RemoveFeature",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ]
+    ],
+    "action_bounds": [
+      {
+        "low": [
+          -1.0,
+          -1.0,
+          0.0
+        ],
+        "high": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0,
+          -1.0
+        ],
+        "high": [
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0,
+          -1.0
+        ],
+        "high": [
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0,
+          -1.0
+        ],
+        "high": [
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0,
+          -1.0
+        ],
+        "high": [
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0,
+          -1.0
+        ],
+        "high": [
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0,
+          -1.0,
+          -1.0
+        ],
+        "high": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      },
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      }
+    ],
+    "action_names": [
+      "electrical_storage",
+      "electric_vehicle_storage_charger_1_1",
+      "washing_machine_1"
+    ],
+    "action_names_by_agent": {
+      "0": [
+        "electrical_storage",
+        "electric_vehicle_storage_charger_1_1",
+        "washing_machine_1"
+      ],
+      "1": [
+        "electrical_storage"
+      ],
+      "2": [
+        "electrical_storage"
+      ],
+      "3": [
+        "electrical_storage",
+        "electric_vehicle_storage_charger_4_1"
+      ],
+      "4": [
+        "electrical_storage",
+        "electric_vehicle_storage_charger_5_1"
+      ],
+      "5": [
+        "electrical_storage"
+      ],
+      "6": [
+        "electrical_storage",
+        "electric_vehicle_storage_charger_7_1"
+      ],
+      "7": [
+        "electrical_storage"
+      ],
+      "8": [
+        "electrical_storage"
+      ],
+      "9": [
+        "electrical_storage",
+        "electric_vehicle_storage_charger_10_1"
+      ],
+      "10": [
+        "electrical_storage"
+      ],
+      "11": [
+        "electrical_storage",
+        "electric_vehicle_storage_charger_12_1"
+      ],
+      "12": [
+        "electrical_storage"
+      ],
+      "13": [
+        "electrical_storage"
+      ],
+      "14": [
+        "electrical_storage",
+        "electric_vehicle_storage_charger_15_1",
+        "electric_vehicle_storage_charger_15_2"
+      ],
+      "15": [
+        "electrical_storage"
+      ],
+      "16": [
+        "electrical_storage"
+      ]
+    },
+    "building_names": null,
+    "interface": "flat",
+    "topology_mode": "static",
+    "entity_encoding": {
+      "enabled": false,
+      "normalization": "minmax_space",
+      "clip": true
+    },
+    "entity_specs": null,
+    "reward_function": {
+      "name": "V2GPenaltyReward",
+      "params": {
+        "rolling_window": [
+          17.90301445662044,
+          33.54958090186119,
+          22.315393775701523,
+          20.107367783784866,
+          41.42006433010101,
+          34.418130815029144
+        ],
+        "PEAK_PERCENTAGE_THRESHOLD": 0.1,
+        "RAMPING_PERCENTAGE_THRESHOLD": 0.1,
+        "PEAK_PENALTY_WEIGHT": 20,
+        "RAMPING_PENALTY_WEIGHT": 15,
+        "ENERGY_TRANSFER_BONUS": 10,
+        "WINDOW_SIZE": 6,
+        "PENALTY_NO_CAR_CHARGING": -5,
+        "PENALTY_BATTERY_LIMITS": -2,
+        "PENALTY_SOC_UNDER_5_10": -5,
+        "REWARD_CLOSE_SOC": 10,
+        "COMMUNITY_WEIGHT": 0.2,
+        "SQUASH": 0,
+        "REWARD_EXTRA_SELF_PRODUCTION": 5,
+        "REWARD_SELF_EV_CONSUMPTION": 5
+      }
+    },
+    "wrapper_reward": {
+      "enabled": false,
+      "profile": "cost_limits_v1",
+      "version": "cost_limits_v1.0.0",
+      "clip_enabled": true,
+      "clip_min": -10.0,
+      "clip_max": 10.0,
+      "squash": "none"
+    }
+  },
+  "agent": {
+    "format": "offline_dataset",
+    "parameters": {
+      "noise_sigma": 0.1,
+      "noisy_episode_indices": [
+        7,
+        8,
+        9
+      ],
+      "seed": 22,
+      "reward_function": "V2GPenaltyReward",
+      "episodes_completed": 10,
+      "buildings": [
+        "agent_0",
+        "agent_1",
+        "agent_2",
+        "agent_3",
+        "agent_4",
+        "agent_5",
+        "agent_6",
+        "agent_7",
+        "agent_8",
+        "agent_9",
+        "agent_10",
+        "agent_11",
+        "agent_12",
+        "agent_13",
+        "agent_14",
+        "agent_15",
+        "agent_16"
+      ]
+    },
+    "artifacts": [
+      {
+        "agent_index": 0,
+        "path": "offline_dataset_agent_0.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_0",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 1,
+        "path": "offline_dataset_agent_1.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_1",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 2,
+        "path": "offline_dataset_agent_2.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_2",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 3,
+        "path": "offline_dataset_agent_3.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_3",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 4,
+        "path": "offline_dataset_agent_4.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_4",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 5,
+        "path": "offline_dataset_agent_5.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_5",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 6,
+        "path": "offline_dataset_agent_6.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_6",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 7,
+        "path": "offline_dataset_agent_7.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_7",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 8,
+        "path": "offline_dataset_agent_8.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_8",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 9,
+        "path": "offline_dataset_agent_9.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_9",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 10,
+        "path": "offline_dataset_agent_10.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_10",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 11,
+        "path": "offline_dataset_agent_11.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_11",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 12,
+        "path": "offline_dataset_agent_12.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_12",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 13,
+        "path": "offline_dataset_agent_13.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_13",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 14,
+        "path": "offline_dataset_agent_14.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_14",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 15,
+        "path": "offline_dataset_agent_15.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_15",
+          "rows": 87590
+        }
+      },
+      {
+        "agent_index": 16,
+        "path": "offline_dataset_agent_16.csv",
+        "format": "offline_dataset",
+        "config": {
+          "building": "agent_16",
+          "rows": 87590
+        }
+      }
+    ]
+  }
+}
