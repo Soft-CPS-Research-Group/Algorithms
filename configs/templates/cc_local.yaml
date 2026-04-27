@@ -1,0 +1,104 @@
+# Community Coordinator — local development template.
+# Experiment: A-O1-S-MLP (Path A input, O1 output, single-step, MLP only)
+# Inner local controller: RuleBasedPolicy (fixed, not trained)
+
+metadata:
+  experiment_name: "cc_local_template"
+  run_name: "CC Local Run — A-O1-S-MLP"
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 50
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "latest_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 2048
+
+bundle:
+  bundle_version: null
+  description: null
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
+  central_agent: false
+  interface: entity
+  reward_function: CCReward
+  episodes: 130
+  episode_time_steps: 8760     # Full year (hourly timesteps)
+  simulation_start_time_step: null
+  simulation_end_time_step: null
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    session_name: null
+
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 2
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+# Algorithm family and hyperparameters.
+algorithm:
+  name: "CommunityCoordinator"
+  hyperparameters:
+    # Network input dim — must equal len(_build_community_state()) output
+    obs_dim: 9   # [net, pv, import, avg_soc, price, pred1, pred2, pred3, hour]
+
+    # Temporal abstraction (disabled for baseline — CC acts every env step)
+    cc_action_interval: 1   # 1 = no abstraction; CC decides every hour like BAs
+
+    # Rollout — counted in CC decisions; with K=1, 1 CC decision = 1 env step
+    # 2048 ≈ 4 PPO updates per episode (8760 env steps/ep)
+    num_steps: 2048
+
+    # Optimiser
+    lr: 1.0e-4
+
+    # Discount & GAE
+    gamma: 0.99
+    gae_lambda: 0.95
+
+    # PPO update
+    num_epochs: 10          # gradient passes over each rollout
+    mini_batch_size: 64
+    clip_coef: 0.2          # PPO clip epsilon
+    vf_coef: 0.5            # value loss weight
+    ent_coef: 0.001         # entropy bonus weight — low so policy gradient dominates
+    max_grad_norm: 0.5      # gradient clipping
+    target_kl: 0.1          # KL early-stopping threshold (null to disable)
+
+execution: null

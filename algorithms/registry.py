@@ -7,10 +7,12 @@ from typing import Dict, List, Type
 from loguru import logger
 
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.agents.community_coordinator_agent import CommunityCoordinatorAgent
 from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.agents.rbc_agent import RuleBasedPolicy
 
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
+    "CommunityCoordinator": CommunityCoordinatorAgent,
     "MADDPG": MADDPG,
     "RuleBasedPolicy": RuleBasedPolicy,
 }
