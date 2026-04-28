@@ -287,6 +287,27 @@ def test_excluded_pattern_matches_topology_version():
     assert not any(p.fullmatch("district__hour") for p in matchers)
 
 
+def test_excluded_feature_pattern_removes_topology_version():
+    """Builder-level corollary of the WP02 exclusion regex (deferred to WP03
+    because it requires ``EntityTokenLayoutBuilder``)."""
+    from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder
+    from tests._entity_sample_obs_names import (
+        load_sample_observation_names_for_first_building,
+    )
+    from utils.entity_tokenizer_schema import load_entity_tokenizer_config
+
+    cfg = load_entity_tokenizer_config(
+        "configs/tokenizers/entity_default.json"
+    )
+    builder = EntityTokenLayoutBuilder(cfg)
+    layout = builder.build(
+        "Building_1",
+        load_sample_observation_names_for_first_building(),
+        ["electrical_storage", "electric_vehicle_storage"],
+    )
+    assert "district__topology_version" in layout.excluded_feature_names
+
+
 # ---------------------------------------------------------------------------
 # validate_config integration (Tasks 12-13)
 # ---------------------------------------------------------------------------
