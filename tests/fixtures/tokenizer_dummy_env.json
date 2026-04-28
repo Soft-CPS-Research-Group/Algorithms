@@ -1,0 +1,74 @@
+{
+  "type_embeddings": {"SRO": 0, "NFC": 1, "CA": 2},
+  "excluded_features": {
+    "patterns": [
+      "^district__topology_version$",
+      "^electric_vehicle_charger_state$",
+      "^electric_vehicle_soc$",
+      "^electric_vehicle_required_soc_departure$",
+      "^electric_vehicle_departure_time$",
+      "^electric_vehicle_is_flexible$",
+      "^active_chargers_count$",
+      "^active_storages_count$",
+      "^active_pvs_count$",
+      "^solar_generation$"
+    ]
+  },
+  "nfc": {
+    "type_name": "building_nfc",
+    "entity_table": "building",
+    "expression": {
+      "op": "subtract",
+      "left": {"feature": "load_power_kw"},
+      "right": {"feature": "pv_power_kw"}
+    }
+  },
+  "ca_types": {
+    "storage": {
+      "entity_table": "storage",
+      "action_field": "electrical_storage",
+      "input_dim_fallback": 1
+    },
+    "charger": {
+      "entity_table": "charger",
+      "action_field": "electric_vehicle_storage",
+      "input_dim_fallback": 4
+    }
+  },
+  "sro_types": {
+    "district_time": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^district__hour$",
+        "^district__minutes$"
+      ],
+      "input_dim_fallback": 2
+    },
+    "pv": {
+      "entity_table": "pv",
+      "cardinality": "per_asset",
+      "adapter_prefix": "pv::",
+      "input_dim_fallback": 1
+    },
+    "ev_connected": {
+      "entity_table": "ev",
+      "cardinality": "per_asset",
+      "adapter_prefix": "charger::",
+      "adapter_label": "connected_ev",
+      "input_dim_fallback": 1
+    },
+    "ev_incoming": {
+      "entity_table": "ev",
+      "cardinality": "per_asset",
+      "adapter_prefix": "charger::",
+      "adapter_label": "incoming_ev",
+      "input_dim_fallback": 1
+    }
+  },
+  "validation": {
+    "unmatched_features": "fail",
+    "ambiguous_pattern_match": "fail",
+    "input_dim_mismatch": "fail"
+  }
+}
