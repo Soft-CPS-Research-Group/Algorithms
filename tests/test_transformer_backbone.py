@@ -1,131 +1,125 @@
-"""Tests for TransformerBackbone."""
+"""Tests for TransformerBackbone (entity-mode contract). Covers spec §16.3."""
+
+from __future__ import annotations
 
 import pytest
 import torch
-
-from algorithms.utils.transformer_backbone import TransformerOutput
-
-
-class TestTransformerOutput:
-    """Tests for TransformerOutput dataclass."""
-
-    def test_transformer_output_creation(self) -> None:
-        """TransformerOutput should store embeddings and metadata."""
-        batch_size = 2
-        n_total = 5
-        n_ca = 2
-        d_model = 64
-
-        result = TransformerOutput(
-            all_embeddings=torch.randn(batch_size, n_total, d_model),
-            ca_embeddings=torch.randn(batch_size, n_ca, d_model),
-            pooled=torch.randn(batch_size, d_model),
-            n_ca=n_ca,
-        )
-
-        assert result.all_embeddings.shape == (batch_size, n_total, d_model)
-        assert result.ca_embeddings.shape == (batch_size, n_ca, d_model)
-        assert result.pooled.shape == (batch_size, d_model)
-        assert result.n_ca == n_ca
+import torch.nn as nn
 
 
-class TestTransformerBackbone:
-    """Tests for TransformerBackbone class."""
+D_MODEL = 16
 
-    def test_backbone_creation(self) -> None:
-        """Backbone should create with specified architecture."""
-        from algorithms.utils.transformer_backbone import TransformerBackbone
 
-        backbone = TransformerBackbone(
-            d_model=64,
-            nhead=4,
-            num_layers=2,
-            dim_feedforward=128,
-            dropout=0.1,
-        )
+@pytest.fixture
+def backbone():
+    from algorithms.utils.transformer_backbone import TransformerBackbone
 
-        assert backbone.d_model == 64
-        assert backbone.type_embedding is not None
-        assert backbone.encoder is not None
+    return TransformerBackbone(
+        d_model=D_MODEL,
+        nhead=2,
+        num_layers=1,
+        dim_feedforward=32,
+        dropout=0.0,
+    )
 
-    def test_backbone_forward_shape(self) -> None:
-        """Forward pass should produce correctly shaped outputs."""
-        from algorithms.utils.transformer_backbone import TransformerBackbone
 
-        d_model = 64
-        backbone = TransformerBackbone(
-            d_model=d_model,
-            nhead=4,
-            num_layers=2,
-            dim_feedforward=128,
-        )
+def test_type_embedding_table_size_3(backbone) -> None:
+    """Spec §9: nn.Embedding(3, d_model) for {SRO=0, NFC=1, CA=2}."""
+    embeddings = [
+        m for m in backbone.modules() if isinstance(m, nn.Embedding)
+    ]
+    matching = [
+        e for e in embeddings
+        if e.num_embeddings == 3 and e.embedding_dim == D_MODEL
+    ]
+    assert matching, (
+        f"Expected nn.Embedding(3, {D_MODEL}); got "
+        f"{[(e.num_embeddings, e.embedding_dim) for e in embeddings]}"
+    )
 
-        batch_size = 2
-        n_ca = 3
-        n_sro = 2
 
-        ca_tokens = torch.randn(batch_size, n_ca, d_model)
-        sro_tokens = torch.randn(batch_size, n_sro, d_model)
-        nfc_token = torch.randn(batch_size, 1, d_model)
+def test_forward_returns_ca_and_pooled_with_correct_shapes(backbone) -> None:
+    """forward(sros, nfc, cas) → (ca_embeddings[B,N_ca,D], pooled[B,D])."""
+    n_sro, n_ca = 3, 2
+    sros = torch.randn(1, n_sro, D_MODEL)
+    nfc = torch.randn(1, 1, D_MODEL)
+    cas = torch.randn(1, n_ca, D_MODEL)
 
-        result = backbone(ca_tokens, sro_tokens, nfc_token)
+    ca_emb, pooled = backbone(sros, nfc, cas)
 
-        n_total = n_ca + n_sro + 1
-        assert result.all_embeddings.shape == (batch_size, n_total, d_model)
-        assert result.ca_embeddings.shape == (batch_size, n_ca, d_model)
-        assert result.pooled.shape == (batch_size, d_model)
-        assert result.n_ca == n_ca
+    assert ca_emb.shape == (1, n_ca, D_MODEL)
+    assert pooled.shape == (1, D_MODEL)
 
-    def test_backbone_type_embeddings(self) -> None:
-        """Type embeddings should differentiate CA, SRO, NFC."""
-        from algorithms.utils.transformer_backbone import TransformerBackbone
 
-        d_model = 64
-        backbone = TransformerBackbone(d_model=d_model, nhead=4, num_layers=1)
+def test_ca_embeddings_sliced_at_correct_offset(backbone) -> None:
+    """CA slice positions are ``[N_sro+1 : N_sro+1+N_ca]`` in the concat
+    sequence. Bypass attention mixing by replacing the encoder with identity
+    and zeroing the type embedding so the output equals the input concat."""
+    n_sro, n_ca = 4, 3
+    sros = torch.zeros(1, n_sro, D_MODEL)
+    nfc = torch.zeros(1, 1, D_MODEL)
+    cas = (
+        torch.arange(n_ca * D_MODEL, dtype=torch.float)
+        .view(1, n_ca, D_MODEL)
+    )
 
-        # Type embeddings: 0=CA, 1=SRO, 2=NFC
-        assert backbone.type_embedding.num_embeddings == 3
-        assert backbone.type_embedding.embedding_dim == d_model
+    backbone.encoder = nn.Identity()
+    with torch.no_grad():
+        backbone.type_embedding.weight.zero_()
 
-    def test_backbone_variable_token_count(self) -> None:
-        """Same backbone should handle different token counts."""
-        from algorithms.utils.transformer_backbone import TransformerBackbone
+    ca_emb, _ = backbone(sros, nfc, cas)
 
-        d_model = 64
-        backbone = TransformerBackbone(d_model=d_model, nhead=4, num_layers=2)
+    assert torch.allclose(ca_emb, cas), (
+        f"CA slice misaligned. Expected {cas}, got {ca_emb}."
+    )
 
-        # First call: 2 CAs, 2 SROs
-        result1 = backbone(
-            torch.randn(1, 2, d_model),
-            torch.randn(1, 2, d_model),
-            torch.randn(1, 1, d_model),
-        )
-        assert result1.n_ca == 2
 
-        # Second call: 5 CAs, 3 SROs
-        result2 = backbone(
-            torch.randn(1, 5, d_model),
-            torch.randn(1, 3, d_model),
-            torch.randn(1, 1, d_model),
-        )
-        assert result2.n_ca == 5
+def test_pooled_is_mean_over_all_tokens(backbone) -> None:
+    """Pooled = mean over every token (SRO + NFC + CA). Bypass attention
+    mixing as in the slice test."""
+    n_sro, n_ca = 2, 2
+    sros = torch.ones(1, n_sro, D_MODEL) * 1.0
+    nfc = torch.ones(1, 1, D_MODEL) * 5.0
+    cas = torch.ones(1, n_ca, D_MODEL) * 2.0
 
-    def test_backbone_gradient_flow(self) -> None:
-        """Gradients should flow through attention to all token types."""
-        from algorithms.utils.transformer_backbone import TransformerBackbone
+    backbone.encoder = nn.Identity()
+    with torch.no_grad():
+        backbone.type_embedding.weight.zero_()
 
-        d_model = 64
-        backbone = TransformerBackbone(d_model=d_model, nhead=4, num_layers=2)
+    _, pooled = backbone(sros, nfc, cas)
+    expected = (n_sro * 1.0 + 1 * 5.0 + n_ca * 2.0) / (n_sro + 1 + n_ca)
+    assert torch.allclose(pooled, torch.full_like(pooled, expected))
 
-        ca_tokens = torch.randn(1, 2, d_model, requires_grad=True)
-        sro_tokens = torch.randn(1, 2, d_model, requires_grad=True)
-        nfc_token = torch.randn(1, 1, d_model, requires_grad=True)
 
-        result = backbone(ca_tokens, sro_tokens, nfc_token)
-        loss = result.pooled.sum()
-        loss.backward()
+def test_gradient_flows_through_sro_and_nfc(backbone) -> None:
+    """Critic-side gradient must reach SRO and NFC inputs (they only contribute
+    via the pooled mean, so we backprop a pooled-only objective)."""
+    n_sro, n_ca = 2, 1
+    sros = torch.randn(1, n_sro, D_MODEL, requires_grad=True)
+    nfc = torch.randn(1, 1, D_MODEL, requires_grad=True)
+    cas = torch.randn(1, n_ca, D_MODEL, requires_grad=True)
 
-        # All inputs should have gradients
-        assert ca_tokens.grad is not None
-        assert sro_tokens.grad is not None
-        assert nfc_token.grad is not None
+    _, pooled = backbone(sros, nfc, cas)
+    pooled.sum().backward()
+
+    assert sros.grad is not None and sros.grad.abs().sum() > 0
+    assert nfc.grad is not None and nfc.grad.abs().sum() > 0
+    assert cas.grad is not None and cas.grad.abs().sum() > 0
+
+
+def test_variable_token_count_supported(backbone) -> None:
+    """Same backbone instance handles different (N_sro, N_ca) on successive
+    calls — required for dynamic topology."""
+    out_a = backbone(
+        torch.randn(1, 2, D_MODEL),
+        torch.randn(1, 1, D_MODEL),
+        torch.randn(1, 2, D_MODEL),
+    )
+    assert out_a[0].shape == (1, 2, D_MODEL)
+
+    out_b = backbone(
+        torch.randn(1, 5, D_MODEL),
+        torch.randn(1, 1, D_MODEL),
+        torch.randn(1, 4, D_MODEL),
+    )
+    assert out_b[0].shape == (1, 4, D_MODEL)
