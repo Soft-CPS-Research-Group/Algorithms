@@ -392,10 +392,27 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
-        if self.algorithm.name == "MADDPG" and self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
-            raise ValueError(
-                "algorithm.name='MADDPG' does not support simulator.interface='entity' with simulator.topology_mode='dynamic'."
-            )
+        # Spec §12.4: registry-driven dynamic-topology guardrail at config
+        # validation time. We preserve the historical MADDPG wording verbatim
+        # so any user-facing tests pinning that message keep passing.
+        if self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
+            from algorithms.registry import ALGORITHM_REGISTRY  # local: avoid circular import at module load
+            agent_cls = ALGORITHM_REGISTRY.get(self.algorithm.name)
+            supports_dynamic = bool(
+                getattr(agent_cls, "supports_dynamic_topology", False)
+            ) if agent_cls is not None else None
+            # ``supports_dynamic`` is None when the algorithm name is registered
+            # in the schema but not in the runtime registry (e.g. placeholder).
+            # In that case we let the placeholder check elsewhere handle it.
+            if supports_dynamic is False:
+                if self.algorithm.name == "MADDPG":
+                    raise ValueError(
+                        "algorithm.name='MADDPG' does not support simulator.interface='entity' with simulator.topology_mode='dynamic'."
+                    )
+                raise ValueError(
+                    f"algorithm.name={self.algorithm.name!r} does not support "
+                    "simulator.topology_mode='dynamic' (supports_dynamic_topology=False)."
+                )
 
         return self
 

@@ -31,6 +31,10 @@ REPLAY_BUFFER_REGISTRY = {
 class MADDPG(BaseAgent):
     """Multi-Agent DDPG implementation with MLflow logging and ONNX export."""
 
+    # Spec §12.4: MADDPG cannot adapt its critic when topology mutates at
+    # runtime; explicit False keeps the registry-driven guardrail honest.
+    supports_dynamic_topology = False
+
     def __init__(self, config: dict) -> None:
         super().__init__()
         self.config = config

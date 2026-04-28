@@ -330,11 +330,25 @@ class Wrapper_CityLearn(RLC):
             or previous_version is None
             or self._entity_topology_version != previous_version
         )
-        if topology_changed and self._entity_dynamic_mode and self._algorithm_name == "MADDPG" and previous_version is not None:
-            raise ValueError(
-                "MADDPG supports entity interface only with topology_mode='static'. "
-                "Detected topology change during runtime."
-            )
+        # Spec §12.4: registry-driven dynamic-topology guardrail. Any agent
+        # with ``supports_dynamic_topology=False`` cannot survive runtime
+        # topology mutation. Keep the historical MADDPG wording when that is
+        # the offender so existing user-facing tests still match.
+        if topology_changed and self._entity_dynamic_mode and previous_version is not None:
+            agent_supports_dynamic = bool(
+                getattr(type(self.model), "supports_dynamic_topology", False)
+            ) if self.model is not None else True
+            if not agent_supports_dynamic:
+                if self._algorithm_name == "MADDPG":
+                    raise ValueError(
+                        "MADDPG supports entity interface only with topology_mode='static'. "
+                        "Detected topology change during runtime."
+                    )
+                raise ValueError(
+                    f"Algorithm {self._algorithm_name!r} does not support dynamic "
+                    "topology (supports_dynamic_topology=False). Detected topology "
+                    "change during runtime."
+                )
 
         if topology_changed and self.model is not None:
             self._attach_model_environment_metadata()

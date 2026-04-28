@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 import numpy as np
 import numpy.typing as npt
@@ -8,6 +8,13 @@ from torch.nn import Module
 
 class BaseAgent(Module, ABC):
     """Common interface for all training and inference agents."""
+
+    # Spec docs/specv2.md §12.4: per-agent capability flag for dynamic
+    # topology. Defaults to False so any new agent must opt in explicitly.
+    # Consulted by ``utils/config_schema.py:validate_config`` and by
+    # ``utils/wrapper_citylearn.py`` to decide whether to permit
+    # ``simulator.topology_mode='dynamic'``.
+    supports_dynamic_topology: ClassVar[bool] = False
 
     def __init__(self) -> None:
         super().__init__()

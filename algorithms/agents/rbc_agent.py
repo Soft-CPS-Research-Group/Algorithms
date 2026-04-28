@@ -31,6 +31,10 @@ class ChargerInfo:
 class RuleBasedPolicy(BaseAgent):
     """Simple heuristic controller that prioritises PV utilisation while respecting EV requirements."""
 
+    # Spec §12.4: the rule-based policy reads observations dictionary-style
+    # via name lookup, so it tolerates any topology the wrapper hands it.
+    supports_dynamic_topology = True
+
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
         self.use_raw_observations = True
