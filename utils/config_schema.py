@@ -252,6 +252,44 @@ class SingleAgentRLAlgorithmConfig(BaseModel):
     exploration: Optional[ExplorationParams] = None
 
 
+class TransformerPPOTransformerConfig(BaseModel):
+    """Backbone hyperparameters for AgentTransformerPPO (spec §15.2)."""
+
+    d_model: int = Field(ge=1)
+    nhead: int = Field(ge=1)
+    num_layers: int = Field(ge=1)
+    dim_feedforward: int = Field(ge=1)
+    dropout: float = Field(default=0.1, ge=0.0, le=1.0)
+
+
+class TransformerPPOHyperparameters(BaseModel):
+    """PPO hyperparameters (spec §15.2; ported from gj/plan-c)."""
+
+    learning_rate: float = Field(gt=0)
+    gamma: float = Field(gt=0, le=1.0)
+    gae_lambda: float = Field(gt=0, le=1.0)
+    clip_eps: float = Field(gt=0)
+    ppo_epochs: int = Field(ge=1)
+    minibatch_size: int = Field(ge=1)
+    entropy_coeff: float = Field(ge=0)
+    value_coeff: float = Field(ge=0)
+    max_grad_norm: float = Field(gt=0)
+
+
+class TransformerPPOAlgorithmConfig(BaseModel):
+    """Top-level ``algorithm`` block when ``name == "AgentTransformerPPO"``.
+
+    Tokenizer rule validation is dispatched from :func:`validate_config`
+    (spec §13.4 hard-fail rules, executed against the bundled entity sample
+    payload + per-building action_field declarations).
+    """
+
+    name: Literal["AgentTransformerPPO"]
+    tokenizer_config_path: str = Field(min_length=1)
+    transformer: TransformerPPOTransformerConfig
+    hyperparameters: TransformerPPOHyperparameters
+
+
 class DeucalionExecutionConfig(BaseModel):
     partition: Optional[str] = None
     account: Optional[str] = None
@@ -341,7 +379,12 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    algorithm: Union[
+        MADDPGAlgorithmConfig,
+        RuleBasedAlgorithmConfig,
+        SingleAgentRLAlgorithmConfig,
+        TransformerPPOAlgorithmConfig,
+    ]
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
@@ -362,5 +405,38 @@ class ProjectConfig(BaseModel):
 
 
 def validate_config(raw_config: Dict[str, Any]) -> ProjectConfig:
-    """Validate a raw configuration dictionary and return the structured model."""
-    return ProjectConfig.model_validate(raw_config)
+    """Validate a raw configuration dictionary and return the structured model.
+
+    For ``algorithm.name == "AgentTransformerPPO"`` the tokenizer JSON pointed
+    to by ``algorithm.tokenizer_config_path`` is also loaded and checked
+    against the bundled entity payload sample using the 5 hard-fail rules
+    defined in ``docs/specv2.md`` §13.4.
+    """
+    project = ProjectConfig.model_validate(raw_config)
+
+    if isinstance(project.algorithm, TransformerPPOAlgorithmConfig):
+        # Imported lazily so that environments without the entity sample (or
+        # without pydantic-validated tokenizer config) only pay the cost when
+        # the transformer agent is actually selected.
+        from utils.entity_tokenizer_schema import (
+            _load_default_sample,
+            load_entity_tokenizer_config,
+            validate_against_payload,
+        )
+
+        tokenizer_cfg = load_entity_tokenizer_config(
+            project.algorithm.tokenizer_config_path
+        )
+        sample = _load_default_sample()
+        # Default action_field surface for the demo dataset; the wrapper
+        # supplies the authoritative names at runtime. We only assert the
+        # baseline contract here so misconfigured tokenizer JSONs fail fast at
+        # config-load time.
+        action_names_per_building = [
+            [ca.action_field for ca in tokenizer_cfg.ca_types.values()]
+        ]
+        validate_against_payload(
+            tokenizer_cfg, sample, action_names_per_building
+        )
+
+    return project
