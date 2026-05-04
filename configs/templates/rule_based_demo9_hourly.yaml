@@ -85,20 +85,21 @@ topology:
   action_dimensions: null
   action_space: null
 
-algorithm:
-  name: "RuleBasedPolicy"
-  hyperparameters:
-    pv_charge_threshold: 2.0
-    flexibility_hours: 3.0
-    emergency_hours: 1.0
-    pv_preferred_charge_rate: 0.7
-    flex_trickle_charge: 0.0
-    min_charge_rate: 0.0
-    emergency_charge_rate: 1.0
-    default_capacity_kwh: 60.0
-    non_flexible_chargers: []
-  networks: null
-  replay_buffer: null
-  exploration: null
+pipeline:
+  - algorithm: "RuleBasedPolicy"
+    count: 1
+    hyperparameters:
+      pv_charge_threshold: 2.0
+      flexibility_hours: 3.0
+      emergency_hours: 1.0
+      pv_preferred_charge_rate: 0.7
+      flex_trickle_charge: 0.0
+      min_charge_rate: 0.0
+      emergency_charge_rate: 1.0
+      default_capacity_kwh: 60.0
+      non_flexible_chargers: []
+    networks: null
+    replay_buffer: null
+    exploration: null
 
 execution: null

@@ -8,7 +8,7 @@ from typing import Optional
 import mlflow
 from loguru import logger
 
-from algorithms.agents.base_agent import BaseAgent
+from algorithms.execution_unit import ExecutionUnit
 
 
 class CheckpointManager:
@@ -30,7 +30,7 @@ class CheckpointManager:
 
     def maybe_save(
         self,
-        agent: BaseAgent,
+        agent: ExecutionUnit,
         step: int,
         initial_exploration_done: bool,
         update_step: bool,
@@ -47,7 +47,7 @@ class CheckpointManager:
             return None
         return self.save(agent, step)
 
-    def save(self, agent: BaseAgent, step: int) -> Optional[Path]:
+    def save(self, agent: ExecutionUnit, step: int) -> Optional[Path]:
         if not self.base_dir:
             logger.debug("Checkpoint directory is not set; skipping save.")
             return None

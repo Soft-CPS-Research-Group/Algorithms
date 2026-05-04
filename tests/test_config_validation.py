@@ -25,16 +25,23 @@ def test_validate_config_accepts_metadata_community_name(base_config):
     validate_config(config)
 
 
-def test_validate_config_missing_algorithm(base_config):
+def test_validate_config_missing_pipeline(base_config):
     config = copy.deepcopy(base_config)
-    config["algorithm"] = None
+    config["pipeline"] = None
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
+def test_validate_config_empty_pipeline(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"] = []
     with pytest.raises(Exception):
         validate_config(config)
 
 
 def test_validate_config_invalid_network_layers(base_config):
     config = copy.deepcopy(base_config)
-    config["algorithm"]["networks"]["actor"]["layers"] = []
+    config["pipeline"][0]["networks"]["actor"]["layers"] = []
     with pytest.raises(Exception):
         validate_config(config)
 
@@ -172,24 +179,27 @@ def test_validate_config_accepts_rule_based_with_entity_dynamic(base_config):
     config["simulator"]["topology_mode"] = "dynamic"
     config["simulator"]["dataset_name"] = "citylearn_three_phase_dynamic_topology_demo_v1"
     config["simulator"]["dataset_path"] = "./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json"
-    config["algorithm"] = {
-        "name": "RuleBasedPolicy",
-        "hyperparameters": {
-            "pv_charge_threshold": 0.0,
-            "flexibility_hours": 3.0,
-            "emergency_hours": 1.0,
-            "pv_preferred_charge_rate": 0.6,
-            "flex_trickle_charge": 0.0,
-            "min_charge_rate": 0.0,
-            "emergency_charge_rate": 1.0,
-            "energy_epsilon": 1e-3,
-            "default_capacity_kwh": 60.0,
-            "non_flexible_chargers": [],
-        },
-        "networks": None,
-        "replay_buffer": None,
-        "exploration": None,
-    }
+    config["pipeline"] = [
+        {
+            "algorithm": "RuleBasedPolicy",
+            "count": 1,
+            "hyperparameters": {
+                "pv_charge_threshold": 0.0,
+                "flexibility_hours": 3.0,
+                "emergency_hours": 1.0,
+                "pv_preferred_charge_rate": 0.6,
+                "flex_trickle_charge": 0.0,
+                "min_charge_rate": 0.0,
+                "emergency_charge_rate": 1.0,
+                "energy_epsilon": 1e-3,
+                "default_capacity_kwh": 60.0,
+                "non_flexible_chargers": [],
+            },
+            "networks": None,
+            "replay_buffer": None,
+            "exploration": None,
+        }
+    ]
     validate_config(config)
 
 

@@ -21,10 +21,10 @@ from reward_function.registry import (
     REWARD_FUNCTION_MAP,
     get_available_reward_function_names,
 )
-from algorithms.agents.base_agent import BaseAgent
+from algorithms.execution_unit import ExecutionUnit
 from algorithms.registry import (
+    build_execution_unit,
     build_unsupported_algorithm_message,
-    create_agent,
     is_algorithm_supported,
 )
 from utils.helpers import set_default_config
@@ -204,10 +204,32 @@ def _build_mlflow_run_url(base_url: Optional[str], experiment_id: Optional[str],
     return f"{normalized}/#/experiments/{experiment_id}/runs/{run_id}"
 
 
+def _summarise_pipeline_algorithms(config: dict[str, Any]) -> str:
+    """Summarise the pipeline algorithms for MLflow tagging.
+
+    Single-stage runs report just the algorithm name (matches the
+    historical ``opeva.algorithm`` tag for backward compatibility).
+    Multi-stage runs report the algorithms joined by ``+`` from top to
+    bottom of the pipeline.
+    """
+    pipeline_cfg = config.get("pipeline") or []
+    names = [
+        str(stage.get("algorithm") or "").strip()
+        for stage in pipeline_cfg
+        if isinstance(stage, dict)
+    ]
+    names = [name for name in names if name]
+    if not names:
+        return "unknown_algorithm"
+    if len(names) == 1:
+        return names[0]
+    return "+".join(names)
+
+
 def _build_mlflow_tags(config: dict[str, Any], *, job_id: str, run_name: str, config_hash: str, git_sha: Optional[str]) -> dict[str, str]:
     simulator_cfg = config.get("simulator", {})
     dataset_name = simulator_cfg.get("dataset_name") or simulator_cfg.get("dataset_path") or "unknown_dataset"
-    algorithm_name = (config.get("algorithm", {}) or {}).get("name", "unknown_algorithm")
+    algorithm_name = _summarise_pipeline_algorithms(config)
     tags: dict[str, str] = {
         "opeva.job_id": str(job_id),
         "opeva.algorithm": str(algorithm_name),
@@ -247,16 +269,16 @@ def _build_checkpoint_artifact_candidates(checkpoint_artifact: str) -> list[str]
     return deduplicated
 
 
-def _agent_supports_checkpoint_loading(agent: BaseAgent) -> bool:
-    """Return whether the agent overrides ``BaseAgent.load_checkpoint``."""
+def _agent_supports_checkpoint_loading(agent: ExecutionUnit) -> bool:
+    """Return whether the unit overrides the default ``load_checkpoint``."""
     load_checkpoint = getattr(type(agent), "load_checkpoint", None)
     if load_checkpoint is None:
         return False
-    return load_checkpoint is not BaseAgent.load_checkpoint
+    return load_checkpoint is not ExecutionUnit.load_checkpoint
 
 
 def _resolve_best_checkpoint_run_id(
-    agent: BaseAgent,
+    agent: ExecutionUnit,
     *,
     experiment_name: Optional[str],
 ) -> Optional[str]:
@@ -337,7 +359,7 @@ def _resolve_local_checkpoint_path(
 
 def _resume_agent_from_checkpoint(
     *,
-    agent: BaseAgent,
+    agent: ExecutionUnit,
     config: dict[str, Any],
     tracking_uri: str,
     checkpoints_dir: Path,
@@ -400,11 +422,17 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         raise SystemExit(1) from exc
 
     config = config_model.to_dict()
-    algorithm_name = (config.get("algorithm", {}) or {}).get("name")
-    if not is_algorithm_supported(algorithm_name):
-        message = build_unsupported_algorithm_message(algorithm_name)
+    pipeline_cfg = config.get("pipeline") or []
+    if not pipeline_cfg:
+        message = build_unsupported_algorithm_message(None)
         logger.error(message)
         raise ValueError(message)
+    for stage in pipeline_cfg:
+        algorithm_name = stage.get("algorithm") if isinstance(stage, dict) else None
+        if not is_algorithm_supported(algorithm_name):
+            message = build_unsupported_algorithm_message(algorithm_name)
+            logger.error(message)
+            raise ValueError(message)
 
     metadata = config.get("metadata", {})
     if not isinstance(metadata, dict):
@@ -622,7 +650,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         _write_resolved_config(config, resolved_config_path)
         logger.info("Resolved runtime config written to {}", resolved_config_path)
 
-        agent = create_agent(config=config)
+        agent = build_execution_unit(config=config)
         wrapper.set_model(agent)
         _resume_agent_from_checkpoint(
             agent=agent,

@@ -260,29 +260,32 @@ def _build_enabled_config(*, artifact_profile: str) -> dict:
             "action_dimensions": None,
             "action_space": None,
         },
-        "algorithm": {
-            "name": "MADDPG",
-            "hyperparameters": {"gamma": 0.99},
-            "networks": {
-                "actor": {"class": "Actor", "layers": [8], "lr": 1e-4},
-                "critic": {"class": "Critic", "layers": [8], "lr": 1e-3},
-            },
-            "replay_buffer": {
-                "class": "MultiAgentReplayBuffer",
-                "capacity": 8,
-                "batch_size": 2,
-            },
-            "exploration": {
-                "strategy": "GaussianNoise",
-                "params": {
-                    "bias": 0.0,
-                    "sigma": 0.1,
-                    "decay": 0.99,
-                    "gamma": 0.99,
-                    "tau": 0.001,
+        "pipeline": [
+            {
+                "algorithm": "MADDPG",
+                "count": 1,
+                "hyperparameters": {"gamma": 0.99},
+                "networks": {
+                    "actor": {"class": "Actor", "layers": [8], "lr": 1e-4},
+                    "critic": {"class": "Critic", "layers": [8], "lr": 1e-3},
                 },
-            },
-        },
+                "replay_buffer": {
+                    "class": "MultiAgentReplayBuffer",
+                    "capacity": 8,
+                    "batch_size": 2,
+                },
+                "exploration": {
+                    "strategy": "GaussianNoise",
+                    "params": {
+                        "bias": 0.0,
+                        "sigma": 0.1,
+                        "decay": 0.99,
+                        "gamma": 0.99,
+                        "tau": 0.001,
+                    },
+                },
+            }
+        ],
     }
 
 
@@ -323,16 +326,19 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
             "target_update_interval": 0,
         },
         "topology": {"num_agents": None, "observation_dimensions": None, "action_dimensions": None, "action_space": None},
-        "algorithm": {
-            "name": "MADDPG",
-            "hyperparameters": {"gamma": 0.99},
-            "networks": {
-                "actor": {"class": "Actor", "layers": [8], "lr": 1e-4},
-                "critic": {"class": "Critic", "layers": [8], "lr": 1e-3},
-            },
-            "replay_buffer": {"class": "MultiAgentReplayBuffer", "capacity": 8, "batch_size": 2},
-            "exploration": {"strategy": "GaussianNoise", "params": {"bias": 0.0, "sigma": 0.1, "decay": 0.99, "gamma": 0.99, "tau": 0.001}},
-        },
+        "pipeline": [
+            {
+                "algorithm": "MADDPG",
+                "count": 1,
+                "hyperparameters": {"gamma": 0.99},
+                "networks": {
+                    "actor": {"class": "Actor", "layers": [8], "lr": 1e-4},
+                    "critic": {"class": "Critic", "layers": [8], "lr": 1e-3},
+                },
+                "replay_buffer": {"class": "MultiAgentReplayBuffer", "capacity": 8, "batch_size": 2},
+                "exploration": {"strategy": "GaussianNoise", "params": {"bias": 0.0, "sigma": 0.1, "decay": 0.99, "gamma": 0.99, "tau": 0.001}},
+            }
+        ],
     }
 
     config_path = tmp_path / "config.yaml"
@@ -350,7 +356,7 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
 
     monkeypatch.setattr(runner, "CityLearnEnv", _dummy_citylearn_env)
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     runner.run_experiment(str(config_path), "job-mlflow-off", tmp_path)
     assert _DummyWrapper.last_instance is not None
@@ -434,7 +440,7 @@ def test_run_experiment_refreshes_topology_after_dynamic_changes(monkeypatch, tm
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyDynamicWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyDynamicAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyDynamicAgent())
 
     runner.run_experiment(str(config_path), "job-dynamic-topology", tmp_path)
 
@@ -458,7 +464,7 @@ def test_run_experiment_mlflow_disabled_keeps_local_metrics_fallback(monkeypatch
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapperWithLocalMetrics)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     runner.run_experiment(str(config_path), "job-local-metrics", tmp_path)
 
@@ -481,7 +487,7 @@ def test_run_experiment_writes_not_collected_kpi_result_when_export_toggle_off(m
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     runner.run_experiment(str(config_path), "job-kpi-disabled", tmp_path)
     assert _DummyWrapper.last_instance is not None
@@ -522,7 +528,7 @@ def test_run_experiment_uses_env_tracking_uri_adds_mlflow_identity_and_curated_a
     )
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     runner.run_experiment(str(config_path), "job-mlflow-on", tmp_path)
 
@@ -575,7 +581,7 @@ def test_run_experiment_minimal_profile_skips_curated_artifacts(monkeypatch, tmp
     )
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     runner.run_experiment(str(config_path), "job-mlflow-minimal", tmp_path)
 
@@ -653,7 +659,7 @@ def test_run_experiment_resume_uses_mlflow_download_artifacts_and_load(monkeypat
     monkeypatch.setattr(runner.mlflow.artifacts, "download_artifacts", _download_artifacts)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: resume_agent)
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: resume_agent)
 
     runner.run_experiment(str(config_path), "job-resume", tmp_path)
 
@@ -674,7 +680,7 @@ def test_run_experiment_resume_fails_if_agent_does_not_implement_load(monkeypatc
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     with pytest.raises(RuntimeError, match="does not implement load_checkpoint"):
         runner.run_experiment(str(config_path), "job-resume-fail", tmp_path)
@@ -682,7 +688,7 @@ def test_run_experiment_resume_fails_if_agent_does_not_implement_load(monkeypatc
 
 def test_run_experiment_fails_fast_for_placeholder_algorithm(monkeypatch, tmp_path):
     config = _build_enabled_config(artifact_profile="minimal")
-    config["algorithm"]["name"] = "SingleAgentRL"
+    config["pipeline"][0]["algorithm"] = "SingleAgentRL"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 

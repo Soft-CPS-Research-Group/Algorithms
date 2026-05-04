@@ -115,34 +115,35 @@ topology:
   action_space: null
 
 # Algorithm family and hyperparameters.
-algorithm:
-  name: "MADDPG"
-  hyperparameters:
-    gamma: 0.99
-  networks:
-    actor:
-      class: "Actor"
-      layers: [1024, 512, 256]
-      lr: 1.0e-4
-    critic:
-      class: "Critic"
-      layers: [1024, 512, 256]
-      lr: 1.0e-3
-  replay_buffer:
-    class: "MultiAgentReplayBuffer"
-    capacity: 100000
-    batch_size: 256
-  exploration:
-    strategy: "GaussianNoise"
-    params:
-      bias: 0.3
-      sigma: 0.2
-      decay: 0.995
-      noise_clip: 0.3
+pipeline:
+  - algorithm: "MADDPG"
+    count: 1
+    hyperparameters:
       gamma: 0.99
-      tau: 0.001
-      end_initial_exploration_time_step: 100
-      random_exploration_steps: 100
+    networks:
+      actor:
+        class: "Actor"
+        layers: [1024, 512, 256]
+        lr: 1.0e-4
+      critic:
+        class: "Critic"
+        layers: [1024, 512, 256]
+        lr: 1.0e-3
+    replay_buffer:
+      class: "MultiAgentReplayBuffer"
+      capacity: 100000
+      batch_size: 256
+    exploration:
+      strategy: "GaussianNoise"
+      params:
+        bias: 0.3
+        sigma: 0.2
+        decay: 0.995
+        noise_clip: 0.3
+        gamma: 0.99
+        tau: 0.001
+        end_initial_exploration_time_step: 100
+        random_exploration_steps: 100
 
 # Optional worker-specific overrides (e.g., Deucalion). Keep null for local runs.
 execution: null
