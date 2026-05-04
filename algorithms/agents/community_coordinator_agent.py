@@ -402,6 +402,15 @@ class CommunityCoordinatorAgent(BaseAgent):
             hour_of_day,
         ]
 
+    # Hours-to-departure threshold below which the RBC forces full EV
+    # charging regardless of o1. Ensures EVs always leave with enough charge.
+    _EV_MUST_CHARGE_HOURS: int = 3
+
+    # SoC gap threshold (as % points: required_soc - current_soc). If the
+    # EV is this far below its required departure SoC, force charging even
+    # if departure is not imminent.
+    _EV_MUST_CHARGE_SOC_GAP: float = 50.0
+
     def _rbc_act(
         self,
         building_obs: np.ndarray,
@@ -412,17 +421,30 @@ class CommunityCoordinatorAgent(BaseAgent):
         Rule-based local controller. Translates the CC's `o1` into an
         action vector for one building.
 
-        Rules:
-          - `electrical_storage`: follow `o1`. Force 0.0 if it would
-            push SoC outside [0.05, 0.95] (battery safety clamp).
-          - `electric_vehicle_storage_charger_*`: charge at 1.0 whenever
-            an EV is plugged in. (Future work: let CC decide.)
-          - everything else (e.g. washing machines): no-op (0.0).
+        Battery rule:
+          Follow `o1` directly, clamped at SoC boundaries [0.05, 0.95].
+
+        EV rule (smart charging):
+          The CC is a community-level manager — it doesn't know departure
+          schedules of individual EVs. The RBC enforces those constraints.
+
+          Two-zone logic:
+            MUST-CHARGE zone: departure ≤ 3h OR SoC gap > 50 pp
+              → charge at 1.0 regardless of o1 (EV WILL leave charged).
+            FLEXIBLE zone: departure > 3h AND SoC gap ≤ 50 pp
+              → o1 > 0 (CC says energy is cheap) → charge at 1.0
+              → o1 ≤ 0 (CC says energy is expensive) → pause (0.0)
+
+          EVs cannot be discharged (no V2G), so the negative side of o1
+          only pauses charging, never reverses it.
+
+        Everything else (e.g. washing machines): no-op (0.0).
         """
         idx = self._obs_index[building_idx]
         building_actions = [0.0] * self._action_dims[building_idx]
 
         for action_name, slot in self._action_index[building_idx].items():
+
             if action_name == "electrical_storage":
                 soc = (float(building_obs[idx["electrical_storage_soc_ratio"]])
                        if "electrical_storage_soc_ratio" in idx else 0.5)
@@ -431,13 +453,53 @@ class CommunityCoordinatorAgent(BaseAgent):
                 else:                        building_actions[slot] = o1
 
             elif action_name.startswith("electric_vehicle_storage_charger_"):
-                charger_id   = action_name[len("electric_vehicle_storage_charger_"):]
-                building_num = charger_id.split("_")[0]
-                obs_key      = f"charger::Building_{building_num}/charger_{charger_id}::connected_state"
-                connected    = float(building_obs[idx[obs_key]]) if obs_key in idx else 0.0
-                building_actions[slot] = 1.0 if connected > 0 else 0.0
+                building_actions[slot] = self._ev_action(
+                    building_obs, idx, action_name, o1
+                )
 
         return building_actions
+
+    def _ev_action(
+        self,
+        building_obs: np.ndarray,
+        idx:          dict,
+        action_name:  str,
+        o1:           float,
+    ) -> float:
+        """
+        Decide EV charger action for one charger slot.
+        Returns 1.0 (charge), 0.0 (pause), or 0.0 (not connected).
+        """
+        charger_id   = action_name[len("electric_vehicle_storage_charger_"):]
+        building_num = charger_id.split("_")[0]
+        prefix       = f"charger::Building_{building_num}/charger_{charger_id}"
+
+        connected = float(building_obs[idx[f"{prefix}::connected_state"]]) \
+                    if f"{prefix}::connected_state" in idx else 0.0
+
+        if connected <= 0:
+            return 0.0  # no EV plugged in
+
+        # Read departure countdown and SoC info (all in the same obs vector).
+        hours_to_departure = float(building_obs[idx[f"{prefix}::connected_ev_departure_time_step"]]) \
+                             if f"{prefix}::connected_ev_departure_time_step" in idx else 24.0
+        ev_soc             = float(building_obs[idx[f"{prefix}::connected_ev_soc"]]) \
+                             if f"{prefix}::connected_ev_soc" in idx else 0.0
+        required_soc       = float(building_obs[idx[f"{prefix}::connected_ev_required_soc_departure"]]) \
+                             if f"{prefix}::connected_ev_required_soc_departure" in idx else 80.0
+
+        soc_gap = max(0.0, required_soc - ev_soc)
+
+        # Must-charge: RBC overrides CC to protect departure readiness.
+        must_charge = (
+            hours_to_departure <= self._EV_MUST_CHARGE_HOURS
+            or soc_gap >= self._EV_MUST_CHARGE_SOC_GAP
+        )
+        if must_charge:
+            return 1.0
+
+        # Flexible window: follow CC signal (positive = charge, ≤0 = pause).
+        return 1.0 if o1 > 0 else 0.0
 
     # ──────────────────────── Internal: learning ────────────────────────
 

@@ -51,7 +51,7 @@ simulator:
   central_agent: false
   interface: entity
   reward_function: CCReward
-  episodes: 130
+  episodes: 150
   episode_time_steps: 8760     # Full year (hourly timesteps)
   simulation_start_time_step: null
   simulation_end_time_step: null
@@ -97,7 +97,7 @@ algorithm:
     mini_batch_size: 64
     clip_coef: 0.2          # PPO clip epsilon
     vf_coef: 0.5            # value loss weight
-    ent_coef: 0.001         # entropy bonus weight — low so policy gradient dominates
+    ent_coef: 0.005         # entropy bonus weight — enough to slow premature convergence
     max_grad_norm: 0.5      # gradient clipping
     target_kl: 0.1          # KL early-stopping threshold (null to disable)
 
