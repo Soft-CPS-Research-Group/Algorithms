@@ -521,6 +521,13 @@ PipelineStageConfig = Union[
 ]
 
 
+PipelineStageConfig = Union[
+    MADDPGStageConfig,
+    RuleBasedStageConfig,
+    SingleAgentRLStageConfig,
+]
+
+
 class DeucalionExecutionConfig(BaseModel):
     partition: Optional[str] = None
     account: Optional[str] = None

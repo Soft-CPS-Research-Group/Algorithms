@@ -120,6 +120,21 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
+def _summarise_pipeline_algorithms(config_payload: Dict[str, Any]) -> Optional[str]:
+    pipeline_cfg = config_payload.get("pipeline") or []
+    names = [
+        str(stage.get("algorithm") or "").strip()
+        for stage in pipeline_cfg
+        if isinstance(stage, dict)
+    ]
+    names = [name for name in names if name]
+    if not names:
+        return None
+    if len(names) == 1:
+        return names[0]
+    return "+".join(names)
+
+
 def _discover_job_dirs(root: Path) -> List[Path]:
     root = root.resolve()
     candidates: set[Path] = set()
