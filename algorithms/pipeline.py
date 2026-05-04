@@ -24,6 +24,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from loguru import logger
+
 from algorithms.execution_unit import ExecutionUnit
 
 
@@ -50,7 +52,7 @@ class Pipeline(ExecutionUnit):
     # ------------------------------------------------------------------
     def predict(
         self,
-        observations,
+        observations: Any,
         deterministic: Optional[bool] = None,
         *,
         context: Any = None,
@@ -115,6 +117,11 @@ class Pipeline(ExecutionUnit):
             try:
                 stage.save_checkpoint(str(stage_dir), step)
             except NotImplementedError:
+                logger.debug(
+                    "Pipeline stage {} ({}) does not implement save_checkpoint; skipping.",
+                    index,
+                    type(stage).__name__,
+                )
                 continue
         return str(root)
 
@@ -122,14 +129,28 @@ class Pipeline(ExecutionUnit):
         root = Path(checkpoint_path)
         if not root.exists():
             raise FileNotFoundError(f"Pipeline checkpoint root not found: {root}")
+        loaded_count = 0
         for index, stage in enumerate(self.stages):
             stage_dir = root / f"stage_{index}"
             if not stage_dir.exists():
                 continue
             try:
                 stage.load_checkpoint(str(stage_dir))
+                loaded_count += 1
             except NotImplementedError:
+                logger.debug(
+                    "Pipeline stage {} ({}) does not implement load_checkpoint; skipping.",
+                    index,
+                    type(stage).__name__,
+                )
                 continue
+        if loaded_count == 0:
+            logger.warning(
+                "Pipeline.load_checkpoint: no stage loaded anything from '{}'. "
+                "All stages either had no checkpoint directory or do not implement "
+                "load_checkpoint. The model was NOT restored.",
+                checkpoint_path,
+            )
 
     def export_artifacts(
         self,
@@ -170,21 +191,42 @@ class Ensemble(ExecutionUnit):
     # ------------------------------------------------------------------
     def predict(
         self,
-        observations,
+        observations: Any,
         deterministic: Optional[bool] = None,
         *,
         context: Any = None,
     ) -> List[Any]:
         results: List[Any] = []
         for index, agent in enumerate(self.agents):
-            obs_slice = [observations[index]] if index < len(observations) else []
+            if index >= len(observations):
+                logger.warning(
+                    "Ensemble member {} received no observations "
+                    "(observations length={}, ensemble size={}). "
+                    "Member will see an empty obs slice.",
+                    index,
+                    len(observations),
+                    len(self.agents),
+                )
+                obs_slice: List[Any] = []
+            else:
+                obs_slice = [observations[index]]
+
             output = agent.predict(obs_slice, deterministic, context=context)
-            # Agents return a list-of-actions; for a single-agent slice we
-            # unwrap the outer container so the ensemble result reads as
-            # one row per member.
-            if isinstance(output, list) and len(output) == 1:
+
+            # Contract: each member receives one obs slice and must return
+            # exactly one row (the action vector for that member). Anything
+            # else is an agent-side bug — fail loud rather than silently
+            # mangle the ensemble output.
+            if isinstance(output, list):
+                if len(output) != 1:
+                    raise RuntimeError(
+                        f"Ensemble member {index} returned {len(output)} rows "
+                        f"for a single observation slice; expected exactly 1."
+                    )
                 results.append(output[0])
             else:
+                # Non-list outputs (e.g. context tensors from a non-leaf
+                # agent) are forwarded unchanged.
                 results.append(output)
         return results
 
@@ -203,6 +245,15 @@ class Ensemble(ExecutionUnit):
         initial_exploration_done: bool,
     ) -> None:
         for index, agent in enumerate(self.agents):
+            if index >= len(observations):
+                logger.warning(
+                    "Ensemble member {} received no observations during update "
+                    "(observations length={}, ensemble size={}). "
+                    "Member will not learn this step.",
+                    index,
+                    len(observations),
+                    len(self.agents),
+                )
             agent.update(
                 [observations[index]] if index < len(observations) else [],
                 [actions[index]] if index < len(actions) else [],
@@ -234,6 +285,13 @@ class Ensemble(ExecutionUnit):
         observation_space,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        env_agent_count = len(action_names) if action_names is not None else 0
+        if env_agent_count != len(self.agents):
+            raise ValueError(
+                f"Ensemble size mismatch: ensemble has {len(self.agents)} member(s) "
+                f"but the environment exposes {env_agent_count} agent slot(s). "
+                f"Adjust 'count' in the pipeline config to match the environment."
+            )
         for index, agent in enumerate(self.agents):
             agent.attach_environment(
                 observation_names=(
@@ -263,6 +321,11 @@ class Ensemble(ExecutionUnit):
             try:
                 agent.save_checkpoint(str(agent_dir), step)
             except NotImplementedError:
+                logger.debug(
+                    "Ensemble member {} ({}) does not implement save_checkpoint; skipping.",
+                    index,
+                    type(agent).__name__,
+                )
                 continue
         return str(root)
 
@@ -277,6 +340,11 @@ class Ensemble(ExecutionUnit):
             try:
                 agent.load_checkpoint(str(agent_dir))
             except NotImplementedError:
+                logger.debug(
+                    "Ensemble member {} ({}) does not implement load_checkpoint; skipping.",
+                    index,
+                    type(agent).__name__,
+                )
                 continue
 
     def export_artifacts(

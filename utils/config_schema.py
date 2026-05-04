@@ -393,4 +393,16 @@ class ProjectConfig(BaseModel):
 
 def validate_config(raw_config: Dict[str, Any]) -> ProjectConfig:
     """Validate a raw configuration dictionary and return the structured model."""
+    if isinstance(raw_config, dict) and "algorithm" in raw_config and "pipeline" not in raw_config:
+        raise ValueError(
+            "Configuration uses the deprecated top-level 'algorithm' key. "
+            "Migrate to a 'pipeline' list, e.g.:\n\n"
+            "  pipeline:\n"
+            "    - algorithm: \"<name>\"\n"
+            "      count: 1\n"
+            "      hyperparameters: { ... }\n"
+            "      networks: { ... }   # if applicable\n"
+            "      replay_buffer: { ... }   # if applicable\n"
+            "      exploration: { ... }   # if applicable\n"
+        )
     return ProjectConfig.model_validate(raw_config)

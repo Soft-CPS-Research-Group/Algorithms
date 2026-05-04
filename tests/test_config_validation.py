@@ -25,6 +25,17 @@ def test_validate_config_accepts_metadata_community_name(base_config):
     validate_config(config)
 
 
+def test_validate_config_rejects_legacy_algorithm_key(base_config):
+    config = copy.deepcopy(base_config)
+    config.pop("pipeline", None)
+    config["algorithm"] = {
+        "name": "RuleBasedPolicy",
+        "hyperparameters": {},
+    }
+    with pytest.raises(ValueError, match="deprecated top-level 'algorithm'"):
+        validate_config(config)
+
+
 def test_validate_config_missing_pipeline(base_config):
     config = copy.deepcopy(base_config)
     config["pipeline"] = None

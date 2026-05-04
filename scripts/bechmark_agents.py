@@ -16,26 +16,14 @@ DEFAULT_KPIS = [
 ]
 
 
+from utils.pipeline_utils import summarise_pipeline_algorithms
+
+
 def _safe_float(value: Any) -> Optional[float]:
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _summarise_pipeline_algorithms(config_payload: Dict[str, Any]) -> Optional[str]:
-    pipeline_cfg = config_payload.get("pipeline") or []
-    names = [
-        str(stage.get("algorithm") or "").strip()
-        for stage in pipeline_cfg
-        if isinstance(stage, dict)
-    ]
-    names = [name for name in names if name]
-    if not names:
-        return None
-    if len(names) == 1:
-        return names[0]
-    return "+".join(names)
 
 
 def _discover_job_dirs(root: Path) -> List[Path]:
@@ -182,7 +170,7 @@ def _load_job_record(job_dir: Path, kpis: List[str]) -> Optional[Dict[str, Any]]
         "job_dir": str(job_dir),
         "job_id": job_dir.name,
         "seed": config_payload.get("training", {}).get("seed"),
-        "algorithm": _summarise_pipeline_algorithms(config_payload),
+        "algorithm": summarise_pipeline_algorithms(config_payload, default=None),
         "kpi_source": kpi_source,
         "kpi_source_path": kpi_source_path,
         "kpis": selected_kpis,

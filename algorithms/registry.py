@@ -118,6 +118,10 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
         agent_cls = ALGORITHM_REGISTRY[algorithm_name]
         agent_view = _stage_to_agent_view(config, stage_cfg)
         count = int(stage_cfg.get("count", 1) or 1)
+        if count < 1:
+            raise ValueError(
+                f"Stage '{algorithm_name}' has count={count}; must be >= 1."
+            )
 
         if count == 1:
             stages.append(agent_cls(config=agent_view))

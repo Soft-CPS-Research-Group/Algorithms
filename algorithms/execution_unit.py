@@ -53,9 +53,36 @@ class ExecutionUnit(ABC):
     ) -> Any:
         """Return actions (or a signal for the next stage) for this step.
 
-        ``context`` is the output produced by the parent stage in a
-        :class:`Pipeline`. Single-agent leaves and the root stage receive
-        ``None`` and may ignore the argument.
+        Parameters
+        ----------
+        observations
+            Per-agent observation list as supplied by the wrapper.
+        deterministic
+            If True the unit must produce a deterministic output (used for
+            evaluation runs).
+        context
+            Output of the parent stage when this unit runs inside a
+            :class:`~algorithms.pipeline.Pipeline`. The root stage and
+            standalone single agents always receive ``None``.
+
+        Notes on the ``context`` contract
+        ---------------------------------
+        - **Type is unconstrained.** It can be a scalar, list, dict, numpy
+          array, torch tensor, or any custom object. The pipeline never
+          inspects it — both stages on either side of a hand-off must
+          agree on the shape.
+        - **Treat it as immutable.** A non-leaf stage may broadcast the
+          same context object to many sibling members of an Ensemble;
+          mutating it from one member is a race waiting to happen.
+        - **Leaf stages return env actions** (``List[List[float]]``). The
+          wrapper consumes whatever the final stage returns and feeds it
+          to the environment, so the leaf's output type is fixed.
+        - **Non-leaf stages return whatever they want** to hand down to
+          their child. If a stage is conceptually a "manager", its return
+          value defines the directive for the layer below.
+        - When in doubt, document the contract on the agent class itself
+          (e.g. CommunityCoordinator promises to emit a 1-D array of
+          building-level setpoints).
         """
 
     @abstractmethod
