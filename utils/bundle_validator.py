@@ -27,7 +27,7 @@ def validate_bundle_contract(manifest: Mapping[str, Any], artifacts_root: Path |
         "simulator",
         "training",
         "topology",
-        "algorithm",
+        "pipeline",
         "environment",
         "agent",
     ]

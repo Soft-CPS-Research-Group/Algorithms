@@ -17,7 +17,9 @@ def test_manifest_contains_core_sections_and_normalized_artifacts():
         },
         "training": {"seed": 1},
         "topology": {"num_agents": 1},
-        "algorithm": {"name": "MADDPG", "hyperparameters": {"gamma": 0.99}},
+        "pipeline": [
+            {"algorithm": "MADDPG", "count": 1, "hyperparameters": {"gamma": 0.99}}
+        ],
     }
     env_meta = {
         "observation_names": [["feat"]],
@@ -47,6 +49,14 @@ def test_manifest_contains_core_sections_and_normalized_artifacts():
     assert manifest["metadata"]["bundle_version"] == "2026-03-10-v1"
     assert manifest["metadata"]["description"] == "Bundle emitted from unit test"
     assert manifest["metadata"]["alias_mapping_path"] == "aliases.json"
+    assert manifest["pipeline"] == [
+        {
+            "stage_index": 0,
+            "algorithm": "MADDPG",
+            "count": 1,
+            "hyperparameters": {"gamma": 0.99},
+        }
+    ]
     assert manifest["environment"] == env_meta
     assert manifest["agent"]["format"] == "onnx"
     assert manifest["agent"]["artifacts"][0]["format"] == "onnx"

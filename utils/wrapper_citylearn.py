@@ -16,7 +16,7 @@ from citylearn.agents.rlc import RLC
 from citylearn.citylearn import CityLearnEnv
 from loguru import logger
 
-from algorithms.agents.base_agent import BaseAgent
+from algorithms.execution_unit import ExecutionUnit
 from utils.entity_adapter import EntityContractAdapter
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
@@ -131,19 +131,18 @@ class Wrapper_CityLearn(RLC):
     def __init__(
         self,
         env: CityLearnEnv,
-        model: BaseAgent = None,
+        model: Optional[ExecutionUnit] = None,
         config=None,
         job_id=None,
         progress_path=None,
         **kwargs,
     ):
-        """
-        Wrapper for CityLearn RLC that delegates custom behavior to a BaseAgent model.
+        """Wrapper for CityLearn RLC that delegates predict/update to a model.
 
-        Parameters:
-        - env: CityLearnEnv instance for the simulation environment.
-        - model: BaseAgent instance implementing custom predict and update logic.
-        - **kwargs: Additional arguments passed to the RLC constructor.
+        The ``model`` is any :class:`ExecutionUnit` — a single agent, a
+        :class:`~algorithms.pipeline.Pipeline`, or an
+        :class:`~algorithms.pipeline.Ensemble`. The wrapper interacts with
+        the same surface regardless of the underlying architecture.
         """
         config = config or {}
         self.config = config
@@ -154,7 +153,14 @@ class Wrapper_CityLearn(RLC):
             simulator_cfg.get("topology_mode", getattr(env, "topology_mode", "static"))
         ).strip().lower() or "static"
         self._entity_dynamic_mode = self._entity_interface_mode and self._entity_topology_mode == "dynamic"
-        self._algorithm_name = str((config.get("algorithm", {}) or {}).get("name", "")).strip()
+        # Names of every algorithm that appears anywhere in the pipeline.
+        # Used to gate behaviour (e.g. MADDPG cannot run with dynamic
+        # entity topology) without depending on a single-algorithm model.
+        self._algorithm_names: set[str] = {
+            str(stage.get("algorithm", "")).strip()
+            for stage in (config.get("pipeline") or [])
+            if isinstance(stage, dict) and stage.get("algorithm")
+        }
         self._entity_topology_version: Optional[int] = None
         self._entity_adapter: Optional[EntityContractAdapter] = None
         self.model = model
@@ -1046,10 +1052,8 @@ class Wrapper_CityLearn(RLC):
 
         self._manual_kpi_exported_episodes.add(episode)
 
-    def set_model(self, model: BaseAgent):
-        """
-        Set the model after initialization.
-        """
+    def set_model(self, model: ExecutionUnit):
+        """Set the model (any :class:`ExecutionUnit`) after initialization."""
         self.model = model
         self._attach_model_environment_metadata()
 

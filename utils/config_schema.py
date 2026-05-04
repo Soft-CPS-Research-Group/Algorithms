@@ -464,7 +464,8 @@ class TopologyConfig(BaseModel):
 
 
 class ActorCriticAlgorithmConfig(BaseModel):
-    name: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
+    algorithm: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
     hyperparameters: AlgorithmHyperparameters
     networks: AlgorithmNetworks
     replay_buffer: ReplayBufferConfig
@@ -472,7 +473,7 @@ class ActorCriticAlgorithmConfig(BaseModel):
 
 
 class RuleBasedAlgorithmConfig(BaseModel):
-    name: Literal[
+    algorithm: Literal[
         "RuleBasedPolicy",
         "RandomPolicy",
         "NormalPolicy",
@@ -481,18 +482,29 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "RBCCommunityPolicy",
         "RBCSmartPolicy",
     ]
+    count: int = Field(default=1, ge=1)
     hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
 
 
-class SingleAgentRLAlgorithmConfig(BaseModel):
-    name: Literal["SingleAgentRL"]
+class SingleAgentRLStageConfig(BaseModel):
+    """Pipeline stage placeholder for SingleAgentRL (no runtime impl yet)."""
+
+    algorithm: Literal["SingleAgentRL"]
+    count: int = Field(default=1, ge=1)
     hyperparameters: AlgorithmHyperparameters
     policy: Optional[str] = Field(default=None, description="Identifier for the policy architecture")
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
+
+
+PipelineStageConfig = Union[
+    MADDPGStageConfig,
+    RuleBasedStageConfig,
+    SingleAgentRLStageConfig,
+]
 
 
 class DeucalionExecutionConfig(BaseModel):
@@ -584,7 +596,15 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[ActorCriticAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    pipeline: List[PipelineStageConfig] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Ordered list of execution stages. A single-element list represents "
+            "a single agent (current default). Multi-element lists describe a "
+            "vertical hierarchy (top stage feeds context to the next)."
+        ),
+    )
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
