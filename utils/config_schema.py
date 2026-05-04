@@ -522,8 +522,8 @@ PipelineStageConfig = Union[
 
 
 PipelineStageConfig = Union[
-    MADDPGStageConfig,
-    RuleBasedStageConfig,
+    ActorCriticAlgorithmConfig,
+    RuleBasedAlgorithmConfig,
     SingleAgentRLStageConfig,
 ]
 
