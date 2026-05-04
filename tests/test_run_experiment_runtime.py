@@ -459,7 +459,7 @@ def test_run_experiment_uses_encoded_observation_dimensions_for_neural_agents(
 ):
     config = _build_enabled_config(artifact_profile="minimal")
     config["tracking"]["mlflow_enabled"] = False
-    config["algorithm"]["name"] = algorithm_name
+    config["pipeline"][0]["algorithm"] = algorithm_name
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
@@ -470,7 +470,7 @@ def test_run_experiment_uses_encoded_observation_dimensions_for_neural_agents(
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyEncodedWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     job_id = f"job-encoded-dims-{algorithm_name.lower()}"
     runner.run_experiment(str(config_path), job_id, tmp_path)
@@ -796,7 +796,7 @@ def test_run_experiment_marks_outputs_failed_when_training_raises(monkeypatch, t
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _FailingWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     with pytest.raises(RuntimeError, match="training exploded"):
         runner.run_experiment(str(config_path), "job-train-fail", tmp_path)
@@ -812,13 +812,14 @@ def test_run_experiment_marks_outputs_failed_when_training_raises(monkeypatch, t
     assert progress_payload["error_type"] == "RuntimeError"
 
 
-def test_run_experiment_fails_fast_for_placeholder_algorithm(monkeypatch, tmp_path):
+def test_run_experiment_fails_fast_for_placeholder_algorithm(tmp_path):
     config = _build_enabled_config(artifact_profile="minimal")
     config["pipeline"][0]["algorithm"] = "SingleAgentRL"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
-    monkeypatch.setattr(runner, "validate_config", lambda raw: _DummyConfigModel(raw))
-
-    with pytest.raises(ValueError, match="placeholder"):
+    # SingleAgentRL is rejected by pydantic at config-parse time, which
+    # causes run_experiment to call SystemExit(1).
+    with pytest.raises(SystemExit) as exc_info:
         runner.run_experiment(str(config_path), "job-placeholder", tmp_path)
+    assert exc_info.value.code == 1

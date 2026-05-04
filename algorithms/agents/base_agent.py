@@ -18,7 +18,6 @@ class BaseAgent(Module, ExecutionUnit):
 
     def __init__(self) -> None:
         super().__init__()
-        self.use_raw_observations: bool = False
 
     @abstractmethod
     def predict(

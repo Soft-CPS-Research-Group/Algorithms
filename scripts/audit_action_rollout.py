@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from algorithms.registry import create_agent
+from algorithms.registry import build_execution_unit
 from run_experiment import _resolve_agent_observation_dimensions
 from scripts.audit_entity_observations import _agent_building_name, _build_environment, _load_config
 from utils.wrapper_citylearn import Wrapper_CityLearn
@@ -111,7 +111,7 @@ def _build_wrapper_and_agent(config_path: str, output_dir: Path, job_id: str) ->
         progress_path=str(output_dir / "progress.json"),
     )
     _set_topology_from_wrapper(config, wrapper)
-    agent = create_agent(config=config)
+    agent = build_execution_unit(config=config)
     wrapper.set_model(agent)
     return config, wrapper
 

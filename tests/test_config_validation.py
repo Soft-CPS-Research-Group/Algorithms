@@ -25,6 +25,17 @@ def test_validate_config_accepts_metadata_community_name(base_config):
     validate_config(config)
 
 
+def test_validate_config_rejects_legacy_algorithm_key(base_config):
+    config = copy.deepcopy(base_config)
+    config.pop("pipeline", None)
+    config["algorithm"] = {
+        "name": "RuleBasedPolicy",
+        "hyperparameters": {},
+    }
+    with pytest.raises(ValueError, match="deprecated top-level 'algorithm'"):
+        validate_config(config)
+
+
 def test_validate_config_missing_pipeline(base_config):
     config = copy.deepcopy(base_config)
     config["pipeline"] = None
@@ -48,7 +59,7 @@ def test_validate_config_invalid_network_layers(base_config):
 
 def test_validate_config_accepts_late_fusion_critic_layers(base_config):
     config = copy.deepcopy(base_config)
-    config["algorithm"]["networks"]["critic"] = {
+    config["pipeline"][0]["networks"]["critic"] = {
         "class": "LateFusionCritic",
         "layers": [64, 32],
         "state_layers": [64],
@@ -281,7 +292,13 @@ def test_validate_config_rejects_invalid_tracking_intervals(base_config):
 
 
 def test_validate_all_templates():
-    template_paths = sorted(Path("configs/templates").rglob("*.yaml"))
+    # Experimental templates intentionally use placeholder algorithms (e.g.
+    # SingleAgentRL) that are not yet runtime-backed.  Exclude them here.
+    template_paths = sorted(
+        p
+        for p in Path("configs/templates").rglob("*.yaml")
+        if "experimental" not in p.parts
+    )
     assert template_paths, "No template files found under configs/templates"
 
     for template_path in template_paths:
@@ -300,7 +317,7 @@ def test_rbc_community_templates_use_community_settlement_objective():
         with template_path.open("r", encoding="utf-8") as handle:
             config = yaml.safe_load(handle)
         kwargs = config["simulator"]["reward_function_kwargs"]
-        hyper = config["algorithm"]["hyperparameters"]
+        hyper = config["pipeline"][0]["hyperparameters"]
 
         assert kwargs["local_cost_weight"] == pytest.approx(0.0)
         assert kwargs["community_settlement_cost_weight"] == pytest.approx(1.0)

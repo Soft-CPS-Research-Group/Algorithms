@@ -104,10 +104,10 @@ pipeline:
       default_capacity_kwh: 60.0
       non_flexible_chargers: []
       deferrable_start_action: 1.0
-    deferrable_urgency_threshold: 0.75
-    deferrable_slack_threshold: 0.25
-    deferrable_priority_threshold: 0.5
-  networks: null
+      deferrable_urgency_threshold: 0.75
+      deferrable_slack_threshold: 0.25
+      deferrable_priority_threshold: 0.5
+    networks: null
     replay_buffer: null
     exploration: null
 

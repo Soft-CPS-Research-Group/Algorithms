@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Literal
 
+# Imported here to avoid circular imports — registry imports from agents,
+# agents do not import from config_schema.
+from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
+
 
 class MetadataConfig(BaseModel):
     experiment_name: str = Field(..., min_length=1, description="Name registered in MLflow")
@@ -499,10 +503,20 @@ class SingleAgentRLStageConfig(BaseModel):
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
 
+    @model_validator(mode="after")
+    def reject_placeholder(self) -> "SingleAgentRLStageConfig":
+        raise ValueError(
+            "Algorithm 'SingleAgentRL' is a schema placeholder and has no runtime "
+            "implementation yet. Use one of: MADDPG, MATD3, MASAC, IPPO, MAPPO, HAPPO, "
+            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartPolicy, RandomPolicy, "
+            "NormalPolicy, NormalNoBatteryPolicy."
+        )
+        return self  # unreachable; satisfies type checker
+
 
 PipelineStageConfig = Union[
-    MADDPGStageConfig,
-    RuleBasedStageConfig,
+    ActorCriticAlgorithmConfig,
+    RuleBasedAlgorithmConfig,
     SingleAgentRLStageConfig,
 ]
 
@@ -612,14 +626,15 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
-        fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
+        stage_names = {stage.algorithm for stage in self.pipeline}
+        conflicting = stage_names & ENCODED_OBSERVATION_ALGORITHMS
         if (
-            self.algorithm.name in fixed_topology_algorithms
+            conflicting
             and self.simulator.interface == "entity"
             and self.simulator.topology_mode == "dynamic"
         ):
             raise ValueError(
-                f"algorithm.name='{self.algorithm.name}' does not support simulator.interface='entity' "
+                f"Pipeline stages {sorted(conflicting)} do not support simulator.interface='entity' "
                 "with simulator.topology_mode='dynamic'."
             )
 
@@ -641,4 +656,16 @@ class ProjectConfig(BaseModel):
 
 def validate_config(raw_config: Dict[str, Any]) -> ProjectConfig:
     """Validate a raw configuration dictionary and return the structured model."""
+    if isinstance(raw_config, dict) and "algorithm" in raw_config and "pipeline" not in raw_config:
+        raise ValueError(
+            "Configuration uses the deprecated top-level 'algorithm' key. "
+            "Migrate to a 'pipeline' list, e.g.:\n\n"
+            "  pipeline:\n"
+            "    - algorithm: \"<name>\"\n"
+            "      count: 1\n"
+            "      hyperparameters: { ... }\n"
+            "      networks: { ... }   # if applicable\n"
+            "      replay_buffer: { ... }   # if applicable\n"
+            "      exploration: { ... }   # if applicable\n"
+        )
     return ProjectConfig.model_validate(raw_config)

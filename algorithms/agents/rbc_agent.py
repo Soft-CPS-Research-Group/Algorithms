@@ -39,9 +39,10 @@ class StorageInfo:
 class RuleBasedPolicy(BaseAgent):
     """Simple heuristic controller that prioritises PV utilisation while respecting EV requirements."""
 
+    _use_raw_observations: bool = True
+
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
-        self.use_raw_observations = True
 
         self._config = config
         hyper = (config.get("algorithm", {}).get("hyperparameters") or {})

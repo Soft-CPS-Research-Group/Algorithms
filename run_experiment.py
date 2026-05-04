@@ -25,12 +25,13 @@ from reward_function.registry import (
 )
 from algorithms.execution_unit import ExecutionUnit
 from algorithms.registry import (
+    ENCODED_OBSERVATION_ALGORITHMS,
     build_execution_unit,
     build_unsupported_algorithm_message,
-    is_algorithm_supported,
 )
 from utils.helpers import set_default_config
 from utils.mlflow_helper import end_mlflow_run, start_mlflow_run
+from utils.pipeline_utils import summarise_pipeline_algorithms
 from utils.wrapper_citylearn import Wrapper_CityLearn as Wrapper
 from utils.artifact_manifest import build_manifest, write_manifest
 from utils.bundle_validator import validate_bundle_contract
@@ -198,8 +199,7 @@ def _resolve_agent_observation_dimensions(wrapper: Any, algorithm_name: Optional
     wrapper behavior.
     """
     fallback = list(getattr(wrapper, "observation_dimension", []) or [])
-    encoded_observation_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
-    if str(algorithm_name or "").strip() not in encoded_observation_algorithms:
+    if str(algorithm_name or "").strip() not in ENCODED_OBSERVATION_ALGORITHMS:
         return fallback
 
     get_encoded = getattr(wrapper, "get_encoded_observations", None)
@@ -302,32 +302,10 @@ def _build_mlflow_run_url(base_url: Optional[str], experiment_id: Optional[str],
     return f"{normalized}/#/experiments/{experiment_id}/runs/{run_id}"
 
 
-def _summarise_pipeline_algorithms(config: dict[str, Any]) -> str:
-    """Summarise the pipeline algorithms for MLflow tagging.
-
-    Single-stage runs report just the algorithm name (matches the
-    historical ``opeva.algorithm`` tag for backward compatibility).
-    Multi-stage runs report the algorithms joined by ``+`` from top to
-    bottom of the pipeline.
-    """
-    pipeline_cfg = config.get("pipeline") or []
-    names = [
-        str(stage.get("algorithm") or "").strip()
-        for stage in pipeline_cfg
-        if isinstance(stage, dict)
-    ]
-    names = [name for name in names if name]
-    if not names:
-        return "unknown_algorithm"
-    if len(names) == 1:
-        return names[0]
-    return "+".join(names)
-
-
 def _build_mlflow_tags(config: dict[str, Any], *, job_id: str, run_name: str, config_hash: str, git_sha: Optional[str]) -> dict[str, str]:
     simulator_cfg = config.get("simulator", {})
     dataset_name = simulator_cfg.get("dataset_name") or simulator_cfg.get("dataset_path") or "unknown_dataset"
-    algorithm_name = _summarise_pipeline_algorithms(config)
+    algorithm_name = summarise_pipeline_algorithms(config) or "unknown_algorithm"
     tags: dict[str, str] = {
         "opeva.job_id": str(job_id),
         "opeva.algorithm": str(algorithm_name),
@@ -525,12 +503,16 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         message = build_unsupported_algorithm_message(None)
         logger.error(message)
         raise ValueError(message)
-    for stage in pipeline_cfg:
-        algorithm_name = stage.get("algorithm") if isinstance(stage, dict) else None
-        if not is_algorithm_supported(algorithm_name):
-            message = build_unsupported_algorithm_message(algorithm_name)
-            logger.error(message)
-            raise ValueError(message)
+    # Derive the algorithm name used for observation-dimension resolution.
+    # Prefer the first neural stage (needs encoded obs); fall back to first stage.
+    algorithm_name: Optional[str] = next(
+        (
+            stage.get("algorithm")
+            for stage in pipeline_cfg
+            if isinstance(stage, dict) and stage.get("algorithm") in ENCODED_OBSERVATION_ALGORITHMS
+        ),
+        pipeline_cfg[0].get("algorithm") if pipeline_cfg and isinstance(pipeline_cfg[0], dict) else None,
+    )
 
     metadata = config.get("metadata", {})
     if not isinstance(metadata, dict):

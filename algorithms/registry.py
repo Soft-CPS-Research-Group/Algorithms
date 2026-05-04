@@ -43,6 +43,13 @@ PLACEHOLDER_ALGORITHMS = {
     "SingleAgentRL",
 }
 
+# Derived from the registry: algorithms whose class sets _use_raw_observations=False
+# (i.e. neural agents that need the wrapper's observation encoding).
+ENCODED_OBSERVATION_ALGORITHMS: frozenset[str] = frozenset(
+    name for name, cls in ALGORITHM_REGISTRY.items()
+    if not cls._use_raw_observations
+)
+
 
 def supported_algorithms() -> List[str]:
     """Return registered algorithm names sorted for stable error messages."""
@@ -140,6 +147,10 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
         agent_cls = ALGORITHM_REGISTRY[algorithm_name]
         agent_view = _stage_to_agent_view(config, stage_cfg)
         count = int(stage_cfg.get("count", 1) or 1)
+        if count < 1:
+            raise ValueError(
+                f"Stage '{algorithm_name}' has count={count}; must be >= 1."
+            )
 
         if count == 1:
             stages.append(agent_cls(config=agent_view))

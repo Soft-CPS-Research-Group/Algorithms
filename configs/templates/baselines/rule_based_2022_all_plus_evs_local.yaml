@@ -98,7 +98,7 @@ simulator:
     include_business_as_usual: true
     export_business_as_usual_timeseries: true
     kpi_round_decimals: null
-    session_name: "rule-based-2022-all-plus-evs-local"
+    session_name: rule-based-2022-all-plus-evs-local
   wrapper_reward:
     enabled: false
     profile: cost_limits_v1
@@ -106,20 +106,19 @@ simulator:
     clip_min: -10.0
     clip_max: 10.0
     squash: none
-
 training:
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
-
 topology:
   num_agents: null
   observation_dimensions: null
   action_dimensions: null
   action_space: null
-
-algorithm:
-  name: "RuleBasedPolicy"
+execution: null
+pipeline:
+- algorithm: RuleBasedPolicy
+  count: 1
   hyperparameters:
     pv_charge_threshold: 2.0
     flexibility_hours: 3.0
@@ -139,5 +138,3 @@ algorithm:
   networks: null
   replay_buffer: null
   exploration: null
-
-execution: null

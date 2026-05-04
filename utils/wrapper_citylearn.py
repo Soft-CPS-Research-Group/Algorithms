@@ -1,3 +1,4 @@
+import inspect
 import json
 import faulthandler
 import re
@@ -17,6 +18,7 @@ from citylearn.citylearn import CityLearnEnv
 from loguru import logger
 
 from algorithms.execution_unit import ExecutionUnit
+from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
 from utils.entity_adapter import EntityContractAdapter
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
@@ -482,15 +484,15 @@ class Wrapper_CityLearn(RLC):
                 self.action_names = self.action_names[: len(self.action_space)]
             self.encoders = self.set_encoders()
             self._action_bounds_cache = None
-        fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
+        conflicting = self._algorithm_names & ENCODED_OBSERVATION_ALGORITHMS
         if (
             topology_changed
             and self._entity_dynamic_mode
-            and self._algorithm_name in fixed_topology_algorithms
+            and conflicting
             and previous_version is not None
         ):
             raise ValueError(
-                f"{self._algorithm_name} supports entity interface only with topology_mode='static'. "
+                f"{sorted(conflicting)} support entity interface only with topology_mode='static'. "
                 "Detected topology change during runtime."
             )
 
@@ -1036,18 +1038,25 @@ class Wrapper_CityLearn(RLC):
         if self._export_timeseries_final_episode_only:
             export_business_as_usual_timeseries = export_business_as_usual_timeseries and is_final_episode
 
-        kwargs = {
+        candidate_kwargs: Dict[str, Any] = {
             "include_business_as_usual": self._export_include_business_as_usual,
             "export_business_as_usual_timeseries": export_business_as_usual_timeseries,
             "kpi_round_decimals": self._export_kpi_round_decimals,
         }
         if not self._export_kpis_final_episode_only and episode is not None:
-            kwargs["filepath"] = f"exported_kpis_ep{episode}.csv"
+            candidate_kwargs["filepath"] = f"exported_kpis_ep{episode}.csv"
 
+        sig = inspect.signature(self.env.export_final_kpis)
+        has_var_keyword = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+        if has_var_keyword:
+            kwargs = candidate_kwargs
+        else:
+            kwargs = {k: v for k, v in candidate_kwargs.items() if k in sig.parameters}
         self.env.export_final_kpis(**kwargs)
         if not self._export_kpis_final_episode_only and is_final_episode and episode is not None:
-            final_kwargs = dict(kwargs)
-            final_kwargs.pop("filepath", None)
+            final_kwargs = {k: v for k, v in kwargs.items() if k != "filepath"}
             self.env.export_final_kpis(**final_kwargs)
 
         self._manual_kpi_exported_episodes.add(episode)

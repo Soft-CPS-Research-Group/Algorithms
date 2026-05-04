@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from algorithms.registry import create_agent
+from algorithms.registry import build_execution_unit
 from reward_function.registry import REWARD_FUNCTION_MAP
 from run_experiment import _resolve_agent_observation_dimensions
 from utils.config_schema import validate_config
@@ -440,7 +440,7 @@ def run_diagnostic(args: argparse.Namespace) -> dict[str, Any]:
     config["topology"]["num_agents"] = len(wrapper.action_space)
     _write_yaml(output_dir / "diagnostic_config.resolved.yaml", config)
 
-    agent = create_agent(config)
+    agent = build_execution_unit(config)
     wrapper.set_model(agent)
     actor_before = _actor_vectors(agent)
 

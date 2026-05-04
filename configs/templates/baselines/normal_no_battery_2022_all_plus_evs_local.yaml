@@ -62,9 +62,9 @@ training:
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
-
-algorithm:
-  name: "NormalNoBatteryPolicy"
+pipeline:
+- algorithm: NormalNoBatteryPolicy
+  count: 1
   hyperparameters:
     control_storage: false
     ev_normal_charge_rate: 1.0

@@ -140,27 +140,33 @@ topology:
   observation_dimensions: null
   action_dimensions: null
   action_space: null
-
-# Algorithm family and hyperparameters.
-algorithm:
-  name: "MATD3"
+execution: null
+pipeline:
+- algorithm: MATD3
+  count: 1
   hyperparameters:
     gamma: 0.995
   networks:
     actor:
-      class: "Actor"
-      layers: [1024, 512, 256]
-      lr: 5.0e-5
+      class: Actor
+      layers:
+      - 1024
+      - 512
+      - 256
+      lr: 5.0e-05
     critic:
-      class: "Critic"
-      layers: [1024, 512, 256]
-      lr: 5.0e-4
+      class: Critic
+      layers:
+      - 1024
+      - 512
+      - 256
+      lr: 0.0005
   replay_buffer:
-    class: "MultiAgentReplayBuffer"
+    class: MultiAgentReplayBuffer
     capacity: 200000
     batch_size: 256
   exploration:
-    strategy: "GaussianNoise"
+    strategy: GaussianNoise
     params:
       bias: 0.0
       sigma: 0.15
@@ -191,7 +197,7 @@ algorithm:
       actor_update_interval: 2
       target_policy_smoothing: true
       target_policy_noise: 0.05
-      target_policy_noise_clip: 0.10
+      target_policy_noise_clip: 0.1
       actor_action_l2_penalty: 0.0
       actor_action_saturation_penalty: 0.0
       actor_storage_action_l2_penalty: 0.0
@@ -205,7 +211,4 @@ algorithm:
       actor_behavior_cloning_decay_steps: 0
       reward_normalization: true
       reward_normalization_clip: 10.0
-      reward_normalization_epsilon: 1.0e-8
-
-# Optional worker-specific overrides; omitted for local execution.
-execution: null
+      reward_normalization_epsilon: 1.0e-08

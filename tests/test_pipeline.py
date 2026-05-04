@@ -251,12 +251,19 @@ class TestEnsemblePredict:
         assert a.predict_calls[0]["context"] == {"signal": 9}
         assert b.predict_calls[0]["context"] == {"signal": 9}
 
-    def test_member_returning_non_singleton_list_is_passed_through(self) -> None:
-        weird = RecordingUnit("weird", predict_output=[[0.1], [0.2]])
-        ensemble = Ensemble([weird])
+    def test_member_returning_multiple_rows_is_rejected(self) -> None:
+        misbehaving = RecordingUnit("oops", predict_output=[[0.1], [0.2]])
+        ensemble = Ensemble([misbehaving])
+        with pytest.raises(RuntimeError, match="returned 2 rows"):
+            ensemble.predict([[1.0]])
+
+    def test_member_returning_non_list_is_passed_through(self) -> None:
+        # Non-leaf members may emit a context object (string, dict, tensor).
+        # The ensemble must forward these unchanged.
+        ctx_emitter = RecordingUnit("ctx", predict_output={"signal": 0.42})
+        ensemble = Ensemble([ctx_emitter])
         result = ensemble.predict([[1.0]])
-        # Output is preserved (no unwrapping when it's not a single-row list).
-        assert result == [[[0.1], [0.2]]]
+        assert result == [{"signal": 0.42}]
 
 
 class TestEnsembleUpdate:
@@ -311,3 +318,44 @@ class TestEnsembleConstruction:
     def test_empty_agents_rejected(self) -> None:
         with pytest.raises(ValueError):
             Ensemble([])
+
+
+class TestEnsembleAttachEnvironmentSizeMismatch:
+    def test_too_few_env_slots_raises(self) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+        c = RecordingUnit("c")
+        ensemble = Ensemble([a, b, c])  # 3 members
+
+        with pytest.raises(ValueError, match="Ensemble size mismatch"):
+            ensemble.attach_environment(
+                observation_names=[["o0"], ["o1"]],  # only 2 slots
+                action_names=[["a0"], ["a1"]],
+                action_space=["s0", "s1"],
+                observation_space=["os0", "os1"],
+            )
+
+    def test_too_many_env_slots_raises(self) -> None:
+        a = RecordingUnit("a")
+        ensemble = Ensemble([a])  # 1 member
+
+        with pytest.raises(ValueError, match="Ensemble size mismatch"):
+            ensemble.attach_environment(
+                observation_names=[["o0"], ["o1"], ["o2"]],
+                action_names=[["a0"], ["a1"], ["a2"]],
+                action_space=["s0", "s1", "s2"],
+                observation_space=["os0", "os1", "os2"],
+            )
+
+    def test_exact_match_does_not_raise(self) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+        ensemble = Ensemble([a, b])
+
+        # Should not raise
+        ensemble.attach_environment(
+            observation_names=[["o0"], ["o1"]],
+            action_names=[["a0"], ["a1"]],
+            action_space=["s0", "s1"],
+            observation_space=["os0", "os1"],
+        )

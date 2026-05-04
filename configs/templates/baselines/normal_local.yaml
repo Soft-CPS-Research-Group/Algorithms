@@ -53,14 +53,14 @@ training:
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
-
-algorithm:
-  name: "NormalPolicy"
+pipeline:
+- algorithm: NormalPolicy
+  count: 1
   hyperparameters:
     ev_normal_charge_rate: 1.0
     ev_normal_target_soc: 1.0
-    storage_min_soc: 0.20
-    storage_max_soc: 0.90
+    storage_min_soc: 0.2
+    storage_max_soc: 0.9
     storage_charge_rate: 0.35
     storage_discharge_rate: 0.35
     normal_storage_discharge_import_threshold_kw: 2.0

@@ -1040,12 +1040,14 @@ def _validated(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _rbc_smart_hyperparameters() -> dict[str, Any]:
     payload = _validated(_load_yaml(RBC_SMART_2022_TEMPLATE))
-    return dict(payload.get("algorithm", {}).get("hyperparameters", {}) or {})
+    pipeline = payload.get("pipeline") or []
+    return dict((pipeline[0] if pipeline else {}).get("hyperparameters", {}) or {})
 
 
 def _rbc_community_hyperparameters() -> dict[str, Any]:
     payload = _validated(_load_yaml(RBC_COMMUNITY_2022_TEMPLATE))
-    return dict(payload.get("algorithm", {}).get("hyperparameters", {}) or {})
+    pipeline = payload.get("pipeline") or []
+    return dict((pipeline[0] if pipeline else {}).get("hyperparameters", {}) or {})
 
 
 def _teacher_hyperparameters(policy_name: str) -> dict[str, Any]:
@@ -1452,8 +1454,8 @@ def _build_rl_config(
     training["steps_between_training_updates"] = int(runtime["updates_every"])
     training["target_update_interval"] = int(runtime["target_update_interval"])
 
-    algorithm = config.setdefault("algorithm", {})
-    algorithm["name"] = str(algorithm_name)
+    algorithm = config["pipeline"][0]
+    algorithm["algorithm"] = str(algorithm_name)
     algorithm["hyperparameters"] = {
         "gamma": 0.995,
         "require_cuda": bool(runtime["require_cuda"]),

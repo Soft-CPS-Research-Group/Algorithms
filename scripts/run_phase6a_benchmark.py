@@ -475,6 +475,14 @@ def _set_nested(config: dict[str, Any], path: tuple[str, ...], value: Any) -> No
     current[path[-1]] = value
 
 
+def _pipeline_stage(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the first pipeline stage dict, creating it if absent."""
+    pipeline = config.setdefault("pipeline", [])
+    if not pipeline:
+        pipeline.append({})
+    return pipeline[0]
+
+
 def _baseline_agent_key_for_policy(policy_name: str) -> str | None:
     return {
         "RandomPolicy": "random",
@@ -493,7 +501,9 @@ def _load_baseline_hyperparameters(dataset_key: str, policy_name: str) -> dict[s
     if not template:
         return {}
     baseline_config = validate_config(_load_yaml(Path(template))).to_dict()
-    return dict((baseline_config.get("algorithm") or {}).get("hyperparameters") or {})
+    pipeline = baseline_config.get("pipeline") or []
+    stage = pipeline[0] if pipeline else {}
+    return dict((stage.get("hyperparameters")) or {})
 
 
 def _selected_steps(dataset_key: str, args: argparse.Namespace) -> int:
@@ -507,7 +517,7 @@ def _selected_steps(dataset_key: str, args: argparse.Namespace) -> int:
 def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
     simulator = config.setdefault("simulator", {})
     encoding = simulator.setdefault("entity_encoding", {})
-    algorithm = config.setdefault("algorithm", {})
+    algorithm = _pipeline_stage(config)
     exploration = algorithm.setdefault("exploration", {}).setdefault("params", {})
 
     if variant == "current":
@@ -1589,7 +1599,7 @@ def _build_run_config(
     if checkpoint_interval is not None:
         checkpointing["checkpoint_interval"] = max(int(checkpoint_interval), 1)
 
-    algorithm = config.setdefault("algorithm", {})
+    algorithm = _pipeline_stage(config)
     hyperparameters = algorithm.setdefault("hyperparameters", {})
     hyperparameters["seed"] = int(seed)
     hyperparameters.update(
@@ -1781,12 +1791,13 @@ def _collect_job_row(plan: Mapping[str, Any], *, output_dir: Path, status: str, 
     if config_path.exists():
         resolved = _load_yaml(config_path)
         simulator = resolved.get("simulator") if isinstance(resolved.get("simulator"), Mapping) else {}
-        algorithm = resolved.get("algorithm") if isinstance(resolved.get("algorithm"), Mapping) else {}
+        pipeline = resolved.get("pipeline") or []
+        stage = pipeline[0] if pipeline and isinstance(pipeline[0], Mapping) else {}
         encoding = simulator.get("entity_encoding") if isinstance(simulator.get("entity_encoding"), Mapping) else {}
         row.update(
             {
                 "dataset_name": simulator.get("dataset_name"),
-                "algorithm_name": algorithm.get("name"),
+                "algorithm_name": stage.get("algorithm"),
                 "entity_profile": encoding.get("profile"),
                 "episodes": simulator.get("episodes"),
                 "deterministic_finish": simulator.get("deterministic_finish"),
