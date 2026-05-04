@@ -1,13 +1,20 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import numpy.typing as npt
 from torch.nn import Module
 
+from algorithms.execution_unit import ExecutionUnit
 
-class BaseAgent(Module, ABC):
-    """Common interface for all training and inference agents."""
+
+class BaseAgent(Module, ExecutionUnit):
+    """Common interface for all training and inference agents.
+
+    Inherits the wrapper-facing contract from :class:`ExecutionUnit` so that
+    single agents and composite execution units (pipelines, ensembles) are
+    interchangeable from the wrapper's perspective.
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -18,8 +25,15 @@ class BaseAgent(Module, ABC):
         self,
         observations: List[npt.NDArray[np.float64]],
         deterministic: bool | None = None,
+        *,
+        context: Any = None,
     ) -> List[List[float]]:
-        """Return actions for the current time step."""
+        """Return actions for the current time step.
+
+        ``context`` is provided by the parent stage when this agent runs
+        inside a :class:`~algorithms.pipeline.Pipeline`. Single agents may
+        ignore it.
+        """
 
     @abstractmethod
     def update(

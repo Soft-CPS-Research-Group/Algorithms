@@ -33,10 +33,7 @@ def build_manifest(
         },
         "training": config.get("training", {}),
         "topology": config.get("topology", {}),
-        "algorithm": {
-            "name": config.get("algorithm", {}).get("name"),
-            "hyperparameters": config.get("algorithm", {}).get("hyperparameters", {}),
-        },
+        "pipeline": _summarise_pipeline(config),
         "environment": environment_metadata,
         "agent": normalized_agent_metadata,
     }
@@ -54,6 +51,24 @@ def write_manifest(manifest: Dict[str, Any], output_dir: str) -> Path:
         logger.error("Failed to write artifact manifest: {}", exc)
         raise
     return path
+
+
+def _summarise_pipeline(config: Dict[str, Any]) -> list:
+    """Build the manifest's pipeline summary from the resolved config."""
+    pipeline_cfg = config.get("pipeline") or []
+    summary = []
+    for index, stage in enumerate(pipeline_cfg):
+        if not isinstance(stage, dict):
+            continue
+        summary.append(
+            {
+                "stage_index": index,
+                "algorithm": stage.get("algorithm"),
+                "count": int(stage.get("count", 1) or 1),
+                "hyperparameters": stage.get("hyperparameters", {}) or {},
+            }
+        )
+    return summary
 
 
 def _merge_bundle_metadata(metadata: Dict[str, Any], bundle_cfg: Dict[str, Any]) -> None:

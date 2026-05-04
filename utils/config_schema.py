@@ -228,28 +228,44 @@ class TopologyConfig(BaseModel):
     action_space: Optional[Any] = None
 
 
-class MADDPGAlgorithmConfig(BaseModel):
-    name: Literal["MADDPG"]
+class MADDPGStageConfig(BaseModel):
+    """Pipeline stage describing a MADDPG agent."""
+
+    algorithm: Literal["MADDPG"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
     hyperparameters: AlgorithmHyperparameters
     networks: AlgorithmNetworks
     replay_buffer: ReplayBufferConfig
     exploration: ExplorationParams
 
 
-class RuleBasedAlgorithmConfig(BaseModel):
-    name: Literal["RuleBasedPolicy"]
+class RuleBasedStageConfig(BaseModel):
+    """Pipeline stage describing a RuleBasedPolicy agent."""
+
+    algorithm: Literal["RuleBasedPolicy"]
+    count: int = Field(default=1, ge=1)
     hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
 
 
-class SingleAgentRLAlgorithmConfig(BaseModel):
-    name: Literal["SingleAgentRL"]
+class SingleAgentRLStageConfig(BaseModel):
+    """Pipeline stage placeholder for SingleAgentRL (no runtime impl yet)."""
+
+    algorithm: Literal["SingleAgentRL"]
+    count: int = Field(default=1, ge=1)
     hyperparameters: AlgorithmHyperparameters
     policy: Optional[str] = Field(default=None, description="Identifier for the policy architecture")
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
+
+
+PipelineStageConfig = Union[
+    MADDPGStageConfig,
+    RuleBasedStageConfig,
+    SingleAgentRLStageConfig,
+]
 
 
 class DeucalionExecutionConfig(BaseModel):
@@ -341,7 +357,15 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    pipeline: List[PipelineStageConfig] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Ordered list of execution stages. A single-element list represents "
+            "a single agent (current default). Multi-element lists describe a "
+            "vertical hierarchy (top stage feeds context to the next)."
+        ),
+    )
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
@@ -349,9 +373,15 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
-        if self.algorithm.name == "MADDPG" and self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
+        uses_maddpg = any(stage.algorithm == "MADDPG" for stage in self.pipeline)
+        if (
+            uses_maddpg
+            and self.simulator.interface == "entity"
+            and self.simulator.topology_mode == "dynamic"
+        ):
             raise ValueError(
-                "algorithm.name='MADDPG' does not support simulator.interface='entity' with simulator.topology_mode='dynamic'."
+                "algorithm 'MADDPG' does not support simulator.interface='entity' "
+                "with simulator.topology_mode='dynamic'."
             )
 
         return self
@@ -363,4 +393,16 @@ class ProjectConfig(BaseModel):
 
 def validate_config(raw_config: Dict[str, Any]) -> ProjectConfig:
     """Validate a raw configuration dictionary and return the structured model."""
+    if isinstance(raw_config, dict) and "algorithm" in raw_config and "pipeline" not in raw_config:
+        raise ValueError(
+            "Configuration uses the deprecated top-level 'algorithm' key. "
+            "Migrate to a 'pipeline' list, e.g.:\n\n"
+            "  pipeline:\n"
+            "    - algorithm: \"<name>\"\n"
+            "      count: 1\n"
+            "      hyperparameters: { ... }\n"
+            "      networks: { ... }   # if applicable\n"
+            "      replay_buffer: { ... }   # if applicable\n"
+            "      exploration: { ... }   # if applicable\n"
+        )
     return ProjectConfig.model_validate(raw_config)

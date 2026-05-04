@@ -86,33 +86,34 @@ topology:
   action_dimensions: null
   action_space: null
 
-algorithm:
-  name: "MADDPG"
-  hyperparameters:
-    gamma: 0.995
-  networks:
-    actor:
-      class: "Actor"
-      layers: [1024, 512, 256]
-      lr: 5.0e-5
-    critic:
-      class: "Critic"
-      layers: [1024, 512, 256]
-      lr: 5.0e-4
-  replay_buffer:
-    class: "MultiAgentReplayBuffer"
-    capacity: 200000
-    batch_size: 256
-  exploration:
-    strategy: "GaussianNoise"
-    params:
-      bias: 0.1
-      sigma: 0.15
-      decay: 0.99
-      noise_clip: 0.3
-      gamma: 0.99
-      tau: 0.001
-      end_initial_exploration_time_step: 96
-      random_exploration_steps: 96
+pipeline:
+  - algorithm: "MADDPG"
+    count: 1
+    hyperparameters:
+      gamma: 0.995
+    networks:
+      actor:
+        class: "Actor"
+        layers: [1024, 512, 256]
+        lr: 5.0e-5
+      critic:
+        class: "Critic"
+        layers: [1024, 512, 256]
+        lr: 5.0e-4
+    replay_buffer:
+      class: "MultiAgentReplayBuffer"
+      capacity: 200000
+      batch_size: 256
+    exploration:
+      strategy: "GaussianNoise"
+      params:
+        bias: 0.1
+        sigma: 0.15
+        decay: 0.99
+        noise_clip: 0.3
+        gamma: 0.99
+        tau: 0.001
+        end_initial_exploration_time_step: 96
+        random_exploration_steps: 96
 
 execution: null
