@@ -537,6 +537,7 @@ class SingleAgentRLStageConfig(BaseModel):
 
 
 PipelineStageConfig = Union[
+    CommunityCoordinatorAlgorithmConfig,
     ActorCriticAlgorithmConfig,
     RuleBasedAlgorithmConfig,
     SingleAgentRLStageConfig,
