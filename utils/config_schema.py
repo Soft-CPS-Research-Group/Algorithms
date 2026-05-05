@@ -228,6 +228,28 @@ class TopologyConfig(BaseModel):
     action_space: Optional[Any] = None
 
 
+class CCHyperparameters(BaseModel):
+    num_steps:           int   = Field(default=2048,  gt=0)
+    lr:                  float = Field(default=3e-4,  gt=0)
+    gamma:               float = Field(default=0.99,  gt=0, lt=1)
+    gae_lambda:          float = Field(default=0.95,  gt=0, le=1)
+    num_epochs:          int   = Field(default=10,    gt=0)
+    mini_batch_size:     int   = Field(default=64,    gt=0)
+    clip_coef:           float = Field(default=0.2,   gt=0)
+    vf_coef:             float = Field(default=0.5,   gt=0)
+    ent_coef:            float = Field(default=0.01,  ge=0)
+    max_grad_norm:       float = Field(default=0.5,   gt=0)
+    target_kl:           Optional[float] = Field(default=0.02, gt=0)
+    obs_dim:             int   = Field(default=9,     gt=0)
+    cc_action_interval:  int   = Field(default=1,     gt=0)
+
+
+class CommunityCoordinatorAlgorithmConfig(BaseModel):
+    algorithm: Literal["CommunityCoordinator"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    hyperparameters: CCHyperparameters = CCHyperparameters()
+
+
 class MADDPGStageConfig(BaseModel):
     """Pipeline stage describing a MADDPG agent."""
 
