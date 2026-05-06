@@ -11,3 +11,5 @@ venv/
 __pycache__/
 .git-credentials
 .idea
+configs/local_ui_test_entity.yaml
+configs/local_ui_test_static.yaml
