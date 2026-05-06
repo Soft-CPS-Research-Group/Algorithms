@@ -28,10 +28,22 @@ class _DummyEntityEnv:
                 "storage": {"ids": ["B1/electrical_storage"], "features": ["soc"]},
                 "pv": {"ids": ["B1/pv"], "features": ["generation_power_kw"]},
                 "ev": {"ids": ["EV1", "EV2"], "features": ["soc"]},
+                "deferrable_appliance": {
+                    "ids": ["B1/washer", "B2/washer"],
+                    "features": [
+                        "pending",
+                        "running",
+                        "can_start",
+                        "urgency_ratio",
+                        "slack_ratio",
+                        "priority",
+                    ],
+                },
             },
             "actions": {
                 "building": {"ids": ["B1", "B2"], "features": ["electrical_storage"]},
                 "charger": {"ids": ["B1/C1", "B2/C2"], "features": ["electric_vehicle_storage"]},
+                "deferrable_appliance": {"ids": ["B1/washer", "B2/washer"], "features": ["start"]},
             },
         }
 
@@ -67,6 +79,11 @@ class _DummyEntityEnv:
                         "ev": spaces.Box(
                             low=np.array([[0.0], [0.0]], dtype=np.float32),
                             high=np.array([[100.0], [100.0]], dtype=np.float32),
+                            dtype=np.float32,
+                        ),
+                        "deferrable_appliance": spaces.Box(
+                            low=np.zeros((2, 6), dtype=np.float32),
+                            high=np.ones((2, 6), dtype=np.float32),
                             dtype=np.float32,
                         ),
                     }
@@ -107,11 +124,19 @@ def _sample_observation_payload() -> dict:
             "storage": np.array([[0.4]], dtype=np.float32),
             "pv": np.array([[8.0]], dtype=np.float32),
             "ev": np.array([[45.0], [22.0]], dtype=np.float32),
+            "deferrable_appliance": np.array(
+                [
+                    [1.0, 0.0, 1.0, 0.8, 0.1, 0.9],
+                    [1.0, 0.0, 0.0, 0.2, 0.9, 0.2],
+                ],
+                dtype=np.float32,
+            ),
         },
         "edges": {
             "building_to_charger": np.array([[0, 0], [1, 1]], dtype=np.int32),
             "building_to_storage": np.array([[0, 0]], dtype=np.int32),
             "building_to_pv": np.array([[0, 0]], dtype=np.int32),
+            "building_to_deferrable_appliance": np.array([[0, 0], [1, 1]], dtype=np.int32),
             "charger_to_ev_connected": np.array([[0, 0], [1, 1]], dtype=np.int32),
             "charger_to_ev_connected_mask": np.array([1.0, 0.0], dtype=np.float32),
             "charger_to_ev_incoming": np.array([[0, 1], [1, 0]], dtype=np.int32),
@@ -133,6 +158,8 @@ def test_entity_adapter_stable_order_and_aliases():
     assert "electric_vehicle_charger_state" in observation_names[0]
     assert "electric_vehicle_soc" in observation_names[0]
     assert any(name.startswith("charger::B1/C1::") for name in observation_names[0])
+    assert "deferrable_appliance::B1/washer::can_start" in observation_names[0]
+    assert "active_deferrable_appliances_count" in observation_names[0]
     assert observation_spaces[0].shape[0] == observations[0].shape[0]
 
 
@@ -244,3 +271,25 @@ def test_entity_adapter_decodes_direct_charger_feature_when_unique_per_building(
     assert building_table[1, 0] == pytest.approx(0.40, abs=1e-6)
     assert charger_table[0, 0] == pytest.approx(0.90, abs=1e-6)
     assert charger_table[1, 0] == pytest.approx(0.30, abs=1e-6)
+
+
+def test_entity_adapter_decodes_deferrable_actions():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)
+
+    action_payload = adapter.to_entity_actions(
+        actions=[
+            [1.0],
+            [0.25],
+        ],
+        action_names=[
+            ["deferrable_appliance_washer"],
+            ["deferrable_appliance::B2/washer::start"],
+        ],
+    )
+
+    deferrable_table = action_payload["tables"]["deferrable_appliance"]
+
+    assert deferrable_table.shape == (2, 1)
+    assert deferrable_table[0, 0] == pytest.approx(1.0, abs=1e-6)
+    assert deferrable_table[1, 0] == pytest.approx(0.25, abs=1e-6)

@@ -32,15 +32,20 @@ class EntityContractAdapter:
         self._storage_features: List[str] = []
         self._pv_features: List[str] = []
         self._ev_features: List[str] = []
+        self._deferrable_features: List[str] = []
         self._charger_ids: List[str] = []
         self._storage_ids: List[str] = []
         self._pv_ids: List[str] = []
+        self._deferrable_ids: List[str] = []
 
         self._building_action_features: List[str] = []
         self._charger_action_features: List[str] = []
+        self._deferrable_action_features: List[str] = []
         self._building_action_col_by_name: Dict[str, int] = {}
         self._charger_action_col_by_name: Dict[str, int] = {}
+        self._deferrable_action_col_by_name: Dict[str, int] = {}
         self._charger_row_by_id: Dict[str, int] = {}
+        self._deferrable_row_by_id: Dict[str, int] = {}
 
         self._latest_observation_origins: List[List[Tuple[str, str]]] = []
         self._warned_invalid_bounds: set[str] = set()
@@ -125,19 +130,26 @@ class EntityContractAdapter:
         self._storage_features = list(table_specs.get("storage", {}).get("features", []))
         self._pv_features = list(table_specs.get("pv", {}).get("features", []))
         self._ev_features = list(table_specs.get("ev", {}).get("features", []))
+        self._deferrable_features = list(table_specs.get("deferrable_appliance", {}).get("features", []))
 
         self._charger_ids = list(table_specs.get("charger", {}).get("ids", []))
         self._storage_ids = list(table_specs.get("storage", {}).get("ids", []))
         self._pv_ids = list(table_specs.get("pv", {}).get("ids", []))
+        self._deferrable_ids = list(table_specs.get("deferrable_appliance", {}).get("ids", []))
         self._charger_row_by_id = {entity_id: row for row, entity_id in enumerate(self._charger_ids)}
+        self._deferrable_row_by_id = {entity_id: row for row, entity_id in enumerate(self._deferrable_ids)}
 
         self._building_action_features = list(action_specs.get("building", {}).get("features", []))
         self._charger_action_features = list(action_specs.get("charger", {}).get("features", []))
+        self._deferrable_action_features = list(action_specs.get("deferrable_appliance", {}).get("features", []))
         self._building_action_col_by_name = {
             name: idx for idx, name in enumerate(self._building_action_features)
         }
         self._charger_action_col_by_name = {
             name: idx for idx, name in enumerate(self._charger_action_features)
+        }
+        self._deferrable_action_col_by_name = {
+            name: idx for idx, name in enumerate(self._deferrable_action_features)
         }
 
         self.topology_version = self._parse_topology_version(observation_payload)
@@ -159,6 +171,7 @@ class EntityContractAdapter:
         storage_table = self._as_2d(tables.get("storage", []))
         pv_table = self._as_2d(tables.get("pv", []))
         ev_table = self._as_2d(tables.get("ev", []))
+        deferrable_table = self._as_2d(tables.get("deferrable_appliance", []))
 
         district_space = table_spaces.get("district")
         building_space = table_spaces.get("building")
@@ -166,6 +179,7 @@ class EntityContractAdapter:
         storage_space = table_spaces.get("storage")
         pv_space = table_spaces.get("pv")
         ev_space = table_spaces.get("ev")
+        deferrable_space = table_spaces.get("deferrable_appliance")
 
         district_low = self._as_2d(getattr(district_space, "low", np.zeros_like(district_table)))
         district_high = self._as_2d(getattr(district_space, "high", np.zeros_like(district_table)))
@@ -179,6 +193,8 @@ class EntityContractAdapter:
         pv_high = self._as_2d(getattr(pv_space, "high", np.zeros_like(pv_table)))
         ev_low = self._as_2d(getattr(ev_space, "low", np.zeros_like(ev_table)))
         ev_high = self._as_2d(getattr(ev_space, "high", np.zeros_like(ev_table)))
+        deferrable_low = self._as_2d(getattr(deferrable_space, "low", np.zeros_like(deferrable_table)))
+        deferrable_high = self._as_2d(getattr(deferrable_space, "high", np.zeros_like(deferrable_table)))
 
         charger_connected_ev = self._charger_ev_row_map(
             edges.get("charger_to_ev_connected", []),
@@ -231,6 +247,10 @@ class EntityContractAdapter:
             building_chargers = self._edge_targets(edges.get("building_to_charger", []), building_index)
             building_storages = self._edge_targets(edges.get("building_to_storage", []), building_index)
             building_pvs = self._edge_targets(edges.get("building_to_pv", []), building_index)
+            building_deferrables = self._edge_targets(
+                edges.get("building_to_deferrable_appliance", []),
+                building_index,
+            )
 
             for row in building_storages:
                 storage_id = self._storage_ids[row] if row < len(self._storage_ids) else f"storage_{row}"
@@ -252,6 +272,21 @@ class EntityContractAdapter:
                         pv_low[row, col] if pv_low.shape[0] > row and pv_low.shape[1] > col else -1.0e6,
                         pv_high[row, col] if pv_high.shape[0] > row and pv_high.shape[1] > col else 1.0e6,
                         ("pv", feature),
+                    )
+
+            for row in building_deferrables:
+                appliance_id = (
+                    self._deferrable_ids[row]
+                    if row < len(self._deferrable_ids)
+                    else f"deferrable_appliance_{row}"
+                )
+                for col, feature in enumerate(self._deferrable_features):
+                    add_feature(
+                        f"deferrable_appliance::{appliance_id}::{feature}",
+                        deferrable_table[row, col] if deferrable_table.shape[0] > row and deferrable_table.shape[1] > col else 0.0,
+                        deferrable_low[row, col] if deferrable_low.shape[0] > row and deferrable_low.shape[1] > col else -1.0e6,
+                        deferrable_high[row, col] if deferrable_high.shape[0] > row and deferrable_high.shape[1] > col else 1.0e6,
+                        ("deferrable_appliance", feature),
                     )
 
             for row in building_chargers:
@@ -297,6 +332,13 @@ class EntityContractAdapter:
             add_feature("active_chargers_count", float(len(building_chargers)), 0.0, float(max(len(self._charger_ids), 1)), ("meta", "active_chargers_count"))
             add_feature("active_storages_count", float(len(building_storages)), 0.0, float(max(len(self._storage_ids), 1)), ("meta", "active_storages_count"))
             add_feature("active_pvs_count", float(len(building_pvs)), 0.0, float(max(len(self._pv_ids), 1)), ("meta", "active_pvs_count"))
+            add_feature(
+                "active_deferrable_appliances_count",
+                float(len(building_deferrables)),
+                0.0,
+                float(max(len(self._deferrable_ids), 1)),
+                ("meta", "active_deferrable_appliances_count"),
+            )
 
             # RBC compatibility aliases from first connected charger if available.
             if building_chargers:
@@ -401,6 +443,16 @@ class EntityContractAdapter:
             mapping.setdefault(building_name, []).append(row)
         return mapping
 
+    @staticmethod
+    def _entity_rows_by_building(entity_ids: Sequence[str]) -> Dict[str, List[int]]:
+        mapping: Dict[str, List[int]] = {}
+        for row, entity_id in enumerate(entity_ids):
+            if not isinstance(entity_id, str) or "/" not in entity_id:
+                continue
+            building_name = entity_id.split("/", 1)[0]
+            mapping.setdefault(building_name, []).append(row)
+        return mapping
+
     def _match_charger_row(
         self,
         *,
@@ -483,6 +535,99 @@ class EntityContractAdapter:
 
         return None, None
 
+    def _match_deferrable_row(
+        self,
+        *,
+        building_name: str,
+        candidate: str,
+        allowed_rows: Sequence[int],
+    ) -> Optional[int]:
+        raw = str(candidate or "").strip()
+        if not raw:
+            return None
+
+        normalized = raw
+        for prefix in ("deferrable_appliance::", "deferrable_appliance_"):
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix) :]
+
+        candidates: List[str] = [normalized]
+        if "/" not in normalized:
+            candidates.insert(0, f"{building_name}/{normalized}")
+        elif normalized.startswith(f"{building_name}/"):
+            suffix = normalized[len(building_name) + 1 :]
+            if suffix:
+                candidates.append(suffix)
+
+        allowed = set(int(row) for row in allowed_rows)
+        for appliance_id in candidates:
+            row = self._deferrable_row_by_id.get(appliance_id)
+            if row is None:
+                continue
+            if allowed and row not in allowed:
+                continue
+            return int(row)
+
+        return None
+
+    def _resolve_deferrable_action_target(
+        self,
+        *,
+        action_name: str,
+        building_name: str,
+        building_deferrable_rows: Sequence[int],
+    ) -> Tuple[Optional[int], Optional[str]]:
+        action = str(action_name or "").strip()
+        if not action or not self._deferrable_action_features:
+            return None, None
+
+        if action in self._deferrable_action_col_by_name:
+            if len(building_deferrable_rows) == 1:
+                return int(building_deferrable_rows[0]), action
+            return None, None
+
+        for feature in self._deferrable_action_features:
+            prefix = f"{feature}_"
+            if action.startswith(prefix):
+                row = self._match_deferrable_row(
+                    building_name=building_name,
+                    candidate=action[len(prefix) :],
+                    allowed_rows=building_deferrable_rows,
+                )
+                if row is not None:
+                    return row, feature
+
+            namespace_prefix = "deferrable_appliance_"
+            if action.startswith(namespace_prefix):
+                row = self._match_deferrable_row(
+                    building_name=building_name,
+                    candidate=action[len(namespace_prefix) :],
+                    allowed_rows=building_deferrable_rows,
+                )
+                if row is not None:
+                    return row, feature
+
+            suffix_token = f"::{feature}"
+            if action.endswith(suffix_token):
+                appliance_ref = action[: -len(suffix_token)]
+                if appliance_ref.startswith("deferrable_appliance::"):
+                    appliance_ref = appliance_ref[len("deferrable_appliance::") :]
+
+                row = self._match_deferrable_row(
+                    building_name=building_name,
+                    candidate=appliance_ref,
+                    allowed_rows=building_deferrable_rows,
+                )
+                if row is not None:
+                    return row, feature
+
+        if len(building_deferrable_rows) == 1:
+            for feature in self._deferrable_action_features:
+                if feature in action or "deferrable_appliance" in action:
+                    return int(building_deferrable_rows[0]), feature
+
+        return None, None
+
     def to_entity_actions(
         self,
         actions: Sequence[Sequence[float]],
@@ -492,17 +637,24 @@ class EntityContractAdapter:
         action_specs = specs.get("actions", {})
         building_ids = list(action_specs.get("building", {}).get("ids", []))
         charger_ids = list(action_specs.get("charger", {}).get("ids", []))
+        deferrable_ids = list(action_specs.get("deferrable_appliance", {}).get("ids", []))
 
         self._building_action_features = list(action_specs.get("building", {}).get("features", []))
         self._charger_action_features = list(action_specs.get("charger", {}).get("features", []))
+        self._deferrable_action_features = list(action_specs.get("deferrable_appliance", {}).get("features", []))
         self._building_action_col_by_name = {
             name: idx for idx, name in enumerate(self._building_action_features)
         }
         self._charger_action_col_by_name = {
             name: idx for idx, name in enumerate(self._charger_action_features)
         }
+        self._deferrable_action_col_by_name = {
+            name: idx for idx, name in enumerate(self._deferrable_action_features)
+        }
         self._charger_row_by_id = {entity_id: row for row, entity_id in enumerate(charger_ids)}
+        self._deferrable_row_by_id = {entity_id: row for row, entity_id in enumerate(deferrable_ids)}
         charger_rows_by_building = self._charger_rows_by_building(charger_ids)
+        deferrable_rows_by_building = self._entity_rows_by_building(deferrable_ids)
 
         building_table = np.zeros(
             (len(building_ids), len(self._building_action_features)),
@@ -510,6 +662,10 @@ class EntityContractAdapter:
         )
         charger_table = np.zeros(
             (len(charger_ids), len(self._charger_action_features)),
+            dtype=np.float32,
+        )
+        deferrable_table = np.zeros(
+            (len(deferrable_ids), len(self._deferrable_action_features)),
             dtype=np.float32,
         )
 
@@ -520,6 +676,7 @@ class EntityContractAdapter:
             names = action_names[building_index]
             building_name = building_ids[building_index]
             building_charger_rows = charger_rows_by_building.get(building_name, [])
+            building_deferrable_rows = deferrable_rows_by_building.get(building_name, [])
 
             for position, action_name in enumerate(names):
                 value = 0.0
@@ -543,10 +700,30 @@ class EntityContractAdapter:
                 if charger_col is None:
                     continue
                 charger_table[charger_row, charger_col] = value
+                continue
+
+            for position, action_name in enumerate(names):
+                value = 0.0
+                if position < len(building_actions):
+                    value = self._safe_scalar(building_actions[position], 0.0)
+
+                deferrable_row, deferrable_feature = self._resolve_deferrable_action_target(
+                    action_name=str(action_name),
+                    building_name=building_name,
+                    building_deferrable_rows=building_deferrable_rows,
+                )
+                if deferrable_row is None or deferrable_feature is None:
+                    continue
+
+                deferrable_col = self._deferrable_action_col_by_name.get(deferrable_feature)
+                if deferrable_col is None:
+                    continue
+                deferrable_table[deferrable_row, deferrable_col] = value
 
         return {
             "tables": {
                 "building": building_table,
                 "charger": charger_table,
+                "deferrable_appliance": deferrable_table,
             }
         }

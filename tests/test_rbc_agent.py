@@ -80,6 +80,90 @@ def test_rbc_emergency_window_forces_full_charge():
     assert actions[0][0] == pytest.approx(1.0, rel=1e-6)
 
 
+def test_rbc_starts_flat_deferrable_appliance_when_urgent():
+    agent = RuleBasedPolicy(
+        {
+            "simulator": {},
+            "algorithm": {
+                "name": "RuleBasedPolicy",
+                "hyperparameters": {
+                    "deferrable_urgency_threshold": 0.75,
+                    "deferrable_slack_threshold": 0.25,
+                    "deferrable_priority_threshold": 0.5,
+                },
+            },
+        }
+    )
+    observation_names = [
+        [
+            "deferrable_appliance_washing_machine_1_pending",
+            "deferrable_appliance_washing_machine_1_running",
+            "deferrable_appliance_washing_machine_1_can_start",
+            "deferrable_appliance_washing_machine_1_urgency_ratio",
+            "deferrable_appliance_washing_machine_1_slack_ratio",
+            "deferrable_appliance_washing_machine_1_priority",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[["deferrable_appliance_washing_machine_1"]],
+        action_space=[DummySpace([0.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 900},
+    )
+
+    actions = agent.predict([np.array([1.0, 0.0, 1.0, 0.8, 0.5, 0.1], dtype=float)])
+    assert actions[0][0] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_rbc_matches_entity_deferrable_appliance_by_action_suffix():
+    agent = RuleBasedPolicy({"simulator": {}, "algorithm": {"name": "RuleBasedPolicy"}})
+    observation_names = [
+        [
+            "deferrable_appliance::B1/washer::pending",
+            "deferrable_appliance::B1/washer::running",
+            "deferrable_appliance::B1/washer::can_start",
+            "deferrable_appliance::B1/washer::urgency_ratio",
+            "deferrable_appliance::B1/washer::slack_ratio",
+            "deferrable_appliance::B1/washer::priority",
+            "deferrable_appliance::B1/dryer::pending",
+            "deferrable_appliance::B1/dryer::running",
+            "deferrable_appliance::B1/dryer::can_start",
+            "deferrable_appliance::B1/dryer::urgency_ratio",
+            "deferrable_appliance::B1/dryer::slack_ratio",
+            "deferrable_appliance::B1/dryer::priority",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[["deferrable_appliance_washer", "deferrable_appliance_dryer"]],
+        action_space=[DummySpace([0.0, 0.0], [1.0, 1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["B1"], "seconds_per_time_step": 3600},
+    )
+
+    obs = np.array(
+        [
+            1.0,
+            0.0,
+            1.0,
+            0.8,
+            0.2,
+            0.9,
+            1.0,
+            0.0,
+            1.0,
+            0.1,
+            0.9,
+            0.1,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+    assert actions[0] == pytest.approx([1.0, 0.0], abs=1e-6)
+
+
 def test_rbc_export_artifacts_uses_rule_based_contract(tmp_path):
     agent = make_agent()
     agent._action_labels = [["electric_vehicle_storage"], ["electric_vehicle_storage_2"]]

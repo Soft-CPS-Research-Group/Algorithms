@@ -127,8 +127,10 @@ def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
         return dataset_path_value
 
     if isinstance(payload, dict):
-        if payload.get("root_directory") in (None, ""):
-            payload["root_directory"] = str(candidate.resolve().parent)
+        # A local schema must resolve sibling CSV/Parquet files from its own
+        # directory. Copied datasets can carry a root_directory from another
+        # repository, so local paths intentionally take precedence here.
+        payload["root_directory"] = str(candidate.resolve().parent)
         return payload
 
     return dataset_path_value

@@ -3,6 +3,7 @@
 /mlruns
 /runs
 /configs/generated/
+/datasets/*_15s/
 *.log
 # Virtual env
 venv/

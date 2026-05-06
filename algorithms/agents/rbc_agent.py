@@ -7,7 +7,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import mlflow
 import numpy as np
@@ -48,16 +48,21 @@ class RuleBasedPolicy(BaseAgent):
         self.energy_epsilon: float = float(hyper.get("energy_epsilon", 1e-3))
         self.non_flexible_chargers: set[str] = set(hyper.get("non_flexible_chargers", []) or [])
         self.default_capacity: float = float(hyper.get("default_capacity_kwh", 60.0))
+        self.deferrable_start_action: float = float(hyper.get("deferrable_start_action", 1.0))
+        self.deferrable_urgency_threshold: float = float(hyper.get("deferrable_urgency_threshold", 0.75))
+        self.deferrable_slack_threshold: float = float(hyper.get("deferrable_slack_threshold", 0.25))
+        self.deferrable_priority_threshold: float = float(hyper.get("deferrable_priority_threshold", 0.5))
 
         dataset_path = Path(config.get("simulator", {}).get("dataset_path", ""))
         self._dataset_path = dataset_path
-        self._dataset_info = self._load_dataset_info(dataset_path) if dataset_path.exists() else None
+        self._dataset_info = self._load_dataset_info(dataset_path) if dataset_path.is_file() else None
 
         self._obs_index: List[Dict[str, int]] = []
         self._action_labels: List[List[str]] = []
         self._action_bounds: List[Dict[str, List[float]]] = []
         self._agent_buildings: Dict[int, str] = {}
         self._ev_action_mapping: Dict[int, List[Optional[ChargerInfo]]] = {}
+        self._ev_action_position_mapping: Dict[int, Dict[int, Optional[ChargerInfo]]] = {}
 
         self.step_hours: float = 1.0
 
@@ -141,6 +146,8 @@ class RuleBasedPolicy(BaseAgent):
                     )
                     high = bounds[1]
                     value = normalised * high if high > 1.0 else normalised
+                elif self._is_deferrable_action_name(action_name, obs_map):
+                    value = self._compute_deferrable_action(obs, obs_map, action_name, bounds)
                 else:
                     value = 0.0
 
@@ -194,6 +201,10 @@ class RuleBasedPolicy(BaseAgent):
             "energy_epsilon": self.energy_epsilon,
             "non_flexible_chargers": sorted(self.non_flexible_chargers),
             "default_capacity_kwh": self.default_capacity,
+            "deferrable_start_action": self.deferrable_start_action,
+            "deferrable_urgency_threshold": self.deferrable_urgency_threshold,
+            "deferrable_slack_threshold": self.deferrable_slack_threshold,
+            "deferrable_priority_threshold": self.deferrable_priority_threshold,
             "step_hours": self.step_hours,
         }
 
@@ -210,7 +221,7 @@ class RuleBasedPolicy(BaseAgent):
         for agent_index, action_names in enumerate(agent_action_labels):
             default_actions = {str(name): 0.0 for name in action_names}
             policy = {
-                "policy_type": "rule_based_ev",
+                "policy_type": "rule_based_ev_deferrable",
                 "version": 1,
                 "agent_index": agent_index,
                 "dataset_schema": str(self._dataset_path) if self._dataset_path else None,
@@ -279,10 +290,14 @@ class RuleBasedPolicy(BaseAgent):
 
     def _build_ev_action_mapping(self, action_names: List[List[str]]) -> None:
         self._ev_action_mapping.clear()
+        self._ev_action_position_mapping.clear()
         if not self._dataset_info:
             for agent_idx, names in enumerate(action_names):
                 ev_slots = [name for name in names if "electric_vehicle" in name]
                 self._ev_action_mapping[agent_idx] = [None for _ in ev_slots]
+                self._ev_action_position_mapping[agent_idx] = {
+                    pos: None for pos, name in enumerate(names) if "electric_vehicle" in name
+                }
             return
 
         building_chargers = self._dataset_info["charger_info"]
@@ -291,17 +306,28 @@ class RuleBasedPolicy(BaseAgent):
             available = building_chargers.get(building, [])
             available_sorted = sorted(available, key=lambda info: info.charger_id)
             mapping: List[Optional[ChargerInfo]] = []
-            ev_slots = [name for name in names if "electric_vehicle" in name]
-            for pos, _ in enumerate(ev_slots):
-                charger_info = available_sorted[pos] if pos < len(available_sorted) else None
+            position_mapping: Dict[int, Optional[ChargerInfo]] = {}
+            ev_slots = [
+                (position, name)
+                for position, name in enumerate(names)
+                if "electric_vehicle" in name
+            ]
+            for slot_index, (position, _) in enumerate(ev_slots):
+                charger_info = available_sorted[slot_index] if slot_index < len(available_sorted) else None
                 mapping.append(charger_info)
+                position_mapping[position] = charger_info
             self._ev_action_mapping[agent_idx] = mapping
+            self._ev_action_position_mapping[agent_idx] = position_mapping
 
     def _get_charger_info(
         self,
         agent_idx: int,
         ev_action_position: int,
     ) -> Optional[ChargerInfo]:
+        position_mapping = self._ev_action_position_mapping.get(agent_idx)
+        if position_mapping and ev_action_position in position_mapping:
+            return position_mapping[ev_action_position]
+
         mapping = self._ev_action_mapping.get(agent_idx)
         if not mapping or ev_action_position >= len(mapping):
             return None
@@ -401,6 +427,155 @@ class RuleBasedPolicy(BaseAgent):
         low, high = bounds
         normalised = float(np.clip(normalised, 0.0 if low <= 0 else low, 1.0 if high >= 1 else high))
         return normalised
+
+    def _is_deferrable_action_name(self, action_name: str, obs_map: Dict[str, int]) -> bool:
+        name = str(action_name or "")
+        if name.startswith("deferrable_appliance") or name.endswith("::start"):
+            return True
+        if name == "start" and self._deferrable_observation_prefixes(obs_map):
+            return True
+        return False
+
+    def _compute_deferrable_action(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        action_name: str,
+        bounds: Sequence[float],
+    ) -> float:
+        prefix = self._resolve_deferrable_observation_prefix(action_name, obs_map)
+        if prefix is None:
+            return 0.0
+
+        pending = self._get_deferrable_value(obs, obs_map, prefix, "pending", default=0.0)
+        running = self._get_deferrable_value(obs, obs_map, prefix, "running", default=0.0)
+        can_start = self._get_deferrable_value(obs, obs_map, prefix, "can_start", default=0.0)
+        deadline_missed = self._get_deferrable_value(obs, obs_map, prefix, "deadline_missed", default=0.0)
+
+        if pending <= 0.5 or running > 0.5 or can_start <= 0.5 or deadline_missed > 0.5:
+            return 0.0
+
+        urgency = self._get_deferrable_value(obs, obs_map, prefix, "urgency_ratio", default=0.0)
+        slack = self._get_deferrable_value(obs, obs_map, prefix, "slack_ratio", default=1.0)
+        priority = self._get_deferrable_value(obs, obs_map, prefix, "priority", default=0.0)
+
+        should_start = (
+            urgency >= self.deferrable_urgency_threshold
+            or slack <= self.deferrable_slack_threshold
+            or priority >= self.deferrable_priority_threshold
+        )
+        if not should_start:
+            return 0.0
+
+        low, high = bounds
+        return float(np.clip(self.deferrable_start_action, low, high))
+
+    @staticmethod
+    def _deferrable_observation_prefixes(obs_map: Dict[str, int]) -> List[str]:
+        prefixes: List[str] = []
+        seen: set[str] = set()
+        for name in obs_map:
+            prefix = RuleBasedPolicy._parse_deferrable_observation_prefix(name)
+            if prefix is None or prefix in seen:
+                continue
+            seen.add(prefix)
+            prefixes.append(prefix)
+        return prefixes
+
+    @staticmethod
+    def _parse_deferrable_observation_prefix(name: str) -> Optional[str]:
+        raw = str(name or "")
+        for feature in ("pending", "can_start", "running", "deadline_missed"):
+            entity_suffix = f"::{feature}"
+            if raw.startswith("deferrable_appliance::") and raw.endswith(entity_suffix):
+                return raw[: -len(entity_suffix)]
+
+            flat_suffix = f"_{feature}"
+            if raw.startswith("deferrable_appliance_") and raw.endswith(flat_suffix):
+                return raw[: -len(flat_suffix)]
+
+        return None
+
+    def _resolve_deferrable_observation_prefix(
+        self,
+        action_name: str,
+        obs_map: Dict[str, int],
+    ) -> Optional[str]:
+        prefixes = self._deferrable_observation_prefixes(obs_map)
+        if not prefixes:
+            return None
+        if len(prefixes) == 1:
+            return prefixes[0]
+
+        action_tokens = self._deferrable_action_tokens(action_name)
+        for prefix in prefixes:
+            prefix_tokens = self._deferrable_prefix_tokens(prefix)
+            if action_tokens & prefix_tokens:
+                return prefix
+
+        return None
+
+    @staticmethod
+    def _deferrable_action_tokens(action_name: str) -> set[str]:
+        raw = str(action_name or "").strip()
+        tokens = {raw} if raw else set()
+
+        candidates = [raw]
+        if raw.startswith("deferrable_appliance::"):
+            candidates.append(raw[len("deferrable_appliance::") :])
+        if raw.startswith("deferrable_appliance_"):
+            candidates.append(raw[len("deferrable_appliance_") :])
+        if raw.startswith("start_"):
+            candidates.append(raw[len("start_") :])
+        if raw.endswith("::start"):
+            candidates.append(raw[: -len("::start")])
+
+        for candidate in list(candidates):
+            if not candidate:
+                continue
+            tokens.add(candidate)
+            if candidate.startswith("deferrable_appliance::"):
+                tokens.add(candidate[len("deferrable_appliance::") :])
+            if candidate.startswith("deferrable_appliance_"):
+                tokens.add(candidate[len("deferrable_appliance_") :])
+            if candidate.endswith("::start"):
+                tokens.add(candidate[: -len("::start")])
+            if "/" in candidate:
+                tokens.add(candidate.split("/", 1)[1])
+
+        return {token for token in tokens if token}
+
+    @staticmethod
+    def _deferrable_prefix_tokens(prefix: str) -> set[str]:
+        raw = str(prefix or "").strip()
+        tokens = {raw} if raw else set()
+
+        if raw.startswith("deferrable_appliance::"):
+            normalized = raw[len("deferrable_appliance::") :]
+            tokens.add(normalized)
+        elif raw.startswith("deferrable_appliance_"):
+            normalized = raw[len("deferrable_appliance_") :]
+            tokens.add(normalized)
+        else:
+            normalized = raw
+
+        if "/" in normalized:
+            tokens.add(normalized.split("/", 1)[1])
+
+        return {token for token in tokens if token}
+
+    def _get_deferrable_value(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        prefix: str,
+        feature: str,
+        default: float = 0.0,
+    ) -> float:
+        for name in (f"{prefix}::{feature}", f"{prefix}_{feature}"):
+            if name in obs_map:
+                return self._get_value(obs, obs_map, name, default=default)
+        return default
 
     def _get_value(
         self,

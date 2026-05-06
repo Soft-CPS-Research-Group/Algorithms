@@ -16,7 +16,8 @@ Texto pronto para enviar:
 > No `Algorithms`, os agentes **não** falam diretamente com `tables/edges`. O
 > wrapper (`utils/wrapper_citylearn.py`) recebe payload entity, converte para
 > vetores por agente, chama o algoritmo, e depois converte as ações do algoritmo
-> de volta para payload entity antes do `env.step(...)`.  
+  > de volta para payload entity antes do `env.step(...)`. O contrato atual inclui
+  > ações/tabelas de `building`, `charger` e `deferrable_appliance`.
 >  
 > Quando a topologia muda durante a simulação, o wrapper deteta
 > `meta.topology_version`, reconstrói o layout e reanexa metadata para o agente
@@ -47,7 +48,7 @@ Texto pronto para enviar:
   - converte `tables/edges/meta` -> vetores por agente
   - reconstrói layout quando muda `topology_version`
 - `_to_env_actions(...)`:
-  - converte ações do agente -> `{"tables": {"building": ..., "charger": ...}}`
+  - converte ações do agente -> `{"tables": {"building": ..., "charger": ..., "deferrable_appliance": ...}}`
 
 ### Metadados para o agente
 
@@ -74,7 +75,7 @@ Para os algoritmos em `algorithms/agents/*`:
   - cenário estático
   - baseline/compatibilidade legada
 - Usa `entity` quando:
-  - queres features ricas por entidade (district/building/charger/storage/pv/ev)
+  - queres features ricas por entidade (district/building/charger/storage/pv/ev/deferrable_appliance)
   - queres preparar modelos para grafos/hierarquia
   - precisas de topologia dinâmica
 
@@ -102,3 +103,4 @@ python run_experiment.py \
 4. Em troubleshooting, validar:
    - `topology_version` a mudar
    - `action_dimension` e `observation_dimension` no wrapper.
+   - presença de `building_to_deferrable_appliance` quando há appliances deferíveis.

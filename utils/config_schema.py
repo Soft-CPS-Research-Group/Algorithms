@@ -219,6 +219,10 @@ class RuleBasedHyperparameters(BaseModel):
     energy_epsilon: float = Field(default=1e-3, ge=0)
     default_capacity_kwh: float = Field(default=60.0, ge=0)
     non_flexible_chargers: List[str] = Field(default_factory=list)
+    deferrable_start_action: float = Field(default=1.0, ge=0)
+    deferrable_urgency_threshold: float = Field(default=0.75, ge=0)
+    deferrable_slack_threshold: float = Field(default=0.25, ge=0)
+    deferrable_priority_threshold: float = Field(default=0.5, ge=0)
 
 
 class TopologyConfig(BaseModel):
