@@ -107,6 +107,7 @@ class WrapperRewardConfig(BaseModel):
 class EntityEncodingConfig(BaseModel):
     enabled: Optional[bool] = None
     normalization: Literal["minmax_space"] = "minmax_space"
+    profile: Literal["minmax_space", "maddpg_v1"] = "minmax_space"
     clip: bool = True
 
 

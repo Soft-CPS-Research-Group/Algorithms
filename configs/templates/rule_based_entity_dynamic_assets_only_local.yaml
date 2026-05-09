@@ -47,8 +47,8 @@ bundle:
   per_agent_artifact_config: {}
 
 simulator:
-  dataset_name: citylearn_three_phase_dynamic_assets_only_demo
-  dataset_path: ./datasets/citylearn_three_phase_dynamic_assets_only_demo/schema.json
+  dataset_name: citylearn_three_phase_dynamic_assets_only_demo_15s_parquet
+  dataset_path: ./datasets/citylearn_three_phase_dynamic_assets_only_demo_15s_parquet/schema.json
   central_agent: false
   interface: entity
   topology_mode: dynamic

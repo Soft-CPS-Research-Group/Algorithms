@@ -168,6 +168,9 @@ class Wrapper_CityLearn(RLC):
                 self._entity_encoding_policy,
             )
             self._entity_encoding_policy = "minmax_space"
+        self._entity_encoding_profile = str(
+            entity_encoding_cfg.get("profile", self._entity_encoding_policy)
+        ).strip().lower() or self._entity_encoding_policy
 
         if self._entity_interface_mode:
             self._initialize_entity_agent_state(env=env)
@@ -300,6 +303,7 @@ class Wrapper_CityLearn(RLC):
             self.env,
             normalization_enabled=self._entity_encoding_enabled and self._entity_encoding_policy == "minmax_space",
             clip=self._entity_encoding_clip,
+            encoding_profile=self._entity_encoding_profile,
         )
 
         initial_observations, _ = self.env.reset()
@@ -1011,10 +1015,34 @@ class Wrapper_CityLearn(RLC):
                 "params": params,
             }
 
-        encoders_metadata = [
-            [_encode_params(encoder) for encoder in encoder_list]
-            for encoder_list in self.encoders
+        raw_observation_names = [
+            [str(name) for name in observation_group]
+            for observation_group in self.observation_names
         ]
+        encoded_observation_names = (
+            self._entity_adapter.encoded_observation_names(raw_observation_names)
+            if self._entity_interface_mode and self._entity_adapter is not None
+            else raw_observation_names
+        )
+        serves_encoded_observations = (
+            self._entity_interface_mode
+            and self._entity_adapter is not None
+            and self._entity_encoding_profile != "minmax_space"
+        )
+        serving_observation_names = (
+            encoded_observation_names if serves_encoded_observations else raw_observation_names
+        )
+
+        if serves_encoded_observations:
+            encoders_metadata = [
+                [{"type": "NoNormalization", "params": {}} for _ in observation_group]
+                for observation_group in serving_observation_names
+            ]
+        else:
+            encoders_metadata = [
+                [_encode_params(encoder) for encoder in encoder_list]
+                for encoder_list in self.encoders
+            ]
 
         action_bounds = []
         for space in self.action_space:
@@ -1064,7 +1092,9 @@ class Wrapper_CityLearn(RLC):
         building_names = self._resolve_building_names()
 
         return {
-            "observation_names": self.observation_names,
+            "observation_names": serving_observation_names,
+            "raw_observation_names": raw_observation_names,
+            "encoded_observation_names": encoded_observation_names,
             "encoders": encoders_metadata,
             "action_bounds": action_bounds,
             "action_names": flat_action_names,
@@ -1072,10 +1102,13 @@ class Wrapper_CityLearn(RLC):
             "building_names": building_names,
             "interface": getattr(self.env, "interface", "flat"),
             "topology_mode": getattr(self.env, "topology_mode", "static"),
+            "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "entity_encoding": {
                 "enabled": bool(self._entity_encoding_enabled),
                 "normalization": self._entity_encoding_policy,
+                "profile": self._entity_encoding_profile,
                 "clip": bool(self._entity_encoding_clip),
+                "serving_observation_names": "encoded" if serves_encoded_observations else "raw",
             },
             "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
             "reward_function": {

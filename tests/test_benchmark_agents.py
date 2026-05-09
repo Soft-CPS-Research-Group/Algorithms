@@ -160,3 +160,38 @@ def test_compare_export_roots_falls_back_to_result_json_evaluation_payload(tmp_p
 
     assert report["aggregates"]["MADDPG"]["runs"][0]["kpi_source"] == "result_json_evaluation"
     assert report["checks"]["ev_gate_pass"] is True
+
+
+def test_compare_export_roots_maps_citylearn_exported_kpi_names(tmp_path):
+    maddpg_root = tmp_path / "maddpg_exports"
+    rbc_root = tmp_path / "rbc_exports"
+
+    _write_job(
+        maddpg_root,
+        "maddpg-citylearn",
+        algorithm="MADDPG",
+        seed=1,
+        kpis={
+            "district_cost_total_control_eur": -96.0,
+            "district_electrical_service_phase_violations_energy_total_kwh": 0.0,
+            "district_ev_performance_departure_success_ratio": 0.2,
+        },
+    )
+    _write_job(
+        rbc_root,
+        "rbc-citylearn",
+        algorithm="RuleBasedPolicy",
+        seed=1,
+        kpis={
+            "district_cost_total_control_eur": -100.0,
+            "district_electrical_service_phase_violations_energy_total_kwh": 0.0,
+            "district_ev_performance_departure_success_ratio": 0.1,
+        },
+    )
+
+    report = compare_export_roots(maddpg_root=maddpg_root, rbc_root=rbc_root)
+
+    assert report["aggregates"]["MADDPG"]["kpi_means"]["community_settled_cost_total_eur"] == -96.0
+    assert report["checks"]["cost_parity_pass"] is True
+    assert report["checks"]["grid_gate_pass"] is True
+    assert report["checks"]["ev_gate_pass"] is True

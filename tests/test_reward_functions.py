@@ -58,6 +58,31 @@ def test_cost_hard_constraint_reward_penalizes_ev_and_grid_constraints():
     assert rewards[0] == pytest.approx(-208.0)
 
 
+def test_cost_hard_constraint_reward_reads_flat_namespaced_ev_observations():
+    reward = CostHardConstraintReward(
+        env_metadata={"central_agent": False},
+        ev_departure_window_hours=1.0,
+        ev_departure_deficit_penalty=120.0,
+        ev_connected_deficit_penalty=30.0,
+    )
+
+    observations = [
+        {
+            "net_electricity_consumption": 0.0,
+            "electricity_pricing": 0.0,
+            "electric_vehicle_charger_charger_1_1_connected_state": 1.0,
+            "connected_electric_vehicle_at_charger_charger_1_1_departure_time": 0.5,
+            "connected_electric_vehicle_at_charger_charger_1_1_required_soc_departure": 0.9,
+            "connected_electric_vehicle_at_charger_charger_1_1_soc": 0.7,
+        }
+    ]
+
+    rewards = reward.calculate(observations)
+
+    # dense penalty: 0.2 * 30 / 1h = 6; departure-window penalty: 0.2 * 120 = 24
+    assert rewards[0] == pytest.approx(-30.0)
+
+
 def test_cost_hard_constraint_reward_supports_central_agent_output():
     reward = CostHardConstraintReward(env_metadata={"central_agent": True})
 

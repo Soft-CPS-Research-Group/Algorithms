@@ -60,14 +60,15 @@ bundle:
 
 # Simulator wiring: dataset schema path, agent mode, and reward implementation.
 simulator:
-  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
-  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
+  dataset_name: citylearn_three_phase_electrical_service_demo_15s_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json
   central_agent: false
-  interface: flat
+  interface: entity
   topology_mode: static
   entity_encoding:
-    enabled: false
+    enabled: true
     normalization: minmax_space
+    profile: maddpg_v1
     clip: true
   reward_function: CostHardConstraintReward
   reward_function_kwargs:
@@ -75,6 +76,7 @@ simulator:
     grid_violation_penalty: 60.0
     power_outage_penalty: 120.0
     ev_departure_window_hours: 1.0
+    ev_connected_deficit_penalty: 30.0
     ev_departure_deficit_penalty: 120.0
     ev_departure_missed_penalty: 250.0
     battery_soc_min: 0.05
@@ -84,9 +86,9 @@ simulator:
   # Number of episodes executed by the training loop.
   episodes: 1
   # Optional simulation window overrides (null = dataset schema defaults).
-  simulation_start_time_step: null
-  simulation_end_time_step: null
-  episode_time_steps: null
+  simulation_start_time_step: 0
+  simulation_end_time_step: 5759
+  episode_time_steps: 5760
   # Export controls for simulator CSV/KPI outputs.
   export:
     mode: end
@@ -100,7 +102,6 @@ simulator:
     clip_min: -10.0
     clip_max: 10.0
     squash: none
-
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:
   seed: 22
@@ -135,7 +136,7 @@ algorithm:
   exploration:
     strategy: "GaussianNoise"
     params:
-      bias: 0.3
+      bias: 0.0
       sigma: 0.2
       decay: 0.995
       noise_clip: 0.3

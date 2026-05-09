@@ -143,6 +143,7 @@ class RuleBasedPolicy(BaseAgent):
                         obs_map,
                         charger_info,
                         bounds,
+                        action_name,
                     )
                     high = bounds[1]
                     value = normalised * high if high > 1.0 else normalised
@@ -354,7 +355,9 @@ class RuleBasedPolicy(BaseAgent):
         obs_map: Dict[str, int],
         charger_info: Optional[ChargerInfo],
         bounds: Sequence[float],
+        action_name: str = "",
     ) -> float:
+        charger_id = self._resolve_ev_charger_id(action_name, charger_info)
         if charger_info is None:
             capacity = self.default_capacity
             max_power = 7.4
@@ -362,38 +365,60 @@ class RuleBasedPolicy(BaseAgent):
             capacity = charger_info.capacity or self.default_capacity
             max_power = charger_info.max_power or 7.4
 
-        current_soc = self._get_value(obs, obs_map, "electric_vehicle_soc", default=0.0)
-        required_soc = self._get_value(
+        capacity = self._get_ev_value(
             obs,
             obs_map,
-            "electric_vehicle_required_soc_departure",
+            charger_id=charger_id,
+            feature="battery_capacity",
+            generic_names=["connected_electric_vehicle_at_charger_battery_capacity"],
+            default=capacity,
+        )
+
+        current_soc = self._get_ev_value(
+            obs,
+            obs_map,
+            charger_id=charger_id,
+            feature="soc",
+            generic_names=["electric_vehicle_soc", "connected_electric_vehicle_at_charger_soc"],
+            default=0.0,
+        )
+        required_soc = self._get_ev_value(
+            obs,
+            obs_map,
+            charger_id=charger_id,
+            feature="required_soc_departure",
+            generic_names=[
+                "electric_vehicle_required_soc_departure",
+                "connected_electric_vehicle_at_charger_required_soc_departure",
+            ],
             default=current_soc,
         )
-        charger_state = self._get_value(obs, obs_map, "electric_vehicle_charger_state", default=0.0)
+        charger_state = self._get_ev_value(
+            obs,
+            obs_map,
+            charger_id=charger_id,
+            feature="connected_state",
+            generic_names=[
+                "electric_vehicle_charger_state",
+                "electric_vehicle_charger_connected_state",
+            ],
+            default=0.0,
+        )
 
         if charger_state <= 0.0:
             return 0.0
 
-        soc_gap_pct = max(0.0, required_soc - current_soc)
-        energy_needed = (soc_gap_pct / 100.0) * capacity
+        soc_gap_fraction = self._soc_gap_fraction(current_soc, required_soc)
+        energy_needed = soc_gap_fraction * capacity
         if energy_needed <= self.energy_epsilon:
             return 0.0
 
-        hour = self._get_value(obs, obs_map, "hour", default=0.0)
-        minute = self._get_value(obs, obs_map, "minute", default=0.0)
-        current_time = (hour % 24.0) + minute / 60.0
-
-        departure_time = self._get_value(
+        time_to_departure = self._get_ev_departure_hours(
             obs,
             obs_map,
-            "electric_vehicle_departure_time",
-            default=current_time + self.flexibility_hours,
+            charger_id=charger_id,
+            default=self.flexibility_hours,
         )
-        departure_time = departure_time % 24.0
-        time_to_departure = departure_time - current_time
-        if time_to_departure <= 0:
-            time_to_departure += 24.0
-
         time_to_departure = max(time_to_departure, self.step_hours)
 
         flex_flag = self._get_value(obs, obs_map, "electric_vehicle_is_flexible", default=1.0)
@@ -427,6 +452,86 @@ class RuleBasedPolicy(BaseAgent):
         low, high = bounds
         normalised = float(np.clip(normalised, 0.0 if low <= 0 else low, 1.0 if high >= 1 else high))
         return normalised
+
+    @staticmethod
+    def _resolve_ev_charger_id(
+        action_name: str,
+        charger_info: Optional[ChargerInfo],
+    ) -> Optional[str]:
+        if charger_info is not None and charger_info.charger_id:
+            return charger_info.charger_id
+
+        raw = str(action_name or "")
+        prefix = "electric_vehicle_storage_"
+        if raw.startswith(prefix) and len(raw) > len(prefix):
+            return raw[len(prefix) :]
+        return None
+
+    def _get_ev_value(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        *,
+        charger_id: Optional[str],
+        feature: str,
+        generic_names: Sequence[str],
+        default: float = 0.0,
+    ) -> float:
+        candidates: List[str] = []
+        if charger_id:
+            if feature in {"connected_state", "incoming_state"}:
+                candidates.append(f"electric_vehicle_charger_{charger_id}_{feature}")
+            else:
+                candidates.append(f"connected_electric_vehicle_at_charger_{charger_id}_{feature}")
+                candidates.append(f"incoming_electric_vehicle_at_charger_{charger_id}_{feature}")
+        candidates.extend(generic_names)
+
+        for name in candidates:
+            if name in obs_map:
+                return self._get_value(obs, obs_map, name, default=default)
+        return default
+
+    def _get_ev_departure_hours(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        *,
+        charger_id: Optional[str],
+        default: float,
+    ) -> float:
+        if charger_id:
+            value = self._get_ev_value(
+                obs,
+                obs_map,
+                charger_id=charger_id,
+                feature="departure_time",
+                generic_names=[],
+                default=float("nan"),
+            )
+            if not math.isnan(value):
+                return max(value, 0.0)
+
+        hour = self._get_value(obs, obs_map, "hour", default=0.0)
+        minute = self._get_value(obs, obs_map, "minute", default=0.0)
+        current_time = (hour % 24.0) + minute / 60.0
+        departure_time = self._get_value(
+            obs,
+            obs_map,
+            "electric_vehicle_departure_time",
+            default=current_time + default,
+        )
+        departure_time = departure_time % 24.0
+        time_to_departure = departure_time - current_time
+        if time_to_departure <= 0:
+            time_to_departure += 24.0
+        return time_to_departure
+
+    @staticmethod
+    def _soc_gap_fraction(current_soc: float, required_soc: float) -> float:
+        gap = max(required_soc - current_soc, 0.0)
+        if max(abs(current_soc), abs(required_soc)) > 1.5:
+            gap /= 100.0
+        return gap
 
     def _is_deferrable_action_name(self, action_name: str, obs_map: Dict[str, int]) -> bool:
         name = str(action_name or "")

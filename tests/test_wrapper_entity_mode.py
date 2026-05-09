@@ -273,3 +273,22 @@ def test_wrapper_entity_building_names_fallbacks_to_entity_specs():
     wrapper._apply_entity_layout(env._observation_payload(version=1), force_attach=False)
     updated_info = wrapper.describe_environment()
     assert updated_info["building_names"] == ["B1", "B2"]
+
+
+def test_wrapper_entity_maddpg_profile_exports_serving_encoded_observations():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["simulator"]["entity_encoding"]["profile"] = "maddpg_v1"
+
+    wrapper = Wrapper_CityLearn(env=env, config=config, job_id="entity-maddpg-manifest")
+    info = wrapper.describe_environment()
+
+    assert info["entity_encoding"]["profile"] == "maddpg_v1"
+    assert info["entity_encoding"]["serving_observation_names"] == "encoded"
+    assert info["observation_names"] == info["encoded_observation_names"]
+    assert info["raw_observation_names"] != info["observation_names"]
+    assert "district__hour" in info["raw_observation_names"][0]
+    assert "district__hour" not in info["observation_names"][0]
+    assert "district__time_of_day_sin" in info["observation_names"][0]
+    assert len(info["encoders"][0]) == len(info["observation_names"][0])
+    assert all(spec["type"] == "NoNormalization" for spec in info["encoders"][0])

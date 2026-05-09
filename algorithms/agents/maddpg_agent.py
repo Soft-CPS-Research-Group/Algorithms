@@ -28,6 +28,20 @@ REPLAY_BUFFER_REGISTRY = {
 }
 
 
+class ActionScaledActor(torch.nn.Module):
+    """Actor wrapper that converts tanh policy output to environment action bounds."""
+
+    def __init__(self, actor: torch.nn.Module, low: np.ndarray, high: np.ndarray) -> None:
+        super().__init__()
+        self.actor = actor
+        self.register_buffer("low", torch.as_tensor(low, dtype=torch.float32).reshape(1, -1))
+        self.register_buffer("high", torch.as_tensor(high, dtype=torch.float32).reshape(1, -1))
+
+    def forward(self, observation: torch.Tensor) -> torch.Tensor:
+        raw_action = self.actor(observation)
+        return self.low + 0.5 * (raw_action + 1.0) * (self.high - self.low)
+
+
 class MADDPG(BaseAgent):
     """Multi-Agent DDPG implementation with MLflow logging and ONNX export."""
 
@@ -98,6 +112,7 @@ class MADDPG(BaseAgent):
         if self.num_agents is None or self.observation_dimension is None or self.action_dimension is None:
             raise ValueError("Topology information (num_agents / observation_dimensions / action_dimensions) is required for MADDPG.")
 
+        self.action_low, self.action_high = self._default_action_bounds()
         self.replay_buffer = self._initialize_replay_buffer()
         self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
         self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
@@ -105,6 +120,49 @@ class MADDPG(BaseAgent):
         self.scaler = GradScaler(enabled=self.use_amp)
 
         logger.info("MADDPG initialization complete.")
+
+    def _default_action_bounds(self) -> tuple[List[np.ndarray], List[np.ndarray]]:
+        lows = [
+            np.full(int(self.action_dimension[i]), -1.0, dtype=np.float32)
+            for i in range(int(self.num_agents))
+        ]
+        highs = [
+            np.full(int(self.action_dimension[i]), 1.0, dtype=np.float32)
+            for i in range(int(self.num_agents))
+        ]
+        return lows, highs
+
+    def attach_environment(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        del observation_names, action_names, observation_space, metadata
+        lows, highs = self._default_action_bounds()
+        for agent_idx, space in enumerate(action_space[: self.num_agents]):
+            if not hasattr(space, "low") or not hasattr(space, "high"):
+                continue
+            low = np.asarray(space.low, dtype=np.float32).reshape(-1)
+            high = np.asarray(space.high, dtype=np.float32).reshape(-1)
+            expected_dim = int(self.action_dimension[agent_idx])
+            if low.shape[0] != expected_dim or high.shape[0] != expected_dim:
+                logger.warning(
+                    "Action bounds dimension mismatch for agent {}: low={}, high={}, expected={}. "
+                    "Using default [-1, 1] bounds for this agent.",
+                    agent_idx,
+                    low.shape[0],
+                    high.shape[0],
+                    expected_dim,
+                )
+                continue
+            lows[agent_idx] = low
+            highs[agent_idx] = high
+        self.action_low = lows
+        self.action_high = highs
 
     def _initialize_replay_buffer(self):
         logger.debug("Initializing replay buffer.")
@@ -196,7 +254,13 @@ class MADDPG(BaseAgent):
         global_actions = torch.cat(actions_all, dim=1)
 
         with torch.no_grad():
-            global_next_actions = torch.cat([self.actor_targets[i](next_states[i]) for i in range(self.num_agents)], dim=1)
+            global_next_actions = torch.cat(
+                [
+                    self._scale_action_tensor(i, self.actor_targets[i](next_states[i]))
+                    for i in range(self.num_agents)
+                ],
+                dim=1,
+            )
             q_targets_next = torch.stack(
                 [critic(global_next_state, global_next_actions) for critic in self.critic_targets]
             )
@@ -232,8 +296,8 @@ class MADDPG(BaseAgent):
         # Compute detached policy actions once and reuse them during actor updates.
         with torch.no_grad():
             detached_policy_actions = [
-                actor(state).detach()
-                for actor, state in zip(self.actors, states)
+                self._scale_action_tensor(agent_idx, actor(state)).detach()
+                for agent_idx, (actor, state) in enumerate(zip(self.actors, states))
             ]
 
         total_actor_loss = 0.0
@@ -242,7 +306,7 @@ class MADDPG(BaseAgent):
         ):
             obs = states[agent_num]
 
-            predicted_action = actor(obs)
+            predicted_action = self._scale_action_tensor(agent_num, actor(obs))
             joint_policy_actions = list(detached_policy_actions)
             joint_policy_actions[agent_num] = predicted_action
             global_predicted_actions = torch.cat(joint_policy_actions, dim=1)
@@ -259,7 +323,7 @@ class MADDPG(BaseAgent):
 
             # Keep cached detached actions in sync with sequential actor updates.
             with torch.no_grad():
-                detached_policy_actions[agent_num] = actor(obs).detach()
+                detached_policy_actions[agent_num] = self._scale_action_tensor(agent_num, actor(obs)).detach()
 
             total_actor_loss += actor_loss.item()
             logger.debug("Actor {} updated. Loss: {:.4f}.", agent_num, actor_loss.item())
@@ -312,8 +376,9 @@ class MADDPG(BaseAgent):
     def _predict_deterministic(self, observations):
         actions = []
         with torch.inference_mode():
-            for actor, obs in zip(self.actors, observations):
-                action = actor(torch.as_tensor(obs, dtype=torch.float32, device=self.device)).cpu().numpy()
+            for agent_idx, (actor, obs) in enumerate(zip(self.actors, observations)):
+                raw_action = actor(torch.as_tensor(obs, dtype=torch.float32, device=self.device))
+                action = self._scale_action_tensor(agent_idx, raw_action).cpu().numpy()
                 actions.append(action)
         logger.debug("Deterministic actions predicted: {}", actions)
         return actions
@@ -326,11 +391,11 @@ class MADDPG(BaseAgent):
         deterministic_actions = self._predict_deterministic(observations)
 
         noisy_actions = []
-        for action in deterministic_actions:
+        for agent_idx, action in enumerate(deterministic_actions):
             noise = np.random.normal(loc=self.bias, scale=self.sigma, size=action.shape)
             if self.noise_clip is not None and self.noise_clip > 0.0:
                 noise = np.clip(noise, -self.noise_clip, self.noise_clip)
-            noisy_actions.append(np.clip(action + noise, -1, 1))
+            noisy_actions.append(self._clip_action_array(agent_idx, action + noise))
 
         self.sigma = max(self.min_sigma, self.sigma * self.sigma_decay)
 
@@ -339,11 +404,46 @@ class MADDPG(BaseAgent):
 
     def _predict_random(self) -> List[List[float]]:
         random_actions = [
-            np.random.uniform(low=-1.0, high=1.0, size=(self.action_dimension[i],)).tolist()
+            np.random.uniform(
+                low=self._action_low_for_agent(i),
+                high=self._action_high_for_agent(i),
+                size=(self.action_dimension[i],),
+            ).tolist()
             for i in range(self.num_agents)
         ]
         logger.debug("Random exploration actions predicted: {}", random_actions)
         return random_actions
+
+    def _action_low_for_agent(self, agent_idx: int) -> np.ndarray:
+        if hasattr(self, "action_low") and agent_idx < len(self.action_low):
+            return np.asarray(self.action_low[agent_idx], dtype=np.float32)
+        return np.full(int(self.action_dimension[agent_idx]), -1.0, dtype=np.float32)
+
+    def _action_high_for_agent(self, agent_idx: int) -> np.ndarray:
+        if hasattr(self, "action_high") and agent_idx < len(self.action_high):
+            return np.asarray(self.action_high[agent_idx], dtype=np.float32)
+        return np.full(int(self.action_dimension[agent_idx]), 1.0, dtype=np.float32)
+
+    def _scale_action_tensor(self, agent_idx: int, raw_action: torch.Tensor) -> torch.Tensor:
+        low = torch.as_tensor(
+            self._action_low_for_agent(agent_idx),
+            dtype=raw_action.dtype,
+            device=raw_action.device,
+        )
+        high = torch.as_tensor(
+            self._action_high_for_agent(agent_idx),
+            dtype=raw_action.dtype,
+            device=raw_action.device,
+        )
+        scaled = low + 0.5 * (raw_action + 1.0) * (high - low)
+        return torch.max(torch.min(scaled, high), low)
+
+    def _clip_action_array(self, agent_idx: int, action: np.ndarray) -> np.ndarray:
+        return np.clip(
+            np.asarray(action, dtype=np.float64),
+            self._action_low_for_agent(agent_idx),
+            self._action_high_for_agent(agent_idx),
+        )
 
     def freeze_layers(self, freeze_actor: bool = True, freeze_critic: bool = False) -> None:
         for actor in self.actors:
@@ -359,6 +459,8 @@ class MADDPG(BaseAgent):
         for i in range(self.num_agents):
             checkpoint[f"actor_state_dict_{i}"] = self.actors[i].state_dict()
             checkpoint[f"critic_state_dict_{i}"] = self.critics[i].state_dict()
+            checkpoint[f"actor_target_state_dict_{i}"] = self.actor_targets[i].state_dict()
+            checkpoint[f"critic_target_state_dict_{i}"] = self.critic_targets[i].state_dict()
             checkpoint[f"actor_optimizer_state_dict_{i}"] = self.actor_optimizers[i].state_dict()
             checkpoint[f"critic_optimizer_state_dict_{i}"] = self.critic_optimizers[i].state_dict()
 
@@ -383,6 +485,14 @@ class MADDPG(BaseAgent):
         for i in range(self.num_agents):
             self.actors[i].load_state_dict(checkpoint[f"actor_state_dict_{i}"])
             self.critics[i].load_state_dict(checkpoint[f"critic_state_dict_{i}"])
+            if hasattr(self, "actor_targets"):
+                self.actor_targets[i].load_state_dict(
+                    checkpoint.get(f"actor_target_state_dict_{i}", checkpoint[f"actor_state_dict_{i}"])
+                )
+            if hasattr(self, "critic_targets"):
+                self.critic_targets[i].load_state_dict(
+                    checkpoint.get(f"critic_target_state_dict_{i}", checkpoint[f"critic_state_dict_{i}"])
+                )
             if not self.fine_tune:
                 self.actor_optimizers[i].load_state_dict(checkpoint[f"actor_optimizer_state_dict_{i}"])
                 self.critic_optimizers[i].load_state_dict(checkpoint[f"critic_optimizer_state_dict_{i}"])
@@ -435,8 +545,14 @@ class MADDPG(BaseAgent):
         for i, actor in enumerate(self.actors):
             export_path = onnx_dir / f"agent_{i}.onnx"
             dummy_input = torch.randn(1, self.observation_dimension[i], device=self.device)
-            torch.onnx.export(
+            export_model = ActionScaledActor(
                 actor,
+                low=self._action_low_for_agent(i),
+                high=self._action_high_for_agent(i),
+            ).to(self.device)
+            export_model.eval()
+            torch.onnx.export(
+                export_model,
                 dummy_input,
                 str(export_path),
                 export_params=True,

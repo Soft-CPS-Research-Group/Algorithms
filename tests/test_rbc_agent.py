@@ -80,6 +80,48 @@ def test_rbc_emergency_window_forces_full_charge():
     assert actions[0][0] == pytest.approx(1.0, rel=1e-6)
 
 
+def test_rbc_reads_namespaced_citylearn_ev_observations():
+    agent = RuleBasedPolicy(
+        {
+            "simulator": {"dataset_path": "datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json"},
+            "algorithm": {
+                "name": "RuleBasedPolicy",
+                "hyperparameters": {
+                    "pv_charge_threshold": 2.0,
+                    "flexibility_hours": 3.0,
+                    "emergency_hours": 1.0,
+                    "pv_preferred_charge_rate": 0.5,
+                    "flex_trickle_charge": 0.0,
+                    "min_charge_rate": 0.05,
+                    "emergency_charge_rate": 1.0,
+                },
+            },
+        }
+    )
+    observation_names = [
+        [
+            "hour",
+            "solar_generation",
+            "electric_vehicle_charger_charger_1_1_connected_state",
+            "connected_electric_vehicle_at_charger_charger_1_1_departure_time",
+            "connected_electric_vehicle_at_charger_charger_1_1_required_soc_departure",
+            "connected_electric_vehicle_at_charger_charger_1_1_soc",
+            "connected_electric_vehicle_at_charger_charger_1_1_battery_capacity",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[["electric_vehicle_storage_charger_1_1"]],
+        action_space=[DummySpace([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+
+    actions = agent.predict([np.array([8.0, 4.0, 1.0, 2.0, 0.9, 0.5, 60.0], dtype=float)])
+
+    assert actions[0][0] > 0.0
+
+
 def test_rbc_starts_flat_deferrable_appliance_when_urgent():
     agent = RuleBasedPolicy(
         {
@@ -96,17 +138,17 @@ def test_rbc_starts_flat_deferrable_appliance_when_urgent():
     )
     observation_names = [
         [
-            "deferrable_appliance_washing_machine_1_pending",
-            "deferrable_appliance_washing_machine_1_running",
-            "deferrable_appliance_washing_machine_1_can_start",
-            "deferrable_appliance_washing_machine_1_urgency_ratio",
-            "deferrable_appliance_washing_machine_1_slack_ratio",
-            "deferrable_appliance_washing_machine_1_priority",
+            "deferrable_appliance_deferrable_appliance_1_pending",
+            "deferrable_appliance_deferrable_appliance_1_running",
+            "deferrable_appliance_deferrable_appliance_1_can_start",
+            "deferrable_appliance_deferrable_appliance_1_urgency_ratio",
+            "deferrable_appliance_deferrable_appliance_1_slack_ratio",
+            "deferrable_appliance_deferrable_appliance_1_priority",
         ]
     ]
     agent.attach_environment(
         observation_names=observation_names,
-        action_names=[["deferrable_appliance_washing_machine_1"]],
+        action_names=[["deferrable_appliance_deferrable_appliance_1"]],
         action_space=[DummySpace([0.0], [1.0])],
         observation_space=[None],
         metadata={"building_names": ["Building_1"], "seconds_per_time_step": 900},
@@ -120,23 +162,23 @@ def test_rbc_matches_entity_deferrable_appliance_by_action_suffix():
     agent = RuleBasedPolicy({"simulator": {}, "algorithm": {"name": "RuleBasedPolicy"}})
     observation_names = [
         [
-            "deferrable_appliance::B1/washer::pending",
-            "deferrable_appliance::B1/washer::running",
-            "deferrable_appliance::B1/washer::can_start",
-            "deferrable_appliance::B1/washer::urgency_ratio",
-            "deferrable_appliance::B1/washer::slack_ratio",
-            "deferrable_appliance::B1/washer::priority",
-            "deferrable_appliance::B1/dryer::pending",
-            "deferrable_appliance::B1/dryer::running",
-            "deferrable_appliance::B1/dryer::can_start",
-            "deferrable_appliance::B1/dryer::urgency_ratio",
-            "deferrable_appliance::B1/dryer::slack_ratio",
-            "deferrable_appliance::B1/dryer::priority",
+            "deferrable_appliance::B1/deferrable_appliance_1::pending",
+            "deferrable_appliance::B1/deferrable_appliance_1::running",
+            "deferrable_appliance::B1/deferrable_appliance_1::can_start",
+            "deferrable_appliance::B1/deferrable_appliance_1::urgency_ratio",
+            "deferrable_appliance::B1/deferrable_appliance_1::slack_ratio",
+            "deferrable_appliance::B1/deferrable_appliance_1::priority",
+            "deferrable_appliance::B1/deferrable_appliance_2::pending",
+            "deferrable_appliance::B1/deferrable_appliance_2::running",
+            "deferrable_appliance::B1/deferrable_appliance_2::can_start",
+            "deferrable_appliance::B1/deferrable_appliance_2::urgency_ratio",
+            "deferrable_appliance::B1/deferrable_appliance_2::slack_ratio",
+            "deferrable_appliance::B1/deferrable_appliance_2::priority",
         ]
     ]
     agent.attach_environment(
         observation_names=observation_names,
-        action_names=[["deferrable_appliance_washer", "deferrable_appliance_dryer"]],
+        action_names=[["deferrable_appliance_deferrable_appliance_1", "deferrable_appliance_deferrable_appliance_2"]],
         action_space=[DummySpace([0.0, 0.0], [1.0, 1.0])],
         observation_space=[None],
         metadata={"building_names": ["B1"], "seconds_per_time_step": 3600},

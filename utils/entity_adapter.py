@@ -19,10 +19,31 @@ class EntityContractAdapter:
         "electric_vehicle_departure_time": "connected_ev_departure_time_step",
     }
 
-    def __init__(self, env: Any, *, normalization_enabled: bool, clip: bool):
+    def __init__(
+        self,
+        env: Any,
+        *,
+        normalization_enabled: bool,
+        clip: bool,
+        encoding_profile: str = "minmax_space",
+    ):
         self.env = env
         self.normalization_enabled = bool(normalization_enabled)
         self.clip = bool(clip)
+        self.encoding_profile = str(encoding_profile or "minmax_space").strip().lower()
+        if self.encoding_profile not in {"minmax_space", "maddpg_v1"}:
+            logger.warning(
+                "Unsupported entity encoding profile '{}'; falling back to 'minmax_space'.",
+                self.encoding_profile,
+            )
+            self.encoding_profile = "minmax_space"
+        self.seconds_per_time_step = self._safe_scalar(
+            getattr(getattr(env, "unwrapped", env), "seconds_per_time_step", 3600.0),
+            default=3600.0,
+        )
+        if self.seconds_per_time_step <= 0.0:
+            self.seconds_per_time_step = 3600.0
+        self.steps_per_day = max(1.0, 86400.0 / self.seconds_per_time_step)
         self.topology_version: Optional[int] = None
 
         self._building_ids: List[str] = []
@@ -48,6 +69,7 @@ class EntityContractAdapter:
         self._deferrable_row_by_id: Dict[str, int] = {}
 
         self._latest_observation_origins: List[List[Tuple[str, str]]] = []
+        self._latest_encoded_observation_names: List[List[str]] = []
         self._warned_invalid_bounds: set[str] = set()
 
     @staticmethod
@@ -400,6 +422,17 @@ class EntityContractAdapter:
         if not self.normalization_enabled:
             return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
 
+        if self.encoding_profile == "maddpg_v1":
+            encoded, encoded_names = self._encode_maddpg_v1(
+                observation=values,
+                observation_names=observation_names,
+                observation_space=observation_space,
+            )
+            while len(self._latest_encoded_observation_names) <= agent_index:
+                self._latest_encoded_observation_names.append([])
+            self._latest_encoded_observation_names[agent_index] = encoded_names
+            return encoded
+
         low = np.asarray(observation_space.low, dtype=np.float64)
         high = np.asarray(observation_space.high, dtype=np.float64)
         denominator = high - low
@@ -432,6 +465,369 @@ class EntityContractAdapter:
                 )
 
         return np.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def encoded_observation_names(self, observation_names: Sequence[Sequence[str]]) -> List[List[str]]:
+        if self.encoding_profile != "maddpg_v1":
+            return [[str(name) for name in group] for group in observation_names]
+
+        encoded_names: List[List[str]] = []
+        for group in observation_names:
+            encoded_names.append(self._maddpg_v1_encoded_names(group))
+        return encoded_names
+
+    def _encode_maddpg_v1(
+        self,
+        *,
+        observation: np.ndarray,
+        observation_names: Sequence[str],
+        observation_space: spaces.Box,
+    ) -> Tuple[np.ndarray, List[str]]:
+        low = np.asarray(observation_space.low, dtype=np.float64)
+        high = np.asarray(observation_space.high, dtype=np.float64)
+        values_by_name = {
+            str(name): self._safe_scalar(observation[index], 0.0)
+            for index, name in enumerate(observation_names)
+        }
+        low_by_name = {
+            str(name): self._safe_scalar(low[index], -1.0e6)
+            for index, name in enumerate(observation_names)
+        }
+        high_by_name = {
+            str(name): self._safe_scalar(high[index], 1.0e6)
+            for index, name in enumerate(observation_names)
+        }
+
+        encoded: List[float] = []
+        encoded_names: List[str] = []
+        emitted_time_of_day = False
+
+        def append(name: str, value: float) -> None:
+            encoded_names.append(name)
+            encoded.append(float(value))
+
+        for index, raw_name in enumerate(observation_names):
+            name = str(raw_name)
+            value = self._safe_scalar(observation[index], 0.0)
+            lo = self._safe_scalar(low[index], -1.0e6)
+            hi = self._safe_scalar(high[index], 1.0e6)
+
+            # These aliases are generated only for legacy RBC compatibility.
+            # The profile keeps the simulator/entity EV observations instead.
+            if name.startswith("electric_vehicle_"):
+                continue
+
+            if name.startswith("district__"):
+                feature = name.split("__", 1)[1]
+                if feature == "month":
+                    sin_value, cos_value = self._cyclic_pair(value, period=12.0, offset=1.0)
+                    append("district__month_sin", sin_value)
+                    append("district__month_cos", cos_value)
+                    continue
+
+                if feature == "day_type":
+                    sin_value, cos_value = self._cyclic_pair(value, period=7.0, offset=1.0)
+                    append("district__day_type_sin", sin_value)
+                    append("district__day_type_cos", cos_value)
+                    append("district__is_weekend", 1.0 if int(round(value)) in {6, 7} else 0.0)
+                    continue
+
+                if feature in {"hour", "minutes", "seconds"}:
+                    if not emitted_time_of_day:
+                        time_sin, time_cos = self._time_of_day_pair(values_by_name)
+                        append("district__time_of_day_sin", time_sin)
+                        append("district__time_of_day_cos", time_cos)
+                        emitted_time_of_day = True
+                    continue
+
+            if self._is_binary_feature(name):
+                append(name, self._binary(value))
+                continue
+
+            if self._is_soc_feature(name):
+                append(name, self._soc_fraction(value))
+                if name.endswith("connected_ev_required_soc_departure"):
+                    soc_name = self._replace_last_feature(name, "connected_ev_soc")
+                    soc = self._soc_fraction(values_by_name.get(soc_name, value))
+                    required = self._soc_fraction(value)
+                    append(self._replace_last_feature(name, "connected_ev_soc_deficit"), max(required - soc, 0.0))
+                continue
+
+            if name.endswith("connected_ev_departure_time_step"):
+                hours = self._steps_until_to_hours(value)
+                append(self._replace_last_feature(name, "connected_ev_hours_until_departure"), self._hours_24(hours))
+                append(self._replace_last_feature(name, "connected_ev_departure_available"), 1.0 if value >= 0.0 else 0.0)
+                append(self._replace_last_feature(name, "connected_ev_departure_urgency_24h"), self._urgency_24(hours))
+                continue
+
+            if name.endswith("incoming_ev_estimated_arrival_time_step"):
+                hours = self._steps_until_to_hours(value)
+                append(self._replace_last_feature(name, "incoming_ev_hours_until_arrival"), self._hours_24(hours))
+                append(self._replace_last_feature(name, "incoming_ev_arrival_available"), 1.0 if value >= 0.0 else 0.0)
+                append(self._replace_last_feature(name, "incoming_ev_arrival_urgency_24h"), self._urgency_24(hours))
+                continue
+
+            if name.startswith("deferrable_appliance::") and name.endswith("_time_step"):
+                available = 1.0 if value >= 0.0 else 0.0
+                sin_value, cos_value = self._step_time_of_day_pair(value)
+                base = name.removesuffix("_time_step")
+                append(f"{base}_time_of_day_sin", sin_value)
+                append(f"{base}_time_of_day_cos", cos_value)
+                append(f"{base}_available", available)
+                continue
+
+            if "hours_until_" in name:
+                append(f"{name}_24h", self._hours_24(value))
+                continue
+
+            if name.endswith("slack_steps") or name.endswith("cycle_duration_steps"):
+                append(f"{name}_day_ratio", self._steps_day_ratio(value))
+                continue
+
+            if name.endswith("remaining_energy_kwh"):
+                cycle_energy = values_by_name.get(self._replace_last_feature(name, "cycle_energy_kwh"), 0.0)
+                append(f"{name}_cycle_ratio", self._safe_ratio(value, cycle_energy, default=0.0))
+                continue
+
+            if name.endswith("current_step_energy_kwh"):
+                cycle_energy = values_by_name.get(self._replace_last_feature(name, "cycle_energy_kwh"), 0.0)
+                append(f"{name}_cycle_ratio", self._safe_ratio(value, cycle_energy, default=0.0))
+                continue
+
+            if name.endswith("_ratio") or name.endswith("priority"):
+                append(name, 0.0 if value < 0.0 else float(np.clip(value, 0.0, 1.0)))
+                continue
+
+            if name.endswith("last_charged_kwh") or name.endswith("electricity_consumption_kwh") or name == "net_electricity_consumption":
+                append(name, self._signed_by_bounds(value, lo, hi))
+                continue
+
+            if "headroom_kw" in name:
+                append(name, self._headroom_ratio(name=name, value=value, low=lo, high=hi))
+                continue
+
+            if name.endswith("constraint_violation_kwh"):
+                append(name, self._positive_by_high(value, hi, fallback=0.5))
+                continue
+
+            if "battery_capacity_kwh" in name or name.endswith("capacity_kwh"):
+                append(name, self._positive_by_high(value, hi, fallback=100.0))
+                continue
+
+            if name.endswith("nominal_power_kw") or name.endswith("max_charging_power_kw") or name.endswith("max_discharging_power_kw"):
+                append(name, self._positive_by_high(value, hi, fallback=22.0))
+                continue
+
+            if "relative_humidity" in name:
+                append(name, float(np.clip(value / 100.0, 0.0, 1.0)))
+                continue
+
+            if "solar_irradiance" in name:
+                append(name, float(np.clip(value / 1000.0, 0.0, 1.0)))
+                continue
+
+            append(name, self._minmax(value, lo, hi))
+
+        return np.asarray(encoded, dtype=np.float64), encoded_names
+
+    def _maddpg_v1_encoded_names(self, observation_names: Sequence[str]) -> List[str]:
+        names: List[str] = []
+        emitted_time_of_day = False
+
+        def append(name: str) -> None:
+            names.append(name)
+
+        for raw_name in observation_names:
+            name = str(raw_name)
+
+            if name.startswith("electric_vehicle_"):
+                continue
+
+            if name.startswith("district__"):
+                feature = name.split("__", 1)[1]
+                if feature == "month":
+                    append("district__month_sin")
+                    append("district__month_cos")
+                    continue
+                if feature == "day_type":
+                    append("district__day_type_sin")
+                    append("district__day_type_cos")
+                    append("district__is_weekend")
+                    continue
+                if feature in {"hour", "minutes", "seconds"}:
+                    if not emitted_time_of_day:
+                        append("district__time_of_day_sin")
+                        append("district__time_of_day_cos")
+                        emitted_time_of_day = True
+                    continue
+
+            if self._is_soc_feature(name):
+                append(name)
+                if name.endswith("connected_ev_required_soc_departure"):
+                    append(self._replace_last_feature(name, "connected_ev_soc_deficit"))
+                continue
+
+            if name.endswith("connected_ev_departure_time_step"):
+                append(self._replace_last_feature(name, "connected_ev_hours_until_departure"))
+                append(self._replace_last_feature(name, "connected_ev_departure_available"))
+                append(self._replace_last_feature(name, "connected_ev_departure_urgency_24h"))
+                continue
+
+            if name.endswith("incoming_ev_estimated_arrival_time_step"):
+                append(self._replace_last_feature(name, "incoming_ev_hours_until_arrival"))
+                append(self._replace_last_feature(name, "incoming_ev_arrival_available"))
+                append(self._replace_last_feature(name, "incoming_ev_arrival_urgency_24h"))
+                continue
+
+            if name.startswith("deferrable_appliance::") and name.endswith("_time_step"):
+                base = name.removesuffix("_time_step")
+                append(f"{base}_time_of_day_sin")
+                append(f"{base}_time_of_day_cos")
+                append(f"{base}_available")
+                continue
+
+            if "hours_until_" in name:
+                append(f"{name}_24h")
+                continue
+
+            if name.endswith("slack_steps") or name.endswith("cycle_duration_steps"):
+                append(f"{name}_day_ratio")
+                continue
+
+            if name.endswith("remaining_energy_kwh") or name.endswith("current_step_energy_kwh"):
+                append(f"{name}_cycle_ratio")
+                continue
+
+            append(name)
+
+        return names
+
+    @staticmethod
+    def _replace_last_feature(name: str, replacement: str) -> str:
+        if "::" in name:
+            parts = name.split("::")
+            parts[-1] = replacement
+            return "::".join(parts)
+
+        prefixes = (
+            "connected_electric_vehicle_at_charger_",
+            "incoming_electric_vehicle_at_charger_",
+            "electric_vehicle_",
+        )
+        for prefix in prefixes:
+            if name.startswith(prefix):
+                return f"{prefix}{replacement}"
+        return replacement
+
+    @staticmethod
+    def _cyclic_pair(value: float, *, period: float, offset: float = 0.0) -> Tuple[float, float]:
+        angle = 2.0 * np.pi * ((float(value) - offset) % period) / period
+        return float(np.sin(angle)), float(np.cos(angle))
+
+    def _time_of_day_pair(self, values_by_name: Mapping[str, float]) -> Tuple[float, float]:
+        hour = self._safe_scalar(values_by_name.get("district__hour", 0.0), 0.0)
+        minute = self._safe_scalar(values_by_name.get("district__minutes", 0.0), 0.0)
+        second = self._safe_scalar(values_by_name.get("district__seconds", 0.0), 0.0)
+        seconds_of_day = (hour % 24.0) * 3600.0 + minute * 60.0 + second
+        return self._cyclic_pair(seconds_of_day, period=86400.0)
+
+    def _step_time_of_day_pair(self, value: float) -> Tuple[float, float]:
+        if value < 0.0:
+            return 0.0, 0.0
+        step_of_day = value % self.steps_per_day
+        return self._cyclic_pair(step_of_day, period=self.steps_per_day)
+
+    def _steps_until_to_hours(self, value: float) -> float:
+        if value < 0.0:
+            return 24.0
+        return value * self.seconds_per_time_step / 3600.0
+
+    @staticmethod
+    def _hours_24(value: float) -> float:
+        return float(np.clip(value, 0.0, 24.0) / 24.0)
+
+    @staticmethod
+    def _urgency_24(value: float) -> float:
+        return float(1.0 - np.clip(value, 0.0, 24.0) / 24.0)
+
+    def _steps_day_ratio(self, value: float) -> float:
+        if value < 0.0:
+            return 0.0
+        return float(np.clip(value / self.steps_per_day, 0.0, 1.0))
+
+    @staticmethod
+    def _binary(value: float) -> float:
+        return 1.0 if value > 0.5 else 0.0
+
+    @staticmethod
+    def _is_binary_feature(name: str) -> bool:
+        binary_tokens = (
+            "connected_state",
+            "incoming_state",
+            "pending",
+            "running",
+            "can_start",
+            "deadline_missed",
+            "is_flexible",
+            "_available",
+        )
+        if any(token in name for token in binary_tokens):
+            return True
+        return "one_hot" in name or name.endswith("_L1") or name.endswith("_L2") or name.endswith("_L3")
+
+    @staticmethod
+    def _is_soc_feature(name: str) -> bool:
+        soc_tokens = (
+            "connected_ev_soc",
+            "connected_ev_required_soc_departure",
+            "incoming_ev_estimated_soc_arrival",
+            "::soc",
+            "electric_vehicle_soc",
+            "electric_vehicle_required_soc_departure",
+        )
+        return any(token in name for token in soc_tokens)
+
+    @staticmethod
+    def _soc_fraction(value: float) -> float:
+        if value < 0.0:
+            return 0.0
+        if value > 1.5:
+            value /= 100.0
+        return float(np.clip(value, 0.0, 1.0))
+
+    @staticmethod
+    def _safe_ratio(numerator: float, denominator: float, *, default: float = 0.0) -> float:
+        if denominator <= 0.0:
+            return float(default)
+        return float(np.clip(numerator / denominator, 0.0, 1.0))
+
+    @staticmethod
+    def _minmax(value: float, low: float, high: float) -> float:
+        denominator = high - low
+        if not np.isfinite(low) or not np.isfinite(high) or not np.isfinite(denominator) or denominator <= 0.0:
+            return 0.0
+        return float(np.clip((value - low) / denominator, 0.0, 1.0))
+
+    @staticmethod
+    def _positive_by_high(value: float, high: float, *, fallback: float) -> float:
+        scale = high if np.isfinite(high) and 0.0 < high < 1.0e5 else fallback
+        return float(np.clip(value / scale, 0.0, 1.0))
+
+    @staticmethod
+    def _signed_by_bounds(value: float, low: float, high: float) -> float:
+        finite_bounds = np.isfinite(low) and np.isfinite(high) and max(abs(low), abs(high)) < 1.0e5
+        scale = max(abs(low), abs(high), 1.0) if finite_bounds else max(abs(value), 1.0)
+        return float(np.clip(value / scale, -1.0, 1.0))
+
+    @staticmethod
+    def _headroom_ratio(*, name: str, value: float, low: float, high: float) -> float:
+        finite_bounds = np.isfinite(low) and np.isfinite(high) and max(abs(low), abs(high)) < 1.0e5
+        if finite_bounds:
+            scale = max(abs(low), abs(high), 1.0)
+        elif "phase_" in name:
+            scale = 25.0
+        else:
+            scale = 100.0
+        return float(np.clip(value / scale, -1.0, 1.0))
 
     @staticmethod
     def _charger_rows_by_building(charger_ids: Sequence[str]) -> Dict[str, List[int]]:
