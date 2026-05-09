@@ -12,6 +12,10 @@ def test_15s_parquet_dataset_uses_deferrable_appliance_names():
 
     assert schema["interface"] == "entity"
     assert schema["root_directory"] == f"./{dataset_dir.as_posix()}"
+    assert schema["observation_bundles"]["entity_core_electrical"]["active"] is False
+    assert schema["observation_bundles"]["entity_community_operational"]["active"] is True
+    assert schema["observation_bundles"]["entity_forecasts_existing"]["active"] is False
+    assert schema["observation_bundles"]["entity_temporal_derived"]["active"] is False
     assert "washing_machine" not in schema_text
     assert "washer" not in schema_text
     assert "dryer" not in schema_text

@@ -9,6 +9,20 @@
   "rolling_episode_split": false,
   "random_episode_split": false,
   "seconds_per_time_step": 15,
+  "observation_bundles": {
+    "entity_core_electrical": {
+      "active": false
+    },
+    "entity_community_operational": {
+      "active": true
+    },
+    "entity_forecasts_existing": {
+      "active": false
+    },
+    "entity_temporal_derived": {
+      "active": false
+    }
+  },
   "observations": {
     "month": {
       "active": true,
