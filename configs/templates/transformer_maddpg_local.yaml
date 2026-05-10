@@ -1,0 +1,140 @@
+# Local TransformerMADDPG template.
+# Uses Transformer-based policy networks with variable-cardinality support.
+
+# Human-readable experiment metadata used across MLflow, logs, and manifests.
+metadata:
+  experiment_name: "transformer_maddpg_local"
+  run_name: "Transformer MADDPG Local"
+
+# Runtime values are injected automatically by run_experiment.py.
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+# Tracking controls for metrics/log verbosity and MLflow enablement.
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 10
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+# Checkpoint behavior for saving and optional resume/fine-tuning workflows.
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "latest_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 5000
+
+# Bundle metadata/options consumed by inference-side artifact loading.
+bundle:
+  bundle_version: null
+  description: null
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+  per_agent_artifact_config: {}
+
+# Simulator wiring: local dataset path.
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs
+  dataset_path: ./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json
+  central_agent: false
+  reward_function: V2GPenaltyReward
+  episodes: 1
+  # Optional simulation window overrides (null = dataset schema defaults).
+  simulation_start_time_step: null
+  simulation_end_time_step: null
+  episode_time_steps: null
+  # Export controls for simulator CSV/KPI outputs.
+  export:
+    mode: none
+    export_kpis_on_episode_end: false
+    session_name: null
+
+# Training schedule knobs used by the wrapper/agent update cadence.
+training:
+  seed: 42
+  steps_between_training_updates: 4
+  target_update_interval: 2
+
+# Topology is environment-derived at runtime.
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+# Transformer-based MADDPG configuration.
+algorithm:
+  name: "TransformerMADDPG"
+  hyperparameters:
+    gamma: 0.99
+
+  # Transformer network architecture.
+  networks:
+    transformer:
+      d_model: 64            # Embedding dimension (must be divisible by nhead)
+      nhead: 4               # Number of attention heads
+      num_layers: 2          # Number of encoder layers
+      dim_feedforward: 128   # Feedforward network hidden size
+      dropout: 0.0           # Dropout rate (start with 0 for stability)
+      max_tokens: 128        # Upper bound for N_ca + N_sro + 1
+    lr_actor: 1.0e-4         # Actor learning rate
+    lr_critic: 1.0e-3        # Critic learning rate
+
+  # Feature-to-token classification patterns.
+  tokenizer:
+    # CA (Controllable Asset) features - receive action outputs.
+    ca_feature_patterns:
+      - "electric_vehicle_soc"
+      - "connected_state"
+      - "incoming_state"
+      - "departure_time"
+      - "arrival_time"
+      - "required_soc_departure"
+      - "estimated_soc_arrival"
+    # SRO (Shared Read-Only) features - context without actions.
+    sro_feature_patterns:
+      - "outdoor_dry_bulb"
+      - "outdoor_relative_humidity"
+      - "diffuse_solar"
+      - "carbon_intensity"
+      - "electricity_pricing"
+    # NFC (Non-Flexible Consumption) - global context.
+    nfc_feature_patterns:
+      - "non_shiftable_load"
+
+  # Replay buffer for tokenized experiences.
+  replay_buffer:
+    class: "TransformerReplayBuffer"
+    capacity: 100000
+    batch_size: 256
+    # max_ca and max_sro are auto-computed if null.
+    max_ca: null
+    max_sro: null
+
+  # Exploration strategy parameters.
+  exploration:
+    strategy: "GaussianNoise"
+    params:
+      gamma: 0.99
+      tau: 0.005
+      sigma: 0.1
+      bias: 0.0
+      end_initial_exploration_time_step: 8760
