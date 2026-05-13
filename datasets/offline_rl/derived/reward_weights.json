@@ -1,0 +1,145 @@
+{
+  "weights": {
+    "cost": 0.05,
+    "carbon": 0.056,
+    "peak": 0.025,
+    "ramp": 0.0017,
+    "unserved": 50.0
+  },
+  "term_names": [
+    "cost",
+    "carbon",
+    "peak",
+    "ramp",
+    "unserved"
+  ],
+  "peak_window_hours": 24,
+  "metadata": {
+    "generated_at_utc": "2026-05-09T17:47:43.512340Z",
+    "calibration_status": "ok",
+    "spearman_rho": 0.9272727272727272,
+    "spearman_pvalue": 0.00011203450639397582,
+    "fit_terms": [
+      "cost",
+      "carbon",
+      "peak",
+      "ramp"
+    ],
+    "skipped_terms": [
+      "unserved"
+    ],
+    "fallback_unserved_weight": 50.0,
+    "rbc_seeds": [
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31
+    ],
+    "rbc_kpi_summary_sha256": "dd45a50bf9a0e6434adf35731a4baf0e97741081ad8be38c0b964ed217789018",
+    "rbc_manifest_sha256": "efee2d876e3ade2042510daeabc65d8c78d92642e729bed3bbad57600b87d2f5",
+    "rbc_seed_parquet_sha256": {
+      "22": "c841c2ac5b6fe1dedc4804e85c5f2aa53bd005e7a19373f1c7238af5d7852319",
+      "23": "716b8a9298f006ee99ae13ba135d64c518d93c3599a802149e07347ff1b22199",
+      "24": "6eb55605bcd29bcbcd24cc117ec6ddd94f58ffdaf4c9dbe9f6b96a9fdfd55887",
+      "25": "22fc12f60c05a5b707d8e60c7fa452f261da170c118e6dc3fb2431f87d92f6f6",
+      "26": "a45b2cd8d2d7c2c019cb0b700f63bc9672777659dfdd799e8372a3e63bf31ae8",
+      "27": "0364b637249fbab99308347775481a5a013f4708360cdf8dc7aa794febe689fd",
+      "28": "799e5c922bb0740a82c88de7ee105be3bf9fdd96a3e86a191b324f68bca4bfd0",
+      "29": "ce069a179444465d3a4e55c3402a18edc5c393b14f15274cdc3aa262a1cee9d3",
+      "30": "f24072db797ca645ac9d2f082e3c147358ed2be3c56d150ddcd860cb8f45753c",
+      "31": "0a78433fb114be28475c8900cbbb9f63bba4383802699343fb62cec519f3876c"
+    },
+    "kpi_columns": [
+      "district.cost_total",
+      "district.carbon_emissions_total",
+      "district.daily_peak_average",
+      "district.ramping_average"
+    ],
+    "kpi_term_map": {
+      "district.cost_total": "cost",
+      "district.carbon_emissions_total": "carbon",
+      "district.daily_peak_average": "peak",
+      "district.ramping_average": "ramp"
+    },
+    "spearman_threshold": 0.9,
+    "diagnostics": {
+      "term_sum_stds": {
+        "cost": 40.434503984021,
+        "carbon": 35.2809193910027,
+        "peak": 78.97719301921552,
+        "ramp": 580.9686852303645,
+        "unserved": 1.396367042581453
+      },
+      "term_means": {
+        "cost": 2002.0332533692613,
+        "carbon": 1775.572568874492,
+        "peak": 10821.989984397276,
+        "ramp": 10616.77505017487,
+        "unserved": 16.33625292778015
+      },
+      "term_stds": {
+        "cost": 40.434503984021,
+        "carbon": 35.2809193910027,
+        "peak": 78.97719301921552,
+        "ramp": 580.9686852303645,
+        "unserved": 1.396367042581453
+      },
+      "kpi_means": {
+        "district.cost_total": 2.2275335738690547,
+        "district.carbon_emissions_total": 2.2166151229232582,
+        "district.daily_peak_average": 2.143403627376329,
+        "district.ramping_average": 1.5786173340730654
+      },
+      "kpi_stds": {
+        "district.cost_total": 0.05398731656166348,
+        "district.carbon_emissions_total": 0.05209394040778926,
+        "district.daily_peak_average": 0.020862177970956478,
+        "district.ramping_average": 0.04753026197136067
+      },
+      "kpi_target_per_seed": {
+        "22": -5.85968412935296,
+        "23": -1.2405300965942931,
+        "24": 5.865965423385326,
+        "25": 4.419741507517835,
+        "26": -4.17083279139022,
+        "27": -2.6155982805814126,
+        "28": 2.443681243008987,
+        "29": 4.339246219572182,
+        "30": 1.1873892419373375,
+        "31": -4.369378337502917
+      },
+      "nnls_weights_standardised_space": {
+        "cost": 2.012248746912414,
+        "carbon": 1.9779093433471704,
+        "peak": 0.0,
+        "ramp": 0.0
+      },
+      "nnls_residual": 0.4246633424206122,
+      "weight_source": {
+        "cost": "nnls",
+        "carbon": "nnls",
+        "peak": "default_standardised",
+        "ramp": "default_standardised",
+        "unserved": "default_safety"
+      },
+      "per_seed_neg_reward_sum": {
+        "22": 1224.039262482505,
+        "23": 1281.0210809652463,
+        "24": 1435.3678362096293,
+        "25": 1373.6483535415646,
+        "26": 1189.8925007443117,
+        "27": 1304.935550366931,
+        "28": 1332.2664340386639,
+        "29": 1385.2350486282028,
+        "30": 1312.4055635455584,
+        "31": 1210.6347705741005
+      }
+    }
+  }
+}

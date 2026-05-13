@@ -1,0 +1,68 @@
+{
+  "behaviour_policy": "rbc",
+  "behaviour_policy_class": "algorithms.offline_rl.rbc.RuleBasedPolicy",
+  "behaviour_policy_hyperparameters": {
+    "pv_charge_threshold": 0.0,
+    "flexibility_hours": 3.0,
+    "emergency_hours": 1.0,
+    "pv_preferred_charge_rate": 0.6,
+    "flex_trickle_charge": 0.0,
+    "min_charge_rate": 0.0,
+    "emergency_charge_rate": 1.0,
+    "energy_epsilon": 0.001,
+    "default_capacity_kwh": 60.0
+  },
+  "schema_hash": "7c57d2e40b66f0eaed9057b679ab4c27914015c0c456e394a092478bbae17fc8",
+  "env_config_hash": "sha256:68218d7bdcd58f296d2a971f94fdcf6f0dcb9e025811c7f5912300d5b69d600a",
+  "citylearn_dataset": "./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json",
+  "building": "Building_5",
+  "building_index": 4,
+  "seeds": [
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ],
+  "seed_files": {
+    "22": "seed_22.parquet",
+    "23": "seed_23.parquet",
+    "24": "seed_24.parquet",
+    "25": "seed_25.parquet",
+    "26": "seed_26.parquet",
+    "27": "seed_27.parquet",
+    "28": "seed_28.parquet",
+    "29": "seed_29.parquet",
+    "30": "seed_30.parquet",
+    "31": "seed_31.parquet"
+  },
+  "n_seeds": 10,
+  "n_steps_total": 87590,
+  "action_stats_aggregated": {
+    "action_electrical_storage": {
+      "mean_of_means": 0.0,
+      "mean_of_stds": 0.0,
+      "min_overall": 0.0,
+      "max_overall": 0.0
+    },
+    "action_electric_vehicle_storage_charger_5_1": {
+      "mean_of_means": 0.12199794959907648,
+      "mean_of_stds": 0.2459215890785357,
+      "min_overall": 0.0,
+      "max_overall": 1.0
+    }
+  },
+  "reward_env_stats_aggregated": {
+    "mean_of_means": -39.367523966585814,
+    "mean_of_stds": 95.75830975231389
+  },
+  "kpi_summary_path": "kpi_summary.csv",
+  "sample_csv_path": "sample_first_1000.csv",
+  "collected_at": "2026-05-09T17:23:39.583993+00:00",
+  "code_git_sha": "e938651"
+}
