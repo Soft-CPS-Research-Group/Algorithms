@@ -231,8 +231,13 @@ class RolloutBuffer:
             returns[t] = gae + values[t]
             next_value = values[t]
 
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Normalize advantages. Guard against degenerate single-element
+        # rollouts (where ``std()`` is undefined / NaN with the default
+        # unbiased estimator) by skipping normalization in that case.
+        if advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        else:
+            advantages = advantages - advantages.mean()
 
         self.advantages = advantages
         self.returns = returns

@@ -324,24 +324,35 @@ def _validate_rule_5_action_field_coverage(
     cfg: EntityTokenizerConfig,
     action_names_per_building: List[List[str]],
 ) -> None:
+    """Rule 5 (action-field coverage).
+
+    Every ``ca_types[*].action_field`` declared in the tokenizer config must
+    appear in at least one building's ``action_names``. Per-building gaps are
+    expected (e.g. assets-only datasets where some buildings have no
+    charger), so we enforce coverage at the *dataset* level rather than the
+    per-building level. The per-building post-condition is enforced by
+    `EntityTokenLayoutBuilder` via the count match
+    (``len(ca_segments) == len(action_names)``); a building that lacks a
+    given CA simply has no segment for that type.
+
+    Diverges from the literal ``docs/specv2.md`` §13.4 r5 wording ("for
+    every building") because real datasets (e.g. the bundled
+    ``citylearn_three_phase_dynamic_assets_only_demo``) intentionally have
+    asset-free buildings, and the simulator (softcpsrecsimulator >= 0.5.0)
+    correctly omits the corresponding actions.
+    """
     required = {ca.action_field for ca in cfg.ca_types.values()}
-    missing_per_building: List[tuple[int, List[str]]] = []
-    for b, names in enumerate(action_names_per_building):
-        missing = sorted(r for r in required if r not in names)
-        if missing:
-            missing_per_building.append((b, missing))
-    if missing_per_building:
-        bullets = "\n".join(
-            f"  - building_idx={b}, missing_action_fields={m}"
-            for b, m in missing_per_building
-        )
+    declared = {n for names in action_names_per_building for n in names}
+    missing = sorted(r for r in required if r not in declared)
+    if missing:
         raise ValueError(
             "Tokenizer rule 5 (action-field coverage) failed — the following "
-            "buildings are missing one or more action_field declared in "
-            f"ca_types:\n{bullets}\n"
-            "Fix: ensure every CA type's action_field appears in the "
-            "building's action_names (this is normally produced by the "
-            "simulator schema)."
+            "CA action_fields declared in ca_types do not appear in any "
+            f"building's action_names:\n"
+            + "\n".join(f"  - {m!r}" for m in missing)
+            + "\nFix: either remove the unused ca_type from the tokenizer "
+            "config, or ensure the simulator schema declares the "
+            "corresponding asset on at least one building."
         )
 
 
@@ -349,16 +360,26 @@ def validate_against_payload(
     cfg: EntityTokenizerConfig,
     sample: EntityPayloadSample,
     action_names_per_building: List[List[str]],
+    *,
+    include_rule_5: bool = True,
 ) -> None:
-    """Run all 5 hard-fail rules. Raises ``ValueError`` on first failure.
+    """Run hard-fail validation rules. Raises ``ValueError`` on first failure.
 
-    Order: rule 4 (regex compile) is implicit during matcher construction; then
-    rule 3 (NFC sources exist); then rule 1 (coverage); then rule 2
-    (uniqueness); then rule 5 (action-field coverage).
+    Order: rule 4 (regex compile) is implicit during matcher construction;
+    then rule 3 (NFC sources exist); then rule 1 (coverage); then rule 2
+    (uniqueness); then optionally rule 5 (action-field coverage).
+
+    ``include_rule_5`` controls whether the dataset-level action-field
+    coverage check runs. Callers SHOULD enable it at startup (to catch
+    misconfigured tokenizers vs the simulator schema) but MAY disable it
+    when re-validating after a runtime topology mutation, where the set of
+    active assets can legitimately become a strict subset of the configured
+    CA types (e.g. a topology event removes the last EV charger).
     """
     sro_matchers = _sro_matchers(cfg)
     excluded_matchers = _excluded_matchers(cfg)
     _validate_rule_3_nfc_sources_exist(cfg, sample)
     _validate_rule_1_coverage(cfg, sample, sro_matchers, excluded_matchers)
     _validate_rule_2_uniqueness(cfg, sample, sro_matchers, excluded_matchers)
-    _validate_rule_5_action_field_coverage(cfg, action_names_per_building)
+    if include_rule_5:
+        _validate_rule_5_action_field_coverage(cfg, action_names_per_building)

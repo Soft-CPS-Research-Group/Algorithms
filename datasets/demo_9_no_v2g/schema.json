@@ -189,19 +189,6 @@
     "incoming_electric_vehicle_at_charger_estimated_arrival_time": {
       "active": true,
       "shared_in_central_agent": true
-    },
-    "washing_machine_start_time_step": {
-      "active": true,
-      "shared_in_central_agent": true
-    },
-    "washing_machine_end_time_step": {
-      "active": true,
-      "shared_in_central_agent": true
-    },
-    "washing_machine_load_profile": {
-      "active": true,
-      "stochaicity:": "0.0",
-      "shared_in_central_agent": true
     }
   },
   "actions": {
@@ -218,9 +205,6 @@
       "active": true
     },
     "electric_vehicle_storage": {
-      "active": true
-    },
-    "washing_machine": {
       "active": true
     }
   },
@@ -549,13 +533,6 @@
           "capacity_loss_coefficient": 1e-05,
           "loss_coefficient": 0.0,
           "nominal_power": 5.0
-        }
-      },
-      "washing_machines": {
-        "washing_machine_1": {
-          "type": "citylearn.energy_model.WashingMachine",
-          "autosize": false,
-          "washing_machine_energy_simulation": "Washing_Machine_1.csv"
         }
       },
       "pv": {

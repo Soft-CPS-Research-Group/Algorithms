@@ -8,7 +8,9 @@
       "^electric_vehicle_soc$",
       "^electric_vehicle_required_soc_departure$",
       "^electric_vehicle_departure_time$",
-      "^electric_vehicle_is_flexible$"
+      "^electric_vehicle_is_flexible$",
+      "^charging_total_service_power_kw$",
+      "^charging_phase_L[123]_power_kw$"
     ]
   },
 
@@ -26,12 +28,12 @@
     "storage": {
       "entity_table": "storage",
       "action_field": "electrical_storage",
-      "input_dim_fallback": 9
+      "input_dim_fallback": 19
     },
     "charger": {
       "entity_table": "charger",
       "action_field": "electric_vehicle_storage",
-      "input_dim_fallback": 16
+      "input_dim_fallback": 33
     }
   },
 
@@ -178,7 +180,7 @@
       "entity_table": "pv",
       "cardinality": "per_asset",
       "adapter_prefix": "pv::",
-      "input_dim_fallback": 3
+      "input_dim_fallback": 4
     },
     "ev_connected": {
       "entity_table": "ev",

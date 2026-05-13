@@ -78,6 +78,11 @@ class _PerBuildingState:
     obs_names_tuple: Tuple[str, ...]
     action_names_tuple: Tuple[str, ...]
     entity_specs_signature: Optional[str] = None
+    # Per-building topology version. Starts at 0 on first attach and is
+    # incremented each time :meth:`_handle_topology_change` succeeds. The
+    # exporter records this in ``artifact_manifest.json`` so deployment
+    # callers can route to the right artifact bundle for a given mutation.
+    topology_version: int = 0
 
 
 def _atanh_safe(x: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
@@ -268,28 +273,32 @@ class AgentTransformerPPO(BaseAgent):
         output_dir: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Write per-building TorchScript artefacts + return manifest metadata.
+        """Write per-building ONNX artefacts + return manifest metadata.
 
-        Spec §14.1 prescribes an ONNX graph with baked layout indices. Tracing
-        the tokenizer through ``BuildingTokenLayout`` is awkward in ONNX
-        because the layout is a Python object. We ship TorchScript
-        (``.pt``) instead — the bundle validator only checks that the
-        manifest entries are well-formed; format is metadata. Refining to
-        ONNX with ``segment_offsets`` / ``segment_indices`` is a follow-up.
-        """
+        Spec §14.1: filename pattern ``agent_<b>__topology_v<v>.onnx``;
+        per-building entry includes ``agent_index``, ``path``, ``format``,
+        and a ``config`` block carrying the layout summary needed by the
+        deployment side."""
         out = Path(output_dir)
-        models_dir = out / "onnx_models"  # name preserved for AGENTS.md compat
+        models_dir = out / "onnx_models"
         models_dir.mkdir(parents=True, exist_ok=True)
 
-        topology_version = int((context or {}).get("topology_version", 0))
+        # Per-building topology version: explicit override via context wins
+        # (preserves backward compat with callers that pass it), else use
+        # the per-building counter maintained by ``_handle_topology_change``.
+        ctx_version = (context or {}).get("topology_version")
         artifacts: List[Dict[str, Any]] = []
         agent_models: List[Dict[str, Any]] = []
         for b, state in enumerate(self._per_building):
+            topology_version = (
+                int(ctx_version) if ctx_version is not None
+                else int(state.topology_version)
+            )
             obs_dim = self._infer_obs_dim(state.layout)
             relpath = (
-                f"onnx_models/agent_{b}__topology_v{topology_version}.pt"
+                f"onnx_models/agent_{b}__topology_v{topology_version}.onnx"
             )
-            self._export_torchscript(state, out / relpath, obs_dim)
+            self._export_onnx(state, out / relpath, obs_dim)
             sro_types = [
                 s.type_name for s in state.layout.segments if s.family == "sro"
             ]
@@ -310,7 +319,7 @@ class AgentTransformerPPO(BaseAgent):
                 {
                     "agent_index": b,
                     "path": relpath,
-                    "format": "torchscript",
+                    "format": "onnx",
                     "config": cfg,
                 }
             )
@@ -334,7 +343,7 @@ class AgentTransformerPPO(BaseAgent):
                 }
             )
         return {
-            "format": "torchscript",
+            "format": "onnx",
             "artifacts": artifacts,
             "tokenizer_config_path": self._tokenizer_config_path,
             "supports_dynamic_topology": True,
@@ -429,7 +438,13 @@ class AgentTransformerPPO(BaseAgent):
             building_id, observation_names, action_names
         )
         # Spec §10.1 post-condition: CA order matches simulator action order.
-        if layout.ca_action_names != tuple(action_names):
+        # Match is exact OR ``action_field`` is a prefix of the simulator
+        # action name (CityLearn appends a charger-id suffix when multiple
+        # CAs of the same type are present, e.g.
+        # ``electric_vehicle_storage_charger_1_1``).
+        for af, an in zip(layout.ca_action_names, action_names):
+            if an == af or an.startswith(af + "_"):
+                continue
             raise ValueError(
                 f"BuildingTokenLayout.ca_action_names "
                 f"{layout.ca_action_names!r} does not match action_names "
@@ -508,6 +523,12 @@ class AgentTransformerPPO(BaseAgent):
             self._tokenizer_config,
             synthetic_sample,
             [list(state.action_names_tuple)],
+            # Rule 5 (action-field coverage) is a startup-only sanity check
+            # against the simulator schema. After a runtime topology
+            # mutation the set of active assets may legitimately become a
+            # strict subset of the configured CA types (e.g. last EV
+            # charger was removed); skipping it avoids false positives.
+            include_rule_5=False,
         )
 
         # 4. Reject feature-count drift on existing types — would invalidate
@@ -536,9 +557,23 @@ class AgentTransformerPPO(BaseAgent):
         # 5. Replace the layout. Per-building NN weights and optimizer state
         #    are preserved (spec §11.4 — per-type weight sharing).
         state.layout = new_layout
+        state.topology_version += 1
 
-        # 6. Spec §10.1 post-condition.
-        if state.layout.ca_action_names != state.action_names_tuple:
+        # 6. Spec §10.1 post-condition. Mirror the startup-side prefix
+        #    tolerance from :meth:`_build_one_per_building_state`: CityLearn
+        #    suffixes ``electric_vehicle_storage_<charger_id>`` when there
+        #    are multiple chargers, so we accept exact match OR
+        #    ``action_field`` being a prefix of the simulator action name.
+        if len(state.layout.ca_action_names) != len(state.action_names_tuple):
+            raise ValueError(
+                "Post-rebuild CA order mismatch for building "
+                f"{state.building_id!r}: layout has "
+                f"{state.layout.ca_action_names!r}, action_names "
+                f"{state.action_names_tuple!r}"
+            )
+        for af, an in zip(state.layout.ca_action_names, state.action_names_tuple):
+            if an == af or an.startswith(af + "_"):
+                continue
             raise ValueError(
                 "Post-rebuild CA order mismatch for building "
                 f"{state.building_id!r}: layout has "
@@ -550,10 +585,20 @@ class AgentTransformerPPO(BaseAgent):
         self, layout: BuildingTokenLayout
     ) -> Dict[str, int]:
         """Spec §8.5: per-type input dim derived from segment widths.
+
         NFC is hard-coded to 1. Declared types absent from the layout get a
-        placeholder dim of 1 so the tokenizer is still constructible (per-
-        type weight sharing makes them unused-but-harmless until a future
-        topology reveals an instance)."""
+        placeholder dim equal to their declared ``input_dim_fallback`` so
+        the per-type projection is sized correctly from the start. This
+        matters under dynamic topology: when a previously-empty type later
+        gains its first instance (e.g. a topology event adds the first EV
+        charger to a building), the new segment width will equal the
+        fallback and the existing projection will accept it without the
+        feature-count-drift fail-fast in :meth:`_handle_topology_change`.
+
+        If the placeholder were always 1, any later real instance with
+        ``input_dim_fallback > 1`` would force a hard failure, even though
+        no learning has yet happened on that type's weights.
+        """
         nfc_name = self._tokenizer_config.nfc.type_name
         dims: Dict[str, int] = {nfc_name: 1}
         for seg in layout.segments:
@@ -567,10 +612,10 @@ class AgentTransformerPPO(BaseAgent):
                     f"{existing} vs {new}"
                 )
             dims[seg.type_name] = new
-        for tname in self._tokenizer_config.ca_types.keys():
-            dims.setdefault(tname, 1)
-        for tname in self._tokenizer_config.sro_types.keys():
-            dims.setdefault(tname, 1)
+        for tname, ca_cfg in self._tokenizer_config.ca_types.items():
+            dims.setdefault(tname, int(ca_cfg.input_dim_fallback))
+        for tname, sro_cfg in self._tokenizer_config.sro_types.items():
+            dims.setdefault(tname, int(sro_cfg.input_dim_fallback))
         return dims
 
     @staticmethod
@@ -684,18 +729,17 @@ class AgentTransformerPPO(BaseAgent):
                 )
                 state.optimizer.step()
 
-    # ----- TorchScript export -------------------------------------------------
+    # ----- ONNX export --------------------------------------------------------
 
-    def _export_torchscript(
+    def _export_onnx(
         self,
         state: _PerBuildingState,
         path: Path,
         obs_dim: int,
     ) -> None:
-        """Save the actor pipeline as TorchScript. The layout indices are
-        baked into the wrapper as Python constants; this works under
-        ``torch.jit.trace`` because the slicing is pure ``index_select`` on
-        a fixed-size dummy."""
+        """Save the actor pipeline as ONNX. The layout indices are baked
+        into the wrapper as Python constants. Pure ``index_select`` +
+        Linear + Transformer + ActorHead → traceable."""
         layout = state.layout
         sros_idx_per_seg = [
             torch.tensor(list(seg.feature_indices), dtype=torch.long)
@@ -729,9 +773,6 @@ class AgentTransformerPPO(BaseAgent):
                 self_inner.actor = actor
 
             def forward(self_inner, encoded_obs: torch.Tensor) -> torch.Tensor:
-                # Manual replay of EntityObservationTokenizer.forward with
-                # baked-in indices (avoids tracing through the layout
-                # Python object).
                 sro_tokens_list = []
                 for seg_idx, idx in zip(range(len(sros_idx_per_seg)), sros_idx_per_seg):
                     g = encoded_obs.index_select(dim=1, index=idx)
@@ -760,14 +801,44 @@ class AgentTransformerPPO(BaseAgent):
                         encoded_obs.shape[0], 0, self_inner.backbone.d_model
                     )
                 ca_emb, _ = self_inner.backbone(sros, nfc_tok, cas)
-                actions, _, _ = self_inner.actor(ca_emb, deterministic=True)
-                return actions.squeeze(-1)
+                # ActorHead.forward returns (actions, log_probs, means);
+                # for export we want the deterministic mean ∈ [-1, 1].
+                means = self_inner.actor.mlp(ca_emb)
+                return torch.tanh(means).squeeze(-1)
 
         wrapper = _ExportWrapper().eval()
         dummy = torch.zeros(1, obs_dim)
         with torch.no_grad():
-            traced = torch.jit.trace(wrapper, (dummy,), strict=False)
-            traced.save(str(path))
+            # The legacy TorchScript-based ONNX exporter (default
+            # ``torch.onnx.export``) does not support PyTorch's fast-path
+            # ``aten::_transformer_encoder_layer_fwd`` operator. Disable the
+            # MHA fastpath for the duration of the trace so the standard
+            # decomposed encoder ops (matmul, softmax, etc.) are emitted.
+            try:
+                from torch.backends.mha import set_fastpath_enabled
+
+                _restore_to: Optional[bool] = True
+                set_fastpath_enabled(False)
+            except ImportError:  # pragma: no cover
+                _restore_to = None
+            try:
+                torch.onnx.export(
+                    wrapper,
+                    (dummy,),
+                    str(path),
+                    input_names=["encoded_obs"],
+                    output_names=["actions"],
+                    dynamic_axes={
+                        "encoded_obs": {0: "batch"},
+                        "actions": {0: "batch"},
+                    },
+                    opset_version=17,
+                )
+            finally:
+                if _restore_to is not None:
+                    from torch.backends.mha import set_fastpath_enabled
+
+                    set_fastpath_enabled(True)
 
 
 # ==========================================================================

@@ -325,7 +325,15 @@ class EntityTokenLayoutBuilder:
             for seg in ca_segments
         )
         # Defensive post-condition (the orderer guarantees this).
-        if ca_action_names != tuple(action_names):
+        # Each entry of ``ca_action_names`` (the segment's action_field) must
+        # either equal the corresponding ``action_name`` exactly, or be a
+        # ``"<action_field>_<instance_id>"`` prefix of it (CityLearn appends
+        # a charger-id suffix when multiple CAs of the same type exist).
+        for af, an in zip(ca_action_names, action_names):
+            if an == af:
+                continue
+            if an.startswith(af + "_"):
+                continue
             raise ValueError(
                 f"BuildingTokenLayout.ca_action_names {ca_action_names!r} "
                 f"does not match action_names[{building_id}] "
@@ -392,9 +400,21 @@ class EntityTokenLayoutBuilder:
     ) -> List[TokenSegment]:
         """Sort CA segments so ``ca_action_names[i] == action_names[i]``.
 
-        There must be exactly one CA segment per action name, matchable by
-        ``action_field``. Within an action_field, segments are picked in
-        sorted ``instance_id`` order for determinism.
+        Matching strategy (in order):
+
+        1. Exact match: ``action_name == action_field``. This holds when the
+           simulator emits unsuffixed names (e.g., ``electrical_storage`` for
+           the single building-level battery).
+        2. Prefix match: ``action_name == f"{action_field}_{instance_id}"``.
+           CityLearn appends a charger ID suffix when multiple CAs of the
+           same type exist (e.g.,
+           ``electric_vehicle_storage_charger_1_1``); we match by checking
+           ``action_name.startswith(action_field + "_")`` and verifying the
+           suffix equals the segment's ``instance_id``. Falls back to first
+           prefix-matching segment if exact instance match fails.
+
+        Within an action_field, segments are picked in sorted ``instance_id``
+        order for determinism (only relevant for the prefix fallback).
         """
         if len(ca_segments) != len(action_names):
             raise ValueError(
@@ -408,17 +428,60 @@ class EntityTokenLayoutBuilder:
             by_action_field.setdefault(af, []).append(seg)
         for v in by_action_field.values():
             v.sort(key=lambda s: s.instance_id or "")
+
+        # Build (action_field, action_name) pairs by matching each action
+        # name to its action_field via exact-or-prefix.
+        all_action_fields = set(by_action_field.keys())
         ordered: List[TokenSegment] = []
-        consumed: Dict[str, int] = {k: 0 for k in by_action_field}
-        for action_field in action_names:
-            pool = by_action_field.get(action_field, [])
-            i = consumed.get(action_field, 0)
-            if i >= len(pool):
+        # Track which segments we've already consumed (by id()) so each one
+        # is used exactly once.
+        consumed_ids: set = set()
+        for action_name in action_names:
+            chosen_field: Optional[str] = None
+            if action_name in all_action_fields:
+                chosen_field = action_name
+            else:
+                # Prefix match: action_name = f"{action_field}_{instance_id}"
+                candidates = [
+                    af for af in all_action_fields
+                    if action_name.startswith(af + "_")
+                ]
+                if len(candidates) == 1:
+                    chosen_field = candidates[0]
+                elif len(candidates) > 1:
+                    # Ambiguity: pick the longest matching prefix.
+                    chosen_field = max(candidates, key=len)
+            if chosen_field is None:
+                raise ValueError(
+                    f"Cannot map action_name {action_name!r} to any "
+                    f"action_field in {sorted(all_action_fields)} for "
+                    f"building {building_id!r}"
+                )
+
+            # Find the next unconsumed segment in this action_field's pool.
+            # Prefer instance_id == suffix-of-action_name when present.
+            pool = by_action_field[chosen_field]
+            suffix = action_name[len(chosen_field) + 1 :] if action_name != chosen_field else None
+            picked: Optional[TokenSegment] = None
+            if suffix:
+                for seg in pool:
+                    if id(seg) in consumed_ids:
+                        continue
+                    if seg.instance_id == suffix:
+                        picked = seg
+                        break
+            if picked is None:
+                # Fall back to first unconsumed segment in deterministic order.
+                for seg in pool:
+                    if id(seg) not in consumed_ids:
+                        picked = seg
+                        break
+            if picked is None:
                 raise ValueError(
                     f"Cannot satisfy action_names ordering for building "
                     f"{building_id!r}: ran out of CA segments for "
-                    f"action_field {action_field!r} (have {len(pool)})"
+                    f"action_field {chosen_field!r} (have {len(pool)})"
                 )
-            ordered.append(pool[i])
-            consumed[action_field] = i + 1
+            ordered.append(picked)
+            consumed_ids.add(id(picked))
         return ordered

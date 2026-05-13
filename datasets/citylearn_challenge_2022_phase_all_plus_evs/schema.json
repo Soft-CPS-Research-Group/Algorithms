@@ -189,23 +189,10 @@
     "incoming_electric_vehicle_at_charger_estimated_arrival_time": {
       "active": true,
       "shared_in_central_agent": true
-    },
-    "washing_machine_start_time_step": {
-      "active": true,
-      "shared_in_central_agent": true
-    },
-    "washing_machine_end_time_step": {
-      "active": true,
-      "shared_in_central_agent": true
-    },
-    "washing_machine_load_profile": {
-      "active": true,
-      "stochaicity:": "0.0",
-      "shared_in_central_agent": true
     }
   },
   "actions": {
-      "cooling_storage": {
+    "cooling_storage": {
       "active": false
     },
     "heating_storage": {
@@ -219,20 +206,15 @@
     },
     "electric_vehicle_storage": {
       "active": true
-    },
-    "washing_machine": {
-      "active": true
     }
   },
   "agent": {
     "type": "citylearn.agents.rbc.BasicElectricVehicleRBC_ReferenceController",
-    "attributes": {
-    }
+    "attributes": {}
   },
   "reward_function": {
     "type": "citylearn.reward_function.Electric_Vehicles_Reward_Function",
-    "attributes": {
-    }  
+    "attributes": {}
   },
   "electric_vehicles_def": {
     "Electric_Vehicle_1": {
@@ -256,7 +238,7 @@
         "attributes": {
           "capacity": 50,
           "nominal_power": 50,
-          "depth_of_discharge": 0.90
+          "depth_of_discharge": 0.9
         }
       }
     },
@@ -268,7 +250,7 @@
         "attributes": {
           "capacity": 75,
           "nominal_power": 50,
-          "depth_of_discharge": 0.80
+          "depth_of_discharge": 0.8
         }
       }
     },
@@ -280,7 +262,7 @@
         "attributes": {
           "capacity": 45,
           "nominal_power": 50,
-          "depth_of_discharge": 0.90
+          "depth_of_discharge": 0.9
         }
       }
     },
@@ -304,7 +286,7 @@
         "attributes": {
           "capacity": 100,
           "nominal_power": 50,
-          "depth_of_discharge": 0.90
+          "depth_of_discharge": 0.9
         }
       }
     },
@@ -353,13 +335,6 @@
           "capacity_loss_coefficient": 1e-05,
           "loss_coefficient": 0.0,
           "nominal_power": 5.0
-        }
-      },
-      "washing_machines": {
-        "washing_machine_1": {
-          "type": "citylearn.energy_model.WashingMachine",
-          "autosize": false,
-          "washing_machine_energy_simulation": "Washing_Machine_1.csv"
         }
       },
       "pv": {
@@ -586,7 +561,7 @@
           "autosize": false,
           "attributes": {
             "nominal_power": 11,
-            "efficiency": 0.90,
+            "efficiency": 0.9,
             "charger_type": 1,
             "max_charging_power": 11,
             "min_charging_power": 0,

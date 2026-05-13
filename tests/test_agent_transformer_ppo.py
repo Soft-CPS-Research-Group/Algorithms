@@ -359,7 +359,7 @@ def test_export_artifacts_writes_files_and_returns_manifest(tmp_path: Path) -> N
     manifest = agent.export_artifacts(
         str(tmp_path), context={"topology_version": 7}
     )
-    assert manifest["format"] == "torchscript"
+    assert manifest["format"] == "onnx"
     assert manifest["supports_dynamic_topology"] is True
     assert manifest["tokenizer_config_path"] == _TOKENIZER_CFG
     assert len(manifest["artifacts"]) == 2
@@ -367,6 +367,7 @@ def test_export_artifacts_writes_files_and_returns_manifest(tmp_path: Path) -> N
     for entry in manifest["artifacts"]:
         p = tmp_path / entry["path"]
         assert p.exists() and p.stat().st_size > 0
+        assert entry["path"].endswith(".onnx")
         assert "topology_v7" in entry["path"]
         assert entry["config"]["n_ca"] == 2
         assert set(entry["config"]["ca_types"]) <= {"storage", "charger"}
