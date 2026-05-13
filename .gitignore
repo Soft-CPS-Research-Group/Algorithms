@@ -10,3 +10,7 @@ venv/
 __pycache__/
 .git-credentials
 .idea
+
+# Local
+thesis.pdf
+datasets/offline_rl/m2/
