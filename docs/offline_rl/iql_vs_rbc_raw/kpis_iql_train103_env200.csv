@@ -1,10 +1,10 @@
 cost_function,value,name,level
-all_time_peak_average,1.7980801990864872,District,district
+all_time_peak_average,1.815414629694892,District,district
 annual_normalized_unserved_energy_total,0.0,District,district
-carbon_emissions_total,2.2827228708251974,District,district
-cost_total,2.295724035482642,District,district
-daily_one_minus_load_factor_average,0.84264834873442,District,district
-daily_peak_average,2.169076556462112,District,district
+carbon_emissions_total,2.3113055790453094,District,district
+cost_total,2.3229005907499674,District,district
+daily_one_minus_load_factor_average,0.8427547258672762,District,district
+daily_peak_average,2.216262644987418,District,district
 discomfort_cold_delta_average,0.0,District,district
 discomfort_cold_delta_maximum,0.0,District,district
 discomfort_cold_delta_minimum,0.0,District,district
@@ -14,16 +14,16 @@ discomfort_hot_delta_maximum,0.0,District,district
 discomfort_hot_delta_minimum,0.0,District,district
 discomfort_hot_proportion,,District,district
 discomfort_proportion,,District,district
-electricity_consumption_total,2.2987562212969084,District,district
-monthly_one_minus_load_factor_average,0.9027345065093263,District,district
+electricity_consumption_total,2.324640750680616,District,district
+monthly_one_minus_load_factor_average,0.9029893194960613,District,district
 one_minus_thermal_resilience_proportion,,District,district
 power_outage_normalized_unserved_energy_total,,District,district
-ramping_average,1.6324003726462823,District,district
-zero_net_energy,-5.94023330918208,District,district
+ramping_average,1.6473186957675483,District,district
+zero_net_energy,-5.959080002924398,District,district
 electricity_consumption_total,2.709485396341719,Building_1,building
 zero_net_energy,0.005160387348345926,Building_1,building
 carbon_emissions_total,2.732129488980809,Building_1,building
-cost_total,2.800402796748388,Building_1,building
+cost_total,2.80045558721882,Building_1,building
 discomfort_proportion,,Building_1,building
 discomfort_cold_proportion,,Building_1,building
 discomfort_hot_proportion,,Building_1,building
@@ -39,7 +39,7 @@ annual_normalized_unserved_energy_total,0.0,Building_1,building
 electricity_consumption_total,1.0,Building_2,building
 zero_net_energy,1.0,Building_2,building
 carbon_emissions_total,1.0000000001230798,Building_2,building
-cost_total,0.9826270504495487,Building_2,building
+cost_total,0.9827791642770903,Building_2,building
 discomfort_proportion,,Building_2,building
 discomfort_cold_proportion,,Building_2,building
 discomfort_hot_proportion,,Building_2,building
@@ -55,7 +55,7 @@ annual_normalized_unserved_energy_total,0.0,Building_2,building
 electricity_consumption_total,1.0,Building_3,building
 zero_net_energy,1.0,Building_3,building
 carbon_emissions_total,1.0000000004561749,Building_3,building
-cost_total,0.984413321426575,Building_3,building
+cost_total,0.9845067651135742,Building_3,building
 discomfort_proportion,,Building_3,building
 discomfort_cold_proportion,,Building_3,building
 discomfort_hot_proportion,,Building_3,building
@@ -71,7 +71,7 @@ annual_normalized_unserved_energy_total,0.0,Building_3,building
 electricity_consumption_total,3.6710784133369345,Building_4,building
 zero_net_energy,15.754386579869102,Building_4,building
 carbon_emissions_total,3.9425799740363683,Building_4,building
-cost_total,3.547745791552559,Building_4,building
+cost_total,3.5482349517645386,Building_4,building
 discomfort_proportion,,Building_4,building
 discomfort_cold_proportion,,Building_4,building
 discomfort_hot_proportion,,Building_4,building
@@ -84,10 +84,10 @@ discomfort_hot_delta_average,0.0,Building_4,building
 one_minus_thermal_resilience_proportion,,Building_4,building
 power_outage_normalized_unserved_energy_total,,Building_4,building
 annual_normalized_unserved_energy_total,0.0,Building_4,building
-electricity_consumption_total,2.616980402443552,Building_5,building
-zero_net_energy,-0.18666101417682074,Building_5,building
-carbon_emissions_total,2.6418891066785726,Building_5,building
-cost_total,2.6852086338775307,Building_5,building
+electricity_consumption_total,3.057017401966582,Building_5,building
+zero_net_energy,-0.5070548077962209,Building_5,building
+carbon_emissions_total,3.1277951464204796,Building_5,building
+cost_total,3.1445409498951404,Building_5,building
 discomfort_proportion,,Building_5,building
 discomfort_cold_proportion,,Building_5,building
 discomfort_hot_proportion,,Building_5,building
@@ -103,7 +103,7 @@ annual_normalized_unserved_energy_total,0.0,Building_5,building
 electricity_consumption_total,1.0,Building_6,building
 zero_net_energy,1.0,Building_6,building
 carbon_emissions_total,1.0000000000071796,Building_6,building
-cost_total,0.9341434252968993,Building_6,building
+cost_total,0.9342453804896271,Building_6,building
 discomfort_proportion,,Building_6,building
 discomfort_cold_proportion,,Building_6,building
 discomfort_hot_proportion,,Building_6,building
@@ -119,7 +119,7 @@ annual_normalized_unserved_energy_total,0.0,Building_6,building
 electricity_consumption_total,3.73093740328735,Building_7,building
 zero_net_energy,-0.16328301585059804,Building_7,building
 carbon_emissions_total,3.7039038678232195,Building_7,building
-cost_total,3.7748856313256423,Building_7,building
+cost_total,3.774936518565041,Building_7,building
 discomfort_proportion,,Building_7,building
 discomfort_cold_proportion,,Building_7,building
 discomfort_hot_proportion,,Building_7,building
@@ -135,7 +135,7 @@ annual_normalized_unserved_energy_total,0.0,Building_7,building
 electricity_consumption_total,1.0,Building_8,building
 zero_net_energy,1.0,Building_8,building
 carbon_emissions_total,1.000000000299154,Building_8,building
-cost_total,0.9860570241973334,Building_8,building
+cost_total,0.9861536461509428,Building_8,building
 discomfort_proportion,,Building_8,building
 discomfort_cold_proportion,,Building_8,building
 discomfort_hot_proportion,,Building_8,building
@@ -151,7 +151,7 @@ annual_normalized_unserved_energy_total,0.0,Building_8,building
 electricity_consumption_total,1.0,Building_9,building
 zero_net_energy,1.0,Building_9,building
 carbon_emissions_total,1.0000000006457166,Building_9,building
-cost_total,0.9845812759107597,Building_9,building
+cost_total,0.9847655150863939,Building_9,building
 discomfort_proportion,,Building_9,building
 discomfort_cold_proportion,,Building_9,building
 discomfort_hot_proportion,,Building_9,building
@@ -167,7 +167,7 @@ annual_normalized_unserved_energy_total,0.0,Building_9,building
 electricity_consumption_total,2.0947547227306322,Building_10,building
 zero_net_energy,3.4839645468066225,Building_10,building
 carbon_emissions_total,2.058577105414845,Building_10,building
-cost_total,2.1334485815026225,Building_10,building
+cost_total,2.1335307480171855,Building_10,building
 discomfort_proportion,,Building_10,building
 discomfort_cold_proportion,,Building_10,building
 discomfort_hot_proportion,,Building_10,building
@@ -183,7 +183,7 @@ annual_normalized_unserved_energy_total,0.0,Building_10,building
 electricity_consumption_total,1.0,Building_11,building
 zero_net_energy,1.0,Building_11,building
 carbon_emissions_total,1.000000000109287,Building_11,building
-cost_total,0.9768126625787132,Building_11,building
+cost_total,0.9769748859971605,Building_11,building
 discomfort_proportion,,Building_11,building
 discomfort_cold_proportion,,Building_11,building
 discomfort_hot_proportion,,Building_11,building
@@ -199,7 +199,7 @@ annual_normalized_unserved_energy_total,0.0,Building_11,building
 electricity_consumption_total,9.809427765724104,Building_12,building
 zero_net_energy,-134.3801227429978,Building_12,building
 carbon_emissions_total,9.576503740483107,Building_12,building
-cost_total,9.800894910835646,Building_12,building
+cost_total,9.801266688089042,Building_12,building
 discomfort_proportion,,Building_12,building
 discomfort_cold_proportion,,Building_12,building
 discomfort_hot_proportion,,Building_12,building
@@ -215,7 +215,7 @@ annual_normalized_unserved_energy_total,0.0,Building_12,building
 electricity_consumption_total,1.0,Building_13,building
 zero_net_energy,1.0,Building_13,building
 carbon_emissions_total,0.9999999999810603,Building_13,building
-cost_total,0.9843486773296971,Building_13,building
+cost_total,0.9845355209777067,Building_13,building
 discomfort_proportion,,Building_13,building
 discomfort_cold_proportion,,Building_13,building
 discomfort_hot_proportion,,Building_13,building
@@ -231,7 +231,7 @@ annual_normalized_unserved_energy_total,0.0,Building_13,building
 electricity_consumption_total,1.0,Building_14,building
 zero_net_energy,1.0,Building_14,building
 carbon_emissions_total,1.0000000004299354,Building_14,building
-cost_total,0.9748567598893512,Building_14,building
+cost_total,0.9749933068096979,Building_14,building
 discomfort_proportion,,Building_14,building
 discomfort_cold_proportion,,Building_14,building
 discomfort_hot_proportion,,Building_14,building
@@ -247,7 +247,7 @@ annual_normalized_unserved_energy_total,0.0,Building_14,building
 electricity_consumption_total,4.446191658183145,Building_15,building
 zero_net_energy,4.502589002905799,Building_15,building
 carbon_emissions_total,4.150705519107977,Building_15,building
-cost_total,4.513264457465827,Building_15,building
+cost_total,4.513577901640309,Building_15,building
 discomfort_proportion,,Building_15,building
 discomfort_cold_proportion,,Building_15,building
 discomfort_hot_proportion,,Building_15,building
@@ -263,7 +263,7 @@ annual_normalized_unserved_energy_total,0.0,Building_15,building
 electricity_consumption_total,1.0,Building_16,building
 zero_net_energy,1.0,Building_16,building
 carbon_emissions_total,0.9999999994650033,Building_16,building
-cost_total,0.9882460907492242,Building_16,building
+cost_total,0.9884003898377883,Building_16,building
 discomfort_proportion,,Building_16,building
 discomfort_cold_proportion,,Building_16,building
 discomfort_hot_proportion,,Building_16,building
@@ -279,7 +279,7 @@ annual_normalized_unserved_energy_total,0.0,Building_16,building
 electricity_consumption_total,1.0,Building_17,building
 zero_net_energy,1.0,Building_17,building
 carbon_emissions_total,0.9999999999868634,Building_17,building
-cost_total,0.9753715120685954,Building_17,building
+cost_total,0.9754121228193896,Building_17,building
 discomfort_proportion,,Building_17,building
 discomfort_cold_proportion,,Building_17,building
 discomfort_hot_proportion,,Building_17,building

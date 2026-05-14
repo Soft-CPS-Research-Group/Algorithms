@@ -299,11 +299,38 @@ Full analysis and next-step options are in `step5_iql_status.md`.
 
 ---
 
-## 5. What's next
+---
 
-- **Step 6** (behaviour policy swap): replace the RBC dataset behaviour
-  policy with the trained IQL policy and re-collect data, testing whether
-  the improvement compounds across iterations.
-- **Run-002** (optional): sweep β ∈ {5, 10} and τ_expectile ∈ {0.8, 0.9}
-  before swapping, to see whether additional B5 gain is available within
-  the current dataset.
+## 5. Behaviour-policy swap (Step 6)
+
+The IQL behaviour policy (run-001 / seed 101, best val MSE 0.002073) replaced
+the RBC as the data-collection agent. New dataset collected on seeds 32–41
+(disjoint from RBC seeds 22–31 and eval seeds 200–209). Frozen reward weights
+applied unchanged via `scripts/apply_reward.py`. IQL run-002 trained on the
+new data.
+
+Full details: `step6_iql_swap_status.md`. Key numbers:
+
+| | run-001 (RBC data) | run-002 (IQL data) |
+|---|---:|---:|
+| best_val_policy_mse (training) | 0.002182 ± 0.000078 | **0.000158 ± 0.000010** |
+| B5 cost (eval) | **2.634 ± 0.051** | 2.666 ± 0.153 |
+| B5 unserved | 0 | 0 |
+
+Training loss improved 13.8× (the policy fits IQL-generated data much more
+tightly), but eval performance regressed slightly and variance widened. The
+iterative swap did not compound the Building 5 improvement.
+
+**Finding**: distributional narrowing from IQL-generated data reduces
+out-of-distribution robustness. The RBC dataset's diversity is more valuable
+than the distribution alignment from IQL-generated data.
+
+---
+
+## 6. What's next
+
+- **Hyperparameter sweep on run-001 data**: try β ∈ {5, 10} and
+  τ_expectile ∈ {0.8, 0.9} on the original RBC dataset to see if
+  further B5 gains are achievable without iterative data.
+- **Multi-building IQL**: extend to all 17 buildings to make district-level
+  improvements visible.
