@@ -1,0 +1,58 @@
+{
+  "behaviour_policy": "iql",
+  "behaviour_policy_class": "algorithms.offline_rl.iql_agent.IQLAgent",
+  "behaviour_policy_checkpoint": "runs/offline_iql/run-001/seed_101",
+  "schema_hash": "d6221cf375e706744afbfac3546f7481bbbd03425565340e1cf51602c6d014a8",
+  "env_config_hash": "sha256:68218d7bdcd58f296d2a971f94fdcf6f0dcb9e025811c7f5912300d5b69d600a",
+  "citylearn_dataset": "./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json",
+  "building": "Building_5",
+  "building_index": 4,
+  "seeds": [
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41
+  ],
+  "seed_files": {
+    "32": "seed_32.parquet",
+    "33": "seed_33.parquet",
+    "34": "seed_34.parquet",
+    "35": "seed_35.parquet",
+    "36": "seed_36.parquet",
+    "37": "seed_37.parquet",
+    "38": "seed_38.parquet",
+    "39": "seed_39.parquet",
+    "40": "seed_40.parquet",
+    "41": "seed_41.parquet"
+  },
+  "n_seeds": 10,
+  "n_steps_total": 87590,
+  "action_stats_aggregated": {
+    "action_electrical_storage": {
+      "mean_of_means": -0.00025946582302243114,
+      "mean_of_stds": 0.000575204482061197,
+      "min_overall": -0.005050447303801775,
+      "max_overall": 0.001209587906487286
+    },
+    "action_electric_vehicle_storage_charger_5_1": {
+      "mean_of_means": 0.11285622603248013,
+      "mean_of_stds": 0.22937641936877462,
+      "min_overall": -0.03683117404580116,
+      "max_overall": 0.9827533960342407
+    }
+  },
+  "reward_env_stats_aggregated": {
+    "mean_of_means": -39.20902927950993,
+    "mean_of_stds": 95.72272622260013
+  },
+  "kpi_summary_path": "kpi_summary.csv",
+  "sample_csv_path": "sample_first_1000.csv",
+  "collected_at": "2026-05-14T03:20:55.067671+00:00",
+  "code_git_sha": "9ecf60d"
+}
