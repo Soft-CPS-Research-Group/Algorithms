@@ -19,7 +19,7 @@ runtime:
   mlflow_run_url: null
 
 tracking:
-  mlflow_enabled: false  # CPU smoke; flip to true for real runs
+  mlflow_enabled: true
   log_level: "INFO"
   log_frequency: 1
   mlflow_step_sample_interval: 10
@@ -37,7 +37,9 @@ checkpointing:
   reset_replay_buffer: false
   freeze_pretrained_layers: false
   fine_tune: false
-  checkpoint_interval: null
+  checkpoint_interval: 1
+  require_update_step: true
+  require_initial_exploration_done: true
 
 bundle:
   bundle_version: null
@@ -57,9 +59,10 @@ simulator:
     enabled: true
     normalization: minmax_space
     clip: true
-  reward_function: RewardFunction
-  reward_function_kwargs: {}
-  episodes: 1
+  reward_function: V2GPenaltyReward
+  reward_function_kwargs:
+    squash: 1   # tanh-squash rewards to [-1, 1] to prevent PPO gradient explosion
+  episodes: 26  # ~6.5h based on ~15min/episode observed in my_test_run
   simulation_start_time_step: 0
   simulation_end_time_step: 3400
   episode_time_steps: 3401
@@ -76,7 +79,7 @@ simulator:
     squash: none
 
 training:
-  seed: 42
+  seed: 7  # swapped from 42 to test seed sensitivity
   steps_between_training_updates: 1
   target_update_interval: 0  # PPO doesn't use a target net; preserved for schema parity
 
@@ -94,16 +97,16 @@ algorithm:
     nhead: 4
     num_layers: 2
     dim_feedforward: 128
-    dropout: 0.0
+    dropout: 0.1
   hyperparameters:
-    learning_rate: 3.0e-4
+    learning_rate: 2.0e-4
     gamma: 0.99
     gae_lambda: 0.95
     clip_eps: 0.2
     ppo_epochs: 4
-    minibatch_size: 32
-    entropy_coeff: 0.01
+    minibatch_size: 64
+    entropy_coeff: 0.03
     value_coeff: 0.5
-    max_grad_norm: 0.5
+    max_grad_norm: 1.0
 
 execution: null
