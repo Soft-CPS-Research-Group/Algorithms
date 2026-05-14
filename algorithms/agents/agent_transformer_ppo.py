@@ -33,6 +33,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple
 import numpy as np
 import numpy.typing as npt
 import torch
+from loguru import logger
 from torch import nn
 
 from algorithms.agents.base_agent import BaseAgent
@@ -163,6 +164,16 @@ class AgentTransformerPPO(BaseAgent):
                 observation_names, action_names, metadata
             )
             self._first_attach_done = True
+            for st in self._per_building:
+                logger.info(
+                    "Initial attach: {} — obs_dim={}, n_sro={}, n_ca={}, "
+                    "actions={}",
+                    st.building_id,
+                    len(st.obs_names_tuple),
+                    st.layout.n_sro,
+                    st.layout.n_ca,
+                    list(st.action_names_tuple),
+                )
             return
 
         if len(self._per_building) != len(observation_names):
@@ -493,6 +504,11 @@ class AgentTransformerPPO(BaseAgent):
         """Spec §12.2: flush PPO → rebuild layout → re-validate rules."""
         state = self._per_building[building_idx]
 
+        old_n_ca = state.layout.n_ca
+        old_n_sro = state.layout.n_sro
+        old_actions = list(state.layout.ca_action_names)
+        old_obs_dim = len(state.layout.segments)
+
         # 1. Flush in-flight rollout (best-effort) before discarding the old
         #    layout. ``_ppo_update`` swallows empty-buffer no-ops.
         if len(state.buffer) > 0:
@@ -558,6 +574,20 @@ class AgentTransformerPPO(BaseAgent):
         #    are preserved (spec §11.4 — per-type weight sharing).
         state.layout = new_layout
         state.topology_version += 1
+
+        logger.info(
+            "Topology change: {} v{} — "
+            "n_ca: {} → {}, n_sro: {} → {}, "
+            "actions: {} → {}",
+            state.building_id,
+            state.topology_version,
+            old_n_ca,
+            new_layout.n_ca,
+            old_n_sro,
+            new_layout.n_sro,
+            old_actions,
+            list(new_layout.ca_action_names),
+        )
 
         # 6. Spec §10.1 post-condition. Mirror the startup-side prefix
         #    tolerance from :meth:`_build_one_per_building_state`: CityLearn
