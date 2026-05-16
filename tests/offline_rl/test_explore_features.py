@@ -45,3 +45,10 @@ def test_section_overview_returns_markdown(sample_df):
     assert fig_path == ""
     assert "rows" in md.lower() or "dataset" in md.lower()
     assert "action_electrical_storage" in md
+
+def test_section_seed_consistency_creates_figure(sample_df, tmp_path):
+    from scripts.explore_features import _section_seed_consistency
+    fig_path, md = _section_seed_consistency(sample_df, tmp_path)
+    assert (tmp_path / "fig1_seed_consistency.png").exists()
+    assert "fig1_seed_consistency.png" in fig_path
+    assert "seed" in md.lower()
