@@ -17,17 +17,17 @@ def test_has_main():
 
 @pytest.fixture
 def sample_df():
-    """Minimal synthetic dataframe matching dataset schema."""
+    """Minimal synthetic dataframe matching dataset schema (real column names)."""
     rng = np.random.default_rng(0)
     n = 200
     return pd.DataFrame({
         "seed": rng.integers(100, 105, n),
         "obs_hour": rng.integers(0, 24, n),
         "obs_month": rng.integers(1, 13, n),
-        "obs_connected_state": rng.integers(0, 2, n).astype(float),
-        "obs_departure_time": rng.integers(6, 22, n).astype(float),
-        "obs_required_soc_departure": rng.uniform(0.5, 1.0, n),
-        "obs_electrical_vehicle_storage_soc": rng.uniform(0.0, 1.0, n),
+        "obs_electric_vehicle_charger_charger_5_1_connected_state": rng.integers(0, 2, n).astype(float),
+        "obs_connected_electric_vehicle_at_charger_charger_5_1_departure_time": rng.integers(6, 22, n).astype(float),
+        "obs_connected_electric_vehicle_at_charger_charger_5_1_required_soc_departure": rng.uniform(0.5, 1.0, n),
+        "obs_connected_electric_vehicle_at_charger_charger_5_1_soc": rng.uniform(0.0, 1.0, n),
         "obs_electrical_storage_soc": np.zeros(n),
         "obs_non_shiftable_load": rng.uniform(0.1, 2.0, n),
         "obs_solar_generation": rng.uniform(0.0, 1.5, n),
@@ -97,10 +97,10 @@ def test_main_produces_all_outputs(tmp_path, monkeypatch):
         "seed": rng.integers(100, 105, n),
         "obs_hour": rng.integers(0, 24, n),
         "obs_month": rng.integers(1, 13, n),
-        "obs_connected_state": rng.integers(0, 2, n).astype(float),
-        "obs_departure_time": rng.integers(6, 22, n).astype(float),
-        "obs_required_soc_departure": rng.uniform(0.5, 1.0, n),
-        "obs_electrical_vehicle_storage_soc": rng.uniform(0.0, 1.0, n),
+        "obs_electric_vehicle_charger_charger_5_1_connected_state": rng.integers(0, 2, n).astype(float),
+        "obs_connected_electric_vehicle_at_charger_charger_5_1_departure_time": rng.integers(6, 22, n).astype(float),
+        "obs_connected_electric_vehicle_at_charger_charger_5_1_required_soc_departure": rng.uniform(0.5, 1.0, n),
+        "obs_connected_electric_vehicle_at_charger_charger_5_1_soc": rng.uniform(0.0, 1.0, n),
         "obs_electrical_storage_soc": np.zeros(n),
         "obs_non_shiftable_load": rng.uniform(0.1, 2.0, n),
         "obs_solar_generation": rng.uniform(0.0, 1.5, n),

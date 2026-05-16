@@ -110,10 +110,10 @@ Mean EV charging action and mean reward aggregated by hour of day. Peak charging
 
 _FEATURE_GROUPS: dict[str, list[str]] = {
     "EV state": [
-        "obs_connected_state",
-        "obs_departure_time",
-        "obs_required_soc_departure",
-        "obs_electrical_vehicle_storage_soc",
+        "obs_electric_vehicle_charger_charger_5_1_connected_state",
+        "obs_connected_electric_vehicle_at_charger_charger_5_1_departure_time",
+        "obs_connected_electric_vehicle_at_charger_charger_5_1_required_soc_departure",
+        "obs_connected_electric_vehicle_at_charger_charger_5_1_soc",
     ],
     "Pricing": [
         "obs_electricity_pricing",
@@ -259,10 +259,15 @@ Features with high MI for action but low MI for reward indicate behaviours the R
 
 def _section_ev_state_patterns(df: pd.DataFrame, figures_dir: Path) -> tuple[str, str]:
     """Histograms of EV SOC at connection, time to departure, and SOC deficit."""
-    connected = df[df["obs_connected_state"] > 0.5].copy()
-    soc_at_connection = connected["obs_electrical_vehicle_storage_soc"]
-    soc_deficit = connected["obs_required_soc_departure"] - connected["obs_electrical_vehicle_storage_soc"]
-    time_to_dep = (connected["obs_departure_time"] - connected["obs_hour"]) % 24
+    connected_col = "obs_electric_vehicle_charger_charger_5_1_connected_state"
+    soc_col = "obs_connected_electric_vehicle_at_charger_charger_5_1_soc"
+    required_soc_col = "obs_connected_electric_vehicle_at_charger_charger_5_1_required_soc_departure"
+    departure_col = "obs_connected_electric_vehicle_at_charger_charger_5_1_departure_time"
+
+    connected = df[df[connected_col] > 0.5].copy()
+    soc_at_connection = connected[soc_col]
+    soc_deficit = connected[required_soc_col] - connected[soc_col]
+    time_to_dep = (connected[departure_col] - connected["obs_hour"]) % 24
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
