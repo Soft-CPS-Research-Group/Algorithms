@@ -71,6 +71,42 @@ Reward KDE overlaid for each seed. Overlapping distributions confirm that seeds 
     return str(fig_path), md
 
 
+def _section_temporal_patterns(df: pd.DataFrame, figures_dir: Path) -> tuple[str, str]:
+    """Plot mean EV action and mean reward by hour of day."""
+    hourly = df.groupby("obs_hour").agg(
+        mean_action=("action_electric_vehicle_storage_charger_5_1", "mean"),
+        mean_reward=("reward", "mean"),
+    ).reset_index()
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    ax1.plot(hourly["obs_hour"], hourly["mean_action"], marker="o")
+    ax1.set_xlabel("Hour of day")
+    ax1.set_ylabel("Mean EV charging action")
+    ax1.set_title("EV action by hour")
+    ax1.set_xticks(range(0, 24, 2))
+
+    ax2.plot(hourly["obs_hour"], hourly["mean_reward"], marker="o", color="tab:orange")
+    ax2.set_xlabel("Hour of day")
+    ax2.set_ylabel("Mean reward")
+    ax2.set_title("Reward by hour")
+    ax2.set_xticks(range(0, 24, 2))
+
+    fig.tight_layout()
+    fig_path = figures_dir / "fig2_temporal_patterns.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    peak_action_hour = int(hourly.loc[hourly["mean_action"].idxmax(), "obs_hour"])
+
+    md = f"""## 3. Temporal patterns
+
+![Temporal patterns](figures/fig2_temporal_patterns.png)
+
+Mean EV charging action and mean reward aggregated by hour of day. Peak charging occurs around hour {peak_action_hour}, consistent with EV arrival patterns. Reward variation across the day reflects electricity price and solar generation schedules.
+"""
+    return str(fig_path), md
+
+
 def main() -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 

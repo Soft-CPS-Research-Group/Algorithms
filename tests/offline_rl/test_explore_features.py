@@ -52,3 +52,9 @@ def test_section_seed_consistency_creates_figure(sample_df, tmp_path):
     assert (tmp_path / "fig1_seed_consistency.png").exists()
     assert "fig1_seed_consistency.png" in fig_path
     assert "seed" in md.lower()
+
+def test_section_temporal_patterns_creates_figure(sample_df, tmp_path):
+    from scripts.explore_features import _section_temporal_patterns
+    fig_path, md = _section_temporal_patterns(sample_df, tmp_path)
+    assert (tmp_path / "fig2_temporal_patterns.png").exists()
+    assert "hour" in md.lower()
