@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from sklearn.feature_selection import mutual_info_regression
 
 DATA_PATH   = Path("datasets/offline_rl/derived/rbc_with_reward.parquet")
 OUTPUT_DIR  = Path("docs/offline_rl/feature_analysis")
@@ -201,6 +202,57 @@ def _section_correlation(df: pd.DataFrame, figures_dir: Path) -> tuple[str, str]
 ![Correlation matrix](figures/fig4_correlation_matrix.png)
 
 Spearman correlation heatmap of all varying observation features. {drop_note} High-correlation clusters (|ρ| > 0.9) indicate redundant features — typically price forecast triplets and temperature forecast triplets. These can be represented by the current-step value without significant information loss.
+"""
+    return str(fig_path), md
+
+
+def _section_mutual_information(df: pd.DataFrame, figures_dir: Path) -> tuple[str, str]:
+    """Dual-bar chart: MI of each obs feature vs reward and vs EV action."""
+    obs_cols = [c for c in df.columns if c.startswith("obs_")]
+    varying = [c for c in obs_cols if df[c].var() > 1e-9]
+    X = df[varying].fillna(0).values
+
+    mi_reward = mutual_info_regression(X, df["reward"].values, random_state=42)
+    mi_action = mutual_info_regression(
+        X,
+        df["action_electric_vehicle_storage_charger_5_1"].values,
+        random_state=42,
+    )
+
+    labels = [c.replace("obs_", "") for c in varying]
+    order = np.argsort(np.maximum(mi_reward, mi_action))[::-1]
+    labels_sorted = [labels[i] for i in order]
+    mi_reward_sorted = mi_reward[order]
+    mi_action_sorted = mi_action[order]
+
+    y_pos = np.arange(len(labels_sorted))
+    fig, ax = plt.subplots(figsize=(10, max(6, len(labels_sorted) * 0.35)))
+    ax.barh(y_pos - 0.2, mi_reward_sorted, height=0.4, label="vs reward", color="tab:blue", alpha=0.8)
+    ax.barh(y_pos + 0.2, mi_action_sorted, height=0.4, label="vs EV action", color="tab:green", alpha=0.8)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels_sorted, fontsize=8)
+    ax.set_xlabel("Mutual information (estimated)")
+    ax.set_title("Feature importance — MI vs reward and EV action")
+    ax.legend()
+    fig.tight_layout()
+    fig_path = figures_dir / "fig5_mutual_information.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    top3_reward = [labels_sorted[i] for i in np.argsort(mi_reward_sorted)[::-1][:3]]
+    top3_action = [labels_sorted[i] for i in np.argsort(mi_action_sorted)[::-1][:3]]
+
+    md = f"""## 6. Mutual information
+
+![Mutual information](figures/fig5_mutual_information.png)
+
+Estimated mutual information (5-nearest-neighbour, `random_state=42`) for each observation feature against reward (blue) and EV charging action (green), sorted by maximum MI. MI values are estimated and approximate.
+
+Top features predictive of **reward**: {", ".join(f"`{f}`" for f in top3_reward)}.
+
+Top features predictive of **EV action**: {", ".join(f"`{f}`" for f in top3_action)}.
+
+Features with high MI for action but low MI for reward indicate behaviours the RBC policy relies on that do not directly improve cost — potential sources of suboptimality that IQL could learn to exploit.
 """
     return str(fig_path), md
 

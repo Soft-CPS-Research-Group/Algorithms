@@ -71,3 +71,9 @@ def test_section_correlation_creates_figure(sample_df, tmp_path):
     fig_path, md = _section_correlation(sample_df, tmp_path)
     assert (tmp_path / "fig4_correlation_matrix.png").exists()
     assert "correlation" in md.lower()
+
+def test_section_mutual_information_creates_figure(sample_df, tmp_path):
+    from scripts.explore_features import _section_mutual_information
+    fig_path, md = _section_mutual_information(sample_df, tmp_path)
+    assert (tmp_path / "fig5_mutual_information.png").exists()
+    assert "mutual information" in md.lower()
