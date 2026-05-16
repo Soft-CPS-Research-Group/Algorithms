@@ -77,3 +77,9 @@ def test_section_mutual_information_creates_figure(sample_df, tmp_path):
     fig_path, md = _section_mutual_information(sample_df, tmp_path)
     assert (tmp_path / "fig5_mutual_information.png").exists()
     assert "mutual information" in md.lower()
+
+def test_section_ev_state_patterns_creates_figure(sample_df, tmp_path):
+    from scripts.explore_features import _section_ev_state_patterns
+    fig_path, md = _section_ev_state_patterns(sample_df, tmp_path)
+    assert (tmp_path / "fig6_ev_state_patterns.png").exists()
+    assert "soc" in md.lower()

@@ -257,6 +257,48 @@ Features with high MI for action but low MI for reward indicate behaviours the R
     return str(fig_path), md
 
 
+def _section_ev_state_patterns(df: pd.DataFrame, figures_dir: Path) -> tuple[str, str]:
+    """Histograms of EV SOC at connection, time to departure, and SOC deficit."""
+    connected = df[df["obs_connected_state"] > 0.5].copy()
+    soc_at_connection = connected["obs_electrical_vehicle_storage_soc"]
+    soc_deficit = connected["obs_required_soc_departure"] - connected["obs_electrical_vehicle_storage_soc"]
+    time_to_dep = (connected["obs_departure_time"] - connected["obs_hour"]) % 24
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    axes[0].hist(soc_at_connection.dropna(), bins=30, color="tab:blue", alpha=0.8)
+    axes[0].set_xlabel("EV SOC at connection")
+    axes[0].set_ylabel("Count")
+    axes[0].set_title("SOC when connected")
+
+    axes[1].hist(time_to_dep.dropna(), bins=24, color="tab:orange", alpha=0.8)
+    axes[1].set_xlabel("Hours to departure")
+    axes[1].set_ylabel("Count")
+    axes[1].set_title("Time to departure")
+
+    axes[2].hist(soc_deficit.dropna(), bins=30, color="tab:red", alpha=0.8)
+    axes[2].set_xlabel("SOC deficit (required − current)")
+    axes[2].set_ylabel("Count")
+    axes[2].set_title("SOC deficit at connection")
+
+    fig.suptitle("EV state at connected steps", fontsize=13)
+    fig.tight_layout()
+    fig_path = figures_dir / "fig6_ev_state_patterns.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    med_deficit = float(soc_deficit.median()) if len(soc_deficit) > 0 else float("nan")
+    med_time = float(time_to_dep.median()) if len(time_to_dep) > 0 else float("nan")
+
+    md = f"""## 7. EV state patterns
+
+![EV state patterns](figures/fig6_ev_state_patterns.png)
+
+Distributions at connected steps (where `obs_connected_state > 0.5`). Median SOC deficit at connection: **{med_deficit:.2f}** (fraction of battery capacity still to charge). Median time to departure: **{med_time:.1f} hours**. These two quantities jointly determine charging urgency and motivate the proposed `ev_urgency` derived feature.
+"""
+    return str(fig_path), md
+
+
 def main() -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
