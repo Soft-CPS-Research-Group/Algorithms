@@ -16,11 +16,12 @@ def _section_overview(df: pd.DataFrame) -> tuple[str, str]:
     act_cols = [c for c in df.columns if c.startswith("action_")]
     missing = df.isnull().sum().sum()
     storage_var = df["action_electrical_storage"].var() if "action_electrical_storage" in df.columns else None
-    storage_note = (
-        f"`action_electrical_storage` variance = {storage_var:.6f} — **constant zero; excluded from analysis.**"
-        if storage_var is not None and storage_var < 1e-9
-        else f"`action_electrical_storage` variance = {storage_var:.6f}"
-    )
+    if storage_var is None:
+        storage_note = "`action_electrical_storage` column not found in dataset."
+    elif storage_var < 1e-9:
+        storage_note = f"`action_electrical_storage` variance = {storage_var:.6f} — **constant zero; excluded from analysis.**"
+    else:
+        storage_note = f"`action_electrical_storage` variance = {storage_var:.6f}"
     reward_min = df["reward"].min()
     reward_max = df["reward"].max()
     reward_mean = df["reward"].mean()
