@@ -83,3 +83,49 @@ def test_section_ev_state_patterns_creates_figure(sample_df, tmp_path):
     fig_path, md = _section_ev_state_patterns(sample_df, tmp_path)
     assert (tmp_path / "fig6_ev_state_patterns.png").exists()
     assert "soc" in md.lower()
+
+
+def test_main_produces_all_outputs(tmp_path, monkeypatch):
+    """Integration: main() writes doc + 6 figures."""
+    import pandas as pd
+    import numpy as np
+    from scripts import explore_features as ef
+
+    rng = np.random.default_rng(42)
+    n = 300
+    df = pd.DataFrame({
+        "seed": rng.integers(100, 105, n),
+        "obs_hour": rng.integers(0, 24, n),
+        "obs_month": rng.integers(1, 13, n),
+        "obs_connected_state": rng.integers(0, 2, n).astype(float),
+        "obs_departure_time": rng.integers(6, 22, n).astype(float),
+        "obs_required_soc_departure": rng.uniform(0.5, 1.0, n),
+        "obs_electrical_vehicle_storage_soc": rng.uniform(0.0, 1.0, n),
+        "obs_electrical_storage_soc": np.zeros(n),
+        "obs_non_shiftable_load": rng.uniform(0.1, 2.0, n),
+        "obs_solar_generation": rng.uniform(0.0, 1.5, n),
+        "obs_net_electricity_consumption": rng.uniform(-1.0, 2.0, n),
+        "obs_electricity_pricing": rng.uniform(0.1, 0.5, n),
+        "obs_electricity_pricing_predicted_1": rng.uniform(0.1, 0.5, n),
+        "action_electric_vehicle_storage_charger_5_1": rng.uniform(0, 1, n),
+        "action_electrical_storage": np.zeros(n),
+        "reward": rng.uniform(-10, 0, n),
+    })
+
+    out_dir = tmp_path / "feature_analysis"
+    fig_dir = out_dir / "figures"
+    doc_path = out_dir / "feature_analysis.md"
+
+    monkeypatch.setattr(ef, "OUTPUT_DIR", out_dir)
+    monkeypatch.setattr(ef, "FIGURES_DIR", fig_dir)
+    monkeypatch.setattr(ef, "DOC_PATH", doc_path)
+
+    ef.main(df=df)
+
+    figures = list(fig_dir.glob("*.png"))
+    assert len(figures) == 6, f"Expected 6 figures, got {len(figures)}: {figures}"
+    assert doc_path.exists()
+    content = doc_path.read_text()
+    for section in ["Dataset overview", "Seed consistency", "Temporal", "distribution",
+                    "Correlation", "Mutual information", "EV state", "Derived features"]:
+        assert section.lower() in content.lower(), f"Missing section: {section}"
