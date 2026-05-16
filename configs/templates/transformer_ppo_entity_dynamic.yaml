@@ -80,7 +80,7 @@ simulator:
 
 training:
   seed: 7  # swapped from 42 to test seed sensitivity
-  steps_between_training_updates: 1
+  steps_between_training_updates: 256  # PPO is on-policy: collect a real trajectory before each update. Must be >= minibatch_size.
   target_update_interval: 0  # PPO doesn't use a target net; preserved for schema parity
 
 topology:

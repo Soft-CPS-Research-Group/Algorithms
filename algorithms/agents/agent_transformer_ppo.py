@@ -688,6 +688,22 @@ class AgentTransformerPPO(BaseAgent):
     ) -> None:
         if len(state.buffer) == 0:
             return
+        # Defensive guard: PPO is on-policy and needs a meaningful trajectory
+        # batch before updating. If the wrapper's `update_step` cadence
+        # (`simulator.steps_between_training_updates`) is set too low, the
+        # buffer can be smaller than a single minibatch which produces a
+        # degenerate update (zero-mean advantages, NaN-prone log_prob
+        # gradients on near-saturated stored actions). Skip with a warning.
+        if len(state.buffer) < self._minibatch_size:
+            logger.warning(
+                "Skipping PPO update for {}: buffer_size={} < minibatch_size={}. "
+                "Increase `simulator.steps_between_training_updates` (recommended >= 256) "
+                "to give PPO a real trajectory to learn from.",
+                getattr(state, "building_id", "?"),
+                len(state.buffer),
+                self._minibatch_size,
+            )
+            return
         # Bootstrap value from the next observation of this building.
         try:
             b_idx = self._per_building.index(state)
