@@ -107,6 +107,67 @@ Mean EV charging action and mean reward aggregated by hour of day. Peak charging
     return str(fig_path), md
 
 
+_FEATURE_GROUPS: dict[str, list[str]] = {
+    "EV state": [
+        "obs_connected_state",
+        "obs_departure_time",
+        "obs_required_soc_departure",
+        "obs_electrical_vehicle_storage_soc",
+    ],
+    "Pricing": [
+        "obs_electricity_pricing",
+        "obs_electricity_pricing_predicted_1",
+    ],
+    "Load & solar": [
+        "obs_non_shiftable_load",
+        "obs_solar_generation",
+        "obs_net_electricity_consumption",
+    ],
+    "Storage": ["obs_electrical_storage_soc"],
+}
+
+
+def _section_feature_distributions(df: pd.DataFrame, figures_dir: Path) -> tuple[str, str]:
+    """KDE plots of observation features grouped by category."""
+    groups = {
+        name: [c for c in cols if c in df.columns]
+        for name, cols in _FEATURE_GROUPS.items()
+    }
+    groups = {k: v for k, v in groups.items() if v}
+
+    n_groups = len(groups)
+    fig, axes = plt.subplots(1, n_groups, figsize=(4 * n_groups, 5))
+    if n_groups == 1:
+        axes = [axes]
+
+    for ax, (group_name, cols) in zip(axes, groups.items()):
+        for col in cols:
+            series = df[col]
+            if series.var() < 1e-9:
+                # Degenerate column — draw a vertical line instead of KDE
+                val = series.iloc[0]
+                ax.axvline(val, label=col.replace("obs_", "") + " (const)", linestyle="--", alpha=0.75)
+            else:
+                series.plot.kde(ax=ax, label=col.replace("obs_", ""), alpha=0.75)
+        ax.set_title(group_name)
+        ax.legend(fontsize=7)
+        ax.set_xlabel("Value")
+
+    fig.suptitle("Feature distributions by group", fontsize=13)
+    fig.tight_layout()
+    fig_path = figures_dir / "fig3_feature_distributions.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    md = """## 4. Feature distributions
+
+![Feature distributions](figures/fig3_feature_distributions.png)
+
+KDE plots grouped by feature category. `obs_electrical_storage_soc` is expected to be constant zero throughout the RBC dataset (the battery storage is never used). EV state features show bimodal patterns driven by connected vs disconnected states.
+"""
+    return str(fig_path), md
+
+
 def main() -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
