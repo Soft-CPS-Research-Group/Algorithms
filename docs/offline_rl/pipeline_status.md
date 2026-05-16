@@ -6,7 +6,6 @@ that dataset. Each stage feeds the next; everything is reproducible
 from the artefacts under `datasets/offline_rl/`.
 
 This page summarises what is built and what each artefact is for.
-The next active stage (IQL) is tracked in `specs/iql_design.md`.
 
 ---
 
@@ -215,7 +214,7 @@ BC's std is tighter than RBC's on Building 5 — the cloned policy is
 more consistent across env seeds than its teacher. The ~3% B5 cost
 improvement is real (Δ larger than max(stds), unserved still zero)
 rather than within-noise. The full benchmark, including raw per-rollout
-KPI CSVs, is in `bc_vs_rbc_benchmark.md` and `bc_vs_rbc_raw/`.
+KPI CSVs, is in `benchmarks.md` §1 and `datasets/offline_rl/benchmarks/bc/`.
 
 ### Success criterion
 
@@ -238,8 +237,8 @@ All four met.
 IQL was trained on the same dataset and reward as BC. The algorithm
 uses expectile value regression and advantage-weighted policy updates
 to optimise expected return directly, without ever querying
-out-of-distribution actions. Full design spec: `specs/iql_design.md`.
-Implementation plan: `plans/iql-implementation.md`.
+out-of-distribution actions. Full design and implementation reference:
+`iql_reference.md`.
 
 ### Training
 
@@ -285,6 +284,18 @@ IQL beats both RBC and BC on every Building 5 KPI, and tightens the
 std. At the district level the gain is diluted ~17× (IQL controls only
 1 of 17 buildings), remaining below the noise floor.
 
+### Why the district criterion wasn't met
+
+The original success criterion required >1σ improvement on a **district**
+KPI. IQL controls only Building 5 (1 of 17 buildings). The other 16
+buildings are driven by the same RBC in both IQL and RBC columns, so the
+B5 gain is diluted ~17× at the district level.
+
+The 3.5% B5 cost improvement (Δ = −0.096) becomes ~0.25% at the district
+(Δ = −0.0056), well below the district cost std of ±0.075. This is
+expected — not a training failure. The criterion was written before the
+single-building scope was locked in.
+
 ### Success criterion
 
 The original criterion was district-level >1σ improvement. IQL misses
@@ -295,7 +306,10 @@ At the Building 5 level (the only building IQL controls), the criterion
 is **met**: IQL beats RBC by >1σ on cost (Δ/σ_RBC ≈ 1.2), carbon, and
 electricity, with unserved energy = 0 across all 50 rollouts.
 
-Full analysis and next-step options are in `step5_iql_status.md`.
+IQL also beats BC on Building 5 across all KPIs, confirming that offline
+RL adds value beyond imitation on this task.
+
+Full benchmark tables: `benchmarks.md` §2.
 
 ---
 
@@ -309,7 +323,7 @@ the RBC as the data-collection agent. New dataset collected on seeds 32–41
 applied unchanged via `scripts/apply_reward.py`. IQL run-002 trained on the
 new data.
 
-Full details: `step6_iql_swap_status.md`. Key numbers:
+Full details and interpretation: `benchmarks.md` §3. Key numbers:
 
 | | run-001 (RBC data) | run-002 (IQL data) |
 |---|---:|---:|
@@ -324,6 +338,16 @@ iterative swap did not compound the Building 5 improvement.
 **Finding**: distributional narrowing from IQL-generated data reduces
 out-of-distribution robustness. The RBC dataset's diversity is more valuable
 than the distribution alignment from IQL-generated data.
+
+**Interpretation**: IQL-generated data covers a narrower state space (more
+deterministic than RBC), so run-002 is well-fit to the IQL distribution but
+generalises less robustly across the wider eval range. The diverse RBC dataset
+(18% PV-bonus, 1% emergency, 81% idle across varied weather and EV arrival
+patterns) is informationally richer than IQL-generated data where the policy
+consistently chooses similar actions.
+
+**Process health (run-002)**: 132/132 tests green; unserved energy = 0 across
+all 50 rollouts; 0 non-finite reward values in `iql_with_reward.parquet`.
 
 ---
 

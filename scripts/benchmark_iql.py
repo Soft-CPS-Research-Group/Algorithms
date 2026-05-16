@@ -21,14 +21,16 @@ Usage
     .venv/bin/python -m scripts.benchmark_iql \\
         --iql-root runs/offline_iql/run-001 \\
         --bc-root runs/offline_bc/run-001 \\
-        --output docs/offline_rl/iql_vs_rbc_benchmark.md \\
+        --run-id iql_run001 \\
+        --output docs/offline_rl/benchmarks.md \\
         --smoke
 
     # Full
     .venv/bin/python -m scripts.benchmark_iql \\
         --iql-root runs/offline_iql/run-001 \\
         --bc-root runs/offline_bc/run-001 \\
-        --output docs/offline_rl/iql_vs_rbc_benchmark.md
+        --run-id iql_run001 \\
+        --output docs/offline_rl/benchmarks.md
 """
 
 from __future__ import annotations
@@ -335,8 +337,16 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        default="docs/offline_rl/iql_vs_rbc_benchmark.md",
+        default="docs/offline_rl/benchmarks.md",
         help="Output markdown report path.",
+    )
+    parser.add_argument(
+        "--run-id",
+        default="iql_run001",
+        help=(
+            "Identifier for this IQL run (e.g. iql_run001). Raw KPI CSVs are "
+            "written to datasets/offline_rl/benchmarks/<run-id>/."
+        ),
     )
     parser.add_argument(
         "--env-seeds", default=",".join(str(s) for s in DEFAULT_EVAL_SEEDS),
@@ -417,7 +427,7 @@ def main() -> int:
     output_path.write_text(md, encoding="utf-8")
     print(f"\n[ok] Report written to {output_path}")
 
-    raw_dir = output_path.parent / "iql_vs_rbc_raw"
+    raw_dir = REPO_ROOT / "datasets" / "offline_rl" / "benchmarks" / args.run_id
     raw_dir.mkdir(exist_ok=True)
     payload = {
         "dataset": DATASET_SCHEMA,
