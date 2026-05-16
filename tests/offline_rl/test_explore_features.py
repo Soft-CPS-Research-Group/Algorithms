@@ -65,3 +65,9 @@ def test_section_feature_distributions_creates_figure(sample_df, tmp_path):
     assert (tmp_path / "fig3_feature_distributions.png").exists()
     assert "fig3" in fig_path
     assert "distribution" in md.lower()
+
+def test_section_correlation_creates_figure(sample_df, tmp_path):
+    from scripts.explore_features import _section_correlation
+    fig_path, md = _section_correlation(sample_df, tmp_path)
+    assert (tmp_path / "fig4_correlation_matrix.png").exists()
+    assert "correlation" in md.lower()

@@ -168,6 +168,43 @@ KDE plots grouped by feature category. `obs_electrical_storage_soc` is expected 
     return str(fig_path), md
 
 
+def _section_correlation(df: pd.DataFrame, figures_dir: Path) -> tuple[str, str]:
+    """Spearman correlation heatmap of observation features (varying only)."""
+    obs_cols = [c for c in df.columns if c.startswith("obs_")]
+    varying = [c for c in obs_cols if df[c].var() > 1e-9]
+    corr = df[varying].corr(method="spearman")
+
+    labels = [c.replace("obs_", "") for c in varying]
+    n = len(labels)
+    fig, ax = plt.subplots(figsize=(max(10, n * 0.45), max(8, n * 0.45)))
+    im = ax.imshow(corr.values, cmap="coolwarm", vmin=-1, vmax=1, aspect="auto")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(labels, rotation=90, fontsize=7)
+    ax.set_yticklabels(labels, fontsize=7)
+    ax.set_title("Spearman correlation — observation features")
+    fig.tight_layout()
+    fig_path = figures_dir / "fig4_correlation_matrix.png"
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    dropped = set(obs_cols) - set(varying)
+    drop_note = (
+        f"Near-constant features dropped before correlation: {', '.join(f'`{c}`' for c in sorted(dropped))}."
+        if dropped
+        else "No near-constant features dropped."
+    )
+
+    md = f"""## 5. Correlation structure
+
+![Correlation matrix](figures/fig4_correlation_matrix.png)
+
+Spearman correlation heatmap of all varying observation features. {drop_note} High-correlation clusters (|ρ| > 0.9) indicate redundant features — typically price forecast triplets and temperature forecast triplets. These can be represented by the current-step value without significant information loss.
+"""
+    return str(fig_path), md
+
+
 def main() -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
