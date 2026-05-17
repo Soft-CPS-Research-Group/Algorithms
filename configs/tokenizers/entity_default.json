@@ -44,9 +44,11 @@
       "feature_patterns": [
         "^district__month$",
         "^district__day_type$",
-        "^district__hour$"
+        "^district__hour$",
+        "^district__minutes$",
+        "^district__seconds$"
       ],
-      "input_dim_fallback": 3
+      "input_dim_fallback": 5
     },
     "district_weather_current": {
       "entity_table": "district",
@@ -171,9 +173,10 @@
       "feature_patterns": [
         "^active_chargers_count$",
         "^active_storages_count$",
-        "^active_pvs_count$"
+        "^active_pvs_count$",
+        "^active_deferrable_appliances_count$"
       ],
-      "input_dim_fallback": 3
+      "input_dim_fallback": 4
     },
 
     "pv": {

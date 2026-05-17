@@ -21,8 +21,8 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TEMPLATE = REPO_ROOT / "configs/templates/transformer_ppo_entity_dynamic.yaml"
-DATASET = REPO_ROOT / "datasets/citylearn_three_phase_dynamic_assets_only_demo/schema.json"
+TEMPLATE = REPO_ROOT / "configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml"
+DATASET = REPO_ROOT / "datasets/citylearn_three_phase_dynamic_assets_only_demo_15s_parquet/schema.json"
 
 pytestmark = pytest.mark.slow
 
