@@ -108,6 +108,17 @@ class _DummyWrapper:
         }
 
 
+class _DummyEncodedWrapper(_DummyWrapper):
+    def __init__(self, env, config, job_id, progress_path):
+        super().__init__(env, config, job_id, progress_path)
+        self.observation_space = [type("Space", (), {"low": [0.0, 0.0]})()]
+        self.observation_names = [["feat_1", "feat_2"]]
+
+    def get_encoded_observations(self, index, observations):
+        _ = index, observations
+        return [0.0, 0.0, 0.0]
+
+
 class _DummyWrapperWithLocalMetrics(_DummyWrapper):
     def __init__(self, env, config, job_id, progress_path):
         super().__init__(env, config, job_id, progress_path)
@@ -420,6 +431,47 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     # Input config file must remain unchanged; resolved values are written separately.
     unchanged_input = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert unchanged_input == config
+
+
+def test_run_experiment_uses_encoded_observation_dimensions_for_maddpg(monkeypatch, tmp_path):
+    config = _build_enabled_config(artifact_profile="minimal")
+    config["tracking"]["mlflow_enabled"] = False
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    monkeypatch.setattr(runner, "validate_config", lambda raw: _DummyConfigModel(raw))
+    monkeypatch.setattr(runner, "start_mlflow_run", lambda config: None)
+    monkeypatch.setattr(runner, "end_mlflow_run", lambda: None)
+    monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
+    monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
+    monkeypatch.setattr(runner, "Wrapper", _DummyEncodedWrapper)
+    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+
+    runner.run_experiment(str(config_path), "job-encoded-dims", tmp_path)
+
+    resolved_config = yaml.safe_load(
+        (tmp_path / "jobs" / "job-encoded-dims" / "config.resolved.yaml").read_text(encoding="utf-8")
+    )
+    manifest = json.loads(
+        (tmp_path / "jobs" / "job-encoded-dims" / "bundle" / "artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    assert resolved_config["topology"]["observation_dimensions"] == [3]
+    assert manifest["topology"]["observation_dimensions"] == [3]
+
+
+def test_resolve_citylearn_schema_input_prefers_local_schema_directory(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    schema_path = dataset_dir / "schema.json"
+    schema_path.write_text(
+        json.dumps({"root_directory": "data/datasets/from-other-repo", "buildings": {}}),
+        encoding="utf-8",
+    )
+
+    schema_input = runner._resolve_citylearn_schema_input(str(schema_path))
+
+    assert schema_input["root_directory"] == str(dataset_dir.resolve())
 
 
 def test_run_experiment_refreshes_topology_after_dynamic_changes(monkeypatch, tmp_path):

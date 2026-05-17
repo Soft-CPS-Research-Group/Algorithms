@@ -15,7 +15,7 @@ except ImportError:
 class Actor(nn.Module):
     """Actor (Policy) Model."""
 
-    def __init__(self, state_size, action_size, seed, fc_units=[256, 128]):
+    def __init__(self, state_size, action_size, seed, fc_units=None):
         """Initialize parameters and build model.
         Params
         ======
@@ -25,6 +25,7 @@ class Actor(nn.Module):
             fc_units (list): List of node counts in the hidden layers.
         """
         super(Actor, self).__init__()
+        fc_units = fc_units or [256, 128]
         self.seed = torch.manual_seed(seed)
 
         # Input layer
@@ -39,6 +40,14 @@ class Actor(nn.Module):
 
         # ModuleList to register the layers with PyTorch
         self.fc_layers = nn.ModuleList(self.fc_layers)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.fc_layers[:-1]:
+            nn.init.kaiming_uniform_(layer.weight, nonlinearity="relu")
+            nn.init.zeros_(layer.bias)
+        nn.init.uniform_(self.fc_layers[-1].weight, -3e-3, 3e-3)
+        nn.init.uniform_(self.fc_layers[-1].bias, -3e-3, 3e-3)
 
     def forward(self, state):
         """Build an actor (policy) network that maps states -> actions."""
@@ -51,7 +60,7 @@ class Actor(nn.Module):
 class Critic(nn.Module):
     """Critic (Value) Model."""
 
-    def __init__(self, state_size, action_size, seed, fc_units=[256, 128]):
+    def __init__(self, state_size, action_size, seed, fc_units=None):
         """Initialize parameters and build model.
         Params
         ======
@@ -61,6 +70,7 @@ class Critic(nn.Module):
             fc_units (list): List of node counts in the hidden layers.
         """
         super(Critic, self).__init__()
+        fc_units = fc_units or [256, 128]
         self.seed = torch.manual_seed(seed)
         self.fc_layers = nn.ModuleList()
         input_dim = state_size + action_size
@@ -68,6 +78,14 @@ class Critic(nn.Module):
             self.fc_layers.append(nn.Linear(input_dim, hidden_dim))
             input_dim = hidden_dim
         self.q_out = nn.Linear(input_dim, 1)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.fc_layers:
+            nn.init.kaiming_uniform_(layer.weight, nonlinearity="relu")
+            nn.init.zeros_(layer.bias)
+        nn.init.uniform_(self.q_out.weight, -3e-3, 3e-3)
+        nn.init.uniform_(self.q_out.bias, -3e-3, 3e-3)
 
     def forward(self, state, action):
         """Build a critic (value) network that maps (state, action) pairs -> Q-values."""

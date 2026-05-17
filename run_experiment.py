@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import mlflow
+import numpy as np
 import yaml
 from loguru import logger
 from pydantic import ValidationError
@@ -127,11 +128,53 @@ def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
         return dataset_path_value
 
     if isinstance(payload, dict):
-        if payload.get("root_directory") in (None, ""):
-            payload["root_directory"] = str(candidate.resolve().parent)
+        # A local schema must resolve sibling CSV/Parquet files from its own
+        # directory. Copied datasets can carry a root_directory from another
+        # repository, so local paths intentionally take precedence here.
+        payload["root_directory"] = str(candidate.resolve().parent)
         return payload
 
     return dataset_path_value
+
+
+def _resolve_agent_observation_dimensions(wrapper: Any, algorithm_name: Optional[str]) -> list[int]:
+    """Resolve the observation dimensions seen by the agent, after preprocessing.
+
+    The wrapper owns preprocessing, but MADDPG builds networks before the first
+    rollout. For MADDPG, use the encoded observation shape exposed by the
+    wrapper's encoder method without changing wrapper behavior.
+    """
+    fallback = list(getattr(wrapper, "observation_dimension", []) or [])
+    if str(algorithm_name or "").strip() != "MADDPG":
+        return fallback
+
+    get_encoded = getattr(wrapper, "get_encoded_observations", None)
+    if not callable(get_encoded):
+        return fallback
+
+    observation_space = list(getattr(wrapper, "observation_space", []) or [])
+    observation_names = list(getattr(wrapper, "observation_names", []) or [])
+    dimensions: list[int] = []
+
+    try:
+        for index, space in enumerate(observation_space):
+            if hasattr(space, "low"):
+                sample = np.asarray(space.low, dtype=np.float64).reshape(-1)
+            elif index < len(observation_names):
+                sample = np.zeros(len(observation_names[index]), dtype=np.float64)
+            else:
+                sample = np.array([], dtype=np.float64)
+
+            encoded = np.asarray(get_encoded(index, sample), dtype=np.float64).reshape(-1)
+            dimensions.append(int(encoded.shape[0]))
+    except Exception as exc:
+        logger.warning(
+            "Could not resolve encoded observation dimensions for MADDPG; falling back to raw dimensions: {}",
+            exc,
+        )
+        return fallback
+
+    return dimensions if dimensions else fallback
 
 
 def _validate_dynamic_entity_schema_input(
@@ -584,7 +627,11 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         )
 
         # Populate derived dimensions required by MADDPG.
-        set_default_config(config, ["topology", "observation_dimensions"], wrapper.observation_dimension)
+        set_default_config(
+            config,
+            ["topology", "observation_dimensions"],
+            _resolve_agent_observation_dimensions(wrapper, algorithm_name),
+        )
         set_default_config(config, ["topology", "action_dimensions"], wrapper.action_dimension)
         set_default_config(config, ["topology", "num_agents"], len(wrapper.action_space))
         logger.debug(
@@ -692,7 +739,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         # Dynamic entity mode can change agent cardinality at runtime.
         # Persist final topology before exporting artifacts/manifest.
         final_topology = config.setdefault("topology", {})
-        final_topology["observation_dimensions"] = wrapper.observation_dimension
+        final_topology["observation_dimensions"] = _resolve_agent_observation_dimensions(wrapper, algorithm_name)
         final_topology["action_dimensions"] = wrapper.action_dimension
         final_topology["num_agents"] = len(wrapper.action_space)
 

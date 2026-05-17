@@ -1,6 +1,6 @@
 {
   "random_seed": 2022,
-  "root_directory": null,
+  "root_directory": "./datasets/citylearn_three_phase_dynamic_topology_demo",
   "interface": "entity",
   "central_agent": false,
   "simulation_start_time_step": 0,
@@ -189,6 +189,74 @@
     "incoming_electric_vehicle_at_charger_estimated_arrival_time": {
       "active": true,
       "shared_in_central_agent": true
+    },
+    "deferrable_appliance_pending": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_running": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_can_start": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_deadline_missed": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_earliest_start_time_step": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_latest_start_time_step": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_deadline_time_step": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_hours_until_latest_start": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_hours_until_deadline": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_slack_steps": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_slack_ratio": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_urgency_ratio": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_cycle_duration_steps": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_cycle_energy_kwh": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_remaining_energy_kwh": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_current_step_energy_kwh": {
+      "active": true,
+      "shared_in_central_agent": true
+    },
+    "deferrable_appliance_priority": {
+      "active": true,
+      "shared_in_central_agent": true
     }
   },
   "actions": {
@@ -205,6 +273,9 @@
       "active": true
     },
     "electric_vehicle_storage": {
+      "active": true
+    },
+    "deferrable_appliance": {
       "active": true
     }
   },
@@ -379,7 +450,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 12.0
+          "nominal_power": 12.0,
+          "generation_mode": "absolute"
         }
       },
       "chargers": {
@@ -396,6 +468,14 @@
             "max_discharging_power": 7.2,
             "min_discharging_power": 0.0
           }
+        }
+      },
+      "deferrable_appliances": {
+        "deferrable_appliance_1": {
+          "type": "citylearn.energy_model.DeferrableAppliance",
+          "autosize": false,
+          "cycle_profiles_file": "deferrable_appliance_1_cycle_profiles.csv",
+          "flexibility_schedule_file": "deferrable_appliance_1_flexibility_schedule.csv"
         }
       }
     },
@@ -422,7 +502,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 4.0
+          "nominal_power": 4.0,
+          "generation_mode": "absolute"
         }
       }
     },
@@ -438,7 +519,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 4.0
+          "nominal_power": 4.0,
+          "generation_mode": "absolute"
         }
       }
     },
@@ -465,7 +547,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 8.0
+          "nominal_power": 8.0,
+          "generation_mode": "absolute"
         }
       },
       "chargers": {
@@ -508,7 +591,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 10.0
+          "nominal_power": 10.0,
+          "generation_mode": "absolute"
         }
       },
       "chargers": {
@@ -571,7 +655,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 9.0
+          "nominal_power": 9.0,
+          "generation_mode": "absolute"
         }
       },
       "chargers": {
@@ -614,7 +699,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 4.0
+          "nominal_power": 4.0,
+          "generation_mode": "absolute"
         }
       }
     },
@@ -641,7 +727,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 4.0
+          "nominal_power": 4.0,
+          "generation_mode": "absolute"
         }
       }
     },
@@ -668,7 +755,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 6.0
+          "nominal_power": 6.0,
+          "generation_mode": "absolute"
         }
       },
       "chargers": {
@@ -711,7 +799,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 5.0
+          "nominal_power": 5.0,
+          "generation_mode": "absolute"
         }
       }
     },
@@ -738,7 +827,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 8.0
+          "nominal_power": 8.0,
+          "generation_mode": "absolute"
         }
       },
       "chargers": {
@@ -781,7 +871,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 5.0
+          "nominal_power": 5.0,
+          "generation_mode": "absolute"
         }
       }
     },
@@ -808,7 +899,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 5.0
+          "nominal_power": 5.0,
+          "generation_mode": "absolute"
         }
       }
     },
@@ -836,7 +928,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 15.0
+          "nominal_power": 15.0,
+          "generation_mode": "absolute"
         }
       },
       "chargers": {
@@ -925,7 +1018,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 5.0
+          "nominal_power": 5.0,
+          "generation_mode": "absolute"
         }
       }
     },
@@ -952,7 +1046,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 5.0
+          "nominal_power": 5.0,
+          "generation_mode": "absolute"
         }
       }
     },
@@ -979,7 +1074,8 @@
         "type": "citylearn.energy_model.PV",
         "autosize": false,
         "attributes": {
-          "nominal_power": 12.0
+          "nominal_power": 12.0,
+          "generation_mode": "absolute"
         }
       },
       "chargers": {
@@ -996,6 +1092,14 @@
             "max_discharging_power": 7.2,
             "min_discharging_power": 0.0
           }
+        }
+      },
+      "deferrable_appliances": {
+        "deferrable_appliance_1": {
+          "type": "citylearn.energy_model.DeferrableAppliance",
+          "autosize": false,
+          "cycle_profiles_file": "deferrable_appliance_18_1_cycle_profiles.csv",
+          "flexibility_schedule_file": "deferrable_appliance_18_1_flexibility_schedule.csv"
         }
       }
     }
@@ -1068,5 +1172,7 @@
       "operation": "remove_member",
       "target_member_id": "Building_18"
     }
-  ]
+  ],
+  "ev_departure_within_tolerance": 0.05,
+  "ev_departure_service_tolerance": 0.05
 }

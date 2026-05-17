@@ -139,22 +139,37 @@ class Normalize(Encoder):
     0.08333333333333333
     """
 
-    def __init__(self, x_min: Union[float, int], x_max: Union[float, int]):
+    def __init__(
+        self,
+        x_min: Union[float, int],
+        x_max: Union[float, int],
+        clip: bool = False,
+    ):
         super().__init__()
         self.x_min = x_min
         self.x_max = x_max
+        self.clip = clip
 
     def __mul__(self, x: Union[float, int]):
-        if self.x_min == self.x_max:
-            return 0
-        else:
-            return (x - self.x_min) / (self.x_max - self.x_min)
+        try:
+            value = float(x)
+            x_min = float(self.x_min)
+            x_max = float(self.x_max)
+        except (TypeError, ValueError):
+            return 0.0
+
+        if not np.isfinite(value):
+            return 0.0
+        if not np.isfinite(x_min) or not np.isfinite(x_max) or x_min == x_max:
+            return 0.0
+
+        normalized = (value - x_min) / (x_max - x_min)
+        if self.clip:
+            normalized = np.clip(normalized, 0.0, 1.0)
+        return normalized
 
     def __rmul__(self, x: Union[float, int]):
-        if self.x_min == self.x_max:
-            return 0
-        else:
-            return (x - self.x_min) / (self.x_max - self.x_min)
+        return self.__mul__(x)
 
 
 class RemoveFeature(Encoder):
@@ -197,9 +212,15 @@ class NormalizeWithMissing(Normalize):
         The value to return when the input is missing (default is 0.0).
     """
 
-    def __init__(self, x_min: Union[float, int], x_max: Union[float, int],
-                 missing_value: Union[float, int] = -0.1, default: Union[float, int] = 0.0):
-        super().__init__(x_min, x_max)
+    def __init__(
+        self,
+        x_min: Union[float, int],
+        x_max: Union[float, int],
+        missing_value: Union[float, int] = -0.1,
+        default: Union[float, int] = 0.0,
+        clip: bool = False,
+    ):
+        super().__init__(x_min, x_max, clip=clip)
         self.missing_value = missing_value
         self.default = default
 

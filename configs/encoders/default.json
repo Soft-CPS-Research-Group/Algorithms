@@ -1,10 +1,17 @@
 {
   "rules": [
     {
-      "match": {"equals": ["month", "hour"]},
+      "match": {"equals": ["month"]},
       "encoder": {
         "type": "PeriodicNormalization",
-        "params": {"x_max": "space_high"}
+        "params": {"x_max": 12}
+      }
+    },
+    {
+      "match": {"equals": ["hour"]},
+      "encoder": {
+        "type": "PeriodicNormalization",
+        "params": {"x_max": 24}
       }
     },
     {
@@ -61,30 +68,16 @@
       }
     },
     {
-      "match": {
-        "equals": [
-          "outdoor_dry_bulb_temperature",
-          "outdoor_dry_bulb_temperature_predicted_6h",
-          "outdoor_dry_bulb_temperature_predicted_12h",
-          "outdoor_dry_bulb_temperature_predicted_24h",
-          "outdoor_relative_humidity",
-          "outdoor_relative_humidity_predicted_6h",
-          "outdoor_relative_humidity_predicted_12h",
-          "outdoor_relative_humidity_predicted_24h",
-          "diffuse_solar_irradiance",
-          "diffuse_solar_irradiance_predicted_6h",
-          "diffuse_solar_irradiance_predicted_12h",
-          "diffuse_solar_irradiance_predicted_24h"
-        ]
-      },
-      "encoder": {
-        "type": "RemoveFeature"
-      }
-    },
-    {
       "match": {"default": true},
       "encoder": {
-        "type": "NoNormalization"
+        "type": "NormalizeWithMissing",
+        "params": {
+          "x_min": "space_low",
+          "x_max": "space_high",
+          "missing_value": -1,
+          "default": 0.0,
+          "clip": true
+        }
       }
     }
   ]

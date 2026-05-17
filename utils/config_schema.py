@@ -68,6 +68,40 @@ class TrackingConfig(BaseModel):
         ge=1,
         description="Collect system metrics every N steps when enabled",
     )
+    action_diagnostics_enabled: bool = Field(
+        default=False,
+        description="Log compact action distribution diagnostics during rollouts",
+    )
+    action_diagnostics_detail: Literal["summary", "per_action"] = Field(
+        default="summary",
+        description="Action diagnostics detail level",
+    )
+    action_saturation_tolerance: float = Field(
+        default=0.01,
+        ge=0,
+        description="Fraction of each action range considered near low/high bounds",
+    )
+    action_idle_tolerance: float = Field(
+        default=0.02,
+        ge=0,
+        description="Absolute tolerance around zero for action idle diagnostics",
+    )
+    training_diagnostics_enabled: bool = Field(
+        default=True,
+        description="Log MADDPG internal training diagnostics such as Q stats and gradient norms",
+    )
+    training_diagnostics_detail: Literal["summary", "per_agent"] = Field(
+        default="summary",
+        description="MADDPG training diagnostics detail level",
+    )
+    reward_diagnostics_enabled: bool = Field(
+        default=True,
+        description="Log reward function component diagnostics when the reward exposes them",
+    )
+    reward_diagnostics_detail: Literal["summary", "per_agent"] = Field(
+        default="summary",
+        description="Reward component diagnostics detail level",
+    )
 
 
 class CheckpointingConfig(BaseModel):
@@ -107,6 +141,7 @@ class WrapperRewardConfig(BaseModel):
 class EntityEncodingConfig(BaseModel):
     enabled: Optional[bool] = None
     normalization: Literal["minmax_space"] = "minmax_space"
+    profile: Literal["minmax_space", "maddpg_v1", "maddpg_v2_compact"] = "minmax_space"
     clip: bool = True
 
 
@@ -201,7 +236,7 @@ class ReplayBufferConfig(BaseModel):
 
 class ExplorationParams(BaseModel):
     strategy: str
-    params: Dict[str, float]
+    params: Dict[str, Any]
 
 
 class AlgorithmHyperparameters(BaseModel):
@@ -209,6 +244,7 @@ class AlgorithmHyperparameters(BaseModel):
 
 
 class RuleBasedHyperparameters(BaseModel):
+    seed: Optional[int] = None
     pv_charge_threshold: float = Field(default=0.0, ge=0)
     flexibility_hours: float = Field(default=3.0, ge=0)
     emergency_hours: float = Field(default=1.0, ge=0)
@@ -219,6 +255,39 @@ class RuleBasedHyperparameters(BaseModel):
     energy_epsilon: float = Field(default=1e-3, ge=0)
     default_capacity_kwh: float = Field(default=60.0, ge=0)
     non_flexible_chargers: List[str] = Field(default_factory=list)
+    control_storage: bool = True
+    control_evs: bool = True
+    control_deferrables: bool = True
+    allow_v2g: bool = False
+    deferrable_start_action: float = Field(default=1.0, ge=0)
+    deferrable_urgency_threshold: float = Field(default=0.75, ge=0)
+    deferrable_slack_threshold: float = Field(default=0.25, ge=0)
+    deferrable_priority_threshold: float = Field(default=0.5, ge=0)
+    storage_min_soc: float = Field(default=0.20, ge=0)
+    storage_max_soc: float = Field(default=0.90, ge=0)
+    storage_target_soc: float = Field(default=0.50, ge=0)
+    storage_charge_rate: float = Field(default=0.35, ge=0)
+    storage_discharge_rate: float = Field(default=0.35, ge=0)
+    price_charge_rate: float = Field(default=0.60, ge=0)
+    price_discharge_rate: float = Field(default=0.45, ge=0)
+    pv_charge_rate: float = Field(default=0.75, ge=0)
+    peak_discharge_rate: float = Field(default=0.65, ge=0)
+    ev_normal_charge_rate: float = Field(default=1.0, ge=0)
+    ev_normal_target_soc: float = Field(default=1.0, ge=0)
+    ev_price_charge_rate: float = Field(default=0.70, ge=0)
+    ev_pv_charge_rate: float = Field(default=0.85, ge=0)
+    ev_v2g_discharge_rate: float = Field(default=0.30, ge=0)
+    pv_surplus_threshold_kw: float = Field(default=0.25, ge=0)
+    import_peak_threshold_kw: float = Field(default=7.0, ge=0)
+    low_headroom_threshold_kw: float = Field(default=2.0, ge=0)
+    ev_v2g_reserve_soc: float = Field(default=0.15, ge=0)
+    ev_service_margin_rate: float = Field(default=0.05, ge=0)
+    ev_service_floor_rate: float = Field(default=0.25, ge=0)
+    ev_service_lookahead_hours: float = Field(default=4.0, ge=0)
+    ev_service_target_soc: float = Field(default=0.0, ge=0)
+    ev_deadline_buffer_hours: float = Field(default=0.25, ge=0)
+    ev_v2g_min_departure_hours: float = Field(default=2.0, ge=0)
+    ev_v2g_service_margin_soc: float = Field(default=0.05, ge=0)
 
 
 class TopologyConfig(BaseModel):
@@ -237,7 +306,14 @@ class MADDPGAlgorithmConfig(BaseModel):
 
 
 class RuleBasedAlgorithmConfig(BaseModel):
-    name: Literal["RuleBasedPolicy"]
+    name: Literal[
+        "RuleBasedPolicy",
+        "RandomPolicy",
+        "NormalPolicy",
+        "NormalNoBatteryPolicy",
+        "RBCBasicPolicy",
+        "RBCSmartPolicy",
+    ]
     hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None

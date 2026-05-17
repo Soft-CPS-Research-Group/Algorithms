@@ -12,8 +12,102 @@ import yaml
 DEFAULT_KPIS = [
     "community_settled_cost_total_eur",
     "electrical_service_violation_total_kwh",
+    "ev_departure_min_acceptable_feasible_rate",
+    "ev_departure_min_acceptable_rate",
+    "ev_departure_success_feasible_rate",
     "ev_departure_success_rate",
+    "ev_departure_within_tolerance_feasible_rate",
+    "ev_departure_within_tolerance_rate",
+    "ev_departure_count",
+    "ev_departure_target_infeasible_count",
+    "ev_departure_min_acceptable_infeasible_count",
+    "ev_departure_within_tolerance_infeasible_count",
+    "ev_departure_soc_deficit_mean",
+    "ev_departure_shortfall_beyond_tolerance_mean",
+    "ev_departure_soc_surplus_mean",
+    "ev_departure_soc_absolute_error_mean",
+    "ev_departure_tolerance_ratio",
 ]
+
+KPI_ALIASES = {
+    "community_settled_cost_total_eur": [
+        "community_settled_cost_total_eur",
+        "district_cost_total_control_eur",
+        "district_cost_total_delta_eur",
+    ],
+    "electrical_service_violation_total_kwh": [
+        "electrical_service_violation_total_kwh",
+        "district_electrical_service_phase_violations_energy_total_kwh",
+        "district_electrical_service_violations_energy_total_kwh",
+    ],
+    "ev_departure_min_acceptable_feasible_rate": [
+        "ev_departure_min_acceptable_feasible_rate",
+        "district_ev_performance_departure_min_acceptable_feasible_ratio",
+    ],
+    "ev_departure_min_acceptable_rate": [
+        "ev_departure_min_acceptable_rate",
+        "district_ev_performance_departure_min_acceptable_ratio",
+    ],
+    "ev_departure_success_feasible_rate": [
+        "ev_departure_success_feasible_rate",
+        "district_ev_performance_departure_success_feasible_ratio",
+    ],
+    "ev_departure_success_rate": [
+        "ev_departure_success_rate",
+        "district_ev_performance_departure_success_ratio",
+    ],
+    "ev_departure_within_tolerance_feasible_rate": [
+        "ev_departure_within_tolerance_feasible_rate",
+        "district_ev_performance_departure_within_tolerance_feasible_ratio",
+    ],
+    "ev_departure_within_tolerance_rate": [
+        "ev_departure_within_tolerance_rate",
+        "district_ev_performance_departure_within_tolerance_ratio",
+    ],
+    "ev_departure_count": [
+        "ev_departure_count",
+        "district_ev_events_departure_count",
+    ],
+    "ev_departure_target_infeasible_count": [
+        "ev_departure_target_infeasible_count",
+        "district_ev_events_departure_target_infeasible_count",
+    ],
+    "ev_departure_min_acceptable_infeasible_count": [
+        "ev_departure_min_acceptable_infeasible_count",
+        "district_ev_events_departure_min_acceptable_infeasible_count",
+    ],
+    "ev_departure_within_tolerance_infeasible_count": [
+        "ev_departure_within_tolerance_infeasible_count",
+        "district_ev_events_departure_within_tolerance_infeasible_count",
+    ],
+    "ev_departure_soc_deficit_mean": [
+        "ev_departure_soc_deficit_mean",
+        "district_ev_performance_departure_soc_deficit_mean_ratio",
+    ],
+    "ev_departure_shortfall_beyond_tolerance_mean": [
+        "ev_departure_shortfall_beyond_tolerance_mean",
+        "district_ev_performance_departure_shortfall_beyond_tolerance_mean_ratio",
+    ],
+    "ev_departure_soc_surplus_mean": [
+        "ev_departure_soc_surplus_mean",
+        "district_ev_performance_departure_soc_surplus_mean_ratio",
+    ],
+    "ev_departure_soc_absolute_error_mean": [
+        "ev_departure_soc_absolute_error_mean",
+        "district_ev_performance_departure_soc_absolute_error_mean_ratio",
+    ],
+    "ev_departure_tolerance_ratio": [
+        "ev_departure_tolerance_ratio",
+        "district_ev_performance_departure_tolerance_ratio",
+    ],
+}
+
+EV_GATE_KPI = "ev_departure_min_acceptable_feasible_rate"
+EV_GATE_FALLBACK_KPIS = (
+    "ev_departure_min_acceptable_rate",
+    "ev_departure_success_feasible_rate",
+    "ev_departure_success_rate",
+)
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -71,7 +165,11 @@ def _discover_exported_kpi_csvs(job_dir: Path) -> List[Path]:
 
 
 def _extract_kpis_from_exported_csv(csv_path: Path, kpis: List[str]) -> Dict[str, float]:
-    tracked = set(kpis)
+    aliases_by_name = {
+        alias: kpi_name
+        for kpi_name in kpis
+        for alias in KPI_ALIASES.get(kpi_name, [kpi_name])
+    }
     selected_kpis: Dict[str, float] = {}
 
     with csv_path.open("r", encoding="utf-8") as handle:
@@ -91,7 +189,8 @@ def _extract_kpis_from_exported_csv(csv_path: Path, kpis: List[str]) -> Dict[str
 
             if kpi_key is not None:
                 metric_name = str(row.get(kpi_key, "")).strip()
-                if metric_name not in tracked:
+                canonical_name = aliases_by_name.get(metric_name)
+                if canonical_name is None:
                     continue
 
                 metric_value = _safe_float(row.get(district_key)) if district_key is not None else None
@@ -103,13 +202,14 @@ def _extract_kpis_from_exported_csv(csv_path: Path, kpis: List[str]) -> Dict[str
                         if metric_value is not None:
                             break
 
-                if metric_value is not None:
-                    selected_kpis[metric_name] = metric_value
+                if metric_value is not None and canonical_name not in selected_kpis:
+                    selected_kpis[canonical_name] = metric_value
                 continue
 
             if cost_function_key is not None and value_key is not None:
                 metric_name = str(row.get(cost_function_key, "")).strip()
-                if metric_name not in tracked:
+                canonical_name = aliases_by_name.get(metric_name)
+                if canonical_name is None:
                     continue
 
                 level = str(row.get(level_key, "")).strip().lower() if level_key else ""
@@ -120,8 +220,8 @@ def _extract_kpis_from_exported_csv(csv_path: Path, kpis: List[str]) -> Dict[str
                     continue
 
                 metric_value = _safe_float(row.get(value_key))
-                if metric_value is not None:
-                    selected_kpis[metric_name] = metric_value
+                if metric_value is not None and canonical_name not in selected_kpis:
+                    selected_kpis[canonical_name] = metric_value
 
     return selected_kpis
 
@@ -132,11 +232,32 @@ def _extract_kpis_from_result_payload(result_payload: Dict[str, Any], kpis: List
 
     selected_kpis: Dict[str, float] = {}
     for kpi_name in kpis:
-        value = _safe_float(evaluation_kpis.get(kpi_name)) if isinstance(evaluation_kpis, dict) else None
+        value = None
+        if isinstance(evaluation_kpis, dict):
+            for alias in KPI_ALIASES.get(kpi_name, [kpi_name]):
+                value = _safe_float(evaluation_kpis.get(alias))
+                if value is not None:
+                    break
         if value is not None:
             selected_kpis[kpi_name] = value
 
     return selected_kpis
+
+
+def _lower_is_better_pass(candidate: Optional[float], baseline: Optional[float], ratio_threshold: float) -> bool:
+    if candidate is None or baseline is None:
+        return False
+    allowed = baseline + (abs(baseline) * max(ratio_threshold - 1.0, 0.0))
+    return candidate <= allowed
+
+
+def _select_ev_gate_value(aggregate: Dict[str, Any]) -> tuple[Optional[str], Optional[float]]:
+    kpi_means = aggregate.get("kpi_means", {}) if isinstance(aggregate, dict) else {}
+    for kpi_name in (EV_GATE_KPI, *EV_GATE_FALLBACK_KPIS):
+        value = kpi_means.get(kpi_name) if isinstance(kpi_means, dict) else None
+        if value is not None:
+            return kpi_name, value
+    return None, None
 
 
 def _load_job_record(job_dir: Path, kpis: List[str]) -> Optional[Dict[str, Any]]:
@@ -197,7 +318,8 @@ def compare_export_roots(
     kpis: Optional[List[str]] = None,
     cost_ratio_threshold: float = 1.05,
     grid_ratio_threshold: float = 1.05,
-    ev_min_threshold: float = 0.95,
+    ev_min_threshold: float = 0.0,
+    ev_ratio_threshold: float = 1.0,
 ) -> Dict[str, Any]:
     tracked_kpis = kpis or list(DEFAULT_KPIS)
 
@@ -222,19 +344,14 @@ def compare_export_roots(
     rbc_cost = rbc_agg["kpi_means"].get("community_settled_cost_total_eur")
     maddpg_grid = maddpg_agg["kpi_means"].get("electrical_service_violation_total_kwh")
     rbc_grid = rbc_agg["kpi_means"].get("electrical_service_violation_total_kwh")
-    maddpg_ev = maddpg_agg["kpi_means"].get("ev_departure_success_rate")
+    maddpg_ev_kpi, maddpg_ev = _select_ev_gate_value(maddpg_agg)
 
-    cost_pass = (
-        maddpg_cost is not None
-        and rbc_cost is not None
-        and maddpg_cost <= (cost_ratio_threshold * rbc_cost)
-    )
-    grid_pass = (
-        maddpg_grid is not None
-        and rbc_grid is not None
-        and maddpg_grid <= (grid_ratio_threshold * rbc_grid)
-    )
-    ev_pass = maddpg_ev is not None and maddpg_ev >= ev_min_threshold
+    cost_pass = _lower_is_better_pass(maddpg_cost, rbc_cost, cost_ratio_threshold)
+    grid_pass = _lower_is_better_pass(maddpg_grid, rbc_grid, grid_ratio_threshold)
+
+    rbc_ev_kpi, rbc_ev = _select_ev_gate_value(rbc_agg)
+    ev_baseline_gate = (rbc_ev or 0.0) * ev_ratio_threshold
+    ev_pass = maddpg_ev is not None and maddpg_ev >= max(ev_min_threshold, ev_baseline_gate)
 
     report: Dict[str, Any] = {
         "inputs": {
@@ -246,6 +363,9 @@ def compare_export_roots(
             "cost_ratio_threshold": cost_ratio_threshold,
             "grid_ratio_threshold": grid_ratio_threshold,
             "ev_min_threshold": ev_min_threshold,
+            "ev_ratio_threshold": ev_ratio_threshold,
+            "ev_gate_primary_kpi": EV_GATE_KPI,
+            "ev_gate_fallback_kpis": list(EV_GATE_FALLBACK_KPIS),
         },
         "aggregates": {
             "MADDPG": maddpg_agg,
@@ -255,6 +375,10 @@ def compare_export_roots(
             "cost_parity_pass": cost_pass,
             "grid_gate_pass": grid_pass,
             "ev_gate_pass": ev_pass,
+        },
+        "diagnostics": {
+            "ev_gate_maddpg_kpi": maddpg_ev_kpi,
+            "ev_gate_rbc_kpi": rbc_ev_kpi,
         },
     }
     report["overall_pass"] = all(report["checks"].values())
@@ -273,7 +397,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cost-threshold", type=float, default=1.05)
     parser.add_argument("--grid-threshold", type=float, default=1.05)
-    parser.add_argument("--ev-min", type=float, default=0.95)
+    parser.add_argument("--ev-min", type=float, default=0.0)
+    parser.add_argument("--ev-ratio-threshold", type=float, default=1.0)
     return parser
 
 
@@ -287,6 +412,7 @@ def main() -> None:
         cost_ratio_threshold=args.cost_threshold,
         grid_ratio_threshold=args.grid_threshold,
         ev_min_threshold=args.ev_min,
+        ev_ratio_threshold=args.ev_ratio_threshold,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

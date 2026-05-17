@@ -44,6 +44,7 @@ def _build_checkpoint_payload():
         "actor_optimizer_state_dict_0": actor_optimizer.state_dict(),
         "critic_optimizer_state_dict_0": critic_optimizer.state_dict(),
         "replay_buffer": {"entries": 7},
+        "exploration_state": {"sigma": 0.123, "exploration_step": 42},
     }
 
 
@@ -59,6 +60,8 @@ def _build_agent_for_load() -> MADDPG:
     agent.fine_tune = False
     agent.reset_replay_buffer = False
     agent.freeze_pretrained_layers = False
+    agent.sigma = 0.9
+    agent.exploration_step = 0
     return agent
 
 
@@ -79,6 +82,8 @@ def test_maddpg_load_checkpoint_restores_weights_optimizers_and_replay(tmp_path)
     assert len(agent.actor_optimizers[0].state_dict()["state"]) > 0
     assert len(agent.critic_optimizers[0].state_dict()["state"]) > 0
     assert agent.replay_buffer.loaded_state == {"entries": 7}
+    assert agent.sigma == 0.123
+    assert agent.exploration_step == 42
 
 
 def test_maddpg_load_checkpoint_respects_fine_tune_and_freeze_flags(tmp_path):

@@ -7,7 +7,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import mlflow
 import numpy as np
@@ -26,6 +26,13 @@ class ChargerInfo:
     efficiency: float
     capacity: float
     ev_name: Optional[str] = None
+    phase_connection: Optional[str] = None
+
+
+@dataclass(slots=True)
+class StorageInfo:
+    nominal_power: float
+    phase_connection: Optional[str] = None
 
 
 class RuleBasedPolicy(BaseAgent):
@@ -52,16 +59,24 @@ class RuleBasedPolicy(BaseAgent):
         self.energy_epsilon: float = float(hyper.get("energy_epsilon", 1e-3))
         self.non_flexible_chargers: set[str] = set(hyper.get("non_flexible_chargers", []) or [])
         self.default_capacity: float = float(hyper.get("default_capacity_kwh", 60.0))
+        self.control_storage: bool = bool(hyper.get("control_storage", True))
+        self.control_evs: bool = bool(hyper.get("control_evs", True))
+        self.control_deferrables: bool = bool(hyper.get("control_deferrables", True))
+        self.deferrable_start_action: float = float(hyper.get("deferrable_start_action", 1.0))
+        self.deferrable_urgency_threshold: float = float(hyper.get("deferrable_urgency_threshold", 0.75))
+        self.deferrable_slack_threshold: float = float(hyper.get("deferrable_slack_threshold", 0.25))
+        self.deferrable_priority_threshold: float = float(hyper.get("deferrable_priority_threshold", 0.5))
 
         dataset_path = Path(config.get("simulator", {}).get("dataset_path", ""))
         self._dataset_path = dataset_path
-        self._dataset_info = self._load_dataset_info(dataset_path) if dataset_path.exists() else None
+        self._dataset_info = self._load_dataset_info(dataset_path) if dataset_path.is_file() else None
 
         self._obs_index: List[Dict[str, int]] = []
         self._action_labels: List[List[str]] = []
         self._action_bounds: List[Dict[str, List[float]]] = []
         self._agent_buildings: Dict[int, str] = {}
         self._ev_action_mapping: Dict[int, List[Optional[ChargerInfo]]] = {}
+        self._ev_action_position_mapping: Dict[int, Dict[int, Optional[ChargerInfo]]] = {}
 
         self.step_hours: float = 1.0
 
@@ -134,7 +149,16 @@ class RuleBasedPolicy(BaseAgent):
             for action_position, action_name in enumerate(action_names):
                 bounds = self._get_action_bounds(agent_idx, action_position)
 
-                if "electric_vehicle" in action_name:
+                if self.control_storage and self._is_storage_action_name(action_name):
+                    value = self._compute_storage_action(agent_idx, obs, obs_map, action_name, bounds)
+                    value = self._apply_storage_dynamic_headroom_limit(
+                        value,
+                        obs,
+                        obs_map,
+                        self._get_storage_info(agent_idx),
+                        bounds,
+                    )
+                elif "electric_vehicle" in action_name and self.control_evs:
                     charger_info = self._get_charger_info(agent_idx, action_position)
                     normalised = self._compute_ev_action(
                         agent_idx,
@@ -142,9 +166,19 @@ class RuleBasedPolicy(BaseAgent):
                         obs_map,
                         charger_info,
                         bounds,
+                        action_name,
                     )
                     high = bounds[1]
                     value = normalised * high if high > 1.0 else normalised
+                    value = self._apply_ev_dynamic_headroom_limit(
+                        value,
+                        obs,
+                        obs_map,
+                        charger_info,
+                        bounds,
+                    )
+                elif self.control_deferrables and self._is_deferrable_action_name(action_name, obs_map):
+                    value = self._compute_deferrable_action(obs, obs_map, action_name, bounds)
                 else:
                     value = 0.0
 
@@ -198,8 +232,51 @@ class RuleBasedPolicy(BaseAgent):
             "energy_epsilon": self.energy_epsilon,
             "non_flexible_chargers": sorted(self.non_flexible_chargers),
             "default_capacity_kwh": self.default_capacity,
+            "control_storage": self.control_storage,
+            "control_evs": self.control_evs,
+            "control_deferrables": self.control_deferrables,
+            "deferrable_start_action": self.deferrable_start_action,
+            "deferrable_urgency_threshold": self.deferrable_urgency_threshold,
+            "deferrable_slack_threshold": self.deferrable_slack_threshold,
+            "deferrable_priority_threshold": self.deferrable_priority_threshold,
             "step_hours": self.step_hours,
         }
+        for attr in (
+            "seed",
+            "storage_min_soc",
+            "storage_max_soc",
+            "storage_target_soc",
+            "storage_charge_rate",
+            "storage_discharge_rate",
+            "price_charge_rate",
+            "price_discharge_rate",
+            "pv_charge_rate",
+            "peak_discharge_rate",
+            "storage_price_charge_soc_ceiling",
+            "storage_price_discharge_soc_floor",
+            "storage_peak_discharge_soc_floor",
+            "normal_storage_discharge_import_threshold_kw",
+            "ev_normal_charge_rate",
+            "ev_normal_target_soc",
+            "ev_price_charge_rate",
+            "ev_pv_charge_rate",
+            "ev_v2g_discharge_rate",
+            "allow_v2g",
+            "pv_surplus_threshold_kw",
+            "import_peak_threshold_kw",
+            "low_headroom_threshold_kw",
+            "ev_v2g_reserve_soc",
+            "ev_service_margin_rate",
+            "ev_service_floor_rate",
+            "ev_service_lookahead_hours",
+            "ev_service_target_soc",
+            "ev_deadline_buffer_hours",
+            "ev_v2g_min_departure_hours",
+            "ev_v2g_service_margin_soc",
+            "deferrable_safety_margin_steps",
+        ):
+            if hasattr(self, attr):
+                hyperparameters[attr] = getattr(self, attr)
 
         export_root = Path(output_dir)
         export_root.mkdir(parents=True, exist_ok=True)
@@ -214,7 +291,7 @@ class RuleBasedPolicy(BaseAgent):
         for agent_index, action_names in enumerate(agent_action_labels):
             default_actions = {str(name): 0.0 for name in action_names}
             policy = {
-                "policy_type": "rule_based_ev",
+                "policy_type": self._policy_type(),
                 "version": 1,
                 "agent_index": agent_index,
                 "dataset_schema": str(self._dataset_path) if self._dataset_path else None,
@@ -259,6 +336,177 @@ class RuleBasedPolicy(BaseAgent):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+    def _policy_type(self) -> str:
+        if self.control_evs and self.control_deferrables:
+            return "rule_based_ev_deferrable"
+        if self.control_evs:
+            return "rule_based_ev_only"
+        if self.control_deferrables:
+            return "rule_based_deferrable_only"
+        return "zero_action"
+
+    @staticmethod
+    def _is_storage_action_name(action_name: str) -> bool:
+        return str(action_name or "") == "electrical_storage"
+
+    def _compute_storage_action(
+        self,
+        agent_idx: int,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        action_name: str,
+        bounds: Sequence[float],
+    ) -> float:
+        del agent_idx, obs, obs_map, action_name
+        low, high = bounds
+        return float(np.clip(0.0, low, high))
+
+    def _apply_ev_dynamic_headroom_limit(
+        self,
+        value: float,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        charger_info: Optional[ChargerInfo],
+        bounds: Sequence[float],
+    ) -> float:
+        if charger_info is None or not charger_info.phase_connection or value == 0.0:
+            return value
+
+        export = value < 0.0
+        available_kw = self._available_dynamic_headroom_kw(
+            obs,
+            obs_map,
+            charger_info.phase_connection,
+            export=export,
+        )
+        if available_kw is None or not math.isfinite(available_kw):
+            return value
+
+        available_kw = max(0.0, available_kw)
+        current_power_kw = self._current_charger_power_kw(obs, obs_map, charger_info)
+        low, high = bounds
+        if value > 0.0:
+            available_kw += max(0.0, current_power_kw)
+            power_scale = max(charger_info.max_power or 0.0, 1.0e-6)
+            limit = available_kw / power_scale if abs(high) <= 1.0 else available_kw
+            return min(value, max(0.0, limit))
+
+        available_kw += max(0.0, -current_power_kw)
+        power_scale = max(charger_info.max_discharge_power or charger_info.max_power or 0.0, 1.0e-6)
+        limit = available_kw / power_scale if abs(low) <= 1.0 else available_kw
+        return max(value, -max(0.0, limit))
+
+    def _apply_storage_dynamic_headroom_limit(
+        self,
+        value: float,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        storage_info: Optional[StorageInfo],
+        bounds: Sequence[float],
+    ) -> float:
+        if storage_info is None or not storage_info.phase_connection or value == 0.0:
+            return value
+
+        export = value < 0.0
+        available_kw = self._available_dynamic_headroom_kw(
+            obs,
+            obs_map,
+            storage_info.phase_connection,
+            export=export,
+        )
+        if available_kw is None or not math.isfinite(available_kw):
+            return value
+
+        available_kw = max(0.0, available_kw)
+        low, high = bounds
+        power_scale = max(storage_info.nominal_power, 1.0e-6)
+        if value > 0.0:
+            limit = available_kw / power_scale if abs(high) <= 1.0 else available_kw
+            return min(value, max(0.0, limit))
+
+        limit = available_kw / power_scale if abs(low) <= 1.0 else available_kw
+        return max(value, -max(0.0, limit))
+
+    def _available_dynamic_headroom_kw(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        phase_connection: Optional[str],
+        *,
+        export: bool,
+    ) -> Optional[float]:
+        candidates: List[float] = []
+        building_name = "charging_building_export_headroom_kw" if export else "charging_building_headroom_kw"
+        building_headroom = self._get_value(obs, obs_map, building_name, default=float("nan"))
+        if not math.isnan(building_headroom) and building_headroom >= 0.0:
+            candidates.append(building_headroom)
+
+        phases = self._phase_connection_to_phases(phase_connection)
+        phase_values: List[float] = []
+        suffix = "export_headroom_kw" if export else "headroom_kw"
+        for phase in phases:
+            phase_value = self._get_value(
+                obs,
+                obs_map,
+                f"charging_phase_{phase}_{suffix}",
+                default=float("nan"),
+            )
+            if not math.isnan(phase_value) and phase_value >= 0.0:
+                phase_values.append(phase_value)
+
+        if phase_values:
+            multiplier = float(len(phases)) if len(phases) > 1 else 1.0
+            candidates.append(min(phase_values) * multiplier)
+
+        if not candidates:
+            return None
+        return min(candidates)
+
+    def _current_charger_power_kw(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        charger_info: Optional[ChargerInfo],
+    ) -> float:
+        """Return the currently applied charger power from raw observations, when available."""
+        if charger_info is None or not charger_info.charger_id:
+            return 0.0
+
+        charger_id = str(charger_info.charger_id)
+        feature_order = ("applied_power_kw", "commanded_power_kw")
+        for feature in feature_order:
+            suffixes = (
+                f"/{charger_id}::{feature}",
+                f"{charger_id}::{feature}",
+                f"{charger_id}_{feature}",
+            )
+            for name in obs_map:
+                raw_name = str(name)
+                if any(raw_name.endswith(suffix) for suffix in suffixes):
+                    return self._get_value(obs, obs_map, raw_name, default=0.0)
+
+        return 0.0
+
+    def _get_storage_info(self, agent_idx: int) -> Optional[StorageInfo]:
+        if not self._dataset_info:
+            return None
+        building = self._agent_buildings.get(agent_idx)
+        return self._dataset_info.get("storage_info", {}).get(building)
+
+    @staticmethod
+    def _phase_connection_to_phases(phase_connection: Optional[str]) -> Tuple[str, ...]:
+        if not phase_connection:
+            return ()
+
+        raw = str(phase_connection).strip().upper().replace("-", "_").replace(" ", "_")
+        if raw in {"ALL_PHASES", "THREE_PHASE", "THREE_PHASES", "3_PHASE", "3_PHASES", "3PHASE", "BALANCED"}:
+            return ("L1", "L2", "L3")
+        if raw in {"L1", "L2", "L3"}:
+            return (raw,)
+
+        phases = tuple(phase for phase in ("L1", "L2", "L3") if phase in raw)
+        return phases
+
     def _serialise_charger_mapping(self) -> Dict[str, Any]:
         if not self._dataset_info:
             return {}
@@ -275,6 +523,7 @@ class RuleBasedPolicy(BaseAgent):
                     "efficiency": info.efficiency,
                     "capacity": info.capacity,
                     "ev_name": info.ev_name,
+                    "phase_connection": info.phase_connection,
                 }
                 for info in chargers
             ]
@@ -283,10 +532,14 @@ class RuleBasedPolicy(BaseAgent):
 
     def _build_ev_action_mapping(self, action_names: List[List[str]]) -> None:
         self._ev_action_mapping.clear()
+        self._ev_action_position_mapping.clear()
         if not self._dataset_info:
             for agent_idx, names in enumerate(action_names):
                 ev_slots = [name for name in names if "electric_vehicle" in name]
                 self._ev_action_mapping[agent_idx] = [None for _ in ev_slots]
+                self._ev_action_position_mapping[agent_idx] = {
+                    pos: None for pos, name in enumerate(names) if "electric_vehicle" in name
+                }
             return
 
         building_chargers = self._dataset_info["charger_info"]
@@ -295,17 +548,28 @@ class RuleBasedPolicy(BaseAgent):
             available = building_chargers.get(building, [])
             available_sorted = sorted(available, key=lambda info: info.charger_id)
             mapping: List[Optional[ChargerInfo]] = []
-            ev_slots = [name for name in names if "electric_vehicle" in name]
-            for pos, _ in enumerate(ev_slots):
-                charger_info = available_sorted[pos] if pos < len(available_sorted) else None
+            position_mapping: Dict[int, Optional[ChargerInfo]] = {}
+            ev_slots = [
+                (position, name)
+                for position, name in enumerate(names)
+                if "electric_vehicle" in name
+            ]
+            for slot_index, (position, _) in enumerate(ev_slots):
+                charger_info = available_sorted[slot_index] if slot_index < len(available_sorted) else None
                 mapping.append(charger_info)
+                position_mapping[position] = charger_info
             self._ev_action_mapping[agent_idx] = mapping
+            self._ev_action_position_mapping[agent_idx] = position_mapping
 
     def _get_charger_info(
         self,
         agent_idx: int,
         ev_action_position: int,
     ) -> Optional[ChargerInfo]:
+        position_mapping = self._ev_action_position_mapping.get(agent_idx)
+        if position_mapping and ev_action_position in position_mapping:
+            return position_mapping[ev_action_position]
+
         mapping = self._ev_action_mapping.get(agent_idx)
         if not mapping or ev_action_position >= len(mapping):
             return None
@@ -332,7 +596,10 @@ class RuleBasedPolicy(BaseAgent):
         obs_map: Dict[str, int],
         charger_info: Optional[ChargerInfo],
         bounds: Sequence[float],
+        action_name: str = "",
     ) -> float:
+        charger_id = self._resolve_ev_charger_id(action_name, charger_info)
+        building_name = self._agent_buildings.get(agent_idx)
         if charger_info is None:
             capacity = self.default_capacity
             max_power = 7.4
@@ -340,49 +607,76 @@ class RuleBasedPolicy(BaseAgent):
             capacity = charger_info.capacity or self.default_capacity
             max_power = charger_info.max_power or 7.4
 
-        current_soc = self._get_value(obs, obs_map, "electric_vehicle_soc", default=0.0)
-        required_soc = self._get_value(
+        capacity = self._get_ev_value(
             obs,
             obs_map,
-            "electric_vehicle_required_soc_departure",
+            charger_id=charger_id,
+            building_name=building_name,
+            feature="battery_capacity",
+            generic_names=["connected_electric_vehicle_at_charger_battery_capacity"],
+            default=capacity,
+        )
+
+        current_soc = self._get_ev_value(
+            obs,
+            obs_map,
+            charger_id=charger_id,
+            building_name=building_name,
+            feature="soc",
+            generic_names=["electric_vehicle_soc", "connected_electric_vehicle_at_charger_soc"],
+            default=0.0,
+        )
+        required_soc = self._get_ev_value(
+            obs,
+            obs_map,
+            charger_id=charger_id,
+            building_name=building_name,
+            feature="required_soc_departure",
+            generic_names=[
+                "electric_vehicle_required_soc_departure",
+                "connected_electric_vehicle_at_charger_required_soc_departure",
+            ],
             default=current_soc,
         )
-        charger_state = self._get_value(obs, obs_map, "electric_vehicle_charger_state", default=0.0)
+        charger_state = self._get_ev_value(
+            obs,
+            obs_map,
+            charger_id=charger_id,
+            building_name=building_name,
+            feature="connected_state",
+            generic_names=[
+                "electric_vehicle_charger_state",
+                "electric_vehicle_charger_connected_state",
+            ],
+            default=0.0,
+        )
 
         if charger_state <= 0.0:
             return 0.0
 
-        soc_gap_pct = max(0.0, required_soc - current_soc)
-        energy_needed = (soc_gap_pct / 100.0) * capacity
+        soc_gap_fraction = self._soc_gap_fraction(current_soc, required_soc)
+        energy_needed = soc_gap_fraction * capacity
         if energy_needed <= self.energy_epsilon:
             return 0.0
 
-        hour = self._get_value(obs, obs_map, "hour", default=0.0)
-        minute = self._get_value(obs, obs_map, "minute", default=0.0)
-        current_time = (hour % 24.0) + minute / 60.0
-
-        departure_time = self._get_value(
+        time_to_departure = self._get_ev_departure_hours(
             obs,
             obs_map,
-            "electric_vehicle_departure_time",
-            default=current_time + self.flexibility_hours,
+            charger_id=charger_id,
+            building_name=building_name,
+            default=self.flexibility_hours,
         )
-        departure_time = departure_time % 24.0
-        time_to_departure = departure_time - current_time
-        if time_to_departure <= 0:
-            time_to_departure += 24.0
-
         time_to_departure = max(time_to_departure, self.step_hours)
 
         flex_flag = self._get_value(obs, obs_map, "electric_vehicle_is_flexible", default=1.0)
         is_flexible = flex_flag > 0.5 and (not charger_info or charger_info.charger_id not in self.non_flexible_chargers)
 
-        solar_generation = max(
-            0.0,
-            self._get_value(obs, obs_map, "solar_generation", default=0.0),
-        )
-        if solar_generation == 0.0:
-            solar_generation = max(0.0, self._get_value(obs, obs_map, "electricity_generation", default=0.0))
+        solar_generation = self._get_value(obs, obs_map, "pv_power_kw", default=float("nan"))
+        if math.isnan(solar_generation):
+            solar_generation = self._get_value(obs, obs_map, "solar_generation", default=float("nan"))
+        if math.isnan(solar_generation):
+            solar_generation = self._get_value(obs, obs_map, "electricity_generation", default=0.0)
+        solar_generation = max(0.0, solar_generation)
 
         required_power = energy_needed / time_to_departure
         if max_power <= 0:
@@ -405,6 +699,278 @@ class RuleBasedPolicy(BaseAgent):
         low, high = bounds
         normalised = float(np.clip(normalised, 0.0 if low <= 0 else low, 1.0 if high >= 1 else high))
         return normalised
+
+    @staticmethod
+    def _resolve_ev_charger_id(
+        action_name: str,
+        charger_info: Optional[ChargerInfo],
+    ) -> Optional[str]:
+        if charger_info is not None and charger_info.charger_id:
+            return charger_info.charger_id
+
+        raw = str(action_name or "")
+        prefix = "electric_vehicle_storage_"
+        if raw.startswith(prefix) and len(raw) > len(prefix):
+            return raw[len(prefix) :]
+        return None
+
+    def _get_ev_value(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        *,
+        charger_id: Optional[str],
+        building_name: Optional[str] = None,
+        feature: str,
+        generic_names: Sequence[str],
+        default: float = 0.0,
+    ) -> float:
+        candidates: List[str] = []
+        if charger_id and building_name:
+            entity_prefix = f"charger::{building_name}/{charger_id}::"
+            if feature == "connected_state":
+                candidates.append(f"{entity_prefix}connected_state")
+            elif feature == "incoming_state":
+                candidates.append(f"{entity_prefix}incoming_state")
+            elif feature == "soc":
+                candidates.extend(
+                    [
+                        f"{entity_prefix}connected_ev_soc",
+                        f"{entity_prefix}connected_ev::soc",
+                    ]
+                )
+            elif feature == "required_soc_departure":
+                candidates.append(f"{entity_prefix}connected_ev_required_soc_departure")
+            elif feature == "battery_capacity":
+                candidates.extend(
+                    [
+                        f"{entity_prefix}connected_ev_battery_capacity_kwh",
+                        f"{entity_prefix}connected_ev::battery_capacity_kwh",
+                    ]
+                )
+
+        if charger_id:
+            if feature in {"connected_state", "incoming_state"}:
+                candidates.append(f"electric_vehicle_charger_{charger_id}_{feature}")
+            else:
+                candidates.append(f"connected_electric_vehicle_at_charger_{charger_id}_{feature}")
+                candidates.append(f"incoming_electric_vehicle_at_charger_{charger_id}_{feature}")
+        candidates.extend(generic_names)
+
+        for name in candidates:
+            if name in obs_map:
+                return self._get_value(obs, obs_map, name, default=default)
+        return default
+
+    def _get_ev_departure_hours(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        *,
+        charger_id: Optional[str],
+        building_name: Optional[str],
+        default: float,
+    ) -> float:
+        if charger_id and building_name:
+            entity_prefix = f"charger::{building_name}/{charger_id}::"
+            hours_name = f"{entity_prefix}hours_until_departure"
+            if hours_name in obs_map:
+                value = self._get_value(obs, obs_map, hours_name, default=float("nan"))
+                if not math.isnan(value) and value >= 0.0:
+                    return value
+
+            steps_name = f"{entity_prefix}connected_ev_departure_time_step"
+            if steps_name in obs_map:
+                value = self._get_value(obs, obs_map, steps_name, default=float("nan"))
+                if not math.isnan(value) and value >= 0.0:
+                    return value * self.step_hours
+
+        if charger_id:
+            value = self._get_ev_value(
+                obs,
+                obs_map,
+                charger_id=charger_id,
+                building_name=building_name,
+                feature="departure_time",
+                generic_names=[],
+                default=float("nan"),
+            )
+            if not math.isnan(value):
+                return max(value, 0.0) * self.step_hours
+
+        hour = self._get_value(obs, obs_map, "hour", default=0.0)
+        minute = self._get_value(obs, obs_map, "minute", default=0.0)
+        current_time = (hour % 24.0) + minute / 60.0
+        departure_time = self._get_value(
+            obs,
+            obs_map,
+            "electric_vehicle_departure_time",
+            default=current_time + default,
+        )
+        if "hour" not in obs_map and ("district__hour" in obs_map or any(name.startswith("charger::") for name in obs_map)):
+            return max(departure_time, 0.0) * self.step_hours
+
+        departure_time = departure_time % 24.0
+        time_to_departure = departure_time - current_time
+        if time_to_departure <= 0:
+            time_to_departure += 24.0
+        return time_to_departure
+
+    @staticmethod
+    def _soc_gap_fraction(current_soc: float, required_soc: float) -> float:
+        gap = max(required_soc - current_soc, 0.0)
+        if max(abs(current_soc), abs(required_soc)) > 1.5:
+            gap /= 100.0
+        return gap
+
+    def _is_deferrable_action_name(self, action_name: str, obs_map: Dict[str, int]) -> bool:
+        name = str(action_name or "")
+        if name.startswith("deferrable_appliance") or name.endswith("::start"):
+            return True
+        if name == "start" and self._deferrable_observation_prefixes(obs_map):
+            return True
+        return False
+
+    def _compute_deferrable_action(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        action_name: str,
+        bounds: Sequence[float],
+    ) -> float:
+        prefix = self._resolve_deferrable_observation_prefix(action_name, obs_map)
+        if prefix is None:
+            return 0.0
+
+        pending = self._get_deferrable_value(obs, obs_map, prefix, "pending", default=0.0)
+        running = self._get_deferrable_value(obs, obs_map, prefix, "running", default=0.0)
+        can_start = self._get_deferrable_value(obs, obs_map, prefix, "can_start", default=0.0)
+        deadline_missed = self._get_deferrable_value(obs, obs_map, prefix, "deadline_missed", default=0.0)
+
+        if pending <= 0.5 or running > 0.5 or can_start <= 0.5 or deadline_missed > 0.5:
+            return 0.0
+
+        urgency = self._get_deferrable_value(obs, obs_map, prefix, "urgency_ratio", default=0.0)
+        slack = self._get_deferrable_value(obs, obs_map, prefix, "slack_ratio", default=1.0)
+        priority = self._get_deferrable_value(obs, obs_map, prefix, "priority", default=0.0)
+
+        should_start = (
+            urgency >= self.deferrable_urgency_threshold
+            or slack <= self.deferrable_slack_threshold
+            or priority >= self.deferrable_priority_threshold
+        )
+        if not should_start:
+            return 0.0
+
+        low, high = bounds
+        return float(np.clip(self.deferrable_start_action, low, high))
+
+    @staticmethod
+    def _deferrable_observation_prefixes(obs_map: Dict[str, int]) -> List[str]:
+        prefixes: List[str] = []
+        seen: set[str] = set()
+        for name in obs_map:
+            prefix = RuleBasedPolicy._parse_deferrable_observation_prefix(name)
+            if prefix is None or prefix in seen:
+                continue
+            seen.add(prefix)
+            prefixes.append(prefix)
+        return prefixes
+
+    @staticmethod
+    def _parse_deferrable_observation_prefix(name: str) -> Optional[str]:
+        raw = str(name or "")
+        for feature in ("pending", "can_start", "running", "deadline_missed"):
+            entity_suffix = f"::{feature}"
+            if raw.startswith("deferrable_appliance::") and raw.endswith(entity_suffix):
+                return raw[: -len(entity_suffix)]
+
+            flat_suffix = f"_{feature}"
+            if raw.startswith("deferrable_appliance_") and raw.endswith(flat_suffix):
+                return raw[: -len(flat_suffix)]
+
+        return None
+
+    def _resolve_deferrable_observation_prefix(
+        self,
+        action_name: str,
+        obs_map: Dict[str, int],
+    ) -> Optional[str]:
+        prefixes = self._deferrable_observation_prefixes(obs_map)
+        if not prefixes:
+            return None
+        if len(prefixes) == 1:
+            return prefixes[0]
+
+        action_tokens = self._deferrable_action_tokens(action_name)
+        for prefix in prefixes:
+            prefix_tokens = self._deferrable_prefix_tokens(prefix)
+            if action_tokens & prefix_tokens:
+                return prefix
+
+        return None
+
+    @staticmethod
+    def _deferrable_action_tokens(action_name: str) -> set[str]:
+        raw = str(action_name or "").strip()
+        tokens = {raw} if raw else set()
+
+        candidates = [raw]
+        if raw.startswith("deferrable_appliance::"):
+            candidates.append(raw[len("deferrable_appliance::") :])
+        if raw.startswith("deferrable_appliance_"):
+            candidates.append(raw[len("deferrable_appliance_") :])
+        if raw.startswith("start_"):
+            candidates.append(raw[len("start_") :])
+        if raw.endswith("::start"):
+            candidates.append(raw[: -len("::start")])
+
+        for candidate in list(candidates):
+            if not candidate:
+                continue
+            tokens.add(candidate)
+            if candidate.startswith("deferrable_appliance::"):
+                tokens.add(candidate[len("deferrable_appliance::") :])
+            if candidate.startswith("deferrable_appliance_"):
+                tokens.add(candidate[len("deferrable_appliance_") :])
+            if candidate.endswith("::start"):
+                tokens.add(candidate[: -len("::start")])
+            if "/" in candidate:
+                tokens.add(candidate.split("/", 1)[1])
+
+        return {token for token in tokens if token}
+
+    @staticmethod
+    def _deferrable_prefix_tokens(prefix: str) -> set[str]:
+        raw = str(prefix or "").strip()
+        tokens = {raw} if raw else set()
+
+        if raw.startswith("deferrable_appliance::"):
+            normalized = raw[len("deferrable_appliance::") :]
+            tokens.add(normalized)
+        elif raw.startswith("deferrable_appliance_"):
+            normalized = raw[len("deferrable_appliance_") :]
+            tokens.add(normalized)
+        else:
+            normalized = raw
+
+        if "/" in normalized:
+            tokens.add(normalized.split("/", 1)[1])
+
+        return {token for token in tokens if token}
+
+    def _get_deferrable_value(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        prefix: str,
+        feature: str,
+        default: float = 0.0,
+    ) -> float:
+        for name in (f"{prefix}::{feature}", f"{prefix}_{feature}"):
+            if name in obs_map:
+                return self._get_value(obs, obs_map, name, default=default)
+        return default
 
     def _get_value(
         self,
@@ -439,9 +1005,18 @@ class RuleBasedPolicy(BaseAgent):
         charger_info: Dict[str, List[ChargerInfo]] = {
             name: [] for name in building_order
         }
+        storage_info: Dict[str, StorageInfo] = {}
         charger_to_building: Dict[str, str] = {}
 
         for building_name, data in schema.get("buildings", {}).items():
+            storage_data = data.get("electrical_storage") or {}
+            storage_attrs = storage_data.get("attributes", {}) if isinstance(storage_data, dict) else {}
+            if storage_attrs:
+                storage_info[building_name] = StorageInfo(
+                    nominal_power=float(storage_attrs.get("nominal_power", storage_attrs.get("power", 0.0)) or 0.0),
+                    phase_connection=storage_attrs.get("phase_connection"),
+                )
+
             for charger_id, charger_data in (data.get("chargers", {}) or {}).items():
                 attributes = charger_data.get("attributes", {})
                 info = ChargerInfo(
@@ -452,6 +1027,7 @@ class RuleBasedPolicy(BaseAgent):
                     min_discharge_power=float(attributes.get("min_discharging_power", 0.0) or 0.0),
                     efficiency=float(attributes.get("efficiency", 1.0) or 1.0),
                     capacity=0.0,
+                    phase_connection=attributes.get("phase_connection"),
                 )
                 charger_info.setdefault(building_name, []).append(info)
                 charger_to_building[charger_id] = building_name
@@ -487,4 +1063,5 @@ class RuleBasedPolicy(BaseAgent):
         return {
             "building_order": building_order,
             "charger_info": charger_info,
+            "storage_info": storage_info,
         }

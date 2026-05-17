@@ -213,7 +213,7 @@ def test_validate_config_rejects_invalid_tracking_intervals(base_config):
 
 
 def test_validate_all_templates():
-    template_paths = sorted(Path("configs/templates").glob("*.yaml"))
+    template_paths = sorted(Path("configs/templates").rglob("*.yaml"))
     assert template_paths, "No template files found under configs/templates"
 
     for template_path in template_paths:
