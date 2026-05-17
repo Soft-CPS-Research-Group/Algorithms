@@ -1,6 +1,6 @@
 {
   "random_seed": 2022,
-  "root_directory": null,
+  "root_directory": "./datasets/citylearn_three_phase_electrical_service_demo",
   "interface": "entity",
   "central_agent": false,
   "simulation_start_time_step": 0,
@@ -444,11 +444,11 @@
         }
       },
       "deferrable_appliances": {
-        "washing_machine_1": {
+        "deferrable_appliance_1": {
           "type": "citylearn.energy_model.DeferrableAppliance",
           "autosize": false,
-          "cycle_profiles_file": "washing_machine_1_cycle_profiles.csv",
-          "flexibility_schedule_file": "washing_machine_1_flexibility_schedule.csv"
+          "cycle_profiles_file": "deferrable_appliance_1_cycle_profiles.csv",
+          "flexibility_schedule_file": "deferrable_appliance_1_flexibility_schedule.csv"
         }
       }
     },
@@ -1042,6 +1042,22 @@
           "generation_mode": "absolute"
         }
       }
+    }
+  },
+  "ev_departure_within_tolerance": 0.05,
+  "ev_departure_service_tolerance": 0.05,
+  "observation_bundles": {
+    "entity_core_electrical": {
+      "active": true
+    },
+    "entity_community_operational": {
+      "active": true
+    },
+    "entity_forecasts_existing": {
+      "active": true
+    },
+    "entity_temporal_derived": {
+      "active": true
     }
   }
 }

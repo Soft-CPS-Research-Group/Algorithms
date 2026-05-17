@@ -31,7 +31,7 @@ class EntityContractAdapter:
         self.normalization_enabled = bool(normalization_enabled)
         self.clip = bool(clip)
         self.encoding_profile = str(encoding_profile or "minmax_space").strip().lower()
-        if self.encoding_profile not in {"minmax_space", "maddpg_v1"}:
+        if self.encoding_profile not in {"minmax_space", "maddpg_v1", "maddpg_v2_compact"}:
             logger.warning(
                 "Unsupported entity encoding profile '{}'; falling back to 'minmax_space'.",
                 self.encoding_profile,
@@ -422,12 +422,20 @@ class EntityContractAdapter:
         if not self.normalization_enabled:
             return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
 
-        if self.encoding_profile == "maddpg_v1":
+        if self.encoding_profile in {"maddpg_v1", "maddpg_v2_compact"}:
             encoded, encoded_names = self._encode_maddpg_v1(
                 observation=values,
                 observation_names=observation_names,
                 observation_space=observation_space,
             )
+            if self.encoding_profile == "maddpg_v2_compact":
+                keep_indices = [
+                    idx
+                    for idx, name in enumerate(encoded_names)
+                    if self._is_maddpg_v2_compact_feature(name)
+                ]
+                encoded = encoded[keep_indices]
+                encoded_names = [encoded_names[idx] for idx in keep_indices]
             while len(self._latest_encoded_observation_names) <= agent_index:
                 self._latest_encoded_observation_names.append([])
             self._latest_encoded_observation_names[agent_index] = encoded_names
@@ -467,12 +475,15 @@ class EntityContractAdapter:
         return np.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
 
     def encoded_observation_names(self, observation_names: Sequence[Sequence[str]]) -> List[List[str]]:
-        if self.encoding_profile != "maddpg_v1":
+        if self.encoding_profile not in {"maddpg_v1", "maddpg_v2_compact"}:
             return [[str(name) for name in group] for group in observation_names]
 
         encoded_names: List[List[str]] = []
         for group in observation_names:
-            encoded_names.append(self._maddpg_v1_encoded_names(group))
+            names = self._maddpg_v1_encoded_names(group)
+            if self.encoding_profile == "maddpg_v2_compact":
+                names = [name for name in names if self._is_maddpg_v2_compact_feature(name)]
+            encoded_names.append(names)
         return encoded_names
 
     def _encode_maddpg_v1(
@@ -515,9 +526,14 @@ class EntityContractAdapter:
             # The profile keeps the simulator/entity EV observations instead.
             if name.startswith("electric_vehicle_"):
                 continue
+            if name in {"minute", "solar_generation"}:
+                continue
 
             if name.startswith("district__"):
                 feature = name.split("__", 1)[1]
+                if feature == "topology_version":
+                    continue
+
                 if feature == "month":
                     sin_value, cos_value = self._cyclic_pair(value, period=12.0, offset=1.0)
                     append("district__month_sin", sin_value)
@@ -550,6 +566,11 @@ class EntityContractAdapter:
                     soc = self._soc_fraction(values_by_name.get(soc_name, value))
                     required = self._soc_fraction(value)
                     append(self._replace_last_feature(name, "connected_ev_soc_deficit"), max(required - soc, 0.0))
+                if name.endswith("incoming_ev_required_soc_departure"):
+                    soc_name = self._replace_last_feature(name, "incoming_ev_estimated_soc_arrival")
+                    soc = self._soc_fraction(values_by_name.get(soc_name, value))
+                    required = self._soc_fraction(value)
+                    append(self._replace_last_feature(name, "incoming_ev_soc_deficit"), max(required - soc, 0.0))
                 continue
 
             if name.endswith("connected_ev_departure_time_step"):
@@ -566,6 +587,13 @@ class EntityContractAdapter:
                 append(self._replace_last_feature(name, "incoming_ev_arrival_urgency_24h"), self._urgency_24(hours))
                 continue
 
+            if name.endswith("incoming_ev_departure_time_step"):
+                hours = self._steps_until_to_hours(value)
+                append(self._replace_last_feature(name, "incoming_ev_hours_until_departure_from_time_step"), self._hours_24(hours))
+                append(self._replace_last_feature(name, "incoming_ev_departure_available"), 1.0 if value >= 0.0 else 0.0)
+                append(self._replace_last_feature(name, "incoming_ev_departure_urgency_24h"), self._urgency_24(hours))
+                continue
+
             if name.startswith("deferrable_appliance::") and name.endswith("_time_step"):
                 available = 1.0 if value >= 0.0 else 0.0
                 sin_value, cos_value = self._step_time_of_day_pair(value)
@@ -579,7 +607,7 @@ class EntityContractAdapter:
                 append(f"{name}_24h", self._hours_24(value))
                 continue
 
-            if name.endswith("slack_steps") or name.endswith("cycle_duration_steps"):
+            if name.endswith("slack_steps") or name.endswith("cycle_duration_steps") or name.endswith("remaining_duration_steps"):
                 append(f"{name}_day_ratio", self._steps_day_ratio(value))
                 continue
 
@@ -591,6 +619,10 @@ class EntityContractAdapter:
             if name.endswith("current_step_energy_kwh"):
                 cycle_energy = values_by_name.get(self._replace_last_feature(name, "cycle_energy_kwh"), 0.0)
                 append(f"{name}_cycle_ratio", self._safe_ratio(value, cycle_energy, default=0.0))
+                continue
+
+            if name.endswith("cycle_peak_step_offset_ratio"):
+                append(name, float(np.clip(value, -1.0, 1.0)))
                 continue
 
             if name.endswith("_ratio") or name.endswith("priority"):
@@ -609,12 +641,58 @@ class EntityContractAdapter:
                 append(name, self._positive_by_high(value, hi, fallback=0.5))
                 continue
 
+            if name.endswith("_kwh_step"):
+                append(
+                    name,
+                    self._step_energy_ratio(
+                        name=name,
+                        value=value,
+                        low=lo,
+                        high=hi,
+                        values_by_name=values_by_name,
+                    ),
+                )
+                continue
+
+            if (
+                name.endswith("energy_to_required_soc_kwh")
+                or name.endswith("energy_to_full_kwh")
+                or name.endswith("energy_available_kwh")
+            ):
+                append(
+                    name,
+                    self._energy_capacity_ratio(
+                        name=name,
+                        value=value,
+                        high=hi,
+                        values_by_name=values_by_name,
+                    ),
+                )
+                continue
+
             if "battery_capacity_kwh" in name or name.endswith("capacity_kwh"):
                 append(name, self._positive_by_high(value, hi, fallback=100.0))
                 continue
 
-            if name.endswith("nominal_power_kw") or name.endswith("max_charging_power_kw") or name.endswith("max_discharging_power_kw"):
+            if (
+                name.endswith("nominal_power_kw")
+                or name.endswith("max_charging_power_kw")
+                or name.endswith("max_discharging_power_kw")
+            ):
                 append(name, self._positive_by_high(value, hi, fallback=22.0))
+                continue
+
+            if name.endswith("_power_kw") or name.endswith("slack_kw"):
+                append(
+                    name,
+                    self._power_ratio(
+                        name=name,
+                        value=value,
+                        low=lo,
+                        high=hi,
+                        values_by_name=values_by_name,
+                    ),
+                )
                 continue
 
             if "relative_humidity" in name:
@@ -641,9 +719,14 @@ class EntityContractAdapter:
 
             if name.startswith("electric_vehicle_"):
                 continue
+            if name in {"minute", "solar_generation"}:
+                continue
 
             if name.startswith("district__"):
                 feature = name.split("__", 1)[1]
+                if feature == "topology_version":
+                    continue
+
                 if feature == "month":
                     append("district__month_sin")
                     append("district__month_cos")
@@ -664,6 +747,8 @@ class EntityContractAdapter:
                 append(name)
                 if name.endswith("connected_ev_required_soc_departure"):
                     append(self._replace_last_feature(name, "connected_ev_soc_deficit"))
+                if name.endswith("incoming_ev_required_soc_departure"):
+                    append(self._replace_last_feature(name, "incoming_ev_soc_deficit"))
                 continue
 
             if name.endswith("connected_ev_departure_time_step"):
@@ -678,6 +763,12 @@ class EntityContractAdapter:
                 append(self._replace_last_feature(name, "incoming_ev_arrival_urgency_24h"))
                 continue
 
+            if name.endswith("incoming_ev_departure_time_step"):
+                append(self._replace_last_feature(name, "incoming_ev_hours_until_departure_from_time_step"))
+                append(self._replace_last_feature(name, "incoming_ev_departure_available"))
+                append(self._replace_last_feature(name, "incoming_ev_departure_urgency_24h"))
+                continue
+
             if name.startswith("deferrable_appliance::") and name.endswith("_time_step"):
                 base = name.removesuffix("_time_step")
                 append(f"{base}_time_of_day_sin")
@@ -689,7 +780,7 @@ class EntityContractAdapter:
                 append(f"{name}_24h")
                 continue
 
-            if name.endswith("slack_steps") or name.endswith("cycle_duration_steps"):
+            if name.endswith("slack_steps") or name.endswith("cycle_duration_steps") or name.endswith("remaining_duration_steps"):
                 append(f"{name}_day_ratio")
                 continue
 
@@ -700,6 +791,254 @@ class EntityContractAdapter:
             append(name)
 
         return names
+
+    @classmethod
+    def _is_maddpg_v2_compact_feature(cls, name: str) -> bool:
+        """Keep the compact MADDPG observation set.
+
+        v2 keeps decision-relevant local/global state and removes semantic
+        duplicates introduced by dense entity bundles, especially power/energy
+        pairs, legacy topology counters, and equivalent EV timing features.
+        """
+
+        feature = cls._feature_tail_from_encoded_name(name)
+
+        if name.startswith("electric_vehicle_"):
+            return False
+
+        if name.startswith("district__"):
+            return cls._is_maddpg_v2_compact_district_feature(feature)
+
+        if feature in {
+            "active_chargers_count",
+            "active_storages_count",
+            "active_pvs_count",
+            "active_deferrable_appliances_count",
+            "electricity_consumption_kwh",
+            "electrical_storage_soc",
+            "electrical_storage_soc_ratio",
+            "net_electricity_consumption",
+            "non_shiftable_load",
+            "pv_power_kw",
+            "bess_power_kw",
+            "bess_energy_kwh_step",
+        }:
+            return False
+
+        if cls._is_redundant_energy_step_feature(feature):
+            return False
+
+        if name.startswith("pv::"):
+            return feature in {
+                "generation_capacity_factor_ratio",
+                "generation_power_kw",
+                "installed_power_kw",
+            }
+
+        if name.startswith("storage::"):
+            return feature in {
+                "soc",
+                "soc_min_ratio",
+                "energy_available_kwh",
+                "energy_to_full_kwh",
+                "capacity_kwh",
+                "degraded_capacity_kwh",
+                "nominal_power_kw",
+                "max_charge_power_kw",
+                "max_discharge_power_kw",
+                "min_charge_power_kw",
+                "min_discharge_power_kw",
+                "current_efficiency_ratio",
+                "round_trip_efficiency_ratio",
+                "phase_connection_L1",
+                "phase_connection_L2",
+                "phase_connection_L3",
+            }
+
+        if name.startswith("charger::"):
+            return cls._is_maddpg_v2_compact_charger_feature(feature)
+
+        if name.startswith("deferrable_appliance::"):
+            return cls._is_maddpg_v2_compact_deferrable_feature(feature)
+
+        return True
+
+    @staticmethod
+    def _feature_tail_from_encoded_name(name: str) -> str:
+        if "::" in name:
+            return name.split("::")[-1]
+        if name.startswith("district__"):
+            return name.split("__", 1)[1]
+        return name
+
+    @staticmethod
+    def _is_redundant_energy_step_feature(feature: str) -> bool:
+        return (
+            feature.endswith("_energy_kwh_step")
+            or "_energy_prev_" in feature
+            or feature.endswith("_energy_prev_1_kwh_step")
+            or feature.endswith("_energy_prev_3_mean_kwh_step")
+            or feature.endswith("current_step_energy_kwh_cycle_ratio")
+        )
+
+    @staticmethod
+    def _is_maddpg_v2_compact_district_feature(feature: str) -> bool:
+        if feature in {
+            "active_buildings_count",
+            "active_chargers_count",
+            "active_evs_count",
+            "outdoor_relative_humidity",
+            "outdoor_relative_humidity_predicted_1",
+            "outdoor_relative_humidity_predicted_2",
+            "outdoor_relative_humidity_predicted_3",
+        }:
+            return False
+
+        if "_energy_kwh_step" in feature or "_prev_" in feature:
+            return False
+
+        return feature in {
+            "month_sin",
+            "month_cos",
+            "day_type_sin",
+            "day_type_cos",
+            "is_weekend",
+            "time_of_day_sin",
+            "time_of_day_cos",
+            "carbon_intensity",
+            "electricity_pricing",
+            "electricity_pricing_predicted_1",
+            "electricity_pricing_predicted_2",
+            "electricity_pricing_predicted_3",
+            "outdoor_dry_bulb_temperature",
+            "outdoor_dry_bulb_temperature_predicted_1",
+            "outdoor_dry_bulb_temperature_predicted_2",
+            "outdoor_dry_bulb_temperature_predicted_3",
+            "diffuse_solar_irradiance",
+            "diffuse_solar_irradiance_predicted_1",
+            "diffuse_solar_irradiance_predicted_2",
+            "diffuse_solar_irradiance_predicted_3",
+            "direct_solar_irradiance",
+            "direct_solar_irradiance_predicted_1",
+            "direct_solar_irradiance_predicted_2",
+            "direct_solar_irradiance_predicted_3",
+            "community_net_power_kw",
+            "community_import_power_kw",
+            "community_export_power_kw",
+            "community_pv_power_kw",
+            "community_ev_power_kw",
+            "community_bess_power_kw",
+            "community_building_headroom_kw",
+            "community_building_export_headroom_kw",
+            "community_phase_headroom_kw",
+            "community_phase_export_headroom_kw",
+        }
+
+    @staticmethod
+    def _is_maddpg_v2_compact_charger_feature(feature: str) -> bool:
+        if feature in {
+            "last_charged_kwh",
+            "commanded_power_kw",
+            "applied_energy_kwh_step",
+            "avg_power_to_departure_kw",
+            "time_until_departure_ratio",
+            "hours_until_departure_24h",
+            "incoming_ev_time_until_departure_ratio",
+            "incoming_ev_hours_until_departure_24h",
+            "connected_ev_hours_until_departure",
+            "incoming_ev_hours_until_arrival",
+            "incoming_ev_hours_until_departure_from_time_step",
+            "connected_ev::soc_ratio",
+            "connected_ev::soc_max_ratio",
+            "connected_ev::soc_min_ratio",
+            "connected_ev::depth_of_discharge_ratio",
+            "connected_ev::energy_available_kwh",
+            "connected_ev::energy_to_full_kwh",
+            "incoming_ev::soc_ratio",
+            "incoming_ev::soc_max_ratio",
+            "incoming_ev::soc_min_ratio",
+            "incoming_ev::depth_of_discharge_ratio",
+            "incoming_ev::energy_available_kwh",
+            "incoming_ev::energy_to_full_kwh",
+        }:
+            return False
+
+        return feature in {
+            "connected_state",
+            "incoming_state",
+            "applied_power_kw",
+            "charging_slack_kw",
+            "charging_priority_ratio",
+            "required_average_power_kw",
+            "energy_to_required_soc_kwh",
+            "connected_ev_soc",
+            "connected_ev_required_soc_departure",
+            "connected_ev_soc_deficit",
+            "connected_ev_departure_available",
+            "connected_ev_departure_urgency_24h",
+            "connected_ev_battery_capacity_kwh",
+            "connected_ev::soc",
+            "connected_ev::battery_capacity_kwh",
+            "incoming_ev_estimated_soc_arrival",
+            "incoming_ev_required_soc_departure",
+            "incoming_ev_soc_deficit",
+            "incoming_ev_arrival_available",
+            "incoming_ev_arrival_urgency_24h",
+            "incoming_ev_departure_available",
+            "incoming_ev_departure_urgency_24h",
+            "incoming_ev::soc",
+            "incoming_ev::battery_capacity_kwh",
+            "max_charging_power_kw",
+            "max_discharging_power_kw",
+            "min_charging_power_kw",
+            "min_discharging_power_kw",
+            "charger_efficiency_ratio",
+            "charge_efficiency_at_max_ratio",
+            "discharge_efficiency_at_max_ratio",
+            "phase_connection_L1",
+            "phase_connection_L2",
+            "phase_connection_L3",
+        }
+
+    @staticmethod
+    def _is_maddpg_v2_compact_deferrable_feature(feature: str) -> bool:
+        if feature in {
+            "earliest_start_time_of_day_sin",
+            "earliest_start_time_of_day_cos",
+            "earliest_start_available",
+            "latest_start_time_of_day_sin",
+            "latest_start_time_of_day_cos",
+            "latest_start_available",
+            "deadline_time_of_day_sin",
+            "deadline_time_of_day_cos",
+            "deadline_available",
+            "slack_steps_day_ratio",
+            "cycle_energy_kwh",
+            "current_step_energy_kwh_cycle_ratio",
+        }:
+            return False
+
+        return feature in {
+            "pending",
+            "running",
+            "can_start",
+            "must_run",
+            "deadline_missed",
+            "priority",
+            "urgency_ratio",
+            "slack_ratio",
+            "hours_until_deadline_24h",
+            "hours_until_latest_start_24h",
+            "remaining_duration_steps_day_ratio",
+            "remaining_energy_kwh_cycle_ratio",
+            "remaining_average_power_kw",
+            "current_step_power_kw",
+            "cycle_duration_steps_day_ratio",
+            "cycle_average_power_kw",
+            "cycle_peak_power_kw",
+            "cycle_load_factor_ratio",
+            "cycle_peak_step_offset_ratio",
+        }
 
     @staticmethod
     def _replace_last_feature(name: str, replacement: str) -> str:
@@ -767,10 +1106,12 @@ class EntityContractAdapter:
             "running",
             "can_start",
             "deadline_missed",
+            "must_run",
             "is_flexible",
-            "_available",
         )
         if any(token in name for token in binary_tokens):
+            return True
+        if name.endswith("_available"):
             return True
         return "one_hot" in name or name.endswith("_L1") or name.endswith("_L2") or name.endswith("_L3")
 
@@ -780,6 +1121,7 @@ class EntityContractAdapter:
             "connected_ev_soc",
             "connected_ev_required_soc_departure",
             "incoming_ev_estimated_soc_arrival",
+            "incoming_ev_required_soc_departure",
             "::soc",
             "electric_vehicle_soc",
             "electric_vehicle_required_soc_departure",
@@ -811,6 +1153,163 @@ class EntityContractAdapter:
     def _positive_by_high(value: float, high: float, *, fallback: float) -> float:
         scale = high if np.isfinite(high) and 0.0 < high < 1.0e5 else fallback
         return float(np.clip(value / scale, 0.0, 1.0))
+
+    @staticmethod
+    def _reasonable_bound_scale(low: float, high: float, *, signed: bool, max_abs: float) -> Optional[float]:
+        if not np.isfinite(low) or not np.isfinite(high):
+            return None
+        if max(abs(low), abs(high)) >= max_abs:
+            return None
+        if signed:
+            scale = max(abs(low), abs(high), 1.0)
+        else:
+            scale = max(high, 1.0)
+        return float(scale) if scale > 0.0 else None
+
+    @staticmethod
+    def _is_signed_power_name(name: str) -> bool:
+        signed_tokens = (
+            "net_power_kw",
+            "bess_power_kw",
+            "storage_power_kw",
+            "commanded_power_kw",
+            "applied_power_kw",
+            "slack_kw",
+        )
+        return any(token in name for token in signed_tokens)
+
+    @staticmethod
+    def _is_signed_step_energy_name(name: str) -> bool:
+        signed_tokens = (
+            "net_energy",
+            "bess_energy",
+            "storage_energy",
+            "applied_energy",
+        )
+        return any(token in name for token in signed_tokens)
+
+    def _power_scale(
+        self,
+        *,
+        name: str,
+        low: float,
+        high: float,
+        values_by_name: Mapping[str, float],
+        signed: bool,
+    ) -> float:
+        bounded = self._reasonable_bound_scale(low, high, signed=signed, max_abs=1.0e4)
+        if bounded is not None:
+            return bounded
+
+        if name.startswith("district__community_"):
+            active_buildings = self._safe_scalar(
+                values_by_name.get("district__active_buildings_count", 0.0),
+                0.0,
+            )
+            return max(active_buildings, 1.0) * 25.0
+
+        if name.startswith("charger::"):
+            max_charge = self._safe_scalar(
+                values_by_name.get(self._replace_last_feature(name, "max_charging_power_kw"), 0.0),
+                0.0,
+            )
+            max_discharge = self._safe_scalar(
+                values_by_name.get(self._replace_last_feature(name, "max_discharging_power_kw"), 0.0),
+                0.0,
+            )
+            return max(max_charge, max_discharge, 22.0)
+
+        if name.startswith("storage::"):
+            nominal = self._safe_scalar(
+                values_by_name.get(self._replace_last_feature(name, "nominal_power_kw"), 0.0),
+                0.0,
+            )
+            max_charge = self._safe_scalar(
+                values_by_name.get(self._replace_last_feature(name, "max_charge_power_kw"), 0.0),
+                0.0,
+            )
+            max_discharge = self._safe_scalar(
+                values_by_name.get(self._replace_last_feature(name, "max_discharge_power_kw"), 0.0),
+                0.0,
+            )
+            return max(nominal, max_charge, max_discharge, 5.0)
+
+        if name.startswith("pv::"):
+            installed = self._safe_scalar(
+                values_by_name.get(self._replace_last_feature(name, "installed_power_kw"), 0.0),
+                0.0,
+            )
+            return max(installed, 1.0)
+
+        return 25.0
+
+    def _power_ratio(
+        self,
+        *,
+        name: str,
+        value: float,
+        low: float,
+        high: float,
+        values_by_name: Mapping[str, float],
+    ) -> float:
+        signed = self._is_signed_power_name(name)
+        scale = self._power_scale(
+            name=name,
+            low=low,
+            high=high,
+            values_by_name=values_by_name,
+            signed=signed,
+        )
+        if signed:
+            return float(np.clip(value / scale, -1.0, 1.0))
+        return float(np.clip(value / scale, 0.0, 1.0))
+
+    def _step_energy_ratio(
+        self,
+        *,
+        name: str,
+        value: float,
+        low: float,
+        high: float,
+        values_by_name: Mapping[str, float],
+    ) -> float:
+        signed = self._is_signed_step_energy_name(name)
+        bounded = self._reasonable_bound_scale(low, high, signed=signed, max_abs=1.0e4)
+        if bounded is not None:
+            scale = bounded
+        else:
+            power_scale = self._power_scale(
+                name=name,
+                low=low,
+                high=high,
+                values_by_name=values_by_name,
+                signed=signed,
+            )
+            scale = max(power_scale * self.seconds_per_time_step / 3600.0, 1.0e-6)
+
+        if signed:
+            return float(np.clip(value / scale, -1.0, 1.0))
+        return float(np.clip(value / scale, 0.0, 1.0))
+
+    def _energy_capacity_ratio(
+        self,
+        *,
+        name: str,
+        value: float,
+        high: float,
+        values_by_name: Mapping[str, float],
+    ) -> float:
+        capacity_candidates = (
+            self._replace_last_feature(name, "battery_capacity_kwh"),
+            self._replace_last_feature(name, "connected_ev_battery_capacity_kwh"),
+            self._replace_last_feature(name, "capacity_kwh"),
+        )
+        for candidate in capacity_candidates:
+            capacity = self._safe_scalar(values_by_name.get(candidate, 0.0), 0.0)
+            if capacity > 0.0:
+                return float(np.clip(value / capacity, 0.0, 1.0))
+
+        return self._positive_by_high(value, high, fallback=100.0)
 
     @staticmethod
     def _signed_by_bounds(value: float, low: float, high: float) -> float:

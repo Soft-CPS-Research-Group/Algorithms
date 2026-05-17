@@ -1094,5 +1094,7 @@
     "expansion_factor": 240,
     "energy_columns_scaled_by": 0.004166666666666667,
     "target_dataset": "citylearn_three_phase_dynamic_assets_only_demo_15s"
-  }
+  },
+  "ev_departure_within_tolerance": 0.05,
+  "ev_departure_service_tolerance": 0.05
 }

@@ -122,6 +122,253 @@ def test_rbc_reads_namespaced_citylearn_ev_observations():
     assert actions[0][0] > 0.0
 
 
+def test_rbc_reads_entity_charger_specific_ev_observations():
+    agent = RuleBasedPolicy(
+        {
+            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "algorithm": {
+                "name": "RuleBasedPolicy",
+                "hyperparameters": {
+                    "pv_charge_threshold": 2.0,
+                    "flexibility_hours": 3.0,
+                    "emergency_hours": 1.0,
+                    "flex_trickle_charge": 0.0,
+                    "emergency_charge_rate": 1.0,
+                },
+            },
+        }
+    )
+    observation_names = [
+        [
+            "solar_generation",
+            "charger::Building_15/charger_15_1::connected_state",
+            "charger::Building_15/charger_15_1::connected_ev_soc",
+            "charger::Building_15/charger_15_1::connected_ev_required_soc_departure",
+            "charger::Building_15/charger_15_1::connected_ev_battery_capacity_kwh",
+            "charger::Building_15/charger_15_1::hours_until_departure",
+            "charger::Building_15/charger_15_2::connected_state",
+            "charger::Building_15/charger_15_2::connected_ev_soc",
+            "charger::Building_15/charger_15_2::connected_ev_required_soc_departure",
+            "charger::Building_15/charger_15_2::connected_ev_battery_capacity_kwh",
+            "charger::Building_15/charger_15_2::hours_until_departure",
+            "electric_vehicle_charger_state",
+            "electric_vehicle_soc",
+            "electric_vehicle_required_soc_departure",
+            "electric_vehicle_departure_time",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[
+            [
+                "electrical_storage",
+                "electric_vehicle_storage_charger_15_1",
+                "electric_vehicle_storage_charger_15_2",
+            ]
+        ],
+        action_space=[DummySpace([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_15"], "seconds_per_time_step": 900},
+    )
+
+    observations = [
+        np.array(
+            [
+                0.0,
+                0.0,
+                20.0,
+                90.0,
+                60.0,
+                1.0,
+                1.0,
+                20.0,
+                80.0,
+                60.0,
+                2.0,
+                1.0,
+                20.0,
+                90.0,
+                1.0,
+            ],
+            dtype=float,
+        )
+    ]
+
+    actions = agent.predict(observations)
+
+    assert actions[0][0] == pytest.approx(0.0, abs=1e-6)
+    assert actions[0][1] == pytest.approx(0.0, abs=1e-6)
+    assert actions[0][2] > 0.0
+
+
+def test_rbc_clips_ev_charge_to_phase_headroom():
+    agent = RuleBasedPolicy(
+        {
+            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "algorithm": {
+                "name": "RuleBasedPolicy",
+                "hyperparameters": {
+                    "pv_charge_threshold": 2.0,
+                    "flexibility_hours": 3.0,
+                    "emergency_hours": 1.0,
+                    "flex_trickle_charge": 0.0,
+                    "emergency_charge_rate": 1.0,
+                },
+            },
+        }
+    )
+    observation_names = [
+        [
+            "solar_generation",
+            "charging_building_headroom_kw",
+            "charging_phase_L1_headroom_kw",
+            "charging_phase_L2_headroom_kw",
+            "charging_phase_L3_headroom_kw",
+            "charger::Building_15/charger_15_1::connected_state",
+            "charger::Building_15/charger_15_1::connected_ev_soc",
+            "charger::Building_15/charger_15_1::connected_ev_required_soc_departure",
+            "charger::Building_15/charger_15_1::connected_ev_battery_capacity_kwh",
+            "charger::Building_15/charger_15_1::hours_until_departure",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[["electric_vehicle_storage_charger_15_1"]],
+        action_space=[DummySpace([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_15"], "seconds_per_time_step": 3600},
+    )
+
+    observations = [np.array([0.0, 10.0, 1.85, 10.0, 10.0, 1.0, 0.0, 1.0, 60.0, 0.5], dtype=float)]
+    actions = agent.predict(observations)
+
+    assert actions[0][0] == pytest.approx(1.85 / 7.4, abs=1e-6)
+
+
+def test_rbc_ev_headroom_clip_allows_existing_charger_power():
+    agent = RuleBasedPolicy(
+        {
+            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "algorithm": {
+                "name": "RuleBasedPolicy",
+                "hyperparameters": {
+                    "pv_charge_threshold": 2.0,
+                    "flexibility_hours": 3.0,
+                    "emergency_hours": 1.0,
+                    "flex_trickle_charge": 0.0,
+                    "emergency_charge_rate": 1.0,
+                },
+            },
+        }
+    )
+    observation_names = [
+        [
+            "solar_generation",
+            "charging_building_headroom_kw",
+            "charging_phase_L1_headroom_kw",
+            "charging_phase_L2_headroom_kw",
+            "charging_phase_L3_headroom_kw",
+            "charger::Building_15/charger_15_1::connected_state",
+            "charger::Building_15/charger_15_1::connected_ev_soc",
+            "charger::Building_15/charger_15_1::connected_ev_required_soc_departure",
+            "charger::Building_15/charger_15_1::connected_ev_battery_capacity_kwh",
+            "charger::Building_15/charger_15_1::hours_until_departure",
+            "charger::Building_15/charger_15_1::applied_power_kw",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[["electric_vehicle_storage_charger_15_1"]],
+        action_space=[DummySpace([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_15"], "seconds_per_time_step": 3600},
+    )
+
+    observations = [np.array([0.0, 0.0, 0.0, 10.0, 10.0, 1.0, 0.0, 1.0, 60.0, 0.5, 7.0], dtype=float)]
+    actions = agent.predict(observations)
+
+    assert actions[0][0] == pytest.approx(7.0 / 7.4, abs=1e-6)
+
+
+def test_rbc_converts_entity_departure_steps_to_hours():
+    agent = RuleBasedPolicy(
+        {
+            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "algorithm": {
+                "name": "RuleBasedPolicy",
+                "hyperparameters": {
+                    "pv_charge_threshold": 2.0,
+                    "flexibility_hours": 3.0,
+                    "emergency_hours": 1.0,
+                    "flex_trickle_charge": 0.0,
+                    "emergency_charge_rate": 1.0,
+                },
+            },
+        }
+    )
+    observation_names = [
+        [
+            "solar_generation",
+            "charger::Building_1/charger_1_1::connected_state",
+            "charger::Building_1/charger_1_1::connected_ev_soc",
+            "charger::Building_1/charger_1_1::connected_ev_required_soc_departure",
+            "charger::Building_1/charger_1_1::connected_ev_battery_capacity_kwh",
+            "charger::Building_1/charger_1_1::connected_ev_departure_time_step",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[["electric_vehicle_storage_charger_1_1"]],
+        action_space=[DummySpace([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 900},
+    )
+
+    observations = [np.array([0.0, 1.0, 20.0, 80.0, 60.0, 8.0], dtype=float)]
+    actions = agent.predict(observations)
+
+    assert actions[0][0] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_rbc_can_disable_ev_and_deferrable_controls():
+    agent = RuleBasedPolicy(
+        {
+            "simulator": {},
+            "algorithm": {
+                "name": "RuleBasedPolicy",
+                "hyperparameters": {
+                    "control_evs": False,
+                    "control_deferrables": False,
+                    "deferrable_urgency_threshold": 0.75,
+                },
+            },
+        }
+    )
+    observation_names = [
+        [
+            "electric_vehicle_charger_state",
+            "electric_vehicle_soc",
+            "electric_vehicle_required_soc_departure",
+            "electric_vehicle_departure_time",
+            "deferrable_appliance_deferrable_appliance_1_pending",
+            "deferrable_appliance_deferrable_appliance_1_running",
+            "deferrable_appliance_deferrable_appliance_1_can_start",
+            "deferrable_appliance_deferrable_appliance_1_urgency_ratio",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[["electric_vehicle_storage", "deferrable_appliance_deferrable_appliance_1"]],
+        action_space=[DummySpace([0.0, 0.0], [1.0, 1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+
+    actions = agent.predict([np.array([1.0, 20.0, 80.0, 1.0, 1.0, 0.0, 1.0, 1.0], dtype=float)])
+
+    assert actions[0] == pytest.approx([0.0, 0.0], abs=1e-6)
+
+
 def test_rbc_starts_flat_deferrable_appliance_when_urgent():
     agent = RuleBasedPolicy(
         {

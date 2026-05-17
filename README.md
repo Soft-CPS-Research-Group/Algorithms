@@ -128,14 +128,14 @@ Use this diagram as the mental model when wiring CI or new algorithms.
 - Validation happens in `utils/config_schema.py` (Pydantic models).
 - Observation encoders are defined in `configs/encoders/default.json` so training
   and inference stay aligned.
-- Templates under `configs/templates/*.yaml` provide algorithm x environment
-  starting points:
-  `maddpg_local.yaml`,
-  `rule_based_entity_dynamic_local.yaml`,
-  `rule_based_local.yaml`,
-  `rule_based_docker_internal_2000.yaml`,
-  `single_agent_local.yaml`,
-  all executor/runtime specifics now chosen at launch time (UI/payload), not in template YAML.
+- Templates under `configs/templates/` provide algorithm x environment
+  starting points, grouped by purpose:
+  `maddpg/maddpg_local.yaml`,
+  `baselines/rule_based_local.yaml`,
+  `baselines/rbc_smart_local.yaml`,
+  `dynamic/rule_based_entity_dynamic_local.yaml`,
+  `legacy/rule_based_docker_internal_2000.yaml`.
+  Executor/runtime specifics are chosen at launch time (UI/payload), not in template YAML.
 
 Important knobs:
 
@@ -163,9 +163,9 @@ Important knobs:
   `require_observations_envelope`).
 - `training.*` – exploration warm-up, update cadence, target refresh.
 - `algorithm.*` – hyperparameters, network sizes, replay buffer type, exploration
-  policy. `RuleBasedPolicy` replaces neural network knobs with PV thresholds,
-  flexibility buffers, and charger overrides. `SingleAgentRL` is currently a
-  schema placeholder only (not runtime-implemented).
+  policy. Rule-based baselines replace neural network knobs with heuristic
+  thresholds and charger overrides. `SingleAgentRL` is currently a schema
+  placeholder only (not runtime-implemented).
 
 ## Training Outputs & Inference Hand-off
 
@@ -187,7 +187,7 @@ Every job produces:
 - `jobs/<job_id>/results/summary.json` – lightweight final run summary with
   MLflow identity/URI linkage.
 - `jobs/<job_id>/policy_agent_<index>.json` – exported rule-based policy files
-  when `RuleBasedPolicy` runs.
+  when a rule-based baseline runs.
 
 Bundle the manifest, ONNX directory, and optional alias map as described in
 [`docs/inference_bundle.md`](docs/inference_bundle.md) to deploy a trained agent.

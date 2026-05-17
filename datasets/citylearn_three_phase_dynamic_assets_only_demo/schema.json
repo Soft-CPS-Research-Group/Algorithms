@@ -1,6 +1,6 @@
 {
   "random_seed": 2022,
-  "root_directory": null,
+  "root_directory": "./datasets/citylearn_three_phase_dynamic_assets_only_demo",
   "interface": "entity",
   "central_agent": false,
   "simulation_start_time_step": 0,
@@ -1077,5 +1077,7 @@
       "source_member_id": "Building_18",
       "source_asset_id": "charger_18_1"
     }
-  ]
+  ],
+  "ev_departure_within_tolerance": 0.05,
+  "ev_departure_service_tolerance": 0.05
 }

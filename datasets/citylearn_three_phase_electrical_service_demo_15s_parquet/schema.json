@@ -9,20 +9,6 @@
   "rolling_episode_split": false,
   "random_episode_split": false,
   "seconds_per_time_step": 15,
-  "observation_bundles": {
-    "entity_core_electrical": {
-      "active": false
-    },
-    "entity_community_operational": {
-      "active": true
-    },
-    "entity_forecasts_existing": {
-      "active": false
-    },
-    "entity_temporal_derived": {
-      "active": false
-    }
-  },
   "observations": {
     "month": {
       "active": true,
@@ -1073,5 +1059,22 @@
     "expansion_factor": 240,
     "energy_columns_scaled_by": 0.004166666666666667,
     "target_dataset": "citylearn_three_phase_electrical_service_demo_15s"
-  }
+  },
+  "observation_bundles": {
+    "entity_core_electrical": {
+      "active": true
+    },
+    "entity_community_operational": {
+      "active": true
+    },
+    "entity_forecasts_existing": {
+      "active": true
+    },
+    "entity_temporal_derived": {
+      "active": true
+    }
+  },
+  "topology_mode": "static",
+  "ev_departure_within_tolerance": 0.05,
+  "ev_departure_service_tolerance": 0.05
 }

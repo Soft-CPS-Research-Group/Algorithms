@@ -739,7 +739,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         # Dynamic entity mode can change agent cardinality at runtime.
         # Persist final topology before exporting artifacts/manifest.
         final_topology = config.setdefault("topology", {})
-        final_topology["observation_dimensions"] = wrapper.observation_dimension
+        final_topology["observation_dimensions"] = _resolve_agent_observation_dimensions(wrapper, algorithm_name)
         final_topology["action_dimensions"] = wrapper.action_dimension
         final_topology["num_agents"] = len(wrapper.action_space)
 

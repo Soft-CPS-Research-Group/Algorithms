@@ -275,6 +275,26 @@ def test_wrapper_entity_building_names_fallbacks_to_entity_specs():
     assert updated_info["building_names"] == ["B1", "B2"]
 
 
+def test_wrapper_flat_building_names_fallbacks_to_metadata():
+    class _FlatMetadataEnv:
+        def __init__(self):
+            self.unwrapped = self
+
+        def get_metadata(self):
+            return {
+                "buildings": [
+                    {"name": "Building_1"},
+                    {"name": "Building_2"},
+                ]
+            }
+
+    wrapper = Wrapper_CityLearn.__new__(Wrapper_CityLearn)
+    wrapper.env = _FlatMetadataEnv()
+    wrapper._entity_interface_mode = False
+
+    assert wrapper._resolve_building_names() == ["Building_1", "Building_2"]
+
+
 def test_wrapper_entity_maddpg_profile_exports_serving_encoded_observations():
     env = _DummyEntityEnv()
     config = _entity_config()

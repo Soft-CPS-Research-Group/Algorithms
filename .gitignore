@@ -4,6 +4,7 @@
 /runs
 /configs/generated/
 /datasets/*_15s/
+/datasets/citylearn_three_phase_electrical_service_demo_15s.zip
 *.log
 # Virtual env
 venv/

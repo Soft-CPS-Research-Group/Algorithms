@@ -453,7 +453,11 @@ def test_run_experiment_uses_encoded_observation_dimensions_for_maddpg(monkeypat
     resolved_config = yaml.safe_load(
         (tmp_path / "jobs" / "job-encoded-dims" / "config.resolved.yaml").read_text(encoding="utf-8")
     )
+    manifest = json.loads(
+        (tmp_path / "jobs" / "job-encoded-dims" / "bundle" / "artifact_manifest.json").read_text(encoding="utf-8")
+    )
     assert resolved_config["topology"]["observation_dimensions"] == [3]
+    assert manifest["topology"]["observation_dimensions"] == [3]
 
 
 def test_resolve_citylearn_schema_input_prefers_local_schema_directory(tmp_path):

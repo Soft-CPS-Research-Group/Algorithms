@@ -12,7 +12,21 @@ import yaml
 DEFAULT_KPIS = [
     "community_settled_cost_total_eur",
     "electrical_service_violation_total_kwh",
+    "ev_departure_min_acceptable_feasible_rate",
+    "ev_departure_min_acceptable_rate",
+    "ev_departure_success_feasible_rate",
     "ev_departure_success_rate",
+    "ev_departure_within_tolerance_feasible_rate",
+    "ev_departure_within_tolerance_rate",
+    "ev_departure_count",
+    "ev_departure_target_infeasible_count",
+    "ev_departure_min_acceptable_infeasible_count",
+    "ev_departure_within_tolerance_infeasible_count",
+    "ev_departure_soc_deficit_mean",
+    "ev_departure_shortfall_beyond_tolerance_mean",
+    "ev_departure_soc_surplus_mean",
+    "ev_departure_soc_absolute_error_mean",
+    "ev_departure_tolerance_ratio",
 ]
 
 KPI_ALIASES = {
@@ -26,12 +40,74 @@ KPI_ALIASES = {
         "district_electrical_service_phase_violations_energy_total_kwh",
         "district_electrical_service_violations_energy_total_kwh",
     ],
+    "ev_departure_min_acceptable_feasible_rate": [
+        "ev_departure_min_acceptable_feasible_rate",
+        "district_ev_performance_departure_min_acceptable_feasible_ratio",
+    ],
+    "ev_departure_min_acceptable_rate": [
+        "ev_departure_min_acceptable_rate",
+        "district_ev_performance_departure_min_acceptable_ratio",
+    ],
+    "ev_departure_success_feasible_rate": [
+        "ev_departure_success_feasible_rate",
+        "district_ev_performance_departure_success_feasible_ratio",
+    ],
     "ev_departure_success_rate": [
         "ev_departure_success_rate",
         "district_ev_performance_departure_success_ratio",
+    ],
+    "ev_departure_within_tolerance_feasible_rate": [
+        "ev_departure_within_tolerance_feasible_rate",
+        "district_ev_performance_departure_within_tolerance_feasible_ratio",
+    ],
+    "ev_departure_within_tolerance_rate": [
+        "ev_departure_within_tolerance_rate",
         "district_ev_performance_departure_within_tolerance_ratio",
     ],
+    "ev_departure_count": [
+        "ev_departure_count",
+        "district_ev_events_departure_count",
+    ],
+    "ev_departure_target_infeasible_count": [
+        "ev_departure_target_infeasible_count",
+        "district_ev_events_departure_target_infeasible_count",
+    ],
+    "ev_departure_min_acceptable_infeasible_count": [
+        "ev_departure_min_acceptable_infeasible_count",
+        "district_ev_events_departure_min_acceptable_infeasible_count",
+    ],
+    "ev_departure_within_tolerance_infeasible_count": [
+        "ev_departure_within_tolerance_infeasible_count",
+        "district_ev_events_departure_within_tolerance_infeasible_count",
+    ],
+    "ev_departure_soc_deficit_mean": [
+        "ev_departure_soc_deficit_mean",
+        "district_ev_performance_departure_soc_deficit_mean_ratio",
+    ],
+    "ev_departure_shortfall_beyond_tolerance_mean": [
+        "ev_departure_shortfall_beyond_tolerance_mean",
+        "district_ev_performance_departure_shortfall_beyond_tolerance_mean_ratio",
+    ],
+    "ev_departure_soc_surplus_mean": [
+        "ev_departure_soc_surplus_mean",
+        "district_ev_performance_departure_soc_surplus_mean_ratio",
+    ],
+    "ev_departure_soc_absolute_error_mean": [
+        "ev_departure_soc_absolute_error_mean",
+        "district_ev_performance_departure_soc_absolute_error_mean_ratio",
+    ],
+    "ev_departure_tolerance_ratio": [
+        "ev_departure_tolerance_ratio",
+        "district_ev_performance_departure_tolerance_ratio",
+    ],
 }
+
+EV_GATE_KPI = "ev_departure_min_acceptable_feasible_rate"
+EV_GATE_FALLBACK_KPIS = (
+    "ev_departure_min_acceptable_rate",
+    "ev_departure_success_feasible_rate",
+    "ev_departure_success_rate",
+)
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -175,6 +251,15 @@ def _lower_is_better_pass(candidate: Optional[float], baseline: Optional[float],
     return candidate <= allowed
 
 
+def _select_ev_gate_value(aggregate: Dict[str, Any]) -> tuple[Optional[str], Optional[float]]:
+    kpi_means = aggregate.get("kpi_means", {}) if isinstance(aggregate, dict) else {}
+    for kpi_name in (EV_GATE_KPI, *EV_GATE_FALLBACK_KPIS):
+        value = kpi_means.get(kpi_name) if isinstance(kpi_means, dict) else None
+        if value is not None:
+            return kpi_name, value
+    return None, None
+
+
 def _load_job_record(job_dir: Path, kpis: List[str]) -> Optional[Dict[str, Any]]:
     result_payload = _load_json_payload(job_dir / "results" / "result.json")
     config_payload = _load_yaml_payload(job_dir / "config.resolved.yaml")
@@ -259,12 +344,12 @@ def compare_export_roots(
     rbc_cost = rbc_agg["kpi_means"].get("community_settled_cost_total_eur")
     maddpg_grid = maddpg_agg["kpi_means"].get("electrical_service_violation_total_kwh")
     rbc_grid = rbc_agg["kpi_means"].get("electrical_service_violation_total_kwh")
-    maddpg_ev = maddpg_agg["kpi_means"].get("ev_departure_success_rate")
+    maddpg_ev_kpi, maddpg_ev = _select_ev_gate_value(maddpg_agg)
 
     cost_pass = _lower_is_better_pass(maddpg_cost, rbc_cost, cost_ratio_threshold)
     grid_pass = _lower_is_better_pass(maddpg_grid, rbc_grid, grid_ratio_threshold)
 
-    rbc_ev = rbc_agg["kpi_means"].get("ev_departure_success_rate")
+    rbc_ev_kpi, rbc_ev = _select_ev_gate_value(rbc_agg)
     ev_baseline_gate = (rbc_ev or 0.0) * ev_ratio_threshold
     ev_pass = maddpg_ev is not None and maddpg_ev >= max(ev_min_threshold, ev_baseline_gate)
 
@@ -279,6 +364,8 @@ def compare_export_roots(
             "grid_ratio_threshold": grid_ratio_threshold,
             "ev_min_threshold": ev_min_threshold,
             "ev_ratio_threshold": ev_ratio_threshold,
+            "ev_gate_primary_kpi": EV_GATE_KPI,
+            "ev_gate_fallback_kpis": list(EV_GATE_FALLBACK_KPIS),
         },
         "aggregates": {
             "MADDPG": maddpg_agg,
@@ -288,6 +375,10 @@ def compare_export_roots(
             "cost_parity_pass": cost_pass,
             "grid_gate_pass": grid_pass,
             "ev_gate_pass": ev_pass,
+        },
+        "diagnostics": {
+            "ev_gate_maddpg_kpi": maddpg_ev_kpi,
+            "ev_gate_rbc_kpi": rbc_ev_kpi,
         },
     }
     report["overall_pass"] = all(report["checks"].values())

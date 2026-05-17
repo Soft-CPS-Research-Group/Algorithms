@@ -83,13 +83,13 @@ Para os algoritmos em `algorithms/agents/*`:
 
 Template pronto:
 
-- `configs/templates/rule_based_entity_dynamic_local.yaml`
+- `configs/templates/dynamic/rule_based_entity_dynamic_local.yaml`
 
 Exemplo de execução:
 
 ```bash
 python run_experiment.py \
-  --config configs/templates/rule_based_entity_dynamic_local.yaml \
+  --config configs/templates/dynamic/rule_based_entity_dynamic_local.yaml \
   --job_id entity-dynamic-smoke
 ```
 
