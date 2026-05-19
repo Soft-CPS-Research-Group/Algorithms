@@ -59,7 +59,7 @@ simulator:
     enabled: true
     normalization: minmax_space
     clip: true
-  reward_function: V2GPenaltyReward
+  reward_function: CostHardConstraintReward
   reward_function_kwargs:
     squash: 1   # tanh-squash rewards to [-1, 1] to prevent PPO gradient explosion
   episodes: 26  # ~6.5h based on ~15min/episode observed in my_test_run
