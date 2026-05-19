@@ -198,6 +198,12 @@
       "adapter_prefix": "charger::",
       "adapter_label": "incoming_ev",
       "input_dim_fallback": 8
+    },
+    "deferrable_appliance": {
+      "entity_table": "deferrable_appliance",
+      "cardinality": "per_asset",
+      "adapter_prefix": "deferrable_appliance::",
+      "input_dim_fallback": 5
     }
   },
 

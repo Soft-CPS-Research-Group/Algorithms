@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TEMPLATE_PATH = REPO_ROOT / "configs/templates/transformer_ppo_entity_dynamic.yaml"
+TEMPLATE_PATH = REPO_ROOT / "configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml"
 
 
 def _load_template() -> dict:

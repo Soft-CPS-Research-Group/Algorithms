@@ -64,6 +64,20 @@
       "adapter_prefix": "charger::",
       "adapter_label": "incoming_ev",
       "input_dim_fallback": 1
+    },
+    "building_meta": {
+      "entity_table": "building",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^active_deferrable_appliances_count$"
+      ],
+      "input_dim_fallback": 1
+    },
+    "deferrable_appliance": {
+      "entity_table": "deferrable_appliance",
+      "cardinality": "per_asset",
+      "adapter_prefix": "deferrable_appliance::",
+      "input_dim_fallback": 5
     }
   },
   "validation": {

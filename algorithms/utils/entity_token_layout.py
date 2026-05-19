@@ -86,7 +86,7 @@ _PER_ASSET_LABELLED_RE = re.compile(
     r"(?P<label>connected_ev|incoming_ev)::(?P<feature>.+)$"
 )
 _PER_ASSET_UNLABELLED_RE = re.compile(
-    r"^(?P<prefix>pv|storage|charger)::(?P<id>[^:]+(?:/[^:]+)*)::"
+    r"^(?P<prefix>pv|storage|charger|deferrable_appliance)::(?P<id>[^:]+(?:/[^:]+)*)::"
     r"(?P<feature>(?!connected_ev::|incoming_ev::).+)$"
 )
 _DISTRICT_PREFIX = "district__"
@@ -375,6 +375,8 @@ class EntityTokenLayoutBuilder:
                 return ("ca", self._ca_prefix_to_type[prefix], instance_id)
             if prefix == "pv":
                 return ("sro", "pv", instance_id)
+            if prefix == "deferrable_appliance":
+                return ("sro", "deferrable_appliance", instance_id)
 
         # Singleton SRO match (district or building scoped). Collect ALL
         # matches to detect ambiguity.
