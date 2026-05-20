@@ -1,23 +1,41 @@
-# Roadmap Atual MADDPG
+# Roadmap Atual RL/MARL
 
 Data: 2026-05-20.
 
-Este e o documento curto de trabalho. Os documentos antigos continuam validos
-como historico e evidencia, mas a ordem futura deve ser decidida a partir daqui.
+Este e o documento vivo para orientar o trabalho daqui para a frente. O nome do
+ficheiro ainda menciona MADDPG porque esse foi o ponto de partida, mas o objetivo
+real ja nao e "encontrar o melhor MADDPG". O objetivo e encontrar o melhor
+controlador para este caso: comunidade energetica com EVs, baterias,
+deferrables, fases, limites fisicos, custo, autoconsumo e requisitos de servico.
 
-## Objetivo
+Os documentos antigos continuam em `docs/archive/maddpg_history/` como
+historico/evidencia. Este documento deve ser a fonte principal para decidir o
+proximo passo.
 
-Chegar a um controlador MADDPG/MARL que:
+## Objetivo Real
 
-- controle EVs, baterias e deferrables disponiveis nos datasets;
-- cumpra limites fisicos e requisitos de servico, sobretudo EV departure;
-- bata ou se aproxime de `RBCSmart` em custo/comunidade;
-- use informacao comunitaria de forma real, nao apenas heuristica local;
-- exporte artefactos utilizaveis no repo de inference.
+Encontrar, validar e exportar um controlador RL/MARL que:
 
-Regra permanente: nao meter comportamento prescritivo no wrapper. Melhorias de
-comportamento devem vir de observacoes, reward, replay, exploracao, arquitetura
-ou algoritmo.
+- controle todos os ativos disponiveis nos datasets: EVs, baterias e
+  deferrables;
+- respeite limites fisicos, fases/headroom e requisitos de servico;
+- cumpra EV departure de forma util para a pessoa:
+  - pelo menos o SOC minimo aceitavel;
+  - idealmente dentro da banda de tolerancia do target;
+- reduza custo e importacao externa;
+- aumente uso de energia renovavel local/comunitaria;
+- reduza picos comunitarios;
+- seja melhor ou pelo menos competitivo contra baselines fortes;
+- funcione nos datasets principais e variantes;
+- exporte artefactos compativeis com inference.
+
+MADDPG e apenas o primeiro candidato serio porque ja existe, ja corre, ja exporta
+e ja foi bastante instrumentado. Se os resultados mostrarem que outro algoritmo e
+melhor para o problema, o roadmap deve mudar para esse algoritmo.
+
+Regra permanente: nao meter comportamento prescritivo no wrapper. O controlador
+deve melhorar por observacoes, reward, exploracao, replay, arquitetura,
+algoritmo e treino.
 
 ## Estado Atual
 
@@ -29,31 +47,70 @@ Base tecnica:
 - datasets principais:
   - `citylearn_three_phase_electrical_service_demo_15s_parquet`;
   - `citylearn_challenge_2022_phase_all_plus_evs`;
-- variantes locais/remotas:
+- variantes ja preparadas:
   - `no_v2g`;
   - `multi_charger`;
-- perfil principal de observacoes MADDPG: `maddpg_v2_compact`;
-- candidato MADDPG atual: `V48`.
+- perfil principal de observacoes: `maddpg_v2_compact`;
+- candidato atual: `MADDPG V48`;
+- imagem remota atual: `sha-969d417`.
 
 O que ja esta solido:
 
 - baselines `Random`, `NormalNoBattery`, `Normal`, `RBCBasic`, `RBCSmart`;
-- reward V46/V48 com EV service e precision;
+- reward com EV service, EV precision, custo, rede e bateria;
 - teacher/warm-start/BC configuraveis;
 - replay ponderado por reward;
 - logs de reward/action/training;
 - CUDA local validado;
 - Deucalion/server integrados;
-- scorecard remoto preparado.
+- scorecard remoto preparado;
+- datasets e variantes locais/remotas preparados.
 
 O que ainda nao esta provado:
 
-- V48 robusta em multi-seed;
-- V48 no dataset 2022;
-- se V2G esta a dificultar aprendizagem;
+- se `MADDPG V48` e robusto em multi-seed;
+- se `MADDPG V48` generaliza bem para 2022;
+- se V2G ajuda ou dificulta aprendizagem;
 - se `multi_charger` quebra por escala de acoes/fases;
-- se storage esta a criar ganho real ou atalho caro;
-- se o critic atual chega ou precisa de MATD3.
+- se storage cria ganho real ou apenas custo/throughput inutil;
+- se o critic atual chega ou precisa de MATD3;
+- se um algoritmo on-policy como MAPPO e mais estavel;
+- se uma abordagem com entropia como MASAC explora melhor;
+- se a aprendizagem comunitaria precisa de attention/GNN.
+
+## Criterios de Sucesso
+
+Um candidato so deve ser considerado "bom" se for avaliado contra baselines e
+nao apenas contra a propria curva de reward.
+
+KPIs principais:
+
+- custo total/comunitario;
+- importacao/exportacao comunitaria;
+- pico comunitario;
+- `ev_min_acceptable_feasible_rate`;
+- `ev_within_tolerance_feasible_rate`;
+- deficits medios/maximos de EV departure;
+- violacoes de rede/fase/headroom;
+- deferrables servidos dentro da janela;
+- battery throughput e ciclos;
+- energia renovavel local/comunitaria utilizada;
+- estabilidade entre seeds.
+
+Comparacao principal:
+
+- contra `RBCSmart` para custo/operacao inteligente;
+- contra `NormalNoBattery` e `Normal` para perceber se bateria ajuda ou estraga;
+- contra `RBCBasic` para ver ganho sobre heuristica simples;
+- contra `Random` apenas como sanidade/lower bound.
+
+Regras de decisao:
+
+- nao aceitar reducao de custo se destruir EV service;
+- nao aceitar bom EV service se criar violacoes;
+- nao aceitar melhoria aparente se for so uma seed;
+- nao aceitar storage se throughput/ciclos forem desproporcionados;
+- nao aceitar algoritmo novo se nao exportar ou nao encaixar em inference.
 
 ## Runs Remotas Em Curso
 
@@ -61,7 +118,7 @@ Imagem: `sha-969d417`.
 
 Grupos submetidos:
 
-- V48 original V2G-capable em GPU:
+- `MADDPG V48` original V2G-capable em GPU:
   - `15s seed123`;
   - `2022 seed123`;
 - baselines full no Deucalion CPU:
@@ -80,9 +137,7 @@ Registos locais:
 - `runs/remote_configs/phase6_remote_2026_05_20/submitted_cpu_jobs_2026_05_20_sha969d417.csv`;
 - `runs/remote_configs/phase6_remote_2026_05_20/submitted_server_variant_full_jobs_2026_05_20_sha969d417.csv`.
 
-## Proximo Passo Imediato
-
-Quando as runs terminarem, recolher tudo:
+Quando terminarem, recolher:
 
 ```bash
 .venv/bin/python scripts/collect_remote_results.py \
@@ -104,146 +159,283 @@ Ficheiros a ler:
 
 - `runs/remote_results/phase6j_sha969d417/scorecard.md`;
 - `runs/remote_results/phase6j_sha969d417/scorecard.csv`;
-- logs dos jobs marcados como `reject_*` ou `not_finished`.
+- logs dos jobs marcados como `reject_*`, `not_finished` ou `pending`.
 
-## Arvore de Decisao
+## Fase 6J - Ler Evidencia Atual
 
-### Caso 1 - V48 original passa bem
+Objetivo: fechar a fotografia do que ja correu antes de mudar mais codigo.
 
-Sinal:
+Perguntas:
 
-- `candidate_strong` ou `candidate_near_cost`;
-- EV feasible bom;
-- EV within tolerance bom;
-- custo igual/melhor ou perto de `RBCSmart`;
-- sem violacoes.
+- `MADDPG V48` bate ou chega perto de `RBCSmart`?
+- o ganho vem de EV, bateria, V2G, comunidade ou acaso?
+- o dataset 15s e o 2022 contam a mesma historia?
+- `no_v2g` melhora estabilidade?
+- `multi_charger` quebra?
+- as falhas estao concentradas no Building 15/fases/headroom?
+- storage esta a ser util ou esta a gerar throughput caro?
+
+Output esperado:
+
+- tabela por dataset/variant/policy/seed;
+- decisao `promote`, `iterate_maddpg`, `switch_to_matd3`, `test_mappo`,
+  `test_masac`, `fix_data_or_baseline`;
+- lista curta de bugs/estranhezas a auditar.
+
+## Fase 6K - Matriz de Decisao de Algoritmos
+
+Objetivo: decidir se continuamos em MADDPG ou se abrimos outro algoritmo.
+
+### Se MADDPG V48 estiver forte
 
 Acao:
 
 - correr seeds `456` e `789`;
-- nao mudar algoritmo ainda;
-- preparar Fase 7 benchmark final.
+- manter algoritmo;
+- fazer so ajustes pequenos em reward/exploracao;
+- preparar benchmark final.
 
-### Caso 2 - V48 cumpre EV mas custo piora
+Racional:
 
-Sinal:
+- se o algoritmo ja e competitivo, trocar cedo aumenta risco e custo sem ganho
+  claro.
 
-- EV feasible/precision aceitaveis;
-- custo pior que `RBCSmart`;
-- battery throughput alto ou uso estranho de storage.
-
-Acao:
-
-- V49 focada em storage discipline;
-- rever reward comunitaria de storage;
-- comparar contra `NormalNoBattery` para medir valor real da bateria;
-- nao mexer em EV se EV ja estiver bom.
-
-### Caso 3 - V48 tem bom custo mas EV precision fraca
-
-Sinal:
-
-- custo bom;
-- `ev_min_acceptable_feasible_rate` bom;
-- `ev_within_tolerance_feasible_rate` abaixo de `RBCSmart`.
+### Se custo/EV forem bons mas instaveis por seed
 
 Acao:
 
-- V49 focada em EV target-band;
-- reforcar BC zero/idle quando EV ja esta dentro da banda;
-- evitar voltar a uma penalizacao tipo V47 se piorar custo.
+- implementar `MATD3`/`MADDPG-TD3`;
+- twin critics;
+- target policy smoothing;
+- delayed actor update;
+- logs Q1/Q2;
+- manter o resto o mais igual possivel.
 
-### Caso 4 - `no_v2g` melhora muito
+Racional:
 
-Sinal:
+- e a evolucao mais natural do MADDPG;
+- ataca overestimation e critic instavel;
+- mantem off-policy e export semelhante.
 
-- `no_v2g` supera original em custo/EV;
-- original mostra descarga EV/V2G instavel.
-
-Acao:
-
-- V50 com curriculum V2G:
-  - fase inicial praticamente sem descarga EV;
-  - liberar V2G apenas com margem de servico;
-  - talvez head separada charge/discharge.
-
-### Caso 5 - `multi_charger` quebra
-
-Sinal:
-
-- original passa;
-- `multi_charger` perde EV/grid/custo.
+### Se MADDPG for sensivel demais a reward/exploracao
 
 Acao:
 
-- auditar observacoes por charger/fase;
-- testar heads por tipo de asset;
-- action scaling por charger;
-- so depois attention/GNN.
+- testar `MASAC`;
+- critic centralizado se possivel;
+- entropia para exploracao;
+- comparar com e sem teacher/warm-start.
 
-### Caso 6 - critic instavel
+Racional:
 
-Sinal:
+- SAC costuma explorar melhor em continuous control;
+- pode descobrir estrategias de EV/storage/V2G que DDPG nao encontra.
 
-- Q-values extremos;
-- critic loss divergente;
-- policy degrada quando reduz BC;
-- resultados muito diferentes por seed.
+### Se MADDPG/MATD3 forem demasiado instaveis
 
 Acao:
 
-- implementar MATD3/MADDPG-TD3:
-  - twin critics;
-  - target policy smoothing;
-  - delayed actor update;
-  - logs Q1/Q2.
+- implementar `MAPPO`;
+- centralized value/critic;
+- actors descentralizados;
+- comparar contra `IPPO`.
 
-### Caso 7 - problema claramente comunitario
+Racional:
 
-Sinal:
+- MAPPO e um comparador MARL forte e defensavel;
+- PPO tende a ser mais estavel, embora mais caro em samples.
 
-- todos cumprem EV/local;
-- custo comunitario ainda fica pior;
-- picos/import/export nao melhoram;
-- storage/EV nao aproveitam excedente comunitario.
+### Se precisarmos de baseline RL simples
 
 Acao:
 
-- reward comunitaria mais fiel:
-  - settlement comunitario;
-  - autoconsumo local/comunitario;
-  - valor de energia partilhada;
-  - penalizacao de picos comunitarios;
-- critic com sinais globais mais fortes;
-- attention/GNN se agregados nao forem suficientes.
+- implementar `IPPO`;
+- uma policy PPO por agente;
+- sem critic centralizado.
 
-## Comparadores Futuros
+Racional:
 
-Ordem recomendada:
+- ajuda a perceber se o problema precisa mesmo de MARL complexo;
+- baseline honesto para paper/tese.
 
-1. `MATD3/MADDPG-TD3`: se critic/Q for o gargalo.
-2. `MAPPO`: comparador MARL forte, on-policy, mais caro.
-3. `IPPO`: baseline PPO simples por agente.
-4. `MASAC`: se exploracao continuous for o gargalo.
-5. Heads por tipo de asset: se `multi_charger` quebrar.
-6. Attention critic/GNN: se escala/topologia/comunidade forem o problema.
-7. `QMIX`, `VDN`, `COMA`, `DQN/Rainbow`: baixa prioridade no problema completo
-   porque as acoes principais sao continuas.
+### Se multi_charger/topologia forem o problema
 
-Detalhe: `docs/marl_algorithm_comparators_pt.md`.
+Acao:
 
-## Plano Futuro Concreto
+- primeiro testar heads por tipo de ativo:
+  - storage;
+  - EV charger;
+  - deferrable;
+- depois attention critic;
+- depois GNN se for preciso generalizar topologias.
 
-1. Ler scorecard remoto.
-2. Escolher uma unica direcao V49/V50, nao varias ao mesmo tempo.
-3. Implementar a menor mudanca que responde ao sinal observado.
-4. Correr smoke local curto.
-5. Correr benchmark curto 15s/2022.
-6. Se passar, submeter remoto.
-7. So promover para Fase 7 depois de multi-seed.
-8. Validar inference/bundle na Fase 8.
+Racional:
+
+- `multi_charger` pode falhar por arquitetura de output, nao por algoritmo;
+- attention/GNN so devem entrar quando MLP/heads forem insuficientes.
+
+## Algoritmos Candidatos
+
+Prioridade atual:
+
+1. `MADDPG V48/V49`: candidato implementado e instrumentado.
+2. `MATD3 / MADDPG-TD3`: primeira evolucao se critic/Q for gargalo.
+3. `MAPPO`: principal comparador MARL forte.
+4. `IPPO`: baseline RL robusto e simples.
+5. `MASAC`: candidato se exploracao continuous for gargalo.
+6. Heads por tipo de ativo: importante se `multi_charger` quebrar.
+7. Attention critic: se credit assignment comunitario ficar fraco.
+8. GNN policy/critic: se generalizacao/topologia passar a ser objetivo central.
+9. `HAPPO/HATRPO`: interessante academicamente, mas mais caro.
+10. `QMIX/VDN/COMA/DQN`: baixa prioridade no problema completo por causa das
+    acoes continuas.
+
+Detalhe tecnico: `docs/marl_algorithm_comparators_pt.md`.
+
+## Fase 6L - Reward Comunitaria e Credit Assignment
+
+Objetivo: garantir que o algoritmo aprende comunidade, nao apenas casa isolada.
+
+Trabalhos a fazer:
+
+- separar reward em componentes logadas:
+  - custo/import;
+  - export/venda;
+  - autoconsumo local;
+  - autoconsumo comunitario;
+  - picos comunitarios;
+  - EV service;
+  - EV precision;
+  - deferrables;
+  - network/headroom;
+  - battery comfort/throughput;
+- confirmar se o settlement comunitario do simulador esta refletido no KPI;
+- decidir se a reward total deve ser:
+  - shared reward comunitaria;
+  - reward local + termo comunitario;
+  - reward por ativo;
+  - mistura ponderada por agente;
+- testar pesos sem criar regras prescritivas.
+
+Hipotese importante:
+
+- se o custo comunitario e o autoconsumo comunitario nao estiverem bem
+  representados na reward, o agente pode cumprir EVs e ainda assim perder para
+  `RBCSmart`.
+
+## Fase 6M - Storage, V2G e Baterias
+
+Objetivo: perceber quando baterias/EV discharge ajudam mesmo.
+
+Trabalhos a fazer:
+
+- comparar `NormalNoBattery`, `Normal`, `RBCSmart`, `MADDPG` e `no_v2g`;
+- medir battery throughput vs poupanca;
+- medir EV discharge perto de departure;
+- garantir limites min/max de bateria quando existirem;
+- manter conforto/servico acima de custo;
+- testar reward com menor penalizacao de ciclos se a bateria estiver a criar
+  valor comunitario real;
+- testar curriculum V2G se descarga EV prejudicar aprendizagem.
+
+Decisao possivel:
+
+- se `no_v2g` ganha consistentemente, treinar primeiro sem V2G e so depois
+  liberar descarga como fase curricular.
+
+## Fase 6N - Experiencias Longas e Seeds
+
+Objetivo: sair de evidencia pontual para robustez.
+
+Matriz minima antes de chamar algo "bom":
+
+- dataset 15s original;
+- dataset 2022 original;
+- variante `no_v2g`;
+- variante `multi_charger`;
+- pelo menos seeds `123`, `456`, `789` para candidatos finais;
+- baselines sempre presentes no mesmo dataset/variant.
+
+Ordem:
+
+1. smoke local;
+2. run curta diagnostica;
+3. run remota seed123;
+4. se passar, multi-seed;
+5. so depois benchmark final.
+
+## Fase 7 - Benchmark Final
+
+Objetivo: comparar candidatos finais em matriz limpa.
+
+Candidatos provaveis:
+
+- melhor `MADDPG`/`MATD3`;
+- `MAPPO` se implementado;
+- `IPPO` se implementado;
+- `MASAC` se implementado;
+- `RBCSmart`;
+- `NormalNoBattery`;
+- `Normal`;
+- `RBCBasic`;
+- `Random`.
+
+Requisitos:
+
+- mesmos datasets;
+- mesmas seeds quando aplicavel;
+- mesmos KPIs;
+- scorecard unico;
+- tabela de custo, EV service, EV precision, picos, violacoes, storage e tempo
+  de treino;
+- logs suficientes para explicar porque ganhou/perdeu.
+
+## Fase 8 - Export e Inference
+
+Objetivo: garantir que o melhor controlador nao fica preso ao treino.
+
+Validar:
+
+- `artifact_manifest.json`;
+- nomes de observacoes encoded;
+- nomes/bounds de acoes;
+- compatibilidade com repo de inference;
+- reproducibilidade do encoding profile;
+- ONNX/model export por agente;
+- configs resolvidas;
+- ausencia de dependencia em MLflow para inference.
+
+## Fase 9 - Produto/Tese
+
+Objetivo: transformar resultados em conclusao defensavel.
+
+Perguntas finais:
+
+- qual algoritmo ganhou e por que razao?
+- quanto melhora contra `RBCSmart`?
+- o ganho e em custo, EV service, picos, renovaveis ou tudo?
+- o ganho e robusto a dataset/seed/topologia?
+- onde ainda falha?
+- o algoritmo e operacionalmente viavel?
+- o custo de treino compensa?
+- consegue exportar para inferencia real?
+
+## O Que Nao Fazer Agora
+
+- nao assumir que MADDPG tem de ser o vencedor;
+- nao implementar varios algoritmos novos antes de ler o scorecard remoto;
+- nao trocar reward e algoritmo ao mesmo tempo sem controlo;
+- nao mexer no wrapper para melhorar KPI;
+- nao tirar conclusoes finais de smokes curtos;
+- nao aceitar `RBCSmart` como oracle perfeito sem continuar a auditar;
+- nao ignorar comunidade/autoconsumo se o objetivo e energia comunitaria;
+- nao otimizar so para `no_v2g` e esquecer o caso original V2G-capable.
 
 ## Documentos de Suporte
+
+Entrada/indice:
+
+- `docs/README.md`.
 
 Documentos atuais de decisao:
 
@@ -264,12 +456,3 @@ Contrato/export/inference:
 
 - `docs/inference_bundle.md`;
 - `docs/entity_interface_playbook_pt.md`.
-
-## O Que Nao Fazer Agora
-
-- nao implementar MAPPO/MASAC antes de ler V48 remoto;
-- nao mexer no wrapper para melhorar KPI;
-- nao mudar reward e algoritmo ao mesmo tempo;
-- nao lançar seeds `456/789` se seed `123` falhar por bug claro;
-- nao tirar conclusoes de smokes curtos como KPI final;
-- nao otimizar para `no_v2g` e esquecer o dataset original V2G-capable.

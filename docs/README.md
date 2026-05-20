@@ -1,8 +1,9 @@
 # Documentacao
 
-Entrada principal para o trabalho MADDPG:
+Entrada principal para o trabalho RL/MARL:
 
-- `maddpg_current_roadmap_pt.md`
+- `maddpg_current_roadmap_pt.md` - roadmap atual RL/MARL; MADDPG e apenas o
+  primeiro candidato implementado.
 
 Documentos ativos:
 
