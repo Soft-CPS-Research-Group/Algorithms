@@ -252,6 +252,10 @@ class ExplorationParams(BaseModel):
 
 class AlgorithmHyperparameters(BaseModel):
     gamma: float = Field(gt=0)
+    require_cuda: bool = Field(
+        default=False,
+        description="If true, MADDPG fails during initialization unless CUDA is available.",
+    )
 
 
 class RuleBasedHyperparameters(BaseModel):

@@ -32,6 +32,31 @@ REPLAY_BUFFER_REGISTRY = {
 }
 
 
+def _select_torch_device(*, require_cuda: bool = False) -> torch.device:
+    """Select the torch device and fail early when CUDA was explicitly required."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if require_cuda:
+        raise RuntimeError(
+            "MADDPG was configured with require_cuda=true, but torch.cuda.is_available() is false."
+        )
+    return torch.device("cpu")
+
+
+def _log_torch_runtime(device: torch.device) -> None:
+    cuda_available = torch.cuda.is_available()
+    cuda_device_count = torch.cuda.device_count() if cuda_available else 0
+    logger.info(
+        "Torch runtime: torch_version={}, torch_cuda_version={}, cuda_available={}, cuda_device_count={}",
+        torch.__version__,
+        torch.version.cuda,
+        cuda_available,
+        cuda_device_count,
+    )
+    if cuda_available:
+        logger.info("CUDA device selected: {}", torch.cuda.get_device_name(device))
+
+
 class ActionScaledActor(torch.nn.Module):
     """Actor wrapper that converts tanh policy output to environment action bounds."""
 
@@ -53,15 +78,16 @@ class MADDPG(BaseAgent):
         super().__init__()
         self.config = config
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info("Device selected: {}", self.device)
-        torch.backends.cudnn.benchmark = True
-
         exploration_cfg = self.config["algorithm"]["exploration"]["params"]
         buffer_cfg = self.config["algorithm"]["replay_buffer"]
         network_cfg = self.config["algorithm"]["networks"]
 
         hyperparams = self.config["algorithm"]["hyperparameters"]
+        self.require_cuda = bool(exploration_cfg.get("require_cuda", hyperparams.get("require_cuda", False)))
+        self.device = _select_torch_device(require_cuda=self.require_cuda)
+        logger.info("Device selected: {}", self.device)
+        _log_torch_runtime(self.device)
+        torch.backends.cudnn.benchmark = self.device.type == "cuda"
 
         self.gamma = float(hyperparams.get("gamma", exploration_cfg.get("gamma", 0.99)))
         self.tau = float(exploration_cfg.get("tau", 0.001))
