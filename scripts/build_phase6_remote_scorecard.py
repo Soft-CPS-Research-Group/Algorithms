@@ -19,6 +19,12 @@ KEY_METRICS = [
     "cost_bau_eur",
     "cost_delta_to_bau_eur",
     "cost_ratio_to_bau",
+    "community_import_kwh",
+    "community_export_kwh",
+    "community_solar_generation_kwh",
+    "community_solar_export_kwh",
+    "community_solar_self_consumption_rate",
+    "community_market_import_share_rate",
     "ev_min_acceptable_feasible_rate",
     "ev_within_tolerance_feasible_rate",
     "ev_departure_count",
@@ -30,9 +36,20 @@ KEY_METRICS = [
     "battery_throughput_ratio_to_bau",
     "v2g_export_kwh",
     "net_exchange_kwh",
+    "net_exchange_delta_to_bau_kwh",
     "peak_daily_ratio_to_bau",
     "peak_all_time_ratio_to_bau",
 ]
+
+LEARNING_POLICIES = {
+    "MADDPG",
+    "MADDPG_v48",
+    "MATD3",
+    "MASAC",
+    "IPPO",
+    "MAPPO",
+    "HAPPO",
+}
 
 OUTPUT_COLUMNS = [
     "decision",
@@ -53,6 +70,12 @@ OUTPUT_COLUMNS = [
     "community_cost_eur",
     "cost_delta_to_bau_eur",
     "cost_ratio_to_bau",
+    "community_import_kwh",
+    "community_export_kwh",
+    "community_solar_generation_kwh",
+    "community_solar_export_kwh",
+    "community_solar_self_consumption_rate",
+    "community_market_import_share_rate",
     "rbcsmart_cost_eur",
     "cost_delta_to_rbcsmart_eur",
     "cost_delta_to_rbcsmart_pct",
@@ -68,6 +91,7 @@ OUTPUT_COLUMNS = [
     "battery_throughput_ratio_to_bau",
     "v2g_export_kwh",
     "net_exchange_kwh",
+    "net_exchange_delta_to_bau_kwh",
     "peak_daily_ratio_to_bau",
     "peak_all_time_ratio_to_bau",
     "errors",
@@ -126,6 +150,16 @@ def infer_variant(config_or_name: str) -> str:
 
 def infer_policy(config_or_name: str) -> str:
     lowered = config_or_name.lower()
+    if "matd3" in lowered:
+        return "MATD3"
+    if "masac" in lowered:
+        return "MASAC"
+    if "mappo" in lowered:
+        return "MAPPO"
+    if "happo" in lowered:
+        return "HAPPO"
+    if "ippo" in lowered:
+        return "IPPO"
     if "maddpg" in lowered:
         if "v48" in lowered:
             return "MADDPG_v48"
@@ -147,6 +181,8 @@ def infer_track(config_or_name: str) -> str:
     lowered = config_or_name.lower()
     if "smoke" in lowered:
         return "smoke"
+    if "short" in lowered or "diagnostic" in lowered:
+        return "short"
     if "baseline" in lowered:
         return "baseline"
     if "full" in lowered:
@@ -216,7 +252,7 @@ def _decision_for_row(
         return "pending" if status in {"queued", "dispatched", "running"} else f"not_finished:{status or 'unknown'}"
     if track == "smoke":
         return "smoke_ok"
-    if policy != "MADDPG_v48":
+    if policy not in LEARNING_POLICIES:
         return "reference"
     if rbc_row is None:
         return "awaiting_rbcsmart_baseline"
@@ -337,8 +373,8 @@ def _best_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         row
         for row in rows
         if str(row.get("status") or "").lower() == "finished"
-        and row.get("policy") == "MADDPG_v48"
-        and row.get("track") == "full"
+        and row.get("policy") in LEARNING_POLICIES
+        and row.get("track") in {"full", "short"}
         and _safe_float(row.get("community_cost_eur")) is not None
     ]
     return sorted(candidates, key=lambda row: _safe_float(row.get("community_cost_eur")) or float("inf"))
@@ -367,15 +403,15 @@ def write_scorecard_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
     lines.extend(
         [
             "",
-            "## Best Finished MADDPG Runs",
+            "## Best Finished Learning Runs",
             "",
-            "| Rank | Dataset | Variant | Decision | Cost | Delta vs RBCSmart | EV feasible | EV within tol | Battery throughput | V2G export | Job ID |",
-            "|---:|---|---|---|---:|---:|---:|---:|---:|---:|---|",
+            "| Rank | Policy | Dataset | Variant | Track | Decision | Cost | Delta vs RBCSmart | EV feasible | EV within tol | Net exchange | Peak daily vs BAU | Battery throughput | V2G export | Job ID |",
+            "|---:|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     best = _best_rows(rows)
     if not best:
-        lines.append("| - | - | - | pending | - | - | - | - | - | - | - |")
+        lines.append("| - | - | - | - | - | pending | - | - | - | - | - | - | - | - | - |")
     else:
         for rank, row in enumerate(best[:12], start=1):
             lines.append(
@@ -383,13 +419,17 @@ def write_scorecard_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
                 + " | ".join(
                     [
                         str(rank),
+                        str(row.get("policy") or ""),
                         str(row.get("dataset") or ""),
                         str(row.get("variant") or ""),
+                        str(row.get("track") or ""),
                         f"`{row.get('decision') or ''}`",
                         _fmt(row.get("community_cost_eur")),
                         _fmt(row.get("cost_delta_to_rbcsmart_eur")),
                         _fmt(row.get("ev_min_acceptable_feasible_rate")),
                         _fmt(row.get("ev_within_tolerance_feasible_rate")),
+                        _fmt(row.get("net_exchange_kwh")),
+                        _fmt(row.get("peak_daily_ratio_to_bau")),
                         _fmt(row.get("battery_throughput_kwh")),
                         _fmt(row.get("v2g_export_kwh")),
                         f"`{row.get('job_id') or ''}`",
@@ -403,11 +443,12 @@ def write_scorecard_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
             "",
             "## How To Read",
             "",
-            "- `candidate_strong`: MADDPG finished, kept EV feasible gate, did not violate grid, beat RBCSmart cost and kept EV precision above the configured threshold.",
+            "- `candidate_strong`: learning controller finished, kept EV feasible gate, did not violate grid, beat RBCSmart cost and kept EV precision above the configured threshold.",
             "- `candidate_cost_ok_precision_watch`: cost beat RBCSmart but EV precision still needs attention.",
             "- `candidate_near_cost`: close enough to RBCSmart to justify tuning, but not yet a winner.",
             "- `reject_ev_service`, `reject_grid_violation`, `reject_cost`: do not promote this recipe without a targeted fix.",
             "- `awaiting_rbcsmart_baseline`/`pending`: rerun the scorecard after the missing jobs finish.",
+            "- Community metrics (`net_exchange`, peak ratios and solar/community-market fields when present) are highlighted because the target is not only house-level EV success.",
             "",
         ]
     )

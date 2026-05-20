@@ -69,8 +69,11 @@ O que ja esta solido:
 - logs de reward/action/training;
 - CUDA local validado;
 - Deucalion/server integrados;
-- scorecard remoto preparado;
+- scorecard remoto preparado para `MADDPG`, `MATD3`, `MASAC`, `IPPO`, `MAPPO`
+  e `HAPPO`;
 - datasets e variantes locais/remotas preparados.
+- matriz remota pendente dos comparadores:
+  `configs/experiments/phase6_algorithm_matrix/remote_pending/`.
 
 O que ainda nao esta provado:
 
@@ -94,6 +97,8 @@ KPIs principais:
 - custo total/comunitario;
 - importacao/exportacao comunitaria;
 - pico comunitario;
+- autoconsumo solar/comunitario quando o KPI existir;
+- community-market import share quando o KPI existir;
 - `ev_min_acceptable_feasible_rate`;
 - `ev_within_tolerance_feasible_rate`;
 - deficits medios/maximos de EV departure;
@@ -370,6 +375,41 @@ Ordem:
 4. se passar, multi-seed;
 5. so depois benchmark final.
 
+## Fase 6O - Matriz Curta de Algoritmos
+
+Objetivo: enquanto se espera pelas runs longas, deixar pronta a comparacao entre
+familias de algoritmos.
+
+Configs preparadas:
+
+- `configs/experiments/phase6_algorithm_matrix/remote_pending/`;
+- `MATD3`, `MASAC`, `IPPO`, `MAPPO`, `HAPPO`;
+- datasets `15s` e `2022`;
+- variants `original`, `no_v2g`, `multi_charger`;
+- reward `CostServiceCommunityFeasiblePrecisionRewardV46`;
+- encoding `maddpg_v2_compact`;
+- seed `123`;
+- MLflow desligado;
+- export de KPIs ativo.
+
+Regras:
+
+- nao submeter estas configs na imagem `sha-969d417`, porque essa imagem nao
+  inclui todos os commits dos comparadores;
+- primeiro recolher o scorecard das runs atuais;
+- depois criar nova imagem Docker/SIF a partir do commit atual;
+- correr primeiro `MATD3` e `MASAC` nos datasets originais;
+- usar `IPPO`/`MAPPO`/`HAPPO` como comparadores de estabilidade;
+- so promover para long run quem passar EV service, rede e custo competitivo.
+
+Metrica comunitaria passa a ser parte da leitura, nao detalhe secundario:
+
+- reduzir custo continua importante;
+- mas tambem interessa reduzir picos;
+- reduzir net exchange/import externo;
+- aumentar autoconsumo solar/comunitario;
+- perceber se a bateria/V2G cria valor comunitario ou apenas throughput.
+
 ## Fase 7 - Benchmark Final
 
 Objetivo: comparar candidatos finais em matriz limpa.
@@ -449,6 +489,7 @@ Documentos atuais de decisao:
 - `docs/maddpg_current_roadmap_pt.md`;
 - `docs/maddpg_phase6j6k_remote_decision_pt.md`;
 - `docs/marl_algorithm_comparators_pt.md`.
+- `docs/rl_marl_algorithm_matrix_pt.md`.
 
 Historico e evidencia:
 

@@ -16,7 +16,16 @@ def test_phase6_scorecard_infers_remote_config_metadata():
     assert infer_track(name) == "full"
 
 
-def test_phase6_scorecard_marks_strong_candidate_against_rbcsmart():
+def test_phase6_scorecard_infers_learning_comparator_metadata():
+    assert infer_policy("remote_20260520_short_15s_original_matd3_seed123.yaml") == "MATD3"
+    assert infer_policy("remote_20260520_short_2022_no_v2g_masac_seed123.yaml") == "MASAC"
+    assert infer_policy("remote_20260520_short_15s_multi_charger_ippo_seed123.yaml") == "IPPO"
+    assert infer_policy("remote_20260520_short_2022_original_mappo_seed123.yaml") == "MAPPO"
+    assert infer_policy("remote_20260520_short_15s_original_happo_seed123.yaml") == "HAPPO"
+    assert infer_track("remote_20260520_short_15s_original_happo_seed123.yaml") == "short"
+
+
+def test_phase6_scorecard_marks_learning_candidate_against_rbcsmart():
     rows = [
         {
             "job_id": "rbc",
@@ -28,9 +37,9 @@ def test_phase6_scorecard_marks_strong_candidate_against_rbcsmart():
             "electrical_violation_kwh": "0.0",
         },
         {
-            "job_id": "maddpg",
+            "job_id": "matd3",
             "status": "finished",
-            "config_path": "configs/remote_20260520_full_15s_maddpg_v48_seed123.yaml",
+            "config_path": "configs/remote_20260520_short_15s_matd3_seed123.yaml",
             "community_cost_eur": "95.0",
             "ev_min_acceptable_feasible_rate": "1.0",
             "ev_within_tolerance_feasible_rate": "0.9",
@@ -39,11 +48,11 @@ def test_phase6_scorecard_marks_strong_candidate_against_rbcsmart():
     ]
 
     scorecard = build_scorecard(rows)
-    maddpg = next(row for row in scorecard if row["job_id"] == "maddpg")
+    candidate = next(row for row in scorecard if row["job_id"] == "matd3")
 
-    assert maddpg["decision"] == "candidate_strong"
-    assert maddpg["cost_delta_to_rbcsmart_eur"] == -5.0
-    assert maddpg["cost_delta_to_rbcsmart_pct"] == -5.0
+    assert candidate["decision"] == "candidate_strong"
+    assert candidate["cost_delta_to_rbcsmart_eur"] == -5.0
+    assert candidate["cost_delta_to_rbcsmart_pct"] == -5.0
 
 
 def test_phase6_scorecard_rejects_maddpg_when_ev_gate_fails():

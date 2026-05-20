@@ -10,6 +10,8 @@ Documentos ativos:
 - `maddpg_phase6j6k_remote_decision_pt.md` - scorecard remoto e decisao V49/V50;
 - `marl_algorithm_comparators_pt.md` - comparadores RL/MARL: MATD3, MASAC,
   IPPO, MAPPO, HAPPO, etc.;
+- `rl_marl_algorithm_matrix_pt.md` - matriz pendente para comparar algoritmos
+  RL/MARL contra baselines e KPIs comunitarios;
 - `entity_interface_playbook_pt.md` - contrato entity;
 - `phd_framework_roadmap.md` - enquadramento de investigacao;
 - `inference_bundle.md` - export/inference;

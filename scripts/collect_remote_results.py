@@ -69,6 +69,30 @@ IMPORTANT_KPIS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
             ("district_energy_grid_shape_quality_peak_all_time_average_to_business_as_usual_ratio",),
         ),
         (
+            "community_import_kwh",
+            ("district_energy_grid_total_import_control_kwh",),
+        ),
+        (
+            "community_export_kwh",
+            ("district_energy_grid_total_export_control_kwh",),
+        ),
+        (
+            "community_solar_generation_kwh",
+            ("district_solar_self_consumption_total_generation_kwh",),
+        ),
+        (
+            "community_solar_export_kwh",
+            ("district_solar_self_consumption_total_export_kwh",),
+        ),
+        (
+            "community_solar_self_consumption_rate",
+            ("district_solar_self_consumption_ratio_self_consumption_ratio",),
+        ),
+        (
+            "community_market_import_share_rate",
+            ("district_solar_self_consumption_community_market_import_share_ratio",),
+        ),
+        (
             "battery_throughput_kwh",
             ("district_battery_total_throughput_kwh",),
         ),
