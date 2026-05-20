@@ -2,6 +2,9 @@
 
 Data: 2026-05-17.
 
+Nota: este ficheiro e memoria de hipoteses. O plano operacional atual esta em
+`docs/maddpg_current_roadmap_pt.md`.
+
 Objetivo: manter uma memoria clara das hipoteses tecnicas que queremos testar
 para melhorar o MADDPG, sem misturar isto com regras no wrapper. O principio
 mantem-se: o comportamento deve vir de observacoes, reward, arquitetura,

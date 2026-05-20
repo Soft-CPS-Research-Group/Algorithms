@@ -1,5 +1,8 @@
 # Plano de Melhoria MADDPG
 
+Nota: este ficheiro contem o historico detalhado das fases. Para decidir o
+proximo passo atual, comecar por `docs/maddpg_current_roadmap_pt.md`.
+
 Este documento e o quadro de trabalho para melhorar o MADDPG sem voltar a
 misturar responsabilidades entre simulador, wrapper, baselines e algoritmo.
 
