@@ -59,10 +59,19 @@ SELECTED_METRICS = (
     "RewardComponent/local_export_energy_mean",
     "RewardComponent/ev_service_penalty_mean",
     "RewardComponent/ev_schedule_deficit_penalty_mean",
+    "RewardComponent/ev_v2g_service_abuse_penalty_mean",
+    "RewardComponent/ev_v2g_discharge_kwh_sum_mean",
+    "RewardComponent/ev_soc_over_service_sum_mean",
+    "RewardComponent/ev_over_service_penalty_amount_mean",
     "RewardComponent/ev_departure_window_penalty_mean",
     "RewardComponent/ev_departure_missed_penalty_amount_mean",
     "RewardComponent/deferrable_service_penalty_mean",
     "RewardComponent/battery_safety_penalty_mean",
+    "RewardComponent/battery_throughput_penalty_mean",
+    "RewardComponent/community_settlement_cost_mean",
+    "RewardComponent/community_settlement_reward_mean",
+    "RewardComponent/community_local_import_energy_mean",
+    "RewardComponent/community_local_export_energy_mean",
     "RewardComponent/community_import_penalty_mean",
     "RewardComponent/community_peak_import_penalty_mean",
     "Action/all_mean",
@@ -82,14 +91,86 @@ SELECTED_METRICS = (
     "MADDPG/average_actor_loss",
     "MADDPG/actor_update_performed",
     "MADDPG/actor_policy_loss_mean",
+    "MADDPG/actor_policy_loss_weighted_mean",
+    "MADDPG/actor_policy_loss_effective_weight",
     "MADDPG/actor_regularization_loss_mean",
     "MADDPG/actor_action_l2_mean",
     "MADDPG/actor_action_saturation_excess_mean",
+    "MADDPG/actor_storage_action_l2_mean",
+    "MADDPG/actor_ev_v2g_action_l2_mean",
+    "MADDPG/actor_behavior_cloning_loss_mean",
+    "MADDPG/actor_behavior_cloning_ev_loss_mean",
+    "MADDPG/actor_behavior_cloning_storage_loss_mean",
+    "MADDPG/actor_behavior_cloning_regularization_mean",
+    "MADDPG/actor_behavior_cloning_effective_weight",
+    "MADDPG/actor_behavior_cloning_source_warm_start_policy",
+    "MADDPG/actor_ev_behavior_cloning_multiplier",
+    "MADDPG/actor_ev_behavior_cloning_zero_target_weight",
+    "MADDPG/actor_storage_behavior_cloning_multiplier",
     "MADDPG/reward_raw_std",
     "MADDPG/reward_train_std",
+    "MADDPG/critic_loss_huber",
+    "MADDPG/critic_target_clip_abs",
     "MADDPG/replay_buffer_size",
+    "MADDPG/replay_priority_fraction",
+    "MADDPG/replay_priority_alpha",
+    "MADDPG/replay_priority_max",
+    "MADDPG/replay_behavior_action_priority_weight",
+    "MADDPG/replay_behavior_action_priority_scope_ev",
+    "MADDPG/replay_observation_event_priority_last",
     "MADDPG/exploration_sigma",
+    "MADDPG/storage_exploration_noise_multiplier",
+    "MADDPG/ev_negative_exploration_noise_multiplier",
+    "MADDPG/warm_start_policy_phaseout_probability",
+    "MADDPG/warm_start_policy_phaseout_used",
+    "MADDPG/warm_start_policy_phaseout_mode_blend",
 )
+
+
+def _rbc_smart_learning_teacher_hyperparameters() -> dict[str, Any]:
+    """Softer RBCSmart teacher used for behavior cloning, not as a baseline claim.
+
+    The benchmark baseline remains the dataset-specific RBCSmart template. This
+    profile is intentionally less aggressive on EV service windows so the actor
+    can learn when to stop charging instead of cloning full-rate service too
+    often.
+    """
+
+    return {
+        "allow_v2g": False,
+        "flexibility_hours": 3.0,
+        "emergency_hours": 1.0,
+        "flex_trickle_charge": 0.0,
+        "emergency_charge_rate": 1.0,
+        "ev_price_charge_rate": 0.70,
+        "ev_pv_charge_rate": 0.85,
+        "ev_v2g_discharge_rate": 0.30,
+        "ev_v2g_reserve_soc": 0.15,
+        "ev_service_margin_rate": 0.05,
+        "ev_service_floor_rate": 0.25,
+        "ev_service_lookahead_hours": 4.0,
+        "ev_service_target_soc": 0.0,
+        "ev_deadline_buffer_hours": 0.25,
+        "ev_v2g_min_departure_hours": 2.0,
+        "ev_v2g_service_margin_soc": 0.05,
+        "price_charge_rate": 0.60,
+        "price_discharge_rate": 0.45,
+        "pv_charge_rate": 0.75,
+        "peak_discharge_rate": 0.65,
+        "storage_min_soc": 0.20,
+        "storage_max_soc": 0.90,
+        "storage_target_soc": 0.50,
+        "storage_price_charge_soc_ceiling": 0.90,
+        "storage_price_discharge_soc_floor": 0.20,
+        "storage_peak_discharge_soc_floor": 0.20,
+        "pv_surplus_threshold_kw": 0.25,
+        "import_peak_threshold_kw": 7.0,
+        "low_headroom_threshold_kw": 2.0,
+        "deferrable_start_action": 1.0,
+        "deferrable_urgency_threshold": 0.60,
+        "deferrable_slack_threshold": 0.40,
+        "deferrable_safety_margin_steps": 1.0,
+    }
 
 
 def _parse_args() -> argparse.Namespace:
@@ -132,12 +213,52 @@ def _parse_args() -> argparse.Namespace:
             "anti_saturation",
             "anti_saturation_warm_rbc_basic",
             "anti_saturation_warm_rbc_smart",
+            "ev_priority_bc_warm_rbc_basic",
+            "ev_service_v2g_guard_warm_rbc_basic",
+            "ev_service_v2g_guard_prioritized_warm_rbc_basic",
+            "service_guard_v2_warm_rbc_basic",
+            "service_guard_v2_prioritized_low_warm_rbc_basic",
+            "service_guard_v2_prioritized_low_bc_decay_warm_rbc_basic",
+            "cost_balanced_v3_warm_rbc_basic",
+            "cost_balanced_v3_prioritized_low_bc_decay_warm_rbc_basic",
+            "community_band_v4_warm_rbc_basic",
+            "community_band_v4_prioritized_tiny_bc_decay_warm_rbc_basic",
+            "community_storage_band_v41_regularized_warm_rbc_basic",
+            "community_storage_band_v41_prioritized_regularized_warm_rbc_basic",
+            "community_service_band_v42_regularized_warm_rbc_basic",
+            "community_service_band_v42_prioritized_regularized_warm_rbc_basic",
+            "community_service_band_v42_prioritized_regularized_warm_rbc_smart",
+            "community_service_band_v42_prioritized_warmtrain_rbc_smart",
+            "community_service_band_v42_prioritized_warmtrain_phaseout_rbc_smart",
+            "community_battery_value_v43_prioritized_warmtrain_phaseout_rbc_smart",
+            "community_battery_value_v43_teacher_bc_stable_rbc_smart",
+            "community_smooth_service_v44_stable_teacher_bc_rbc_smart",
+            "community_feasible_service_v45_stable_teacher_bc_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
+            "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_band_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_balanced_rbc_smart",
+            "community_feasible_service_v45_actor_pretrain_rbc_smart",
+            "community_feasible_service_v45_actor_pretrain_slow_rbc_smart",
         ),
         default=[],
         help="MADDPG variant to include when --agent maddpg is selected. Can be repeated.",
     )
     parser.add_argument("--seed", action="append", type=int, default=[], help="Seed. Can be repeated.")
     parser.add_argument("--episodes", type=int, default=1, help="Episodes per generated run.")
+    parser.add_argument(
+        "--deterministic-finish",
+        action="store_true",
+        help="Run the final episode deterministically without learning updates.",
+    )
     parser.add_argument("--steps", type=int, default=128, help="Default steps per episode for short windows.")
     parser.add_argument("--steps-15s", type=int, default=None, help="Override short-window steps for 15s dataset.")
     parser.add_argument("--steps-2022", type=int, default=None, help="Override short-window steps for 2022 dataset.")
@@ -153,12 +274,88 @@ def _parse_args() -> argparse.Namespace:
         help="Disable simulator KPI export. Useful for very fast debug runs.",
     )
     parser.add_argument("--metric-interval", type=int, default=16, help="Step metric sampling interval.")
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=None,
+        help="Optional checkpoint interval for generated runs. Uses template default when omitted.",
+    )
+    parser.add_argument(
+        "--reward-diagnostics-detail",
+        choices=("summary", "per_agent"),
+        default="summary",
+        help="Reward component logging detail. Use per_agent for targeted reward audits.",
+    )
+    parser.add_argument(
+        "--reward-function-override",
+        default=None,
+        help="Optional reward function name to force in every generated run for diagnostics.",
+    )
     parser.add_argument("--batch-size", type=int, default=32, help="MADDPG replay batch size for generated runs.")
     parser.add_argument("--buffer-capacity", type=int, default=10000, help="MADDPG replay buffer capacity.")
     parser.add_argument("--actor-layers", default="64,32", help="Comma-separated MADDPG actor layers.")
     parser.add_argument("--critic-layers", default="128,64", help="Comma-separated MADDPG critic layers.")
     parser.add_argument("--random-exploration-steps", type=int, default=32, help="MADDPG warm-up steps.")
+    parser.add_argument(
+        "--warm-start-phaseout-steps",
+        type=int,
+        default=None,
+        help=(
+            "Optional MADDPG warm-start phase-out length after warm-up. "
+            "Only applies to policy warm-start variants."
+        ),
+    )
     parser.add_argument("--sigma", type=float, default=0.15, help="MADDPG Gaussian exploration sigma.")
+    parser.add_argument(
+        "--hyperparameter-override",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Override algorithm.hyperparameters entries in generated configs. "
+            "Can be repeated; values are parsed as bool/int/float when possible."
+        ),
+    )
+    parser.add_argument(
+        "--exploration-override",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Override algorithm.exploration.params entries in generated MADDPG configs. "
+            "Can be repeated; values are parsed as bool/int/float when possible."
+        ),
+    )
+    parser.add_argument(
+        "--warm-start-hyperparameter-override",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Override exploration.params.warm_start_policy_hyperparameters entries. "
+            "Useful for testing a learning teacher without changing the baseline template."
+        ),
+    )
+    parser.add_argument(
+        "--replay-buffer-override",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Override algorithm.replay_buffer entries in generated MADDPG configs. "
+            "Can be repeated; values are parsed as bool/int/float when possible."
+        ),
+    )
+    parser.add_argument(
+        "--reward-kwarg-override",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Override simulator.reward_function_kwargs entries in generated configs. "
+            "Can be repeated; values are parsed as bool/int/float when possible."
+        ),
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -207,6 +404,40 @@ def _parse_layers(raw: str) -> list[int]:
     return layers
 
 
+def _parse_scalar_override(raw: str) -> Any:
+    value = str(raw).strip()
+    lowered = value.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    if lowered in {"none", "null"}:
+        return None
+    try:
+        if re.fullmatch(r"[+-]?\d+", value):
+            return int(value)
+        if re.fullmatch(r"[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?", value):
+            return float(value)
+    except ValueError:
+        return value
+    return value
+
+
+def _parse_key_value_overrides(raw_values: Iterable[str], *, label: str = "override") -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    for raw in raw_values or []:
+        if "=" not in str(raw):
+            raise ValueError(f"Invalid {label} {raw!r}; expected KEY=VALUE.")
+        key, value = str(raw).split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"Invalid {label} {raw!r}; key cannot be empty.")
+        overrides[key] = _parse_scalar_override(value)
+    return overrides
+
+
+def _parse_hyperparameter_overrides(raw_values: Iterable[str]) -> dict[str, Any]:
+    return _parse_key_value_overrides(raw_values, label="hyperparameter override")
+
+
 def _safe_float(value: Any) -> float | None:
     try:
         parsed = float(value)
@@ -226,6 +457,27 @@ def _set_nested(config: dict[str, Any], path: tuple[str, ...], value: Any) -> No
             current[key] = child
         current = child
     current[path[-1]] = value
+
+
+def _baseline_agent_key_for_policy(policy_name: str) -> str | None:
+    return {
+        "RandomPolicy": "random",
+        "NormalNoBatteryPolicy": "normal_no_battery",
+        "NormalPolicy": "normal",
+        "RBCBasicPolicy": "rbc_basic",
+        "RBCSmartPolicy": "rbc_smart",
+    }.get(str(policy_name))
+
+
+def _load_baseline_hyperparameters(dataset_key: str, policy_name: str) -> dict[str, Any]:
+    agent_key = _baseline_agent_key_for_policy(policy_name)
+    if not agent_key:
+        return {}
+    template = DATASET_CONFIGS.get(dataset_key, {}).get(agent_key)
+    if not template:
+        return {}
+    baseline_config = validate_config(_load_yaml(Path(template))).to_dict()
+    return dict((baseline_config.get("algorithm") or {}).get("hyperparameters") or {})
 
 
 def _selected_steps(dataset_key: str, args: argparse.Namespace) -> int:
@@ -282,7 +534,46 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
         exploration["critic_update_mode"] = "per_agent"
         return
 
-    if variant in {"anti_saturation", "anti_saturation_warm_rbc_basic", "anti_saturation_warm_rbc_smart"}:
+    if variant in {
+        "anti_saturation",
+        "anti_saturation_warm_rbc_basic",
+        "anti_saturation_warm_rbc_smart",
+        "ev_priority_bc_warm_rbc_basic",
+        "ev_service_v2g_guard_warm_rbc_basic",
+        "ev_service_v2g_guard_prioritized_warm_rbc_basic",
+        "service_guard_v2_warm_rbc_basic",
+        "service_guard_v2_prioritized_low_warm_rbc_basic",
+        "service_guard_v2_prioritized_low_bc_decay_warm_rbc_basic",
+        "cost_balanced_v3_warm_rbc_basic",
+        "cost_balanced_v3_prioritized_low_bc_decay_warm_rbc_basic",
+        "community_band_v4_warm_rbc_basic",
+        "community_band_v4_prioritized_tiny_bc_decay_warm_rbc_basic",
+        "community_storage_band_v41_regularized_warm_rbc_basic",
+        "community_storage_band_v41_prioritized_regularized_warm_rbc_basic",
+        "community_service_band_v42_regularized_warm_rbc_basic",
+        "community_service_band_v42_prioritized_regularized_warm_rbc_basic",
+        "community_service_band_v42_prioritized_regularized_warm_rbc_smart",
+        "community_service_band_v42_prioritized_warmtrain_rbc_smart",
+        "community_service_band_v42_prioritized_warmtrain_phaseout_rbc_smart",
+        "community_battery_value_v43_prioritized_warmtrain_phaseout_rbc_smart",
+        "community_battery_value_v43_teacher_bc_stable_rbc_smart",
+        "community_smooth_service_v44_stable_teacher_bc_rbc_smart",
+        "community_feasible_service_v45_stable_teacher_bc_rbc_smart",
+        "community_feasible_service_v45_teacher_clone_rbc_smart",
+        "community_feasible_service_v45_teacher_clone_ev_focus_rbc_smart",
+        "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
+        "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
+        "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+        "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+        "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+        "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
+        "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
+        "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
+        "community_feasible_service_v45_teacher_clone_ev_band_rbc_smart",
+        "community_feasible_service_v45_teacher_clone_ev_balanced_rbc_smart",
+        "community_feasible_service_v45_actor_pretrain_rbc_smart",
+        "community_feasible_service_v45_actor_pretrain_slow_rbc_smart",
+    }:
         exploration["initial_exploration_strategy"] = "noop_centered"
         exploration["noop_noise_scale"] = 0.10
         exploration["deferrable_on_probability"] = 0.2
@@ -297,16 +588,622 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
         exploration["actor_action_l2_penalty"] = 0.002
         exploration["actor_action_saturation_penalty"] = 0.020
         exploration["actor_action_saturation_threshold"] = 0.85
-        if variant == "anti_saturation_warm_rbc_basic":
+        if variant in {
+            "anti_saturation_warm_rbc_basic",
+            "ev_priority_bc_warm_rbc_basic",
+            "ev_service_v2g_guard_warm_rbc_basic",
+            "ev_service_v2g_guard_prioritized_warm_rbc_basic",
+            "service_guard_v2_warm_rbc_basic",
+            "service_guard_v2_prioritized_low_warm_rbc_basic",
+            "service_guard_v2_prioritized_low_bc_decay_warm_rbc_basic",
+            "cost_balanced_v3_warm_rbc_basic",
+            "cost_balanced_v3_prioritized_low_bc_decay_warm_rbc_basic",
+            "community_band_v4_warm_rbc_basic",
+            "community_band_v4_prioritized_tiny_bc_decay_warm_rbc_basic",
+            "community_storage_band_v41_regularized_warm_rbc_basic",
+            "community_storage_band_v41_prioritized_regularized_warm_rbc_basic",
+            "community_service_band_v42_regularized_warm_rbc_basic",
+            "community_service_band_v42_prioritized_regularized_warm_rbc_basic",
+        }:
             exploration["initial_exploration_strategy"] = "policy"
             exploration["warm_start_policy"] = "RBCBasicPolicy"
             exploration["warm_start_policy_deterministic"] = True
             exploration["warm_start_policy_noise_scale"] = 0.0
-        elif variant == "anti_saturation_warm_rbc_smart":
+        elif variant in {
+            "anti_saturation_warm_rbc_smart",
+            "community_service_band_v42_prioritized_regularized_warm_rbc_smart",
+            "community_service_band_v42_prioritized_warmtrain_rbc_smart",
+            "community_service_band_v42_prioritized_warmtrain_phaseout_rbc_smart",
+            "community_battery_value_v43_prioritized_warmtrain_phaseout_rbc_smart",
+            "community_battery_value_v43_teacher_bc_stable_rbc_smart",
+            "community_smooth_service_v44_stable_teacher_bc_rbc_smart",
+            "community_feasible_service_v45_stable_teacher_bc_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
+            "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_band_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_balanced_rbc_smart",
+            "community_feasible_service_v45_actor_pretrain_rbc_smart",
+            "community_feasible_service_v45_actor_pretrain_slow_rbc_smart",
+        }:
             exploration["initial_exploration_strategy"] = "policy"
             exploration["warm_start_policy"] = "RBCSmartPolicy"
             exploration["warm_start_policy_deterministic"] = True
             exploration["warm_start_policy_noise_scale"] = 0.0
+        if variant in {
+            "ev_priority_bc_warm_rbc_basic",
+            "ev_service_v2g_guard_warm_rbc_basic",
+            "ev_service_v2g_guard_prioritized_warm_rbc_basic",
+            "service_guard_v2_warm_rbc_basic",
+            "service_guard_v2_prioritized_low_warm_rbc_basic",
+            "service_guard_v2_prioritized_low_bc_decay_warm_rbc_basic",
+            "cost_balanced_v3_warm_rbc_basic",
+            "cost_balanced_v3_prioritized_low_bc_decay_warm_rbc_basic",
+            "community_band_v4_warm_rbc_basic",
+            "community_band_v4_prioritized_tiny_bc_decay_warm_rbc_basic",
+            "community_storage_band_v41_regularized_warm_rbc_basic",
+            "community_storage_band_v41_prioritized_regularized_warm_rbc_basic",
+            "community_service_band_v42_regularized_warm_rbc_basic",
+            "community_service_band_v42_prioritized_regularized_warm_rbc_basic",
+            "community_service_band_v42_prioritized_regularized_warm_rbc_smart",
+            "community_service_band_v42_prioritized_warmtrain_rbc_smart",
+            "community_service_band_v42_prioritized_warmtrain_phaseout_rbc_smart",
+            "community_battery_value_v43_prioritized_warmtrain_phaseout_rbc_smart",
+            "community_battery_value_v43_teacher_bc_stable_rbc_smart",
+            "community_smooth_service_v44_stable_teacher_bc_rbc_smart",
+            "community_feasible_service_v45_stable_teacher_bc_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
+            "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_band_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_balanced_rbc_smart",
+            "community_feasible_service_v45_actor_pretrain_rbc_smart",
+            "community_feasible_service_v45_actor_pretrain_slow_rbc_smart",
+        }:
+            exploration["actor_behavior_cloning_weight"] = 0.05
+            exploration["actor_action_saturation_penalty"] = 0.050
+            reward_kwargs = simulator.setdefault("reward_function_kwargs", {})
+            reward_kwargs["ev_departure_window_hours"] = 4.0
+            reward_kwargs["ev_connected_deficit_penalty"] = 120.0
+            reward_kwargs["ev_schedule_deficit_penalty"] = 480.0
+            reward_kwargs["ev_departure_deficit_penalty"] = 480.0
+            reward_kwargs["ev_departure_missed_penalty"] = 1000.0
+            if variant in {
+                "ev_service_v2g_guard_warm_rbc_basic",
+                "ev_service_v2g_guard_prioritized_warm_rbc_basic",
+            }:
+                reward_kwargs["ev_v2g_service_penalty"] = 200.0
+            if variant.startswith("service_guard_v2"):
+                simulator["reward_function"] = "CostServiceGuardRewardV2"
+                simulator["reward_function_kwargs"] = {}
+            if variant.startswith("cost_balanced_v3"):
+                simulator["reward_function"] = "CostServiceCostBalancedRewardV3"
+                simulator["reward_function_kwargs"] = {}
+                exploration["actor_behavior_cloning_weight"] = 0.04
+                exploration["actor_action_saturation_penalty"] = 0.035
+            if variant.startswith("community_band_v4"):
+                simulator["reward_function"] = "CostServiceCommunityBandRewardV4"
+                simulator["reward_function_kwargs"] = {}
+                exploration["actor_behavior_cloning_weight"] = 0.03
+                exploration["actor_action_saturation_penalty"] = 0.030
+            if variant.startswith("community_storage_band_v41"):
+                simulator["reward_function"] = "CostServiceCommunityStorageBandRewardV41"
+                simulator["reward_function_kwargs"] = {}
+                exploration["actor_behavior_cloning_weight"] = 0.025
+                exploration["actor_action_saturation_penalty"] = 0.030
+                exploration["actor_storage_action_l2_penalty"] = 4.0
+                exploration["actor_ev_v2g_action_l2_penalty"] = 0.020
+            if variant.startswith("community_service_band_v42"):
+                simulator["reward_function"] = "CostServiceCommunityServiceBandRewardV42"
+                simulator["reward_function_kwargs"] = {}
+                exploration["actor_behavior_cloning_weight"] = (
+                    0.080
+                    if "phaseout" in variant
+                    else (0.040 if "warmtrain" in variant else (0.020 if variant.endswith("_warm_rbc_smart") else 0.025))
+                )
+                exploration["actor_action_saturation_penalty"] = 0.030
+                exploration["actor_storage_action_l2_penalty"] = 4.0
+                exploration["actor_ev_v2g_action_l2_penalty"] = 5.0 if "phaseout" in variant else 0.040
+                exploration["storage_exploration_noise_multiplier"] = 0.25
+                exploration["ev_negative_exploration_noise_multiplier"] = 0.0 if "phaseout" in variant else 0.35
+                if "warmtrain" in variant:
+                    exploration["train_during_initial_exploration"] = True
+                    exploration["initial_exploration_training_start_step"] = 0
+                if "phaseout" in variant:
+                    exploration["use_amp"] = False
+                    exploration["actor_ev_behavior_cloning_multiplier"] = 8.0
+                    exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                    warmup_steps = int(exploration.get("random_exploration_steps") or 0)
+                    exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 2, 1)
+                    exploration["warm_start_policy_phaseout_mode"] = "blend"
+            if variant.startswith("community_battery_value_v43"):
+                simulator["reward_function"] = "CostServiceCommunityBatteryValueRewardV43"
+                simulator["reward_function_kwargs"] = {}
+                exploration["actor_behavior_cloning_weight"] = 0.070
+                exploration["actor_action_saturation_penalty"] = 0.030
+                exploration["actor_storage_action_l2_penalty"] = 0.50
+                exploration["actor_ev_v2g_action_l2_penalty"] = 5.0
+                exploration["storage_exploration_noise_multiplier"] = 0.50
+                exploration["ev_negative_exploration_noise_multiplier"] = 0.0
+                exploration["use_amp"] = False
+                exploration["actor_ev_behavior_cloning_multiplier"] = 8.0
+                exploration["actor_storage_behavior_cloning_multiplier"] = 1.0
+                exploration["train_during_initial_exploration"] = True
+                exploration["initial_exploration_training_start_step"] = 0
+                warmup_steps = int(exploration.get("random_exploration_steps") or 0)
+                exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 2, 1)
+                exploration["warm_start_policy_phaseout_mode"] = "blend"
+                if "teacher_bc" in variant:
+                    algorithm["networks"]["critic"]["lr"] = 2.0e-4
+                    exploration["actor_behavior_cloning_source"] = "warm_start_policy"
+                    exploration["actor_behavior_cloning_weight"] = 0.100
+                    exploration["actor_ev_behavior_cloning_multiplier"] = 10.0
+                    exploration["actor_storage_behavior_cloning_multiplier"] = 0.30
+                    exploration["actor_storage_action_l2_penalty"] = 0.25
+                    exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 4, 1)
+            if variant.startswith("community_smooth_service_v44"):
+                simulator["reward_function"] = "CostServiceCommunitySmoothServiceRewardV44"
+                simulator["reward_function_kwargs"] = {}
+                algorithm["networks"]["critic"]["lr"] = 1.0e-4
+                exploration["critic_loss"] = "huber"
+                exploration["critic_huber_beta"] = 1.0
+                exploration["critic_target_clip_abs"] = 35.0
+                exploration["actor_behavior_cloning_source"] = "warm_start_policy"
+                exploration["actor_behavior_cloning_weight"] = 0.120
+                exploration["actor_ev_behavior_cloning_multiplier"] = 12.0
+                exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                exploration["actor_storage_action_l2_penalty"] = 0.20
+                exploration["actor_ev_v2g_action_l2_penalty"] = 8.0
+                exploration["actor_action_saturation_penalty"] = 0.020
+                exploration["storage_exploration_noise_multiplier"] = 0.35
+                exploration["ev_negative_exploration_noise_multiplier"] = 0.0
+                exploration["use_amp"] = False
+                exploration["train_during_initial_exploration"] = True
+                exploration["initial_exploration_training_start_step"] = 0
+                warmup_steps = int(exploration.get("random_exploration_steps") or 0)
+                exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 6, 1)
+                exploration["warm_start_policy_phaseout_mode"] = "blend"
+            if (
+                variant.startswith("community_feasible_service_v45")
+                or variant.startswith("community_feasible_precision_v46")
+                or variant.startswith("community_feasible_precision_v47")
+                or variant.startswith("community_feasible_precision_v48")
+            ):
+                simulator["reward_function"] = (
+                    "CostServiceCommunityFeasiblePrecisionRewardV47"
+                    if variant.startswith("community_feasible_precision_v47")
+                    else "CostServiceCommunityFeasiblePrecisionRewardV46"
+                    if (
+                        variant.startswith("community_feasible_precision_v46")
+                        or variant.startswith("community_feasible_precision_v48")
+                    )
+                    else "CostServiceCommunityFeasibleServiceRewardV45"
+                )
+                simulator["reward_function_kwargs"] = {}
+                algorithm["networks"]["critic"]["lr"] = 1.0e-4
+                exploration["critic_loss"] = "huber"
+                exploration["critic_huber_beta"] = 1.0
+                exploration["critic_target_clip_abs"] = (
+                    25.0
+                    if (
+                        variant.startswith("community_feasible_precision_v46")
+                        or variant.startswith("community_feasible_precision_v47")
+                        or variant.startswith("community_feasible_precision_v48")
+                    )
+                    else 35.0
+                )
+                exploration["actor_behavior_cloning_source"] = "warm_start_policy"
+                exploration["actor_behavior_cloning_weight"] = 0.120
+                exploration["actor_ev_behavior_cloning_multiplier"] = 12.0
+                exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                exploration["actor_storage_action_l2_penalty"] = 0.20
+                exploration["actor_ev_v2g_action_l2_penalty"] = 8.0
+                exploration["actor_action_saturation_penalty"] = 0.020
+                exploration["storage_exploration_noise_multiplier"] = 0.35
+                exploration["ev_negative_exploration_noise_multiplier"] = 0.0
+                exploration["use_amp"] = False
+                exploration["train_during_initial_exploration"] = True
+                exploration["initial_exploration_training_start_step"] = 0
+                warmup_steps = int(exploration.get("random_exploration_steps") or 0)
+                exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 6, 1)
+                exploration["warm_start_policy_phaseout_mode"] = "blend"
+                if "teacher_clone" in variant:
+                    algorithm["networks"]["actor"]["lr"] = 2.0e-4
+                    algorithm["networks"]["critic"]["lr"] = 1.0e-4
+                    exploration["actor_policy_loss_weight"] = 0.0
+                    exploration["actor_policy_loss_warmup_weight"] = 0.0
+                    exploration["actor_policy_loss_warmup_steps"] = 0
+                    exploration["actor_behavior_cloning_weight"] = 0.500
+                    exploration["actor_behavior_cloning_min_weight"] = 0.500
+                    exploration["actor_behavior_cloning_decay_steps"] = 0
+                    exploration["actor_ev_behavior_cloning_multiplier"] = 24.0
+                    exploration["actor_ev_behavior_cloning_positive_target_weight"] = 8.0
+                    exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.0
+                    exploration["actor_storage_behavior_cloning_multiplier"] = 1.00
+                    exploration["actor_storage_action_l2_penalty"] = 0.10
+                    exploration["actor_ev_v2g_action_l2_penalty"] = 20.0
+                    exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 32, 1)
+                    if "ev_learning_teacher" in variant:
+                        exploration["warm_start_policy_hyperparameters"] = (
+                            _rbc_smart_learning_teacher_hyperparameters()
+                        )
+                        exploration["actor_behavior_cloning_weight"] = 0.650
+                        exploration["actor_behavior_cloning_min_weight"] = 0.650
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 36.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 16.0
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 4.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                        exploration["actor_storage_action_l2_penalty"] = 0.30
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
+                    if variant.startswith("community_feasible_precision_v47"):
+                        exploration["actor_behavior_cloning_weight"] = 0.850
+                        exploration["actor_behavior_cloning_min_weight"] = 0.850
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 64.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 20.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.15
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 16.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.12
+                        exploration["actor_storage_action_l2_penalty"] = 0.45
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 32.0
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 64, 1)
+                    if variant.startswith("community_feasible_precision_v48"):
+                        exploration["actor_behavior_cloning_weight"] = 0.650
+                        exploration["actor_behavior_cloning_min_weight"] = 0.650
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 40.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 16.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.0
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 8.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                        exploration["actor_storage_action_l2_penalty"] = 0.30
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 32, 1)
+                    if "ev_learning_teacher_event" in variant:
+                        teacher_hyperparameters = dict(
+                            exploration.get("warm_start_policy_hyperparameters") or {}
+                        )
+                        teacher_hyperparameters.update(
+                            {
+                                "storage_min_soc": 0.25,
+                                "storage_price_discharge_soc_floor": 0.30,
+                                "storage_peak_discharge_soc_floor": 0.30,
+                                "price_discharge_rate": 0.35,
+                                "peak_discharge_rate": 0.50,
+                            }
+                        )
+                        exploration["warm_start_policy_hyperparameters"] = teacher_hyperparameters
+                        exploration["actor_behavior_cloning_weight"] = 0.700
+                        exploration["actor_behavior_cloning_min_weight"] = 0.700
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 44.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 24.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.15
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 4.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.15
+                        exploration["actor_storage_action_l2_penalty"] = 0.45
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 30.0
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 64, 1)
+                    if "ev_focus" in variant:
+                        exploration["actor_behavior_cloning_weight"] = 0.650
+                        exploration["actor_behavior_cloning_min_weight"] = 0.650
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 36.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 16.0
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                        exploration["actor_storage_action_l2_penalty"] = 0.30
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
+                    if "slow_finetune" in variant:
+                        exploration["actor_policy_loss_weight"] = 0.12
+                        exploration["actor_policy_loss_warmup_weight"] = 0.01
+                        exploration["actor_policy_loss_warmup_steps"] = max(warmup_steps * 96, 1)
+                        exploration["actor_policy_loss_warmup_start_step"] = max(warmup_steps * 2, 1)
+                        exploration["actor_behavior_cloning_weight"] = 0.650
+                        exploration["actor_behavior_cloning_min_weight"] = 0.450
+                        exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 96, 1)
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 40.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 18.0
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.35
+                        exploration["actor_storage_action_l2_penalty"] = 0.25
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 28.0
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 64, 1)
+                    if "ev_focus_event" in variant:
+                        exploration["actor_policy_loss_weight"] = 0.0
+                        exploration["actor_policy_loss_warmup_weight"] = 0.0
+                        exploration["actor_policy_loss_warmup_steps"] = 0
+                        exploration["actor_behavior_cloning_weight"] = 0.700
+                        exploration["actor_behavior_cloning_min_weight"] = 0.700
+                        exploration["actor_behavior_cloning_decay_steps"] = 0
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 44.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 24.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.25
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.20
+                        exploration["actor_storage_action_l2_penalty"] = 0.35
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 30.0
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 48, 1)
+                    if "ev_guarded_band" in variant:
+                        exploration["actor_behavior_cloning_weight"] = 0.650
+                        exploration["actor_behavior_cloning_min_weight"] = 0.650
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 36.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 16.0
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 4.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                        exploration["actor_storage_action_l2_penalty"] = 0.30
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
+                    if "ev_band" in variant:
+                        exploration["actor_behavior_cloning_weight"] = 0.600
+                        exploration["actor_behavior_cloning_min_weight"] = 0.600
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 32.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 12.0
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 12.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                        exploration["actor_storage_action_l2_penalty"] = 0.30
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
+                    if "ev_balanced" in variant:
+                        exploration["actor_behavior_cloning_weight"] = 0.625
+                        exploration["actor_behavior_cloning_min_weight"] = 0.625
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 34.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 14.0
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 8.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                        exploration["actor_storage_action_l2_penalty"] = 0.30
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
+                if "actor_pretrain_slow" in variant:
+                    exploration["actor_policy_loss_weight"] = 0.60
+                    exploration["actor_policy_loss_warmup_weight"] = 0.02
+                    exploration["actor_policy_loss_warmup_steps"] = max(warmup_steps * 64, 1)
+                    exploration["actor_policy_loss_warmup_start_step"] = 0
+                    exploration["actor_behavior_cloning_weight"] = 0.250
+                    exploration["actor_behavior_cloning_min_weight"] = 0.200
+                    exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 64, 1)
+                    exploration["actor_ev_behavior_cloning_multiplier"] = 24.0
+                    exploration["actor_ev_behavior_cloning_positive_target_weight"] = 6.0
+                    exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.0
+                    exploration["actor_storage_behavior_cloning_multiplier"] = 1.00
+                    exploration["actor_storage_action_l2_penalty"] = 0.18
+                    exploration["actor_ev_v2g_action_l2_penalty"] = 16.0
+                    exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 24, 1)
+                elif "actor_pretrain" in variant:
+                    exploration["actor_policy_loss_warmup_weight"] = 0.05
+                    exploration["actor_policy_loss_warmup_steps"] = max(warmup_steps * 16, 1)
+                    exploration["actor_policy_loss_warmup_start_step"] = 0
+                    exploration["actor_behavior_cloning_weight"] = 0.180
+                    exploration["actor_behavior_cloning_min_weight"] = 0.120
+                    exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 16, 1)
+                    exploration["actor_ev_behavior_cloning_multiplier"] = 16.0
+                    exploration["actor_ev_behavior_cloning_positive_target_weight"] = 4.0
+                    exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.0
+                    exploration["actor_storage_behavior_cloning_multiplier"] = 0.50
+                    exploration["actor_storage_action_l2_penalty"] = 0.12
+                    exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 10, 1)
+        if variant in {
+            "ev_service_v2g_guard_prioritized_warm_rbc_basic",
+            "service_guard_v2_prioritized_low_warm_rbc_basic",
+            "service_guard_v2_prioritized_low_bc_decay_warm_rbc_basic",
+            "cost_balanced_v3_prioritized_low_bc_decay_warm_rbc_basic",
+            "community_band_v4_prioritized_tiny_bc_decay_warm_rbc_basic",
+            "community_storage_band_v41_prioritized_regularized_warm_rbc_basic",
+            "community_service_band_v42_prioritized_regularized_warm_rbc_basic",
+            "community_service_band_v42_prioritized_regularized_warm_rbc_smart",
+            "community_service_band_v42_prioritized_warmtrain_rbc_smart",
+            "community_service_band_v42_prioritized_warmtrain_phaseout_rbc_smart",
+            "community_battery_value_v43_prioritized_warmtrain_phaseout_rbc_smart",
+            "community_battery_value_v43_teacher_bc_stable_rbc_smart",
+            "community_smooth_service_v44_stable_teacher_bc_rbc_smart",
+            "community_feasible_service_v45_stable_teacher_bc_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
+            "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_band_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_balanced_rbc_smart",
+            "community_feasible_service_v45_actor_pretrain_rbc_smart",
+            "community_feasible_service_v45_actor_pretrain_slow_rbc_smart",
+        }:
+            replay_buffer = algorithm.setdefault("replay_buffer", {})
+            replay_buffer["class"] = "RewardWeightedMultiAgentReplayBuffer"
+            if variant == "ev_service_v2g_guard_prioritized_warm_rbc_basic":
+                replay_buffer["priority_fraction"] = 0.5
+            elif "ev_learning_teacher_event" in variant:
+                replay_buffer["priority_fraction"] = 0.30
+            elif "ev_focus_event" in variant:
+                replay_buffer["priority_fraction"] = 0.35
+            elif (
+                variant.startswith("community_feasible_precision_v46")
+                or variant.startswith("community_feasible_precision_v47")
+                or variant.startswith("community_feasible_precision_v48")
+            ):
+                replay_buffer["priority_fraction"] = 0.20
+            elif (
+                variant.startswith("community_smooth_service_v44")
+                or variant.startswith("community_feasible_service_v45")
+                or variant.startswith("community_feasible_precision_v46")
+                or variant.startswith("community_feasible_precision_v47")
+                or variant.startswith("community_feasible_precision_v48")
+            ):
+                replay_buffer["priority_fraction"] = 0.25
+            elif "teacher_bc" in variant:
+                replay_buffer["priority_fraction"] = 0.35
+            elif variant.startswith("community_service_band_v42") or variant.startswith("community_battery_value_v43"):
+                replay_buffer["priority_fraction"] = 0.20
+            elif variant.startswith("community_band_v4") or variant.startswith("community_storage_band_v41"):
+                replay_buffer["priority_fraction"] = 0.15
+            else:
+                replay_buffer["priority_fraction"] = 0.25
+            replay_buffer["priority_alpha"] = 0.7
+            replay_buffer["priority_epsilon"] = 1.0e-3
+            replay_buffer["priority_mode"] = "negative_reward"
+            if (
+                variant.startswith("community_feasible_service_v45")
+                or variant.startswith("community_feasible_precision_v46")
+                or variant.startswith("community_feasible_precision_v47")
+                or variant.startswith("community_feasible_precision_v48")
+            ):
+                replay_buffer["behavior_action_priority_mode"] = "positive"
+                replay_buffer["behavior_action_priority_weight"] = (
+                    4.0
+                    if variant.startswith("community_feasible_precision_v47")
+                    else 3.5
+                    if variant.startswith("community_feasible_precision_v48")
+                    else 4.0
+                    if "ev_learning_teacher_event" in variant
+                    else 4.0
+                    if "ev_focus_event" in variant
+                    else 3.0
+                    if "ev_learning_teacher" in variant
+                    else 3.0
+                    if "ev_focus" in variant
+                    else 3.0
+                    if "ev_guarded_band" in variant
+                    else 2.75
+                    if "ev_balanced" in variant
+                    else 2.5
+                    if "ev_band" in variant
+                    else (2.0 if "teacher_clone" in variant else (1.0 if "actor_pretrain" in variant else 0.5))
+                )
+                replay_buffer["behavior_action_priority_scope"] = (
+                    "ev"
+                    if (
+                        "ev_focus_event" in variant
+                        or "ev_learning_teacher_event" in variant
+                        or "ev_learning_teacher" in variant
+                        or variant.startswith("community_feasible_precision_v47")
+                        or variant.startswith("community_feasible_precision_v48")
+                        or "ev_focus" in variant
+                        or "ev_guarded_band" in variant
+                        or "ev_band" in variant
+                        or "ev_balanced" in variant
+                    )
+                    else "all"
+                )
+                if "ev_learning_teacher_event" in variant:
+                    replay_buffer["observation_event_priority_weight"] = 6.0
+                    replay_buffer["observation_event_priority_mode"] = "ev_departure_service"
+                elif "ev_focus_event" in variant:
+                    replay_buffer["observation_event_priority_weight"] = 8.0
+                    replay_buffer["observation_event_priority_mode"] = "ev_departure_service"
+            replay_buffer["priority_max"] = (
+                60.0
+                if "ev_learning_teacher_event" in variant or "ev_focus_event" in variant
+                else 30.0
+                if (
+                    variant.startswith("community_feasible_precision_v46")
+                    or variant.startswith("community_feasible_precision_v47")
+                    or variant.startswith("community_feasible_precision_v48")
+                )
+                else 40.0
+                if (
+                    variant.startswith("community_smooth_service_v44")
+                    or variant.startswith("community_feasible_service_v45")
+                    or variant.startswith("community_feasible_precision_v46")
+                    or variant.startswith("community_feasible_precision_v47")
+                    or variant.startswith("community_feasible_precision_v48")
+                )
+                else (50.0 if "teacher_bc" in variant else 100.0)
+            )
+        if variant in {
+            "service_guard_v2_prioritized_low_bc_decay_warm_rbc_basic",
+            "cost_balanced_v3_prioritized_low_bc_decay_warm_rbc_basic",
+            "community_band_v4_prioritized_tiny_bc_decay_warm_rbc_basic",
+            "community_storage_band_v41_prioritized_regularized_warm_rbc_basic",
+            "community_service_band_v42_prioritized_regularized_warm_rbc_basic",
+            "community_service_band_v42_prioritized_regularized_warm_rbc_smart",
+            "community_service_band_v42_prioritized_warmtrain_rbc_smart",
+            "community_service_band_v42_prioritized_warmtrain_phaseout_rbc_smart",
+            "community_battery_value_v43_prioritized_warmtrain_phaseout_rbc_smart",
+            "community_battery_value_v43_teacher_bc_stable_rbc_smart",
+            "community_smooth_service_v44_stable_teacher_bc_rbc_smart",
+            "community_feasible_service_v45_stable_teacher_bc_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
+            "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_band_rbc_smart",
+            "community_feasible_service_v45_teacher_clone_ev_balanced_rbc_smart",
+            "community_feasible_service_v45_actor_pretrain_rbc_smart",
+            "community_feasible_service_v45_actor_pretrain_slow_rbc_smart",
+        }:
+            warmup_steps = int(exploration.get("random_exploration_steps") or 0)
+            is_community_variant = (
+                variant.startswith("community_band_v4")
+                or variant.startswith("community_storage_band_v41")
+                or variant.startswith("community_service_band_v42")
+                or variant.startswith("community_battery_value_v43")
+            )
+            if "teacher_clone" in variant:
+                if "slow_finetune" in variant:
+                    exploration["actor_behavior_cloning_min_weight"] = 0.450
+                    exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 96, 1)
+                elif (
+                    "ev_learning_teacher" in variant
+                    or "ev_focus" in variant
+                    or "ev_guarded_band" in variant
+                    or "ev_band" in variant
+                    or "ev_balanced" in variant
+                ):
+                    exploration["actor_behavior_cloning_min_weight"] = float(
+                        exploration.get("actor_behavior_cloning_weight", 0.650)
+                    )
+                else:
+                    exploration["actor_behavior_cloning_min_weight"] = 0.500
+                    exploration["actor_behavior_cloning_decay_steps"] = 0
+            elif "actor_pretrain_slow" in variant:
+                exploration["actor_behavior_cloning_min_weight"] = 0.200
+                exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 64, 1)
+            elif "actor_pretrain" in variant:
+                exploration["actor_behavior_cloning_min_weight"] = 0.120
+                exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 16, 1)
+            elif (
+                variant.startswith("community_smooth_service_v44")
+                or variant.startswith("community_feasible_service_v45")
+                or variant.startswith("community_feasible_precision_v46")
+                or variant.startswith("community_feasible_precision_v47")
+                or variant.startswith("community_feasible_precision_v48")
+            ):
+                exploration["actor_behavior_cloning_min_weight"] = 0.100
+                exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 12, 1)
+            elif "teacher_bc" in variant:
+                exploration["actor_behavior_cloning_min_weight"] = 0.080
+                exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 8, 1)
+            elif "phaseout" in variant:
+                exploration["actor_behavior_cloning_min_weight"] = 0.060
+                exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 6, 1)
+            elif is_community_variant:
+                exploration["actor_behavior_cloning_min_weight"] = 0.005
+                exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps, 1)
+            else:
+                exploration["actor_behavior_cloning_min_weight"] = 0.010
+                exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 2, 1)
+            exploration["actor_behavior_cloning_decay_start_step"] = warmup_steps
         return
 
     raise ValueError(f"Unknown MADDPG variant: {variant}")
@@ -343,10 +1240,11 @@ def _build_run_config(
     tracking["training_diagnostics_enabled"] = True
     tracking["training_diagnostics_detail"] = "summary"
     tracking["reward_diagnostics_enabled"] = True
-    tracking["reward_diagnostics_detail"] = "summary"
+    tracking["reward_diagnostics_detail"] = getattr(args, "reward_diagnostics_detail", "summary")
 
     simulator = config.setdefault("simulator", {})
     simulator["episodes"] = max(int(args.episodes), 1)
+    simulator["deterministic_finish"] = bool(getattr(args, "deterministic_finish", False))
     if not args.full_window:
         steps = _selected_steps(dataset_key, args)
         start = max(int(args.start), 0)
@@ -363,9 +1261,17 @@ def _build_run_config(
     training["steps_between_training_updates"] = 1
     training["target_update_interval"] = 1 if agent_key == "maddpg" else 0
 
+    checkpointing = config.setdefault("checkpointing", {})
+    checkpoint_interval = getattr(args, "checkpoint_interval", None)
+    if checkpoint_interval is not None:
+        checkpointing["checkpoint_interval"] = max(int(checkpoint_interval), 1)
+
     algorithm = config.setdefault("algorithm", {})
     hyperparameters = algorithm.setdefault("hyperparameters", {})
     hyperparameters["seed"] = int(seed)
+    hyperparameters.update(
+        _parse_hyperparameter_overrides(getattr(args, "hyperparameter_override", []))
+    )
 
     if agent_key == "maddpg":
         algorithm.setdefault("networks", {})
@@ -395,6 +1301,53 @@ def _build_run_config(
         exploration["reward_normalization_clip"] = float(exploration.get("reward_normalization_clip", 10.0))
         exploration["reward_normalization_epsilon"] = float(exploration.get("reward_normalization_epsilon", 1.0e-8))
         _apply_maddpg_variant(config, maddpg_variant or "current")
+        exploration.update(
+            _parse_key_value_overrides(
+                getattr(args, "exploration_override", []),
+                label="exploration override",
+            )
+        )
+        algorithm.setdefault("replay_buffer", {}).update(
+            _parse_key_value_overrides(
+                getattr(args, "replay_buffer_override", []),
+                label="replay buffer override",
+            )
+        )
+        warm_start_policy = exploration.get("warm_start_policy")
+        if warm_start_policy and "warm_start_policy_hyperparameters" not in exploration:
+            warm_start_hyperparameters = _load_baseline_hyperparameters(
+                dataset_key,
+                str(warm_start_policy),
+            )
+            if warm_start_hyperparameters:
+                exploration["warm_start_policy_hyperparameters"] = warm_start_hyperparameters
+        warm_start_overrides = _parse_key_value_overrides(
+            getattr(args, "warm_start_hyperparameter_override", []),
+            label="warm-start hyperparameter override",
+        )
+        if warm_start_overrides:
+            warm_start_hyperparameters = exploration.setdefault("warm_start_policy_hyperparameters", {})
+            if not isinstance(warm_start_hyperparameters, dict):
+                warm_start_hyperparameters = {}
+                exploration["warm_start_policy_hyperparameters"] = warm_start_hyperparameters
+            warm_start_hyperparameters.update(warm_start_overrides)
+        warm_start_phaseout_steps = getattr(args, "warm_start_phaseout_steps", None)
+        if warm_start_phaseout_steps is not None:
+            exploration["warm_start_policy_phaseout_steps"] = max(
+                int(warm_start_phaseout_steps),
+                0,
+            )
+
+    reward_function_override = getattr(args, "reward_function_override", None)
+    if reward_function_override:
+        simulator["reward_function"] = str(reward_function_override)
+        simulator["reward_function_kwargs"] = {}
+    simulator.setdefault("reward_function_kwargs", {}).update(
+        _parse_key_value_overrides(
+            getattr(args, "reward_kwarg_override", []),
+            label="reward kwarg override",
+        )
+    )
 
     config.setdefault("topology", {})
     _set_nested(config, ("topology", "num_agents"), None)
@@ -513,6 +1466,7 @@ def _collect_job_row(plan: Mapping[str, Any], *, output_dir: Path, status: str, 
                 "algorithm_name": algorithm.get("name"),
                 "entity_profile": encoding.get("profile"),
                 "episodes": simulator.get("episodes"),
+                "deterministic_finish": simulator.get("deterministic_finish"),
                 "simulation_start_time_step": simulator.get("simulation_start_time_step"),
                 "simulation_end_time_step": simulator.get("simulation_end_time_step"),
                 "episode_time_steps": simulator.get("episode_time_steps"),
@@ -541,6 +1495,7 @@ def _fieldnames(rows: list[Mapping[str, Any]]) -> list[str]:
         "entity_profile",
         "seed",
         "episodes",
+        "deterministic_finish",
         "episode_time_steps",
         "simulation_start_time_step",
         "simulation_end_time_step",
@@ -575,6 +1530,7 @@ def _write_readme(path: Path, *, rows: list[Mapping[str, Any]], args: argparse.N
         f"- Failed: `{failed}`",
         f"- Planned only: `{planned}`",
         f"- KPI export enabled: `{not bool(args.no_kpi_export)}`",
+        f"- Deterministic finish: `{bool(getattr(args, 'deterministic_finish', False))}`",
         f"- Dry run: `{bool(args.dry_run)}`",
         "",
         "## Files",
@@ -647,11 +1603,22 @@ def run_phase6a(args: argparse.Namespace) -> dict[str, Any]:
             "maddpg_variants": args.maddpg_variant or list(DEFAULT_MADDPG_VARIANTS),
             "seeds": args.seed or [123],
             "episodes": args.episodes,
+            "deterministic_finish": bool(getattr(args, "deterministic_finish", False)),
             "steps": args.steps,
             "steps_15s": args.steps_15s,
             "steps_2022": args.steps_2022,
             "full_window": args.full_window,
             "kpi_export": not bool(args.no_kpi_export),
+            "checkpoint_interval": getattr(args, "checkpoint_interval", None),
+            "reward_diagnostics_detail": getattr(args, "reward_diagnostics_detail", "summary"),
+            "reward_function_override": getattr(args, "reward_function_override", None),
+            "hyperparameter_overrides": list(getattr(args, "hyperparameter_override", []) or []),
+            "exploration_overrides": list(getattr(args, "exploration_override", []) or []),
+            "warm_start_hyperparameter_overrides": list(
+                getattr(args, "warm_start_hyperparameter_override", []) or []
+            ),
+            "replay_buffer_overrides": list(getattr(args, "replay_buffer_override", []) or []),
+            "reward_kwarg_overrides": list(getattr(args, "reward_kwarg_override", []) or []),
             "dry_run": bool(args.dry_run),
         },
         "rows": rows,

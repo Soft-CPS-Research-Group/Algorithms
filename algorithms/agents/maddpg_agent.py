@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import random
 import time
 from copy import deepcopy
@@ -11,7 +12,7 @@ import numpy as np
 import torch
 from loguru import logger
 from torch.amp import GradScaler, autocast
-from torch.nn.functional import mse_loss
+from torch.nn.functional import mse_loss, smooth_l1_loss
 from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.base_agent import BaseAgent
@@ -20,13 +21,40 @@ from algorithms.utils.networks import Actor, Critic
 from algorithms.utils.replay_buffer import (
     MultiAgentReplayBuffer,
     PrioritizedReplayBuffer,
+    RewardWeightedMultiAgentReplayBuffer,
 )
 from utils.artifact_config_builder import build_auto_artifact_config
 
 REPLAY_BUFFER_REGISTRY = {
     "MultiAgentReplayBuffer": MultiAgentReplayBuffer,
+    "RewardWeightedMultiAgentReplayBuffer": RewardWeightedMultiAgentReplayBuffer,
     "PrioritizedReplayBuffer": PrioritizedReplayBuffer,
 }
+
+
+def _select_torch_device(*, require_cuda: bool = False) -> torch.device:
+    """Select the torch device and fail early when CUDA was explicitly required."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if require_cuda:
+        raise RuntimeError(
+            "MADDPG was configured with require_cuda=true, but torch.cuda.is_available() is false."
+        )
+    return torch.device("cpu")
+
+
+def _log_torch_runtime(device: torch.device) -> None:
+    cuda_available = torch.cuda.is_available()
+    cuda_device_count = torch.cuda.device_count() if cuda_available else 0
+    logger.info(
+        "Torch runtime: torch_version={}, torch_cuda_version={}, cuda_available={}, cuda_device_count={}",
+        torch.__version__,
+        torch.version.cuda,
+        cuda_available,
+        cuda_device_count,
+    )
+    if cuda_available:
+        logger.info("CUDA device selected: {}", torch.cuda.get_device_name(device))
 
 
 class ActionScaledActor(torch.nn.Module):
@@ -54,15 +82,16 @@ class MADDPG(BaseAgent):
         super().__init__()
         self.config = config
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info("Device selected: {}", self.device)
-        torch.backends.cudnn.benchmark = True
-
         exploration_cfg = self.config["algorithm"]["exploration"]["params"]
         buffer_cfg = self.config["algorithm"]["replay_buffer"]
         network_cfg = self.config["algorithm"]["networks"]
 
         hyperparams = self.config["algorithm"]["hyperparameters"]
+        self.require_cuda = bool(exploration_cfg.get("require_cuda", hyperparams.get("require_cuda", False)))
+        self.device = _select_torch_device(require_cuda=self.require_cuda)
+        logger.info("Device selected: {}", self.device)
+        _log_torch_runtime(self.device)
+        torch.backends.cudnn.benchmark = self.device.type == "cuda"
 
         self.gamma = float(hyperparams.get("gamma", exploration_cfg.get("gamma", 0.99)))
         self.tau = float(exploration_cfg.get("tau", 0.001))
@@ -74,10 +103,34 @@ class MADDPG(BaseAgent):
         self.noise_clip = float(noise_clip_raw) if noise_clip_raw is not None else None
         if self.noise_clip is not None and self.noise_clip <= 0.0:
             self.noise_clip = None
+        self.storage_exploration_noise_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("storage_exploration_noise_multiplier", 1.0) or 0.0),
+        )
+        self.ev_negative_exploration_noise_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("ev_negative_exploration_noise_multiplier", 1.0) or 0.0),
+        )
         self.warm_start_policy_name = self._optional_string(exploration_cfg.get("warm_start_policy"))
         self.initial_exploration_strategy = self._resolve_initial_exploration_strategy(exploration_cfg)
         self.warm_start_policy_deterministic = bool(exploration_cfg.get("warm_start_policy_deterministic", True))
         self.warm_start_policy_noise_scale = max(0.0, float(exploration_cfg.get("warm_start_policy_noise_scale", 0.0) or 0.0))
+        self.warm_start_policy_phaseout_steps = max(
+            0,
+            int(exploration_cfg.get("warm_start_policy_phaseout_steps", 0) or 0),
+        )
+        self.warm_start_policy_phaseout_mode = str(
+            exploration_cfg.get("warm_start_policy_phaseout_mode", "probability") or "probability"
+        ).strip().lower()
+        if self.warm_start_policy_phaseout_mode not in {"probability", "blend"}:
+            raise ValueError("MADDPG warm_start_policy_phaseout_mode must be 'probability' or 'blend'.")
+        self.train_during_initial_exploration = bool(
+            exploration_cfg.get("train_during_initial_exploration", False)
+        )
+        self.initial_exploration_training_start_step = max(
+            0,
+            int(exploration_cfg.get("initial_exploration_training_start_step", 0) or 0),
+        )
         self.noop_noise_scale = max(0.0, float(exploration_cfg.get("noop_noise_scale", 0.15) or 0.0))
         self.deferrable_on_probability = float(np.clip(float(exploration_cfg.get("deferrable_on_probability", 0.2) or 0.0), 0.0, 1.0))
         self.deferrable_trigger_threshold = float(np.clip(float(exploration_cfg.get("deferrable_trigger_threshold", 0.5) or 0.5), 0.0, 1.0))
@@ -89,6 +142,28 @@ class MADDPG(BaseAgent):
         if self.critic_update_mode not in {"joint_mean", "per_agent"}:
             raise ValueError("MADDPG critic_update_mode must be 'joint_mean' or 'per_agent'.")
         self.actor_update_interval = max(1, int(exploration_cfg.get("actor_update_interval", 1) or 1))
+        self.actor_policy_loss_weight = max(
+            0.0,
+            float(exploration_cfg.get("actor_policy_loss_weight", 1.0) or 0.0),
+        )
+        self.actor_policy_loss_warmup_weight = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_policy_loss_warmup_weight",
+                    self.actor_policy_loss_weight,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_policy_loss_warmup_steps = max(
+            0,
+            int(exploration_cfg.get("actor_policy_loss_warmup_steps", 0) or 0),
+        )
+        self.actor_policy_loss_warmup_start_step = max(
+            0,
+            int(exploration_cfg.get("actor_policy_loss_warmup_start_step", 0) or 0),
+        )
         self.target_policy_smoothing = bool(exploration_cfg.get("target_policy_smoothing", False))
         self.target_policy_noise = max(0.0, float(exploration_cfg.get("target_policy_noise", 0.05) or 0.0))
         self.target_policy_noise_clip = max(
@@ -100,9 +175,91 @@ class MADDPG(BaseAgent):
             0.0,
             float(exploration_cfg.get("actor_action_saturation_penalty", 0.0) or 0.0),
         )
+        self.actor_storage_action_l2_penalty = max(
+            0.0,
+            float(exploration_cfg.get("actor_storage_action_l2_penalty", 0.0) or 0.0),
+        )
+        self.actor_ev_v2g_action_l2_penalty = max(
+            0.0,
+            float(exploration_cfg.get("actor_ev_v2g_action_l2_penalty", 0.0) or 0.0),
+        )
         self.actor_action_saturation_threshold = float(
             np.clip(float(exploration_cfg.get("actor_action_saturation_threshold", 0.85) or 0.85), 0.0, 1.0)
         )
+        self.actor_behavior_cloning_weight = max(
+            0.0,
+            float(exploration_cfg.get("actor_behavior_cloning_weight", 0.0) or 0.0),
+        )
+        self.actor_ev_behavior_cloning_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("actor_ev_behavior_cloning_multiplier", 1.0) or 0.0),
+        )
+        self.actor_ev_behavior_cloning_positive_target_weight = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_ev_behavior_cloning_positive_target_weight",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_ev_behavior_cloning_positive_target_power = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_ev_behavior_cloning_positive_target_power",
+                    1.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_ev_behavior_cloning_zero_target_weight = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_ev_behavior_cloning_zero_target_weight",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_ev_behavior_cloning_zero_target_threshold = float(
+            np.clip(
+                float(
+                    exploration_cfg.get(
+                        "actor_ev_behavior_cloning_zero_target_threshold",
+                        0.05,
+                    )
+                    or 0.05
+                ),
+                0.0,
+                1.0,
+            )
+        )
+        self.actor_storage_behavior_cloning_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("actor_storage_behavior_cloning_multiplier", 1.0) or 0.0),
+        )
+        self.actor_behavior_cloning_min_weight = max(
+            0.0,
+            float(exploration_cfg.get("actor_behavior_cloning_min_weight", 0.0) or 0.0),
+        )
+        self.actor_behavior_cloning_decay_steps = max(
+            0,
+            int(exploration_cfg.get("actor_behavior_cloning_decay_steps", 0) or 0),
+        )
+        self.actor_behavior_cloning_decay_start_step = max(
+            0,
+            int(exploration_cfg.get("actor_behavior_cloning_decay_start_step", 0) or 0),
+        )
+        self.actor_behavior_cloning_source = str(
+            exploration_cfg.get("actor_behavior_cloning_source", "replay_action") or "replay_action"
+        ).strip().lower()
+        if self.actor_behavior_cloning_source not in {"replay_action", "warm_start_policy"}:
+            raise ValueError(
+                "MADDPG actor_behavior_cloning_source must be 'replay_action' or 'warm_start_policy'."
+            )
         self.reward_normalization_enabled = bool(exploration_cfg.get("reward_normalization", False))
         self.reward_normalization_clip = float(exploration_cfg.get("reward_normalization_clip", 10.0) or 10.0)
         if self.reward_normalization_clip <= 0.0:
@@ -113,6 +270,30 @@ class MADDPG(BaseAgent):
         self.reward_norm_count = 0
         self.reward_norm_mean = 0.0
         self.reward_norm_m2 = 0.0
+        replay_cfg = self.config["algorithm"].get("replay_buffer", {})
+        self.replay_observation_event_priority_weight = max(
+            0.0,
+            float(replay_cfg.get("observation_event_priority_weight", 0.0) or 0.0),
+        )
+        self.replay_observation_event_priority_mode = str(
+            replay_cfg.get("observation_event_priority_mode", "ev_departure_service") or "ev_departure_service"
+        ).strip().lower()
+        if self.replay_observation_event_priority_mode not in {"ev_departure_service"}:
+            raise ValueError(
+                "MADDPG replay_buffer.observation_event_priority_mode must be 'ev_departure_service'."
+            )
+        self._last_observation_event_priority_boost = 0.0
+        self.critic_loss_function = str(exploration_cfg.get("critic_loss", "mse") or "mse").strip().lower()
+        if self.critic_loss_function not in {"mse", "huber"}:
+            raise ValueError("MADDPG critic_loss must be 'mse' or 'huber'.")
+        self.critic_huber_beta = max(
+            float(exploration_cfg.get("critic_huber_beta", 1.0) or 1.0),
+            1.0e-6,
+        )
+        self.critic_target_clip_abs = max(
+            0.0,
+            float(exploration_cfg.get("critic_target_clip_abs", 0.0) or 0.0),
+        )
         self.end_initial_exploration_time_step = max(
             0,
             int(exploration_cfg.get("end_initial_exploration_time_step", 0) or 0),
@@ -175,11 +356,13 @@ class MADDPG(BaseAgent):
         self._latest_encoded_observations: Optional[List[np.ndarray]] = None
         self._warm_start_policy = None
         self._warned_missing_raw_context = False
+        self._last_warm_start_phaseout_probability = 0.0
+        self._last_warm_start_phaseout_used = False
         self._noop_actor_initialized = False
         self.replay_buffer = self._initialize_replay_buffer()
         self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
         self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
-        self.use_amp = self.device.type == "cuda"
+        self.use_amp = bool(exploration_cfg.get("use_amp", True)) and self.device.type == "cuda"
         self.scaler = GradScaler(enabled=self.use_amp)
 
         logger.info("MADDPG initialization complete.")
@@ -262,6 +445,7 @@ class MADDPG(BaseAgent):
             highs[agent_idx] = high
         self.action_low = lows
         self.action_high = highs
+        self._configure_replay_behavior_action_priority()
         self._initialize_warm_start_policy(
             observation_names=observation_names,
             action_names=action_names,
@@ -270,6 +454,26 @@ class MADDPG(BaseAgent):
             metadata=metadata,
         )
         self._apply_noop_actor_initialization()
+
+    def _configure_replay_behavior_action_priority(self) -> None:
+        replay_buffer = getattr(self, "replay_buffer", None)
+        if not hasattr(replay_buffer, "set_behavior_action_priority_masks"):
+            return
+        replay_cfg = self.config["algorithm"].get("replay_buffer", {})
+        scope = str(replay_cfg.get("behavior_action_priority_scope", "all") or "all").strip().lower()
+        if scope != "ev":
+            return
+        masks = []
+        for agent_idx in range(int(self.num_agents)):
+            action_names = self._action_names_for_agent(agent_idx)
+            action_dim = int(self.action_dimension[agent_idx])
+            masks.append(
+                [
+                    bool(action_idx < len(action_names) and self._is_ev_action_name(action_names[action_idx]))
+                    for action_idx in range(action_dim)
+                ]
+            )
+        replay_buffer.set_behavior_action_priority_masks(masks)
 
     def _initialize_warm_start_policy(
         self,
@@ -397,6 +601,29 @@ class MADDPG(BaseAgent):
             "batch_size": self.config["algorithm"]["replay_buffer"]["batch_size"],
             "num_agents": self.num_agents,
         }
+        if replay_buffer_name == "RewardWeightedMultiAgentReplayBuffer":
+            buffer_cfg = self.config["algorithm"]["replay_buffer"]
+            params.update(
+                {
+                    "priority_fraction": buffer_cfg.get("priority_fraction", 0.5),
+                    "priority_alpha": buffer_cfg.get("priority_alpha", 0.6),
+                    "priority_epsilon": buffer_cfg.get("priority_epsilon", 1.0e-3),
+                    "priority_mode": buffer_cfg.get("priority_mode", "abs_reward"),
+                    "priority_max": buffer_cfg.get("priority_max"),
+                    "behavior_action_priority_weight": buffer_cfg.get(
+                        "behavior_action_priority_weight",
+                        0.0,
+                    ),
+                    "behavior_action_priority_mode": buffer_cfg.get(
+                        "behavior_action_priority_mode",
+                        "positive",
+                    ),
+                    "behavior_action_priority_scope": buffer_cfg.get(
+                        "behavior_action_priority_scope",
+                        "all",
+                    ),
+                }
+            )
         return replay_cls(**params)
 
     def _initialize_networks(self):
@@ -448,13 +675,23 @@ class MADDPG(BaseAgent):
 
         done = bool(terminated or truncated)
         self._update_reward_normalizer(rewards)
-        self.replay_buffer.push(observations, actions, rewards, next_observations, done)
+        behavior_actions = self._transition_behavior_actions(actions)
+        priority_boost = self._transition_observation_event_priority_boost()
+        self._push_replay_transition(
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_observations,
+            done=done,
+            behavior_actions=behavior_actions,
+            priority_boost=priority_boost,
+        )
 
         if len(self.replay_buffer) < self.batch_size:
             logger.debug("Not enough samples in the replay buffer. Skipping update.")
             return
 
-        if not initial_exploration_done:
+        if not self._should_train_on_step(initial_exploration_done, global_learning_step):
             logger.debug("Initial exploration phase not finished. Skipping update.")
             return
 
@@ -462,13 +699,20 @@ class MADDPG(BaseAgent):
             logger.debug("Update step skipped based on schedule.")
             return
 
-        states, actions_all, rewards_all, next_states, dones_all = self.replay_buffer.sample()
+        if hasattr(self.replay_buffer, "sample_with_behavior_actions"):
+            states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all = (
+                self.replay_buffer.sample_with_behavior_actions()
+            )
+        else:
+            states, actions_all, rewards_all, next_states, dones_all = self.replay_buffer.sample()
+            behavior_actions_all = actions_all
 
         raw_rewards_all = torch.stack(rewards_all).to(self.device, dtype=torch.float32, non_blocking=True)
         rewards_all = self._normalize_reward_tensor(raw_rewards_all)
         dones_all = dones_all.to(self.device, dtype=torch.float32, non_blocking=True)
         states = [s.to(self.device, non_blocking=True) for s in states]
         actions_all = [a.to(self.device, non_blocking=True) for a in actions_all]
+        behavior_actions_all = [a.to(self.device, non_blocking=True) for a in behavior_actions_all]
         next_states = [ns.to(self.device, non_blocking=True) for ns in next_states]
 
         global_state = torch.cat(states, dim=1)
@@ -487,6 +731,12 @@ class MADDPG(BaseAgent):
                 [critic(global_next_state, global_next_actions) for critic in self.critic_targets]
             )
             q_targets = rewards_all + self.gamma * q_targets_next * (1 - dones_all)
+            if self.critic_target_clip_abs > 0.0:
+                q_targets = torch.clamp(
+                    q_targets,
+                    -self.critic_target_clip_abs,
+                    self.critic_target_clip_abs,
+                )
 
         if self.critic_update_mode == "per_agent":
             critic_loss_values: List[float] = []
@@ -496,7 +746,7 @@ class MADDPG(BaseAgent):
             for agent_num, (critic, optimizer) in enumerate(zip(self.critics, self.critic_optimizers)):
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
                     q_expected_agent = critic(global_state, global_actions)
-                    critic_loss_agent = mse_loss(q_expected_agent, q_targets[agent_num])
+                    critic_loss_agent = self._critic_loss(q_expected_agent, q_targets[agent_num])
 
                 optimizer.zero_grad(set_to_none=True)
                 self.scaler.scale(critic_loss_agent).backward()
@@ -515,7 +765,7 @@ class MADDPG(BaseAgent):
         else:
             q_expected = torch.stack([critic(global_state, global_actions) for critic in self.critics])
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                critic_loss = mse_loss(q_expected, q_targets).mean()
+                critic_loss = self._critic_loss(q_expected, q_targets).mean()
 
             for optimizer in self.critic_optimizers:
                 optimizer.zero_grad(set_to_none=True)
@@ -532,7 +782,7 @@ class MADDPG(BaseAgent):
 
             critic_loss_scalar = float(critic_loss.item())
             critic_loss_values = [
-                float(mse_loss(q_expected[agent_num], q_targets[agent_num]).item())
+                float(self._critic_loss(q_expected[agent_num], q_targets[agent_num]).item())
                 for agent_num in range(self.num_agents)
             ]
             critic_td_abs_values = [
@@ -560,10 +810,23 @@ class MADDPG(BaseAgent):
         total_actor_loss = 0.0
         actor_loss_values: List[float] = []
         actor_policy_loss_values: List[float] = []
+        actor_policy_loss_weighted_values: List[float] = []
         actor_regularization_values: List[float] = []
         actor_action_l2_values: List[float] = []
         actor_action_saturation_values: List[float] = []
+        actor_storage_action_l2_values: List[float] = []
+        actor_ev_v2g_action_l2_values: List[float] = []
+        actor_behavior_cloning_loss_values: List[float] = []
+        actor_behavior_cloning_ev_loss_values: List[float] = []
+        actor_behavior_cloning_storage_loss_values: List[float] = []
+        actor_behavior_cloning_regularization_values: List[float] = []
         actor_grad_norm_values: List[float] = []
+        actor_behavior_cloning_effective_weight = self._actor_behavior_cloning_effective_weight(
+            global_learning_step
+        )
+        actor_policy_loss_effective_weight = self._actor_policy_loss_effective_weight(
+            global_learning_step
+        )
         if actor_update_due:
             for agent_num, (actor, critic, actor_optimizer) in enumerate(
                 zip(self.actors, self.critics, self.actor_optimizers)
@@ -577,11 +840,34 @@ class MADDPG(BaseAgent):
 
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
                     actor_policy_loss = -critic(global_state, global_predicted_actions).mean()
-                    action_l2, action_saturation, actor_regularization = self._actor_action_regularization_terms(
+                    weighted_actor_policy_loss = actor_policy_loss_effective_weight * actor_policy_loss
+                    (
+                        action_l2,
+                        action_saturation,
+                        storage_action_l2,
+                        ev_v2g_action_l2,
+                        actor_regularization,
+                    ) = self._actor_action_regularization_terms(
                         agent_num,
                         predicted_action,
                     )
-                    actor_loss = actor_policy_loss + actor_regularization
+                    behavior_cloning_loss = self._actor_behavior_cloning_loss(
+                        agent_num,
+                        predicted_action,
+                        behavior_actions_all[agent_num],
+                    )
+                    behavior_cloning_ev_loss, behavior_cloning_storage_loss = (
+                        self._actor_behavior_cloning_type_losses(
+                            agent_num,
+                            predicted_action,
+                            behavior_actions_all[agent_num],
+                        )
+                    )
+                    behavior_cloning_regularization = (
+                        actor_behavior_cloning_effective_weight * behavior_cloning_loss
+                    )
+                    total_regularization = actor_regularization + behavior_cloning_regularization
+                    actor_loss = weighted_actor_policy_loss + total_regularization
 
                 actor_optimizer.zero_grad(set_to_none=True)
                 self.scaler.scale(actor_loss).backward()
@@ -597,9 +883,20 @@ class MADDPG(BaseAgent):
                 total_actor_loss += actor_loss.item()
                 actor_loss_values.append(float(actor_loss.item()))
                 actor_policy_loss_values.append(float(actor_policy_loss.detach().item()))
-                actor_regularization_values.append(float(actor_regularization.detach().item()))
+                actor_policy_loss_weighted_values.append(float(weighted_actor_policy_loss.detach().item()))
+                actor_regularization_values.append(float(total_regularization.detach().item()))
                 actor_action_l2_values.append(float(action_l2.detach().item()))
                 actor_action_saturation_values.append(float(action_saturation.detach().item()))
+                actor_storage_action_l2_values.append(float(storage_action_l2.detach().item()))
+                actor_ev_v2g_action_l2_values.append(float(ev_v2g_action_l2.detach().item()))
+                actor_behavior_cloning_loss_values.append(float(behavior_cloning_loss.detach().item()))
+                actor_behavior_cloning_ev_loss_values.append(float(behavior_cloning_ev_loss.detach().item()))
+                actor_behavior_cloning_storage_loss_values.append(
+                    float(behavior_cloning_storage_loss.detach().item())
+                )
+                actor_behavior_cloning_regularization_values.append(
+                    float(behavior_cloning_regularization.detach().item())
+                )
                 actor_grad_norm_values.append(float(actor_grad_norm))
                 logger.debug("Actor {} updated. Loss: {:.4f}.", agent_num, actor_loss.item())
 
@@ -610,9 +907,16 @@ class MADDPG(BaseAgent):
         else:
             actor_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_policy_loss_values = [0.0 for _ in range(self.num_agents)]
+            actor_policy_loss_weighted_values = [0.0 for _ in range(self.num_agents)]
             actor_regularization_values = [0.0 for _ in range(self.num_agents)]
             actor_action_l2_values = [0.0 for _ in range(self.num_agents)]
             actor_action_saturation_values = [0.0 for _ in range(self.num_agents)]
+            actor_storage_action_l2_values = [0.0 for _ in range(self.num_agents)]
+            actor_ev_v2g_action_l2_values = [0.0 for _ in range(self.num_agents)]
+            actor_behavior_cloning_loss_values = [0.0 for _ in range(self.num_agents)]
+            actor_behavior_cloning_ev_loss_values = [0.0 for _ in range(self.num_agents)]
+            actor_behavior_cloning_storage_loss_values = [0.0 for _ in range(self.num_agents)]
+            actor_behavior_cloning_regularization_values = [0.0 for _ in range(self.num_agents)]
             actor_grad_norm_values = [0.0 for _ in range(self.num_agents)]
             logger.debug(
                 "Actor update delayed at step {} by actor_update_interval={}.",
@@ -628,9 +932,29 @@ class MADDPG(BaseAgent):
                 "MADDPG/average_actor_loss": total_actor_loss / self.num_agents,
                 "MADDPG/actor_update_performed": float(actor_update_due),
                 "MADDPG/actor_policy_loss_mean": float(np.mean(actor_policy_loss_values)),
+                "MADDPG/actor_policy_loss_weighted_mean": float(np.mean(actor_policy_loss_weighted_values)),
+                "MADDPG/actor_policy_loss_effective_weight": float(actor_policy_loss_effective_weight),
                 "MADDPG/actor_regularization_loss_mean": float(np.mean(actor_regularization_values)),
                 "MADDPG/actor_action_l2_mean": float(np.mean(actor_action_l2_values)),
                 "MADDPG/actor_action_saturation_excess_mean": float(np.mean(actor_action_saturation_values)),
+                "MADDPG/actor_storage_action_l2_mean": float(np.mean(actor_storage_action_l2_values)),
+                "MADDPG/actor_ev_v2g_action_l2_mean": float(np.mean(actor_ev_v2g_action_l2_values)),
+                "MADDPG/actor_behavior_cloning_loss_mean": float(np.mean(actor_behavior_cloning_loss_values)),
+                "MADDPG/actor_behavior_cloning_ev_loss_mean": float(
+                    np.mean(actor_behavior_cloning_ev_loss_values)
+                ),
+                "MADDPG/actor_behavior_cloning_storage_loss_mean": float(
+                    np.mean(actor_behavior_cloning_storage_loss_values)
+                ),
+                "MADDPG/actor_behavior_cloning_regularization_mean": float(
+                    np.mean(actor_behavior_cloning_regularization_values)
+                ),
+                "MADDPG/actor_behavior_cloning_effective_weight": float(
+                    actor_behavior_cloning_effective_weight
+                ),
+                "MADDPG/actor_behavior_cloning_source_warm_start_policy": float(
+                    getattr(self, "actor_behavior_cloning_source", "replay_action") == "warm_start_policy"
+                ),
                 "MADDPG/reward_raw_mean": float(raw_rewards_all.mean().item()),
                 "MADDPG/reward_raw_std": float(raw_rewards_all.std(unbiased=False).item()),
                 "MADDPG/reward_train_mean": float(rewards_all.mean().item()),
@@ -638,6 +962,8 @@ class MADDPG(BaseAgent):
                 "MADDPG/reward_norm_count": float(getattr(self, "reward_norm_count", 0)),
                 "MADDPG/reward_norm_mean": float(getattr(self, "reward_norm_mean", 0.0)),
                 "MADDPG/reward_norm_std": float(self._reward_normalization_std()),
+                "MADDPG/critic_loss_huber": float(getattr(self, "critic_loss_function", "mse") == "huber"),
+                "MADDPG/critic_target_clip_abs": float(getattr(self, "critic_target_clip_abs", 0.0)),
                 "MADDPG/critic_td_abs_mean": float(np.mean(critic_td_abs_values)),
                 "MADDPG/critic_td_abs_max": float(np.max(critic_td_abs_values)),
                 "MADDPG/critic_grad_norm_mean": float(np.mean(critic_grad_norm_values)),
@@ -653,6 +979,9 @@ class MADDPG(BaseAgent):
                 "MADDPG/q_target_min": float(q_targets_flat.min().item()),
                 "MADDPG/q_target_max": float(q_targets_flat.max().item()),
                 "MADDPG/replay_buffer_size": float(len(self.replay_buffer)),
+                "MADDPG/replay_observation_event_priority_last": float(
+                    getattr(self, "_last_observation_event_priority_boost", 0.0)
+                ),
                 "MADDPG/exploration_sigma": float(getattr(self, "sigma", 0.0)),
                 "MADDPG/exploration_step": float(getattr(self, "exploration_step", 0)),
                 "MADDPG/training_step_time": time.time() - update_start_time,
@@ -663,9 +992,26 @@ class MADDPG(BaseAgent):
                     training_metrics[f"MADDPG/critic_td_abs_agent_{agent_num}"] = critic_td_abs_values[agent_num]
                     training_metrics[f"MADDPG/actor_loss_agent_{agent_num}"] = actor_loss_values[agent_num]
                     training_metrics[f"MADDPG/actor_policy_loss_agent_{agent_num}"] = actor_policy_loss_values[agent_num]
+                    training_metrics[f"MADDPG/actor_policy_loss_weighted_agent_{agent_num}"] = (
+                        actor_policy_loss_weighted_values[agent_num]
+                    )
                     training_metrics[f"MADDPG/actor_regularization_loss_agent_{agent_num}"] = actor_regularization_values[agent_num]
                     training_metrics[f"MADDPG/actor_action_l2_agent_{agent_num}"] = actor_action_l2_values[agent_num]
                     training_metrics[f"MADDPG/actor_action_saturation_excess_agent_{agent_num}"] = actor_action_saturation_values[agent_num]
+                    training_metrics[f"MADDPG/actor_storage_action_l2_agent_{agent_num}"] = actor_storage_action_l2_values[agent_num]
+                    training_metrics[f"MADDPG/actor_ev_v2g_action_l2_agent_{agent_num}"] = actor_ev_v2g_action_l2_values[agent_num]
+                    training_metrics[f"MADDPG/actor_behavior_cloning_loss_agent_{agent_num}"] = (
+                        actor_behavior_cloning_loss_values[agent_num]
+                    )
+                    training_metrics[f"MADDPG/actor_behavior_cloning_ev_loss_agent_{agent_num}"] = (
+                        actor_behavior_cloning_ev_loss_values[agent_num]
+                    )
+                    training_metrics[f"MADDPG/actor_behavior_cloning_storage_loss_agent_{agent_num}"] = (
+                        actor_behavior_cloning_storage_loss_values[agent_num]
+                    )
+                    training_metrics[f"MADDPG/actor_behavior_cloning_regularization_agent_{agent_num}"] = (
+                        actor_behavior_cloning_regularization_values[agent_num]
+                    )
                     training_metrics[f"MADDPG/actor_grad_norm_agent_{agent_num}"] = actor_grad_norm_values[agent_num]
             self._record_training_metrics(training_metrics, global_learning_step)
 
@@ -675,8 +1021,44 @@ class MADDPG(BaseAgent):
         else:
             logger.debug(log_message, critic_loss_scalar, total_actor_loss / self.num_agents)
 
+    def _push_replay_transition(
+        self,
+        *,
+        observations: List[torch.Tensor],
+        actions: List[torch.Tensor],
+        rewards: List[float],
+        next_observations: List[torch.Tensor],
+        done: bool,
+        behavior_actions: List[Any],
+        priority_boost: float,
+    ) -> None:
+        """Push a transition while preserving compatibility with simple buffers."""
+        push = self.replay_buffer.push
+        kwargs: Dict[str, Any] = {}
+        try:
+            parameters = inspect.signature(push).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        if accepts_kwargs or "behavior_actions" in parameters:
+            kwargs["behavior_actions"] = behavior_actions
+        if accepts_kwargs or "priority_boost" in parameters:
+            kwargs["priority_boost"] = priority_boost
+
+        push(observations, actions, rewards, next_observations, done, **kwargs)
+
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return global_learning_step >= self.end_initial_exploration_time_step
+
+    def _should_train_on_step(self, initial_exploration_done: bool, global_learning_step: int) -> bool:
+        if initial_exploration_done:
+            return True
+        return bool(getattr(self, "train_during_initial_exploration", False)) and (
+            global_learning_step >= getattr(self, "initial_exploration_training_start_step", 0)
+        )
 
     def _should_log_training_step(self, global_learning_step: int) -> bool:
         return global_learning_step % self.mlflow_step_sample_interval == 0
@@ -710,12 +1092,45 @@ class MADDPG(BaseAgent):
         clip_value = float(getattr(self, "reward_normalization_clip", 10.0))
         return torch.clamp(normalized, -clip_value, clip_value)
 
+    def _critic_loss(self, expected: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if getattr(self, "critic_loss_function", "mse") == "huber":
+            return smooth_l1_loss(
+                expected,
+                target,
+                beta=float(getattr(self, "critic_huber_beta", 1.0)),
+            )
+        return mse_loss(expected, target)
+
     def get_diagnostic_metrics(self) -> Dict[str, float]:
         metrics = {
             "MADDPG/replay_buffer_size": float(len(self.replay_buffer)),
             "MADDPG/exploration_step": float(getattr(self, "exploration_step", 0)),
             "MADDPG/exploration_sigma": float(getattr(self, "sigma", 0.0)),
+            "MADDPG/storage_exploration_noise_multiplier": float(
+                getattr(self, "storage_exploration_noise_multiplier", 1.0)
+            ),
+            "MADDPG/ev_negative_exploration_noise_multiplier": float(
+                getattr(self, "ev_negative_exploration_noise_multiplier", 1.0)
+            ),
             "MADDPG/random_exploration_steps": float(getattr(self, "random_exploration_steps", 0)),
+            "MADDPG/warm_start_policy_phaseout_steps": float(
+                getattr(self, "warm_start_policy_phaseout_steps", 0)
+            ),
+            "MADDPG/warm_start_policy_phaseout_probability": float(
+                getattr(self, "_last_warm_start_phaseout_probability", 0.0)
+            ),
+            "MADDPG/warm_start_policy_phaseout_used": float(
+                getattr(self, "_last_warm_start_phaseout_used", False)
+            ),
+            "MADDPG/warm_start_policy_phaseout_mode_blend": float(
+                getattr(self, "warm_start_policy_phaseout_mode", "probability") == "blend"
+            ),
+            "MADDPG/train_during_initial_exploration": float(
+                getattr(self, "train_during_initial_exploration", False)
+            ),
+            "MADDPG/initial_exploration_training_start_step": float(
+                getattr(self, "initial_exploration_training_start_step", 0)
+            ),
             "MADDPG/action_warmup_done": float(
                 getattr(self, "exploration_step", 0) >= getattr(self, "random_exploration_steps", 0)
             ),
@@ -726,13 +1141,85 @@ class MADDPG(BaseAgent):
             "MADDPG/reward_norm_count": float(getattr(self, "reward_norm_count", 0)),
             "MADDPG/reward_norm_mean": float(getattr(self, "reward_norm_mean", 0.0)),
             "MADDPG/reward_norm_std": float(self._reward_normalization_std()),
+            "MADDPG/critic_loss_huber": float(getattr(self, "critic_loss_function", "mse") == "huber"),
+            "MADDPG/critic_target_clip_abs": float(getattr(self, "critic_target_clip_abs", 0.0)),
             "MADDPG/actor_update_interval": float(getattr(self, "actor_update_interval", 1)),
+            "MADDPG/actor_policy_loss_weight": float(getattr(self, "actor_policy_loss_weight", 1.0)),
+            "MADDPG/actor_policy_loss_warmup_weight": float(
+                getattr(self, "actor_policy_loss_warmup_weight", getattr(self, "actor_policy_loss_weight", 1.0))
+            ),
+            "MADDPG/actor_policy_loss_warmup_steps": float(
+                getattr(self, "actor_policy_loss_warmup_steps", 0)
+            ),
             "MADDPG/target_policy_smoothing": float(getattr(self, "target_policy_smoothing", False)),
             "MADDPG/actor_action_l2_penalty": float(getattr(self, "actor_action_l2_penalty", 0.0)),
             "MADDPG/actor_action_saturation_penalty": float(
                 getattr(self, "actor_action_saturation_penalty", 0.0)
             ),
+            "MADDPG/actor_storage_action_l2_penalty": float(
+                getattr(self, "actor_storage_action_l2_penalty", 0.0)
+            ),
+            "MADDPG/actor_ev_v2g_action_l2_penalty": float(
+                getattr(self, "actor_ev_v2g_action_l2_penalty", 0.0)
+            ),
+            "MADDPG/actor_behavior_cloning_weight": float(
+                getattr(self, "actor_behavior_cloning_weight", 0.0)
+            ),
+            "MADDPG/actor_ev_behavior_cloning_multiplier": float(
+                getattr(self, "actor_ev_behavior_cloning_multiplier", 1.0)
+            ),
+            "MADDPG/actor_ev_behavior_cloning_positive_target_weight": float(
+                getattr(self, "actor_ev_behavior_cloning_positive_target_weight", 0.0)
+            ),
+            "MADDPG/actor_ev_behavior_cloning_positive_target_power": float(
+                getattr(self, "actor_ev_behavior_cloning_positive_target_power", 1.0)
+            ),
+            "MADDPG/actor_ev_behavior_cloning_zero_target_weight": float(
+                getattr(self, "actor_ev_behavior_cloning_zero_target_weight", 0.0)
+            ),
+            "MADDPG/actor_ev_behavior_cloning_zero_target_threshold": float(
+                getattr(self, "actor_ev_behavior_cloning_zero_target_threshold", 0.05)
+            ),
+            "MADDPG/actor_storage_behavior_cloning_multiplier": float(
+                getattr(self, "actor_storage_behavior_cloning_multiplier", 1.0)
+            ),
+            "MADDPG/actor_behavior_cloning_min_weight": float(
+                getattr(self, "actor_behavior_cloning_min_weight", 0.0)
+            ),
+            "MADDPG/actor_behavior_cloning_decay_steps": float(
+                getattr(self, "actor_behavior_cloning_decay_steps", 0)
+            ),
+            "MADDPG/actor_behavior_cloning_source_warm_start_policy": float(
+                getattr(self, "actor_behavior_cloning_source", "replay_action") == "warm_start_policy"
+            ),
+            "MADDPG/replay_observation_event_priority_weight": float(
+                getattr(self, "replay_observation_event_priority_weight", 0.0)
+            ),
+            "MADDPG/replay_observation_event_priority_last": float(
+                getattr(self, "_last_observation_event_priority_boost", 0.0)
+            ),
         }
+        replay_buffer = getattr(self, "replay_buffer", None)
+        if replay_buffer is not None and hasattr(replay_buffer, "priority_fraction"):
+            metrics.update(
+                {
+                    "MADDPG/replay_priority_fraction": float(
+                        getattr(replay_buffer, "priority_fraction", 0.0)
+                    ),
+                    "MADDPG/replay_priority_alpha": float(
+                        getattr(replay_buffer, "priority_alpha", 0.0)
+                    ),
+                    "MADDPG/replay_priority_max": float(
+                        getattr(replay_buffer, "priority_max", 0.0) or 0.0
+                    ),
+                    "MADDPG/replay_behavior_action_priority_weight": float(
+                        getattr(replay_buffer, "behavior_action_priority_weight", 0.0)
+                    ),
+                    "MADDPG/replay_behavior_action_priority_scope_ev": float(
+                        getattr(replay_buffer, "behavior_action_priority_scope", "all") == "ev"
+                    ),
+                }
+            )
         return metrics
 
     def consume_latest_training_metrics(self) -> Dict[str, float]:
@@ -778,19 +1265,105 @@ class MADDPG(BaseAgent):
                 return self._predict_noop_centered()
             return self._predict_random()
 
+        phaseout_probability = self._warm_start_phaseout_probability()
+        self._last_warm_start_phaseout_probability = float(phaseout_probability)
+        self._last_warm_start_phaseout_used = False
+        phaseout_mode = getattr(self, "warm_start_policy_phaseout_mode", "probability")
+        if (
+            phaseout_probability > 0.0
+            and phaseout_mode == "probability"
+            and np.random.random() < phaseout_probability
+        ):
+            self._last_warm_start_phaseout_used = True
+            return self._predict_warm_start_policy()
+
         deterministic_actions = self._predict_deterministic(observations)
 
         noisy_actions = []
         for agent_idx, action in enumerate(deterministic_actions):
             noise = np.random.normal(loc=self.bias, scale=self.sigma, size=action.shape)
+            noise = self._scale_exploration_noise(agent_idx, noise)
             if self.noise_clip is not None and self.noise_clip > 0.0:
                 noise = np.clip(noise, -self.noise_clip, self.noise_clip)
             noisy_actions.append(self._clip_action_array(agent_idx, action + noise))
 
         self.sigma = max(self.min_sigma, self.sigma * self.sigma_decay)
 
+        if phaseout_probability > 0.0 and phaseout_mode == "blend":
+            warm_start_actions = self._predict_warm_start_policy()
+            blended_actions = self._blend_phaseout_actions(
+                warm_start_actions=warm_start_actions,
+                actor_actions=noisy_actions,
+                phaseout_probability=phaseout_probability,
+            )
+            self._last_warm_start_phaseout_used = True
+            logger.debug("Blended phase-out exploration actions predicted: {}", blended_actions)
+            return blended_actions
+
         logger.debug("Actions with exploration applied: {}", noisy_actions)
         return [action.tolist() for action in noisy_actions]
+
+    def _warm_start_phaseout_probability(self) -> float:
+        if getattr(self, "initial_exploration_strategy", None) != "policy":
+            return 0.0
+        if self._warm_start_policy is None:
+            return 0.0
+        phaseout_steps = int(getattr(self, "warm_start_policy_phaseout_steps", 0) or 0)
+        if phaseout_steps <= 0:
+            return 0.0
+        warmup_steps = int(getattr(self, "random_exploration_steps", 0) or 0)
+        phaseout_elapsed = int(getattr(self, "exploration_step", 0)) - warmup_steps
+        if phaseout_elapsed <= 0 or phaseout_elapsed > phaseout_steps:
+            return 0.0
+        return float(max(0.0, 1.0 - (phaseout_elapsed - 1) / phaseout_steps))
+
+    def _blend_phaseout_actions(
+        self,
+        *,
+        warm_start_actions: List[List[float]],
+        actor_actions: List[np.ndarray],
+        phaseout_probability: float,
+    ) -> List[List[float]]:
+        blended_actions: List[List[float]] = []
+        teacher_weight = float(np.clip(phaseout_probability, 0.0, 1.0))
+        actor_weight = 1.0 - teacher_weight
+        for agent_idx, actor_action in enumerate(actor_actions):
+            teacher_action = (
+                np.asarray(warm_start_actions[agent_idx], dtype=np.float64).reshape(-1)
+                if agent_idx < len(warm_start_actions)
+                else np.zeros_like(actor_action, dtype=np.float64)
+            )
+            actor_array = np.asarray(actor_action, dtype=np.float64).reshape(-1)
+            action_dim = min(actor_array.shape[0], teacher_action.shape[0])
+            blended = actor_array.copy()
+            if action_dim > 0:
+                blended[:action_dim] = (
+                    teacher_weight * teacher_action[:action_dim]
+                    + actor_weight * actor_array[:action_dim]
+                )
+            blended_actions.append(self._clip_action_array(agent_idx, blended).tolist())
+        return blended_actions
+
+    def _scale_exploration_noise(self, agent_idx: int, noise: np.ndarray) -> np.ndarray:
+        scaled_noise = np.asarray(noise, dtype=np.float64).copy()
+        action_names = self._action_names_for_agent(agent_idx)
+        if not action_names:
+            return scaled_noise
+
+        low = self._action_low_for_agent(agent_idx)
+        storage_multiplier = float(getattr(self, "storage_exploration_noise_multiplier", 1.0))
+        ev_negative_multiplier = float(getattr(self, "ev_negative_exploration_noise_multiplier", 1.0))
+        for action_idx, action_name in enumerate(action_names[: scaled_noise.shape[0]]):
+            if self._is_storage_action_name(action_name):
+                scaled_noise[action_idx] *= storage_multiplier
+            if (
+                self._is_ev_action_name(action_name)
+                and action_idx < low.shape[0]
+                and low[action_idx] < 0.0
+                and scaled_noise[action_idx] < 0.0
+            ):
+                scaled_noise[action_idx] *= ev_negative_multiplier
+        return scaled_noise
 
     def _predict_random(self) -> List[List[float]]:
         random_actions = [
@@ -804,7 +1377,160 @@ class MADDPG(BaseAgent):
         logger.debug("Random exploration actions predicted: {}", random_actions)
         return random_actions
 
-    def _predict_warm_start_policy(self) -> List[List[float]]:
+    def _transition_behavior_actions(self, actions: List[Any]) -> List[Any]:
+        if (
+            getattr(self, "actor_behavior_cloning_source", "replay_action") != "warm_start_policy"
+            or self._warm_start_policy is None
+            or self._latest_raw_observations is None
+        ):
+            return actions
+        return self._predict_warm_start_policy(apply_noise=False, deterministic=True)
+
+    def _transition_observation_event_priority_boost(self) -> float:
+        weight = float(getattr(self, "replay_observation_event_priority_weight", 0.0) or 0.0)
+        if weight <= 0.0:
+            self._last_observation_event_priority_boost = 0.0
+            return 0.0
+
+        observations = getattr(self, "_latest_raw_observations", None)
+        if observations is None:
+            observations = getattr(self, "_latest_encoded_observations", None)
+        if observations is None:
+            self._last_observation_event_priority_boost = 0.0
+            return 0.0
+
+        scores = [
+            self._ev_departure_service_priority_score(agent_idx, observation)
+            for agent_idx, observation in enumerate(observations)
+        ]
+        score = float(max(scores, default=0.0))
+        boost = weight * score
+        self._last_observation_event_priority_boost = boost
+        return boost
+
+    def _ev_departure_service_priority_score(self, agent_idx: int, observation: Any) -> float:
+        names = self.observation_names[agent_idx] if agent_idx < len(self.observation_names) else []
+        values = np.asarray(observation, dtype=np.float64).reshape(-1)
+        if not names or values.size == 0:
+            return 0.0
+
+        departure_available = self._max_observation_value(
+            names,
+            values,
+            include=("departure_available",),
+            finite_only=True,
+        )
+        hours_until_departure = self._min_observation_value(
+            names,
+            values,
+            include=("hours_until_departure", "time_until_departure_hours"),
+            finite_only=True,
+            lower_bound=0.0,
+        )
+        if departure_available <= 0.0 and not np.isfinite(hours_until_departure):
+            return 0.0
+
+        urgency_from_feature = self._max_observation_value(
+            names,
+            values,
+            include=("departure_urgency",),
+            finite_only=True,
+        )
+        urgency_from_hours = 0.0
+        if np.isfinite(hours_until_departure):
+            urgency_from_hours = float(np.clip(1.0 - hours_until_departure / 24.0, 0.0, 1.0))
+        urgency = float(np.clip(max(urgency_from_feature, urgency_from_hours), 0.0, 1.0))
+
+        soc_deficit = self._max_observation_value(
+            names,
+            values,
+            include=("soc_deficit",),
+            exclude=("surplus",),
+            finite_only=True,
+        )
+        energy_deficit = self._max_observation_value(
+            names,
+            values,
+            include=("energy_to_required_soc",),
+            finite_only=True,
+        )
+        required_power = self._max_observation_value(
+            names,
+            values,
+            include=("required_average_power", "avg_power_to_departure"),
+            finite_only=True,
+        )
+
+        # These observations may be raw physical values or already normalized
+        # entity features depending on the encoding profile. Clamp each signal
+        # conservatively so priority remains a sampler hint, not a reward.
+        deficit_signal = max(
+            float(np.clip(soc_deficit, 0.0, 1.0)),
+            float(np.clip(energy_deficit / 20.0, 0.0, 1.0)),
+            float(np.clip(required_power / 7.4, 0.0, 1.0)),
+        )
+        if deficit_signal <= 1.0e-6:
+            return 0.0
+
+        return float(np.clip(max(deficit_signal, urgency * (0.25 + deficit_signal)), 0.0, 1.0))
+
+    @staticmethod
+    def _max_observation_value(
+        names: List[str],
+        values: np.ndarray,
+        *,
+        include: tuple[str, ...],
+        exclude: tuple[str, ...] = (),
+        finite_only: bool = True,
+    ) -> float:
+        candidates: List[float] = []
+        for index, raw_name in enumerate(names[: values.shape[0]]):
+            name = str(raw_name).lower()
+            if not any(token in name for token in include):
+                continue
+            if any(token in name for token in exclude):
+                continue
+            value = float(values[index])
+            if finite_only and not np.isfinite(value):
+                continue
+            candidates.append(value)
+        if not candidates:
+            return 0.0
+        return max(candidates)
+
+    @staticmethod
+    def _min_observation_value(
+        names: List[str],
+        values: np.ndarray,
+        *,
+        include: tuple[str, ...],
+        exclude: tuple[str, ...] = (),
+        finite_only: bool = True,
+        lower_bound: Optional[float] = None,
+    ) -> float:
+        candidates: List[float] = []
+        for index, raw_name in enumerate(names[: values.shape[0]]):
+            name = str(raw_name).lower()
+            if not any(token in name for token in include):
+                continue
+            if any(token in name for token in exclude):
+                continue
+            value = float(values[index])
+            if finite_only and not np.isfinite(value):
+                continue
+            if lower_bound is not None and value < lower_bound:
+                continue
+            candidates.append(value)
+        if not candidates:
+            return float("inf")
+        return min(candidates)
+
+    def _predict_warm_start_policy(
+        self,
+        *,
+        apply_noise: bool = True,
+        deterministic: Optional[bool] = None,
+    ) -> List[List[float]]:
         if self._warm_start_policy is None or self._latest_raw_observations is None:
             if not self._warned_missing_raw_context:
                 logger.warning(
@@ -816,12 +1542,12 @@ class MADDPG(BaseAgent):
 
         actions = self._warm_start_policy.predict(
             self._latest_raw_observations,
-            deterministic=self.warm_start_policy_deterministic,
+            deterministic=self.warm_start_policy_deterministic if deterministic is None else bool(deterministic),
         )
         clipped_actions: List[List[float]] = []
         for agent_idx, action in enumerate(actions):
             action_array = np.asarray(action, dtype=np.float64).reshape(-1)
-            if self.warm_start_policy_noise_scale > 0.0:
+            if apply_noise and self.warm_start_policy_noise_scale > 0.0:
                 span = self._action_span_for_agent(agent_idx)
                 noise = np.random.normal(
                     loc=0.0,
@@ -896,6 +1622,21 @@ class MADDPG(BaseAgent):
         raw = str(action_name or "")
         return raw.startswith("deferrable_appliance") or raw.endswith("::start") or raw == "start"
 
+    @staticmethod
+    def _is_storage_action_name(action_name: str) -> bool:
+        raw = str(action_name or "").lower()
+        return "electrical_storage" in raw or raw in {"battery", "storage"}
+
+    @staticmethod
+    def _is_ev_action_name(action_name: str) -> bool:
+        raw = str(action_name or "").lower()
+        return (
+            "electric_vehicle" in raw
+            or "charger" in raw
+            or raw.startswith("ev_")
+            or raw in {"ev", "v2g"}
+        )
+
     def _scale_action_tensor(self, agent_idx: int, raw_action: torch.Tensor) -> torch.Tensor:
         low = torch.as_tensor(
             self._action_low_for_agent(agent_idx),
@@ -957,16 +1698,252 @@ class MADDPG(BaseAgent):
         self,
         agent_idx: int,
         scaled_action: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         normalized_action = self._normalize_scaled_action_tensor(agent_idx, scaled_action)
         action_l2 = normalized_action.pow(2).mean()
         threshold = float(getattr(self, "actor_action_saturation_threshold", 0.85))
         saturation_excess = torch.relu(normalized_action.abs() - threshold).pow(2).mean()
+        storage_action_l2 = self._masked_action_l2(
+            agent_idx,
+            normalized_action,
+            predicate=self._is_storage_action_name,
+        )
+        ev_v2g_action_l2 = self._negative_masked_action_l2(
+            agent_idx,
+            scaled_action,
+            normalized_action,
+            predicate=self._is_ev_action_name,
+        )
         regularization = (
             float(getattr(self, "actor_action_l2_penalty", 0.0)) * action_l2
             + float(getattr(self, "actor_action_saturation_penalty", 0.0)) * saturation_excess
+            + float(getattr(self, "actor_storage_action_l2_penalty", 0.0)) * storage_action_l2
+            + float(getattr(self, "actor_ev_v2g_action_l2_penalty", 0.0)) * ev_v2g_action_l2
         )
-        return action_l2, saturation_excess, regularization
+        return action_l2, saturation_excess, storage_action_l2, ev_v2g_action_l2, regularization
+
+    def _masked_action_l2(
+        self,
+        agent_idx: int,
+        normalized_action: torch.Tensor,
+        *,
+        predicate,
+    ) -> torch.Tensor:
+        names = self._action_names_for_agent(agent_idx)
+        mask_values = [
+            1.0 if action_idx < len(names) and predicate(names[action_idx]) else 0.0
+            for action_idx in range(normalized_action.shape[1])
+        ]
+        if not any(mask_values):
+            return normalized_action.new_tensor(0.0)
+        mask = torch.as_tensor(mask_values, dtype=normalized_action.dtype, device=normalized_action.device).view(1, -1)
+        denominator = torch.clamp(mask.sum() * normalized_action.shape[0], min=1.0)
+        return (normalized_action.pow(2) * mask).sum() / denominator
+
+    def _negative_masked_action_l2(
+        self,
+        agent_idx: int,
+        scaled_action: torch.Tensor,
+        normalized_action: torch.Tensor,
+        *,
+        predicate,
+    ) -> torch.Tensor:
+        names = self._action_names_for_agent(agent_idx)
+        mask_values = [
+            1.0 if action_idx < len(names) and predicate(names[action_idx]) else 0.0
+            for action_idx in range(normalized_action.shape[1])
+        ]
+        if not any(mask_values):
+            return normalized_action.new_tensor(0.0)
+        mask = torch.as_tensor(mask_values, dtype=normalized_action.dtype, device=normalized_action.device).view(1, -1)
+        negative_mask = (scaled_action < 0.0).to(dtype=normalized_action.dtype)
+        effective_mask = mask * negative_mask
+        denominator = torch.clamp(effective_mask.sum(), min=1.0)
+        return (normalized_action.pow(2) * effective_mask).sum() / denominator
+
+    def _actor_behavior_cloning_loss(
+        self,
+        agent_idx: int,
+        predicted_action: torch.Tensor,
+        replay_action: torch.Tensor,
+    ) -> torch.Tensor:
+        if float(getattr(self, "actor_behavior_cloning_weight", 0.0)) <= 0.0:
+            return predicted_action.new_tensor(0.0)
+
+        predicted_normalized = self._normalize_scaled_action_tensor(agent_idx, predicted_action)
+        replay_normalized = self._normalize_scaled_action_tensor(agent_idx, replay_action.detach())
+        weights = self._actor_behavior_cloning_action_weights(
+            agent_idx,
+            action_dim=predicted_normalized.shape[1],
+            dtype=predicted_normalized.dtype,
+            device=predicted_normalized.device,
+        )
+        weights = self._actor_behavior_cloning_sample_weights(
+            agent_idx,
+            base_weights=weights,
+            replay_action=replay_action.detach(),
+        )
+        denominator = torch.clamp(weights.sum(), min=1.0)
+        return ((predicted_normalized - replay_normalized).pow(2) * weights).sum() / denominator
+
+    def _actor_behavior_cloning_type_losses(
+        self,
+        agent_idx: int,
+        predicted_action: torch.Tensor,
+        replay_action: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        predicted_normalized = self._normalize_scaled_action_tensor(agent_idx, predicted_action)
+        replay_normalized = self._normalize_scaled_action_tensor(agent_idx, replay_action.detach())
+        squared_error = (predicted_normalized - replay_normalized).pow(2)
+        ev_mask = self._action_type_mask_tensor(
+            agent_idx,
+            action_dim=squared_error.shape[1],
+            predicate=self._is_ev_action_name,
+            dtype=squared_error.dtype,
+            device=squared_error.device,
+        )
+        storage_mask = self._action_type_mask_tensor(
+            agent_idx,
+            action_dim=squared_error.shape[1],
+            predicate=self._is_storage_action_name,
+            dtype=squared_error.dtype,
+            device=squared_error.device,
+        )
+        return (
+            self._masked_mean(squared_error, ev_mask),
+            self._masked_mean(squared_error, storage_mask),
+        )
+
+    @staticmethod
+    def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        effective_mask = mask.view(1, -1).expand_as(values)
+        denominator = torch.clamp(effective_mask.sum(), min=1.0)
+        return (values * effective_mask).sum() / denominator
+
+    def _action_type_mask_tensor(
+        self,
+        agent_idx: int,
+        *,
+        action_dim: int,
+        predicate,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        names = self._action_names_for_agent(agent_idx)
+        values = [
+            1.0 if action_idx < len(names) and predicate(names[action_idx]) else 0.0
+            for action_idx in range(int(action_dim))
+        ]
+        return torch.as_tensor(values, dtype=dtype, device=device)
+
+    def _actor_behavior_cloning_action_weights(
+        self,
+        agent_idx: int,
+        *,
+        action_dim: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        weights = np.ones(int(action_dim), dtype=np.float32)
+        names = self._action_names_for_agent(agent_idx)
+        ev_multiplier = float(getattr(self, "actor_ev_behavior_cloning_multiplier", 1.0))
+        storage_multiplier = float(getattr(self, "actor_storage_behavior_cloning_multiplier", 1.0))
+        for action_idx, action_name in enumerate(names[: int(action_dim)]):
+            if self._is_ev_action_name(action_name):
+                weights[action_idx] *= ev_multiplier
+            if self._is_storage_action_name(action_name):
+                weights[action_idx] *= storage_multiplier
+        return torch.as_tensor(weights, dtype=dtype, device=device)
+
+    def _actor_behavior_cloning_sample_weights(
+        self,
+        agent_idx: int,
+        *,
+        base_weights: torch.Tensor,
+        replay_action: torch.Tensor,
+    ) -> torch.Tensor:
+        weights = base_weights.view(1, -1).expand(replay_action.shape[0], -1)
+        positive_target_weight = float(
+            getattr(self, "actor_ev_behavior_cloning_positive_target_weight", 0.0) or 0.0
+        )
+        zero_target_weight = float(
+            getattr(self, "actor_ev_behavior_cloning_zero_target_weight", 0.0) or 0.0
+        )
+        if positive_target_weight <= 0.0 and zero_target_weight <= 0.0:
+            return weights
+
+        action_dim = min(int(replay_action.shape[1]), int(base_weights.shape[0]))
+        names = self._action_names_for_agent(agent_idx)
+        ev_mask_values = [
+            1.0 if action_idx < len(names) and self._is_ev_action_name(names[action_idx]) else 0.0
+            for action_idx in range(action_dim)
+        ]
+        if not any(ev_mask_values):
+            return weights
+
+        ev_mask = torch.as_tensor(
+            ev_mask_values,
+            dtype=replay_action.dtype,
+            device=replay_action.device,
+        ).view(1, -1)
+        positive_high = torch.as_tensor(
+            np.maximum(self._action_high_for_agent(agent_idx)[:action_dim], 1.0e-6),
+            dtype=replay_action.dtype,
+            device=replay_action.device,
+        ).view(1, -1)
+        positive_target = torch.clamp(replay_action[:, :action_dim], min=0.0) / positive_high
+        positive_target = torch.clamp(positive_target, 0.0, 1.0)
+        multiplier = torch.ones_like(positive_target)
+        if positive_target_weight > 0.0:
+            power = float(getattr(self, "actor_ev_behavior_cloning_positive_target_power", 1.0) or 1.0)
+            positive_term = positive_target.pow(power) if power != 1.0 else positive_target
+            multiplier = multiplier + positive_target_weight * ev_mask * positive_term
+        if zero_target_weight > 0.0:
+            zero_target_threshold = float(
+                getattr(self, "actor_ev_behavior_cloning_zero_target_threshold", 0.05) or 0.05
+            )
+            zero_target = (torch.abs(replay_action[:, :action_dim]) <= zero_target_threshold * positive_high).to(
+                dtype=replay_action.dtype
+            )
+            multiplier = multiplier + zero_target_weight * ev_mask * zero_target
+        return weights[:, :action_dim] * multiplier
+
+    def _actor_behavior_cloning_effective_weight(self, global_learning_step: int) -> float:
+        base_weight = float(getattr(self, "actor_behavior_cloning_weight", 0.0) or 0.0)
+        if base_weight <= 0.0:
+            return 0.0
+
+        min_weight = min(
+            base_weight,
+            max(0.0, float(getattr(self, "actor_behavior_cloning_min_weight", 0.0) or 0.0)),
+        )
+        decay_steps = max(0, int(getattr(self, "actor_behavior_cloning_decay_steps", 0) or 0))
+        if decay_steps <= 0:
+            return base_weight
+
+        decay_start = max(0, int(getattr(self, "actor_behavior_cloning_decay_start_step", 0) or 0))
+        if global_learning_step <= decay_start:
+            return base_weight
+
+        progress = min(max((global_learning_step - decay_start) / decay_steps, 0.0), 1.0)
+        return base_weight + (min_weight - base_weight) * progress
+
+    def _actor_policy_loss_effective_weight(self, global_learning_step: int) -> float:
+        base_weight = max(0.0, float(getattr(self, "actor_policy_loss_weight", 1.0) or 0.0))
+        warmup_steps = max(0, int(getattr(self, "actor_policy_loss_warmup_steps", 0) or 0))
+        if warmup_steps <= 0:
+            return base_weight
+
+        warmup_weight = max(
+            0.0,
+            float(getattr(self, "actor_policy_loss_warmup_weight", base_weight) or 0.0),
+        )
+        warmup_start = max(0, int(getattr(self, "actor_policy_loss_warmup_start_step", 0) or 0))
+        if global_learning_step <= warmup_start:
+            return warmup_weight
+
+        progress = min(max((global_learning_step - warmup_start) / warmup_steps, 0.0), 1.0)
+        return warmup_weight + (base_weight - warmup_weight) * progress
 
     def _clip_action_array(self, agent_idx: int, action: np.ndarray) -> np.ndarray:
         return np.clip(

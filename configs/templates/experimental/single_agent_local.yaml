@@ -21,7 +21,7 @@ runtime:
 
 # Tracking controls for metrics/log verbosity and MLflow enablement.
 tracking:
-  mlflow_enabled: true
+  mlflow_enabled: false
   log_level: "INFO"
   log_frequency: 1
   mlflow_step_sample_interval: 10

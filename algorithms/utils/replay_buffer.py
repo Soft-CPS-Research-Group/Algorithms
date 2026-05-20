@@ -29,7 +29,16 @@ class MultiAgentReplayBuffer:
         # Store joint transitions so sampling preserves alignment across agents.
         self.buffer = deque(maxlen=capacity)
 
-    def push(self, states, actions, rewards, next_states, done):
+    def push(
+        self,
+        states,
+        actions,
+        rewards,
+        next_states,
+        done,
+        behavior_actions=None,
+        priority_boost=None,
+    ):
         """
         Store experiences for each agent in CPU memory.
 
@@ -39,15 +48,27 @@ class MultiAgentReplayBuffer:
             rewards (list): List of rewards per agent.
             next_states (list): List of next states per agent.
             done (bool): Single done flag shared across all agents.
+            behavior_actions (list, optional): Optional per-agent action targets
+                for supervised actor regularization. Defaults to the executed
+                actions for backward-compatible behavior cloning.
+            priority_boost (float, optional): Ignored by the uniform buffer.
+                Weighted replay implementations can use it as an external
+                event-priority signal.
         """
         # Keep transitions on pageable CPU memory and pin only sampled batches.
         # This avoids long-lived pinned allocations that can hurt host memory performance.
+        if behavior_actions is None:
+            behavior_actions = actions
         state_tensors = [
             torch.tensor(states[agent_idx], dtype=torch.float32)
             for agent_idx in range(self.num_agents)
         ]
         action_tensors = [
             torch.tensor(actions[agent_idx], dtype=torch.float32)
+            for agent_idx in range(self.num_agents)
+        ]
+        behavior_action_tensors = [
+            torch.tensor(behavior_actions[agent_idx], dtype=torch.float32)
             for agent_idx in range(self.num_agents)
         ]
         reward_tensors = [
@@ -60,7 +81,16 @@ class MultiAgentReplayBuffer:
         ]
         done_tensor = torch.tensor(float(done), dtype=torch.float32).unsqueeze(0)
 
-        self.buffer.append((state_tensors, action_tensors, reward_tensors, next_state_tensors, done_tensor))
+        self.buffer.append(
+            (
+                state_tensors,
+                action_tensors,
+                reward_tensors,
+                next_state_tensors,
+                done_tensor,
+                behavior_action_tensors,
+            )
+        )
 
     def sample(self):
         """
@@ -73,7 +103,32 @@ class MultiAgentReplayBuffer:
             raise ValueError("Not enough samples in the buffer to sample a batch.")
 
         batch = random.sample(self.buffer, self.batch_size)
-        states_batch, actions_batch, rewards_batch, next_states_batch, dones_batch = zip(*batch)
+        return self._build_sample(batch, include_behavior_actions=False)
+
+    def sample_with_behavior_actions(self):
+        """
+        Sample a batch and include per-agent behavior-cloning action targets.
+
+        Returns:
+            Tuple of (states, actions, rewards, next_states, terminated,
+            behavior_actions) as CPU tensors.
+        """
+        if len(self) < self.batch_size:
+            raise ValueError("Not enough samples in the buffer to sample a batch.")
+
+        batch = random.sample(self.buffer, self.batch_size)
+        return self._build_sample(batch, include_behavior_actions=True)
+
+    def _build_sample(self, batch, *, include_behavior_actions: bool):
+        unpacked = [self._unpack_transition(experience) for experience in batch]
+        (
+            states_batch,
+            actions_batch,
+            rewards_batch,
+            next_states_batch,
+            dones_batch,
+            behavior_actions_batch,
+        ) = zip(*unpacked)
 
         states = [
             _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in states_batch]))
@@ -91,17 +146,32 @@ class MultiAgentReplayBuffer:
             _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in next_states_batch]))
             for agent_idx in range(self.num_agents)
         ]
+        behavior_actions = [
+            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in behavior_actions_batch]))
+            for agent_idx in range(self.num_agents)
+        ]
 
         # Keep historical shape: [num_agents, batch_size, 1].
         done_tensor = _maybe_pin_memory(torch.stack(dones_batch))
         done_tensor = done_tensor.unsqueeze(0).expand(self.num_agents, -1, -1)
 
+        if include_behavior_actions:
+            return states, actions, rewards, next_states, done_tensor, behavior_actions
         return states, actions, rewards, next_states, done_tensor
+
+    @staticmethod
+    def _unpack_transition(experience):
+        if len(experience) == 6:
+            return experience
+        if len(experience) == 5:
+            states, actions, rewards, next_states, done = experience
+            return states, actions, rewards, next_states, done, actions
+        raise ValueError("Unsupported replay transition format.")
 
     def get_state(self):
         """Return a serialisable snapshot of the replay buffer."""
         return {
-            "format": "joint_transitions_v2",
+            "format": "joint_transitions_v3",
             "buffer": list(self.buffer),
         }
 
@@ -128,7 +198,7 @@ class MultiAgentReplayBuffer:
                 rewards = [entry[2] for entry in per_agent]
                 next_states = [entry[3] for entry in per_agent]
                 done = per_agent[0][4]
-                self.buffer.append((states, actions, rewards, next_states, done))
+                self.buffer.append((states, actions, rewards, next_states, done, actions))
             return
 
         if isinstance(state, list):
@@ -141,6 +211,231 @@ class MultiAgentReplayBuffer:
     def __len__(self):
         """Get the current replay size."""
         return len(self.buffer)
+
+
+class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
+    """Joint multi-agent replay with optional reward-weighted sampling.
+
+    This keeps the same output contract as :class:`MultiAgentReplayBuffer`, but
+    samples a configurable fraction of the batch from transitions with large
+    reward signal according to ``priority_mode``. In this project those
+    transitions usually correspond to EV service windows, grid violations,
+    deferrable deadlines or other rare constraint signals that uniform replay
+    can under-sample.
+    """
+
+    def __init__(
+        self,
+        capacity,
+        num_agents,
+        batch_size,
+        priority_fraction: float = 0.5,
+        priority_alpha: float = 0.6,
+        priority_epsilon: float = 1.0e-3,
+        priority_mode: str = "abs_reward",
+        priority_max: float | None = None,
+        behavior_action_priority_weight: float = 0.0,
+        behavior_action_priority_mode: str = "positive",
+        behavior_action_priority_scope: str = "all",
+    ):
+        super().__init__(capacity=capacity, num_agents=num_agents, batch_size=batch_size)
+        self.priority_fraction = float(np.clip(float(priority_fraction), 0.0, 1.0))
+        self.priority_alpha = max(float(priority_alpha), 0.0)
+        self.priority_epsilon = max(float(priority_epsilon), 1.0e-12)
+        self.priority_mode = str(priority_mode or "abs_reward").strip().lower()
+        if self.priority_mode not in {"abs_reward", "negative_reward", "positive_reward"}:
+            raise ValueError(
+                "RewardWeightedMultiAgentReplayBuffer priority_mode must be "
+                "'abs_reward', 'negative_reward' or 'positive_reward'."
+            )
+        self.priority_max = None if priority_max is None else max(float(priority_max), self.priority_epsilon)
+        self.behavior_action_priority_weight = max(float(behavior_action_priority_weight), 0.0)
+        self.behavior_action_priority_mode = str(behavior_action_priority_mode or "positive").strip().lower()
+        if self.behavior_action_priority_mode not in {"positive", "abs"}:
+            raise ValueError(
+                "RewardWeightedMultiAgentReplayBuffer behavior_action_priority_mode must be "
+                "'positive' or 'abs'."
+            )
+        self.behavior_action_priority_scope = str(behavior_action_priority_scope or "all").strip().lower()
+        if self.behavior_action_priority_scope not in {"all", "ev"}:
+            raise ValueError(
+                "RewardWeightedMultiAgentReplayBuffer behavior_action_priority_scope must be "
+                "'all' or 'ev'."
+            )
+        self.behavior_action_priority_masks = None
+        self.priorities = deque(maxlen=capacity)
+
+    def set_behavior_action_priority_masks(self, masks) -> None:
+        """Restrict behavior-action priority to selected per-agent action dimensions."""
+        parsed_masks = []
+        for mask in masks or []:
+            parsed_masks.append(np.asarray(mask, dtype=bool).reshape(-1))
+        self.behavior_action_priority_masks = parsed_masks or None
+
+    def push(
+        self,
+        states,
+        actions,
+        rewards,
+        next_states,
+        done,
+        behavior_actions=None,
+        priority_boost=None,
+    ):
+        super().push(
+            states,
+            actions,
+            rewards,
+            next_states,
+            done,
+            behavior_actions=behavior_actions,
+            priority_boost=priority_boost,
+        )
+        reward_values = np.asarray(rewards, dtype=np.float64).reshape(-1)
+        finite_rewards = reward_values[np.isfinite(reward_values)]
+        priority = self._priority_from_rewards(finite_rewards)
+        priority += self.behavior_action_priority_weight * self._priority_from_behavior_actions(
+            behavior_actions if behavior_actions is not None else actions
+        )
+        priority += self._priority_from_external_boost(priority_boost)
+        if self.priority_max is not None:
+            priority = min(priority, self.priority_max)
+        self.priorities.append(priority + self.priority_epsilon)
+
+    def _priority_from_rewards(self, finite_rewards: np.ndarray) -> float:
+        if finite_rewards.size == 0:
+            return 0.0
+        if self.priority_mode == "negative_reward":
+            return float(np.max(np.maximum(-finite_rewards, 0.0)))
+        if self.priority_mode == "positive_reward":
+            return float(np.max(np.maximum(finite_rewards, 0.0)))
+        return float(np.max(np.abs(finite_rewards)))
+
+    def _priority_from_behavior_actions(self, behavior_actions) -> float:
+        if self.behavior_action_priority_weight <= 0.0:
+            return 0.0
+        values = []
+        for agent_idx, action in enumerate(behavior_actions or []):
+            array = np.asarray(action, dtype=np.float64).reshape(-1)
+            if self.behavior_action_priority_scope != "all":
+                masks = self.behavior_action_priority_masks or []
+                if agent_idx >= len(masks):
+                    continue
+                mask = np.asarray(masks[agent_idx], dtype=bool).reshape(-1)
+                if mask.shape[0] != array.shape[0] or not np.any(mask):
+                    continue
+                array = array[mask]
+            finite = array[np.isfinite(array)]
+            if finite.size > 0:
+                values.append(finite)
+        if not values:
+            return 0.0
+        action_values = np.concatenate(values)
+        if self.behavior_action_priority_mode == "abs":
+            return float(np.max(np.abs(action_values)))
+        return float(np.max(np.maximum(action_values, 0.0)))
+
+    @staticmethod
+    def _priority_from_external_boost(priority_boost) -> float:
+        if priority_boost is None:
+            return 0.0
+        try:
+            value = float(priority_boost)
+        except (TypeError, ValueError):
+            return 0.0
+        if not np.isfinite(value):
+            return 0.0
+        return max(value, 0.0)
+
+    def sample(self):
+        if len(self) < self.batch_size:
+            raise ValueError("Not enough samples in the buffer to sample a batch.")
+
+        batch_indices = self._sample_indices()
+        batch = [self.buffer[index] for index in batch_indices]
+        return self._build_sample(batch, include_behavior_actions=False)
+
+    def sample_with_behavior_actions(self):
+        if len(self) < self.batch_size:
+            raise ValueError("Not enough samples in the buffer to sample a batch.")
+
+        batch_indices = self._sample_indices()
+        batch = [self.buffer[index] for index in batch_indices]
+        return self._build_sample(batch, include_behavior_actions=True)
+
+    def _sample_indices(self) -> list[int]:
+        replay_size = len(self.buffer)
+        priority_count = int(round(self.batch_size * self.priority_fraction))
+        uniform_count = self.batch_size - priority_count
+
+        indices: list[int] = []
+        if uniform_count > 0:
+            indices.extend(random.choices(range(replay_size), k=uniform_count))
+
+        if priority_count > 0:
+            priorities = np.asarray(list(self.priorities), dtype=np.float64)
+            if priorities.shape[0] != replay_size:
+                priorities = np.ones(replay_size, dtype=np.float64)
+            weights = np.power(np.maximum(priorities, self.priority_epsilon), self.priority_alpha)
+            total = float(np.sum(weights))
+            if total <= 0.0 or not np.isfinite(total):
+                probabilities = np.full(replay_size, 1.0 / replay_size, dtype=np.float64)
+            else:
+                probabilities = weights / total
+            indices.extend(np.random.choice(replay_size, size=priority_count, replace=True, p=probabilities).tolist())
+
+        random.shuffle(indices)
+        return indices
+
+    def get_state(self):
+        state = super().get_state()
+        state.update(
+            {
+                "format": "joint_reward_weighted_transitions_v2",
+                "priorities": list(self.priorities),
+                "priority_fraction": self.priority_fraction,
+                "priority_alpha": self.priority_alpha,
+                "priority_epsilon": self.priority_epsilon,
+                "priority_mode": self.priority_mode,
+                "priority_max": self.priority_max,
+                "behavior_action_priority_weight": self.behavior_action_priority_weight,
+                "behavior_action_priority_mode": self.behavior_action_priority_mode,
+                "behavior_action_priority_scope": self.behavior_action_priority_scope,
+            }
+        )
+        return state
+
+    def set_state(self, state):
+        super().set_state(state)
+        if isinstance(state, dict):
+            if "priority_mode" in state:
+                mode = str(state.get("priority_mode") or self.priority_mode).strip().lower()
+                if mode in {"abs_reward", "negative_reward", "positive_reward"}:
+                    self.priority_mode = mode
+            if "priority_max" in state:
+                raw_max = state.get("priority_max")
+                self.priority_max = None if raw_max is None else max(float(raw_max), self.priority_epsilon)
+            if "behavior_action_priority_weight" in state:
+                self.behavior_action_priority_weight = max(
+                    float(state.get("behavior_action_priority_weight") or 0.0),
+                    0.0,
+                )
+            if "behavior_action_priority_mode" in state:
+                mode = str(state.get("behavior_action_priority_mode") or self.behavior_action_priority_mode)
+                mode = mode.strip().lower()
+                if mode in {"positive", "abs"}:
+                    self.behavior_action_priority_mode = mode
+            if "behavior_action_priority_scope" in state:
+                scope = str(state.get("behavior_action_priority_scope") or self.behavior_action_priority_scope)
+                scope = scope.strip().lower()
+                if scope in {"all", "ev"}:
+                    self.behavior_action_priority_scope = scope
+        self.priorities = deque(maxlen=self.capacity)
+        if isinstance(state, dict) and isinstance(state.get("priorities"), list):
+            for value in state["priorities"][-self.capacity :]:
+                self.priorities.append(float(value))
+        while len(self.priorities) < len(self.buffer):
+            self.priorities.append(self.priority_epsilon)
 
 
 class PrioritizedReplayBuffer:

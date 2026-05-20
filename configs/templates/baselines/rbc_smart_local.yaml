@@ -77,8 +77,8 @@ algorithm:
     storage_max_soc: 0.85
     storage_target_soc: 0.60
     storage_price_charge_soc_ceiling: 0.60
-    storage_price_discharge_soc_floor: 0.60
-    storage_peak_discharge_soc_floor: 0.60
+    storage_price_discharge_soc_floor: 0.30
+    storage_peak_discharge_soc_floor: 0.30
     pv_surplus_threshold_kw: 0.50
     import_peak_threshold_kw: 10.0
     low_headroom_threshold_kw: 1.0

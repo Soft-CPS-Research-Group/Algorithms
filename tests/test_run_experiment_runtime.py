@@ -130,6 +130,12 @@ class _DummyWrapperWithLocalMetrics(_DummyWrapper):
             self.local_metrics_logger.log({"sample_metric": 1.0}, 0)
 
 
+class _FailingWrapper(_DummyWrapper):
+    def learn(self, **kwargs):
+        self.learn_calls.append(kwargs)
+        raise RuntimeError("training exploded")
+
+
 class _DummyDynamicWrapper(_DummyWrapper):
     def learn(self, **kwargs):
         self.learn_calls.append(kwargs)
@@ -365,8 +371,13 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
 
     runner.run_experiment(str(config_path), "job-mlflow-off", tmp_path)
     assert _DummyWrapper.last_instance is not None
-    assert _DummyWrapper.last_instance.learn_calls[0] == {"episodes": 2}
-    assert _DummyWrapper.last_instance.learn_calls == [{"episodes": 2}]
+    assert _DummyWrapper.last_instance.learn_calls[0] == {
+        "episodes": 2,
+        "deterministic_finish": False,
+    }
+    assert _DummyWrapper.last_instance.learn_calls == [
+        {"episodes": 2, "deterministic_finish": False}
+    ]
 
     job_root = tmp_path / "jobs" / "job-mlflow-off"
     bundle_root = job_root / "bundle"
@@ -537,7 +548,9 @@ def test_run_experiment_writes_not_collected_kpi_result_when_export_toggle_off(m
 
     runner.run_experiment(str(config_path), "job-kpi-disabled", tmp_path)
     assert _DummyWrapper.last_instance is not None
-    assert _DummyWrapper.last_instance.learn_calls == [{"episodes": 3}]
+    assert _DummyWrapper.last_instance.learn_calls == [
+        {"episodes": 3, "deterministic_finish": False}
+    ]
 
     result_payload = json.loads(
         (tmp_path / "jobs" / "job-kpi-disabled" / "results" / "result.json").read_text(encoding="utf-8")
@@ -730,6 +743,34 @@ def test_run_experiment_resume_fails_if_agent_does_not_implement_load(monkeypatc
 
     with pytest.raises(RuntimeError, match="does not implement load_checkpoint"):
         runner.run_experiment(str(config_path), "job-resume-fail", tmp_path)
+
+
+def test_run_experiment_marks_outputs_failed_when_training_raises(monkeypatch, tmp_path):
+    config = _build_enabled_config(artifact_profile="minimal")
+    config["tracking"]["mlflow_enabled"] = False
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    monkeypatch.setattr(runner, "validate_config", lambda raw: _DummyConfigModel(raw))
+    monkeypatch.setattr(runner, "start_mlflow_run", lambda config: None)
+    monkeypatch.setattr(runner, "end_mlflow_run", lambda: None)
+    monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
+    monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
+    monkeypatch.setattr(runner, "Wrapper", _FailingWrapper)
+    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+
+    with pytest.raises(RuntimeError, match="training exploded"):
+        runner.run_experiment(str(config_path), "job-train-fail", tmp_path)
+
+    job_root = tmp_path / "jobs" / "job-train-fail"
+    result_payload = json.loads((job_root / "results" / "result.json").read_text(encoding="utf-8"))
+    progress_payload = json.loads((job_root / "progress" / "progress.json").read_text(encoding="utf-8"))
+
+    assert result_payload["status"] == "failed"
+    assert result_payload["error_type"] == "RuntimeError"
+    assert "training exploded" in result_payload["error"]
+    assert progress_payload["status"] == "failed"
+    assert progress_payload["error_type"] == "RuntimeError"
 
 
 def test_run_experiment_fails_fast_for_placeholder_algorithm(monkeypatch, tmp_path):

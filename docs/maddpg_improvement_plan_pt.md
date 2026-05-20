@@ -29,11 +29,9 @@ Regra de responsabilidade:
 ## Estado
 
 - Data de referencia: 2026-05-17.
-- Simulador PyPI fixado em `requirements.txt`: `softcpsrecsimulator==0.6.4`.
-- Ambiente atual de trabalho: editable local de `/home/tiago/dev/Simulator`;
-  `citylearn.__version__ == 0.6.6`.
-- Pin PyPI `0.6.6` ainda esta pendente neste repo; antes de fechar commit de
-  dependencias, reinstalar por PyPI e trocar o `requirements.txt`.
+- Simulador PyPI fixado em `requirements.txt`: `softcpsrecsimulator==0.6.7`.
+- Ambiente atual de trabalho: `.venv` com package PyPI;
+  `citylearn.__version__ == 0.6.7`.
 - Interface principal: `entity`.
 - Topologia para MADDPG: `static`.
 - Dataset 15s principal: `citylearn_three_phase_electrical_service_demo_15s_parquet`.
@@ -53,10 +51,11 @@ Ficheiros de apoio:
 - Auditoria evento EV/headroom 0.6.5: `docs/ev_departure_event_audit_065_pt.md`.
 - Resultados fase 6E: `docs/maddpg_phase6e_results_pt.md`.
 - Resultados fase 6E.1: `docs/maddpg_phase6e1_results_pt.md`.
+- Resultados fases 6F+: `docs/maddpg_phase6f_results_pt.md`.
 
 ## Fotografia Atual
 
-Estamos depois da Fase 6E.1.
+Fase 6F.1 esta concluida como primeira matriz de custo sob gate EV.
 
 O que esta solido:
 
@@ -69,21 +68,100 @@ O que esta solido:
 - bug dos baselines EV com headroom residual corrigido no Algorithms.
 - Fase 6E executada em 15s e 2022 com `10/10` jobs completos e `0` falhas.
 - Fase 6E.1 executada em 15s e 2022 com `10/10` jobs completos e `0` falhas.
+- Fase 6F ja repetiu diagnostico MADDPG pequeno, matriz curta 15s e janela 15s
+  com departures reais usando simulador `0.6.6`.
+- reward EV corrigida para nao tratar departure desconhecido
+  (`departure_time_step = -1`) como departure falhado em todos os passos.
 - baselines deterministicos cumprem `ev_departure_min_acceptable_feasible_rate`
   em ambos os datasets.
-- `RBCBasic` e `RBCSmart` ja formam tradeoffs uteis para comparar MADDPG:
-  `RBCBasic` aceita uso moderado de bateria por menor custo; `RBCSmart` e mais
-  conservador e evita penalty de bateria.
+- Fase 6G revalidou storage/baselines: nao ha evidencia de perda de SOC em
+  idle; `Normal` com bateria piora por estrategia/ciclos, enquanto
+  `RBCBasic` e `RBCSmart` mostram valor real de storage.
+- `RBCSmart` 2022 ficou retuned com `price_charge_rate=0.15`,
+  `storage_price_charge_soc_ceiling=0.85` e floors de descarga `0.30`; isto
+  bate `RBCBasic` no 2022 mantendo EV feasible e sem violacoes.
+- O schema de config agora preserva os knobs novos de storage/deferrables dos
+  baselines, evitando drift entre YAML, config resolvido e policy.
+- As variantes MADDPG com professor `RBCBasicPolicy`/`RBCSmartPolicy` agora
+  recebem automaticamente os hiperparametros do baseline do mesmo dataset; a
+  exploracao inicial e o behavior cloning deixam de usar defaults desalinhados
+  face ao baseline de comparacao.
+- MADDPG ja tem uma receita que cumpre EV feasible no 15s:
+  `ev_service_v2g_guard_warm_rbc_basic`.
+- Replay ponderado por reward ja existe como variante configuravel:
+  `RewardWeightedMultiAgentReplayBuffer`.
+- CUDA ja funcionou no ambiente local com PyTorch `2.5.1+cu121` e GPU
+  `NVIDIA GeForce RTX 4080 Laptop GPU`; confirmar novamente antes de nova run
+  MADDPG longa.
+- Fase 6F.1 executada em GPU com `5/5` jobs completos e `0` falhas.
+- MADDPG manteve `ev_departure_min_acceptable_feasible_rate = 1.0` nas
+  variantes testadas.
+- Melhor variante MADDPG atual em custo:
+  `service_guard_v2_prioritized_low_bc_decay_warm_rbc_basic`
+  com custo `69.737`, ainda pior que `RBCSmart` (`60.402`).
+- Fase 6F.2 implementou a reward experimental
+  `CostServiceCommunityBandRewardV4`, alinhada com settlement comunitario e
+  penalizacao de sobre-servico EV.
+- Fase 6F.2 executada em GPU no 15s com `5/5` jobs completos e `0` falhas.
+- Melhor V4 atual:
+  `community_band_v4_prioritized_tiny_bc_decay_warm_rbc_basic`, custo `69.794`,
+  mantendo `ev_departure_min_acceptable_feasible_rate = 1.0`.
+- Fase 6F.3 implementou teacher behavior cloning separado da acao executada no
+  replay, com alvo `warm_start_policy`.
+- Run GPU longa 6F.3 ficou parcial (`95.8333%`) por `CUDA error: unspecified
+  launch failure`; os logs sao uteis para diagnostico, mas nao contam como
+  benchmark final.
+- Teacher BC reduziu EV negative fraction e EV service penalty face a V43
+  anterior, mas nao resolveu o evento dominante do Building 15/agente 14.
+- Fase 6F.4/6F.5 criou V44/V45, estabilizando critic e tornando a pressao EV
+  phase-aware no Building 15.
+- Fase 6F.7 adicionou actor pretraining configuravel, para que a avaliacao
+  deterministica nao dependa do professor durante o rollout de treino. A
+  primeira variante melhorou 1 episodio, mas degradou no terceiro quando a
+  policy loss ficou demasiado forte.
+- Fase 6F.10-6F.14 testou teacher-clone EV focus. O melhor marco atual e
+  `community_feasible_service_v45_teacher_clone_ev_focus_rbc_smart` com 3
+  episodios de treino + 1 avaliacao deterministica: custo `87.460`,
+  `EV feasible min = 1.0`, `EV within tolerance feasible = 0.6`, EV V2G medio
+  `0.0`.
+- Fase 6H.3 substituiu o professor "acidental" por um professor explicito
+  `RBCSmart` mais suave para aprendizagem:
+  `community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart`.
+  Resultado 15s, 3 treino + 1 avaliacao: custo `87.808`,
+  `EV feasible min = 1.0`, `EV within_tolerance_feasible = 0.6`, erro EV
+  absoluto medio `0.0654`, EV V2G medio `0.0`. A variante recupera o bom custo
+  do `f14` e melhora o erro EV absoluto, mas ainda nao bate o `RBCSmart` em
+  precisao EV (`within_tolerance_feasible = 1.0`, erro absoluto `0.0299`).
+- Fase 6H.4 testou event replay EV generico e foi rejeitada: custo `87.945`,
+  `EV feasible min = 0.8`, `EV within_tolerance_feasible = 0.4`.
+- Fase 6H.5 reforcou BC EV e targets zero/idle sem event replay generico.
+  Resultado 15s, 5 treino + 1 avaliacao: custo `85.172`,
+  `EV feasible min = 1.0`, `EV within_tolerance_feasible = 0.8`, erro EV
+  absoluto medio `0.0484`, EV V2G medio `0.0`.
+- Fase 6H.6 criou a reward `CostServiceCommunityFeasiblePrecisionRewardV46`
+  com caps em deficits EV usados no treino, over-service mais forte e critic
+  target clip `25`. Resultado 15s, 5 treino + 1 avaliacao: custo `83.761`,
+  `EV feasible min = 1.0`, `EV within_tolerance_feasible = 0.8`, erro EV
+  absoluto medio `0.0473`, EV V2G medio `0.0`. E o melhor marco MADDPG atual
+  em custo e mantem o gate EV, mas ainda nao atinge a precisao EV do professor.
 
 O que ainda nao esta solido:
 
-- diagnostico MADDPG repetido depois do fix dos baselines e dos KPIs `0.6.6`;
-- tuning longo multi-seed;
+- melhorar banda de SOC EV sem perder o custo ja obtido com 6H.6;
+- tuning multi-episodio/multi-seed;
 - validacao final do bundle no inference.
+- confirmar o ganho de custo do `6H.6` em mais seeds/datasets;
+- reduzir uso excessivo de storage no MADDPG;
+- melhorar `ev_departure_within_tolerance_feasible_rate`, porque a V4 cumpre o
+  minimo/target mas nao sai dentro da banda do SOC pedido.
+- estabilizar critic em runs longas sem depender demasiado de clipping; V46 ja
+  reduziu o target clip para `25`, mas ainda precisa de validacao;
+- fazer o actor bater tambem a precisao EV do `RBCSmart`
+  (`within_tolerance_feasible = 1.0`).
 
-Conclusao pratica: a infraestrutura e os baselines ja estao suficientemente
-coerentes para voltar ao MADDPG. Ainda nao sao resultados finais multi-seed,
-mas sao bons o bastante para a Fase 6F.
+Conclusao pratica: a infraestrutura, baselines, CUDA, logs e benchmark ja estao
+coerentes. O gargalo atual e de aprendizagem/reward tradeoff: manter servico EV
+e baixar custo sem voltar a descarregar EVs ou abusar de storage.
 
 ## Checklist Macro
 
@@ -105,25 +183,50 @@ mas sao bons o bastante para a Fase 6F.
   headroom residual nos baselines.
 - [x] Fase 6E: repetir baselines pos-fix em 15s e 2022.
 - [x] Fase 6E.1: corrigir/calibrar estrategia dos baselines heuristicos.
-- [ ] Fase 6F: repetir diagnostico/tuning MADDPG contra baselines confiaveis.
+- [x] Fase 6F: repetir diagnostico/tuning MADDPG contra baselines confiaveis.
+- [x] Fase 6F.1: testar custo do MADDPG mantendo `EV feasible min = 1.0`.
+- [x] Fase 6F.2: nova calibracao reward/config para reduzir custo sem perder
+  o gate EV. V4 implementada/testada; ainda nao bate `RBCSmart`.
+- [x] Fase 6F.3: teacher BC e replay com acoes do professor implementados; run
+  longa parcial usada para diagnostico, nao benchmark final.
+- [x] Fase 6F.4/6F.5: V44/V45 implementadas para critic mais estavel e schedule
+  EV phase-aware.
+- [x] Fase 6F.7: actor pretraining avaliado; policy loss cedo demais degradou
+  EV service.
+- [x] Fase 6F.10-6F.14: teacher-clone EV focus avaliado; `f14` e o melhor
+  marco MADDPG atual no 15s.
+- [x] Fase 6G: auditar storage e retunar `RBCSmart` 2022 com schema/config
+  alinhados.
+- [x] Fase 6H.3: professor explicito de aprendizagem testado; recupera custo
+  baixo e melhora erro EV face ao `f14`, mas ainda nao atinge precisao EV do
+  `RBCSmart`.
+- [x] Fase 6H.4: event replay EV generico testado e rejeitado.
+- [x] Fase 6H.5: strong BC EV testado; melhor marco MADDPG anterior.
+- [x] Fase 6H.6: V46 testada; melhor marco MADDPG atual em custo, mantendo
+  `EV feasible min = 1.0`.
 - [ ] Fase 7: benchmark KPI completo contra baselines.
 - [ ] Fase 8: validar bundle real no repo de inference.
 
 ## Proxima Ordem Logica
 
-1. Fechar ambiente `0.6.6`:
-   instalar por PyPI quando o pin for atualizado e correr `pytest`.
-2. Fase 6F:
-   repetir MADDPG pequeno/controlado com `maddpg_v2_compact`, reward atual e
-   KPIs `0.6.6`.
-3. Escalar MADDPG:
+1. Tomar a 6H.6/V46 como baseline MADDPG atual.
+2. Melhorar a precisao de banda EV feasible (`within_tolerance_feasible`) antes
+   de otimizar mais custo.
+3. Rever storage depois da EV precision: 6H.6 baixa custo, mas continua a usar
+   descarga de storage e precisa de auditoria por beneficio real.
+4. So depois testar fine-tune RL muito lento: policy loss pequena, BC EV forte,
+   anti-V2G ativo, e sem voltar a `ev_band`/`balanced`.
+5. Se fine-tune degradar EV service, atacar replay event-aware por janelas EV/
+   deferrable/grid, mas so com classificacao feasible/infeasible.
+6. Escalar MADDPG:
    1 building -> 2 buildings -> 17 buildings, sempre comparando com os baselines.
-4. So depois fazer tuning largo:
-   replay/event-aware, redes, LayerNorm, critic maior, exploration schedule,
-   reward weights e eventualmente TD3-style.
-5. Fase 7:
+8. Testar variantes controladas:
+   replay ponderado com menor prioridade, redes menores/maiores, LayerNorm,
+   critic maior, exploration schedule, reward weights e eventualmente
+   TD3-style.
+9. Fase 7:
    benchmark final multi-seed contra baselines.
-6. Fase 8:
+10. Fase 8:
    validar export/inference.
 
 ## Fase 1 - Contrato Atual Congelado
@@ -176,14 +279,21 @@ Revisao local apos `softcpsrecsimulator==0.6.5`:
 - `ev_departure_min_acceptable_rate` continua importante, mas mede experiencia
   bruta do utilizador/cenario, incluindo schedules fisicamente impossiveis.
 
-Revisao local apos `softcpsrecsimulator==0.6.6`:
+Revisao apos `softcpsrecsimulator==0.6.6`:
 
-- instalado em editable a partir de `/home/tiago/dev/Simulator`;
+- validado primeiro em editable local e depois instalado via PyPI;
 - `citylearn.__version__ == 0.6.6`;
 - corrige a classificacao feasible dos eventos EV problematicos do 15s;
-- Fase 6E.1 usa este contrato de KPI;
-- `requirements.txt` ainda nao foi atualizado porque o pedido atual e usar o
-  simulador local ate haver confirmacao para PyPI.
+- Fases 6E.1, 6F e 6F.1 usam este contrato de KPI;
+- `requirements.txt` esta fixado em `softcpsrecsimulator==0.6.6`.
+
+Revisao apos `softcpsrecsimulator==0.6.7`:
+
+- instalado via PyPI na `.venv`;
+- `citylearn.__version__ == 0.6.7`;
+- update tratado como otimizacao de performance, mantendo o contrato de KPI e
+  interface da versao `0.6.6`;
+- `requirements.txt` esta fixado em `softcpsrecsimulator==0.6.7`.
 
 Objetivo: antes de mexer em aprendizagem, deixar claro o contrato que o MADDPG
 recebe e exporta. A partir daqui, qualquer alteracao a observacoes, encoding,
@@ -679,7 +789,9 @@ Alteracoes principais:
 - a penalizacao forte de EV missed departure continua como evento de falha de
   servico;
 - os templates usam fallback fisico `battery_soc_min: 0.0` e
-  `battery_soc_max: 1.0`, evitando inventar uma banda de conforto;
+  `battery_soc_max: 1.0`, evitando inventar uma banda de conforto quando o
+  simulador nao expõe limites; quando existem observacoes de minimo/maximo, sao
+  esses limites que devem ser respeitados;
 - `export_credit_ratio` passou a `0.0` nos templates comparaveis, porque o
   dataset 15s declara `grid_export_price: 0.0` e nao queremos premiar export
   artificial;
@@ -1233,7 +1345,7 @@ Ainda nao passar para comparacao MADDPG final. Primeiro fazer Fase 6E.1.
 
 ### Fase 6E.1 - Calibrar Baselines
 
-Status: por fazer.
+Status: concluida.
 
 Objetivo: tornar `Normal`, `RBCBasic` e `RBCSmart` uma escada justa e
 fisicamente coerente.
@@ -1265,16 +1377,16 @@ Trabalho provavel:
 
 ### Fase 6F - MADDPG Diagnostico e Tuning
 
-Status: por fazer.
+Status: concluida como diagnostico e primeiro tuning MADDPG.
 
-So depois da Fase 6E.1:
+Base executada depois da Fase 6E.1:
 
 1. repetir diagnostico pequeno:
    - 1 building;
    - 2 buildings;
    - `maddpg_v2_compact`;
    - reward atual;
-   - KPIs `0.6.5`;
+   - KPIs `0.6.6`;
 2. correr MADDPG 15s contra baselines pos-fix:
    - `current`;
    - `noop_centered`;
@@ -1284,19 +1396,182 @@ So depois da Fase 6E.1:
 3. escolher uma receita curta;
 4. so depois fazer tuning mais caro.
 
+Resultado:
+
+- reward corrigida para departure EV desconhecido;
+- `current` ainda mostra saturacao excessiva;
+- `anti_saturation` reduz saturacao;
+- behavior cloning inicial a partir de `RBCBasicPolicy` reduz EV discharge mas
+  sozinho nao resolve EV service;
+- `ev_v2g_service_penalty` resolveu o problema principal de servico:
+  `ev_service_v2g_guard_warm_rbc_basic` cumpriu
+  `ev_departure_min_acceptable_feasible_rate = 1.0` na janela 15s com
+  departures reais;
+- `RewardWeightedMultiAgentReplayBuffer` esta implementado e a variante
+  priorizada tambem cumpriu EV feasible, com custo menor que o guard uniforme
+  nesta run curta;
+- custo ainda nao bate `RBCBasic`/`RBCSmart`, portanto a fase 6F.1 focou
+  otimizar custo mantendo o gate EV.
+
 Hipoteses de tuning:
 
-- learning rates separados;
-- critic maior que actor;
-- LayerNorm;
-- batch size;
-- buffer size;
-- warmup;
-- tau;
-- reward normalization;
-- exploration schedule;
+- reduzir `priority_fraction` no replay ponderado para nao sobre-amostrar
+  eventos infeasible;
+- aumentar episodios antes de mexer em LSTM;
+- testar critic maior e actor moderado;
+- testar LayerNorm;
+- ajustar learning rates separados;
+- rever peso de `ev_v2g_service_penalty` vs custo;
+- explorar schedule de noise e warmup;
 - TD3-style tricks se necessario;
 - LSTM apenas se houver evidencia de problema de memoria temporal.
+
+### Fase 6F.1 - Baixar Custo Mantendo EV
+
+Status: concluida como primeira matriz de custo; problema ainda aberto.
+
+Gate fixo:
+
+- `ev_departure_min_acceptable_feasible_rate == 1.0`;
+- `electrical_service_violation_total_kwh` perto de zero;
+- sem regressao forte em `ev_departure_soc_deficit_mean`.
+
+Run principal:
+
+- `runs/benchmarks/phase6f1_066_maddpg_15s_cost_service_gpu`
+- `5/5` jobs completos, `0` falhas;
+- `pytest -q`: `173 passed`.
+
+Resultado curto:
+
+- `RBCSmart`: custo `60.402`, EV feasible min `1.0`;
+- `service_guard_v2_warm_rbc_basic`: custo `72.263`, EV feasible min `1.0`;
+- `service_guard_v2_prioritized_low_bc_decay_warm_rbc_basic`: custo `69.737`,
+  EV feasible min `1.0`;
+- `cost_balanced_v3_prioritized_low_bc_decay_warm_rbc_basic`: custo `80.917`,
+  EV feasible min `1.0`.
+
+Conclusao:
+
+- melhor MADDPG atual em custo:
+  `service_guard_v2_prioritized_low_bc_decay_warm_rbc_basic`;
+- ainda nao bate `RBCSmart`;
+- V3 reduziu deficit EV mas piorou custo, portanto nao e a receita principal;
+- proxima fase deve atacar sobre-servico EV e storage caro, nao aumentar rede
+  ou meter LSTM.
+
+### Fase 6F.2 - Reward/Config V4 Para Custo
+
+Status: primeira iteracao concluida.
+
+Implementado/testado:
+
+- `CostServiceCommunityBandRewardV4`;
+- settlement comunitario aproximado como custo de treino;
+- penalizacao de EV acima da banda do SOC pedido;
+- replay `priority_fraction=0.15`;
+- behavior cloning mais leve (`0.03 -> 0.005`);
+- run: `runs/benchmarks/phase6f2_066_maddpg_15s_community_band_gpu`.
+
+Resultado:
+
+- melhor V4: `community_band_v4_prioritized_tiny_bc_decay_warm_rbc_basic`;
+- custo `69.794`;
+- EV feasible min `1.0`;
+- ainda pior que `RBCSmart` (`60.402`);
+- `within_tolerance_feasible=0.0`, logo a V4 cumpre minimo/target mas nao fica
+  suficientemente perto do SOC pedido;
+- storage continua demasiado ativo face ao `RBCSmart`.
+
+Proxima fase 6F.3:
+
+- reforcar disciplina de storage;
+- calibrar penalizacao de over-service EV perto de departure;
+- repetir a melhor candidata em 2-3 seeds antes de mexer em rede/LSTM.
+
+### Fase 6F.10-6F.15 - Teacher Clone e Fine-Tune
+
+Status: `f14` aceite como melhor marco; `f15` e `f16` rejeitadas.
+
+Melhor marco atual:
+
+- `community_feasible_service_v45_teacher_clone_ev_focus_rbc_smart`;
+- run: `runs/benchmarks/phase6f14_ev_focus_cpu_3train_1eval_15s`;
+- custo `87.460`;
+- `EV feasible min = 1.0`;
+- `EV within_tolerance_feasible = 0.6`;
+- EV V2G medio `0.0`.
+
+Tentativa rejeitada:
+
+- `community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart`;
+- run: `runs/benchmarks/phase6f15_slow_finetune_cpu_1train_1eval_15s`;
+- custo `93.481`;
+- `EV feasible min = 0.8`;
+- `EV within_tolerance_feasible = 0.2`;
+- EV V2G medio `0.0133`.
+
+Conclusao:
+
+- reabrir policy loss, mesmo com peso pequeno e warmup longo, ainda quebra o
+  servico EV;
+- nao correr `f15` mais tempo sem protecao adicional;
+- event-aware BC/replay foi testado em `f16` e tambem quebrou o gate EV:
+  - run: `runs/benchmarks/phase6f16_event_focus_cpu_1train_1eval_15s`;
+  - custo `90.405`;
+  - `EV feasible min = 0.8`;
+  - `EV within_tolerance_feasible = 0.4`;
+- nao correr mais variantes derivadas de `f16` sem rever a estrategia;
+- proximo passo deve ser uma reuniao curta de decisao antes de mais treino
+  longo.
+
+### Fase 6H.3-6H.8 - Professor Explicito, Strong BC, V46 e V48
+
+Status: 6H.8 aceite como melhor marco MADDPG atual; 6H.7 rejeitada.
+
+Professor de aprendizagem:
+
+- `RBCSmartPolicy` mais suave que o baseline final;
+- EV sem V2G;
+- carga EV menos agressiva;
+- storage com peso baixo no BC.
+
+Resultados 15s:
+
+| Variante | Custo | EV feasible min | EV dentro tolerancia feasible | Erro abs EV | EV V2G |
+|---|---:|---:|---:|---:|---:|
+| `RBCSmart` learning teacher | 89.010 | 1.000 | 1.000 | 0.0300 | 0.0000 |
+| `6H.3` professor explicito | 87.808 | 1.000 | 0.600 | 0.0654 | 0.0000 |
+| `6H.4` event replay EV | 87.945 | 0.800 | 0.400 | 0.1002 | 0.0000 |
+| `6H.5` strong BC EV | 85.172 | 1.000 | 0.800 | 0.0484 | 0.0000 |
+| `6H.6` V46 precision | 83.761 | 1.000 | 0.800 | 0.0473 | 0.0000 |
+| `6H.7` V47 over-service guard | 86.448 | 1.000 | 0.800 | 0.0540 | 0.0000 |
+| `6H.8` V48 zero-band | 83.702 | 1.000 | 1.000 | 0.0330 | 0.0000 |
+
+Conclusoes:
+
+- strong BC EV melhora a precisao sem quebrar o gate feasible;
+- event replay EV generico piora e fica rejeitado;
+- 6H.6 bate o professor suave em custo, mas ainda nao bate em precisao de SOC;
+- os dois failures min-acceptable crus do Building 15 sao target-infeasible
+  segundo o KPI oficial;
+- a V46 reduziu ligeiramente surplus/erro absoluto EV face a 6H.5;
+- V47 apertou demasiado over-service via reward/BC e piorou custo/erro, por
+  isso fica rejeitada;
+- V48 manteve a reward V46 e reforcou moderadamente BC de EV zero/idle;
+- V48 eliminou o erro feasible restante: todos os eventos EV target-feasible
+  ficaram dentro da tolerancia;
+- o critic ficou mais controlado com target clip `25`, mas ainda falta validar
+  multi-seed/multi-dataset.
+
+Proxima fase:
+
+- promover V48 a baseline MADDPG candidato;
+- repetir V48 em 2-3 seeds no 15s;
+- correr V48 no dataset 2022;
+- rever storage por beneficio real, porque o custo baixo ainda vem com uso
+  relevante de bateria;
+- so testar policy loss muito fraca quando V48 estiver robusta em seed/dataset.
 
 ## Fase 7 - Benchmark KPI Completo
 

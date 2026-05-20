@@ -158,6 +158,7 @@ class RuleBasedPolicy(BaseAgent):
                         self._get_storage_info(agent_idx),
                         bounds,
                     )
+                    value = self._apply_storage_soc_limit(value, obs, obs_map, bounds)
                 elif "electric_vehicle" in action_name and self.control_evs:
                     charger_info = self._get_charger_info(agent_idx, action_position)
                     normalised = self._compute_ev_action(
@@ -421,11 +422,124 @@ class RuleBasedPolicy(BaseAgent):
         low, high = bounds
         power_scale = max(storage_info.nominal_power, 1.0e-6)
         if value > 0.0:
+            if available_kw <= self.energy_epsilon:
+                available_kw = self._local_pv_surplus_kw(obs, obs_map)
             limit = available_kw / power_scale if abs(high) <= 1.0 else available_kw
             return min(value, max(0.0, limit))
 
         limit = available_kw / power_scale if abs(low) <= 1.0 else available_kw
         return max(value, -max(0.0, limit))
+
+    def _apply_storage_soc_limit(
+        self,
+        value: float,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        bounds: Sequence[float],
+    ) -> float:
+        """Avoid issuing storage commands beyond observed SOC limits.
+
+        This is a baseline-policy guard only. The learning agents still see the
+        observations/reward and the simulator remains the source of truth for
+        physical constraints.
+        """
+
+        if value == 0.0:
+            return float(np.clip(0.0, bounds[0], bounds[1]))
+
+        soc = self._storage_soc_ratio(obs, obs_map, default=float("nan"))
+        if math.isnan(soc):
+            return float(np.clip(value, bounds[0], bounds[1]))
+
+        min_soc, max_soc = self._observed_storage_soc_limits(obs, obs_map)
+        if value > 0.0 and soc >= max_soc - self.energy_epsilon:
+            return float(np.clip(0.0, bounds[0], bounds[1]))
+        if value < 0.0 and soc <= min_soc + self.energy_epsilon:
+            return float(np.clip(0.0, bounds[0], bounds[1]))
+        return float(np.clip(value, bounds[0], bounds[1]))
+
+    def _storage_soc_ratio(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        *,
+        default: float = 0.0,
+    ) -> float:
+        value = self._first_available_observation_value(
+            obs,
+            obs_map,
+            ("electrical_storage_soc_ratio", "electrical_storage_soc"),
+            suffixes=("::soc", "::soc_ratio"),
+            default=default,
+        )
+        if not math.isnan(value) and abs(value) > 1.5:
+            value /= 100.0
+        return float(np.clip(value, 0.0, 1.0)) if not math.isnan(value) else float("nan")
+
+    def _observed_storage_soc_limits(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+    ) -> Tuple[float, float]:
+        min_soc = self._first_available_observation_value(
+            obs,
+            obs_map,
+            ("electrical_storage_soc_min_ratio",),
+            suffixes=("::soc_min_ratio",),
+            default=0.0,
+        )
+        max_soc = self._first_available_observation_value(
+            obs,
+            obs_map,
+            ("electrical_storage_soc_max_ratio",),
+            suffixes=("::soc_max_ratio",),
+            default=1.0,
+        )
+        if abs(min_soc) > 1.5:
+            min_soc /= 100.0
+        if abs(max_soc) > 1.5:
+            max_soc /= 100.0
+        min_soc = float(np.clip(min_soc, 0.0, 1.0))
+        max_soc = float(np.clip(max_soc, 0.0, 1.0))
+        if min_soc > max_soc:
+            return max_soc, min_soc
+        return min_soc, max_soc
+
+    def _local_pv_surplus_kw(self, obs: np.ndarray, obs_map: Dict[str, int]) -> float:
+        pv_power = self._first_available_observation_value(
+            obs,
+            obs_map,
+            ("pv_power_kw", "solar_generation"),
+            suffixes=("::generation_power_kw",),
+        )
+        load_power = self._first_available_observation_value(
+            obs,
+            obs_map,
+            ("load_power_kw", "non_shiftable_load"),
+        )
+        return max(0.0, pv_power - load_power)
+
+    def _first_available_observation_value(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        names: Sequence[str],
+        *,
+        suffixes: Sequence[str] = (),
+        default: float = 0.0,
+    ) -> float:
+        for name in names:
+            value = self._get_value(obs, obs_map, name, default=float("nan"))
+            if not math.isnan(value):
+                return value
+
+        for raw_name in obs_map:
+            if any(str(raw_name).endswith(suffix) for suffix in suffixes):
+                value = self._get_value(obs, obs_map, str(raw_name), default=float("nan"))
+                if not math.isnan(value):
+                    return value
+
+        return default
 
     def _available_dynamic_headroom_kw(
         self,
