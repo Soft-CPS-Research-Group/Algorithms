@@ -154,6 +154,7 @@ class SimulatorConfig(BaseModel):
     reward_function: str
     reward_function_kwargs: Dict[str, Any] = Field(default_factory=dict)
     episodes: int = Field(default=1, ge=1)
+    deterministic_finish: bool = False
     simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
     simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
@@ -232,6 +233,16 @@ class ReplayBufferConfig(BaseModel):
     class_name: str = Field(alias="class")
     capacity: int = Field(ge=1)
     batch_size: int = Field(ge=1)
+    priority_fraction: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    priority_alpha: Optional[float] = Field(default=None, ge=0.0)
+    priority_epsilon: Optional[float] = Field(default=None, gt=0.0)
+    priority_mode: Optional[Literal["abs_reward", "negative_reward", "positive_reward"]] = None
+    priority_max: Optional[float] = Field(default=None, gt=0.0)
+    behavior_action_priority_weight: Optional[float] = Field(default=None, ge=0.0)
+    behavior_action_priority_mode: Optional[Literal["positive", "abs"]] = None
+    behavior_action_priority_scope: Optional[Literal["all", "ev"]] = None
+    observation_event_priority_weight: Optional[float] = Field(default=None, ge=0.0)
+    observation_event_priority_mode: Optional[Literal["ev_departure_service"]] = None
 
 
 class ExplorationParams(BaseModel):
@@ -263,6 +274,7 @@ class RuleBasedHyperparameters(BaseModel):
     deferrable_urgency_threshold: float = Field(default=0.75, ge=0)
     deferrable_slack_threshold: float = Field(default=0.25, ge=0)
     deferrable_priority_threshold: float = Field(default=0.5, ge=0)
+    deferrable_safety_margin_steps: float = Field(default=1.0, ge=0)
     storage_min_soc: float = Field(default=0.20, ge=0)
     storage_max_soc: float = Field(default=0.90, ge=0)
     storage_target_soc: float = Field(default=0.50, ge=0)
@@ -272,6 +284,9 @@ class RuleBasedHyperparameters(BaseModel):
     price_discharge_rate: float = Field(default=0.45, ge=0)
     pv_charge_rate: float = Field(default=0.75, ge=0)
     peak_discharge_rate: float = Field(default=0.65, ge=0)
+    storage_price_charge_soc_ceiling: float = Field(default=0.90, ge=0)
+    storage_price_discharge_soc_floor: float = Field(default=0.20, ge=0)
+    storage_peak_discharge_soc_floor: float = Field(default=0.20, ge=0)
     ev_normal_charge_rate: float = Field(default=1.0, ge=0)
     ev_normal_target_soc: float = Field(default=1.0, ge=0)
     ev_price_charge_rate: float = Field(default=0.70, ge=0)

@@ -424,3 +424,79 @@ Conclusao temporaria:
 - isto aponta menos para "RBCSmart esta errado" e mais para auditar o evento
   especifico: chegada, target, janela, potencia, fase/headroom e se o
   controlador inicia carga cedo o suficiente.
+
+## Revisao 0.6.6 / Fase 6G - Storage e RBCSmart 2022
+
+Depois dos fixes do simulador `0.6.6`, a matriz completa de baselines foi
+repetida nos dois datasets principais:
+
+- benchmark: `runs/benchmarks/phase6g_baseline_storage_check`;
+- auditoria storage: `runs/storage_audits/phase6g_baseline_storage_check`.
+
+Resumo de custo:
+
+| dataset | policy | cost eur | EV feasible min | EV feasible tolerance | leitura |
+|---|---|---:|---:|---:|---|
+| 15s | NormalNoBattery | 112.505 | 1.000 | 0.000 | dia normal sem bateria |
+| 15s | Normal | 114.035 | 1.000 | 0.000 | bateria piora por ciclos pouco valiosos |
+| 15s | RBCBasic | 99.453 | 1.000 | 1.000 | baseline medio forte |
+| 15s | RBCSmart | 97.105 | 1.000 | 1.000 | baseline forte atual |
+| 2022 | NormalNoBattery | 4729.065 | 1.000 | 0.049 | dia normal sem bateria |
+| 2022 | Normal | 4825.920 | 1.000 | 0.049 | bateria piora por eficiencia/ciclos |
+| 2022 | RBCBasic | 3835.326 | 1.000 | 0.436 | baseline medio forte |
+| 2022 | RBCSmart antigo | 3894.033 | 1.000 | 0.436 | demasiado conservador/mal calibrado |
+
+Conclusoes:
+
+- nao ha evidencia de consumo parado da bateria: quando a policy deixa storage
+  idle, o SOC nao drena de forma relevante;
+- `Normal` com bateria ser pior que `NormalNoBattery` e plausivel, porque a
+  estrategia mecanica paga perdas de ciclo sem olhar para preco/PV/peak;
+- `RBCBasic` e `RBCSmart` demonstram que storage pode ajudar quando a decisao e
+  minimamente contextual;
+- no 15s, o `RBCSmart` ja era o baseline forte;
+- no 2022, o `RBCSmart` antigo carregava a bateria a preco medio pior que
+  `RBCBasic`, logo precisava de retune.
+
+Alteracoes aplicadas:
+
+- `RBCSmartPolicy` passou a permitir carga por preco ate
+  `storage_price_charge_soc_ceiling`, sem ficar limitada por
+  `storage_target_soc`;
+- a rama de carga por PV ja nao bloqueia carga por preco quando `pv_charge_rate`
+  e zero ou inferior a `price_charge_rate`;
+- o clipping fisico continua depois da decisao da policy, preservando limites
+  de SOC, headroom e fases;
+- `rbc_smart_local.yaml` foi alinhado para floors de descarga `0.30`, mantendo
+  o resultado forte no 15s: custo `97.105`, EV feasible min `1.0`, EV feasible
+  dentro da tolerancia `1.0` e zero violacoes;
+- `rbc_smart_2022_all_plus_evs_local.yaml` foi retuned para
+  `price_charge_rate = 0.15`, `storage_price_charge_soc_ceiling = 0.85`,
+  `storage_price_discharge_soc_floor = 0.30` e
+  `storage_peak_discharge_soc_floor = 0.30`.
+- `utils/config_schema.py` passou a preservar estes knobs de storage e
+  `deferrable_safety_margin_steps`; antes, alguns valores existiam no template
+  mas eram descartados no config resolvido.
+
+Validacao do template 2022 atualizado:
+
+- run: `runs/benchmarks/phase6g_rbcsmart_2022_template_verify_final`;
+- auditoria storage:
+  `runs/storage_audits/phase6g_rbcsmart_2022_template_verify_final`;
+- custo: `3823.523`;
+- melhor que `RBCBasic` (`3835.326`) e que o `RBCSmart` antigo (`3894.033`);
+- `ev_departure_min_acceptable_feasible_rate = 1.0`;
+- `ev_departure_within_tolerance_feasible_rate = 0.435816`;
+- `electrical violation = 0.0`.
+- storage: `5783.500 kWh` de carga, `4691.000 kWh` de descarga,
+  `10474.500 kWh` de throughput, sem drift de SOC quando idle.
+
+Estado para comparacao MADDPG:
+
+- `Random` continua a ser apenas sanity/lower bound;
+- `NormalNoBattery` representa dia normal sem controlo de bateria;
+- `Normal` representa dia normal com bateria mecanica, nao uma estrategia
+  otimizada;
+- `RBCBasic` e o baseline intermedio;
+- `RBCSmart` e o baseline forte por dataset: conservador no 15s, retuned no
+  2022.

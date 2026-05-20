@@ -49,6 +49,12 @@ class RandomPolicy(RuleBasedPolicy):
                         self._get_storage_info(agent_idx),
                         (low, high),
                     )
+                    value = self._apply_storage_soc_limit(
+                        value,
+                        obs,
+                        obs_map,
+                        (low, high),
+                    )
                 elif "electric_vehicle" in str(action_name):
                     charger_info = self._get_charger_info(agent_idx, action_position)
                     value = self._apply_ev_dynamic_headroom_limit(
@@ -186,16 +192,18 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         return {"price": price, "cheap": cheap, "expensive": expensive}
 
     def _get_storage_soc(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
-        value = self._get_first_value(
-            obs,
-            obs_map,
-            ["electrical_storage_soc_ratio", "electrical_storage_soc"],
-            suffixes=("electrical_storage::soc", "electrical_storage::soc_ratio"),
-            default=self.storage_target_soc,
-        )
-        if abs(value) > 1.5:
-            value /= 100.0
-        return float(np.clip(value, 0.0, 1.0))
+        value = self._storage_soc_ratio(np.asarray(obs, dtype=float), dict(obs_map), default=self.storage_target_soc)
+        if math.isnan(value):
+            return float(np.clip(self.storage_target_soc, 0.0, 1.0))
+        return value
+
+    def _storage_strategy_limits(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> tuple[float, float]:
+        observed_min, observed_max = self._observed_storage_soc_limits(np.asarray(obs, dtype=float), dict(obs_map))
+        min_soc = max(self.storage_min_soc, observed_min)
+        max_soc = min(self.storage_max_soc, observed_max)
+        if min_soc > max_soc:
+            return observed_min, observed_max
+        return min_soc, max_soc
 
     def _get_pv_power(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
         return max(
@@ -239,10 +247,17 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         return self._get_pv_power(obs, obs_map) - self._get_load_power(obs, obs_map)
 
     def _is_grid_stressed(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> bool:
-        headroom = self._get_headroom_kw(obs, obs_map)
-        if math.isfinite(headroom) and headroom <= self.low_headroom_threshold_kw:
+        if self._has_low_headroom(obs, obs_map):
             return True
         return self._get_import_power(obs, obs_map) >= self.import_peak_threshold_kw
+
+    def _has_low_headroom(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> bool:
+        headroom = self._get_headroom_kw(obs, obs_map)
+        return bool(math.isfinite(headroom) and headroom <= self.low_headroom_threshold_kw)
+
+    def _has_positive_charge_headroom(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> bool:
+        headroom = self._get_headroom_kw(obs, obs_map)
+        return not math.isfinite(headroom) or headroom > self.energy_epsilon
 
     def _clip_non_v2g_charge(self, value: float, bounds: Sequence[float]) -> float:
         low, high = bounds
@@ -471,13 +486,14 @@ class NormalPolicy(_OperationalBaselinePolicy):
     ) -> float:
         del agent_idx, action_name
         soc = self._get_storage_soc(obs, obs_map)
+        min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
         surplus = self._pv_surplus_kw(obs, obs_map)
         import_power = self._get_import_power(obs, obs_map)
         low, high = bounds
 
-        if surplus > self.pv_surplus_threshold_kw and soc < self.storage_max_soc:
+        if surplus > self.pv_surplus_threshold_kw and soc < max_soc:
             return float(np.clip(self.storage_charge_rate, low, high))
-        if import_power > self.normal_storage_discharge_import_threshold_kw and soc > self.storage_min_soc:
+        if import_power > self.normal_storage_discharge_import_threshold_kw and soc > min_soc:
             return float(np.clip(-self.storage_discharge_rate, low, high))
         return float(np.clip(0.0, low, high))
 
@@ -565,11 +581,12 @@ class RBCBasicPolicy(_OperationalBaselinePolicy):
     ) -> float:
         del agent_idx, action_name
         soc = self._get_storage_soc(obs, obs_map)
+        min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
         price_ctx = self._get_price_context(obs, obs_map)
         low, high = bounds
-        if bool(price_ctx["cheap"]) and soc < min(self.storage_max_soc, self.storage_price_charge_soc_ceiling):
+        if bool(price_ctx["cheap"]) and soc < min(max_soc, self.storage_price_charge_soc_ceiling):
             return float(np.clip(self.price_charge_rate, low, high))
-        if bool(price_ctx["expensive"]) and soc > max(self.storage_min_soc, self.storage_price_discharge_soc_floor):
+        if bool(price_ctx["expensive"]) and soc > max(min_soc, self.storage_price_discharge_soc_floor):
             return float(np.clip(-self.price_discharge_rate, low, high))
         return float(np.clip(0.0, low, high))
 
@@ -661,27 +678,36 @@ class RBCSmartPolicy(RBCBasicPolicy):
     ) -> float:
         del agent_idx, action_name
         soc = self._get_storage_soc(obs, obs_map)
+        min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
         surplus = self._pv_surplus_kw(obs, obs_map)
         price_ctx = self._get_price_context(obs, obs_map)
-        stressed = self._is_grid_stressed(obs, obs_map)
         import_power = self._get_import_power(obs, obs_map)
+        low_headroom = self._has_low_headroom(obs, obs_map)
+        stressed = low_headroom or import_power >= self.import_peak_threshold_kw
         low, high = bounds
+        price_charge_ceiling = min(max_soc, self.storage_price_charge_soc_ceiling)
+        price_charge_allowed = (
+            self.price_charge_rate > 0.0
+            and soc < price_charge_ceiling
+            and bool(price_ctx["cheap"])
+        )
 
-        if soc < self.storage_max_soc and surplus > self.pv_surplus_threshold_kw and not stressed:
-            return float(np.clip(self.pv_charge_rate, low, high))
+        if soc < max_soc and surplus > self.pv_surplus_threshold_kw:
+            charge_rate = self.pv_charge_rate
+            if price_charge_allowed:
+                charge_rate = max(charge_rate, self.price_charge_rate)
+            if charge_rate > 0.0:
+                return float(np.clip(charge_rate, low, high))
         if (
             bool(price_ctx["expensive"])
             and (stressed or import_power >= self.import_peak_threshold_kw)
-            and soc > max(self.storage_min_soc, self.storage_peak_discharge_soc_floor)
+            and soc > max(min_soc, self.storage_peak_discharge_soc_floor)
         ):
             return float(np.clip(-self.peak_discharge_rate, low, high))
-        if bool(price_ctx["expensive"]) and soc > max(self.storage_min_soc, self.storage_price_discharge_soc_floor):
+        if bool(price_ctx["expensive"]) and soc > max(min_soc, self.storage_price_discharge_soc_floor):
             return float(np.clip(-self.price_discharge_rate, low, high))
         if (
-            self.price_charge_rate > 0.0
-            and soc < min(self.storage_target_soc, self.storage_price_charge_soc_ceiling)
-            and bool(price_ctx["cheap"])
-            and not stressed
+            price_charge_allowed
         ):
             return float(np.clip(self.price_charge_rate, low, high))
         return float(np.clip(0.0, low, high))

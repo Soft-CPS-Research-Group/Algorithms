@@ -7,7 +7,18 @@ from typing import Dict, Type
 from citylearn.reward_function import RewardFunction
 
 from reward_function.V2G_Reward import V2GPenaltyReward
-from reward_function.cost_hard_constraint_reward import CostHardConstraintReward
+from reward_function.cost_hard_constraint_reward import (
+    CostHardConstraintReward,
+    CostServiceCostBalancedRewardV3,
+    CostServiceCommunityBandRewardV4,
+    CostServiceCommunityBatteryValueRewardV43,
+    CostServiceCommunityFeasibleServiceRewardV45,
+    CostServiceCommunityFeasiblePrecisionRewardV46,
+    CostServiceCommunityServiceBandRewardV42,
+    CostServiceCommunitySmoothServiceRewardV44,
+    CostServiceCommunityStorageBandRewardV41,
+    CostServiceGuardRewardV2,
+)
 from reward_function.cost_minimization_reward import CostMinimizationReward
 
 REWARD_FUNCTION_MAP: Dict[str, Type[RewardFunction]] = {
@@ -15,6 +26,15 @@ REWARD_FUNCTION_MAP: Dict[str, Type[RewardFunction]] = {
     "V2GPenaltyReward": V2GPenaltyReward,
     "CostMinimizationReward": CostMinimizationReward,
     "CostHardConstraintReward": CostHardConstraintReward,
+    "CostServiceGuardRewardV2": CostServiceGuardRewardV2,
+    "CostServiceCostBalancedRewardV3": CostServiceCostBalancedRewardV3,
+    "CostServiceCommunityBandRewardV4": CostServiceCommunityBandRewardV4,
+    "CostServiceCommunityStorageBandRewardV41": CostServiceCommunityStorageBandRewardV41,
+    "CostServiceCommunityServiceBandRewardV42": CostServiceCommunityServiceBandRewardV42,
+    "CostServiceCommunityBatteryValueRewardV43": CostServiceCommunityBatteryValueRewardV43,
+    "CostServiceCommunitySmoothServiceRewardV44": CostServiceCommunitySmoothServiceRewardV44,
+    "CostServiceCommunityFeasibleServiceRewardV45": CostServiceCommunityFeasibleServiceRewardV45,
+    "CostServiceCommunityFeasiblePrecisionRewardV46": CostServiceCommunityFeasiblePrecisionRewardV46,
 }
 
 

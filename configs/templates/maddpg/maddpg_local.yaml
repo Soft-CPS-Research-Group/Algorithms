@@ -78,12 +78,16 @@ simulator:
   reward_function: CostHardConstraintReward
   reward_function_kwargs:
     export_credit_ratio: 0.0
+    local_cost_weight: 1.0
     grid_violation_penalty: 60.0
     power_outage_penalty: 120.0
     ev_departure_window_hours: 1.0
     ev_departure_service_tolerance: 0.05
+    ev_over_service_tolerance: 0.05
+    ev_over_service_penalty: 0.0
     ev_connected_deficit_penalty: 30.0
     ev_schedule_deficit_penalty: 120.0
+    ev_v2g_service_penalty: 0.0
     ev_departure_deficit_penalty: 120.0
     ev_departure_missed_penalty: 250.0
     battery_soc_min: 0.0
@@ -97,9 +101,13 @@ simulator:
     community_peak_import_penalty: 0.001
     community_export_penalty: 0.0
     community_penalty_divide_by_agents: true
+    community_settlement_cost_weight: 0.0
+    community_local_price_ratio: 0.8
+    community_grid_export_price: 0.0
     scale_state_penalties_by_time_step: true
     state_penalty_reference_seconds: 3600.0
   episodes: 1
+  deterministic_finish: false
   # Optional simulation window overrides (null = dataset schema defaults).
   simulation_start_time_step: 0
   simulation_end_time_step: 5759
@@ -155,14 +163,21 @@ algorithm:
       decay: 0.9995
       min_sigma: 0.03
       noise_clip: 0.3
+      storage_exploration_noise_multiplier: 1.0
+      ev_negative_exploration_noise_multiplier: 1.0
       gamma: 0.99
       tau: 0.001
+      use_amp: true
       end_initial_exploration_time_step: 960
       random_exploration_steps: 960
       initial_exploration_strategy: uniform_full_range
       warm_start_policy: null
       warm_start_policy_deterministic: true
       warm_start_policy_noise_scale: 0.0
+      warm_start_policy_phaseout_steps: 0
+      warm_start_policy_phaseout_mode: probability
+      train_during_initial_exploration: false
+      initial_exploration_training_start_step: 0
       noop_noise_scale: 0.15
       deferrable_on_probability: 0.2
       deferrable_trigger_threshold: 0.5
@@ -175,7 +190,15 @@ algorithm:
       target_policy_noise_clip: 0.10
       actor_action_l2_penalty: 0.0
       actor_action_saturation_penalty: 0.0
+      actor_storage_action_l2_penalty: 0.0
+      actor_ev_v2g_action_l2_penalty: 0.0
       actor_action_saturation_threshold: 0.85
+      actor_behavior_cloning_weight: 0.0
+      actor_ev_behavior_cloning_multiplier: 1.0
+      actor_storage_behavior_cloning_multiplier: 1.0
+      actor_behavior_cloning_min_weight: 0.0
+      actor_behavior_cloning_decay_start_step: 0
+      actor_behavior_cloning_decay_steps: 0
       reward_normalization: true
       reward_normalization_clip: 10.0
       reward_normalization_epsilon: 1.0e-8

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import subprocess
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -105,6 +106,38 @@ def _write_resolved_config(config: dict, output_path: Path) -> None:
     """Persist the runtime-resolved configuration for reproducibility."""
     with output_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(config, handle, sort_keys=False)
+
+
+def _mark_failed_outputs(path_info: dict[str, Path], exc: Exception) -> None:
+    """Persist a terminal failure state for orchestrators and long local runs."""
+    timestamp = datetime.utcnow().isoformat() + "Z"
+    result_payload = {
+        "status": "failed",
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "timestamp": timestamp,
+    }
+    result_payload["traceback"] = traceback.format_exc()
+    with open(path_info["result_path"], "w", encoding="utf-8") as result_file:
+        json.dump(result_payload, result_file, indent=2)
+
+    progress_payload: dict[str, Any] = {}
+    if path_info["progress_path"].exists():
+        try:
+            with open(path_info["progress_path"], "r", encoding="utf-8") as progress_file:
+                progress_payload = json.load(progress_file)
+        except (OSError, json.JSONDecodeError):
+            progress_payload = {}
+    progress_payload.update(
+        {
+            "status": "failed",
+            "timestamp": timestamp,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+    )
+    with open(path_info["progress_path"], "w", encoding="utf-8") as progress_file:
+        json.dump(progress_payload, progress_file, indent=2)
 
 
 def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
@@ -679,7 +712,10 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         )
 
         logger.info("Starting training loop")
-        wrapper.learn(episodes=int(simulator_cfg.get("episodes", 1) or 1))
+        wrapper.learn(
+            episodes=int(simulator_cfg.get("episodes", 1) or 1),
+            deterministic_finish=bool(simulator_cfg.get("deterministic_finish", False)),
+        )
 
         # Ensure progress file reaches terminal state with 100% completion.
         completed_episodes = int(simulator_cfg.get("episodes", 1) or 1)
@@ -782,6 +818,10 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             )
 
         logger.info("Experiment complete")
+    except Exception as exc:
+        logger.exception("Experiment failed")
+        _mark_failed_outputs(path_info, exc)
+        raise
     finally:
         end_mlflow_run()
         try:

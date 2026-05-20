@@ -82,12 +82,16 @@ simulator:
   reward_function: CostHardConstraintReward
   reward_function_kwargs:
     export_credit_ratio: 0.0
+    local_cost_weight: 1.0
     grid_violation_penalty: 60.0
     power_outage_penalty: 120.0
     ev_departure_window_hours: 1.0
     ev_departure_service_tolerance: 0.05
+    ev_over_service_tolerance: 0.05
+    ev_over_service_penalty: 0.0
     ev_connected_deficit_penalty: 30.0
     ev_schedule_deficit_penalty: 120.0
+    ev_v2g_service_penalty: 0.0
     ev_departure_deficit_penalty: 120.0
     ev_departure_missed_penalty: 250.0
     battery_soc_min: 0.0
@@ -101,8 +105,13 @@ simulator:
     community_peak_import_penalty: 0.001
     community_export_penalty: 0.0
     community_penalty_divide_by_agents: true
+    community_settlement_cost_weight: 0.0
+    community_local_price_ratio: 0.8
+    community_grid_export_price: 0.0
   # Number of episodes executed by the training loop.
   episodes: 1
+  # When true, the final episode uses deterministic actions and disables updates.
+  deterministic_finish: false
   # Optional simulation window overrides (null = dataset schema defaults).
   simulation_start_time_step: 0
   simulation_end_time_step: 5759
@@ -151,6 +160,9 @@ algorithm:
     class: "MultiAgentReplayBuffer"
     capacity: 200000
     batch_size: 256
+    behavior_action_priority_scope: all
+    observation_event_priority_weight: 0.0
+    observation_event_priority_mode: ev_departure_service
   exploration:
     strategy: "GaussianNoise"
     params:
@@ -159,17 +171,40 @@ algorithm:
       decay: 0.9995
       min_sigma: 0.03
       noise_clip: 0.3
+      storage_exploration_noise_multiplier: 1.0
+      ev_negative_exploration_noise_multiplier: 1.0
       gamma: 0.99
       tau: 0.001
+      use_amp: true
+      critic_loss: mse
+      critic_huber_beta: 1.0
+      critic_target_clip_abs: 0.0
       end_initial_exploration_time_step: 960
       random_exploration_steps: 960
+      warm_start_policy_phaseout_steps: 0
+      warm_start_policy_phaseout_mode: probability
+      train_during_initial_exploration: false
+      initial_exploration_training_start_step: 0
       actor_update_interval: 1
       target_policy_smoothing: false
       target_policy_noise: 0.05
       target_policy_noise_clip: 0.10
       actor_action_l2_penalty: 0.0
       actor_action_saturation_penalty: 0.0
+      actor_storage_action_l2_penalty: 0.0
+      actor_ev_v2g_action_l2_penalty: 0.0
       actor_action_saturation_threshold: 0.85
+      actor_behavior_cloning_weight: 0.0
+      actor_ev_behavior_cloning_multiplier: 1.0
+      actor_ev_behavior_cloning_positive_target_weight: 0.0
+      actor_ev_behavior_cloning_positive_target_power: 1.0
+      actor_ev_behavior_cloning_zero_target_weight: 0.0
+      actor_ev_behavior_cloning_zero_target_threshold: 0.05
+      actor_storage_behavior_cloning_multiplier: 1.0
+      actor_behavior_cloning_min_weight: 0.0
+      actor_behavior_cloning_decay_start_step: 0
+      actor_behavior_cloning_decay_steps: 0
+      actor_behavior_cloning_source: replay_action
 
 # Optional worker-specific overrides (e.g., Deucalion). Keep null for local runs.
 execution: null
