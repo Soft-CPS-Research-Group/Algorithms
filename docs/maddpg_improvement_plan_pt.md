@@ -29,9 +29,9 @@ Regra de responsabilidade:
 ## Estado
 
 - Data de referencia: 2026-05-17.
-- Simulador PyPI fixado em `requirements.txt`: `softcpsrecsimulator==0.6.6`.
+- Simulador PyPI fixado em `requirements.txt`: `softcpsrecsimulator==0.6.7`.
 - Ambiente atual de trabalho: `.venv` com package PyPI;
-  `citylearn.__version__ == 0.6.6`.
+  `citylearn.__version__ == 0.6.7`.
 - Interface principal: `entity`.
 - Topologia para MADDPG: `static`.
 - Dataset 15s principal: `citylearn_three_phase_electrical_service_demo_15s_parquet`.
@@ -286,6 +286,14 @@ Revisao apos `softcpsrecsimulator==0.6.6`:
 - corrige a classificacao feasible dos eventos EV problematicos do 15s;
 - Fases 6E.1, 6F e 6F.1 usam este contrato de KPI;
 - `requirements.txt` esta fixado em `softcpsrecsimulator==0.6.6`.
+
+Revisao apos `softcpsrecsimulator==0.6.7`:
+
+- instalado via PyPI na `.venv`;
+- `citylearn.__version__ == 0.6.7`;
+- update tratado como otimizacao de performance, mantendo o contrato de KPI e
+  interface da versao `0.6.6`;
+- `requirements.txt` esta fixado em `softcpsrecsimulator==0.6.7`.
 
 Objetivo: antes de mexer em aprendizagem, deixar claro o contrato que o MADDPG
 recebe e exporta. A partir daqui, qualquer alteracao a observacoes, encoding,
