@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import random
 import time
 from copy import deepcopy
@@ -646,12 +647,12 @@ class MADDPG(BaseAgent):
         self._update_reward_normalizer(rewards)
         behavior_actions = self._transition_behavior_actions(actions)
         priority_boost = self._transition_observation_event_priority_boost()
-        self.replay_buffer.push(
-            observations,
-            actions,
-            rewards,
-            next_observations,
-            done,
+        self._push_replay_transition(
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_observations,
+            done=done,
             behavior_actions=behavior_actions,
             priority_boost=priority_boost,
         )
@@ -989,6 +990,35 @@ class MADDPG(BaseAgent):
             logger.info(log_message, critic_loss_scalar, total_actor_loss / self.num_agents)
         else:
             logger.debug(log_message, critic_loss_scalar, total_actor_loss / self.num_agents)
+
+    def _push_replay_transition(
+        self,
+        *,
+        observations: List[torch.Tensor],
+        actions: List[torch.Tensor],
+        rewards: List[float],
+        next_observations: List[torch.Tensor],
+        done: bool,
+        behavior_actions: List[Any],
+        priority_boost: float,
+    ) -> None:
+        """Push a transition while preserving compatibility with simple buffers."""
+        push = self.replay_buffer.push
+        kwargs: Dict[str, Any] = {}
+        try:
+            parameters = inspect.signature(push).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        if accepts_kwargs or "behavior_actions" in parameters:
+            kwargs["behavior_actions"] = behavior_actions
+        if accepts_kwargs or "priority_boost" in parameters:
+            kwargs["priority_boost"] = priority_boost
+
+        push(observations, actions, rewards, next_observations, done, **kwargs)
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return global_learning_step >= self.end_initial_exploration_time_step
