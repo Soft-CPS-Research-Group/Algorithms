@@ -94,3 +94,79 @@ class Critic(nn.Module):
             x = F.relu(fc(x))
 
         return self.q_out(x)
+
+
+class ValueNetwork(nn.Module):
+    """State-value model used by PPO-style agents."""
+
+    def __init__(self, state_size, seed, fc_units=None):
+        super(ValueNetwork, self).__init__()
+        fc_units = fc_units or [256, 128]
+        self.seed = torch.manual_seed(seed)
+        self.fc_layers = nn.ModuleList()
+        input_dim = state_size
+        for hidden_dim in fc_units:
+            self.fc_layers.append(nn.Linear(input_dim, hidden_dim))
+            input_dim = hidden_dim
+        self.value_out = nn.Linear(input_dim, 1)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.fc_layers:
+            nn.init.kaiming_uniform_(layer.weight, nonlinearity="relu")
+            nn.init.zeros_(layer.bias)
+        nn.init.uniform_(self.value_out.weight, -3e-3, 3e-3)
+        nn.init.uniform_(self.value_out.bias, -3e-3, 3e-3)
+
+    def forward(self, state):
+        x = state
+        for fc in self.fc_layers:
+            x = F.relu(fc(x))
+        return self.value_out(x)
+
+
+class GaussianActor(nn.Module):
+    """Gaussian policy over normalized actions in [-1, 1]."""
+
+    def __init__(
+        self,
+        state_size,
+        action_size,
+        seed,
+        fc_units=None,
+        initial_log_std=-0.5,
+        min_log_std=-5.0,
+        max_log_std=1.0,
+    ):
+        super(GaussianActor, self).__init__()
+        fc_units = fc_units or [256, 128]
+        self.seed = torch.manual_seed(seed)
+        self.min_log_std = float(min_log_std)
+        self.max_log_std = float(max_log_std)
+        self.fc_layers = nn.ModuleList()
+        input_dim = state_size
+        for hidden_dim in fc_units:
+            self.fc_layers.append(nn.Linear(input_dim, hidden_dim))
+            input_dim = hidden_dim
+        self.mean_out = nn.Linear(input_dim, action_size)
+        self.log_std = nn.Parameter(torch.full((action_size,), float(initial_log_std)))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.fc_layers:
+            nn.init.kaiming_uniform_(layer.weight, nonlinearity="relu")
+            nn.init.zeros_(layer.bias)
+        nn.init.uniform_(self.mean_out.weight, -3e-3, 3e-3)
+        nn.init.uniform_(self.mean_out.bias, -3e-3, 3e-3)
+
+    def forward(self, state):
+        x = state
+        for fc in self.fc_layers:
+            x = F.relu(fc(x))
+        return torch.tanh(self.mean_out(x))
+
+    def distribution(self, state):
+        mean = self.forward(state)
+        log_std = torch.clamp(self.log_std, self.min_log_std, self.max_log_std)
+        std = torch.exp(log_std).expand_as(mean)
+        return Normal(mean, std)

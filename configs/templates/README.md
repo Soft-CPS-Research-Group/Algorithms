@@ -3,6 +3,8 @@
 Templates are grouped by purpose:
 
 - `maddpg/`: current MADDPG training templates for the supported static datasets.
+- `rl/`: experimental RL/MARL comparators (`MATD3`, `IPPO`, `MAPPO`) that use
+  the same wrapper/export contract.
 - `baselines/`: Random, Normal, NormalNoBattery, legacy RuleBased, RBCBasic and RBCSmart comparison baselines.
 - `dynamic/`: entity dynamic-topology smoke/debug templates.
 - `legacy/`: older demo/docker compatibility templates.

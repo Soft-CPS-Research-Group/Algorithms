@@ -32,7 +32,7 @@ Isto favorece algoritmos que suportem:
 
 ### 1. MATD3 / MADDPG-TD3
 
-Prioridade: muito alta.
+Prioridade: muito alta. Estado: implementado como `MATD3`.
 
 Ideia:
 
@@ -49,7 +49,7 @@ Porque faz sentido:
 - mexe pouco na interface;
 - ataca diretamente instabilidade de critic/Q-values, que ja apareceu nas fases
   anteriores;
-- pode ser implementado incrementalmente dentro do agente atual.
+- foi implementado incrementalmente mantendo o contrato de agente/export.
 
 Risco:
 
@@ -64,12 +64,11 @@ Quando testar:
 
 Veredicto:
 
-- primeiro comparador tecnico a implementar antes de algoritmos totalmente
-  novos.
+- primeiro comparador tecnico a testar antes de algoritmos totalmente novos.
 
 ### 2. IPPO / PPO Independente Por Agente
 
-Prioridade: alta como baseline robusto.
+Prioridade: alta como baseline robusto. Estado: implementado como `IPPO`.
 
 Ideia:
 
@@ -103,7 +102,7 @@ Veredicto:
 
 ### 3. MAPPO
 
-Prioridade: alta.
+Prioridade: alta. Estado: implementado como `MAPPO`.
 
 Ideia:
 

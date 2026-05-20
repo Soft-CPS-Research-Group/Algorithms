@@ -367,9 +367,15 @@ class Wrapper_CityLearn(RLC):
             or previous_version is None
             or self._entity_topology_version != previous_version
         )
-        if topology_changed and self._entity_dynamic_mode and self._algorithm_name == "MADDPG" and previous_version is not None:
+        fixed_topology_algorithms = {"MADDPG", "MATD3", "IPPO", "MAPPO"}
+        if (
+            topology_changed
+            and self._entity_dynamic_mode
+            and self._algorithm_name in fixed_topology_algorithms
+            and previous_version is not None
+        ):
             raise ValueError(
-                "MADDPG supports entity interface only with topology_mode='static'. "
+                f"{self._algorithm_name} supports entity interface only with topology_mode='static'. "
                 "Detected topology change during runtime."
             )
 

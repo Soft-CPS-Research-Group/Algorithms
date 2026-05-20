@@ -316,8 +316,8 @@ class TopologyConfig(BaseModel):
     action_space: Optional[Any] = None
 
 
-class MADDPGAlgorithmConfig(BaseModel):
-    name: Literal["MADDPG"]
+class ActorCriticAlgorithmConfig(BaseModel):
+    name: Literal["MADDPG", "MATD3", "IPPO", "MAPPO"]
     hyperparameters: AlgorithmHyperparameters
     networks: AlgorithmNetworks
     replay_buffer: ReplayBufferConfig
@@ -436,7 +436,7 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    algorithm: Union[ActorCriticAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
@@ -444,9 +444,15 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
-        if self.algorithm.name == "MADDPG" and self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
+        fixed_topology_algorithms = {"MADDPG", "MATD3", "IPPO", "MAPPO"}
+        if (
+            self.algorithm.name in fixed_topology_algorithms
+            and self.simulator.interface == "entity"
+            and self.simulator.topology_mode == "dynamic"
+        ):
             raise ValueError(
-                "algorithm.name='MADDPG' does not support simulator.interface='entity' with simulator.topology_mode='dynamic'."
+                f"algorithm.name='{self.algorithm.name}' does not support simulator.interface='entity' "
+                "with simulator.topology_mode='dynamic'."
             )
 
         return self

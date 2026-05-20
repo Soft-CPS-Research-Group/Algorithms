@@ -57,6 +57,10 @@ Base tecnica:
 O que ja esta solido:
 
 - baselines `Random`, `NormalNoBattery`, `Normal`, `RBCBasic`, `RBCSmart`;
+- agentes comparadores registados e executaveis:
+  - `MATD3`;
+  - `IPPO`;
+  - `MAPPO`;
 - reward com EV service, EV precision, custo, rede e bateria;
 - teacher/warm-start/BC configuraveis;
 - replay ponderado por reward;
@@ -73,8 +77,8 @@ O que ainda nao esta provado:
 - se V2G ajuda ou dificulta aprendizagem;
 - se `multi_charger` quebra por escala de acoes/fases;
 - se storage cria ganho real ou apenas custo/throughput inutil;
-- se o critic atual chega ou precisa de MATD3;
-- se um algoritmo on-policy como MAPPO e mais estavel;
+- se o critic atual chega ou se `MATD3` melhora;
+- se um algoritmo on-policy como `MAPPO`/`IPPO` e mais estavel;
 - se uma abordagem com entropia como MASAC explora melhor;
 - se a aprendizagem comunitaria precisa de attention/GNN.
 
@@ -204,7 +208,7 @@ Racional:
 
 Acao:
 
-- implementar `MATD3`/`MADDPG-TD3`;
+- testar `MATD3`/`MADDPG-TD3`;
 - twin critics;
 - target policy smoothing;
 - delayed actor update;
@@ -235,7 +239,7 @@ Racional:
 
 Acao:
 
-- implementar `MAPPO`;
+- testar `MAPPO`;
 - centralized value/critic;
 - actors descentralizados;
 - comparar contra `IPPO`.
@@ -249,7 +253,7 @@ Racional:
 
 Acao:
 
-- implementar `IPPO`;
+- testar `IPPO`;
 - uma policy PPO por agente;
 - sem critic centralizado.
 
@@ -279,9 +283,9 @@ Racional:
 Prioridade atual:
 
 1. `MADDPG V48/V49`: candidato implementado e instrumentado.
-2. `MATD3 / MADDPG-TD3`: primeira evolucao se critic/Q for gargalo.
-3. `MAPPO`: principal comparador MARL forte.
-4. `IPPO`: baseline RL robusto e simples.
+2. `MATD3 / MADDPG-TD3`: implementado; primeira evolucao se critic/Q for gargalo.
+3. `MAPPO`: implementado; principal comparador MARL forte.
+4. `IPPO`: implementado; baseline RL robusto e simples.
 5. `MASAC`: candidato se exploracao continuous for gargalo.
 6. Heads por tipo de ativo: importante se `multi_charger` quebrar.
 7. Attention critic: se credit assignment comunitario ficar fraco.
