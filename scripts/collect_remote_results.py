@@ -405,7 +405,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", default=os.environ.get("OPEVA_SERVER", DEFAULT_SERVER))
     parser.add_argument("--job-id", action="append", default=[], help="Remote orchestrator job id. Can be repeated.")
-    parser.add_argument("--jobs-file", type=Path, help="Text/CSV/JSON file with job ids.")
+    parser.add_argument(
+        "--jobs-file",
+        type=Path,
+        action="append",
+        default=[],
+        help="Text/CSV/JSON file with job ids. Can be repeated.",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -419,8 +425,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     job_ids = [str(item).strip() for item in args.job_id if str(item).strip()]
-    if args.jobs_file:
-        job_ids.extend(_read_jobs_file(args.jobs_file))
+    for jobs_file in args.jobs_file:
+        job_ids.extend(_read_jobs_file(jobs_file))
 
     seen: set[str] = set()
     unique_job_ids = [job_id for job_id in job_ids if not (job_id in seen or seen.add(job_id))]

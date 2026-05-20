@@ -694,3 +694,32 @@ Nova hipotese:
   - correr no dataset 2022;
   - comparar sempre contra RBCSmart e Normal/Basic;
   - so depois testar policy loss pequeno ou redes diferentes.
+
+## Atualizacao Apos Preparacao 6J/6K
+
+Foram submetidas runs remotas `sha-969d417` para validar a V48 fora da janela
+local:
+
+- V48 original V2G-capable em `15s` e `2022`, seed `123`;
+- baselines full em CPU: `Random`, `NormalNoBattery`, `Normal`, `RBCBasic`,
+  `RBCSmart`;
+- variantes diagnosticas `no_v2g` e `multi_charger`.
+
+Antes de criar V49/V50, a decisao deve vir do scorecard:
+
+- `candidate_strong`: promover V48 para seeds `456/789`;
+- `reject_cost` com EV bom: V49 focada em storage/custo;
+- `candidate_cost_ok_precision_watch`: V49 focada em target-band EV;
+- `no_v2g` muito melhor que original: V50 com curriculum V2G;
+- `multi_charger` pior que original: V50 com action scaling/heads por asset ou
+  auditoria de observacoes por charger;
+- divergencia server/Deucalion: parar tuning RL e corrigir reproducibilidade.
+
+Scripts preparados:
+
+- `scripts/collect_remote_results.py`;
+- `scripts/build_phase6_remote_scorecard.py`.
+
+Plano detalhado:
+
+- `docs/maddpg_phase6j6k_remote_decision_pt.md`.

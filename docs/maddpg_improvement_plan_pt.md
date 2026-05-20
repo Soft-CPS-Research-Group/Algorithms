@@ -144,6 +144,12 @@ O que esta solido:
   `EV feasible min = 1.0`, `EV within_tolerance_feasible = 0.8`, erro EV
   absoluto medio `0.0473`, EV V2G medio `0.0`. E o melhor marco MADDPG atual
   em custo e mantem o gate EV, mas ainda nao atinge a precisao EV do professor.
+- Fase 6H.8/V48 foi promovida a candidato remoto: mesma reward V46, EV
+  zero-band mais forte e professor de aprendizagem suave. Foram submetidas runs
+  remotas `sha-969d417` nos datasets originais V2G-capable, baselines CPU e
+  variantes `no_v2g`/`multi_charger`.
+- Fase 6J/6K preparada em `docs/maddpg_phase6j6k_remote_decision_pt.md`, com
+  scorecard automatico e matriz de decisao para V49/V50.
 
 O que ainda nao esta solido:
 
@@ -204,29 +210,26 @@ e baixar custo sem voltar a descarregar EVs ou abusar de storage.
 - [x] Fase 6H.5: strong BC EV testado; melhor marco MADDPG anterior.
 - [x] Fase 6H.6: V46 testada; melhor marco MADDPG atual em custo, mantendo
   `EV feasible min = 1.0`.
+- [x] Fase 6H.8: V48 aceite como candidato remoto.
+- [x] Fase 6J: scorecard remoto preparado para leitura de resultados.
+- [x] Fase 6K: matriz de decisao V49/V50 preparada.
 - [ ] Fase 7: benchmark KPI completo contra baselines.
 - [ ] Fase 8: validar bundle real no repo de inference.
 
 ## Proxima Ordem Logica
 
-1. Tomar a 6H.6/V46 como baseline MADDPG atual.
-2. Melhorar a precisao de banda EV feasible (`within_tolerance_feasible`) antes
-   de otimizar mais custo.
-3. Rever storage depois da EV precision: 6H.6 baixa custo, mas continua a usar
-   descarga de storage e precisa de auditoria por beneficio real.
-4. So depois testar fine-tune RL muito lento: policy loss pequena, BC EV forte,
-   anti-V2G ativo, e sem voltar a `ev_band`/`balanced`.
-5. Se fine-tune degradar EV service, atacar replay event-aware por janelas EV/
-   deferrable/grid, mas so com classificacao feasible/infeasible.
-6. Escalar MADDPG:
-   1 building -> 2 buildings -> 17 buildings, sempre comparando com os baselines.
-8. Testar variantes controladas:
-   replay ponderado com menor prioridade, redes menores/maiores, LayerNorm,
-   critic maior, exploration schedule, reward weights e eventualmente
-   TD3-style.
-9. Fase 7:
+1. Aguardar/recolher resultados remotos `sha-969d417`.
+2. Executar `scripts/collect_remote_results.py` com os tres CSVs de submissao.
+3. Executar `scripts/build_phase6_remote_scorecard.py` sobre o `summary.csv`.
+4. Usar `docs/maddpg_phase6j6k_remote_decision_pt.md` para decidir:
+   - promover V48 para seeds `456/789`;
+   - criar V49 focada em storage/custo;
+   - criar V49 focada em EV precision;
+   - criar V50 para curriculum V2G;
+   - criar V50 para multi_charger/action scaling.
+5. Fase 7:
    benchmark final multi-seed contra baselines.
-10. Fase 8:
+6. Fase 8:
    validar export/inference.
 
 ## Fase 1 - Contrato Atual Congelado
@@ -1572,6 +1575,46 @@ Proxima fase:
 - rever storage por beneficio real, porque o custo baixo ainda vem com uso
   relevante de bateria;
 - so testar policy loss muito fraca quando V48 estiver robusta em seed/dataset.
+
+### Fase 6J/6K - Remote Scorecard e Decisao V49/V50
+
+Status: preparado; aguarda resultados remotos.
+
+Artefactos:
+
+- plano detalhado: `docs/maddpg_phase6j6k_remote_decision_pt.md`;
+- coletor remoto: `scripts/collect_remote_results.py`;
+- scorecard: `scripts/build_phase6_remote_scorecard.py`.
+
+Workflow quando as runs remotas terminarem:
+
+```bash
+.venv/bin/python scripts/collect_remote_results.py \
+  --jobs-file runs/remote_configs/phase6_remote_2026_05_20/submitted_jobs_2026_05_20_sha969d417.csv \
+  --jobs-file runs/remote_configs/phase6_remote_2026_05_20/submitted_cpu_jobs_2026_05_20_sha969d417.csv \
+  --jobs-file runs/remote_configs/phase6_remote_2026_05_20/submitted_server_variant_full_jobs_2026_05_20_sha969d417.csv \
+  --output-dir runs/remote_results/phase6j_sha969d417
+
+.venv/bin/python scripts/build_phase6_remote_scorecard.py \
+  --summary-csv runs/remote_results/phase6j_sha969d417/summary.csv \
+  --output-dir runs/remote_results/phase6j_sha969d417
+```
+
+Gates default:
+
+- `ev_min_acceptable_feasible_rate >= 0.999`;
+- `ev_within_tolerance_feasible_rate >= 0.80`;
+- `electrical_violation_kwh <= 1e-6`;
+- candidato forte se tambem bater `RBCSmart` em custo no mesmo dataset/variante.
+
+Decisao:
+
+- se V48 original passar, promover para seeds `456/789`;
+- se `no_v2g` ganhar claramente, V50 deve focar curriculum V2G;
+- se `multi_charger` quebrar, V50 deve focar action scaling/fases/charger
+  local observations;
+- se EV estiver bom mas custo mau, V49 deve focar storage discipline;
+- se custo estiver bom mas EV precision fraca, V49 deve focar target-band BC EV.
 
 ## Fase 7 - Benchmark KPI Completo
 
