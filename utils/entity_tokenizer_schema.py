@@ -125,13 +125,14 @@ class EntityPayloadSample:
     adapter_observed_prefixes: Dict[str, List[str]] = field(default_factory=dict)
 
 
-_DEFAULT_SAMPLE_PATH = Path("datasets/tmp_entity_obs_full_step2200_named.json")
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_SAMPLE_PATH = _REPO_ROOT / "configs" / "tokenizers" / "fixtures" / "entity_obs_sample.json"
 
 
 def _load_default_sample() -> EntityPayloadSample:
     """Load the bundled entity payload sample as an EntityPayloadSample.
 
-    The sample lives at ``datasets/tmp_entity_obs_full_step2200_named.json``
+    The sample lives at ``configs/tokenizers/fixtures/entity_obs_sample.json``
     and is the single canonical fixture for tokenizer validation.
 
     The entity payload stores **bare** feature column names per table (e.g.
