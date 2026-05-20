@@ -1,0 +1,21 @@
+# Documentacao
+
+Entrada principal para o trabalho MADDPG:
+
+- `maddpg_current_roadmap_pt.md`
+
+Documentos ativos:
+
+- `maddpg_phase6j6k_remote_decision_pt.md` - scorecard remoto e decisao V49/V50;
+- `marl_algorithm_comparators_pt.md` - comparadores futuros: MATD3, MAPPO,
+  MASAC, etc.;
+- `entity_interface_playbook_pt.md` - contrato entity;
+- `phd_framework_roadmap.md` - enquadramento de investigacao;
+- `inference_bundle.md` - export/inference;
+- `platform_guide.md` - plataforma;
+- `simulator_limits.md` - limites do simulador.
+
+Historico:
+
+- `archive/maddpg_history/` - fases antigas, auditorias, resultados e hipoteses
+  usadas ate ao roadmap atual.

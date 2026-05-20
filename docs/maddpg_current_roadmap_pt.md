@@ -253,12 +253,12 @@ Documentos atuais de decisao:
 
 Historico e evidencia:
 
-- `docs/maddpg_improvement_plan_pt.md`;
-- `docs/maddpg_hypotheses_pt.md`;
-- `docs/maddpg_phase6f_results_pt.md`;
-- `docs/rbc_baseline_audit_pt.md`;
-- `docs/storage_battery_audit_pt.md`;
-- `docs/ev_departure_event_audit_065_pt.md`.
+- `docs/archive/maddpg_history/maddpg_improvement_plan_pt.md`;
+- `docs/archive/maddpg_history/maddpg_hypotheses_pt.md`;
+- `docs/archive/maddpg_history/maddpg_phase6f_results_pt.md`;
+- `docs/archive/maddpg_history/rbc_baseline_audit_pt.md`;
+- `docs/archive/maddpg_history/storage_battery_audit_pt.md`;
+- `docs/archive/maddpg_history/ev_departure_event_audit_065_pt.md`.
 
 Contrato/export/inference:
 

@@ -44,17 +44,17 @@ Regra de responsabilidade:
 
 Ficheiros de apoio:
 
-- Hipoteses e caminhos MADDPG: `docs/maddpg_hypotheses_pt.md`.
-- Auditoria tecnica fase 3: `docs/maddpg_phase3_audit_pt.md`.
-- Plano de experiencias fase 3.5: `docs/maddpg_phase35_experiments_pt.md`.
-- Resultados fase 6B: `docs/maddpg_phase6b_triage_pt.md`.
-- Resultados fase 6C: `docs/maddpg_phase6c_results_pt.md`.
-- Resultados fase 6D: `docs/maddpg_phase6d_results_pt.md`.
-- Auditoria dos baselines: `docs/rbc_baseline_audit_pt.md`.
-- Auditoria evento EV/headroom 0.6.5: `docs/ev_departure_event_audit_065_pt.md`.
-- Resultados fase 6E: `docs/maddpg_phase6e_results_pt.md`.
-- Resultados fase 6E.1: `docs/maddpg_phase6e1_results_pt.md`.
-- Resultados fases 6F+: `docs/maddpg_phase6f_results_pt.md`.
+- Hipoteses e caminhos MADDPG: `docs/archive/maddpg_history/maddpg_hypotheses_pt.md`.
+- Auditoria tecnica fase 3: `docs/archive/maddpg_history/maddpg_phase3_audit_pt.md`.
+- Plano de experiencias fase 3.5: `docs/archive/maddpg_history/maddpg_phase35_experiments_pt.md`.
+- Resultados fase 6B: `docs/archive/maddpg_history/maddpg_phase6b_triage_pt.md`.
+- Resultados fase 6C: `docs/archive/maddpg_history/maddpg_phase6c_results_pt.md`.
+- Resultados fase 6D: `docs/archive/maddpg_history/maddpg_phase6d_results_pt.md`.
+- Auditoria dos baselines: `docs/archive/maddpg_history/rbc_baseline_audit_pt.md`.
+- Auditoria evento EV/headroom 0.6.5: `docs/archive/maddpg_history/ev_departure_event_audit_065_pt.md`.
+- Resultados fase 6E: `docs/archive/maddpg_history/maddpg_phase6e_results_pt.md`.
+- Resultados fase 6E.1: `docs/archive/maddpg_history/maddpg_phase6e1_results_pt.md`.
+- Resultados fases 6F+: `docs/archive/maddpg_history/maddpg_phase6f_results_pt.md`.
 
 ## Fotografia Atual
 
@@ -439,7 +439,7 @@ baseline principal de comparacao.
 
 Docs relacionadas:
 
-- `docs/rbc_baseline_audit_pt.md`
+- `docs/archive/maddpg_history/rbc_baseline_audit_pt.md`
 
 ### Validacoes Feitas
 
@@ -599,7 +599,7 @@ usar minimo aceitavel como KPI primario de conforto.
 
 Documento detalhado:
 
-- `docs/maddpg_phase3_audit_pt.md`
+- `docs/archive/maddpg_history/maddpg_phase3_audit_pt.md`
 
 Verificar:
 
@@ -634,7 +634,7 @@ matriz de benchmarks.
 
 Documento detalhado:
 
-- `docs/maddpg_phase35_experiments_pt.md`
+- `docs/archive/maddpg_history/maddpg_phase35_experiments_pt.md`
 
 Objetivo: transformar os findings da Fase 3 em experiencias controladas antes
 de mexer em reward/logging/tuning de forma larga.
@@ -983,13 +983,13 @@ Interpretacao:
   diagnosticos;
 - nao serve ainda para dizer que uma policy e melhor em performance final;
 - para conclusoes finais, usar janelas longas, multiplas seeds e a matriz
-  selecionada de hipoteses em `docs/maddpg_hypotheses_pt.md`.
+  selecionada de hipoteses em `docs/archive/maddpg_history/maddpg_hypotheses_pt.md`.
 
 ### Fase 6B - Triagem 15s de 1 Dia
 
 Antes de tuning longo, a triagem 15s de 1 dia mostrou um bloqueio claro.
 
-Resultado documentado em `docs/maddpg_phase6b_triage_pt.md`.
+Resultado documentado em `docs/archive/maddpg_history/maddpg_phase6b_triage_pt.md`.
 
 Resumo:
 
@@ -1036,7 +1036,7 @@ Ainda a confirmar por benchmark:
 - testar warm-start com `RBCSmartPolicy` retuned;
 - validar se `1/7` departures e limite fisico da janela 15s.
 
-Resultado: `docs/maddpg_phase6c_results_pt.md`.
+Resultado: `docs/archive/maddpg_history/maddpg_phase6c_results_pt.md`.
 
 ### Fase 6D - Repetir Triagem 0.5.2
 
@@ -1109,7 +1109,7 @@ policy.
 
 Resultado documentado:
 
-- `docs/maddpg_phase6d_results_pt.md`
+- `docs/archive/maddpg_history/maddpg_phase6d_results_pt.md`
 
 Resumo 15s:
 
@@ -1246,7 +1246,7 @@ Status: concluido.
 
 Documento detalhado:
 
-- `docs/ev_departure_event_audit_065_pt.md`
+- `docs/archive/maddpg_history/ev_departure_event_audit_065_pt.md`
 
 Evento auditado:
 
@@ -1339,7 +1339,7 @@ Resultado:
 - output: `runs/benchmarks/phase6e_065_baselines_post_headroom_fix`;
 - `10/10` jobs completos;
 - `0` falhas;
-- detalhes: `docs/maddpg_phase6e_results_pt.md`.
+- detalhes: `docs/archive/maddpg_history/maddpg_phase6e_results_pt.md`.
 
 Conclusoes:
 

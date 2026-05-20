@@ -430,7 +430,7 @@ nao uma mudanca grande de reward/rede de uma vez.
 
 Plano vivo detalhado:
 
-- `docs/maddpg_phase35_experiments_pt.md`
+- `docs/archive/maddpg_history/maddpg_phase35_experiments_pt.md`
 
 Prioridade alta:
 
