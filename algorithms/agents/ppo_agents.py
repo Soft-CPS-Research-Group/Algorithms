@@ -85,6 +85,11 @@ class _PPOBase(BaseAgent):
         )
         self.target_kl = exploration_cfg.get("target_kl")
         self.target_kl = None if self.target_kl is None else float(max(self.target_kl, 0.0))
+        self.agent_update_order = str(
+            exploration_cfg.get("agent_update_order", "fixed") or "fixed"
+        ).strip().lower()
+        if self.agent_update_order not in {"fixed", "random"}:
+            raise ValueError("PPO agent_update_order must be 'fixed' or 'random'.")
 
         try:
             self.mlflow_step_sample_interval = int(tracking_cfg.get("mlflow_step_sample_interval", 10) or 10)
@@ -354,7 +359,7 @@ class _PPOBase(BaseAgent):
             stop_epoch = False
             for start in range(0, rollout_size, self.minibatch_size):
                 batch_idx = shuffled[start : start + self.minibatch_size]
-                for agent_idx in range(int(self.num_agents)):
+                for agent_idx in self._ppo_agent_update_order():
                     obs_batch = self._stack_agent_observations(agent_idx, batch_idx)
                     action_batch = self._stack_agent_actions(agent_idx, batch_idx)
                     value_input_batch = self._stack_value_inputs(agent_idx, batch_idx)
@@ -420,8 +425,15 @@ class _PPOBase(BaseAgent):
                 f"{self.metric_prefix}/advantage_mean": float(advantages.mean().item()),
                 f"{self.metric_prefix}/advantage_std": float(advantages.std(unbiased=False).item()),
                 f"{self.metric_prefix}/value_scope_global": float(self.value_scope == "global"),
+                f"{self.metric_prefix}/agent_update_order_random": float(self.agent_update_order == "random"),
             }
             self._record_training_metrics(metrics, global_learning_step)
+
+    def _ppo_agent_update_order(self) -> List[int]:
+        order = list(range(int(self.num_agents)))
+        if self.agent_update_order == "random":
+            random.shuffle(order)
+        return order
 
     def _stack_agent_observations(self, agent_idx: int, indices: torch.Tensor) -> torch.Tensor:
         selected = [self.rollout[int(idx.item())]["observations"][agent_idx] for idx in indices]
@@ -492,6 +504,7 @@ class _PPOBase(BaseAgent):
             f"{self.metric_prefix}/value_loss_coef": float(self.value_loss_coef),
             f"{self.metric_prefix}/gae_lambda": float(self.gae_lambda),
             f"{self.metric_prefix}/value_scope_global": float(self.value_scope == "global"),
+            f"{self.metric_prefix}/agent_update_order_random": float(self.agent_update_order == "random"),
             f"{self.metric_prefix}/exploration_step": float(self.exploration_step),
             f"{self.metric_prefix}/initial_exploration_done": float(
                 self.exploration_step >= self.end_initial_exploration_time_step
@@ -643,3 +656,10 @@ class MAPPO(_PPOBase):
 
     value_scope = "global"
     metric_prefix = "MAPPO"
+
+
+class HAPPO(_PPOBase):
+    """HAPPO-style sequential multi-agent PPO with centralized value inputs."""
+
+    value_scope = "global"
+    metric_prefix = "HAPPO"

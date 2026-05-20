@@ -367,7 +367,7 @@ class Wrapper_CityLearn(RLC):
             or previous_version is None
             or self._entity_topology_version != previous_version
         )
-        fixed_topology_algorithms = {"MADDPG", "MATD3", "IPPO", "MAPPO"}
+        fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
         if (
             topology_changed
             and self._entity_dynamic_mode

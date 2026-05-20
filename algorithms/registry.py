@@ -15,14 +15,17 @@ from algorithms.agents.baseline_policies import (
 )
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.maddpg_agent import MADDPG
+from algorithms.agents.masac_agent import MASAC
 from algorithms.agents.matd3_agent import MATD3
-from algorithms.agents.ppo_agents import IPPO, MAPPO
+from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO
 from algorithms.agents.rbc_agent import RuleBasedPolicy
 
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
+    "HAPPO": HAPPO,
     "IPPO": IPPO,
     "MADDPG": MADDPG,
     "MAPPO": MAPPO,
+    "MASAC": MASAC,
     "MATD3": MATD3,
     "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
     "NormalPolicy": NormalPolicy,

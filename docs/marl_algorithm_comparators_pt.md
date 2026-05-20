@@ -134,7 +134,7 @@ Veredicto:
 
 ### 4. MASAC / Multi-Agent SAC
 
-Prioridade: alta/media.
+Prioridade: alta/media. Estado: implementado como `MASAC`.
 
 Ideia:
 
@@ -155,7 +155,7 @@ Risco:
 - implementacao mais complexa;
 - tuning de temperatura/entropy pode ser sensivel;
 - acoes binarizadas dos deferrables podem ser estranhas com Gaussian policy;
-- export/inference fica mais complexo que deterministic actor, embora possivel.
+- export/inference usa a media deterministica do actor, no mesmo contrato ONNX.
 
 Quando testar:
 
@@ -165,13 +165,13 @@ Quando testar:
 
 Veredicto:
 
-- muito interessante, mas depois de MATD3/MAPPO.
+- candidato implementado para testar quando a exploracao for o bloqueio.
 
 ## Tier 2 - Boas Ideias, Mas Com Mais Custo
 
 ### 5. HAPPO / HATRPO
 
-Prioridade: media.
+Prioridade: media. Estado: `HAPPO` implementado; `HATRPO` fica futuro.
 
 Ideia:
 
@@ -185,7 +185,7 @@ Porque faz sentido:
 
 Risco:
 
-- implementacao bem mais exigente;
+- `HATRPO` continua mais exigente;
 - menos simples de explicar/operacionalizar;
 - on-policy, portanto caro;
 - pode nao trazer ganho suficiente face a MAPPO para justificar agora.
@@ -197,7 +197,8 @@ Quando testar:
 
 Veredicto:
 
-- bom candidato academico, nao o primeiro para engenharia.
+- `HAPPO` fica disponivel como comparador academico/pratico; `HATRPO` nao e
+  prioridade agora.
 
 ### 6. MAAC / Attention Critic
 
@@ -396,9 +397,9 @@ Veredicto:
    - correr seeds `456/789`;
    - nao mudar algoritmo ainda.
 3. Se critic/Q parecer instavel:
-   - implementar `MATD3`/`MADDPG-TD3`.
+   - testar `MATD3`/`MADDPG-TD3`.
 4. Se quisermos comparador MARL forte:
-   - implementar `MAPPO`.
+   - testar `MAPPO` e `HAPPO`.
 5. Se exploracao for o bloqueio:
    - testar `MASAC`.
 6. Se multi_charger quebrar:

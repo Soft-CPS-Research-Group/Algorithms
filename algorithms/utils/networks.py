@@ -170,3 +170,12 @@ class GaussianActor(nn.Module):
         log_std = torch.clamp(self.log_std, self.min_log_std, self.max_log_std)
         std = torch.exp(log_std).expand_as(mean)
         return Normal(mean, std)
+
+    def sample_normalized(self, state, epsilon=1.0e-6):
+        """Sample a tanh-squashed normalized action and corrected log-prob."""
+        distribution = self.distribution(state)
+        raw_action = distribution.rsample()
+        action = torch.tanh(raw_action)
+        log_prob = distribution.log_prob(raw_action)
+        log_prob = log_prob - torch.log(torch.clamp(1.0 - action.pow(2), min=epsilon))
+        return action, log_prob.sum(dim=-1, keepdim=True)

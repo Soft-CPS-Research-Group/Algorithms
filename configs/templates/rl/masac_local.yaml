@@ -1,0 +1,214 @@
+# Local MADDPG template.
+
+# Human-readable experiment metadata used across MLflow, logs, and manifests.
+metadata:
+  experiment_name: "maddpg_local_template"
+  run_name: "MADDPG Local"
+  community_name: "default_community"
+  description: "MADDPG template run"
+
+# Runtime values are injected automatically by run_experiment.py.
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+# Tracking controls for metrics/log verbosity and MLflow enablement.
+tracking:
+  mlflow_enabled: false
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 10
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+  action_diagnostics_enabled: true
+  action_diagnostics_detail: per_action
+  action_saturation_tolerance: 0.01
+  action_idle_tolerance: 0.02
+  training_diagnostics_enabled: true
+  training_diagnostics_detail: per_agent
+  reward_diagnostics_enabled: true
+  reward_diagnostics_detail: per_agent
+
+# Checkpoint behavior for saving and optional resume/fine-tuning workflows.
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "latest_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 5000
+
+# Bundle metadata/options consumed by inference-side artifact loading.
+bundle:
+  bundle_version: null
+  description: null
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+  # Community example:
+  # per_agent_artifact_config:
+  #   "0": {"input_site_key": "boavista"}
+  #   "1": {"input_site_key": "sao_mamede"}
+  per_agent_artifact_config: {}
+
+# Simulator wiring: local dataset path.
+simulator:
+  dataset_name: citylearn_three_phase_electrical_service_demo_15s_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    profile: maddpg_v2_compact
+    clip: true
+  reward_function: CostHardConstraintReward
+  reward_function_kwargs:
+    export_credit_ratio: 0.0
+    local_cost_weight: 1.0
+    grid_violation_penalty: 60.0
+    power_outage_penalty: 120.0
+    ev_departure_window_hours: 1.0
+    ev_departure_service_tolerance: 0.05
+    ev_over_service_tolerance: 0.05
+    ev_over_service_penalty: 0.0
+    ev_connected_deficit_penalty: 30.0
+    ev_schedule_deficit_penalty: 120.0
+    ev_v2g_service_penalty: 0.0
+    ev_departure_deficit_penalty: 120.0
+    ev_departure_missed_penalty: 250.0
+    battery_soc_min: 0.0
+    battery_soc_max: 1.0
+    use_observed_storage_soc_limits: true
+    battery_soc_violation_penalty: 30.0
+    battery_throughput_penalty: 0.2
+    deferrable_deadline_missed_penalty: 100.0
+    deferrable_urgency_penalty: 10.0
+    community_import_penalty: 0.01
+    community_peak_import_penalty: 0.001
+    community_export_penalty: 0.0
+    community_penalty_divide_by_agents: true
+    community_settlement_cost_weight: 0.0
+    community_local_price_ratio: 0.8
+    community_grid_export_price: 0.0
+    scale_state_penalties_by_time_step: true
+    state_penalty_reference_seconds: 3600.0
+  episodes: 1
+  deterministic_finish: false
+  # Optional simulation window overrides (null = dataset schema defaults).
+  simulation_start_time_step: 0
+  simulation_end_time_step: 5759
+  episode_time_steps: 5760
+  # Export controls for simulator CSV/KPI outputs.
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    session_name: null
+  wrapper_reward:
+    enabled: false
+    profile: cost_limits_v1
+    clip_enabled: true
+    clip_min: -10.0
+    clip_max: 10.0
+    squash: none
+# Training schedule knobs used by the wrapper/agent update cadence.
+training:
+  seed: 123
+  steps_between_training_updates: 4
+  target_update_interval: 2
+
+# Topology is environment-derived at runtime.
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+# Algorithm family and hyperparameters.
+algorithm:
+  name: "MASAC"
+  hyperparameters:
+    gamma: 0.995
+  networks:
+    actor:
+      class: "Actor"
+      layers: [1024, 512, 256]
+      lr: 5.0e-5
+    critic:
+      class: "Critic"
+      layers: [1024, 512, 256]
+      lr: 5.0e-4
+  replay_buffer:
+    class: "MultiAgentReplayBuffer"
+    capacity: 200000
+    batch_size: 256
+  exploration:
+    strategy: "SAC"
+    params:
+      bias: 0.0
+      sigma: 0.15
+      decay: 0.9995
+      min_sigma: 0.03
+      noise_clip: 0.3
+      storage_exploration_noise_multiplier: 1.0
+      ev_negative_exploration_noise_multiplier: 1.0
+      gamma: 0.99
+      tau: 0.001
+      use_amp: true
+      end_initial_exploration_time_step: 960
+      random_exploration_steps: 960
+      initial_exploration_strategy: uniform_full_range
+      warm_start_policy: null
+      warm_start_policy_deterministic: true
+      warm_start_policy_noise_scale: 0.0
+      warm_start_policy_phaseout_steps: 0
+      warm_start_policy_phaseout_mode: probability
+      train_during_initial_exploration: false
+      initial_exploration_training_start_step: 0
+      noop_noise_scale: 0.15
+      deferrable_on_probability: 0.2
+      deferrable_trigger_threshold: 0.5
+      noop_actor_initialization: false
+      noop_actor_initialization_epsilon: 0.05
+      critic_update_mode: joint_mean
+      actor_update_interval: 1
+      target_policy_smoothing: false
+      target_policy_noise: 0.05
+      target_policy_noise_clip: 0.10
+      actor_action_l2_penalty: 0.0
+      actor_action_saturation_penalty: 0.0
+      actor_storage_action_l2_penalty: 0.0
+      actor_ev_v2g_action_l2_penalty: 0.0
+      actor_action_saturation_threshold: 0.85
+      actor_behavior_cloning_weight: 0.0
+      actor_ev_behavior_cloning_multiplier: 1.0
+      actor_storage_behavior_cloning_multiplier: 1.0
+      actor_behavior_cloning_min_weight: 0.0
+      actor_behavior_cloning_decay_start_step: 0
+      actor_behavior_cloning_decay_steps: 0
+      reward_normalization: true
+      reward_normalization_clip: 10.0
+      reward_normalization_epsilon: 1.0e-8
+      initial_log_std: -0.5
+      min_log_std: -5.0
+      max_log_std: 1.0
+      entropy_alpha: 0.2
+      automatic_entropy_tuning: true
+      alpha_lr: 5.0e-5
+      target_entropy: null
+
+# Optional worker-specific overrides; omitted for local execution.
+execution: null

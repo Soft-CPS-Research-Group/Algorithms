@@ -9,7 +9,8 @@ import torch
 import yaml
 
 from algorithms.agents.matd3_agent import MATD3
-from algorithms.agents.ppo_agents import IPPO, MAPPO
+from algorithms.agents.masac_agent import MASAC
+from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO
 from algorithms.registry import create_agent, is_algorithm_supported
 from utils.config_schema import validate_config
 
@@ -61,12 +62,12 @@ def _base_rl_config(name: str) -> dict:
                 },
             },
             "replay_buffer": {
-                "class": "MultiAgentReplayBuffer" if name == "MATD3" else "OnPolicyRolloutBuffer",
+                "class": "MultiAgentReplayBuffer" if name in {"MATD3", "MASAC"} else "OnPolicyRolloutBuffer",
                 "capacity": 8,
                 "batch_size": 2,
             },
             "exploration": {
-                "strategy": "GaussianNoise" if name == "MATD3" else "PPO",
+                "strategy": "SAC" if name == "MASAC" else ("GaussianNoise" if name == "MATD3" else "PPO"),
                 "params": {
                     "gamma": 0.95,
                     "tau": 0.01,
@@ -94,6 +95,10 @@ def _base_rl_config(name: str) -> dict:
                     "value_loss_coef": 0.5,
                     "max_grad_norm": 0.5,
                     "initial_log_std": -0.5,
+                    "entropy_alpha": 0.2,
+                    "automatic_entropy_tuning": name == "MASAC",
+                    "alpha_lr": 1.0e-3,
+                    "agent_update_order": "random" if name == "HAPPO" else "fixed",
                 },
             },
         },
@@ -126,25 +131,27 @@ def _transition(step: int):
     return obs, next_obs, rewards
 
 
-@pytest.mark.parametrize("algorithm_name", ["MATD3", "IPPO", "MAPPO"])
+@pytest.mark.parametrize("algorithm_name", ["MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"])
 def test_registry_supports_new_rl_agents(algorithm_name):
     assert is_algorithm_supported(algorithm_name)
     agent = create_agent(_base_rl_config(algorithm_name))
     assert agent.__class__.__name__ == algorithm_name
 
 
-@pytest.mark.parametrize("algorithm_name", ["MATD3", "IPPO", "MAPPO"])
+@pytest.mark.parametrize("algorithm_name", ["MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"])
 def test_config_schema_accepts_new_rl_templates(algorithm_name):
     config_path = {
         "MATD3": Path("configs/templates/rl/matd3_local.yaml"),
+        "MASAC": Path("configs/templates/rl/masac_local.yaml"),
         "IPPO": Path("configs/templates/rl/ippo_local.yaml"),
         "MAPPO": Path("configs/templates/rl/mappo_local.yaml"),
+        "HAPPO": Path("configs/templates/rl/happo_local.yaml"),
     }[algorithm_name]
     with config_path.open("r", encoding="utf-8") as handle:
         validate_config(yaml.safe_load(handle))
 
 
-@pytest.mark.parametrize("agent_cls", [MATD3, IPPO, MAPPO])
+@pytest.mark.parametrize("agent_cls", [MATD3, MASAC, IPPO, MAPPO, HAPPO])
 def test_rl_agent_predict_update_and_checkpoint_contract(agent_cls, tmp_path):
     agent = agent_cls(_base_rl_config(agent_cls.__name__))
     _attach_bounds(agent)
@@ -176,7 +183,7 @@ def test_rl_agent_predict_update_and_checkpoint_contract(agent_cls, tmp_path):
     assert diagnostics
 
 
-@pytest.mark.parametrize("agent_cls", [IPPO, MAPPO])
+@pytest.mark.parametrize("agent_cls", [MASAC, IPPO, MAPPO, HAPPO])
 def test_ppo_agents_export_onnx_contract(agent_cls, tmp_path):
     agent = agent_cls(_base_rl_config(agent_cls.__name__))
     _attach_bounds(agent)

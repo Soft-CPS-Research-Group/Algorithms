@@ -317,7 +317,7 @@ class TopologyConfig(BaseModel):
 
 
 class ActorCriticAlgorithmConfig(BaseModel):
-    name: Literal["MADDPG", "MATD3", "IPPO", "MAPPO"]
+    name: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
     hyperparameters: AlgorithmHyperparameters
     networks: AlgorithmNetworks
     replay_buffer: ReplayBufferConfig
@@ -444,7 +444,7 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
-        fixed_topology_algorithms = {"MADDPG", "MATD3", "IPPO", "MAPPO"}
+        fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
         if (
             self.algorithm.name in fixed_topology_algorithms
             and self.simulator.interface == "entity"

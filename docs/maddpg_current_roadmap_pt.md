@@ -59,8 +59,10 @@ O que ja esta solido:
 - baselines `Random`, `NormalNoBattery`, `Normal`, `RBCBasic`, `RBCSmart`;
 - agentes comparadores registados e executaveis:
   - `MATD3`;
+  - `MASAC`;
   - `IPPO`;
   - `MAPPO`;
+  - `HAPPO`;
 - reward com EV service, EV precision, custo, rede e bateria;
 - teacher/warm-start/BC configuraveis;
 - replay ponderado por reward;
@@ -78,8 +80,8 @@ O que ainda nao esta provado:
 - se `multi_charger` quebra por escala de acoes/fases;
 - se storage cria ganho real ou apenas custo/throughput inutil;
 - se o critic atual chega ou se `MATD3` melhora;
-- se um algoritmo on-policy como `MAPPO`/`IPPO` e mais estavel;
-- se uma abordagem com entropia como MASAC explora melhor;
+- se `MASAC` explora melhor que DDPG-style;
+- se um algoritmo on-policy como `MAPPO`/`IPPO`/`HAPPO` e mais estavel;
 - se a aprendizagem comunitaria precisa de attention/GNN.
 
 ## Criterios de Sucesso
@@ -284,13 +286,13 @@ Prioridade atual:
 
 1. `MADDPG V48/V49`: candidato implementado e instrumentado.
 2. `MATD3 / MADDPG-TD3`: implementado; primeira evolucao se critic/Q for gargalo.
-3. `MAPPO`: implementado; principal comparador MARL forte.
-4. `IPPO`: implementado; baseline RL robusto e simples.
-5. `MASAC`: candidato se exploracao continuous for gargalo.
-6. Heads por tipo de ativo: importante se `multi_charger` quebrar.
-7. Attention critic: se credit assignment comunitario ficar fraco.
-8. GNN policy/critic: se generalizacao/topologia passar a ser objetivo central.
-9. `HAPPO/HATRPO`: interessante academicamente, mas mais caro.
+3. `MASAC`: implementado; candidato se exploracao continuous for gargalo.
+4. `MAPPO`: implementado; principal comparador MARL forte.
+5. `IPPO`: implementado; baseline RL robusto e simples.
+6. `HAPPO`: implementado; comparador on-policy sequencial por agente.
+7. Heads por tipo de ativo: trabalho futuro se `multi_charger` quebrar.
+8. Attention critic: trabalho futuro se credit assignment comunitario ficar fraco.
+9. GNN policy/critic: trabalho futuro se generalizacao/topologia passar a ser objetivo central.
 10. `QMIX/VDN/COMA/DQN`: baixa prioridade no problema completo por causa das
     acoes continuas.
 
@@ -375,9 +377,10 @@ Objetivo: comparar candidatos finais em matriz limpa.
 Candidatos provaveis:
 
 - melhor `MADDPG`/`MATD3`;
-- `MAPPO` se implementado;
-- `IPPO` se implementado;
-- `MASAC` se implementado;
+- `MASAC`;
+- `MAPPO`;
+- `IPPO`;
+- `HAPPO`;
 - `RBCSmart`;
 - `NormalNoBattery`;
 - `Normal`;
