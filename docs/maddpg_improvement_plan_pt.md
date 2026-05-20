@@ -150,6 +150,9 @@ O que esta solido:
   variantes `no_v2g`/`multi_charger`.
 - Fase 6J/6K preparada em `docs/maddpg_phase6j6k_remote_decision_pt.md`, com
   scorecard automatico e matriz de decisao para V49/V50.
+- Comparadores futuros preparados em `docs/marl_algorithm_comparators_pt.md`:
+  MATD3/MADDPG-TD3, IPPO, MAPPO, MASAC, HAPPO/HATRPO, attention critic, GNN e
+  alternativas discretas rejeitadas/baixa prioridade.
 
 O que ainda nao esta solido:
 
@@ -227,9 +230,15 @@ e baixar custo sem voltar a descarregar EVs ou abusar de storage.
    - criar V49 focada em EV precision;
    - criar V50 para curriculum V2G;
    - criar V50 para multi_charger/action scaling.
-5. Fase 7:
+5. Se V48/MATD3 nao for suficiente, escolher comparador em
+   `docs/marl_algorithm_comparators_pt.md`:
+   - `MATD3` se o problema for critic/Q;
+   - `MAPPO` como comparador MARL forte;
+   - `MASAC` se o problema for exploracao;
+   - heads por tipo de ativo se `multi_charger` quebrar.
+6. Fase 7:
    benchmark final multi-seed contra baselines.
-6. Fase 8:
+7. Fase 8:
    validar export/inference.
 
 ## Fase 1 - Contrato Atual Congelado

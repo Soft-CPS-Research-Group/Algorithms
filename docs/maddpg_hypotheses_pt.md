@@ -723,3 +723,21 @@ Scripts preparados:
 Plano detalhado:
 
 - `docs/maddpg_phase6j6k_remote_decision_pt.md`.
+
+## Comparadores MARL Fututos
+
+Foi criada uma matriz de comparadores em:
+
+- `docs/marl_algorithm_comparators_pt.md`.
+
+Hipotese de ordem:
+
+1. nao trocar algoritmo antes de ler o scorecard V48;
+2. se o problema for critic/Q, testar `MATD3`/`MADDPG-TD3`;
+3. se quisermos baseline MARL forte e defensavel, testar `MAPPO`;
+4. se o problema for exploracao em continuous action, testar `MASAC`;
+5. se `multi_charger` quebrar, testar heads por tipo de ativo antes de trocar
+   algoritmo inteiro;
+6. deixar `HAPPO/HATRPO`, attention critic e GNN para fase posterior;
+7. nao priorizar `QMIX`, `VDN`, `COMA`, `DQN/Rainbow` no problema completo por
+   causa das acoes continuas.
