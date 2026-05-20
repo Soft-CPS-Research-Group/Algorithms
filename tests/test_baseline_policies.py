@@ -234,6 +234,40 @@ def test_normal_no_battery_policy_leaves_storage_idle():
     assert actions[0][2] == pytest.approx(1.0)
 
 
+def test_normal_policy_never_uses_ev_v2g():
+    agent = NormalPolicy({"algorithm": {"name": "NormalPolicy", "hyperparameters": {}}})
+    _attach(agent, _base_observation_names(), _action_names())
+    obs = np.array(
+        [
+            0.90,
+            0.10,
+            0.20,
+            0.30,
+            0.0,
+            2.0,
+            8.0,
+            10.0,
+            0.5,
+            1.0,
+            0.95,
+            0.5,
+            60.0,
+            5.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] >= 0.0
+
+
 def test_normal_policy_clips_storage_to_three_phase_headroom():
     agent = NormalPolicy(
         {
@@ -433,6 +467,40 @@ def test_rbc_basic_policy_uses_price_for_storage_ev_and_deferrable():
     assert actions[0][0] > 0.0
     assert actions[0][1] > 0.0
     assert actions[0][2] == pytest.approx(1.0)
+
+
+def test_rbc_basic_policy_never_uses_ev_v2g():
+    agent = RBCBasicPolicy({"algorithm": {"name": "RBCBasicPolicy", "hyperparameters": {"flex_trickle_charge": 0.0}}})
+    _attach(agent, _base_observation_names(), _action_names())
+    obs = np.array(
+        [
+            0.90,
+            0.10,
+            0.20,
+            0.30,
+            0.0,
+            2.0,
+            8.0,
+            10.0,
+            0.5,
+            1.0,
+            0.95,
+            0.5,
+            60.0,
+            5.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] >= 0.0
 
 
 def test_rbc_basic_policy_ignores_long_price_forecasts():
@@ -788,3 +856,82 @@ def test_rbc_smart_policy_can_use_conservative_v2g_when_enabled():
     assert actions[0][0] < 0.0
     assert actions[0][1] < 0.0
     assert actions[0][2] == pytest.approx(0.0)
+
+
+def test_rbc_smart_policy_blocks_v2g_near_departure_even_when_enabled():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {"allow_v2g": True, "ev_v2g_discharge_rate": 0.25},
+            }
+        }
+    )
+    _attach(agent, _base_observation_names(), _action_names())
+    obs = np.array(
+        [
+            0.60,
+            0.10,
+            0.20,
+            0.30,
+            0.0,
+            2.0,
+            8.0,
+            1.0,
+            0.5,
+            1.0,
+            0.9,
+            0.5,
+            60.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] >= 0.0
+
+
+@pytest.mark.parametrize(
+    "policy_cls",
+    [NormalPolicy, RBCBasicPolicy, RBCSmartPolicy],
+)
+def test_baseline_deferrable_actions_are_binary_start_commands(policy_cls):
+    agent = policy_cls({"algorithm": {"name": policy_cls.__name__, "hyperparameters": {}}})
+    _attach(agent, _base_observation_names(), _action_names())
+    obs = np.array(
+        [
+            0.10,
+            0.40,
+            0.50,
+            0.60,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            60.0,
+            10.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][2] in {0.0, 1.0}
