@@ -9,6 +9,7 @@ from reward_function.cost_hard_constraint_reward import (
     CostServiceCommunityBatteryValueRewardV43,
     CostServiceCommunityFeasibleServiceRewardV45,
     CostServiceCommunityFeasiblePrecisionRewardV46,
+    CostServiceCommunityFeasiblePrecisionRewardV47,
     CostServiceCommunityServiceBandRewardV42,
     CostServiceCommunitySmoothServiceRewardV44,
     CostServiceCommunityStorageBandRewardV41,
@@ -41,6 +42,7 @@ def test_named_cost_service_reward_profiles_set_default_weights():
     smooth_service = CostServiceCommunitySmoothServiceRewardV44(env_metadata={"central_agent": False})
     feasible_service = CostServiceCommunityFeasibleServiceRewardV45(env_metadata={"central_agent": False})
     feasible_precision = CostServiceCommunityFeasiblePrecisionRewardV46(env_metadata={"central_agent": False})
+    feasible_precision_guard = CostServiceCommunityFeasiblePrecisionRewardV47(env_metadata={"central_agent": False})
 
     assert guard.ev_departure_window_hours == pytest.approx(4.0)
     assert guard.ev_v2g_service_penalty == pytest.approx(200.0)
@@ -74,6 +76,9 @@ def test_named_cost_service_reward_profiles_set_default_weights():
     assert feasible_precision.ev_over_service_penalty == pytest.approx(420.0)
     assert feasible_precision.ev_schedule_deficit_cap_soc == pytest.approx(0.08)
     assert feasible_precision.ev_departure_window_shortfall_cap_soc == pytest.approx(0.08)
+    assert feasible_precision_guard.ev_over_service_tolerance == pytest.approx(0.01)
+    assert feasible_precision_guard.ev_over_service_penalty == pytest.approx(760.0)
+    assert feasible_precision_guard.ev_schedule_deficit_cap_soc == pytest.approx(0.08)
 
 
 def test_battery_value_reward_does_not_penalize_empty_idle_storage_by_default():

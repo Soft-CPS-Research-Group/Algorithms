@@ -1833,3 +1833,26 @@ class CostServiceCommunityFeasiblePrecisionRewardV46(CostHardConstraintReward):
         params = dict(self.DEFAULT_KWARGS)
         params.update(kwargs)
         super().__init__(env_metadata, **params)
+
+
+class CostServiceCommunityFeasiblePrecisionRewardV47(CostHardConstraintReward):
+    """Phase 6H.7 profile: keep V46 feasible service and push down EV over-service.
+
+    V46 became the best cost milestone while preserving the feasible minimum
+    EV gate, but its remaining feasible SOC error was over-service. V47 keeps
+    the V46 deficit caps and feasibility model unchanged, then tightens the
+    upper target band and increases the over-service penalty. This avoids
+    teaching the agent to under-charge infeasible EVs while making "too full"
+    departures less attractive.
+    """
+
+    DEFAULT_KWARGS = {
+        **CostServiceCommunityFeasiblePrecisionRewardV46.DEFAULT_KWARGS,
+        "ev_over_service_tolerance": 0.01,
+        "ev_over_service_penalty": 760.0,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)

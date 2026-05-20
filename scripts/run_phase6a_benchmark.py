@@ -239,6 +239,8 @@ def _parse_args() -> argparse.Namespace:
             "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
             "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -562,6 +564,8 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
         "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
         "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
         "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+        "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+        "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
         "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
         "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
         "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -619,6 +623,8 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
             "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -658,6 +664,8 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
             "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -769,10 +777,20 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                 warmup_steps = int(exploration.get("random_exploration_steps") or 0)
                 exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 6, 1)
                 exploration["warm_start_policy_phaseout_mode"] = "blend"
-            if (variant.startswith("community_feasible_service_v45") or variant.startswith("community_feasible_precision_v46")):
+            if (
+                variant.startswith("community_feasible_service_v45")
+                or variant.startswith("community_feasible_precision_v46")
+                or variant.startswith("community_feasible_precision_v47")
+                or variant.startswith("community_feasible_precision_v48")
+            ):
                 simulator["reward_function"] = (
-                    "CostServiceCommunityFeasiblePrecisionRewardV46"
-                    if variant.startswith("community_feasible_precision_v46")
+                    "CostServiceCommunityFeasiblePrecisionRewardV47"
+                    if variant.startswith("community_feasible_precision_v47")
+                    else "CostServiceCommunityFeasiblePrecisionRewardV46"
+                    if (
+                        variant.startswith("community_feasible_precision_v46")
+                        or variant.startswith("community_feasible_precision_v48")
+                    )
                     else "CostServiceCommunityFeasibleServiceRewardV45"
                 )
                 simulator["reward_function_kwargs"] = {}
@@ -780,7 +798,13 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                 exploration["critic_loss"] = "huber"
                 exploration["critic_huber_beta"] = 1.0
                 exploration["critic_target_clip_abs"] = (
-                    25.0 if variant.startswith("community_feasible_precision_v46") else 35.0
+                    25.0
+                    if (
+                        variant.startswith("community_feasible_precision_v46")
+                        or variant.startswith("community_feasible_precision_v47")
+                        or variant.startswith("community_feasible_precision_v48")
+                    )
+                    else 35.0
                 )
                 exploration["actor_behavior_cloning_source"] = "warm_start_policy"
                 exploration["actor_behavior_cloning_weight"] = 0.120
@@ -826,6 +850,30 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                         exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
                         exploration["actor_storage_action_l2_penalty"] = 0.30
                         exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
+                    if variant.startswith("community_feasible_precision_v47"):
+                        exploration["actor_behavior_cloning_weight"] = 0.850
+                        exploration["actor_behavior_cloning_min_weight"] = 0.850
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 64.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 20.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.15
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 16.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.12
+                        exploration["actor_storage_action_l2_penalty"] = 0.45
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 32.0
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 64, 1)
+                    if variant.startswith("community_feasible_precision_v48"):
+                        exploration["actor_behavior_cloning_weight"] = 0.650
+                        exploration["actor_behavior_cloning_min_weight"] = 0.650
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 40.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 16.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.0
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 8.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                        exploration["actor_storage_action_l2_penalty"] = 0.30
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 32, 1)
                     if "ev_learning_teacher_event" in variant:
                         teacher_hyperparameters = dict(
                             exploration.get("warm_start_policy_hyperparameters") or {}
@@ -965,6 +1013,8 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
             "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -981,9 +1031,19 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                 replay_buffer["priority_fraction"] = 0.30
             elif "ev_focus_event" in variant:
                 replay_buffer["priority_fraction"] = 0.35
-            elif variant.startswith("community_feasible_precision_v46"):
+            elif (
+                variant.startswith("community_feasible_precision_v46")
+                or variant.startswith("community_feasible_precision_v47")
+                or variant.startswith("community_feasible_precision_v48")
+            ):
                 replay_buffer["priority_fraction"] = 0.20
-            elif variant.startswith("community_smooth_service_v44") or variant.startswith("community_feasible_service_v45") or variant.startswith("community_feasible_precision_v46"):
+            elif (
+                variant.startswith("community_smooth_service_v44")
+                or variant.startswith("community_feasible_service_v45")
+                or variant.startswith("community_feasible_precision_v46")
+                or variant.startswith("community_feasible_precision_v47")
+                or variant.startswith("community_feasible_precision_v48")
+            ):
                 replay_buffer["priority_fraction"] = 0.25
             elif "teacher_bc" in variant:
                 replay_buffer["priority_fraction"] = 0.35
@@ -996,10 +1056,19 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             replay_buffer["priority_alpha"] = 0.7
             replay_buffer["priority_epsilon"] = 1.0e-3
             replay_buffer["priority_mode"] = "negative_reward"
-            if (variant.startswith("community_feasible_service_v45") or variant.startswith("community_feasible_precision_v46")):
+            if (
+                variant.startswith("community_feasible_service_v45")
+                or variant.startswith("community_feasible_precision_v46")
+                or variant.startswith("community_feasible_precision_v47")
+                or variant.startswith("community_feasible_precision_v48")
+            ):
                 replay_buffer["behavior_action_priority_mode"] = "positive"
                 replay_buffer["behavior_action_priority_weight"] = (
                     4.0
+                    if variant.startswith("community_feasible_precision_v47")
+                    else 3.5
+                    if variant.startswith("community_feasible_precision_v48")
+                    else 4.0
                     if "ev_learning_teacher_event" in variant
                     else 4.0
                     if "ev_focus_event" in variant
@@ -1021,6 +1090,8 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                         "ev_focus_event" in variant
                         or "ev_learning_teacher_event" in variant
                         or "ev_learning_teacher" in variant
+                        or variant.startswith("community_feasible_precision_v47")
+                        or variant.startswith("community_feasible_precision_v48")
                         or "ev_focus" in variant
                         or "ev_guarded_band" in variant
                         or "ev_band" in variant
@@ -1038,9 +1109,19 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                 60.0
                 if "ev_learning_teacher_event" in variant or "ev_focus_event" in variant
                 else 30.0
-                if variant.startswith("community_feasible_precision_v46")
+                if (
+                    variant.startswith("community_feasible_precision_v46")
+                    or variant.startswith("community_feasible_precision_v47")
+                    or variant.startswith("community_feasible_precision_v48")
+                )
                 else 40.0
-                if variant.startswith("community_smooth_service_v44") or variant.startswith("community_feasible_service_v45") or variant.startswith("community_feasible_precision_v46")
+                if (
+                    variant.startswith("community_smooth_service_v44")
+                    or variant.startswith("community_feasible_service_v45")
+                    or variant.startswith("community_feasible_precision_v46")
+                    or variant.startswith("community_feasible_precision_v47")
+                    or variant.startswith("community_feasible_precision_v48")
+                )
                 else (50.0 if "teacher_bc" in variant else 100.0)
             )
         if variant in {
@@ -1061,6 +1142,8 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             "community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart",
             "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -1099,7 +1182,13 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             elif "actor_pretrain" in variant:
                 exploration["actor_behavior_cloning_min_weight"] = 0.120
                 exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 16, 1)
-            elif variant.startswith("community_smooth_service_v44") or variant.startswith("community_feasible_service_v45") or variant.startswith("community_feasible_precision_v46"):
+            elif (
+                variant.startswith("community_smooth_service_v44")
+                or variant.startswith("community_feasible_service_v45")
+                or variant.startswith("community_feasible_precision_v46")
+                or variant.startswith("community_feasible_precision_v47")
+                or variant.startswith("community_feasible_precision_v48")
+            ):
                 exploration["actor_behavior_cloning_min_weight"] = 0.100
                 exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 12, 1)
             elif "teacher_bc" in variant:

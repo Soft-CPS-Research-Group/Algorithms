@@ -1517,9 +1517,9 @@ Conclusao:
 - proximo passo deve ser uma reuniao curta de decisao antes de mais treino
   longo.
 
-### Fase 6H.3-6H.6 - Professor Explicito, Strong BC e V46
+### Fase 6H.3-6H.8 - Professor Explicito, Strong BC, V46 e V48
 
-Status: 6H.6 aceite como melhor marco MADDPG atual.
+Status: 6H.8 aceite como melhor marco MADDPG atual; 6H.7 rejeitada.
 
 Professor de aprendizagem:
 
@@ -1537,6 +1537,8 @@ Resultados 15s:
 | `6H.4` event replay EV | 87.945 | 0.800 | 0.400 | 0.1002 | 0.0000 |
 | `6H.5` strong BC EV | 85.172 | 1.000 | 0.800 | 0.0484 | 0.0000 |
 | `6H.6` V46 precision | 83.761 | 1.000 | 0.800 | 0.0473 | 0.0000 |
+| `6H.7` V47 over-service guard | 86.448 | 1.000 | 0.800 | 0.0540 | 0.0000 |
+| `6H.8` V48 zero-band | 83.702 | 1.000 | 1.000 | 0.0330 | 0.0000 |
 
 Conclusoes:
 
@@ -1546,19 +1548,22 @@ Conclusoes:
 - os dois failures min-acceptable crus do Building 15 sao target-infeasible
   segundo o KPI oficial;
 - a V46 reduziu ligeiramente surplus/erro absoluto EV face a 6H.5;
-- o erro feasible restante em 6H.6 e over-service no
-  `Building 5 / charger_5_1`;
+- V47 apertou demasiado over-service via reward/BC e piorou custo/erro, por
+  isso fica rejeitada;
+- V48 manteve a reward V46 e reforcou moderadamente BC de EV zero/idle;
+- V48 eliminou o erro feasible restante: todos os eventos EV target-feasible
+  ficaram dentro da tolerancia;
 - o critic ficou mais controlado com target clip `25`, mas ainda falta validar
   multi-seed/multi-dataset.
 
-Proxima fase 6H.7:
+Proxima fase:
 
-- manter V46 como baseline MADDPG;
-- atacar over-service feasible sem aumentar deficits;
+- promover V48 a baseline MADDPG candidato;
+- repetir V48 em 2-3 seeds no 15s;
+- correr V48 no dataset 2022;
 - rever storage por beneficio real, porque o custo baixo ainda vem com uso
   relevante de bateria;
-- so testar policy loss muito fraca quando `EV feasible min` e
-  `within_tolerance_feasible` estiverem estaveis.
+- so testar policy loss muito fraca quando V48 estiver robusta em seed/dataset.
 
 ## Fase 7 - Benchmark KPI Completo
 

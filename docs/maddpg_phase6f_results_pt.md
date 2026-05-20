@@ -1062,3 +1062,74 @@ Leitura:
   event replay generico: classificar melhor eventos feasible/over-service e
   testar policy loss muito fraca ou fine-tune curto apenas depois de manter EV
   service estavel.
+
+## Fase 6H.7 e 6H.8 - V47 Rejeitada, V48 Aceite
+
+Runs:
+
+- V47:
+  `runs/benchmarks/phase6h7_precision_v47_over_service_guard_gpu_5train_1eval_15s`;
+- V48:
+  `runs/benchmarks/phase6h8_precision_v48_zero_band_gpu_5train_1eval_15s`.
+
+Variantes:
+
+- V47:
+  `community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart`;
+- V48:
+  `community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart`.
+
+Alteracoes:
+
+- V47 criou `CostServiceCommunityFeasiblePrecisionRewardV47`, com banda de
+  over-service EV mais apertada e penalizacao mais pesada;
+- V47 tambem aumentou demasiado BC EV e phaseout do professor;
+- V48 voltou a usar `CostServiceCommunityFeasiblePrecisionRewardV46`;
+- V48 manteve o phaseout da V46 e so reforcou moderadamente o peso de targets
+  EV zero/idle (`zero_target_weight = 8`) e a prioridade EV do replay.
+
+Comparacao principal:
+
+| Variante | Custo | EV feasible min | EV feasible dentro tolerancia | EV raw min | Deficit medio | Surplus medio | Erro abs medio | Storage throughput eval |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `RBCSmart` learning teacher | 89.010 | 1.000 | 1.000 | 0.714 | 0.0300 | 0.0000 | 0.0300 | 129.141 |
+| `6H.5` V45 strong BC | 85.172 | 1.000 | 0.800 | 0.714 | 0.0301 | 0.0182 | 0.0484 | 105.493 |
+| `6H.6` V46 precision | 83.761 | 1.000 | 0.800 | 0.714 | 0.0304 | 0.0169 | 0.0473 | 104.048 |
+| `6H.7` V47 over-service guard | 86.448 | 1.000 | 0.800 | 0.714 | 0.0301 | 0.0240 | 0.0540 | 98.583 |
+| `6H.8` V48 zero-band | 83.702 | 1.000 | 1.000 | 0.714 | 0.0297 | 0.0033 | 0.0330 | 104.965 |
+
+Diagnosticos:
+
+- eventos EV V48:
+  `runs/maddpg_diagnostics/phase6h8_precision_v48_zero_band_gpu_5train_1eval_15s_ev_departures`;
+- trajetoria V48:
+  `runs/maddpg_diagnostics/phase6h8_precision_v48_zero_band_gpu_5train_1eval_15s_trajectory`;
+- storage V48:
+  `runs/storage_audits/phase6h8_precision_v48_zero_band_gpu_5train_1eval_15s`;
+- comparacao CSV:
+  `runs/benchmarks/phase6h8_precision_v48_zero_band_gpu_5train_1eval_15s/comparison_key_metrics.csv`.
+
+Eventos finais V48:
+
+- os unicos failures min-acceptable crus continuam em
+  `Building 15 / charger_15_1` e `Building 15 / charger_15_2`;
+- ambos sao target-infeasible no KPI oficial;
+- todos os eventos EV target-feasible ficaram dentro da tolerancia;
+- `EV within_tolerance_feasible` subiu de `0.8` para `1.0`;
+- surplus medio caiu de `0.0169` na V46 para `0.0033` na V48;
+- erro absoluto medio caiu de `0.0473` na V46 para `0.0330` na V48.
+
+Storage V48:
+
+- episodio de avaliacao: carga `63.572 kWh`, descarga `41.394 kWh`,
+  throughput `104.965 kWh`, SOC final medio `0.128`;
+- isto e muito proximo da V46 (`104.048 kWh` de throughput), portanto a V48
+  melhorou EV sem desligar a bateria nem mudar drasticamente o uso de storage.
+
+Leitura:
+
+- V47 fica rejeitada: aumentou custo e piorou surplus/erro absoluto;
+- V48 passa a ser o melhor marco MADDPG atual no 15s;
+- a melhoria veio de uma alteracao de treino, nao de nova reward;
+- proximo passo tecnico: validar V48 em mais seeds e depois no dataset 2022,
+  antes de abrir policy loss ou alterar redes.

@@ -643,3 +643,54 @@ Proxima hipotese:
 - testar uma V47 pequena com penalizacao/BC focada em over-service feasible;
 - so depois testar policy loss muito fraca, com BC EV forte e monitorizacao do
   gate EV em cada episodio.
+
+## Atualizacao Apos 6H.7 e 6H.8
+
+Testes feitos:
+
+- V47:
+  `community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart`;
+- V48:
+  `community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart`;
+- ambos com 5 episodios de treino + 1 avaliacao deterministica no dataset 15s.
+
+Resultado V47:
+
+- custo `86.448`;
+- `EV feasible min = 1.0`;
+- `EV within_tolerance_feasible = 0.8`;
+- EV surplus medio `0.0240`;
+- EV erro absoluto medio `0.0540`.
+
+Conclusao V47:
+
+- rejeitada;
+- a penalizacao/BC demasiado forte contra over-service nao resolveu a causa;
+- apenas deslocou o erro feasible e tornou a policy mais cara.
+
+Resultado V48:
+
+- custo `83.702`;
+- `EV feasible min = 1.0`;
+- `EV within_tolerance_feasible = 1.0`;
+- EV surplus medio `0.0033`;
+- EV erro absoluto medio `0.0330`;
+- EV V2G medio `0.0`;
+- storage no episodio de avaliacao: carga `63.572 kWh`, descarga
+  `41.394 kWh`, throughput `104.965 kWh`.
+
+Hipotese validada:
+
+- para corrigir over-service feasible, foi melhor manter a reward V46 e
+  reforcar moderadamente o BC de targets EV zero/idle do que aumentar muito a
+  penalizacao da reward;
+- V48 e o melhor marco MADDPG atual no 15s.
+
+Nova hipotese:
+
+- V48 pode ser a primeira receita candidata para matriz final, mas ainda falta
+  provar robustez:
+  - repetir 2-3 seeds no 15s;
+  - correr no dataset 2022;
+  - comparar sempre contra RBCSmart e Normal/Basic;
+  - so depois testar policy loss pequeno ou redes diferentes.

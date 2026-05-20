@@ -1305,6 +1305,121 @@ def test_phase6a_community_feasible_precision_v46_learning_teacher_variant_caps_
     assert replay_buffer["behavior_action_priority_scope"] == "ev"
 
 
+def test_phase6a_community_feasible_precision_v47_learning_teacher_variant_guards_over_service(
+    tmp_path,
+):
+    output_dir = tmp_path / "phase6a_community_feasible_precision_v47_learning_teacher"
+    args = Namespace(
+        output_dir=str(output_dir),
+        dataset=["15s"],
+        agent=["maddpg"],
+        maddpg_variant=["community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart"],
+        seed=[123],
+        episodes=1,
+        deterministic_finish=False,
+        steps=16,
+        steps_15s=None,
+        steps_2022=None,
+        start=0,
+        full_window=False,
+        no_kpi_export=True,
+        metric_interval=8,
+        batch_size=16,
+        buffer_capacity=1000,
+        actor_layers="32",
+        critic_layers="64,32",
+        random_exploration_steps=16,
+        warm_start_phaseout_steps=None,
+        sigma=0.1,
+        dry_run=True,
+        fail_fast=False,
+    )
+
+    phase6a.run_phase6a(args)
+
+    config_path = (
+        output_dir
+        / "generated_configs"
+        / "phase6a_15s_maddpg_community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart_seed123.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    exploration = payload["algorithm"]["exploration"]["params"]
+    replay_buffer = payload["algorithm"]["replay_buffer"]
+
+    assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV47"
+    assert exploration["critic_target_clip_abs"] == 25.0
+    assert exploration["actor_policy_loss_weight"] == 0.0
+    assert exploration["actor_behavior_cloning_weight"] == 0.850
+    assert exploration["actor_behavior_cloning_min_weight"] == 0.850
+    assert exploration["actor_ev_behavior_cloning_multiplier"] == 64.0
+    assert exploration["actor_ev_behavior_cloning_positive_target_weight"] == 20.0
+    assert exploration["actor_ev_behavior_cloning_positive_target_power"] == 1.15
+    assert exploration["actor_ev_behavior_cloning_zero_target_weight"] == 16.0
+    assert exploration["actor_storage_behavior_cloning_multiplier"] == 0.12
+    assert exploration["actor_storage_action_l2_penalty"] == 0.45
+    assert exploration["actor_ev_v2g_action_l2_penalty"] == 32.0
+    assert replay_buffer["priority_fraction"] == 0.20
+    assert replay_buffer["priority_max"] == 30.0
+    assert replay_buffer["behavior_action_priority_weight"] == 4.0
+    assert replay_buffer["behavior_action_priority_scope"] == "ev"
+
+
+def test_phase6a_community_feasible_precision_v48_learning_teacher_variant_tightens_zero_band(
+    tmp_path,
+):
+    output_dir = tmp_path / "phase6a_community_feasible_precision_v48_learning_teacher"
+    args = Namespace(
+        output_dir=str(output_dir),
+        dataset=["15s"],
+        agent=["maddpg"],
+        maddpg_variant=["community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart"],
+        seed=[123],
+        episodes=1,
+        deterministic_finish=False,
+        steps=16,
+        steps_15s=None,
+        steps_2022=None,
+        start=0,
+        full_window=False,
+        no_kpi_export=True,
+        metric_interval=8,
+        batch_size=16,
+        buffer_capacity=1000,
+        actor_layers="32",
+        critic_layers="64,32",
+        random_exploration_steps=16,
+        warm_start_phaseout_steps=None,
+        sigma=0.1,
+        dry_run=True,
+        fail_fast=False,
+    )
+
+    phase6a.run_phase6a(args)
+
+    config_path = (
+        output_dir
+        / "generated_configs"
+        / "phase6a_15s_maddpg_community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart_seed123.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    exploration = payload["algorithm"]["exploration"]["params"]
+    replay_buffer = payload["algorithm"]["replay_buffer"]
+
+    assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV46"
+    assert exploration["critic_target_clip_abs"] == 25.0
+    assert exploration["actor_policy_loss_weight"] == 0.0
+    assert exploration["actor_behavior_cloning_weight"] == 0.650
+    assert exploration["actor_ev_behavior_cloning_multiplier"] == 40.0
+    assert exploration["actor_ev_behavior_cloning_positive_target_weight"] == 16.0
+    assert exploration["actor_ev_behavior_cloning_zero_target_weight"] == 8.0
+    assert exploration["actor_storage_behavior_cloning_multiplier"] == 0.25
+    assert exploration["actor_storage_action_l2_penalty"] == 0.30
+    assert replay_buffer["priority_fraction"] == 0.20
+    assert replay_buffer["priority_max"] == 30.0
+    assert replay_buffer["behavior_action_priority_weight"] == 3.5
+    assert replay_buffer["behavior_action_priority_scope"] == "ev"
+
+
 def test_phase6a_rbc_smart_warm_start_uses_dataset_specific_teacher_hyperparameters(tmp_path):
     output_dir = tmp_path / "phase6a_rbc_smart_teacher_hyperparameters"
     args = Namespace(

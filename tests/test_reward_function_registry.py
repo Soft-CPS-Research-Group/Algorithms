@@ -17,6 +17,7 @@ def test_reward_registry_contains_expected_reward_functions():
     assert "CostServiceCommunitySmoothServiceRewardV44" in names
     assert "CostServiceCommunityFeasibleServiceRewardV45" in names
     assert "CostServiceCommunityFeasiblePrecisionRewardV46" in names
+    assert "CostServiceCommunityFeasiblePrecisionRewardV47" in names
 
     assert REWARD_FUNCTION_MAP["CostMinimizationReward"].__name__ == "CostMinimizationReward"
     assert REWARD_FUNCTION_MAP["CostHardConstraintReward"].__name__ == "CostHardConstraintReward"
@@ -31,4 +32,8 @@ def test_reward_registry_contains_expected_reward_functions():
     assert (
         REWARD_FUNCTION_MAP["CostServiceCommunityFeasiblePrecisionRewardV46"].__name__
         == "CostServiceCommunityFeasiblePrecisionRewardV46"
+    )
+    assert (
+        REWARD_FUNCTION_MAP["CostServiceCommunityFeasiblePrecisionRewardV47"].__name__
+        == "CostServiceCommunityFeasiblePrecisionRewardV47"
     )
