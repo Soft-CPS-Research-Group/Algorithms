@@ -15,7 +15,7 @@ class _ReplayBufferProbe:
     def set_state(self, state):
         self.loaded_state = state
 
-    def push(self, _states, _actions, _rewards, _next_states, done):
+    def push(self, _states, _actions, _rewards, _next_states, done, **kwargs):
         self.pushed_done = done
 
     def __len__(self):
