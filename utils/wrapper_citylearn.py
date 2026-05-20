@@ -152,6 +152,7 @@ class Wrapper_CityLearn(RLC):
         self._entity_dynamic_mode = self._entity_interface_mode and self._entity_topology_mode == "dynamic"
         self._algorithm_name = str((config.get("algorithm", {}) or {}).get("name", "")).strip()
         self._entity_topology_version: Optional[int] = None
+        self._topology_changed_during_step: bool = False
         self._entity_adapter: Optional[EntityContractAdapter] = None
         self.model = model
 
@@ -367,11 +368,34 @@ class Wrapper_CityLearn(RLC):
             or previous_version is None
             or self._entity_topology_version != previous_version
         )
-        if topology_changed and self._entity_dynamic_mode and self._algorithm_name == "MADDPG" and previous_version is not None:
-            raise ValueError(
-                "MADDPG supports entity interface only with topology_mode='static'. "
-                "Detected topology change during runtime."
-            )
+        # Surface this for the outer ``learn`` loop so it can skip the
+        # cross-schema update step (the previous-step ``observations`` no
+        # longer share a layout with the new ``observation_space``).
+        # ``force_attach=True`` is used during reset where there is no
+        # previous transition to update on, so we don't need to set the
+        # flag in that case.
+        self._topology_changed_during_step = (
+            topology_changed and not force_attach and previous_version is not None
+        )
+        # Spec §12.4: registry-driven dynamic-topology guardrail. Any agent
+        # with ``supports_dynamic_topology=False`` cannot survive runtime
+        # topology mutation. Keep the historical MADDPG wording when that is
+        # the offender so existing user-facing tests still match.
+        if topology_changed and self._entity_dynamic_mode and previous_version is not None:
+            agent_supports_dynamic = bool(
+                getattr(type(self.model), "supports_dynamic_topology", False)
+            ) if self.model is not None else True
+            if not agent_supports_dynamic:
+                if self._algorithm_name == "MADDPG":
+                    raise ValueError(
+                        "MADDPG supports entity interface only with topology_mode='static'. "
+                        "Detected topology change during runtime."
+                    )
+                raise ValueError(
+                    f"Algorithm {self._algorithm_name!r} does not support dynamic "
+                    "topology (supports_dynamic_topology=False). Detected topology "
+                    "change during runtime."
+                )
 
         if topology_changed and self.model is not None:
             self._attach_model_environment_metadata()
@@ -530,15 +554,30 @@ class Wrapper_CityLearn(RLC):
 
                 # Update model if not in deterministic mode
                 if not deterministic:
-                    self.update(
-                        observations,
-                        actions,
-                        rewards,
-                        next_observations,
-                        terminated=terminated,
-                        truncated=truncated,
-                    )
-                    logger.debug("Model update executed at global step {}", self.global_step)
+                    if self._topology_changed_during_step:
+                        # Schema change between predict and step: previous
+                        # observations belong to the old layout while
+                        # observation_space already reflects the new one.
+                        # Encoding would crash; the agent has already been
+                        # notified via ``_handle_topology_change`` and any
+                        # in-flight rollout has been flushed there. Skip
+                        # this single transition.
+                        logger.debug(
+                            "Skipping model.update at global step {} due to "
+                            "mid-step topology change.",
+                            self.global_step,
+                        )
+                        self._topology_changed_during_step = False
+                    else:
+                        self.update(
+                            observations,
+                            actions,
+                            rewards,
+                            next_observations,
+                            terminated=terminated,
+                            truncated=truncated,
+                        )
+                        logger.debug("Model update executed at global step {}", self.global_step)
 
                     self.checkpoint_manager.maybe_save(
                         agent=self.model,

@@ -186,6 +186,10 @@ class _DummyEntityEnv:
 
 
 class _DummyModel:
+    # Spec §12.4: agents declare dynamic-topology capability via a ClassVar
+    # consulted by the wrapper guardrail.
+    supports_dynamic_topology = True
+
     def __init__(self):
         self.use_raw_observations = True
         self.attach_calls = 0

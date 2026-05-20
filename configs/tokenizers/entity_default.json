@@ -1,0 +1,215 @@
+{
+  "type_embeddings": { "SRO": 0, "NFC": 1, "CA": 2 },
+
+  "excluded_features": {
+    "patterns": [
+      "^district__topology_version$",
+      "^electric_vehicle_charger_state$",
+      "^electric_vehicle_soc$",
+      "^electric_vehicle_required_soc_departure$",
+      "^electric_vehicle_departure_time$",
+      "^electric_vehicle_is_flexible$",
+      "^charging_total_service_power_kw$",
+      "^charging_phase_L[123]_power_kw$"
+    ]
+  },
+
+  "nfc": {
+    "type_name": "building_nfc",
+    "entity_table": "building",
+    "expression": {
+      "op": "subtract",
+      "left":  { "feature": "non_shiftable_load" },
+      "right": { "feature": "solar_generation" }
+    }
+  },
+
+  "ca_types": {
+    "storage": {
+      "entity_table": "storage",
+      "action_field": "electrical_storage",
+      "input_dim_fallback": 19
+    },
+    "charger": {
+      "entity_table": "charger",
+      "action_field": "electric_vehicle_storage",
+      "input_dim_fallback": 33
+    }
+  },
+
+  "sro_types": {
+    "district_time": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^district__month$",
+        "^district__day_type$",
+        "^district__hour$",
+        "^district__minutes$",
+        "^district__seconds$"
+      ],
+      "input_dim_fallback": 5
+    },
+    "district_weather_current": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^district__outdoor_dry_bulb_temperature$",
+        "^district__outdoor_relative_humidity$",
+        "^district__diffuse_solar_irradiance$",
+        "^district__direct_solar_irradiance$"
+      ],
+      "input_dim_fallback": 4
+    },
+    "district_weather_forecast": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^district__outdoor_dry_bulb_temperature_predicted_\\d+$",
+        "^district__outdoor_relative_humidity_predicted_\\d+$",
+        "^district__diffuse_solar_irradiance_predicted_\\d+$",
+        "^district__direct_solar_irradiance_predicted_\\d+$"
+      ],
+      "input_dim_fallback": 12
+    },
+    "district_carbon": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [ "^district__carbon_intensity$" ],
+      "input_dim_fallback": 1
+    },
+    "district_pricing_current": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [ "^district__electricity_pricing$" ],
+      "input_dim_fallback": 1
+    },
+    "district_pricing_forecast": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [ "^district__electricity_pricing_predicted_\\d+$" ],
+      "input_dim_fallback": 3
+    },
+    "district_community_energy": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^district__community_(net|import|export|pv|bess|ev)_(power_kw|energy_kwh_step)$"
+      ],
+      "input_dim_fallback": 12
+    },
+    "district_community_headroom": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^district__community_(building|phase)(_export)?_headroom_kw$"
+      ],
+      "input_dim_fallback": 4
+    },
+    "district_community_history": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^district__community_net_prev_\\d+_(kwh_step|mean_kwh_step)$"
+      ],
+      "input_dim_fallback": 2
+    },
+    "district_meta": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [ "^district__active_(buildings|chargers|evs)_count$" ],
+      "input_dim_fallback": 3
+    },
+
+    "building_storage_state": {
+      "entity_table": "building",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^electrical_storage_soc$",
+        "^electrical_storage_soc_ratio$"
+      ],
+      "input_dim_fallback": 2
+    },
+    "building_charging_phase_onehot": {
+      "entity_table": "building",
+      "cardinality": "singleton",
+      "feature_patterns": [ "^charging_phase_one_hot_.+$" ],
+      "input_dim_fallback": 6
+    },
+    "building_charging_headroom": {
+      "entity_table": "building",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^charging_(building|phase_L\\d+)(_export)?_headroom_kw$"
+      ],
+      "input_dim_fallback": 8
+    },
+    "building_charging_violation": {
+      "entity_table": "building",
+      "cardinality": "singleton",
+      "feature_patterns": [ "^charging_constraint_violation_kwh$" ],
+      "input_dim_fallback": 1
+    },
+    "building_energy_current": {
+      "entity_table": "building",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^net_electricity_consumption$",
+        "^(net|import|export|load|pv|bess|ev_charging)_(power_kw|energy_kwh_step)$"
+      ],
+      "input_dim_fallback": 15
+    },
+    "building_energy_history": {
+      "entity_table": "building",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^(net|import|export)_energy_prev_\\d+_(kwh_step|mean_kwh_step)$"
+      ],
+      "input_dim_fallback": 4
+    },
+    "building_meta": {
+      "entity_table": "building",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^active_chargers_count$",
+        "^active_storages_count$",
+        "^active_pvs_count$",
+        "^active_deferrable_appliances_count$"
+      ],
+      "input_dim_fallback": 4
+    },
+
+    "pv": {
+      "entity_table": "pv",
+      "cardinality": "per_asset",
+      "adapter_prefix": "pv::",
+      "input_dim_fallback": 4
+    },
+    "ev_connected": {
+      "entity_table": "ev",
+      "cardinality": "per_asset",
+      "adapter_prefix": "charger::",
+      "adapter_label": "connected_ev",
+      "input_dim_fallback": 8
+    },
+    "ev_incoming": {
+      "entity_table": "ev",
+      "cardinality": "per_asset",
+      "adapter_prefix": "charger::",
+      "adapter_label": "incoming_ev",
+      "input_dim_fallback": 8
+    },
+    "deferrable_appliance": {
+      "entity_table": "deferrable_appliance",
+      "cardinality": "per_asset",
+      "adapter_prefix": "deferrable_appliance::",
+      "input_dim_fallback": 5
+    }
+  },
+
+  "validation": {
+    "unmatched_features": "fail",
+    "ambiguous_pattern_match": "fail",
+    "input_dim_mismatch": "fail"
+  }
+}

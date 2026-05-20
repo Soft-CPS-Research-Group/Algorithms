@@ -13,6 +13,7 @@ from algorithms.agents.baseline_policies import (
     RBCSmartPolicy,
     RandomPolicy,
 )
+from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.agents.rbc_agent import RuleBasedPolicy
@@ -25,6 +26,7 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "RBCSmartPolicy": RBCSmartPolicy,
     "RandomPolicy": RandomPolicy,
     "RuleBasedPolicy": RuleBasedPolicy,
+    "AgentTransformerPPO": AgentTransformerPPO,
 }
 
 PLACEHOLDER_ALGORITHMS = {
