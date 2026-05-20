@@ -173,12 +173,14 @@ def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
 def _resolve_agent_observation_dimensions(wrapper: Any, algorithm_name: Optional[str]) -> list[int]:
     """Resolve the observation dimensions seen by the agent, after preprocessing.
 
-    The wrapper owns preprocessing, but MADDPG builds networks before the first
-    rollout. For MADDPG, use the encoded observation shape exposed by the
-    wrapper's encoder method without changing wrapper behavior.
+    The wrapper owns preprocessing, but neural agents build networks before the
+    first rollout. For agents that consume encoded observations, use the encoded
+    observation shape exposed by the wrapper's encoder method without changing
+    wrapper behavior.
     """
     fallback = list(getattr(wrapper, "observation_dimension", []) or [])
-    if str(algorithm_name or "").strip() != "MADDPG":
+    encoded_observation_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
+    if str(algorithm_name or "").strip() not in encoded_observation_algorithms:
         return fallback
 
     get_encoded = getattr(wrapper, "get_encoded_observations", None)
@@ -202,7 +204,8 @@ def _resolve_agent_observation_dimensions(wrapper: Any, algorithm_name: Optional
             dimensions.append(int(encoded.shape[0]))
     except Exception as exc:
         logger.warning(
-            "Could not resolve encoded observation dimensions for MADDPG; falling back to raw dimensions: {}",
+            "Could not resolve encoded observation dimensions for {}; falling back to raw dimensions: {}",
+            algorithm_name,
             exc,
         )
         return fallback
@@ -659,7 +662,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             progress_path=str(path_info["progress_path"]),
         )
 
-        # Populate derived dimensions required by MADDPG.
+        # Populate derived dimensions required by neural agents.
         set_default_config(
             config,
             ["topology", "observation_dimensions"],

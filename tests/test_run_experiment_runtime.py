@@ -444,9 +444,15 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert unchanged_input == config
 
 
-def test_run_experiment_uses_encoded_observation_dimensions_for_maddpg(monkeypatch, tmp_path):
+@pytest.mark.parametrize("algorithm_name", ["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"])
+def test_run_experiment_uses_encoded_observation_dimensions_for_neural_agents(
+    monkeypatch,
+    tmp_path,
+    algorithm_name,
+):
     config = _build_enabled_config(artifact_profile="minimal")
     config["tracking"]["mlflow_enabled"] = False
+    config["algorithm"]["name"] = algorithm_name
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
@@ -459,13 +465,14 @@ def test_run_experiment_uses_encoded_observation_dimensions_for_maddpg(monkeypat
     monkeypatch.setattr(runner, "Wrapper", _DummyEncodedWrapper)
     monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
 
-    runner.run_experiment(str(config_path), "job-encoded-dims", tmp_path)
+    job_id = f"job-encoded-dims-{algorithm_name.lower()}"
+    runner.run_experiment(str(config_path), job_id, tmp_path)
 
     resolved_config = yaml.safe_load(
-        (tmp_path / "jobs" / "job-encoded-dims" / "config.resolved.yaml").read_text(encoding="utf-8")
+        (tmp_path / "jobs" / job_id / "config.resolved.yaml").read_text(encoding="utf-8")
     )
     manifest = json.loads(
-        (tmp_path / "jobs" / "job-encoded-dims" / "bundle" / "artifact_manifest.json").read_text(encoding="utf-8")
+        (tmp_path / "jobs" / job_id / "bundle" / "artifact_manifest.json").read_text(encoding="utf-8")
     )
     assert resolved_config["topology"]["observation_dimensions"] == [3]
     assert manifest["topology"]["observation_dimensions"] == [3]
