@@ -23,12 +23,12 @@ configs.
 
 | Baseline | Objetivo | Leitura correta |
 |---|---|---|
-| `RandomPolicy` | Amostra todas as acoes disponiveis dentro dos bounds. | Lower bound/sanidade. Serve para apanhar erros de bounds, fases, V2G, storage e deferrables. |
+| `RandomPolicy` | Amostra todas as acoes disponiveis dentro dos bounds. | Lower bound/sanidade. Serve para mostrar que um algoritmo e melhor que aleatorio e para apanhar erros de bounds, fases, V2G, storage e deferrables. |
 | `NormalNoBatteryPolicy` | Comportamento normal sem controlo de bateria. EV carrega quando chega; deferrables arrancam cedo. | Aproxima o comportamento "sem otimizacao" quando queremos isolar o efeito da bateria. |
-| `NormalPolicy` | Igual ao normal, mas com bateria simples para autoconsumo. | Baseline BAU operacional simples; pode ser pior que no-battery se bateria tiver perdas/ciclos maus. |
+| `NormalPolicy` | Igual ao normal, mas com bateria simples para autoconsumo. | Baseline BAU (`Business as Usual`) operacional simples; pode ser pior que no-battery se bateria tiver perdas/ciclos maus. |
 | `RBCBasicPolicy` | Heuristica simples com urgencia, preco atual/previsao curta e limites. | Baseline inteligente medio. Nao deve ser oracle. |
 | `RBCSmartPolicy` | Heuristica mais forte: preco, PV, picos/headroom, EV service, storage conservador e V2G quando configurado/seguro. | Baseline forte principal para comparar candidatos RL/MARL. |
-| `RuleBasedPolicy` | RBC legacy EV-focused. | Mantido para compatibilidade/debug; nao e o baseline principal. |
+| `RuleBasedPolicy` | RBC legacy EV-focused. | Mantido para compatibilidade/debug. Nao usar na maior parte das comparacoes novas. |
 
 Configs locais principais:
 
@@ -52,6 +52,7 @@ O MADDPG atual e o candidato principal implementado, mas ja ficou preparado para
 comparacao mais seria:
 
 - replay buffer compacto prealocado, para reduzir RAM e overhead de sampling;
+- funcao de reward iterada; a receita `V48` e a melhor local ate agora;
 - warm-start opcional com policy teacher, por exemplo `RBCSmartPolicy`;
 - behavior cloning configuravel no actor;
 - exploration noise configuravel por tipo de acao;
@@ -77,6 +78,63 @@ configs/experiments/phase6_15s_scaling/
 configs/experiments/phase6_dataset_variants/remote_pending/
 configs/experiments/phase6_algorithm_matrix/remote_pending/
 ```
+
+## Reward Functions E Receita V48
+
+Ha dois conceitos diferentes:
+
+- `reward_function`: classe registada no repo, por exemplo
+  `CostServiceCommunityFeasiblePrecisionRewardV46`;
+- receita/config `V48`: combinacao que temos usado para MADDPG com essa reward,
+  teacher `RBCSmartPolicy`, behavior cloning e hiperparametros especificos.
+
+Neste momento, para novos algoritmos RL/MARL, eu usaria a reward
+`CostServiceCommunityFeasiblePrecisionRewardV46` como ponto de partida. Foi a
+base da receita `V48`, que teve o melhor equilibrio local entre custo, EV service
+e picos. Isto nao prova que seja universalmente a melhor para todos os
+algoritmos, mas e o default mais defensavel neste momento.
+
+Variantes testadas:
+
+| Receita | Reward base | Ideia | Leitura atual |
+|---|---|---|---|
+| `V48` | `CostServiceCommunityFeasiblePrecisionRewardV46` | Equilibrar custo, EV minimo aceitavel, precisao de SOC, comunidade e bateria. | Melhor candidata local. Promovida para runs longas/multi-seed. |
+| `V49` | `CostServiceCommunityStorageValueRewardV49` | Reduzir penalizacao de bateria e dar mais espaco a storage/V2G. | Nao mostrou ganho suficiente; pode piorar EV. |
+| `V50` | `CostServiceCommunityDeadlineValueRewardV50` | Aumentar pressao de deadline EV antes da saida. | Reduz deficit, mas tende a over-service e pior custo. |
+| `V51` | `CostServiceCommunityPrecisionValueRewardV51` | Penalizar mais over-service para ficar perto do SOC alvo. | Cortou excesso, mas falhou mais o minimo EV. |
+| `V52` | `CostServiceCommunityPeakDeadlineRewardV52` | Aumentar sinal de pico/export/settlement comunitario. | Piorou custo/precisao nos testes locais. |
+| `V54` | Diagnostico com policy loss desligado | Quase clone do `RBCSmartPolicy`. | Provou que o actor consegue aprender o teacher; nao e a melhor receita. |
+| `V55`/`V56` | Variantes com BC extra | Testar warmup/BC mais forte. | Ainda nao bateram V48 nesta configuracao. |
+
+Comparacao local mais informativa ate agora: dataset 2022, semana curta, 8
+episodios. O `RBCSmart` e a referencia forte; `V48` foi a melhor receita MADDPG.
+
+| Controlador/receita | Custo EUR | EV min feasible | EV within feasible | Deficit SOC medio | Surplus SOC medio | Erro abs. SOC | Pico comunitario reward mean |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `RBCSmart` | `424.66` | `1.000` | `0.423` | `0.001` | `0.063` | `0.064` | `0.997` |
+| `MADDPG V48`, 8 eps | `398.51` | `1.000` | `0.385` | `0.004` | `0.063` | `0.067` | `0.750` |
+| `MADDPG V50`, 8 eps | `466.79` | `1.000` | `0.019` | `0.002` | `0.145` | `0.147` | `0.827` |
+| `MADDPG V52`, 8 eps | `459.65` | `1.000` | `0.000` | `0.002` | `0.135` | `0.137` | `1.470` |
+| `MADDPG V54`, 8 eps | `419.82` | `1.000` | `0.308` | `0.002` | `0.067` | `0.068` | `0.801` |
+| `MADDPG V55`, 8 eps | `436.95` | `1.000` | `0.096` | `0.001` | `0.103` | `0.104` | `1.407` |
+| `MADDPG V56`, 8 eps | `439.68` | `1.000` | `0.096` | `0.001` | `0.108` | `0.110` | `0.603` |
+| `MADDPG V48`, 16 eps | `407.84` | `1.000` | `0.519` | `0.002` | `0.055` | `0.056` | `0.450` |
+
+Robustez inicial da `V48` com 16 episodios e seeds `123/456/789`:
+
+| Receita | Custo medio EUR | EV min feasible medio | EV within feasible medio | Deficit SOC medio | Erro abs. SOC medio | Pico comunitario reward mean |
+|---|---:|---:|---:|---:|---:|---:|
+| `MADDPG V48`, media 3 seeds | `409.74` | `1.000` | `0.474` | `0.0016` | `0.0601` | `0.444` |
+
+Leitura curta:
+
+- `V48` bateu o `RBCSmart` local em custo nesta janela e manteve
+  `EV min feasible = 1.0`;
+- `V48` tambem melhorou `EV within feasible` quando treinada mais episodios;
+- aumentar peso comunitario/deadline sem preservar primeiro EV precision levou
+  a over-service, pior custo ou pior precisao;
+- estes resultados sao bons para escolher direcao, mas nao substituem runs
+  longas/full-year/multi-seed.
 
 ## KPIs Que Tenho Usado Para Comparar
 
