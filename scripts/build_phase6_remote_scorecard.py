@@ -53,6 +53,9 @@ LEARNING_POLICIES = {
 
 OUTPUT_COLUMNS = [
     "decision",
+    "decision_bucket",
+    "next_action",
+    "risk_flags",
     "dataset",
     "variant",
     "track",
@@ -201,6 +204,8 @@ def enrich_row(row: dict[str, Any]) -> dict[str, Any]:
         for value in (
             _config_basename(row),
             str(row.get("job_name") or ""),
+            str(row.get("simulation_data_session") or ""),
+            str(row.get("kpi_source") or ""),
         )
         if value
     )
@@ -233,6 +238,130 @@ def _build_rbcsmart_index(rows: list[dict[str, Any]]) -> dict[tuple[str, str], d
         if current is None or row.get("track") == "baseline":
             index[key] = row
     return index
+
+
+def _is_learning_policy(row: dict[str, Any]) -> bool:
+    return str(row.get("policy") or "") in LEARNING_POLICIES
+
+
+def _decision_bucket(decision: str) -> str:
+    if decision == "candidate_strong":
+        return "promote"
+    if decision in {"candidate_cost_ok_precision_watch", "candidate_near_cost"}:
+        return "iterate"
+    if decision.startswith("reject_"):
+        return "reject"
+    if decision in {"pending", "awaiting_rbcsmart_baseline", "awaiting_kpis"}:
+        return "wait"
+    if decision.startswith("not_finished:"):
+        return "wait"
+    if decision in {"reference", "smoke_ok"}:
+        return "reference"
+    return "review"
+
+
+def _risk_flags_for_row(
+    row: dict[str, Any],
+    rbc_row: dict[str, Any] | None,
+    *,
+    ev_feasible_min: float,
+    ev_within_min: float,
+    cost_near_pct: float,
+    max_grid_violation_kwh: float,
+    battery_throughput_ratio_warn: float,
+    peak_ratio_warn: float,
+) -> str:
+    flags: list[str] = []
+    status = str(row.get("status") or "").lower()
+    if status not in {"finished", "completed"}:
+        flags.append("not_finished")
+    if str(row.get("errors") or "").strip():
+        flags.append("collection_errors")
+
+    cost = _safe_float(row.get("community_cost_eur"))
+    rbc_cost = _safe_float(rbc_row.get("community_cost_eur")) if rbc_row else None
+    if cost is None:
+        flags.append("missing_cost")
+    if _is_learning_policy(row) and rbc_row is None:
+        flags.append("missing_rbcsmart")
+    if _is_learning_policy(row) and rbc_row is not None and rbc_cost is None:
+        flags.append("missing_rbcsmart_cost")
+
+    ev_feasible = _safe_float(row.get("ev_min_acceptable_feasible_rate"))
+    ev_within = _safe_float(row.get("ev_within_tolerance_feasible_rate"))
+    if ev_feasible is None:
+        flags.append("missing_ev_feasible")
+    elif ev_feasible < ev_feasible_min:
+        flags.append("ev_service_below_gate")
+    if ev_within is None:
+        flags.append("missing_ev_precision")
+    elif ev_within < ev_within_min:
+        flags.append("ev_precision_below_gate")
+
+    violation_kwh = _safe_float(row.get("electrical_violation_kwh")) or 0.0
+    violation_events = _safe_float(row.get("electrical_violation_events")) or 0.0
+    if violation_kwh > max_grid_violation_kwh or violation_events > 0:
+        flags.append("grid_violation")
+
+    if cost is not None and rbc_cost is not None:
+        denominator = abs(rbc_cost) if abs(rbc_cost) > 1e-9 else 1.0
+        cost_delta_pct = ((cost - rbc_cost) / denominator) * 100.0
+        if cost_delta_pct > cost_near_pct:
+            flags.append("cost_above_rbcsmart")
+
+    battery_ratio = _safe_float(row.get("battery_throughput_ratio_to_bau"))
+    if battery_ratio is not None and battery_ratio > battery_throughput_ratio_warn:
+        flags.append("battery_throughput_high")
+
+    peak_daily = _safe_float(row.get("peak_daily_ratio_to_bau"))
+    peak_all_time = _safe_float(row.get("peak_all_time_ratio_to_bau"))
+    if (peak_daily is not None and peak_daily > peak_ratio_warn) or (
+        peak_all_time is not None and peak_all_time > peak_ratio_warn
+    ):
+        flags.append("peak_worse_than_bau")
+
+    v2g_export = _safe_float(row.get("v2g_export_kwh")) or 0.0
+    if v2g_export > 1e-9:
+        flags.append("v2g_used")
+
+    return ";".join(dict.fromkeys(flags))
+
+
+def _next_action_for_row(row: dict[str, Any]) -> str:
+    decision = str(row.get("decision") or "")
+    policy = str(row.get("policy") or "")
+    track = str(row.get("track") or "")
+    flags = set(str(row.get("risk_flags") or "").split(";"))
+
+    if decision == "candidate_strong":
+        return "promote_to_multiseed_full"
+    if decision == "candidate_cost_ok_precision_watch":
+        return "tune_ev_precision_keep_cost_recipe"
+    if decision == "candidate_near_cost":
+        return "tune_cost_or_compare_matd3_masac"
+    if decision == "reject_ev_service":
+        return "fix_ev_service_reward_teacher_or_exploration"
+    if decision == "reject_grid_violation":
+        return "audit_phase_headroom_actions"
+    if decision == "reject_cost":
+        if "battery_throughput_high" in flags:
+            return "audit_storage_reward_and_throughput"
+        return "compare_algorithm_variant_or_reward_cost_terms"
+    if decision == "awaiting_rbcsmart_baseline":
+        return "wait_for_or_run_rbcsmart_baseline"
+    if decision == "awaiting_kpis":
+        return "inspect_exported_kpis_and_logs"
+    if decision == "pending":
+        return "wait_for_job_completion"
+    if decision.startswith("not_finished:"):
+        return "inspect_remote_failure"
+    if decision == "smoke_ok":
+        return "eligible_for_short_or_full_run"
+    if decision == "reference":
+        if policy == "RBCSmart" and track in {"baseline", "full"}:
+            return "use_as_main_baseline"
+        return "use_as_reference_baseline"
+    return "manual_review"
 
 
 def _decision_for_row(
@@ -290,6 +419,8 @@ def build_scorecard(
     ev_within_min: float = 0.80,
     cost_near_pct: float = 5.0,
     max_grid_violation_kwh: float = 1e-6,
+    battery_throughput_ratio_warn: float = 3.0,
+    peak_ratio_warn: float = 1.05,
 ) -> list[dict[str, Any]]:
     enriched_rows = [enrich_row(row) for row in rows]
     rbc_index = _build_rbcsmart_index(enriched_rows)
@@ -345,6 +476,18 @@ def build_scorecard(
             cost_near_pct=cost_near_pct,
             max_grid_violation_kwh=max_grid_violation_kwh,
         )
+        scored["decision_bucket"] = _decision_bucket(str(scored["decision"]))
+        scored["risk_flags"] = _risk_flags_for_row(
+            row,
+            rbc_row,
+            ev_feasible_min=ev_feasible_min,
+            ev_within_min=ev_within_min,
+            cost_near_pct=cost_near_pct,
+            max_grid_violation_kwh=max_grid_violation_kwh,
+            battery_throughput_ratio_warn=battery_throughput_ratio_warn,
+            peak_ratio_warn=peak_ratio_warn,
+        )
+        scored["next_action"] = _next_action_for_row(scored)
         output.append(scored)
 
     return output
@@ -380,38 +523,86 @@ def _best_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(candidates, key=lambda row: _safe_float(row.get("community_cost_eur")) or float("inf"))
 
 
+def _rows_with_risk(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates = [
+        row
+        for row in rows
+        if str(row.get("risk_flags") or "").strip()
+        and str(row.get("status") or "").lower() in {"finished", "completed"}
+    ]
+    return sorted(
+        candidates,
+        key=lambda row: (
+            0 if row.get("policy") in LEARNING_POLICIES else 1,
+            str(row.get("dataset") or ""),
+            str(row.get("variant") or ""),
+            str(row.get("policy") or ""),
+        ),
+    )
+
+
 def write_scorecard_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     counts: OrderedDict[str, int] = OrderedDict()
+    bucket_counts: OrderedDict[str, int] = OrderedDict()
+    next_actions: OrderedDict[str, int] = OrderedDict()
     for row in rows:
         decision = str(row.get("decision") or "unknown")
         counts[decision] = counts.get(decision, 0) + 1
+        bucket = str(row.get("decision_bucket") or "unknown")
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+        next_action = str(row.get("next_action") or "manual_review")
+        next_actions[next_action] = next_actions.get(next_action, 0) + 1
 
     lines = [
         "# Phase 6J Remote Scorecard",
         "",
         f"Generated at Unix time `{time.time():.0f}`.",
         "",
-        "## Decision Counts",
+        "## Decision Buckets",
         "",
-        "| Decision | Count |",
+        "| Bucket | Count |",
         "|---|---:|",
     ]
+    for bucket, count in bucket_counts.items():
+        lines.append(f"| `{bucket}` | {count} |")
+
+    lines.extend(
+        [
+            "",
+            "## Decision Counts",
+            "",
+            "| Decision | Count |",
+            "|---|---:|",
+        ]
+    )
     for decision, count in counts.items():
         lines.append(f"| `{decision}` | {count} |")
 
     lines.extend(
         [
             "",
+            "## Next Actions",
+            "",
+            "| Next action | Count |",
+            "|---|---:|",
+        ]
+    )
+    for action, count in next_actions.items():
+        lines.append(f"| `{action}` | {count} |")
+
+    lines.extend(
+        [
+            "",
             "## Best Finished Learning Runs",
             "",
-            "| Rank | Policy | Dataset | Variant | Track | Decision | Cost | Delta vs RBCSmart | EV feasible | EV within tol | Net exchange | Peak daily vs BAU | Battery throughput | V2G export | Job ID |",
-            "|---:|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+            "| Rank | Policy | Dataset | Variant | Track | Decision | Next action | Cost | Delta vs RBCSmart | EV feasible | EV within tol | Net exchange | Peak daily vs BAU | Battery throughput | V2G export | Job ID |",
+            "|---:|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     best = _best_rows(rows)
     if not best:
-        lines.append("| - | - | - | - | - | pending | - | - | - | - | - | - | - | - | - |")
+        lines.append("| - | - | - | - | - | pending | - | - | - | - | - | - | - | - | - | - |")
     else:
         for rank, row in enumerate(best[:12], start=1):
             lines.append(
@@ -424,6 +615,7 @@ def write_scorecard_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
                         str(row.get("variant") or ""),
                         str(row.get("track") or ""),
                         f"`{row.get('decision') or ''}`",
+                        f"`{row.get('next_action') or ''}`",
                         _fmt(row.get("community_cost_eur")),
                         _fmt(row.get("cost_delta_to_rbcsmart_eur")),
                         _fmt(row.get("ev_min_acceptable_feasible_rate")),
@@ -441,13 +633,53 @@ def write_scorecard_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
     lines.extend(
         [
             "",
+            "## Risk Flags",
+            "",
+            "| Policy | Dataset | Variant | Track | Decision | Flags | Cost | EV feasible | EV within tol | Grid kWh | Battery ratio | Peak daily | Job ID |",
+            "|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---|",
+        ]
+    )
+    risk_rows = _rows_with_risk(rows)
+    if not risk_rows:
+        lines.append("| - | - | - | - | - | - | - | - | - | - | - | - | - |")
+    else:
+        for row in risk_rows[:25]:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        str(row.get("policy") or ""),
+                        str(row.get("dataset") or ""),
+                        str(row.get("variant") or ""),
+                        str(row.get("track") or ""),
+                        f"`{row.get('decision') or ''}`",
+                        f"`{row.get('risk_flags') or ''}`",
+                        _fmt(row.get("community_cost_eur")),
+                        _fmt(row.get("ev_min_acceptable_feasible_rate")),
+                        _fmt(row.get("ev_within_tolerance_feasible_rate")),
+                        _fmt(row.get("electrical_violation_kwh")),
+                        _fmt(row.get("battery_throughput_ratio_to_bau")),
+                        _fmt(row.get("peak_daily_ratio_to_bau")),
+                        f"`{row.get('job_id') or ''}`",
+                    ]
+                )
+                + " |"
+            )
+
+    lines.extend(
+        [
+            "",
             "## How To Read",
             "",
+            "- `decision_bucket=promote`: candidate can move to multi-seed/full comparison.",
+            "- `decision_bucket=iterate`: result is useful but needs a targeted fix before promotion.",
+            "- `decision_bucket=reject`: do not promote this recipe without fixing the named gate.",
+            "- `decision_bucket=wait`: remote job, KPI export or matching RBCSmart baseline is missing.",
             "- `candidate_strong`: learning controller finished, kept EV feasible gate, did not violate grid, beat RBCSmart cost and kept EV precision above the configured threshold.",
             "- `candidate_cost_ok_precision_watch`: cost beat RBCSmart but EV precision still needs attention.",
             "- `candidate_near_cost`: close enough to RBCSmart to justify tuning, but not yet a winner.",
             "- `reject_ev_service`, `reject_grid_violation`, `reject_cost`: do not promote this recipe without a targeted fix.",
-            "- `awaiting_rbcsmart_baseline`/`pending`: rerun the scorecard after the missing jobs finish.",
+            "- `risk_flags` are deliberately conservative; they are prompts for inspection, not automatic proof of a bug.",
             "- Community metrics (`net_exchange`, peak ratios and solar/community-market fields when present) are highlighted because the target is not only house-level EV success.",
             "",
         ]
@@ -463,6 +695,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--ev-within-min", type=float, default=0.80)
     parser.add_argument("--cost-near-pct", type=float, default=5.0)
     parser.add_argument("--max-grid-violation-kwh", type=float, default=1e-6)
+    parser.add_argument("--battery-throughput-ratio-warn", type=float, default=3.0)
+    parser.add_argument("--peak-ratio-warn", type=float, default=1.05)
     return parser.parse_args(argv)
 
 
@@ -475,6 +709,8 @@ def main(argv: list[str]) -> int:
         ev_within_min=args.ev_within_min,
         cost_near_pct=args.cost_near_pct,
         max_grid_violation_kwh=args.max_grid_violation_kwh,
+        battery_throughput_ratio_warn=args.battery_throughput_ratio_warn,
+        peak_ratio_warn=args.peak_ratio_warn,
     )
     write_scorecard_csv(args.output_dir / "scorecard.csv", scorecard)
     write_scorecard_markdown(args.output_dir / "scorecard.md", scorecard)

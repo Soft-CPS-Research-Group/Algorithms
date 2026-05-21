@@ -62,14 +62,29 @@ class EntityContractAdapter:
         self._building_action_features: List[str] = []
         self._charger_action_features: List[str] = []
         self._deferrable_action_features: List[str] = []
+        self._building_action_ids: List[str] = []
+        self._charger_action_ids: List[str] = []
+        self._deferrable_action_ids: List[str] = []
         self._building_action_col_by_name: Dict[str, int] = {}
         self._charger_action_col_by_name: Dict[str, int] = {}
         self._deferrable_action_col_by_name: Dict[str, int] = {}
         self._charger_row_by_id: Dict[str, int] = {}
         self._deferrable_row_by_id: Dict[str, int] = {}
+        self._charger_action_row_by_id: Dict[str, int] = {}
+        self._deferrable_action_row_by_id: Dict[str, int] = {}
+        self._table_lows: Dict[str, np.ndarray] = {}
+        self._table_highs: Dict[str, np.ndarray] = {}
+        self._building_asset_rows: Dict[str, List[List[int]]] = {}
+        self._charger_feature_col: Dict[str, int] = {}
+        self._entity_action_layout_cache_key: Optional[Tuple[Any, ...]] = None
+        self._entity_action_routes: List[List[Tuple[int, str, int, int]]] = []
 
         self._latest_observation_origins: List[List[Tuple[str, str]]] = []
         self._latest_encoded_observation_names: List[List[str]] = []
+        self._maddpg_encoded_layout_cache: Dict[int, Dict[str, Any]] = {}
+        self._cached_observation_names: List[List[str]] = []
+        self._cached_observation_spaces: List[spaces.Box] = []
+        self._cached_observation_origins: List[List[Tuple[str, str]]] = []
         self._warned_invalid_bounds: set[str] = set()
 
     @staticmethod
@@ -160,10 +175,54 @@ class EntityContractAdapter:
         self._deferrable_ids = list(table_specs.get("deferrable_appliance", {}).get("ids", []))
         self._charger_row_by_id = {entity_id: row for row, entity_id in enumerate(self._charger_ids)}
         self._deferrable_row_by_id = {entity_id: row for row, entity_id in enumerate(self._deferrable_ids)}
+        self._charger_feature_col = {name: idx for idx, name in enumerate(self._charger_features)}
+
+        table_spaces = self._table_spaces_from_observation_space(self.env.observation_space)
+        self._table_lows = {}
+        self._table_highs = {}
+        for table_name in (
+            "district",
+            "building",
+            "charger",
+            "storage",
+            "pv",
+            "ev",
+            "deferrable_appliance",
+        ):
+            table_space = table_spaces.get(table_name)
+            low = getattr(table_space, "low", [])
+            high = getattr(table_space, "high", [])
+            self._table_lows[table_name] = self._as_2d(low)
+            self._table_highs[table_name] = self._as_2d(high)
+
+        edges = observation_payload.get("edges", {}) if isinstance(observation_payload, Mapping) else {}
+        self._building_asset_rows = {
+            "charger": [
+                self._edge_targets(edges.get("building_to_charger", []), building_index)
+                for building_index in range(len(self._building_ids))
+            ],
+            "storage": [
+                self._edge_targets(edges.get("building_to_storage", []), building_index)
+                for building_index in range(len(self._building_ids))
+            ],
+            "pv": [
+                self._edge_targets(edges.get("building_to_pv", []), building_index)
+                for building_index in range(len(self._building_ids))
+            ],
+            "deferrable_appliance": [
+                self._edge_targets(edges.get("building_to_deferrable_appliance", []), building_index)
+                for building_index in range(len(self._building_ids))
+            ],
+        }
 
         self._building_action_features = list(action_specs.get("building", {}).get("features", []))
         self._charger_action_features = list(action_specs.get("charger", {}).get("features", []))
         self._deferrable_action_features = list(action_specs.get("deferrable_appliance", {}).get("features", []))
+        self._building_action_ids = list(action_specs.get("building", {}).get("ids", self._building_ids))
+        self._charger_action_ids = list(action_specs.get("charger", {}).get("ids", self._charger_ids))
+        self._deferrable_action_ids = list(
+            action_specs.get("deferrable_appliance", {}).get("ids", self._deferrable_ids)
+        )
         self._building_action_col_by_name = {
             name: idx for idx, name in enumerate(self._building_action_features)
         }
@@ -173,8 +232,20 @@ class EntityContractAdapter:
         self._deferrable_action_col_by_name = {
             name: idx for idx, name in enumerate(self._deferrable_action_features)
         }
+        self._charger_action_row_by_id = {
+            entity_id: row for row, entity_id in enumerate(self._charger_action_ids)
+        }
+        self._deferrable_action_row_by_id = {
+            entity_id: row for row, entity_id in enumerate(self._deferrable_action_ids)
+        }
 
         self.topology_version = self._parse_topology_version(observation_payload)
+        self._maddpg_encoded_layout_cache = {}
+        self._cached_observation_names = []
+        self._cached_observation_spaces = []
+        self._cached_observation_origins = []
+        self._entity_action_layout_cache_key = None
+        self._entity_action_routes = []
 
     def to_agent_observations(
         self,
@@ -185,8 +256,6 @@ class EntityContractAdapter:
 
         tables = observation_payload.get("tables", {})
         edges = observation_payload.get("edges", {})
-        table_spaces = self._table_spaces_from_observation_space(self.env.observation_space)
-
         district_table = self._as_2d(tables.get("district", []))
         building_table = self._as_2d(tables.get("building", []))
         charger_table = self._as_2d(tables.get("charger", []))
@@ -195,28 +264,20 @@ class EntityContractAdapter:
         ev_table = self._as_2d(tables.get("ev", []))
         deferrable_table = self._as_2d(tables.get("deferrable_appliance", []))
 
-        district_space = table_spaces.get("district")
-        building_space = table_spaces.get("building")
-        charger_space = table_spaces.get("charger")
-        storage_space = table_spaces.get("storage")
-        pv_space = table_spaces.get("pv")
-        ev_space = table_spaces.get("ev")
-        deferrable_space = table_spaces.get("deferrable_appliance")
-
-        district_low = self._as_2d(getattr(district_space, "low", np.zeros_like(district_table)))
-        district_high = self._as_2d(getattr(district_space, "high", np.zeros_like(district_table)))
-        building_low = self._as_2d(getattr(building_space, "low", np.zeros_like(building_table)))
-        building_high = self._as_2d(getattr(building_space, "high", np.zeros_like(building_table)))
-        charger_low = self._as_2d(getattr(charger_space, "low", np.zeros_like(charger_table)))
-        charger_high = self._as_2d(getattr(charger_space, "high", np.zeros_like(charger_table)))
-        storage_low = self._as_2d(getattr(storage_space, "low", np.zeros_like(storage_table)))
-        storage_high = self._as_2d(getattr(storage_space, "high", np.zeros_like(storage_table)))
-        pv_low = self._as_2d(getattr(pv_space, "low", np.zeros_like(pv_table)))
-        pv_high = self._as_2d(getattr(pv_space, "high", np.zeros_like(pv_table)))
-        ev_low = self._as_2d(getattr(ev_space, "low", np.zeros_like(ev_table)))
-        ev_high = self._as_2d(getattr(ev_space, "high", np.zeros_like(ev_table)))
-        deferrable_low = self._as_2d(getattr(deferrable_space, "low", np.zeros_like(deferrable_table)))
-        deferrable_high = self._as_2d(getattr(deferrable_space, "high", np.zeros_like(deferrable_table)))
+        district_low = self._table_lows.get("district", np.zeros_like(district_table))
+        district_high = self._table_highs.get("district", np.zeros_like(district_table))
+        building_low = self._table_lows.get("building", np.zeros_like(building_table))
+        building_high = self._table_highs.get("building", np.zeros_like(building_table))
+        charger_low = self._table_lows.get("charger", np.zeros_like(charger_table))
+        charger_high = self._table_highs.get("charger", np.zeros_like(charger_table))
+        storage_low = self._table_lows.get("storage", np.zeros_like(storage_table))
+        storage_high = self._table_highs.get("storage", np.zeros_like(storage_table))
+        pv_low = self._table_lows.get("pv", np.zeros_like(pv_table))
+        pv_high = self._table_highs.get("pv", np.zeros_like(pv_table))
+        ev_low = self._table_lows.get("ev", np.zeros_like(ev_table))
+        ev_high = self._table_highs.get("ev", np.zeros_like(ev_table))
+        deferrable_low = self._table_lows.get("deferrable_appliance", np.zeros_like(deferrable_table))
+        deferrable_high = self._table_highs.get("deferrable_appliance", np.zeros_like(deferrable_table))
 
         charger_connected_ev = self._charger_ev_row_map(
             edges.get("charger_to_ev_connected", []),
@@ -231,8 +292,7 @@ class EntityContractAdapter:
         observation_names: List[List[str]] = []
         observation_spaces: List[spaces.Box] = []
         observation_origins: List[List[Tuple[str, str]]] = []
-
-        charger_feature_col = {name: idx for idx, name in enumerate(self._charger_features)}
+        collect_layout = len(self._cached_observation_names) != len(self._building_ids)
 
         for building_index, building_id in enumerate(self._building_ids):
             names: List[str] = []
@@ -244,9 +304,10 @@ class EntityContractAdapter:
             def add_feature(name: str, value: float, low: float, high: float, origin: Tuple[str, str]):
                 names.append(str(name))
                 values.append(self._safe_scalar(value, 0.0))
-                lows.append(self._safe_scalar(low, -1.0e6))
-                highs.append(self._safe_scalar(high, 1.0e6))
-                origins.append(origin)
+                if collect_layout:
+                    lows.append(self._safe_scalar(low, -1.0e6))
+                    highs.append(self._safe_scalar(high, 1.0e6))
+                    origins.append(origin)
 
             for col, feature in enumerate(self._district_features):
                 add_feature(
@@ -266,13 +327,13 @@ class EntityContractAdapter:
                     ("building", feature),
                 )
 
-            building_chargers = self._edge_targets(edges.get("building_to_charger", []), building_index)
-            building_storages = self._edge_targets(edges.get("building_to_storage", []), building_index)
-            building_pvs = self._edge_targets(edges.get("building_to_pv", []), building_index)
-            building_deferrables = self._edge_targets(
-                edges.get("building_to_deferrable_appliance", []),
-                building_index,
-            )
+            building_chargers = self._building_asset_rows.get("charger", [[] for _ in self._building_ids])[building_index]
+            building_storages = self._building_asset_rows.get("storage", [[] for _ in self._building_ids])[building_index]
+            building_pvs = self._building_asset_rows.get("pv", [[] for _ in self._building_ids])[building_index]
+            building_deferrables = self._building_asset_rows.get(
+                "deferrable_appliance",
+                [[] for _ in self._building_ids],
+            )[building_index]
 
             for row in building_storages:
                 storage_id = self._storage_ids[row] if row < len(self._storage_ids) else f"storage_{row}"
@@ -366,7 +427,7 @@ class EntityContractAdapter:
             if building_chargers:
                 first_row = building_chargers[0]
                 for legacy_name, source_feature in self._LEGACY_CHARGER_ALIASES.items():
-                    source_col = charger_feature_col.get(source_feature)
+                    source_col = self._charger_feature_col.get(source_feature)
                     if source_col is None:
                         continue
                     add_feature(
@@ -386,29 +447,47 @@ class EntityContractAdapter:
 
             if "minute" not in names and "minutes" in names:
                 minute_idx = names.index("minutes")
-                add_feature("minute", values[minute_idx], lows[minute_idx], highs[minute_idx], origins[minute_idx])
+                add_feature(
+                    "minute",
+                    values[minute_idx],
+                    lows[minute_idx] if collect_layout else 0.0,
+                    highs[minute_idx] if collect_layout else 59.0,
+                    origins[minute_idx] if collect_layout else ("district", "minutes"),
+                )
 
             if "solar_generation" not in names and "pv_power_kw" in names:
                 pv_idx = names.index("pv_power_kw")
-                add_feature("solar_generation", values[pv_idx], lows[pv_idx], highs[pv_idx], origins[pv_idx])
+                add_feature(
+                    "solar_generation",
+                    values[pv_idx],
+                    lows[pv_idx] if collect_layout else 0.0,
+                    highs[pv_idx] if collect_layout else 1.0,
+                    origins[pv_idx] if collect_layout else ("pv", "pv_power_kw"),
+            )
 
             obs_vector = np.asarray(values, dtype=np.float64)
-            low_vector = np.asarray(lows, dtype=np.float64)
-            high_vector = np.asarray(highs, dtype=np.float64)
 
             observations.append(obs_vector)
-            observation_names.append(names)
-            observation_spaces.append(
-                spaces.Box(
-                    low=low_vector.astype(np.float32),
-                    high=high_vector.astype(np.float32),
-                    dtype=np.float32,
+            if collect_layout:
+                low_vector = np.asarray(lows, dtype=np.float64)
+                high_vector = np.asarray(highs, dtype=np.float64)
+                observation_names.append(names)
+                observation_spaces.append(
+                    spaces.Box(
+                        low=low_vector.astype(np.float32),
+                        high=high_vector.astype(np.float32),
+                        dtype=np.float32,
+                    )
                 )
-            )
-            observation_origins.append(origins)
+                observation_origins.append(origins)
 
-        self._latest_observation_origins = observation_origins
-        return observations, observation_names, observation_spaces
+        if collect_layout:
+            self._cached_observation_names = observation_names
+            self._cached_observation_spaces = observation_spaces
+            self._cached_observation_origins = observation_origins
+
+        self._latest_observation_origins = self._cached_observation_origins
+        return observations, self._cached_observation_names, self._cached_observation_spaces
 
     def normalize_observation(
         self,
@@ -423,11 +502,31 @@ class EntityContractAdapter:
             return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
 
         if self.encoding_profile in {"maddpg_v1", "maddpg_v2_compact"}:
+            layout_cache = self._maddpg_encoded_layout_cache.get(agent_index)
+            cache_names = tuple(str(name) for name in observation_names)
+            if (
+                layout_cache is not None
+                and layout_cache.get("raw_names") == cache_names
+                and layout_cache.get("profile") == self.encoding_profile
+            ):
+                encoded, _ = self._encode_maddpg_v1(
+                    observation=values,
+                    observation_names=observation_names,
+                    observation_space=observation_space,
+                    collect_names=False,
+                )
+                keep_indices = layout_cache.get("keep_indices")
+                if keep_indices is not None:
+                    encoded = encoded[keep_indices]
+                return encoded
+
             encoded, encoded_names = self._encode_maddpg_v1(
                 observation=values,
                 observation_names=observation_names,
                 observation_space=observation_space,
+                collect_names=True,
             )
+            keep_indices = None
             if self.encoding_profile == "maddpg_v2_compact":
                 keep_indices = [
                     idx
@@ -436,9 +535,16 @@ class EntityContractAdapter:
                 ]
                 encoded = encoded[keep_indices]
                 encoded_names = [encoded_names[idx] for idx in keep_indices]
+                keep_indices = np.asarray(keep_indices, dtype=np.int64)
             while len(self._latest_encoded_observation_names) <= agent_index:
                 self._latest_encoded_observation_names.append([])
             self._latest_encoded_observation_names[agent_index] = encoded_names
+            self._maddpg_encoded_layout_cache[agent_index] = {
+                "raw_names": cache_names,
+                "profile": self.encoding_profile,
+                "encoded_names": encoded_names,
+                "keep_indices": keep_indices,
+            }
             return encoded
 
         low = np.asarray(observation_space.low, dtype=np.float64)
@@ -492,19 +598,12 @@ class EntityContractAdapter:
         observation: np.ndarray,
         observation_names: Sequence[str],
         observation_space: spaces.Box,
+        collect_names: bool = True,
     ) -> Tuple[np.ndarray, List[str]]:
         low = np.asarray(observation_space.low, dtype=np.float64)
         high = np.asarray(observation_space.high, dtype=np.float64)
         values_by_name = {
             str(name): self._safe_scalar(observation[index], 0.0)
-            for index, name in enumerate(observation_names)
-        }
-        low_by_name = {
-            str(name): self._safe_scalar(low[index], -1.0e6)
-            for index, name in enumerate(observation_names)
-        }
-        high_by_name = {
-            str(name): self._safe_scalar(high[index], 1.0e6)
             for index, name in enumerate(observation_names)
         }
 
@@ -513,7 +612,8 @@ class EntityContractAdapter:
         emitted_time_of_day = False
 
         def append(name: str, value: float) -> None:
-            encoded_names.append(name)
+            if collect_names:
+                encoded_names.append(name)
             encoded.append(float(value))
 
         for index, raw_name in enumerate(observation_names):
@@ -1372,8 +1472,9 @@ class EntityContractAdapter:
                 candidates.append(suffix)
 
         allowed = set(int(row) for row in allowed_rows)
+        row_by_id = self._charger_action_row_by_id or self._charger_row_by_id
         for charger_id in candidates:
-            row = self._charger_row_by_id.get(charger_id)
+            row = row_by_id.get(charger_id)
             if row is None:
                 continue
             if allowed and row not in allowed:
@@ -1455,8 +1556,9 @@ class EntityContractAdapter:
                 candidates.append(suffix)
 
         allowed = set(int(row) for row in allowed_rows)
+        row_by_id = self._deferrable_action_row_by_id or self._deferrable_row_by_id
         for appliance_id in candidates:
-            row = self._deferrable_row_by_id.get(appliance_id)
+            row = row_by_id.get(appliance_id)
             if row is None:
                 continue
             if allowed and row not in allowed:
@@ -1523,85 +1625,54 @@ class EntityContractAdapter:
 
         return None, None
 
-    def to_entity_actions(
+    def _entity_action_cache_key(self, action_names: Sequence[Sequence[str]]) -> Tuple[Any, ...]:
+        return (
+            tuple(self._building_action_ids),
+            tuple(self._charger_action_ids),
+            tuple(self._deferrable_action_ids),
+            tuple(self._building_action_features),
+            tuple(self._charger_action_features),
+            tuple(self._deferrable_action_features),
+            tuple(tuple(str(name) for name in names) for names in action_names),
+        )
+
+    def _build_entity_action_routes(
         self,
-        actions: Sequence[Sequence[float]],
         action_names: Sequence[Sequence[str]],
-    ) -> Mapping[str, Any]:
-        specs = self.env.entity_specs
-        action_specs = specs.get("actions", {})
-        building_ids = list(action_specs.get("building", {}).get("ids", []))
-        charger_ids = list(action_specs.get("charger", {}).get("ids", []))
-        deferrable_ids = list(action_specs.get("deferrable_appliance", {}).get("ids", []))
+    ) -> List[List[Tuple[int, str, int, int]]]:
+        charger_rows_by_building = self._charger_rows_by_building(self._charger_action_ids)
+        deferrable_rows_by_building = self._entity_rows_by_building(self._deferrable_action_ids)
 
-        self._building_action_features = list(action_specs.get("building", {}).get("features", []))
-        self._charger_action_features = list(action_specs.get("charger", {}).get("features", []))
-        self._deferrable_action_features = list(action_specs.get("deferrable_appliance", {}).get("features", []))
-        self._building_action_col_by_name = {
-            name: idx for idx, name in enumerate(self._building_action_features)
-        }
-        self._charger_action_col_by_name = {
-            name: idx for idx, name in enumerate(self._charger_action_features)
-        }
-        self._deferrable_action_col_by_name = {
-            name: idx for idx, name in enumerate(self._deferrable_action_features)
-        }
-        self._charger_row_by_id = {entity_id: row for row, entity_id in enumerate(charger_ids)}
-        self._deferrable_row_by_id = {entity_id: row for row, entity_id in enumerate(deferrable_ids)}
-        charger_rows_by_building = self._charger_rows_by_building(charger_ids)
-        deferrable_rows_by_building = self._entity_rows_by_building(deferrable_ids)
-
-        building_table = np.zeros(
-            (len(building_ids), len(self._building_action_features)),
-            dtype=np.float32,
-        )
-        charger_table = np.zeros(
-            (len(charger_ids), len(self._charger_action_features)),
-            dtype=np.float32,
-        )
-        deferrable_table = np.zeros(
-            (len(deferrable_ids), len(self._deferrable_action_features)),
-            dtype=np.float32,
-        )
-
-        for building_index, building_actions in enumerate(actions):
-            if building_index >= len(action_names) or building_index >= len(building_ids):
+        routes_by_building: List[List[Tuple[int, str, int, int]]] = []
+        for building_index, names in enumerate(action_names):
+            building_routes: List[Tuple[int, str, int, int]] = []
+            if building_index >= len(self._building_action_ids):
+                routes_by_building.append(building_routes)
                 continue
 
-            names = action_names[building_index]
-            building_name = building_ids[building_index]
+            building_name = self._building_action_ids[building_index]
             building_charger_rows = charger_rows_by_building.get(building_name, [])
             building_deferrable_rows = deferrable_rows_by_building.get(building_name, [])
 
             for position, action_name in enumerate(names):
-                value = 0.0
-                if position < len(building_actions):
-                    value = self._safe_scalar(building_actions[position], 0.0)
-
-                if action_name in self._building_action_col_by_name:
-                    col = self._building_action_col_by_name[action_name]
-                    building_table[building_index, col] = value
+                action_name_text = str(action_name)
+                if action_name_text in self._building_action_col_by_name:
+                    col = self._building_action_col_by_name[action_name_text]
+                    building_routes.append((position, "building", building_index, col))
                     continue
 
                 charger_row, charger_feature = self._resolve_charger_action_target(
-                    action_name=str(action_name),
+                    action_name=action_name_text,
                     building_name=building_name,
                     building_charger_rows=building_charger_rows,
                 )
                 if charger_row is None or charger_feature is None:
                     continue
-
                 charger_col = self._charger_action_col_by_name.get(charger_feature)
-                if charger_col is None:
-                    continue
-                charger_table[charger_row, charger_col] = value
-                continue
+                if charger_col is not None:
+                    building_routes.append((position, "charger", charger_row, charger_col))
 
             for position, action_name in enumerate(names):
-                value = 0.0
-                if position < len(building_actions):
-                    value = self._safe_scalar(building_actions[position], 0.0)
-
                 deferrable_row, deferrable_feature = self._resolve_deferrable_action_target(
                     action_name=str(action_name),
                     building_name=building_name,
@@ -1609,11 +1680,79 @@ class EntityContractAdapter:
                 )
                 if deferrable_row is None or deferrable_feature is None:
                     continue
-
                 deferrable_col = self._deferrable_action_col_by_name.get(deferrable_feature)
-                if deferrable_col is None:
-                    continue
-                deferrable_table[deferrable_row, deferrable_col] = value
+                if deferrable_col is not None:
+                    building_routes.append((position, "deferrable_appliance", deferrable_row, deferrable_col))
+
+            routes_by_building.append(building_routes)
+
+        return routes_by_building
+
+    def to_entity_actions(
+        self,
+        actions: Sequence[Sequence[float]],
+        action_names: Sequence[Sequence[str]],
+    ) -> Mapping[str, Any]:
+        if not self._building_action_ids and hasattr(self.env, "entity_specs"):
+            action_specs = self.env.entity_specs.get("actions", {})
+            self._building_action_features = list(action_specs.get("building", {}).get("features", []))
+            self._charger_action_features = list(action_specs.get("charger", {}).get("features", []))
+            self._deferrable_action_features = list(
+                action_specs.get("deferrable_appliance", {}).get("features", [])
+            )
+            self._building_action_ids = list(action_specs.get("building", {}).get("ids", []))
+            self._charger_action_ids = list(action_specs.get("charger", {}).get("ids", []))
+            self._deferrable_action_ids = list(action_specs.get("deferrable_appliance", {}).get("ids", []))
+            self._building_action_col_by_name = {
+                name: idx for idx, name in enumerate(self._building_action_features)
+            }
+            self._charger_action_col_by_name = {
+                name: idx for idx, name in enumerate(self._charger_action_features)
+            }
+            self._deferrable_action_col_by_name = {
+                name: idx for idx, name in enumerate(self._deferrable_action_features)
+            }
+            self._charger_action_row_by_id = {
+                entity_id: row for row, entity_id in enumerate(self._charger_action_ids)
+            }
+            self._deferrable_action_row_by_id = {
+                entity_id: row for row, entity_id in enumerate(self._deferrable_action_ids)
+            }
+
+        building_table = np.zeros(
+            (len(self._building_action_ids), len(self._building_action_features)),
+            dtype=np.float32,
+        )
+        charger_table = np.zeros(
+            (len(self._charger_action_ids), len(self._charger_action_features)),
+            dtype=np.float32,
+        )
+        deferrable_table = np.zeros(
+            (len(self._deferrable_action_ids), len(self._deferrable_action_features)),
+            dtype=np.float32,
+        )
+
+        cache_key = self._entity_action_cache_key(action_names)
+        if self._entity_action_layout_cache_key != cache_key:
+            self._entity_action_routes = self._build_entity_action_routes(action_names)
+            self._entity_action_layout_cache_key = cache_key
+
+        for building_index, building_actions in enumerate(actions):
+            if building_index >= len(self._entity_action_routes):
+                continue
+
+            action_values = np.asarray(building_actions, dtype=np.float32).reshape(-1)
+            if action_values.size > 0:
+                action_values = np.nan_to_num(action_values, nan=0.0, posinf=0.0, neginf=0.0)
+
+            for position, table_name, row, col in self._entity_action_routes[building_index]:
+                value = float(action_values[position]) if position < action_values.shape[0] else 0.0
+                if table_name == "building":
+                    building_table[row, col] = value
+                elif table_name == "charger":
+                    charger_table[row, col] = value
+                elif table_name == "deferrable_appliance":
+                    deferrable_table[row, col] = value
 
         return {
             "tables": {

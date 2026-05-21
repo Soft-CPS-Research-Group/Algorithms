@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -182,9 +183,13 @@ class Wrapper_CityLearn(RLC):
         self.update_step = False
         self.update_target_step = False
         self.global_step = 0
+        self._encoded_observation_cache_key: Optional[tuple[int, ...]] = None
+        self._encoded_observation_cache_value: Optional[List[np.ndarray]] = None
+        self._action_bounds_cache: Optional[List[tuple[np.ndarray, np.ndarray]]] = None
         training_cfg = config.get("training", {})
         checkpoint_cfg = config.get("checkpointing", {})
         tracking_cfg = config.get("tracking", {})
+        export_cfg = simulator_cfg.get("export", {}) or {}
         wrapper_reward_cfg = simulator_cfg.get("wrapper_reward", {})
 
         self.steps_between_training_updates = training_cfg.get("steps_between_training_updates", 1)
@@ -253,8 +258,42 @@ class Wrapper_CityLearn(RLC):
                 self.reward_diagnostics_detail,
             )
             self.reward_diagnostics_detail = "summary"
+        self.runtime_profiling_enabled = bool(tracking_cfg.get("runtime_profiling_enabled", False))
+        try:
+            self.runtime_profiling_interval = int(tracking_cfg.get("runtime_profiling_interval", 512) or 512)
+        except (TypeError, ValueError):
+            self.runtime_profiling_interval = 512
+        if self.runtime_profiling_interval < 1:
+            self.runtime_profiling_interval = 512
+        self.runtime_profiling_detail = str(
+            tracking_cfg.get("runtime_profiling_detail", "summary") or "summary"
+        ).strip().lower()
+        if self.runtime_profiling_detail not in {"summary", "detailed"}:
+            logger.warning(
+                "Unknown runtime_profiling_detail '{}'; falling back to 'summary'.",
+                self.runtime_profiling_detail,
+            )
+            self.runtime_profiling_detail = "summary"
         self._deferrable_wait_steps: Dict[tuple[int, str], int] = {}
         self.progress_tracker = ProgressTracker(progress_path)
+        self._configured_render_enabled = bool(getattr(self.env, "render_enabled", False))
+        self._configured_export_kpis_on_episode_end = bool(
+            export_cfg.get(
+                "export_kpis_on_episode_end",
+                getattr(self.env, "export_kpis_on_episode_end", False),
+            )
+        )
+        self._export_final_episode_only = bool(export_cfg.get("final_episode_only", False))
+        self._export_include_business_as_usual = bool(export_cfg.get("include_business_as_usual", True))
+        self._export_business_as_usual_timeseries = bool(
+            export_cfg.get("export_business_as_usual_timeseries", True)
+        )
+        self._export_kpi_round_decimals = export_cfg.get("kpi_round_decimals")
+        self._manual_kpi_export = self._configured_export_kpis_on_episode_end and (
+            not self._export_include_business_as_usual
+            or not self._export_business_as_usual_timeseries
+            or self._export_kpi_round_decimals is not None
+        )
 
         self.wrapper_reward_enabled = bool(wrapper_reward_cfg.get("enabled", False))
         self.wrapper_reward_profile = str(wrapper_reward_cfg.get("profile", "cost_limits_v1")).strip() or "cost_limits_v1"
@@ -351,22 +390,24 @@ class Wrapper_CityLearn(RLC):
         agent_observations, observation_names, observation_spaces = self._entity_adapter.to_agent_observations(observation_payload)
         self._entity_topology_version = self._entity_adapter.topology_version
 
-        self.observation_names = observation_names
-        self.observation_space = observation_spaces
-        self.action_space = list(getattr(self.env, "flat_action_space", []))
-        self.action_names = [list(names) for names in getattr(self.env, "action_names", [])]
-        if len(self.action_names) < len(self.action_space):
-            self.action_names.extend([[] for _ in range(len(self.action_space) - len(self.action_names))])
-        elif len(self.action_names) > len(self.action_space):
-            self.action_names = self.action_names[: len(self.action_space)]
         self.episode_time_steps = int(getattr(self.episode_tracker, "episode_time_steps", self.episode_time_steps))
-        self.encoders = self.set_encoders()
 
         topology_changed = (
             force_attach
             or previous_version is None
             or self._entity_topology_version != previous_version
         )
+        if topology_changed:
+            self.observation_names = observation_names
+            self.observation_space = observation_spaces
+            self.action_space = list(getattr(self.env, "flat_action_space", []))
+            self.action_names = [list(names) for names in getattr(self.env, "action_names", [])]
+            if len(self.action_names) < len(self.action_space):
+                self.action_names.extend([[] for _ in range(len(self.action_space) - len(self.action_names))])
+            elif len(self.action_names) > len(self.action_space):
+                self.action_names = self.action_names[: len(self.action_space)]
+            self.encoders = self.set_encoders()
+            self._action_bounds_cache = None
         fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
         if (
             topology_changed
@@ -470,6 +511,39 @@ class Wrapper_CityLearn(RLC):
             return None, None
         return step_total, episodes * step_total
 
+    def _configure_episode_exports(self, episode: int, episodes: int) -> bool:
+        """Enable costly simulator exports only for episodes requested by config."""
+
+        is_final_episode = episode >= episodes - 1
+        export_this_episode = self._configured_export_kpis_on_episode_end and (
+            not self._export_final_episode_only or is_final_episode
+        )
+        render_this_episode = self._configured_render_enabled and (
+            not self._export_final_episode_only or is_final_episode
+        )
+
+        if hasattr(self.env, "render_enabled"):
+            self.env.render_enabled = render_this_episode
+        if hasattr(self.env, "export_kpis_on_episode_end"):
+            self.env.export_kpis_on_episode_end = export_this_episode and not self._manual_kpi_export
+
+        return export_this_episode
+
+    def _export_episode_kpis_if_needed(self, export_this_episode: bool) -> None:
+        if not export_this_episode or not self._manual_kpi_export:
+            return
+        if not hasattr(self.env, "export_final_kpis"):
+            logger.warning("Simulator does not expose export_final_kpis(); skipping manual KPI export.")
+            return
+        if bool(getattr(self.env, "_final_kpis_exported", False)):
+            return
+
+        self.env.export_final_kpis(
+            include_business_as_usual=self._export_include_business_as_usual,
+            export_business_as_usual_timeseries=self._export_business_as_usual_timeseries,
+            kpi_round_decimals=self._export_kpi_round_decimals,
+        )
+
     def set_model(self, model: BaseAgent):
         """
         Set the model after initialization.
@@ -495,6 +569,7 @@ class Wrapper_CityLearn(RLC):
         for episode in range(episodes):
             start_episode_time = time.time()
             deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
+            export_this_episode = self._configure_episode_exports(episode, episodes)
             raw_observations, _ = self.env.reset()
             if self._entity_interface_mode:
                 observations = self._apply_entity_layout(raw_observations, force_attach=True)
@@ -510,6 +585,12 @@ class Wrapper_CityLearn(RLC):
             while not (terminated or truncated):
                 step_start_time = time.time()
                 self.global_step += 1
+                should_profile_step = (
+                    self.runtime_profiling_enabled
+                    and self.global_step % self.runtime_profiling_interval == 0
+                )
+                step_profile_start_time = time.perf_counter() if should_profile_step else 0.0
+                runtime_profile_metrics: Dict[str, float] = {}
                 logger.debug(
                     "Global step {} (episode {}, timestep {})",
                     self.global_step,
@@ -518,7 +599,13 @@ class Wrapper_CityLearn(RLC):
                 )
 
                 step_observations = [np.asarray(obs, dtype=np.float64) for obs in observations]
+                phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 actions = self.predict(observations, deterministic=deterministic)
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/predict_seconds"] = (
+                        time.perf_counter() - phase_start_time
+                    )
+                phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 actions = self._clip_actions(actions)
                 if not self._entity_interface_mode:
                     self.actions = actions
@@ -526,16 +613,36 @@ class Wrapper_CityLearn(RLC):
 
                 # Apply actions to CityLearn environment
                 env_actions = self._to_env_actions(actions)
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/action_prepare_seconds"] = (
+                        time.perf_counter() - phase_start_time
+                    )
+                phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 next_observations_raw, rewards, terminated, truncated, _ = self.env.step(env_actions)
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/env_step_seconds"] = (
+                        time.perf_counter() - phase_start_time
+                    )
+                phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 if self._entity_interface_mode:
                     next_observations = self._apply_entity_layout(next_observations_raw, force_attach=False)
                 else:
                     next_observations = next_observations_raw
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/observation_encoding_seconds"] = (
+                        time.perf_counter() - phase_start_time
+                    )
+                phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 rewards = self._shape_rewards(rewards, next_observations)
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/reward_shaping_seconds"] = (
+                        time.perf_counter() - phase_start_time
+                    )
                 rewards_list.append(rewards)
 
                 # Update model if not in deterministic mode
                 if not deterministic:
+                    phase_start_time = time.perf_counter() if should_profile_step else 0.0
                     self.update(
                         observations,
                         actions,
@@ -544,14 +651,26 @@ class Wrapper_CityLearn(RLC):
                         terminated=terminated,
                         truncated=truncated,
                     )
+                    if should_profile_step:
+                        runtime_profile_metrics["Runtime/agent_update_seconds"] = (
+                            time.perf_counter() - phase_start_time
+                        )
                     logger.debug("Model update executed at global step {}", self.global_step)
 
+                    phase_start_time = time.perf_counter() if should_profile_step else 0.0
                     self.checkpoint_manager.maybe_save(
                         agent=self.model,
                         step=self.global_step,
                         initial_exploration_done=self.initial_exploration_done,
                         update_step=self.update_step,
                     )
+                    if should_profile_step:
+                        runtime_profile_metrics["Runtime/checkpoint_seconds"] = (
+                            time.perf_counter() - phase_start_time
+                        )
+                elif should_profile_step:
+                    runtime_profile_metrics["Runtime/agent_update_seconds"] = 0.0
+                    runtime_profile_metrics["Runtime/checkpoint_seconds"] = 0.0
 
                 observations = [o for o in next_observations]
 
@@ -576,9 +695,14 @@ class Wrapper_CityLearn(RLC):
 
                 # Step duration calculation
                 step_duration = time.time() - step_start_time
-
-                should_log_step = self._should_log_step(self.global_step)
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/step_seconds"] = step_duration
+                    runtime_profile_metrics["Runtime/step_perf_seconds"] = (
+                        time.perf_counter() - step_profile_start_time
+                    )
+                should_log_step = self._should_log_step(self.global_step) or should_profile_step
                 if should_log_step:
+                    diagnostics_start_time = time.perf_counter()
                     metrics = {
                         f"Agent_{i}_Reward": reward for i, reward in enumerate(rewards)
                     }
@@ -589,11 +713,17 @@ class Wrapper_CityLearn(RLC):
                         metrics["GPU_PyTorch_Allocated_MB"] = gpu_mem_allocated
                         metrics["GPU_PyTorch_Reserved_MB"] = gpu_mem_reserved
                     metrics["Step_Duration"] = step_duration
+                    if should_profile_step:
+                        metrics.update(runtime_profile_metrics)
                     metrics.update(self._collect_model_status_metrics())
                     metrics.update(self._build_action_diagnostic_metrics(actions, step_observations))
                     metrics.update(self._build_reward_component_metrics())
                     if not mlflow.active_run():
                         metrics.update(self._consume_model_training_metrics())
+                    if should_profile_step:
+                        metrics["Runtime/diagnostics_build_seconds"] = (
+                            time.perf_counter() - diagnostics_start_time
+                        )
 
                     if mlflow.active_run():
                         mlflow.log_metrics(metrics, step=self.global_step)
@@ -629,6 +759,8 @@ class Wrapper_CityLearn(RLC):
                     )
 
                 time_step += 1
+
+            self._export_episode_kpis_if_needed(export_this_episode)
 
             if self.progress_updates_enabled and time_step > 0:
                 self.progress_tracker.update(
@@ -778,10 +910,7 @@ class Wrapper_CityLearn(RLC):
         if self.model is None:
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        if getattr(self.model, "use_raw_observations", False):
-            encoded_observations = [np.asarray(obs, dtype=np.float64) for obs in observations]
-        else:
-            encoded_observations = self.get_all_encoded_observations(observations)
+        encoded_observations = self._encode_observations_for_model(observations)
 
         observation_context_hook = getattr(self.model, "set_observation_context", None)
         if callable(observation_context_hook):
@@ -812,35 +941,52 @@ class Wrapper_CityLearn(RLC):
         if not isinstance(actions, list):
             raise ValueError("Model predicted actions must be provided as a list.")
 
+        action_bounds = self._get_action_bounds_cache()
         clipped_actions: List[List[float]] = []
-        for agent_idx, action_space in enumerate(self.action_space):
+        for agent_idx, (low, high) in enumerate(action_bounds):
             raw = actions[agent_idx] if agent_idx < len(actions) else []
             action_array = np.asarray(raw, dtype=np.float64).reshape(-1)
+            if low.shape[0] == 0 or high.shape[0] == 0:
+                clipped_actions.append(action_array.tolist())
+                continue
 
-            if hasattr(action_space, "low") and hasattr(action_space, "high"):
-                low = np.asarray(action_space.low, dtype=np.float64).reshape(-1)
-                high = np.asarray(action_space.high, dtype=np.float64).reshape(-1)
-                expected_dim = low.shape[0]
+            expected_dim = low.shape[0]
+            if action_array.shape[0] != expected_dim:
+                logger.warning(
+                    "Action dimension mismatch for agent {}: predicted={}, expected={}. "
+                    "Padding/truncating before clipping.",
+                    agent_idx,
+                    action_array.shape[0],
+                    expected_dim,
+                )
+                fixed = np.zeros(expected_dim, dtype=np.float64)
+                copy_dim = min(expected_dim, action_array.shape[0])
+                if copy_dim > 0:
+                    fixed[:copy_dim] = action_array[:copy_dim]
+                action_array = fixed
 
-                if action_array.shape[0] != expected_dim:
-                    logger.warning(
-                        "Action dimension mismatch for agent {}: predicted={}, expected={}. "
-                        "Padding/truncating before clipping.",
-                        agent_idx,
-                        action_array.shape[0],
-                        expected_dim,
-                    )
-                    fixed = np.zeros(expected_dim, dtype=np.float64)
-                    copy_dim = min(expected_dim, action_array.shape[0])
-                    if copy_dim > 0:
-                        fixed[:copy_dim] = action_array[:copy_dim]
-                    action_array = fixed
-
-                action_array = np.clip(action_array, low, high)
+            action_array = np.clip(action_array, low, high)
 
             clipped_actions.append(action_array.tolist())
 
         return clipped_actions
+
+    def _get_action_bounds_cache(self) -> List[tuple[np.ndarray, np.ndarray]]:
+        cached = getattr(self, "_action_bounds_cache", None)
+        if cached is not None and len(cached) == len(self.action_space):
+            return cached
+
+        bounds: List[tuple[np.ndarray, np.ndarray]] = []
+        for action_space in self.action_space:
+            if hasattr(action_space, "low") and hasattr(action_space, "high"):
+                low = np.asarray(action_space.low, dtype=np.float64).reshape(-1)
+                high = np.asarray(action_space.high, dtype=np.float64).reshape(-1)
+            else:
+                low = np.asarray([], dtype=np.float64)
+                high = np.asarray([], dtype=np.float64)
+            bounds.append((low, high))
+        self._action_bounds_cache = bounds
+        return bounds
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -869,6 +1015,11 @@ class Wrapper_CityLearn(RLC):
         return "electric_vehicle_storage" in raw or "ev_storage" in raw
 
     @staticmethod
+    def _charger_token_from_action_name(action_name: str) -> str | None:
+        match = re.search(r"charger_\d+_\d+", str(action_name or "").lower())
+        return match.group(0) if match else None
+
+    @staticmethod
     def _is_storage_action_name(action_name: str) -> bool:
         raw = str(action_name or "").lower()
         return "electrical_storage" in raw or raw in {"battery", "storage"}
@@ -885,6 +1036,31 @@ class Wrapper_CityLearn(RLC):
             np.full(action_count, -1.0, dtype=np.float64),
             np.full(action_count, 1.0, dtype=np.float64),
         )
+
+    def _ev_connected_for_action(
+        self,
+        *,
+        agent_index: int,
+        observation: np.ndarray,
+        action_name: str,
+    ) -> Optional[bool]:
+        charger_token = self._charger_token_from_action_name(action_name)
+        if not charger_token:
+            return None
+        names = (
+            [str(name).lower() for name in self.observation_names[agent_index]]
+            if agent_index < len(getattr(self, "observation_names", []))
+            else []
+        )
+        if not names:
+            return None
+        values = np.asarray(observation, dtype=np.float64).reshape(-1)
+        for obs_index, obs_name in enumerate(names[: values.shape[0]]):
+            if charger_token not in obs_name:
+                continue
+            if obs_name.endswith("::connected_state") or obs_name.endswith("__connected_state"):
+                return bool(values[obs_index] > 0.5)
+        return None
 
     def _build_action_diagnostic_metrics(
         self,
@@ -945,6 +1121,15 @@ class Wrapper_CityLearn(RLC):
                     category = "ev"
                 elif self._is_storage_action_name(action_name):
                     category = "storage"
+                ev_connected = (
+                    self._ev_connected_for_action(
+                        agent_index=agent_index,
+                        observation=observations[agent_index] if agent_index < len(observations) else np.array([]),
+                        action_name=action_name,
+                    )
+                    if category == "ev"
+                    else None
+                )
 
                 rows.append(
                     {
@@ -952,6 +1137,7 @@ class Wrapper_CityLearn(RLC):
                         "action_index": action_index,
                         "action_name": action_name,
                         "category": category,
+                        "ev_connected": ev_connected,
                         "value": float(value),
                         "low": action_low,
                         "high": action_high,
@@ -998,6 +1184,28 @@ class Wrapper_CityLearn(RLC):
                 metrics[f"Action/{category}_idle_fraction"] = float(
                     np.mean(np.abs(category_values) <= self.action_idle_tolerance)
                 )
+                if category == "ev":
+                    connected_rows = [row for row in category_rows if row.get("ev_connected") is True]
+                    disconnected_rows = [row for row in category_rows if row.get("ev_connected") is False]
+                    for prefix, subset_rows in (
+                        ("ev_connected", connected_rows),
+                        ("ev_disconnected", disconnected_rows),
+                    ):
+                        if not subset_rows:
+                            continue
+                        subset_values = np.asarray([row["value"] for row in subset_rows], dtype=np.float64)
+                        metrics[f"Action/{prefix}_count"] = float(subset_values.shape[0])
+                        metrics[f"Action/{prefix}_mean"] = float(np.mean(subset_values))
+                        metrics[f"Action/{prefix}_std"] = float(np.std(subset_values))
+                        metrics[f"Action/{prefix}_positive_fraction"] = float(
+                            np.mean(subset_values > self.action_idle_tolerance)
+                        )
+                        metrics[f"Action/{prefix}_negative_fraction"] = float(
+                            np.mean(subset_values < -self.action_idle_tolerance)
+                        )
+                        metrics[f"Action/{prefix}_idle_fraction"] = float(
+                            np.mean(np.abs(subset_values) <= self.action_idle_tolerance)
+                        )
             elif category == "deferrable":
                 thresholds = np.asarray([row["threshold"] for row in category_rows], dtype=np.float64)
                 metrics["Action/deferrable_on_fraction"] = float(np.mean(category_values > thresholds))
@@ -1280,7 +1488,7 @@ class Wrapper_CityLearn(RLC):
         if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
             self.update_step = True
         else:
-            self.update_step = self.time_step % self.steps_between_training_updates == 0
+            self.update_step = self.global_step % self.steps_between_training_updates == 0
         logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
 
         # Exploration phase ownership belongs to the algorithm.
@@ -1295,16 +1503,12 @@ class Wrapper_CityLearn(RLC):
         if not self.target_update_interval:
             self.update_target_step = False
         else:
-            self.update_target_step = self.time_step % self.target_update_interval == 0
+            self.update_target_step = self.global_step % self.target_update_interval == 0
         logger.debug(
             "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
-        if getattr(self.model, "use_raw_observations", False):
-            encoded_observations = [np.asarray(obs, dtype=np.float64) for obs in observations]
-            encoded_next_observations = [np.asarray(obs, dtype=np.float64) for obs in next_observations]
-        else:
-            encoded_observations = self.get_all_encoded_observations(observations)
-            encoded_next_observations = self.get_all_encoded_observations(next_observations)
+        encoded_observations = self._encode_observations_for_model(observations)
+        encoded_next_observations = self._encode_observations_for_model(next_observations)
 
         # Pass updated parameters to model.update()
         return self.model.update(observations = encoded_observations, actions= actions, rewards= reward,
@@ -1316,6 +1520,22 @@ class Wrapper_CityLearn(RLC):
 
     def _should_log_step(self, step: int) -> bool:
         return step % self.step_metric_interval == 0
+
+    def _encode_observations_for_model(self, observations: List[Any]) -> List[np.ndarray]:
+        if getattr(self.model, "use_raw_observations", False):
+            return [np.asarray(obs, dtype=np.float64) for obs in observations]
+
+        cache_key = tuple(id(obs) for obs in observations)
+        if (
+            getattr(self, "_encoded_observation_cache_key", None) == cache_key
+            and getattr(self, "_encoded_observation_cache_value", None) is not None
+        ):
+            return self._encoded_observation_cache_value
+
+        encoded_observations = self.get_all_encoded_observations(observations)
+        self._encoded_observation_cache_key = cache_key
+        self._encoded_observation_cache_value = encoded_observations
+        return encoded_observations
 
     def get_encoded_observations(self, index: int, observations: List[float]) -> np.ndarray:
         """Optimized encoding function using NumPy with proper type handling."""

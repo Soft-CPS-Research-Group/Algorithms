@@ -122,6 +122,7 @@ def test_wrapper_action_diagnostics_include_categories_and_deferrable_delay():
         "deferrable_appliance_washing_machine_1",
     ]]
     wrapper.observation_names = [[
+        "charger::Building_1/charger_1_1::connected_state",
         "deferrable_appliance::Building_1/washing_machine_1::pending",
         "deferrable_appliance::Building_1/washing_machine_1::can_start",
     ]]
@@ -135,12 +136,14 @@ def test_wrapper_action_diagnostics_include_categories_and_deferrable_delay():
             },
         )()
     ]
-    observations = [np.array([1.0, 1.0], dtype=np.float64)]
+    observations = [np.array([1.0, 1.0, 1.0], dtype=np.float64)]
 
     first = wrapper._build_action_diagnostic_metrics([[0.0, -0.2, 0.1]], observations)
     second = wrapper._build_action_diagnostic_metrics([[0.0, -0.2, 0.6]], observations)
 
     assert first["Action/ev_negative_fraction"] == 1.0
+    assert first["Action/ev_connected_count"] == 1.0
+    assert first["Action/ev_connected_negative_fraction"] == 1.0
     assert first["Action/storage_idle_fraction"] == 1.0
     assert first["Action/deferrable_off_fraction"] == 1.0
     assert second["Action/deferrable_on_fraction"] == 1.0

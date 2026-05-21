@@ -25,6 +25,28 @@ def test_phase6_scorecard_infers_learning_comparator_metadata():
     assert infer_track("remote_20260520_short_15s_original_happo_seed123.yaml") == "short"
 
 
+def test_phase6_scorecard_infers_metadata_from_simulation_session_when_config_missing():
+    scorecard = build_scorecard(
+        [
+            {
+                "job_id": "random",
+                "status": "finished",
+                "simulation_data_session": "remote_20260520_baseline_15s_random",
+                "community_cost_eur": "60.0",
+                "ev_min_acceptable_feasible_rate": "0.0",
+                "ev_within_tolerance_feasible_rate": "0.0",
+            }
+        ]
+    )
+
+    row = scorecard[0]
+
+    assert row["dataset"] == "15s"
+    assert row["track"] == "baseline"
+    assert row["policy"] == "Random"
+    assert row["decision"] == "reference"
+
+
 def test_phase6_scorecard_marks_learning_candidate_against_rbcsmart():
     rows = [
         {
@@ -51,6 +73,8 @@ def test_phase6_scorecard_marks_learning_candidate_against_rbcsmart():
     candidate = next(row for row in scorecard if row["job_id"] == "matd3")
 
     assert candidate["decision"] == "candidate_strong"
+    assert candidate["decision_bucket"] == "promote"
+    assert candidate["next_action"] == "promote_to_multiseed_full"
     assert candidate["cost_delta_to_rbcsmart_eur"] == -5.0
     assert candidate["cost_delta_to_rbcsmart_pct"] == -5.0
 
@@ -80,3 +104,5 @@ def test_phase6_scorecard_rejects_maddpg_when_ev_gate_fails():
     maddpg = next(row for row in scorecard if row["job_id"] == "maddpg")
 
     assert maddpg["decision"] == "reject_ev_service"
+    assert maddpg["decision_bucket"] == "reject"
+    assert "ev_service_below_gate" in maddpg["risk_flags"]

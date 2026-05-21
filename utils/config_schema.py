@@ -102,6 +102,19 @@ class TrackingConfig(BaseModel):
         default="summary",
         description="Reward component diagnostics detail level",
     )
+    runtime_profiling_enabled: bool = Field(
+        default=False,
+        description="Log coarse runtime timings for wrapper and agent phases",
+    )
+    runtime_profiling_interval: int = Field(
+        default=512,
+        ge=1,
+        description="Log runtime profiling metrics every N environment steps when enabled",
+    )
+    runtime_profiling_detail: Literal["summary", "detailed"] = Field(
+        default="summary",
+        description="Runtime profiling detail level",
+    )
 
 
 class CheckpointingConfig(BaseModel):
@@ -120,6 +133,10 @@ class CheckpointingConfig(BaseModel):
 class SimulatorExportConfig(BaseModel):
     mode: Literal["none", "during", "end"] = "none"
     export_kpis_on_episode_end: bool = False
+    final_episode_only: bool = False
+    include_business_as_usual: bool = True
+    export_business_as_usual_timeseries: bool = True
+    kpi_round_decimals: Optional[int] = Field(default=None, ge=0)
     session_name: Optional[str] = None
 
 

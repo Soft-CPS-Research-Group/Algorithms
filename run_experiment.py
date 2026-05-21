@@ -764,6 +764,11 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "status": "completed",
             "kpi_source": kpi_source,
             "export_kpis_on_episode_end": bool(export_cfg.get("export_kpis_on_episode_end", False)),
+            "export_final_episode_only": bool(export_cfg.get("final_episode_only", False)),
+            "export_include_business_as_usual": bool(export_cfg.get("include_business_as_usual", True)),
+            "export_business_as_usual_timeseries": bool(
+                export_cfg.get("export_business_as_usual_timeseries", True)
+            ),
             "simulation_data_dir": str(path_info["simulation_data_dir"]),
             "wrapper_reward_profile": wrapper_reward_metadata.get("profile"),
             "wrapper_reward_version": wrapper_reward_metadata.get("version"),

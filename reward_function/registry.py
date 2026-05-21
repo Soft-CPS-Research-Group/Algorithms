@@ -15,6 +15,10 @@ from reward_function.cost_hard_constraint_reward import (
     CostServiceCommunityFeasibleServiceRewardV45,
     CostServiceCommunityFeasiblePrecisionRewardV46,
     CostServiceCommunityFeasiblePrecisionRewardV47,
+    CostServiceCommunityDeadlineValueRewardV50,
+    CostServiceCommunityPeakDeadlineRewardV52,
+    CostServiceCommunityPrecisionValueRewardV51,
+    CostServiceCommunityStorageValueRewardV49,
     CostServiceCommunityServiceBandRewardV42,
     CostServiceCommunitySmoothServiceRewardV44,
     CostServiceCommunityStorageBandRewardV41,
@@ -37,6 +41,10 @@ REWARD_FUNCTION_MAP: Dict[str, Type[RewardFunction]] = {
     "CostServiceCommunityFeasibleServiceRewardV45": CostServiceCommunityFeasibleServiceRewardV45,
     "CostServiceCommunityFeasiblePrecisionRewardV46": CostServiceCommunityFeasiblePrecisionRewardV46,
     "CostServiceCommunityFeasiblePrecisionRewardV47": CostServiceCommunityFeasiblePrecisionRewardV47,
+    "CostServiceCommunityStorageValueRewardV49": CostServiceCommunityStorageValueRewardV49,
+    "CostServiceCommunityDeadlineValueRewardV50": CostServiceCommunityDeadlineValueRewardV50,
+    "CostServiceCommunityPrecisionValueRewardV51": CostServiceCommunityPrecisionValueRewardV51,
+    "CostServiceCommunityPeakDeadlineRewardV52": CostServiceCommunityPeakDeadlineRewardV52,
 }
 
 

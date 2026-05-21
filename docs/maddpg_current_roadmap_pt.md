@@ -1,6 +1,6 @@
 # Roadmap Atual RL/MARL
 
-Data: 2026-05-20.
+Data: 2026-05-21.
 
 Este e o documento vivo para orientar o trabalho daqui para a frente. O nome do
 ficheiro ainda menciona MADDPG porque esse foi o ponto de partida, mas o objetivo
@@ -41,7 +41,7 @@ algoritmo e treino.
 
 Base tecnica:
 
-- simulador: `softcpsrecsimulator==0.6.7`;
+- simulador: `softcpsrecsimulator==0.6.9`;
 - interface: `entity`;
 - topologia MADDPG: `static`;
 - datasets principais:
@@ -53,6 +53,12 @@ Base tecnica:
 - perfil principal de observacoes: `maddpg_v2_compact`;
 - candidato atual: `MADDPG V48`;
 - imagem remota atual: `sha-969d417`.
+- performance recente:
+  - replay compacto prealocado em NumPy/torch;
+  - rewards do repo declaram payload minimo de observacoes para o simulador;
+  - configs novas exportam KPIs/series so no episodio final quando aplicavel;
+  - BAU export fica desligado nas configs de treino/comparacao atuais;
+  - `step_many` existe no simulador 0.6.9, mas ainda fica em estudo antes de entrar no treino.
 
 O que ja esta solido:
 
@@ -64,9 +70,18 @@ O que ja esta solido:
   - `MAPPO`;
   - `HAPPO`;
 - reward com EV service, EV precision, custo, rede e bateria;
+- rewards exploratorias locais:
+  - `V49` para dar mais valor a storage/comunidade;
+  - `V50` para reforcar EV deadline;
+  - `V51` para testar precisao perto do SOC alvo;
+  - `V52` para reforcar objetivo comunitario/pico;
+  - `V55`/`V56` para testar BC warmup e policy finetune conservador;
 - teacher/warm-start/BC configuraveis;
+- BC warmup extra configuravel no actor;
 - replay ponderado por reward;
+- replay compacto prealocado para reduzir RAM em runs longas 15s;
 - logs de reward/action/training;
+- diagnostico de acoes EV condicionadas a EV ligado (`Action/ev_connected_*`);
 - CUDA local validado;
 - Deucalion/server integrados;
 - scorecard remoto preparado para `MADDPG`, `MATD3`, `MASAC`, `IPPO`, `MAPPO`
@@ -82,6 +97,7 @@ O que ainda nao esta provado:
 - se V2G ajuda ou dificulta aprendizagem;
 - se `multi_charger` quebra por escala de acoes/fases;
 - se storage cria ganho real ou apenas custo/throughput inutil;
+- se a melhoria de EV deadline deve vir mais de reward ou de teacher/BC;
 - se o critic atual chega ou se `MATD3` melhora;
 - se `MASAC` explora melhor que DDPG-style;
 - se um algoritmo on-policy como `MAPPO`/`IPPO`/`HAPPO` e mais estavel;
@@ -123,46 +139,84 @@ Regras de decisao:
 - nao aceitar storage se throughput/ciclos forem desproporcionados;
 - nao aceitar algoritmo novo se nao exportar ou nao encaixar em inference.
 
+## Reward Scout Local
+
+Foram testadas V49-V56 em smokes curtos e runs locais de 8/16 episodios para
+nao esperar pelas runs remotas.
+Detalhe em `docs/maddpg_phase6_reward_scout_pt.md`.
+
+Leitura curta:
+
+- `V48` passou a candidata local principal: no 2022/16 episodios e seeds
+  `123/456/789` bateu `RBCSmart` em custo, manteve
+  `ev_min_acceptable_feasible_rate=1.0` e reduziu o sinal de pico comunitario;
+- `V48` multi-seed local: custo medio 409.74 EUR,
+  `ev_within_tolerance_feasible_rate` medio 0.474 e pico comunitario reward
+  mean medio 0.444;
+- `V50`/`V52` cumprem minimo EV mas fazem over-service e pioram custo;
+- `V55`/`V56` mostram que BC extra/policy finetune podem baixar algum sinal de
+  pico, mas ainda degradam custo e EV precision nesta configuracao;
+- `V54` fica como diagnostico de clone/teacher, nao como melhor candidata.
+
+Proxima iteracao local deve evitar aumentar pesos de reward comunitaria sem
+preservar primeiro a politica EV. O caminho mais promissor e levar a V48 para
+runs remotas/longas, comparar contra datasets variantes, e so depois testar
+policy improvement muito conservador ou algoritmos alternativos.
+
 ## Runs Remotas Em Curso
 
 Imagem: `sha-969d417`.
 
-Grupos submetidos:
+Correcao importante, 2026-05-21:
 
-- `MADDPG V48` original V2G-capable em GPU:
-  - `15s seed123`;
-  - `2022 seed123`;
-- baselines full no Deucalion CPU:
+- os configs remotos `remote_20260520_*_2022_*` usavam apenas `0..1999`
+  horas, cerca de 83 dias, e nao devem ser tratados como resultados anuais;
+- os configs remotos `remote_20260520_*_15s_*` usavam um dia de 15 segundos
+  repetido por episodios, e nao devem ser tratados como prova final;
+- os jobs curtos ainda ativos foram parados/cancelados;
+- a matriz correta para o dataset 2022 original esta agora em
+  `configs/experiments/phase6_2022_full_year/`.
+
+Nova matriz 2022 anual submetida:
+
+- dataset: `citylearn_challenge_2022_phase_all_plus_evs_data_2026_05_20`;
+- janela: `simulation_start_time_step=0`,
+  `simulation_end_time_step=8759`, `episode_time_steps=8760`;
+- baselines anuais, 1 episodio:
   - `Random`;
   - `NormalNoBattery`;
   - `Normal`;
   - `RBCBasic`;
   - `RBCSmart`;
-- smokes e full variants no server:
-  - `no_v2g`;
-  - `multi_charger`.
+- `MADDPG V48`, 6 episodios anuais por seed:
+  - seed `123`;
+  - seed `456`;
+  - seed `789`.
 
 Registos locais:
 
+- `configs/experiments/phase6_2022_full_year/README.md`;
+- `runs/remote_configs/phase6_2022_full_year_2026_05_21/submitted_full_year_jobs_2026_05_21_sha969d417.csv`;
 - `runs/remote_configs/phase6_remote_2026_05_20/submitted_jobs_2026_05_20_sha969d417.csv`;
 - `runs/remote_configs/phase6_remote_2026_05_20/submitted_cpu_jobs_2026_05_20_sha969d417.csv`;
 - `runs/remote_configs/phase6_remote_2026_05_20/submitted_server_variant_full_jobs_2026_05_20_sha969d417.csv`.
 
-Quando terminarem, recolher:
+Quando terminarem, recolher e gerar scorecards primeiro da matriz anual 2022:
 
 ```bash
-.venv/bin/python scripts/collect_remote_results.py \
+.venv/bin/python scripts/run_phase6_remote_analysis.py \
+  --jobs-file runs/remote_configs/phase6_2022_full_year_2026_05_21/submitted_full_year_jobs_2026_05_21_sha969d417.csv \
+  --output-dir runs/remote_results/phase6_2022_full_year_sha969d417
+```
+
+Os ficheiros antigos de 2026-05-20 podem continuar a servir para diagnostico,
+mas nao para conclusao principal:
+
+```bash
+.venv/bin/python scripts/run_phase6_remote_analysis.py \
   --jobs-file runs/remote_configs/phase6_remote_2026_05_20/submitted_jobs_2026_05_20_sha969d417.csv \
   --jobs-file runs/remote_configs/phase6_remote_2026_05_20/submitted_cpu_jobs_2026_05_20_sha969d417.csv \
   --jobs-file runs/remote_configs/phase6_remote_2026_05_20/submitted_server_variant_full_jobs_2026_05_20_sha969d417.csv \
-  --output-dir runs/remote_results/phase6j_sha969d417
-```
-
-Depois gerar scorecard:
-
-```bash
-.venv/bin/python scripts/build_phase6_remote_scorecard.py \
-  --summary-csv runs/remote_results/phase6j_sha969d417/summary.csv \
   --output-dir runs/remote_results/phase6j_sha969d417
 ```
 
@@ -170,7 +224,24 @@ Ficheiros a ler:
 
 - `runs/remote_results/phase6j_sha969d417/scorecard.md`;
 - `runs/remote_results/phase6j_sha969d417/scorecard.csv`;
+- `runs/remote_results/phase6j_sha969d417/building_scorecard.md`;
+- `runs/remote_results/phase6j_sha969d417/building_scorecard.csv`;
 - logs dos jobs marcados como `reject_*`, `not_finished` ou `pending`.
+
+Performance/tempo de execucao:
+
+- auditoria atual: `docs/phase6_runtime_performance_audit_pt.md`;
+- estrategia de escala para 15s:
+  `docs/phase6_15s_training_scale_strategy_pt.md`;
+- auditoria de degradacao/memoria 15s:
+  `docs/phase6_15s_runtime_degradation_pt.md`;
+- leitura atual: tempo por step ficou estavel numa run local de 1 dia 15s; o
+  risco de memoria do replay foi mitigado com replay compacto, embora
+  actor/critic e o numero total de steps continuem a dominar runtime;
+- regra pratica: baselines 2022 full-year custam minutos; MADDPG 2022
+  full-year em GPU custa cerca de 6h por seed;
+- antes de submeter mais long-runs, resolver/mitigar falhas `stale_status` no
+  worker/orchestrator.
 
 ## Fase 6J - Ler Evidencia Atual
 
@@ -189,6 +260,8 @@ Perguntas:
 Output esperado:
 
 - tabela por dataset/variant/policy/seed;
+- tabela por building para localizar falhas de EV, fases, bateria, solar e
+  deferrables;
 - decisao `promote`, `iterate_maddpg`, `switch_to_matd3`, `test_mappo`,
   `test_masac`, `fix_data_or_baseline`;
 - lista curta de bugs/estranhezas a auditar.
@@ -488,6 +561,7 @@ Documentos atuais de decisao:
 
 - `docs/maddpg_current_roadmap_pt.md`;
 - `docs/maddpg_phase6j6k_remote_decision_pt.md`;
+- `docs/phase6_remote_analysis_pipeline_pt.md`;
 - `docs/marl_algorithm_comparators_pt.md`.
 - `docs/rl_marl_algorithm_matrix_pt.md`.
 

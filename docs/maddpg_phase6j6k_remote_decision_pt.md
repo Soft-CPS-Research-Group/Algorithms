@@ -26,10 +26,10 @@ Grupos:
 
 ## Recolha
 
-Quando as runs acabarem:
+Quando as runs acabarem, usar o pipeline unico:
 
 ```bash
-.venv/bin/python scripts/collect_remote_results.py \
+.venv/bin/python scripts/run_phase6_remote_analysis.py \
   --jobs-file runs/remote_configs/phase6_remote_2026_05_20/submitted_jobs_2026_05_20_sha969d417.csv \
   --jobs-file runs/remote_configs/phase6_remote_2026_05_20/submitted_cpu_jobs_2026_05_20_sha969d417.csv \
   --jobs-file runs/remote_configs/phase6_remote_2026_05_20/submitted_server_variant_full_jobs_2026_05_20_sha969d417.csv \
@@ -45,18 +45,12 @@ Isto escreve:
 
 ## Scorecard
 
-Depois da recolha:
-
-```bash
-.venv/bin/python scripts/build_phase6_remote_scorecard.py \
-  --summary-csv runs/remote_results/phase6j_sha969d417/summary.csv \
-  --output-dir runs/remote_results/phase6j_sha969d417
-```
-
 Outputs:
 
 - `scorecard.csv`;
-- `scorecard.md`.
+- `scorecard.md`;
+- `building_scorecard.csv`;
+- `building_scorecard.md`.
 
 O scorecard infere:
 
@@ -72,6 +66,9 @@ Tambem calcula, quando o baseline existir:
 - `cost_delta_to_rbcsmart_eur`;
 - `cost_delta_to_rbcsmart_pct`;
 - `ev_within_tolerance_delta_to_rbcsmart`.
+
+O scorecard por building mostra onde aparecem as falhas, com foco em EV
+departures, fases/headroom, bateria, solar, deferrables e `Building_15`.
 
 ## Gates de Decisao
 

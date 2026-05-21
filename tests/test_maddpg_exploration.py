@@ -323,6 +323,55 @@ def test_actor_behavior_cloning_effective_weight_decays_after_start_step():
     assert agent._actor_behavior_cloning_effective_weight(40) == pytest.approx(0.01)
 
 
+def test_actor_behavior_cloning_extra_updates_respect_training_window():
+    agent = _build_agent_for_exploration()
+    agent.actor_behavior_cloning_extra_updates = 2
+    agent.actor_behavior_cloning_extra_update_start_step = 10
+    agent.actor_behavior_cloning_extra_update_end_step = 20
+
+    assert agent._actor_behavior_cloning_extra_updates_for_step(9, 1.0) == 0
+    assert agent._actor_behavior_cloning_extra_updates_for_step(10, 1.0) == 2
+    assert agent._actor_behavior_cloning_extra_updates_for_step(20, 1.0) == 2
+    assert agent._actor_behavior_cloning_extra_updates_for_step(21, 1.0) == 0
+    assert agent._actor_behavior_cloning_extra_updates_for_step(10, 0.0) == 0
+
+
+def test_actor_behavior_cloning_extra_updates_move_actor_toward_teacher_action():
+    agent = _build_agent_for_exploration()
+    agent.num_agents = 1
+    agent.device = torch.device("cpu")
+    agent.use_amp = False
+    agent.scaler = torch.amp.GradScaler(enabled=False)
+    agent.action_names = [["electric_vehicle_storage_charger_1"]]
+    agent.action_low = [np.array([-1.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0], dtype=np.float32)]
+    agent.actor_behavior_cloning_weight = 1.0
+    agent.actor_ev_behavior_cloning_multiplier = 1.0
+    agent.actor_storage_behavior_cloning_multiplier = 1.0
+    actor = torch.nn.Linear(1, 1)
+    torch.nn.init.zeros_(actor.weight)
+    torch.nn.init.zeros_(actor.bias)
+    optimizer = torch.optim.SGD(actor.parameters(), lr=0.20)
+    observations = torch.ones((4, 1), dtype=torch.float32)
+    behavior_actions = torch.ones((4, 1), dtype=torch.float32)
+
+    before = agent._scale_action_tensor(0, actor(observations)).mean().item()
+    losses, grad_norms = agent._run_actor_behavior_cloning_extra_updates(
+        agent_num=0,
+        actor=actor,
+        actor_optimizer=optimizer,
+        observations=observations,
+        behavior_actions=behavior_actions,
+        behavior_cloning_weight=1.0,
+        extra_updates=2,
+    )
+    after = agent._scale_action_tensor(0, actor(observations)).mean().item()
+
+    assert len(losses) == 2
+    assert len(grad_norms) == 2
+    assert after > before
+
+
 def test_actor_policy_loss_effective_weight_can_ramp_after_start_step():
     agent = _build_agent_for_exploration()
     agent.actor_policy_loss_weight = 1.0

@@ -10,9 +10,13 @@ from reward_function.cost_hard_constraint_reward import (
     CostServiceCommunityFeasibleServiceRewardV45,
     CostServiceCommunityFeasiblePrecisionRewardV46,
     CostServiceCommunityFeasiblePrecisionRewardV47,
+    CostServiceCommunityDeadlineValueRewardV50,
+    CostServiceCommunityPeakDeadlineRewardV52,
+    CostServiceCommunityPrecisionValueRewardV51,
     CostServiceCommunityServiceBandRewardV42,
     CostServiceCommunitySmoothServiceRewardV44,
     CostServiceCommunityStorageBandRewardV41,
+    CostServiceCommunityStorageValueRewardV49,
     CostServiceGuardRewardV2,
 )
 from reward_function.cost_minimization_reward import CostMinimizationReward
@@ -43,6 +47,10 @@ def test_named_cost_service_reward_profiles_set_default_weights():
     feasible_service = CostServiceCommunityFeasibleServiceRewardV45(env_metadata={"central_agent": False})
     feasible_precision = CostServiceCommunityFeasiblePrecisionRewardV46(env_metadata={"central_agent": False})
     feasible_precision_guard = CostServiceCommunityFeasiblePrecisionRewardV47(env_metadata={"central_agent": False})
+    storage_value = CostServiceCommunityStorageValueRewardV49(env_metadata={"central_agent": False})
+    deadline_value = CostServiceCommunityDeadlineValueRewardV50(env_metadata={"central_agent": False})
+    precision_value = CostServiceCommunityPrecisionValueRewardV51(env_metadata={"central_agent": False})
+    peak_deadline = CostServiceCommunityPeakDeadlineRewardV52(env_metadata={"central_agent": False})
 
     assert guard.ev_departure_window_hours == pytest.approx(4.0)
     assert guard.ev_v2g_service_penalty == pytest.approx(200.0)
@@ -79,6 +87,38 @@ def test_named_cost_service_reward_profiles_set_default_weights():
     assert feasible_precision_guard.ev_over_service_tolerance == pytest.approx(0.01)
     assert feasible_precision_guard.ev_over_service_penalty == pytest.approx(760.0)
     assert feasible_precision_guard.ev_schedule_deficit_cap_soc == pytest.approx(0.08)
+    assert storage_value.community_settlement_cost_weight == pytest.approx(1.15)
+    assert storage_value.community_peak_import_penalty == pytest.approx(0.0010)
+    assert storage_value.battery_throughput_penalty == pytest.approx(0.003)
+    assert storage_value.ev_v2g_service_penalty == pytest.approx(700.0)
+    assert deadline_value.ev_departure_window_hours == pytest.approx(6.0)
+    assert deadline_value.ev_schedule_deficit_penalty == pytest.approx(820.0)
+    assert deadline_value.ev_schedule_deficit_exponent == pytest.approx(1.5)
+    assert deadline_value.ev_schedule_deficit_cap_soc == pytest.approx(0.10)
+    assert deadline_value.ev_departure_missed_penalty == pytest.approx(3000.0)
+    assert precision_value.community_settlement_cost_weight == pytest.approx(1.08)
+    assert precision_value.ev_schedule_deficit_penalty == pytest.approx(760.0)
+    assert precision_value.ev_schedule_deficit_cap_soc == pytest.approx(0.08)
+    assert precision_value.ev_over_service_tolerance == pytest.approx(0.03)
+    assert precision_value.ev_over_service_penalty == pytest.approx(1200.0)
+    assert precision_value.battery_throughput_penalty == pytest.approx(0.004)
+    assert peak_deadline.community_settlement_cost_weight == pytest.approx(1.12)
+    assert peak_deadline.community_peak_import_penalty == pytest.approx(0.0014)
+    assert peak_deadline.community_export_penalty == pytest.approx(0.00035)
+    assert peak_deadline.ev_schedule_deficit_penalty == pytest.approx(820.0)
+    assert peak_deadline.ev_over_service_tolerance == pytest.approx(0.035)
+    assert peak_deadline.ev_over_service_penalty == pytest.approx(720.0)
+    assert peak_deadline.battery_throughput_penalty == pytest.approx(0.0035)
+
+
+def test_cost_hard_constraint_reward_declares_minimal_observation_payload():
+    required = set(CostHardConstraintReward.required_observation_names)
+
+    assert "net_electricity_consumption" in required
+    assert "electricity_pricing" in required
+    assert "electric_vehicles_chargers_dict" in required
+    assert "deferrable_appliances_dict" in required
+    assert "charging_building_headroom_kw" in required
 
 
 def test_battery_value_reward_does_not_penalize_empty_idle_storage_by_default():

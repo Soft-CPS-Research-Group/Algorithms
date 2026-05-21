@@ -1,13 +1,15 @@
 import random
-from collections import deque
 
 import numpy as np
 import torch
 
 
+_PIN_MEMORY_AVAILABLE = torch.cuda.is_available()
+
+
 def _maybe_pin_memory(tensor: torch.Tensor) -> torch.Tensor:
     """Pin memory only when CUDA is available in the current runtime."""
-    if torch.cuda.is_available():
+    if _PIN_MEMORY_AVAILABLE:
         return tensor.pin_memory()
     return tensor
 
@@ -26,8 +28,20 @@ class MultiAgentReplayBuffer:
         self.capacity = capacity
         self.num_agents = num_agents
         self.batch_size = batch_size
-        # Store joint transitions so sampling preserves alignment across agents.
-        self.buffer = deque(maxlen=capacity)
+        # Store joint transitions in compact preallocated arrays. This avoids
+        # keeping millions of tiny Tensor/list objects alive in long 15s runs.
+        self.position = 0
+        self.size = 0
+        self._last_insert_index = -1
+        self._state_dims: list[int] = []
+        self._action_dims: list[int] = []
+        self._behavior_action_dims: list[int] = []
+        self._states: list[np.ndarray] | None = None
+        self._actions: list[np.ndarray] | None = None
+        self._behavior_actions: list[np.ndarray] | None = None
+        self._next_states: list[np.ndarray] | None = None
+        self._rewards: np.ndarray | None = None
+        self._dones: np.ndarray | None = None
 
     def push(
         self,
@@ -55,42 +69,108 @@ class MultiAgentReplayBuffer:
                 Weighted replay implementations can use it as an external
                 event-priority signal.
         """
-        # Keep transitions on pageable CPU memory and pin only sampled batches.
-        # This avoids long-lived pinned allocations that can hurt host memory performance.
         if behavior_actions is None:
             behavior_actions = actions
-        state_tensors = [
-            torch.tensor(states[agent_idx], dtype=torch.float32)
-            for agent_idx in range(self.num_agents)
-        ]
-        action_tensors = [
-            torch.tensor(actions[agent_idx], dtype=torch.float32)
-            for agent_idx in range(self.num_agents)
-        ]
-        behavior_action_tensors = [
-            torch.tensor(behavior_actions[agent_idx], dtype=torch.float32)
-            for agent_idx in range(self.num_agents)
-        ]
-        reward_tensors = [
-            torch.tensor(rewards[agent_idx], dtype=torch.float32).unsqueeze(0)
-            for agent_idx in range(self.num_agents)
-        ]
-        next_state_tensors = [
-            torch.tensor(next_states[agent_idx], dtype=torch.float32)
-            for agent_idx in range(self.num_agents)
-        ]
-        done_tensor = torch.tensor(float(done), dtype=torch.float32).unsqueeze(0)
 
-        self.buffer.append(
-            (
-                state_tensors,
-                action_tensors,
-                reward_tensors,
-                next_state_tensors,
-                done_tensor,
-                behavior_action_tensors,
+        self._ensure_storage(states, actions, next_states, behavior_actions)
+        insert_index = self.position
+
+        assert self._states is not None
+        assert self._actions is not None
+        assert self._behavior_actions is not None
+        assert self._next_states is not None
+        assert self._rewards is not None
+        assert self._dones is not None
+
+        for agent_idx in range(self.num_agents):
+            self._states[agent_idx][insert_index] = self._coerce_vector(
+                states[agent_idx],
+                self._state_dims[agent_idx],
+                label=f"state[{agent_idx}]",
             )
-        )
+            self._actions[agent_idx][insert_index] = self._coerce_vector(
+                actions[agent_idx],
+                self._action_dims[agent_idx],
+                label=f"action[{agent_idx}]",
+            )
+            self._behavior_actions[agent_idx][insert_index] = self._coerce_vector(
+                behavior_actions[agent_idx],
+                self._behavior_action_dims[agent_idx],
+                label=f"behavior_action[{agent_idx}]",
+            )
+            self._next_states[agent_idx][insert_index] = self._coerce_vector(
+                next_states[agent_idx],
+                self._state_dims[agent_idx],
+                label=f"next_state[{agent_idx}]",
+            )
+            reward_value = rewards[agent_idx] if agent_idx < len(rewards) else 0.0
+            self._rewards[insert_index, agent_idx, 0] = self._safe_float32(reward_value)
+        self._dones[insert_index, 0] = 1.0 if bool(done) else 0.0
+
+        self.position = (insert_index + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+        self._last_insert_index = insert_index
+
+    def _ensure_storage(self, states, actions, next_states, behavior_actions) -> None:
+        if self._states is not None:
+            return
+
+        self._state_dims = [
+            int(np.asarray(states[agent_idx], dtype=np.float32).reshape(-1).shape[0])
+            for agent_idx in range(self.num_agents)
+        ]
+        next_state_dims = [
+            int(np.asarray(next_states[agent_idx], dtype=np.float32).reshape(-1).shape[0])
+            for agent_idx in range(self.num_agents)
+        ]
+        self._action_dims = [
+            int(np.asarray(actions[agent_idx], dtype=np.float32).reshape(-1).shape[0])
+            for agent_idx in range(self.num_agents)
+        ]
+        self._behavior_action_dims = [
+            int(np.asarray(behavior_actions[agent_idx], dtype=np.float32).reshape(-1).shape[0])
+            for agent_idx in range(self.num_agents)
+        ]
+        if next_state_dims != self._state_dims:
+            raise ValueError("Replay buffer next_state dimensions must match state dimensions.")
+
+        self._states = [
+            np.zeros((self.capacity, dim), dtype=np.float32)
+            for dim in self._state_dims
+        ]
+        self._actions = [
+            np.zeros((self.capacity, dim), dtype=np.float32)
+            for dim in self._action_dims
+        ]
+        self._behavior_actions = [
+            np.zeros((self.capacity, dim), dtype=np.float32)
+            for dim in self._behavior_action_dims
+        ]
+        self._next_states = [
+            np.zeros((self.capacity, dim), dtype=np.float32)
+            for dim in self._state_dims
+        ]
+        self._rewards = np.zeros((self.capacity, self.num_agents, 1), dtype=np.float32)
+        self._dones = np.zeros((self.capacity, 1), dtype=np.float32)
+
+    @staticmethod
+    def _safe_float32(value) -> np.float32:
+        try:
+            parsed = float(np.asarray(value).reshape(-1)[0])
+        except (TypeError, ValueError, IndexError):
+            parsed = 0.0
+        if not np.isfinite(parsed):
+            parsed = 0.0
+        return np.float32(parsed)
+
+    @staticmethod
+    def _coerce_vector(value, expected_dim: int, *, label: str) -> np.ndarray:
+        array = np.asarray(value, dtype=np.float32).reshape(-1)
+        if array.shape[0] != expected_dim:
+            raise ValueError(
+                f"Replay buffer {label} dimension changed from {expected_dim} to {array.shape[0]}."
+            )
+        return np.nan_to_num(array, nan=0.0, posinf=0.0, neginf=0.0)
 
     def sample(self):
         """
@@ -102,8 +182,8 @@ class MultiAgentReplayBuffer:
         if len(self) < self.batch_size:
             raise ValueError("Not enough samples in the buffer to sample a batch.")
 
-        batch = random.sample(self.buffer, self.batch_size)
-        return self._build_sample(batch, include_behavior_actions=False)
+        indices = np.asarray(random.sample(range(self.size), self.batch_size), dtype=np.int64)
+        return self._build_sample(indices, include_behavior_actions=False)
 
     def sample_with_behavior_actions(self):
         """
@@ -116,48 +196,47 @@ class MultiAgentReplayBuffer:
         if len(self) < self.batch_size:
             raise ValueError("Not enough samples in the buffer to sample a batch.")
 
-        batch = random.sample(self.buffer, self.batch_size)
-        return self._build_sample(batch, include_behavior_actions=True)
+        indices = np.asarray(random.sample(range(self.size), self.batch_size), dtype=np.int64)
+        return self._build_sample(indices, include_behavior_actions=True)
 
-    def _build_sample(self, batch, *, include_behavior_actions: bool):
-        unpacked = [self._unpack_transition(experience) for experience in batch]
-        (
-            states_batch,
-            actions_batch,
-            rewards_batch,
-            next_states_batch,
-            dones_batch,
-            behavior_actions_batch,
-        ) = zip(*unpacked)
+    def _build_sample(self, indices: np.ndarray, *, include_behavior_actions: bool):
+        if self._states is None or self._actions is None or self._next_states is None:
+            raise ValueError("Replay buffer storage is not initialized.")
+        if self._rewards is None or self._dones is None or self._behavior_actions is None:
+            raise ValueError("Replay buffer storage is not initialized.")
 
         states = [
-            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in states_batch]))
-            for agent_idx in range(self.num_agents)
+            self._tensor_from_array(storage[indices])
+            for storage in self._states
         ]
         actions = [
-            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in actions_batch]))
-            for agent_idx in range(self.num_agents)
+            self._tensor_from_array(storage[indices])
+            for storage in self._actions
         ]
         rewards = [
-            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in rewards_batch]))
+            self._tensor_from_array(self._rewards[indices, agent_idx, :])
             for agent_idx in range(self.num_agents)
         ]
         next_states = [
-            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in next_states_batch]))
-            for agent_idx in range(self.num_agents)
+            self._tensor_from_array(storage[indices])
+            for storage in self._next_states
         ]
         behavior_actions = [
-            _maybe_pin_memory(torch.stack([transition[agent_idx] for transition in behavior_actions_batch]))
-            for agent_idx in range(self.num_agents)
+            self._tensor_from_array(storage[indices])
+            for storage in self._behavior_actions
         ]
 
         # Keep historical shape: [num_agents, batch_size, 1].
-        done_tensor = _maybe_pin_memory(torch.stack(dones_batch))
+        done_tensor = self._tensor_from_array(self._dones[indices])
         done_tensor = done_tensor.unsqueeze(0).expand(self.num_agents, -1, -1)
 
         if include_behavior_actions:
             return states, actions, rewards, next_states, done_tensor, behavior_actions
         return states, actions, rewards, next_states, done_tensor
+
+    @staticmethod
+    def _tensor_from_array(array: np.ndarray) -> torch.Tensor:
+        return _maybe_pin_memory(torch.from_numpy(np.ascontiguousarray(array, dtype=np.float32)))
 
     @staticmethod
     def _unpack_transition(experience):
@@ -170,21 +249,63 @@ class MultiAgentReplayBuffer:
 
     def get_state(self):
         """Return a serialisable snapshot of the replay buffer."""
+        if self._states is None:
+            return {
+                "format": "joint_transitions_compact_v1",
+                "position": self.position,
+                "size": self.size,
+                "state_dims": self._state_dims,
+                "action_dims": self._action_dims,
+                "behavior_action_dims": self._behavior_action_dims,
+                "states": [],
+                "actions": [],
+                "behavior_actions": [],
+                "next_states": [],
+                "rewards": np.zeros((0, self.num_agents, 1), dtype=np.float32),
+                "dones": np.zeros((0, 1), dtype=np.float32),
+            }
+
+        active = slice(0, self.size)
         return {
-            "format": "joint_transitions_v3",
-            "buffer": list(self.buffer),
+            "format": "joint_transitions_compact_v1",
+            "position": self.position,
+            "size": self.size,
+            "state_dims": list(self._state_dims),
+            "action_dims": list(self._action_dims),
+            "behavior_action_dims": list(self._behavior_action_dims),
+            "states": [array[active].copy() for array in self._states],
+            "actions": [array[active].copy() for array in self._actions],
+            "behavior_actions": [array[active].copy() for array in self._behavior_actions],
+            "next_states": [array[active].copy() for array in self._next_states],
+            "rewards": self._rewards[active].copy(),
+            "dones": self._dones[active].copy(),
         }
 
     def set_state(self, state):
         """Restore buffer contents from :meth:`get_state`."""
         if state is None:
             return
-        self.buffer = deque(maxlen=self.capacity)
+        self._reset_storage()
+
+        if isinstance(state, dict) and state.get("format") == "joint_transitions_compact_v1":
+            self._set_compact_state(state)
+            return
+
+        # Backward compatibility for older compact snapshots that may carry a
+        # newer format name but the same arrays.
+        if isinstance(state, dict) and {"states", "actions", "next_states", "rewards", "dones"} <= set(state):
+            self._set_compact_state(state)
+            return
+
+        # Backward compatibility for older checkpoints where transitions were a
+        # list of tensors.
+        self.position = 0
 
         if isinstance(state, dict) and "buffer" in state:
-            experiences = state["buffer"]
+            experiences = list(state["buffer"])[-self.capacity :]
             for experience in experiences:
-                self.buffer.append(experience)
+                self._push_legacy_transition(experience)
+            self.position = int(state.get("position", len(self) % self.capacity)) % self.capacity
             return
 
         # Backward compatibility for older checkpoints where each agent had its own deque.
@@ -198,19 +319,99 @@ class MultiAgentReplayBuffer:
                 rewards = [entry[2] for entry in per_agent]
                 next_states = [entry[3] for entry in per_agent]
                 done = per_agent[0][4]
-                self.buffer.append((states, actions, rewards, next_states, done, actions))
+                self.push(states, actions, rewards, next_states, done, behavior_actions=actions)
             return
 
         if isinstance(state, list):
-            for experience in state:
-                self.buffer.append(experience)
+            for experience in state[-self.capacity :]:
+                self._push_legacy_transition(experience)
             return
 
         raise ValueError("Unsupported replay buffer state format.")
 
+    def _reset_storage(self) -> None:
+        self.position = 0
+        self.size = 0
+        self._last_insert_index = -1
+        self._state_dims = []
+        self._action_dims = []
+        self._behavior_action_dims = []
+        self._states = None
+        self._actions = None
+        self._behavior_actions = None
+        self._next_states = None
+        self._rewards = None
+        self._dones = None
+
+    def _set_compact_state(self, state: dict) -> None:
+        states = [np.asarray(array, dtype=np.float32) for array in state.get("states", [])]
+        actions = [np.asarray(array, dtype=np.float32) for array in state.get("actions", [])]
+        behavior_actions = [
+            np.asarray(array, dtype=np.float32)
+            for array in state.get("behavior_actions", actions)
+        ]
+        next_states = [np.asarray(array, dtype=np.float32) for array in state.get("next_states", [])]
+        if not states:
+            self._reset_storage()
+            return
+
+        size = int(state.get("size", min(array.shape[0] for array in states)))
+        size = max(0, min(size, self.capacity))
+        self._state_dims = [int(array.shape[1]) for array in states]
+        self._action_dims = [int(array.shape[1]) for array in actions]
+        self._behavior_action_dims = [int(array.shape[1]) for array in behavior_actions]
+        self._states = [
+            np.zeros((self.capacity, dim), dtype=np.float32)
+            for dim in self._state_dims
+        ]
+        self._actions = [
+            np.zeros((self.capacity, dim), dtype=np.float32)
+            for dim in self._action_dims
+        ]
+        self._behavior_actions = [
+            np.zeros((self.capacity, dim), dtype=np.float32)
+            for dim in self._behavior_action_dims
+        ]
+        self._next_states = [
+            np.zeros((self.capacity, dim), dtype=np.float32)
+            for dim in self._state_dims
+        ]
+        self._rewards = np.zeros((self.capacity, self.num_agents, 1), dtype=np.float32)
+        self._dones = np.zeros((self.capacity, 1), dtype=np.float32)
+
+        for agent_idx in range(self.num_agents):
+            self._states[agent_idx][:size] = states[agent_idx][:size]
+            self._actions[agent_idx][:size] = actions[agent_idx][:size]
+            self._behavior_actions[agent_idx][:size] = behavior_actions[agent_idx][:size]
+            self._next_states[agent_idx][:size] = next_states[agent_idx][:size]
+        rewards = np.asarray(state.get("rewards", []), dtype=np.float32)
+        dones = np.asarray(state.get("dones", []), dtype=np.float32)
+        if rewards.size:
+            self._rewards[:size] = rewards[:size].reshape(size, self.num_agents, 1)
+        if dones.size:
+            self._dones[:size] = dones[:size].reshape(size, 1)
+        self.size = size
+        self.position = int(state.get("position", size % self.capacity)) % self.capacity
+
+    def _push_legacy_transition(self, experience) -> None:
+        states, actions, rewards, next_states, done, behavior_actions = self._unpack_transition(experience)
+        scalar_rewards = [
+            self._safe_float32(reward)
+            for reward in rewards
+        ]
+        done_value = bool(float(np.asarray(done, dtype=np.float32).reshape(-1)[0]) > 0.5)
+        self.push(
+            states,
+            actions,
+            scalar_rewards,
+            next_states,
+            done_value,
+            behavior_actions=behavior_actions,
+        )
+
     def __len__(self):
         """Get the current replay size."""
-        return len(self.buffer)
+        return int(self.size)
 
 
 class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
@@ -263,7 +464,11 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
                 "'all' or 'ev'."
             )
         self.behavior_action_priority_masks = None
-        self.priorities = deque(maxlen=capacity)
+        self._priorities = np.zeros((self.capacity,), dtype=np.float32)
+
+    @property
+    def priorities(self) -> np.ndarray:
+        return self._priorities[: len(self)]
 
     def set_behavior_action_priority_masks(self, masks) -> None:
         """Restrict behavior-action priority to selected per-agent action dimensions."""
@@ -300,7 +505,9 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
         priority += self._priority_from_external_boost(priority_boost)
         if self.priority_max is not None:
             priority = min(priority, self.priority_max)
-        self.priorities.append(priority + self.priority_epsilon)
+        priority += self.priority_epsilon
+        insert_index = getattr(self, "_last_insert_index", len(self.priorities))
+        self._priorities[insert_index] = np.float32(priority)
 
     def _priority_from_rewards(self, finite_rewards: np.ndarray) -> float:
         if finite_rewards.size == 0:
@@ -351,29 +558,27 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
         if len(self) < self.batch_size:
             raise ValueError("Not enough samples in the buffer to sample a batch.")
 
-        batch_indices = self._sample_indices()
-        batch = [self.buffer[index] for index in batch_indices]
-        return self._build_sample(batch, include_behavior_actions=False)
+        batch_indices = np.asarray(self._sample_indices(), dtype=np.int64)
+        return self._build_sample(batch_indices, include_behavior_actions=False)
 
     def sample_with_behavior_actions(self):
         if len(self) < self.batch_size:
             raise ValueError("Not enough samples in the buffer to sample a batch.")
 
-        batch_indices = self._sample_indices()
-        batch = [self.buffer[index] for index in batch_indices]
-        return self._build_sample(batch, include_behavior_actions=True)
+        batch_indices = np.asarray(self._sample_indices(), dtype=np.int64)
+        return self._build_sample(batch_indices, include_behavior_actions=True)
 
     def _sample_indices(self) -> list[int]:
-        replay_size = len(self.buffer)
+        replay_size = len(self)
         priority_count = int(round(self.batch_size * self.priority_fraction))
         uniform_count = self.batch_size - priority_count
 
         indices: list[int] = []
         if uniform_count > 0:
-            indices.extend(random.choices(range(replay_size), k=uniform_count))
+            indices.extend(np.random.randint(0, replay_size, size=uniform_count).tolist())
 
         if priority_count > 0:
-            priorities = np.asarray(list(self.priorities), dtype=np.float64)
+            priorities = self._priorities[:replay_size].astype(np.float64, copy=False)
             if priorities.shape[0] != replay_size:
                 priorities = np.ones(replay_size, dtype=np.float64)
             weights = np.power(np.maximum(priorities, self.priority_epsilon), self.priority_alpha)
@@ -392,7 +597,7 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
         state.update(
             {
                 "format": "joint_reward_weighted_transitions_v2",
-                "priorities": list(self.priorities),
+                "priorities": self._priorities[: len(self)].copy(),
                 "priority_fraction": self.priority_fraction,
                 "priority_alpha": self.priority_alpha,
                 "priority_epsilon": self.priority_epsilon,
@@ -430,12 +635,15 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
                 scope = scope.strip().lower()
                 if scope in {"all", "ev"}:
                     self.behavior_action_priority_scope = scope
-        self.priorities = deque(maxlen=self.capacity)
-        if isinstance(state, dict) and isinstance(state.get("priorities"), list):
-            for value in state["priorities"][-self.capacity :]:
-                self.priorities.append(float(value))
-        while len(self.priorities) < len(self.buffer):
-            self.priorities.append(self.priority_epsilon)
+        self._priorities = np.zeros((self.capacity,), dtype=np.float32)
+        if isinstance(state, dict) and "priorities" in state:
+            values = np.asarray(state.get("priorities"), dtype=np.float32).reshape(-1)[-self.capacity :]
+            count = min(values.shape[0], len(self))
+            if count > 0:
+                self._priorities[:count] = values[:count]
+        if len(self) > 0:
+            active_priorities = self._priorities[: len(self)]
+            active_priorities[active_priorities <= 0.0] = np.float32(self.priority_epsilon)
 
 
 class PrioritizedReplayBuffer:

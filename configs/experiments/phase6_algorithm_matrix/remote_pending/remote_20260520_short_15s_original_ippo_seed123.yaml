@@ -71,6 +71,10 @@ simulator:
   export:
     mode: end
     export_kpis_on_episode_end: true
+    final_episode_only: true
+    include_business_as_usual: false
+    export_business_as_usual_timeseries: false
+    kpi_round_decimals: null
     session_name: remote_20260520_short_15s_original_ippo_seed123
   wrapper_reward:
     enabled: false

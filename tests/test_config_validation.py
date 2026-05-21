@@ -101,6 +101,10 @@ def test_validate_config_accepts_simulator_export_and_time_controls(base_config)
     config["simulator"]["export"] = {
         "mode": "end",
         "export_kpis_on_episode_end": True,
+        "final_episode_only": True,
+        "include_business_as_usual": False,
+        "export_business_as_usual_timeseries": False,
+        "kpi_round_decimals": 4,
         "session_name": "session-a",
     }
     validate_config(config)

@@ -10,6 +10,32 @@ from citylearn.reward_function import RewardFunction
 class CostHardConstraintReward(RewardFunction):
     """Encourage low cost while strongly discouraging EV departure and grid constraint violations."""
 
+    required_observation_names = (
+        "net_electricity_consumption",
+        "electricity_pricing",
+        "power_outage",
+        "charging_constraint_violation_kwh",
+        "electrical_service_violation_kwh",
+        "electrical_service_violation",
+        "service_violation_kwh",
+        "service_violation",
+        "electrical_storage_soc",
+        "electrical_storage_soc_ratio",
+        "electrical_storage_soc_min_ratio",
+        "electrical_storage_min_soc_ratio",
+        "electrical_storage_soc_max_ratio",
+        "electrical_storage_max_soc_ratio",
+        "electrical_storage_electricity_consumption",
+        "electrical_storage_electricity_consumption_kwh",
+        "electric_vehicles_chargers_dict",
+        "deferrable_appliances_dict",
+        "washing_machines_dict",
+        "charging_building_headroom_kw",
+        "charging_phase_L1_headroom_kw",
+        "charging_phase_L2_headroom_kw",
+        "charging_phase_L3_headroom_kw",
+    )
+
     SERVICE_VIOLATION_KEYS = (
         "charging_constraint_violation_kwh",
         "electrical_service_violation_kwh",
@@ -1850,6 +1876,149 @@ class CostServiceCommunityFeasiblePrecisionRewardV47(CostHardConstraintReward):
         **CostServiceCommunityFeasiblePrecisionRewardV46.DEFAULT_KWARGS,
         "ev_over_service_tolerance": 0.01,
         "ev_over_service_penalty": 760.0,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)
+
+
+class CostServiceCommunityStorageValueRewardV49(CostHardConstraintReward):
+    """Phase 6 reward profile: give storage/V2G room when it creates community value.
+
+    V48-style configs kept EV service stable, but early comparisons suggested
+    that storage could look worse than no-storage if cycling was over-penalized
+    relative to the community settlement signal. V49 keeps the feasible EV
+    model from V46, lowers pure throughput cost, and slightly raises community
+    settlement/peak pressure so storage can be rewarded when it reduces grid
+    import or peaks. Physical SOC limits still come from simulator observations
+    when present.
+    """
+
+    DEFAULT_KWARGS = {
+        **CostServiceCommunityFeasiblePrecisionRewardV46.DEFAULT_KWARGS,
+        "community_settlement_cost_weight": 1.15,
+        "community_peak_import_penalty": 0.0010,
+        "community_export_penalty": 0.0001,
+        "battery_throughput_penalty": 0.003,
+        "battery_soc_min": 0.0,
+        "battery_soc_max": 1.0,
+        "use_observed_storage_soc_limits": True,
+        "ev_v2g_service_penalty": 700.0,
+        "scale_state_penalties_by_time_step": True,
+        "state_penalty_reference_seconds": 3600.0,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)
+
+
+class CostServiceCommunityDeadlineValueRewardV50(CostHardConstraintReward):
+    """Phase 6 reward profile: stronger EV deadline shaping with bounded pressure.
+
+    The EV target should not be enforced as a hard rule at every connected step,
+    but the agent must see the consequence of being below the recoverable
+    schedule before the departure event. V50 keeps V46's effective charging
+    power model, extends the warning window, and raises schedule/departure
+    pressure while capping unrecoverable deficits so infeasible departures do
+    not dominate all cost/community learning.
+    """
+
+    DEFAULT_KWARGS = {
+        **CostServiceCommunityFeasiblePrecisionRewardV46.DEFAULT_KWARGS,
+        "community_settlement_cost_weight": 1.0,
+        "community_peak_import_penalty": 0.0008,
+        "ev_departure_window_hours": 6.0,
+        "ev_connected_deficit_penalty": 95.0,
+        "ev_connected_deficit_exponent": 2.0,
+        "ev_schedule_deficit_penalty": 820.0,
+        "ev_schedule_deficit_exponent": 1.5,
+        "ev_schedule_deficit_cap_soc": 0.10,
+        "ev_departure_window_shortfall_cap_soc": 0.10,
+        "ev_departure_deficit_penalty": 980.0,
+        "ev_departure_missed_penalty": 3000.0,
+        "ev_over_service_tolerance": 0.02,
+        "ev_over_service_penalty": 380.0,
+        "ev_v2g_service_penalty": 760.0,
+        "battery_throughput_penalty": 0.006,
+        "scale_state_penalties_by_time_step": True,
+        "state_penalty_reference_seconds": 3600.0,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)
+
+
+class CostServiceCommunityPrecisionValueRewardV51(CostHardConstraintReward):
+    """Phase 6 reward profile: balance EV minimum service with target precision.
+
+    V50 improves minimum acceptable departure service, but the short 2022 scout
+    run showed it can over-serve EVs and miss the within-tolerance KPI. V51 keeps
+    the useful deadline pressure, raises the over-service term, and gives the
+    community/cost signal slightly more room so the policy does not learn that
+    "always charge more" is the only safe response.
+    """
+
+    DEFAULT_KWARGS = {
+        **CostServiceCommunityDeadlineValueRewardV50.DEFAULT_KWARGS,
+        "community_settlement_cost_weight": 1.08,
+        "community_peak_import_penalty": 0.0008,
+        "ev_connected_deficit_penalty": 80.0,
+        "ev_connected_deficit_exponent": 2.0,
+        "ev_schedule_deficit_penalty": 760.0,
+        "ev_schedule_deficit_exponent": 1.45,
+        "ev_schedule_deficit_cap_soc": 0.08,
+        "ev_departure_window_shortfall_cap_soc": 0.08,
+        "ev_departure_deficit_penalty": 920.0,
+        "ev_departure_missed_penalty": 2800.0,
+        "ev_over_service_tolerance": 0.03,
+        "ev_over_service_penalty": 1200.0,
+        "ev_v2g_service_penalty": 720.0,
+        "battery_throughput_penalty": 0.004,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)
+
+
+class CostServiceCommunityPeakDeadlineRewardV52(CostHardConstraintReward):
+    """Phase 6 reward profile: EV deadline service plus community peak reduction.
+
+    V52 keeps the useful EV deadline pressure from V50, avoids V51's excessive
+    retreat from charging, and makes the community objective more explicit:
+    settlement cost, squared community import peaks and leftover grid export all
+    matter. The storage throughput term stays low enough that a battery can be
+    useful for peak shaving, while SOC limits remain delegated to simulator
+    observations when they exist.
+    """
+
+    DEFAULT_KWARGS = {
+        **CostServiceCommunityDeadlineValueRewardV50.DEFAULT_KWARGS,
+        "community_settlement_cost_weight": 1.12,
+        "community_peak_import_penalty": 0.0014,
+        "community_export_penalty": 0.00035,
+        "ev_connected_deficit_penalty": 92.0,
+        "ev_connected_deficit_exponent": 2.0,
+        "ev_schedule_deficit_penalty": 820.0,
+        "ev_schedule_deficit_exponent": 1.45,
+        "ev_schedule_deficit_cap_soc": 0.09,
+        "ev_departure_window_shortfall_cap_soc": 0.09,
+        "ev_departure_deficit_penalty": 980.0,
+        "ev_departure_missed_penalty": 3000.0,
+        "ev_over_service_tolerance": 0.035,
+        "ev_over_service_penalty": 720.0,
+        "ev_v2g_service_penalty": 740.0,
+        "battery_throughput_penalty": 0.0035,
+        "battery_soc_min": 0.0,
+        "battery_soc_max": 1.0,
+        "use_observed_storage_soc_limits": True,
     }
 
     def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:

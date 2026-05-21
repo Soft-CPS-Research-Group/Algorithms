@@ -78,12 +78,20 @@ SELECTED_METRICS = (
     "Action/all_std",
     "Action/near_low_fraction",
     "Action/near_high_fraction",
+    "Action/storage_mean",
+    "Action/storage_std",
     "Action/storage_positive_fraction",
     "Action/storage_negative_fraction",
     "Action/storage_idle_fraction",
+    "Action/ev_mean",
+    "Action/ev_std",
     "Action/ev_positive_fraction",
     "Action/ev_negative_fraction",
     "Action/ev_idle_fraction",
+    "Action/ev_connected_mean",
+    "Action/ev_connected_positive_fraction",
+    "Action/ev_connected_negative_fraction",
+    "Action/ev_disconnected_positive_fraction",
     "Action/deferrable_on_fraction",
     "Action/deferrable_off_fraction",
     "Deferrable/start_delay_steps_mean",
@@ -241,6 +249,14 @@ def _parse_args() -> argparse.Namespace:
             "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v56_teacher_clone_policy_finetune_rbc_smart",
+            "community_storage_value_v49_teacher_clone_ev_balanced_rbc_smart",
+            "community_deadline_value_v50_teacher_clone_ev_balanced_rbc_smart",
+            "community_precision_value_v51_teacher_clone_ev_precise_rbc_smart",
+            "community_peak_deadline_v52_teacher_clone_ev_community_rbc_smart",
+            "community_deadline_zero_guard_v53_teacher_clone_ev_rbc_smart",
+            "community_deadline_clone_v54_teacher_clone_anchor_rbc_smart",
+            "community_peak_deadline_v55_teacher_clone_bc_warmup_community_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -534,6 +550,37 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
         exploration["critic_update_mode"] = "per_agent"
         return
 
+    def is_community_feasible_family(name: str) -> bool:
+        return (
+            name.startswith("community_feasible_service_v45")
+            or name.startswith("community_feasible_precision_v46")
+            or name.startswith("community_feasible_precision_v47")
+            or name.startswith("community_feasible_precision_v48")
+            or name.startswith("community_feasible_precision_v56")
+            or name.startswith("community_storage_value_v49")
+            or name.startswith("community_deadline_value_v50")
+            or name.startswith("community_precision_value_v51")
+            or name.startswith("community_peak_deadline_v52")
+            or name.startswith("community_deadline_zero_guard_v53")
+            or name.startswith("community_deadline_clone_v54")
+            or name.startswith("community_peak_deadline_v55")
+        )
+
+    def is_precision_like_family(name: str) -> bool:
+        return (
+            name.startswith("community_feasible_precision_v46")
+            or name.startswith("community_feasible_precision_v47")
+            or name.startswith("community_feasible_precision_v48")
+            or name.startswith("community_feasible_precision_v56")
+            or name.startswith("community_storage_value_v49")
+            or name.startswith("community_deadline_value_v50")
+            or name.startswith("community_precision_value_v51")
+            or name.startswith("community_peak_deadline_v52")
+            or name.startswith("community_deadline_zero_guard_v53")
+            or name.startswith("community_deadline_clone_v54")
+            or name.startswith("community_peak_deadline_v55")
+        )
+
     if variant in {
         "anti_saturation",
         "anti_saturation_warm_rbc_basic",
@@ -566,6 +613,14 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
         "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
         "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
         "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+        "community_feasible_precision_v56_teacher_clone_policy_finetune_rbc_smart",
+        "community_storage_value_v49_teacher_clone_ev_balanced_rbc_smart",
+        "community_deadline_value_v50_teacher_clone_ev_balanced_rbc_smart",
+        "community_precision_value_v51_teacher_clone_ev_precise_rbc_smart",
+        "community_peak_deadline_v52_teacher_clone_ev_community_rbc_smart",
+        "community_deadline_zero_guard_v53_teacher_clone_ev_rbc_smart",
+        "community_deadline_clone_v54_teacher_clone_anchor_rbc_smart",
+        "community_peak_deadline_v55_teacher_clone_bc_warmup_community_rbc_smart",
         "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
         "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
         "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -625,6 +680,14 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v56_teacher_clone_policy_finetune_rbc_smart",
+            "community_storage_value_v49_teacher_clone_ev_balanced_rbc_smart",
+            "community_deadline_value_v50_teacher_clone_ev_balanced_rbc_smart",
+            "community_precision_value_v51_teacher_clone_ev_precise_rbc_smart",
+            "community_peak_deadline_v52_teacher_clone_ev_community_rbc_smart",
+            "community_deadline_zero_guard_v53_teacher_clone_ev_rbc_smart",
+            "community_deadline_clone_v54_teacher_clone_anchor_rbc_smart",
+            "community_peak_deadline_v55_teacher_clone_bc_warmup_community_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -666,6 +729,14 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v56_teacher_clone_policy_finetune_rbc_smart",
+            "community_storage_value_v49_teacher_clone_ev_balanced_rbc_smart",
+            "community_deadline_value_v50_teacher_clone_ev_balanced_rbc_smart",
+            "community_precision_value_v51_teacher_clone_ev_precise_rbc_smart",
+            "community_peak_deadline_v52_teacher_clone_ev_community_rbc_smart",
+            "community_deadline_zero_guard_v53_teacher_clone_ev_rbc_smart",
+            "community_deadline_clone_v54_teacher_clone_anchor_rbc_smart",
+            "community_peak_deadline_v55_teacher_clone_bc_warmup_community_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -777,19 +848,31 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                 warmup_steps = int(exploration.get("random_exploration_steps") or 0)
                 exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 6, 1)
                 exploration["warm_start_policy_phaseout_mode"] = "blend"
-            if (
-                variant.startswith("community_feasible_service_v45")
-                or variant.startswith("community_feasible_precision_v46")
-                or variant.startswith("community_feasible_precision_v47")
-                or variant.startswith("community_feasible_precision_v48")
-            ):
+            if is_community_feasible_family(variant):
                 simulator["reward_function"] = (
-                    "CostServiceCommunityFeasiblePrecisionRewardV47"
+                    "CostServiceCommunityDeadlineValueRewardV50"
+                    if (
+                        variant.startswith("community_deadline_zero_guard_v53")
+                        or variant.startswith("community_deadline_clone_v54")
+                    )
+                    else "CostServiceCommunityPeakDeadlineRewardV52"
+                    if (
+                        variant.startswith("community_peak_deadline_v52")
+                        or variant.startswith("community_peak_deadline_v55")
+                    )
+                    else "CostServiceCommunityPrecisionValueRewardV51"
+                    if variant.startswith("community_precision_value_v51")
+                    else "CostServiceCommunityDeadlineValueRewardV50"
+                    if variant.startswith("community_deadline_value_v50")
+                    else "CostServiceCommunityStorageValueRewardV49"
+                    if variant.startswith("community_storage_value_v49")
+                    else "CostServiceCommunityFeasiblePrecisionRewardV47"
                     if variant.startswith("community_feasible_precision_v47")
                     else "CostServiceCommunityFeasiblePrecisionRewardV46"
                     if (
                         variant.startswith("community_feasible_precision_v46")
                         or variant.startswith("community_feasible_precision_v48")
+                        or variant.startswith("community_feasible_precision_v56")
                     )
                     else "CostServiceCommunityFeasibleServiceRewardV45"
                 )
@@ -799,11 +882,7 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                 exploration["critic_huber_beta"] = 1.0
                 exploration["critic_target_clip_abs"] = (
                     25.0
-                    if (
-                        variant.startswith("community_feasible_precision_v46")
-                        or variant.startswith("community_feasible_precision_v47")
-                        or variant.startswith("community_feasible_precision_v48")
-                    )
+                    if is_precision_like_family(variant)
                     else 35.0
                 )
                 exploration["actor_behavior_cloning_source"] = "warm_start_policy"
@@ -874,6 +953,155 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                         exploration["actor_storage_action_l2_penalty"] = 0.30
                         exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
                         exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 32, 1)
+                    if variant.startswith("community_feasible_precision_v56"):
+                        exploration["actor_policy_loss_weight"] = 0.015
+                        exploration["actor_policy_loss_warmup_weight"] = 0.0
+                        exploration["actor_policy_loss_warmup_steps"] = max(warmup_steps * 48, 1)
+                        exploration["actor_policy_loss_warmup_start_step"] = max(warmup_steps * 8, 1)
+                        exploration["actor_behavior_cloning_weight"] = 0.800
+                        exploration["actor_behavior_cloning_min_weight"] = 0.650
+                        exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 96, 1)
+                        exploration["actor_behavior_cloning_extra_updates"] = 1
+                        exploration["actor_behavior_cloning_extra_update_start_step"] = 0
+                        exploration["actor_behavior_cloning_extra_update_end_step"] = max(warmup_steps * 40, 1)
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 48.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 18.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.0
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 10.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
+                        exploration["actor_storage_action_l2_penalty"] = 0.20
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 20.0
+                        exploration["storage_exploration_noise_multiplier"] = 0.50
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 64, 1)
+                    if variant.startswith("community_storage_value_v49"):
+                        exploration["actor_policy_loss_weight"] = 0.10
+                        exploration["actor_policy_loss_warmup_weight"] = 0.01
+                        exploration["actor_policy_loss_warmup_steps"] = max(warmup_steps * 24, 1)
+                        exploration["actor_policy_loss_warmup_start_step"] = max(warmup_steps * 2, 1)
+                        exploration["actor_behavior_cloning_weight"] = 0.550
+                        exploration["actor_behavior_cloning_min_weight"] = 0.350
+                        exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 48, 1)
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 28.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 12.0
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 8.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.60
+                        exploration["actor_storage_action_l2_penalty"] = 0.08
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 18.0
+                        exploration["storage_exploration_noise_multiplier"] = 0.65
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 32, 1)
+                    if variant.startswith("community_deadline_value_v50"):
+                        exploration["actor_policy_loss_weight"] = 0.04
+                        exploration["actor_policy_loss_warmup_weight"] = 0.005
+                        exploration["actor_policy_loss_warmup_steps"] = max(warmup_steps * 32, 1)
+                        exploration["actor_policy_loss_warmup_start_step"] = max(warmup_steps * 2, 1)
+                        exploration["actor_behavior_cloning_weight"] = 0.700
+                        exploration["actor_behavior_cloning_min_weight"] = 0.600
+                        exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 64, 1)
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 48.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 22.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.10
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 8.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.20
+                        exploration["actor_storage_action_l2_penalty"] = 0.25
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 28.0
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 48, 1)
+                    if variant.startswith("community_precision_value_v51"):
+                        exploration["actor_policy_loss_weight"] = 0.08
+                        exploration["actor_policy_loss_warmup_weight"] = 0.008
+                        exploration["actor_policy_loss_warmup_steps"] = max(warmup_steps * 40, 1)
+                        exploration["actor_policy_loss_warmup_start_step"] = max(warmup_steps * 2, 1)
+                        exploration["actor_behavior_cloning_weight"] = 0.620
+                        exploration["actor_behavior_cloning_min_weight"] = 0.420
+                        exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 56, 1)
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 38.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 14.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.05
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 14.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.35
+                        exploration["actor_storage_action_l2_penalty"] = 0.16
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 40, 1)
+                    if variant.startswith("community_peak_deadline_v52"):
+                        exploration["actor_policy_loss_weight"] = 0.065
+                        exploration["actor_policy_loss_warmup_weight"] = 0.006
+                        exploration["actor_policy_loss_warmup_steps"] = max(warmup_steps * 40, 1)
+                        exploration["actor_policy_loss_warmup_start_step"] = max(warmup_steps * 2, 1)
+                        exploration["actor_behavior_cloning_weight"] = 0.680
+                        exploration["actor_behavior_cloning_min_weight"] = 0.560
+                        exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 56, 1)
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 44.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 18.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.08
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 10.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.04
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.35
+                        exploration["actor_storage_action_l2_penalty"] = 0.12
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
+                        exploration["storage_exploration_noise_multiplier"] = 0.55
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 48, 1)
+                    if variant.startswith("community_deadline_zero_guard_v53"):
+                        exploration["actor_policy_loss_weight"] = 0.035
+                        exploration["actor_policy_loss_warmup_weight"] = 0.003
+                        exploration["actor_policy_loss_warmup_steps"] = max(warmup_steps * 56, 1)
+                        exploration["actor_policy_loss_warmup_start_step"] = max(warmup_steps * 3, 1)
+                        exploration["actor_behavior_cloning_weight"] = 0.780
+                        exploration["actor_behavior_cloning_min_weight"] = 0.700
+                        exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 80, 1)
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 58.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 20.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.12
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 24.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.05
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.18
+                        exploration["actor_storage_action_l2_penalty"] = 0.24
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 30.0
+                        exploration["storage_exploration_noise_multiplier"] = 0.35
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 64, 1)
+                    if variant.startswith("community_deadline_clone_v54"):
+                        exploration["actor_policy_loss_weight"] = 0.0
+                        exploration["actor_policy_loss_warmup_weight"] = 0.0
+                        exploration["actor_policy_loss_warmup_steps"] = 0
+                        exploration["actor_behavior_cloning_weight"] = 1.200
+                        exploration["actor_behavior_cloning_min_weight"] = 1.200
+                        exploration["actor_behavior_cloning_decay_steps"] = 0
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 80.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 32.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.0
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 20.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.05
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.50
+                        exploration["actor_action_l2_penalty"] = 0.0
+                        exploration["actor_action_saturation_penalty"] = 0.0
+                        exploration["actor_storage_action_l2_penalty"] = 0.0
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 0.0
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 64, 1)
+                    if variant.startswith("community_peak_deadline_v55"):
+                        exploration["actor_policy_loss_weight"] = 0.025
+                        exploration["actor_policy_loss_warmup_weight"] = 0.0
+                        exploration["actor_policy_loss_warmup_steps"] = max(warmup_steps * 48, 1)
+                        exploration["actor_policy_loss_warmup_start_step"] = max(warmup_steps * 8, 1)
+                        exploration["actor_behavior_cloning_weight"] = 1.000
+                        exploration["actor_behavior_cloning_min_weight"] = 0.850
+                        exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 96, 1)
+                        exploration["actor_behavior_cloning_extra_updates"] = 1
+                        exploration["actor_behavior_cloning_extra_update_start_step"] = 0
+                        exploration["actor_behavior_cloning_extra_update_end_step"] = max(warmup_steps * 48, 1)
+                        exploration["actor_ev_behavior_cloning_multiplier"] = 72.0
+                        exploration["actor_ev_behavior_cloning_positive_target_weight"] = 30.0
+                        exploration["actor_ev_behavior_cloning_positive_target_power"] = 1.0
+                        exploration["actor_ev_behavior_cloning_zero_target_weight"] = 18.0
+                        exploration["actor_ev_behavior_cloning_zero_target_threshold"] = 0.05
+                        exploration["actor_storage_behavior_cloning_multiplier"] = 0.35
+                        exploration["actor_action_l2_penalty"] = 0.0
+                        exploration["actor_action_saturation_penalty"] = 0.0
+                        exploration["actor_storage_action_l2_penalty"] = 0.05
+                        exploration["actor_ev_v2g_action_l2_penalty"] = 16.0
+                        exploration["storage_exploration_noise_multiplier"] = 0.45
+                        exploration["warm_start_policy_phaseout_steps"] = max(warmup_steps * 80, 1)
                     if "ev_learning_teacher_event" in variant:
                         teacher_hyperparameters = dict(
                             exploration.get("warm_start_policy_hyperparameters") or {}
@@ -955,7 +1183,10 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                         exploration["actor_storage_behavior_cloning_multiplier"] = 0.25
                         exploration["actor_storage_action_l2_penalty"] = 0.30
                         exploration["actor_ev_v2g_action_l2_penalty"] = 24.0
-                    if "ev_balanced" in variant:
+                    if "ev_balanced" in variant and not (
+                        variant.startswith("community_storage_value_v49")
+                        or variant.startswith("community_deadline_value_v50")
+                    ):
                         exploration["actor_behavior_cloning_weight"] = 0.625
                         exploration["actor_behavior_cloning_min_weight"] = 0.625
                         exploration["actor_ev_behavior_cloning_multiplier"] = 34.0
@@ -1015,6 +1246,14 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v56_teacher_clone_policy_finetune_rbc_smart",
+            "community_storage_value_v49_teacher_clone_ev_balanced_rbc_smart",
+            "community_deadline_value_v50_teacher_clone_ev_balanced_rbc_smart",
+            "community_precision_value_v51_teacher_clone_ev_precise_rbc_smart",
+            "community_peak_deadline_v52_teacher_clone_ev_community_rbc_smart",
+            "community_deadline_zero_guard_v53_teacher_clone_ev_rbc_smart",
+            "community_deadline_clone_v54_teacher_clone_anchor_rbc_smart",
+            "community_peak_deadline_v55_teacher_clone_bc_warmup_community_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -1031,18 +1270,27 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                 replay_buffer["priority_fraction"] = 0.30
             elif "ev_focus_event" in variant:
                 replay_buffer["priority_fraction"] = 0.35
-            elif (
-                variant.startswith("community_feasible_precision_v46")
-                or variant.startswith("community_feasible_precision_v47")
-                or variant.startswith("community_feasible_precision_v48")
-            ):
+            elif variant.startswith("community_peak_deadline_v55"):
+                replay_buffer["priority_fraction"] = 0.35
+            elif variant.startswith("community_deadline_clone_v54"):
+                replay_buffer["priority_fraction"] = 0.40
+            elif variant.startswith("community_deadline_zero_guard_v53"):
+                replay_buffer["priority_fraction"] = 0.35
+            elif variant.startswith("community_peak_deadline_v52"):
+                replay_buffer["priority_fraction"] = 0.30
+            elif variant.startswith("community_precision_value_v51"):
+                replay_buffer["priority_fraction"] = 0.30
+            elif variant.startswith("community_deadline_value_v50"):
+                replay_buffer["priority_fraction"] = 0.30
+            elif variant.startswith("community_storage_value_v49"):
+                replay_buffer["priority_fraction"] = 0.25
+            elif variant.startswith("community_feasible_precision_v56"):
+                replay_buffer["priority_fraction"] = 0.25
+            elif is_precision_like_family(variant):
                 replay_buffer["priority_fraction"] = 0.20
             elif (
                 variant.startswith("community_smooth_service_v44")
-                or variant.startswith("community_feasible_service_v45")
-                or variant.startswith("community_feasible_precision_v46")
-                or variant.startswith("community_feasible_precision_v47")
-                or variant.startswith("community_feasible_precision_v48")
+                or is_community_feasible_family(variant)
             ):
                 replay_buffer["priority_fraction"] = 0.25
             elif "teacher_bc" in variant:
@@ -1056,15 +1304,26 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             replay_buffer["priority_alpha"] = 0.7
             replay_buffer["priority_epsilon"] = 1.0e-3
             replay_buffer["priority_mode"] = "negative_reward"
-            if (
-                variant.startswith("community_feasible_service_v45")
-                or variant.startswith("community_feasible_precision_v46")
-                or variant.startswith("community_feasible_precision_v47")
-                or variant.startswith("community_feasible_precision_v48")
-            ):
+            if is_community_feasible_family(variant):
                 replay_buffer["behavior_action_priority_mode"] = "positive"
                 replay_buffer["behavior_action_priority_weight"] = (
-                    4.0
+                    5.5
+                    if variant.startswith("community_peak_deadline_v55")
+                    else 6.0
+                    if variant.startswith("community_deadline_clone_v54")
+                    else 5.0
+                    if variant.startswith("community_deadline_zero_guard_v53")
+                    else 3.75
+                    if variant.startswith("community_peak_deadline_v52")
+                    else 3.5
+                    if variant.startswith("community_precision_value_v51")
+                    else 4.5
+                    if variant.startswith("community_deadline_value_v50")
+                    else 3.25
+                    if variant.startswith("community_storage_value_v49")
+                    else 4.0
+                    if variant.startswith("community_feasible_precision_v56")
+                    else 4.0
                     if variant.startswith("community_feasible_precision_v47")
                     else 3.5
                     if variant.startswith("community_feasible_precision_v48")
@@ -1092,6 +1351,14 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                         or "ev_learning_teacher" in variant
                         or variant.startswith("community_feasible_precision_v47")
                         or variant.startswith("community_feasible_precision_v48")
+                        or variant.startswith("community_feasible_precision_v56")
+                        or variant.startswith("community_storage_value_v49")
+                        or variant.startswith("community_deadline_value_v50")
+                        or variant.startswith("community_precision_value_v51")
+                        or variant.startswith("community_peak_deadline_v52")
+                        or variant.startswith("community_deadline_zero_guard_v53")
+                        or variant.startswith("community_deadline_clone_v54")
+                        or variant.startswith("community_peak_deadline_v55")
                         or "ev_focus" in variant
                         or "ev_guarded_band" in variant
                         or "ev_band" in variant
@@ -1105,22 +1372,52 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                 elif "ev_focus_event" in variant:
                     replay_buffer["observation_event_priority_weight"] = 8.0
                     replay_buffer["observation_event_priority_mode"] = "ev_departure_service"
+                elif variant.startswith("community_peak_deadline_v55"):
+                    replay_buffer["observation_event_priority_weight"] = 8.0
+                    replay_buffer["observation_event_priority_mode"] = "ev_departure_service"
+                elif variant.startswith("community_deadline_clone_v54"):
+                    replay_buffer["observation_event_priority_weight"] = 8.0
+                    replay_buffer["observation_event_priority_mode"] = "ev_departure_service"
+                elif variant.startswith("community_deadline_zero_guard_v53"):
+                    replay_buffer["observation_event_priority_weight"] = 8.0
+                    replay_buffer["observation_event_priority_mode"] = "ev_departure_service"
+                elif variant.startswith("community_peak_deadline_v52"):
+                    replay_buffer["observation_event_priority_weight"] = 6.0
+                    replay_buffer["observation_event_priority_mode"] = "ev_departure_service"
+                elif variant.startswith("community_precision_value_v51"):
+                    replay_buffer["observation_event_priority_weight"] = 6.0
+                    replay_buffer["observation_event_priority_mode"] = "ev_departure_service"
+                elif variant.startswith("community_deadline_value_v50"):
+                    replay_buffer["observation_event_priority_weight"] = 6.0
+                    replay_buffer["observation_event_priority_mode"] = "ev_departure_service"
+                elif variant.startswith("community_feasible_precision_v56"):
+                    replay_buffer["observation_event_priority_weight"] = 4.0
+                    replay_buffer["observation_event_priority_mode"] = "ev_departure_service"
             replay_buffer["priority_max"] = (
                 60.0
                 if "ev_learning_teacher_event" in variant or "ev_focus_event" in variant
+                else 55.0
+                if variant.startswith("community_peak_deadline_v55")
+                else 60.0
+                if variant.startswith("community_deadline_clone_v54")
+                else 50.0
+                if variant.startswith("community_deadline_zero_guard_v53")
+                else 44.0
+                if variant.startswith("community_peak_deadline_v52")
+                else 42.0
+                if variant.startswith("community_precision_value_v51")
+                else 45.0
+                if variant.startswith("community_deadline_value_v50")
+                else 35.0
+                if variant.startswith("community_storage_value_v49")
+                else 35.0
+                if variant.startswith("community_feasible_precision_v56")
                 else 30.0
-                if (
-                    variant.startswith("community_feasible_precision_v46")
-                    or variant.startswith("community_feasible_precision_v47")
-                    or variant.startswith("community_feasible_precision_v48")
-                )
+                if is_precision_like_family(variant)
                 else 40.0
                 if (
                     variant.startswith("community_smooth_service_v44")
-                    or variant.startswith("community_feasible_service_v45")
-                    or variant.startswith("community_feasible_precision_v46")
-                    or variant.startswith("community_feasible_precision_v47")
-                    or variant.startswith("community_feasible_precision_v48")
+                    or is_community_feasible_family(variant)
                 )
                 else (50.0 if "teacher_bc" in variant else 100.0)
             )
@@ -1144,6 +1441,14 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
             "community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart",
             "community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart",
+            "community_feasible_precision_v56_teacher_clone_policy_finetune_rbc_smart",
+            "community_storage_value_v49_teacher_clone_ev_balanced_rbc_smart",
+            "community_deadline_value_v50_teacher_clone_ev_balanced_rbc_smart",
+            "community_precision_value_v51_teacher_clone_ev_precise_rbc_smart",
+            "community_peak_deadline_v52_teacher_clone_ev_community_rbc_smart",
+            "community_deadline_zero_guard_v53_teacher_clone_ev_rbc_smart",
+            "community_deadline_clone_v54_teacher_clone_anchor_rbc_smart",
+            "community_peak_deadline_v55_teacher_clone_bc_warmup_community_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart",
             "community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart",
@@ -1164,11 +1469,32 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                     exploration["actor_behavior_cloning_min_weight"] = 0.450
                     exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 96, 1)
                 elif (
+                    variant.startswith("community_storage_value_v49")
+                    or variant.startswith("community_deadline_value_v50")
+                    or variant.startswith("community_precision_value_v51")
+                    or variant.startswith("community_peak_deadline_v52")
+                    or variant.startswith("community_deadline_zero_guard_v53")
+                    or variant.startswith("community_deadline_clone_v54")
+                    or variant.startswith("community_peak_deadline_v55")
+                    or variant.startswith("community_feasible_precision_v56")
+                ):
+                    pass
+                elif (
                     "ev_learning_teacher" in variant
                     or "ev_focus" in variant
                     or "ev_guarded_band" in variant
                     or "ev_band" in variant
-                    or "ev_balanced" in variant
+                    or (
+                        "ev_balanced" in variant
+                        and not (
+                            variant.startswith("community_storage_value_v49")
+                            or variant.startswith("community_deadline_value_v50")
+                            or variant.startswith("community_precision_value_v51")
+                            or variant.startswith("community_peak_deadline_v52")
+                            or variant.startswith("community_deadline_zero_guard_v53")
+                            or variant.startswith("community_deadline_clone_v54")
+                        )
+                    )
                 ):
                     exploration["actor_behavior_cloning_min_weight"] = float(
                         exploration.get("actor_behavior_cloning_weight", 0.650)
@@ -1184,10 +1510,7 @@ def _apply_maddpg_variant(config: dict[str, Any], variant: str) -> None:
                 exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 16, 1)
             elif (
                 variant.startswith("community_smooth_service_v44")
-                or variant.startswith("community_feasible_service_v45")
-                or variant.startswith("community_feasible_precision_v46")
-                or variant.startswith("community_feasible_precision_v47")
-                or variant.startswith("community_feasible_precision_v48")
+                or is_community_feasible_family(variant)
             ):
                 exploration["actor_behavior_cloning_min_weight"] = 0.100
                 exploration["actor_behavior_cloning_decay_steps"] = max(warmup_steps * 12, 1)

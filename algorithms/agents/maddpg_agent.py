@@ -249,6 +249,18 @@ class MADDPG(BaseAgent):
             0,
             int(exploration_cfg.get("actor_behavior_cloning_decay_start_step", 0) or 0),
         )
+        self.actor_behavior_cloning_extra_updates = max(
+            0,
+            int(exploration_cfg.get("actor_behavior_cloning_extra_updates", 0) or 0),
+        )
+        self.actor_behavior_cloning_extra_update_start_step = max(
+            0,
+            int(exploration_cfg.get("actor_behavior_cloning_extra_update_start_step", 0) or 0),
+        )
+        self.actor_behavior_cloning_extra_update_end_step = max(
+            0,
+            int(exploration_cfg.get("actor_behavior_cloning_extra_update_end_step", 0) or 0),
+        )
         self.actor_behavior_cloning_source = str(
             exploration_cfg.get("actor_behavior_cloning_source", "replay_action") or "replay_action"
         ).strip().lower()
@@ -323,6 +335,22 @@ class MADDPG(BaseAgent):
             self.mlflow_step_sample_interval = 10
         if self.mlflow_step_sample_interval < 1:
             self.mlflow_step_sample_interval = 1
+        self.runtime_profiling_enabled = bool(tracking_cfg.get("runtime_profiling_enabled", False))
+        try:
+            self.runtime_profiling_interval = int(tracking_cfg.get("runtime_profiling_interval", 512) or 512)
+        except (TypeError, ValueError):
+            self.runtime_profiling_interval = 512
+        if self.runtime_profiling_interval < 1:
+            self.runtime_profiling_interval = 512
+        self.runtime_profiling_detail = str(
+            tracking_cfg.get("runtime_profiling_detail", "summary") or "summary"
+        ).strip().lower()
+        if self.runtime_profiling_detail not in {"summary", "detailed"}:
+            logger.warning(
+                "Unknown runtime_profiling_detail '{}'; falling back to 'summary'.",
+                self.runtime_profiling_detail,
+            )
+            self.runtime_profiling_detail = "summary"
         self.training_diagnostics_enabled = bool(tracking_cfg.get("training_diagnostics_enabled", True))
         self.training_diagnostics_detail = str(
             tracking_cfg.get("training_diagnostics_detail", "summary") or "summary"
@@ -352,9 +380,12 @@ class MADDPG(BaseAgent):
         self._latest_encoded_observations: Optional[List[np.ndarray]] = None
         self._warm_start_policy = None
         self._warned_missing_raw_context = False
+        self._last_warm_start_policy_actions: Optional[List[List[float]]] = None
         self._last_warm_start_phaseout_probability = 0.0
         self._last_warm_start_phaseout_used = False
         self._noop_actor_initialized = False
+        self._replay_push_accepts_behavior_actions: Optional[bool] = None
+        self._replay_push_accepts_priority_boost: Optional[bool] = None
         self.replay_buffer = self._initialize_replay_buffer()
         self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
         self.actor_optimizers, self.critic_optimizers = self._initialize_optimizers()
@@ -545,6 +576,7 @@ class MADDPG(BaseAgent):
             if encoded_observations is not None
             else None
         )
+        self._last_warm_start_policy_actions = None
 
     def _apply_noop_actor_initialization(self) -> None:
         if not getattr(self, "noop_actor_initialization", False) or getattr(self, "_noop_actor_initialized", False):
@@ -668,11 +700,33 @@ class MADDPG(BaseAgent):
     ) -> None:
         logger.debug("Starting update phase.")
         update_start_time = time.time()
+        update_perf_start_time = time.perf_counter()
+        should_log_runtime_profile = self._should_runtime_profile_step(global_learning_step)
+        runtime_profile_metrics: Dict[str, float] = {}
 
         done = bool(terminated or truncated)
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         self._update_reward_normalizer(rewards)
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_reward_normalizer_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
+
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         behavior_actions = self._transition_behavior_actions(actions)
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_behavior_action_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
+
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         priority_boost = self._transition_observation_event_priority_boost()
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_priority_boost_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
+
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         self._push_replay_transition(
             observations=observations,
             actions=actions,
@@ -682,19 +736,42 @@ class MADDPG(BaseAgent):
             behavior_actions=behavior_actions,
             priority_boost=priority_boost,
         )
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_replay_push_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
 
         if len(self.replay_buffer) < self.batch_size:
             logger.debug("Not enough samples in the replay buffer. Skipping update.")
+            self._record_update_runtime_skip_metrics(
+                runtime_profile_metrics,
+                global_learning_step,
+                update_perf_start_time,
+                reason="replay_warmup",
+            )
             return
 
         if not self._should_train_on_step(initial_exploration_done, global_learning_step):
             logger.debug("Initial exploration phase not finished. Skipping update.")
+            self._record_update_runtime_skip_metrics(
+                runtime_profile_metrics,
+                global_learning_step,
+                update_perf_start_time,
+                reason="initial_exploration",
+            )
             return
 
         if not update_step:
             logger.debug("Update step skipped based on schedule.")
+            self._record_update_runtime_skip_metrics(
+                runtime_profile_metrics,
+                global_learning_step,
+                update_perf_start_time,
+                reason="schedule",
+            )
             return
 
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         if hasattr(self.replay_buffer, "sample_with_behavior_actions"):
             states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all = (
                 self.replay_buffer.sample_with_behavior_actions()
@@ -702,7 +779,12 @@ class MADDPG(BaseAgent):
         else:
             states, actions_all, rewards_all, next_states, dones_all = self.replay_buffer.sample()
             behavior_actions_all = actions_all
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_replay_sample_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
 
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         raw_rewards_all = torch.stack(rewards_all).to(self.device, dtype=torch.float32, non_blocking=True)
         rewards_all = self._normalize_reward_tensor(raw_rewards_all)
         dones_all = dones_all.to(self.device, dtype=torch.float32, non_blocking=True)
@@ -710,11 +792,21 @@ class MADDPG(BaseAgent):
         actions_all = [a.to(self.device, non_blocking=True) for a in actions_all]
         behavior_actions_all = [a.to(self.device, non_blocking=True) for a in behavior_actions_all]
         next_states = [ns.to(self.device, non_blocking=True) for ns in next_states]
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_tensor_transfer_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
 
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         global_state = torch.cat(states, dim=1)
         global_next_state = torch.cat(next_states, dim=1)
         global_actions = torch.cat(actions_all, dim=1)
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_tensor_prepare_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
 
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         with torch.no_grad():
             next_policy_actions = []
             for agent_idx in range(self.num_agents):
@@ -733,7 +825,12 @@ class MADDPG(BaseAgent):
                     -self.critic_target_clip_abs,
                     self.critic_target_clip_abs,
                 )
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_target_compute_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
 
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         if self.critic_update_mode == "per_agent":
             critic_loss_values: List[float] = []
             critic_td_abs_values: List[float] = []
@@ -787,17 +884,28 @@ class MADDPG(BaseAgent):
             ]
             critic_grad_norm_values = [float(critic_grad_norm)]
             q_expected_stat_tensors = [q_expected.detach()]
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_critic_update_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
 
         logger.debug("Critics updated. Loss: {:.4f}.", critic_loss_scalar)
 
-        should_log_step_metrics = self._should_log_training_step(global_learning_step)
+        should_log_step_metrics = (
+            self._should_log_training_step(global_learning_step) or should_log_runtime_profile
+        )
 
         # Compute detached policy actions once and reuse them during actor updates.
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         with torch.no_grad():
             detached_policy_actions = [
                 self._scale_action_tensor(agent_idx, actor(state)).detach()
                 for agent_idx, (actor, state) in enumerate(zip(self.actors, states))
             ]
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_detached_policy_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
 
         actor_update_due = (
             self.actor_update_interval <= 1
@@ -816,6 +924,8 @@ class MADDPG(BaseAgent):
         actor_behavior_cloning_ev_loss_values: List[float] = []
         actor_behavior_cloning_storage_loss_values: List[float] = []
         actor_behavior_cloning_regularization_values: List[float] = []
+        actor_behavior_cloning_extra_loss_values: List[float] = []
+        actor_behavior_cloning_extra_grad_norm_values: List[float] = []
         actor_grad_norm_values: List[float] = []
         actor_behavior_cloning_effective_weight = self._actor_behavior_cloning_effective_weight(
             global_learning_step
@@ -823,11 +933,27 @@ class MADDPG(BaseAgent):
         actor_policy_loss_effective_weight = self._actor_policy_loss_effective_weight(
             global_learning_step
         )
+        actor_behavior_cloning_extra_updates = self._actor_behavior_cloning_extra_updates_for_step(
+            global_learning_step,
+            actor_behavior_cloning_effective_weight,
+        )
+        phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         if actor_update_due:
             for agent_num, (actor, critic, actor_optimizer) in enumerate(
                 zip(self.actors, self.critics, self.actor_optimizers)
             ):
                 obs = states[agent_num]
+                extra_losses, extra_grad_norms = self._run_actor_behavior_cloning_extra_updates(
+                    agent_num=agent_num,
+                    actor=actor,
+                    actor_optimizer=actor_optimizer,
+                    observations=obs,
+                    behavior_actions=behavior_actions_all[agent_num],
+                    behavior_cloning_weight=actor_behavior_cloning_effective_weight,
+                    extra_updates=actor_behavior_cloning_extra_updates,
+                )
+                actor_behavior_cloning_extra_loss_values.extend(extra_losses)
+                actor_behavior_cloning_extra_grad_norm_values.extend(extra_grad_norms)
 
                 predicted_action = self._scale_action_tensor(agent_num, actor(obs))
                 joint_policy_actions = list(detached_policy_actions)
@@ -913,14 +1039,21 @@ class MADDPG(BaseAgent):
             actor_behavior_cloning_ev_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_storage_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_regularization_values = [0.0 for _ in range(self.num_agents)]
+            actor_behavior_cloning_extra_loss_values = [0.0]
+            actor_behavior_cloning_extra_grad_norm_values = [0.0]
             actor_grad_norm_values = [0.0 for _ in range(self.num_agents)]
             logger.debug(
                 "Actor update delayed at step {} by actor_update_interval={}.",
                 global_learning_step,
                 self.actor_update_interval,
             )
+        if should_log_runtime_profile:
+            runtime_profile_metrics["MADDPG/runtime_actor_update_seconds"] = (
+                time.perf_counter() - phase_start_time
+            )
 
         if should_log_step_metrics and self.training_diagnostics_enabled:
+            metrics_start_time = time.perf_counter()
             q_expected_flat = torch.cat([tensor.reshape(-1) for tensor in q_expected_stat_tensors])
             q_targets_flat = q_targets.detach().reshape(-1)
             training_metrics: Dict[str, float] = {
@@ -944,6 +1077,19 @@ class MADDPG(BaseAgent):
                 ),
                 "MADDPG/actor_behavior_cloning_regularization_mean": float(
                     np.mean(actor_behavior_cloning_regularization_values)
+                ),
+                "MADDPG/actor_behavior_cloning_extra_updates": float(
+                    actor_behavior_cloning_extra_updates
+                ),
+                "MADDPG/actor_behavior_cloning_extra_loss_mean": float(
+                    np.mean(actor_behavior_cloning_extra_loss_values)
+                    if actor_behavior_cloning_extra_loss_values
+                    else 0.0
+                ),
+                "MADDPG/actor_behavior_cloning_extra_grad_norm_mean": float(
+                    np.mean(actor_behavior_cloning_extra_grad_norm_values)
+                    if actor_behavior_cloning_extra_grad_norm_values
+                    else 0.0
                 ),
                 "MADDPG/actor_behavior_cloning_effective_weight": float(
                     actor_behavior_cloning_effective_weight
@@ -981,6 +1127,7 @@ class MADDPG(BaseAgent):
                 "MADDPG/exploration_sigma": float(getattr(self, "sigma", 0.0)),
                 "MADDPG/exploration_step": float(getattr(self, "exploration_step", 0)),
                 "MADDPG/training_step_time": time.time() - update_start_time,
+                "MADDPG/training_step_perf_seconds": time.perf_counter() - update_perf_start_time,
             }
             if self.training_diagnostics_detail == "per_agent":
                 for agent_num in range(self.num_agents):
@@ -1009,6 +1156,11 @@ class MADDPG(BaseAgent):
                         actor_behavior_cloning_regularization_values[agent_num]
                     )
                     training_metrics[f"MADDPG/actor_grad_norm_agent_{agent_num}"] = actor_grad_norm_values[agent_num]
+            if should_log_runtime_profile:
+                runtime_profile_metrics["MADDPG/runtime_metrics_build_seconds"] = (
+                    time.perf_counter() - metrics_start_time
+                )
+                training_metrics.update(runtime_profile_metrics)
             self._record_training_metrics(training_metrics, global_learning_step)
 
         log_message = "Update complete. Avg Critic Loss: {:.4f}, Avg Actor Loss: {:.4f}."
@@ -1031,17 +1183,26 @@ class MADDPG(BaseAgent):
         """Push a transition while preserving compatibility with simple buffers."""
         push = self.replay_buffer.push
         kwargs: Dict[str, Any] = {}
-        try:
-            parameters = inspect.signature(push).parameters
-        except (TypeError, ValueError):
-            parameters = {}
-        accepts_kwargs = any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters.values()
-        )
-        if accepts_kwargs or "behavior_actions" in parameters:
+
+        accepts_behavior_actions = getattr(self, "_replay_push_accepts_behavior_actions", None)
+        accepts_priority_boost = getattr(self, "_replay_push_accepts_priority_boost", None)
+        if accepts_behavior_actions is None or accepts_priority_boost is None:
+            try:
+                parameters = inspect.signature(push).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            accepts_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            accepts_behavior_actions = accepts_kwargs or "behavior_actions" in parameters
+            accepts_priority_boost = accepts_kwargs or "priority_boost" in parameters
+            self._replay_push_accepts_behavior_actions = accepts_behavior_actions
+            self._replay_push_accepts_priority_boost = accepts_priority_boost
+
+        if accepts_behavior_actions:
             kwargs["behavior_actions"] = behavior_actions
-        if accepts_kwargs or "priority_boost" in parameters:
+        if accepts_priority_boost:
             kwargs["priority_boost"] = priority_boost
 
         push(observations, actions, rewards, next_observations, done, **kwargs)
@@ -1058,6 +1219,28 @@ class MADDPG(BaseAgent):
 
     def _should_log_training_step(self, global_learning_step: int) -> bool:
         return global_learning_step % self.mlflow_step_sample_interval == 0
+
+    def _should_runtime_profile_step(self, global_learning_step: int) -> bool:
+        return bool(getattr(self, "runtime_profiling_enabled", False)) and (
+            global_learning_step % getattr(self, "runtime_profiling_interval", 512) == 0
+        )
+
+    def _record_update_runtime_skip_metrics(
+        self,
+        metrics: Dict[str, float],
+        global_learning_step: int,
+        update_perf_start_time: float,
+        *,
+        reason: str,
+    ) -> None:
+        if not self._should_runtime_profile_step(global_learning_step):
+            return
+        metrics = dict(metrics)
+        metrics["MADDPG/training_step_perf_seconds"] = time.perf_counter() - update_perf_start_time
+        metrics["MADDPG/update_skip_replay_warmup"] = float(reason == "replay_warmup")
+        metrics["MADDPG/update_skip_initial_exploration"] = float(reason == "initial_exploration")
+        metrics["MADDPG/update_skip_schedule"] = float(reason == "schedule")
+        self._record_training_metrics(metrics, global_learning_step)
 
     def _update_reward_normalizer(self, rewards: List[float]) -> None:
         if not getattr(self, "reward_normalization_enabled", False):
@@ -1184,6 +1367,15 @@ class MADDPG(BaseAgent):
             ),
             "MADDPG/actor_behavior_cloning_decay_steps": float(
                 getattr(self, "actor_behavior_cloning_decay_steps", 0)
+            ),
+            "MADDPG/actor_behavior_cloning_extra_updates": float(
+                getattr(self, "actor_behavior_cloning_extra_updates", 0)
+            ),
+            "MADDPG/actor_behavior_cloning_extra_update_start_step": float(
+                getattr(self, "actor_behavior_cloning_extra_update_start_step", 0)
+            ),
+            "MADDPG/actor_behavior_cloning_extra_update_end_step": float(
+                getattr(self, "actor_behavior_cloning_extra_update_end_step", 0)
             ),
             "MADDPG/actor_behavior_cloning_source_warm_start_policy": float(
                 getattr(self, "actor_behavior_cloning_source", "replay_action") == "warm_start_policy"
@@ -1380,6 +1572,8 @@ class MADDPG(BaseAgent):
             or self._latest_raw_observations is None
         ):
             return actions
+        if self.warm_start_policy_deterministic and self._last_warm_start_policy_actions is not None:
+            return [list(action) for action in self._last_warm_start_policy_actions]
         return self._predict_warm_start_policy(apply_noise=False, deterministic=True)
 
     def _transition_observation_event_priority_boost(self) -> float:
@@ -1536,13 +1730,19 @@ class MADDPG(BaseAgent):
                 self._warned_missing_raw_context = True
             return self._predict_noop_centered()
 
+        deterministic_effective = (
+            self.warm_start_policy_deterministic if deterministic is None else bool(deterministic)
+        )
         actions = self._warm_start_policy.predict(
             self._latest_raw_observations,
-            deterministic=self.warm_start_policy_deterministic if deterministic is None else bool(deterministic),
+            deterministic=deterministic_effective,
         )
+        base_clipped_actions: List[List[float]] = []
         clipped_actions: List[List[float]] = []
         for agent_idx, action in enumerate(actions):
             action_array = np.asarray(action, dtype=np.float64).reshape(-1)
+            action_array = self._clip_action_array(agent_idx, action_array)
+            base_clipped_actions.append(action_array.tolist())
             if apply_noise and self.warm_start_policy_noise_scale > 0.0:
                 span = self._action_span_for_agent(agent_idx)
                 noise = np.random.normal(
@@ -1552,6 +1752,8 @@ class MADDPG(BaseAgent):
                 )
                 action_array = action_array + noise
             clipped_actions.append(self._clip_action_array(agent_idx, action_array).tolist())
+        if deterministic_effective:
+            self._last_warm_start_policy_actions = [list(action) for action in base_clipped_actions]
         logger.debug("Warm-start policy exploration actions predicted: {}", clipped_actions)
         return clipped_actions
 
@@ -1756,6 +1958,71 @@ class MADDPG(BaseAgent):
         effective_mask = mask * negative_mask
         denominator = torch.clamp(effective_mask.sum(), min=1.0)
         return (normalized_action.pow(2) * effective_mask).sum() / denominator
+
+    def _actor_behavior_cloning_extra_updates_for_step(
+        self,
+        global_learning_step: int,
+        behavior_cloning_weight: float,
+    ) -> int:
+        if behavior_cloning_weight <= 0.0:
+            return 0
+        extra_updates = max(0, int(getattr(self, "actor_behavior_cloning_extra_updates", 0) or 0))
+        if extra_updates <= 0:
+            return 0
+
+        start_step = max(
+            0,
+            int(getattr(self, "actor_behavior_cloning_extra_update_start_step", 0) or 0),
+        )
+        if global_learning_step < start_step:
+            return 0
+
+        end_step = max(
+            0,
+            int(getattr(self, "actor_behavior_cloning_extra_update_end_step", 0) or 0),
+        )
+        if end_step > 0 and global_learning_step > end_step:
+            return 0
+
+        return extra_updates
+
+    def _run_actor_behavior_cloning_extra_updates(
+        self,
+        *,
+        agent_num: int,
+        actor: torch.nn.Module,
+        actor_optimizer: torch.optim.Optimizer,
+        observations: torch.Tensor,
+        behavior_actions: torch.Tensor,
+        behavior_cloning_weight: float,
+        extra_updates: int,
+    ) -> tuple[List[float], List[float]]:
+        if extra_updates <= 0:
+            return [], []
+
+        loss_values: List[float] = []
+        grad_norm_values: List[float] = []
+        for _ in range(extra_updates):
+            predicted_action = self._scale_action_tensor(agent_num, actor(observations))
+            with autocast(device_type=self.device.type, enabled=self.use_amp):
+                behavior_cloning_loss = self._actor_behavior_cloning_loss(
+                    agent_num,
+                    predicted_action,
+                    behavior_actions,
+                )
+                weighted_loss = behavior_cloning_weight * behavior_cloning_loss
+
+            actor_optimizer.zero_grad(set_to_none=True)
+            self.scaler.scale(weighted_loss).backward()
+            self.scaler.unscale_(actor_optimizer)
+            grad_norm = clip_grad_norm_(actor.parameters(), max_norm=1.0)
+            self.scaler.step(actor_optimizer)
+            self.scaler.update()
+
+            loss_values.append(float(weighted_loss.detach().item()))
+            grad_norm_values.append(float(grad_norm))
+
+        return loss_values, grad_norm_values
 
     def _actor_behavior_cloning_loss(
         self,
