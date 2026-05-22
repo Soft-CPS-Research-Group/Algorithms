@@ -1,0 +1,180 @@
+metadata:
+  experiment_name: remote_20260522_scorecard_2022_matd3_service_storage_guard_seed123
+  run_name: remote 20260522 scorecard 2022 matd3 service storage guard seed123
+  community_name: citylearn_2022
+  description: Official scorecard full-year 2022 MATD3ServiceStorageGuard; dataset
+    citylearn_challenge_2022_phase_all_plus_evs_data_2026_05_21; image sha-f20cc24;
+    no checkpoints; no BAU exports.
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+tracking:
+  mlflow_enabled: false
+  log_level: INFO
+  log_frequency: 1024
+  mlflow_step_sample_interval: 1024
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 1024
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+  action_diagnostics_enabled: true
+  action_diagnostics_detail: summary
+  action_saturation_tolerance: 0.01
+  action_idle_tolerance: 0.02
+  training_diagnostics_enabled: true
+  training_diagnostics_detail: summary
+  reward_diagnostics_enabled: true
+  reward_diagnostics_detail: summary
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: latest_checkpoint.pth
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: null
+  require_update_step: true
+  require_initial_exploration_done: true
+bundle:
+  bundle_version: null
+  description: null
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+  per_agent_artifact_config: {}
+simulator:
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs_data_2026_05_21
+  dataset_path: /data/datasets/citylearn_challenge_2022_phase_all_plus_evs_data_2026_05_21/schema.json
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    profile: maddpg_v2_compact
+    clip: true
+  reward_function: CostServiceCommunityFeasiblePrecisionRewardV46
+  reward_function_kwargs: {}
+  episodes: 6
+  deterministic_finish: true
+  simulation_start_time_step: 0
+  simulation_end_time_step: 8759
+  episode_time_steps: 8760
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    final_episode_only: true
+    kpis_final_episode_only: false
+    timeseries_final_episode_only: true
+    include_business_as_usual: false
+    export_business_as_usual_timeseries: false
+    kpi_round_decimals: null
+    session_name: remote_20260522_scorecard_2022_matd3_service_storage_guard_seed123
+  wrapper_reward:
+    enabled: false
+    profile: cost_limits_v1
+    clip_enabled: true
+    clip_min: -10.0
+    clip_max: 10.0
+    squash: none
+training:
+  seed: 123
+  steps_between_training_updates: 1
+  target_update_interval: 1
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+algorithm:
+  name: MATD3
+  hyperparameters:
+    gamma: 0.995
+    seed: 123
+  networks:
+    actor:
+      class: Actor
+      layers:
+      - 512
+      - 256
+      lr: 0.0002
+    critic:
+      class: Critic
+      layers:
+      - 512
+      - 256
+      lr: 0.0001
+  replay_buffer:
+    class: RewardWeightedMultiAgentReplayBuffer
+    capacity: 250000
+    batch_size: 256
+    priority_fraction: 0.2
+    priority_alpha: 0.7
+    priority_epsilon: 0.001
+    priority_mode: negative_reward
+    priority_max: 30.0
+    behavior_action_priority_weight: 3.5
+    behavior_action_priority_mode: positive
+    behavior_action_priority_scope: ev
+  exploration:
+    strategy: GaussianNoise
+    params:
+      bias: 0.0
+      sigma: 0.15
+      decay: 0.9995
+      min_sigma: 0.03
+      noise_clip: 0.3
+      storage_exploration_noise_multiplier: 0.35
+      ev_negative_exploration_noise_multiplier: 0.0
+      gamma: 0.99
+      tau: 0.001
+      use_amp: true
+      end_initial_exploration_time_step: 960
+      random_exploration_steps: 960
+      initial_exploration_strategy: policy
+      warm_start_policy: RBCSmartPolicy
+      warm_start_policy_deterministic: true
+      warm_start_policy_noise_scale: 0.0
+      warm_start_policy_phaseout_steps: 12000
+      warm_start_policy_phaseout_mode: blend
+      train_during_initial_exploration: true
+      initial_exploration_training_start_step: 0
+      noop_noise_scale: 0.15
+      deferrable_on_probability: 0.2
+      deferrable_trigger_threshold: 0.5
+      noop_actor_initialization: false
+      noop_actor_initialization_epsilon: 0.05
+      critic_update_mode: joint_mean
+      actor_update_interval: 2
+      target_policy_smoothing: true
+      target_policy_noise: 0.05
+      target_policy_noise_clip: 0.1
+      actor_action_l2_penalty: 0.006
+      actor_action_saturation_penalty: 0.04
+      actor_storage_action_l2_penalty: 1.5
+      actor_ev_v2g_action_l2_penalty: 35.0
+      actor_action_saturation_threshold: 0.85
+      actor_behavior_cloning_weight: 1.0
+      actor_ev_behavior_cloning_multiplier: 55.0
+      actor_storage_behavior_cloning_multiplier: 2.0
+      actor_behavior_cloning_min_weight: 1.0
+      actor_behavior_cloning_decay_start_step: 0
+      actor_behavior_cloning_decay_steps: 0
+      reward_normalization: true
+      reward_normalization_clip: 10.0
+      reward_normalization_epsilon: 1.0e-08
+      critic_loss: huber
+      critic_huber_beta: 1.0
+      critic_target_clip_abs: 25.0
+      actor_behavior_cloning_source: warm_start_policy
+      actor_policy_loss_weight: 0.0
+execution: null

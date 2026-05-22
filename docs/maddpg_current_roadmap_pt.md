@@ -1,6 +1,6 @@
 # Roadmap Atual RL/MARL
 
-Data: 2026-05-21.
+Data: 2026-05-22.
 
 Este e o documento vivo para orientar o trabalho daqui para a frente. O nome do
 ficheiro ainda menciona MADDPG porque esse foi o ponto de partida, mas o objetivo
@@ -52,7 +52,7 @@ Base tecnica:
   - `multi_charger`;
 - perfil principal de observacoes: `maddpg_v2_compact`;
 - candidato atual: `MADDPG V48`;
-- imagem remota atual: `sha-969d417`.
+- imagem remota atual: `sha-f20cc24`.
 - performance recente:
   - replay compacto prealocado em NumPy/torch;
   - rewards do repo declaram payload minimo de observacoes para o simulador;
@@ -107,6 +107,11 @@ O que ainda nao esta provado:
 
 Um candidato so deve ser considerado "bom" se for avaliado contra baselines e
 nao apenas contra a propria curva de reward.
+
+O scorecard congelado para a matriz atual esta em
+`docs/community_optimization_success_scorecard_pt.md`. A matriz remota oficial
+2022 full-year submetida em 2026-05-22 esta documentada em
+`docs/phase6_2022_scorecard_remote_submission_pt.md`.
 
 KPIs principais:
 
