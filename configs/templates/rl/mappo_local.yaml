@@ -203,6 +203,9 @@ algorithm:
       actor_behavior_cloning_min_weight: 0.0
       actor_behavior_cloning_decay_start_step: 0
       actor_behavior_cloning_decay_steps: 0
+      actor_behavior_cloning_extra_updates: 0
+      actor_behavior_cloning_extra_update_start_step: 0
+      actor_behavior_cloning_extra_update_end_step: 0
       reward_normalization: true
       reward_normalization_clip: 10.0
       reward_normalization_epsilon: 1.0e-8

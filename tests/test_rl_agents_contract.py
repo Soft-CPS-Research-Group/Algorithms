@@ -206,3 +206,85 @@ def test_ppo_agents_export_onnx_contract(agent_cls, tmp_path):
         assert artifact["format"] == "onnx"
         assert artifact["config"]["require_observations_envelope"] is True
         assert (tmp_path / artifact["path"]).exists()
+
+
+def test_ppo_warm_start_policy_and_behavior_cloning_contract():
+    config = _base_rl_config("MAPPO")
+    params = config["algorithm"]["exploration"]["params"]
+    params.update(
+        {
+            "initial_exploration_strategy": "policy",
+            "warm_start_policy": "RandomPolicy",
+            "warm_start_policy_deterministic": True,
+            "warm_start_policy_phaseout_steps": 100,
+            "warm_start_policy_phaseout_mode": "blend",
+            "actor_behavior_cloning_weight": 0.5,
+            "actor_behavior_cloning_min_weight": 0.5,
+            "actor_behavior_cloning_decay_steps": 0,
+            "actor_behavior_cloning_extra_updates": 1,
+        }
+    )
+    agent = MAPPO(config)
+    _attach_bounds(agent)
+
+    for step in range(2):
+        obs, next_obs, rewards = _transition(step)
+        agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
+        actions = agent.predict(obs, deterministic=False)
+        assert len(actions) == 2
+        assert agent.get_diagnostic_metrics()["MAPPO/warm_start_policy_enabled"] == 1.0
+        assert agent.get_diagnostic_metrics()["MAPPO/warm_start_policy_phaseout_used"] == 1.0
+
+        agent.update(
+            observations=obs,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_obs,
+            terminated=False,
+            truncated=step == 1,
+            update_target_step=True,
+            global_learning_step=step + 1,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+    metrics = agent.consume_latest_training_metrics()
+    assert metrics["MAPPO/behavior_cloning_effective_weight"] == pytest.approx(0.5)
+    assert "MAPPO/behavior_cloning_loss_mean" in metrics
+    assert metrics["MAPPO/behavior_cloning_extra_updates"] == pytest.approx(1.0)
+
+
+def test_masac_behavior_cloning_and_action_regularization_metrics():
+    config = _base_rl_config("MASAC")
+    params = config["algorithm"]["exploration"]["params"]
+    params.update(
+        {
+            "automatic_entropy_tuning": False,
+            "actor_behavior_cloning_weight": 0.25,
+            "actor_behavior_cloning_min_weight": 0.25,
+            "actor_storage_action_l2_penalty": 0.1,
+        }
+    )
+    agent = MASAC(config)
+    _attach_bounds(agent)
+
+    for step in range(2):
+        obs, next_obs, rewards = _transition(step)
+        actions = agent.predict(obs, deterministic=False)
+        agent.update(
+            observations=obs,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_obs,
+            terminated=False,
+            truncated=step == 1,
+            update_target_step=True,
+            global_learning_step=step + 1,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+    metrics = agent.consume_latest_training_metrics()
+    assert metrics["MASAC/actor_behavior_cloning_effective_weight"] == pytest.approx(0.25)
+    assert "MASAC/actor_behavior_cloning_loss_mean" in metrics
+    assert "MASAC/actor_regularization_mean" in metrics

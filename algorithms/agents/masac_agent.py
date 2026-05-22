@@ -164,17 +164,19 @@ class MASAC(MADDPG):
             return
 
         if hasattr(self.replay_buffer, "sample_with_behavior_actions"):
-            states, actions_all, rewards_all, next_states, dones_all, _behavior_actions_all = (
+            states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all = (
                 self.replay_buffer.sample_with_behavior_actions()
             )
         else:
             states, actions_all, rewards_all, next_states, dones_all = self.replay_buffer.sample()
+            behavior_actions_all = actions_all
 
         raw_rewards_all = torch.stack(rewards_all).to(self.device, dtype=torch.float32, non_blocking=True)
         rewards_all = self._normalize_reward_tensor(raw_rewards_all)
         dones_all = dones_all.to(self.device, dtype=torch.float32, non_blocking=True)
         states = [state.to(self.device, non_blocking=True) for state in states]
         actions_all = [action.to(self.device, non_blocking=True) for action in actions_all]
+        behavior_actions_all = [action.to(self.device, non_blocking=True) for action in behavior_actions_all]
         next_states = [state.to(self.device, non_blocking=True) for state in next_states]
 
         global_state = torch.cat(states, dim=1)
@@ -253,6 +255,11 @@ class MASAC(MADDPG):
         alpha_loss_values: List[float] = []
         alpha_values: List[float] = []
         actor_grad_norm_values: List[float] = []
+        actor_behavior_cloning_values: List[float] = []
+        actor_regularization_values: List[float] = []
+        actor_behavior_cloning_effective_weight = self._actor_behavior_cloning_effective_weight(
+            global_learning_step
+        )
         if actor_update_due:
             with torch.no_grad():
                 detached_policy_actions = []
@@ -272,7 +279,24 @@ class MASAC(MADDPG):
                     q2_policy = self.critics_2[agent_idx](global_state, global_policy_actions)
                     min_q_policy = torch.minimum(q1_policy, q2_policy)
                     alpha = self._alpha(agent_idx).detach()
-                    actor_loss = (alpha * log_prob - min_q_policy).mean()
+                    actor_policy_loss = (alpha * log_prob - min_q_policy).mean()
+                    (
+                        _action_l2,
+                        _action_saturation,
+                        _storage_action_l2,
+                        _ev_v2g_action_l2,
+                        actor_regularization,
+                    ) = self._actor_action_regularization_terms(agent_idx, scaled_action)
+                    behavior_cloning_loss = self._actor_behavior_cloning_loss(
+                        agent_idx,
+                        scaled_action,
+                        behavior_actions_all[agent_idx],
+                    )
+                    actor_loss = (
+                        actor_policy_loss
+                        + actor_regularization
+                        + actor_behavior_cloning_effective_weight * behavior_cloning_loss
+                    )
 
                 optimizer.zero_grad(set_to_none=True)
                 self.scaler.scale(actor_loss).backward()
@@ -284,6 +308,8 @@ class MASAC(MADDPG):
                 actor_loss_values.append(float(actor_loss.detach().item()))
                 actor_log_prob_values.append(float(log_prob.detach().mean().item()))
                 actor_grad_norm_values.append(float(actor_grad_norm))
+                actor_behavior_cloning_values.append(float(behavior_cloning_loss.detach().item()))
+                actor_regularization_values.append(float(actor_regularization.detach().item()))
 
                 if self.automatic_entropy_tuning:
                     alpha_loss = -(
@@ -318,6 +344,13 @@ class MASAC(MADDPG):
                 "MASAC/actor_loss_mean": float(np.mean(actor_loss_values) if actor_loss_values else 0.0),
                 "MASAC/actor_log_prob_mean": float(np.mean(actor_log_prob_values) if actor_log_prob_values else 0.0),
                 "MASAC/actor_grad_norm_mean": float(np.mean(actor_grad_norm_values) if actor_grad_norm_values else 0.0),
+                "MASAC/actor_behavior_cloning_loss_mean": float(
+                    np.mean(actor_behavior_cloning_values) if actor_behavior_cloning_values else 0.0
+                ),
+                "MASAC/actor_behavior_cloning_effective_weight": float(actor_behavior_cloning_effective_weight),
+                "MASAC/actor_regularization_mean": float(
+                    np.mean(actor_regularization_values) if actor_regularization_values else 0.0
+                ),
                 "MASAC/alpha_loss_mean": float(np.mean(alpha_loss_values) if alpha_loss_values else 0.0),
                 "MASAC/alpha_mean": float(np.mean(alpha_values) if alpha_values else self.entropy_alpha),
                 "MASAC/q1_expected_mean": float(q1_flat.mean().item()),

@@ -268,10 +268,33 @@ def _read_jobs_file(path: Path) -> list[str]:
     if path.suffix.lower() == ".json":
         payload = json.loads(text)
         if isinstance(payload, list):
-            return [str(item) for item in payload]
+            job_ids: list[str] = []
+            for item in payload:
+                if isinstance(item, dict):
+                    job_id = item.get("job_id") or _extract_nested(item, "response", "job_id")
+                    if job_id:
+                        job_ids.append(str(job_id))
+                elif item:
+                    job_ids.append(str(item))
+            return job_ids
         if isinstance(payload, dict):
             values = payload.get("job_ids") or payload.get("jobs") or []
-            return [str(item) for item in values]
+            job_ids = []
+            for item in values:
+                if isinstance(item, dict):
+                    job_id = item.get("job_id") or _extract_nested(item, "response", "job_id")
+                    if job_id:
+                        job_ids.append(str(job_id))
+                elif item:
+                    job_ids.append(str(item))
+            submissions = payload.get("submissions") or []
+            for item in submissions:
+                if not isinstance(item, dict):
+                    continue
+                job_id = item.get("job_id") or _extract_nested(item, "response", "job_id")
+                if job_id:
+                    job_ids.append(str(job_id))
+            return job_ids
     if path.suffix.lower() == ".csv":
         reader = csv.DictReader(text.splitlines())
         if reader.fieldnames and "job_id" in reader.fieldnames:
@@ -363,9 +386,11 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
         errors.append(f"simulation_data: {exc}")
 
     details = _as_dict(status.get("details"))
+    deucalion_options = _as_dict(info.get("deucalion_options"))
     row.update(
         {
             "status": status.get("status") or "",
+            "exit_code": status.get("exit_code"),
             "worker_id": status.get("worker_id") or "",
             "worker_version": status.get("worker_version") or "",
             "job_name": info.get("job_name") or "",
@@ -378,6 +403,17 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
             "slurm_reason": details.get("slurm_reason") or "",
             "slurm_start_time": details.get("slurm_start_time") or "",
             "slurm_queue_position": details.get("slurm_queue_position") or "",
+            "queued_at": info.get("queued_at") or "",
+            "started_at": info.get("started_at") or "",
+            "finished_at": info.get("finished_at") or "",
+            "queue_wait_seconds": info.get("queue_wait_seconds") or "",
+            "run_duration_seconds": info.get("run_duration_seconds") or "",
+            "total_duration_seconds": info.get("total_duration_seconds") or "",
+            "deucalion_partition": deucalion_options.get("partition") or "",
+            "deucalion_time": deucalion_options.get("time") or "",
+            "deucalion_cpus_per_task": deucalion_options.get("cpus_per_task") or "",
+            "deucalion_mem_gb": deucalion_options.get("mem_gb") or "",
+            "deucalion_gpus": deucalion_options.get("gpus") or "",
             "device_selected": _extract_device(logs),
             "simulation_data_available": result.get("simulation_data_available"),
             "kpi_source": result.get("kpi_source") or "",

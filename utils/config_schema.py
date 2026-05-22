@@ -134,6 +134,8 @@ class SimulatorExportConfig(BaseModel):
     mode: Literal["none", "during", "end"] = "none"
     export_kpis_on_episode_end: bool = False
     final_episode_only: bool = False
+    kpis_final_episode_only: Optional[bool] = None
+    timeseries_final_episode_only: Optional[bool] = None
     include_business_as_usual: bool = True
     export_business_as_usual_timeseries: bool = True
     kpi_round_decimals: Optional[int] = Field(default=None, ge=0)

@@ -112,6 +112,16 @@ def main(argv: list[str]) -> int:
     _run(
         [
             python,
+            str(scripts / "build_remote_job_report.py"),
+            "--results-dir",
+            str(args.output_dir),
+            "--summary-csv",
+            str(summary_csv),
+        ]
+    )
+    _run(
+        [
+            python,
             str(scripts / "build_phase6_building_scorecard.py"),
             "--results-dir",
             str(args.output_dir),
@@ -124,7 +134,15 @@ def main(argv: list[str]) -> int:
     )
 
     print("Generated:")
-    for name in ("summary.csv", "scorecard.csv", "scorecard.md", "building_scorecard.csv", "building_scorecard.md"):
+    for name in (
+        "summary.csv",
+        "scorecard.csv",
+        "scorecard.md",
+        "job_report.csv",
+        "job_report.md",
+        "building_scorecard.csv",
+        "building_scorecard.md",
+    ):
         print(args.output_dir / name)
     return 0
 

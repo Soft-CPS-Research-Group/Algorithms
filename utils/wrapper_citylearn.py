@@ -284,6 +284,12 @@ class Wrapper_CityLearn(RLC):
             )
         )
         self._export_final_episode_only = bool(export_cfg.get("final_episode_only", False))
+        self._export_kpis_final_episode_only = bool(
+            export_cfg.get("kpis_final_episode_only", self._export_final_episode_only)
+        )
+        self._export_timeseries_final_episode_only = bool(
+            export_cfg.get("timeseries_final_episode_only", self._export_final_episode_only)
+        )
         self._export_include_business_as_usual = bool(export_cfg.get("include_business_as_usual", True))
         self._export_business_as_usual_timeseries = bool(
             export_cfg.get("export_business_as_usual_timeseries", True)
@@ -293,7 +299,9 @@ class Wrapper_CityLearn(RLC):
             not self._export_include_business_as_usual
             or not self._export_business_as_usual_timeseries
             or self._export_kpi_round_decimals is not None
+            or not self._export_kpis_final_episode_only
         )
+        self._manual_kpi_exported_episodes: set[int | None] = set()
 
         self.wrapper_reward_enabled = bool(wrapper_reward_cfg.get("enabled", False))
         self.wrapper_reward_profile = str(wrapper_reward_cfg.get("profile", "cost_limits_v1")).strip() or "cost_limits_v1"
@@ -512,14 +520,14 @@ class Wrapper_CityLearn(RLC):
         return step_total, episodes * step_total
 
     def _configure_episode_exports(self, episode: int, episodes: int) -> bool:
-        """Enable costly simulator exports only for episodes requested by config."""
+        """Enable KPI export and timeseries rendering independently per episode."""
 
         is_final_episode = episode >= episodes - 1
         export_this_episode = self._configured_export_kpis_on_episode_end and (
-            not self._export_final_episode_only or is_final_episode
+            not self._export_kpis_final_episode_only or is_final_episode
         )
         render_this_episode = self._configured_render_enabled and (
-            not self._export_final_episode_only or is_final_episode
+            not self._export_timeseries_final_episode_only or is_final_episode
         )
 
         if hasattr(self.env, "render_enabled"):
@@ -529,20 +537,40 @@ class Wrapper_CityLearn(RLC):
 
         return export_this_episode
 
-    def _export_episode_kpis_if_needed(self, export_this_episode: bool) -> None:
+    def _export_episode_kpis_if_needed(
+        self,
+        export_this_episode: bool,
+        episode: int | None = None,
+        *,
+        is_final_episode: bool = False,
+    ) -> None:
         if not export_this_episode or not self._manual_kpi_export:
             return
         if not hasattr(self.env, "export_final_kpis"):
             logger.warning("Simulator does not expose export_final_kpis(); skipping manual KPI export.")
             return
-        if bool(getattr(self.env, "_final_kpis_exported", False)):
+        if episode in self._manual_kpi_exported_episodes:
             return
 
-        self.env.export_final_kpis(
-            include_business_as_usual=self._export_include_business_as_usual,
-            export_business_as_usual_timeseries=self._export_business_as_usual_timeseries,
-            kpi_round_decimals=self._export_kpi_round_decimals,
-        )
+        export_business_as_usual_timeseries = self._export_business_as_usual_timeseries
+        if self._export_timeseries_final_episode_only:
+            export_business_as_usual_timeseries = export_business_as_usual_timeseries and is_final_episode
+
+        kwargs = {
+            "include_business_as_usual": self._export_include_business_as_usual,
+            "export_business_as_usual_timeseries": export_business_as_usual_timeseries,
+            "kpi_round_decimals": self._export_kpi_round_decimals,
+        }
+        if not self._export_kpis_final_episode_only and episode is not None:
+            kwargs["filepath"] = f"exported_kpis_ep{episode}.csv"
+
+        self.env.export_final_kpis(**kwargs)
+        if not self._export_kpis_final_episode_only and is_final_episode and episode is not None:
+            final_kwargs = dict(kwargs)
+            final_kwargs.pop("filepath", None)
+            self.env.export_final_kpis(**final_kwargs)
+
+        self._manual_kpi_exported_episodes.add(episode)
 
     def set_model(self, model: BaseAgent):
         """
@@ -760,7 +788,11 @@ class Wrapper_CityLearn(RLC):
 
                 time_step += 1
 
-            self._export_episode_kpis_if_needed(export_this_episode)
+            self._export_episode_kpis_if_needed(
+                export_this_episode,
+                episode=episode,
+                is_final_episode=episode + 1 >= episodes,
+            )
 
             if self.progress_updates_enabled and time_step > 0:
                 self.progress_tracker.update(
