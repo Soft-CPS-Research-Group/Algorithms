@@ -13,3 +13,16 @@ Official clean full-year 2022 matrix for the current scorecard.
 - KPI export: per episode; timeseries final episode only
 
 See `docs/community_optimization_success_scorecard_pt.md` for the decision gates.
+
+## Redistribution
+
+After the first submission, secondary RL/MARL seeds were redistributed away from
+the Deucalion GPU queue:
+
+- seed `123` remains on Deucalion GPU for `MADDPG V48`,
+  `MATD3ServiceStorageGuard`, and `MATD3StorageGuard`;
+- seed `456` runs on the `server` CPU worker;
+- seed `789` runs on Deucalion CPU (`normal-x86`);
+- redistributed CPU configs have AMP disabled (`use_amp: false`).
+
+See `redistribution_manifest.csv` for the replacement configs.
