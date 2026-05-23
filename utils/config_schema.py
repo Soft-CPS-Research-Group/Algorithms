@@ -481,17 +481,52 @@ class CCHyperparameters(BaseModel):
     target_kl:           Optional[float] = Field(default=0.02, gt=0)
     obs_dim:             int   = Field(default=9,     gt=0)
     cc_action_interval:  int   = Field(default=1,     gt=0)
+    output_mode:         Literal["actions", "signal"] = "actions"
+
+
+class BuildingAgentHyperparameters(BaseModel):
+    gamma:                    float = Field(default=0.99,  ge=0, le=1)
+    gae_lambda:               float = Field(default=0.95,  ge=0, le=1)
+    num_epochs:               int   = Field(default=10,    ge=1)
+    mini_batch_size:          int   = Field(default=64,    ge=1)
+    clip_coef:                float = Field(default=0.2,   gt=0)
+    vf_coef:                  float = Field(default=0.5,   ge=0)
+    ent_coef:                 float = Field(default=0.01,  ge=0)
+    max_grad_norm:            float = Field(default=0.5,   gt=0)
+    target_kl:                Optional[float] = Field(default=0.02, gt=0)
+    lr:                       float = Field(default=3e-4,  gt=0)
+    obs_dim:                  int   = Field(default=0,     ge=0)   # 0 = auto from env
+    action_dim:               int   = Field(default=0,     ge=0)   # 0 = auto from env
+    num_steps:                int   = Field(default=2048,  ge=1)
+    hidden_dims:              List[int] = Field(default=[64, 64])
+    building_cost_weight:     float = Field(default=1.0,   ge=0)
+    community_import_weight:  float = Field(default=0.3,   ge=0)
+    constraint_penalty_weight: float = Field(default=0.5,  ge=0)
 
 
 class CommunityCoordinatorAlgorithmConfig(BaseModel):
     algorithm: Literal["CommunityCoordinator"]
     count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    frozen: bool = False
     hyperparameters: CCHyperparameters = CCHyperparameters()
+
+
+class BuildingAgentStageConfig(BaseModel):
+    """Pipeline stage describing a BuildingAgent (per-building PPO worker)."""
+
+    algorithm: Literal["BuildingAgent"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
+    hyperparameters: BuildingAgentHyperparameters = BuildingAgentHyperparameters()
+    networks: Optional[Any] = None
+    replay_buffer: Optional[Any] = None
+    exploration: Optional[Any] = None
 
 
 class ActorCriticAlgorithmConfig(BaseModel):
     algorithm: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
     count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    frozen: bool = False
     hyperparameters: AlgorithmHyperparameters
     networks: AlgorithmNetworks
     replay_buffer: ReplayBufferConfig
@@ -509,6 +544,7 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "RBCSmartPolicy",
     ]
     count: int = Field(default=1, ge=1)
+    frozen: bool = False
     hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
@@ -520,6 +556,7 @@ class SingleAgentRLStageConfig(BaseModel):
 
     algorithm: Literal["SingleAgentRL"]
     count: int = Field(default=1, ge=1)
+    frozen: bool = False
     hyperparameters: AlgorithmHyperparameters
     policy: Optional[str] = Field(default=None, description="Identifier for the policy architecture")
     replay_buffer: Optional[ReplayBufferConfig] = None
@@ -537,19 +574,12 @@ class SingleAgentRLStageConfig(BaseModel):
 
 
 PipelineStageConfig = Union[
+    BuildingAgentStageConfig,
     CommunityCoordinatorAlgorithmConfig,
     ActorCriticAlgorithmConfig,
     RuleBasedAlgorithmConfig,
     SingleAgentRLStageConfig,
 ]
-
-
-PipelineStageConfig = Union[
-    ActorCriticAlgorithmConfig,
-    RuleBasedAlgorithmConfig,
-    SingleAgentRLStageConfig,
-]
-
 
 class DeucalionExecutionConfig(BaseModel):
     partition: Optional[str] = None

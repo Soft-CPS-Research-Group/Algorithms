@@ -167,6 +167,11 @@ class CommunityCoordinatorAgent(BaseAgent):
         self._cached_value:       float = 0.0
         self._accumulated_reward: float = 0.0
 
+        # ── Output mode ─────────────────────────────────────────────────
+        # "actions" (default): return per-building action vectors via RBC.
+        # "signal": return the raw o1 scalar for the next pipeline stage.
+        self._output_mode: str = hyper.get("output_mode", "actions")
+
         # ── Decision trace (diagnostic only) ────────────────────────────
         # One row per CC decision: state + action + value estimate.
         # Flushed to CSV + MLflow at episode end so we can plot whether
@@ -209,6 +214,9 @@ class CommunityCoordinatorAgent(BaseAgent):
         """
         if self._step_in_interval == 0:
             self._sample_new_decision(observations)
+
+        if self._output_mode == "signal":
+            return self._cached_o1
 
         return [self._rbc_act(observations[i], i, self._cached_o1)
                 for i in range(len(observations))]
@@ -317,12 +325,51 @@ class CommunityCoordinatorAgent(BaseAgent):
             ],
         }
 
-    # Required by BaseAgent but not implemented yet.
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
-        raise NotImplementedError("Agent does not implement checkpointing.")
+        path = Path(output_dir) / f"cc_step_{step}.pt"
+        torch.save(
+            {
+                "step":              step,
+                "actor_critic":      self.actor_critic.state_dict(),
+                "optimizer":         self.ppo_optim.state_dict(),
+                "obs_rms_n":         self._obs_rms._n,
+                "obs_rms_mean":      self._obs_rms._mean.copy(),
+                "obs_rms_M2":        self._obs_rms._M2.copy(),
+                "ret_rms_n":         self._ret_rms._n,
+                "ret_rms_mean":      self._ret_rms._mean.copy(),
+                "ret_rms_M2":        self._ret_rms._M2.copy(),
+                "return_running":    self._return_running,
+                "ppo_update_count":  self._ppo_update_count,
+                "global_cc_step":    self._global_cc_step,
+            },
+            path,
+        )
+        logger.info("CC checkpoint saved → {}", path)
+        return str(path)
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
-        raise NotImplementedError("Agent does not implement checkpoint loading.")
+        root = Path(checkpoint_path)
+        if root.is_dir():
+            candidates = sorted(root.glob("cc_step_*.pt"), key=lambda p: p.stat().st_mtime)
+            if not candidates:
+                raise FileNotFoundError(f"No CC checkpoint found in {root}")
+            path = candidates[-1]
+        else:
+            path = root
+
+        ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
+        self.actor_critic.load_state_dict(ckpt["actor_critic"])
+        self.ppo_optim.load_state_dict(ckpt["optimizer"])
+        self._obs_rms._n    = ckpt["obs_rms_n"]
+        self._obs_rms._mean = ckpt["obs_rms_mean"]
+        self._obs_rms._M2   = ckpt["obs_rms_M2"]
+        self._ret_rms._n    = ckpt["ret_rms_n"]
+        self._ret_rms._mean = ckpt["ret_rms_mean"]
+        self._ret_rms._M2   = ckpt["ret_rms_M2"]
+        self._return_running   = float(ckpt["return_running"])
+        self._ppo_update_count = int(ckpt.get("ppo_update_count", 0))
+        self._global_cc_step   = int(ckpt.get("global_cc_step", 0))
+        logger.info("CC checkpoint loaded ← {} (step {})", path, ckpt.get("step"))
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         # No warm-up exploration phase: PPO learns from the very first rollout.

@@ -36,7 +36,7 @@ checkpointing:
   reset_replay_buffer: false
   freeze_pretrained_layers: false
   fine_tune: false
-  checkpoint_interval: 2048
+  checkpoint_interval: 57600
 
 bundle:
   bundle_version: null
@@ -56,10 +56,10 @@ simulator:
     normalization: minmax_space
     clip: true
   reward_function: CCReward
-  episodes: 1
+  episodes: 150
   episode_time_steps: 5760     # 1 day at 15-second timesteps (5760 × 15s = 86400s)
   simulation_start_time_step: 0
-  simulation_end_time_step: 5759
+  simulation_end_time_step: 17280
   export:
     mode: end
     export_kpis_on_episode_end: true

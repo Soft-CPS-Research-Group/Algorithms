@@ -79,6 +79,8 @@ class Pipeline(ExecutionUnit):
         initial_exploration_done: bool,
     ) -> None:
         for stage in self.stages:
+            if getattr(stage, "frozen", False):
+                continue
             stage.update(
                 observations,
                 actions,
@@ -133,7 +135,25 @@ class Pipeline(ExecutionUnit):
         for index, stage in enumerate(self.stages):
             stage_dir = root / f"stage_{index}"
             if not stage_dir.exists():
-                continue
+                # Flat fallback: standalone checkpoint (no stage subdirs).
+                # A model trained solo saves directly to the root dir.
+                # Allow stage 0 to load from root if root contains checkpoint
+                # files — covers the CC-trained-alone → HIRO-loaded scenario.
+                if index == 0 and any(root.iterdir()):
+                    logger.debug(
+                        "Pipeline stage 0: no stage_0/ subdir found; "
+                        "falling back to root '{}' (flat checkpoint format).",
+                        root,
+                    )
+                    stage_dir = root
+                else:
+                    logger.debug(
+                        "Pipeline stage {} ({}): checkpoint dir '{}' not found; skipping.",
+                        index,
+                        type(stage).__name__,
+                        root / f"stage_{index}",
+                    )
+                    continue
             try:
                 stage.load_checkpoint(str(stage_dir))
                 loaded_count += 1

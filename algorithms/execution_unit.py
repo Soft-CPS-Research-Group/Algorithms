@@ -47,6 +47,10 @@ class ExecutionUnit(ABC):
     def use_raw_observations(self, value: bool) -> None:
         self._use_raw_observations = value
 
+    # When True, this unit's update() is skipped by Pipeline so its weights
+    # remain frozen (useful for two-phase HIRO training).
+    frozen: bool = False
+
     # ------------------------------------------------------------------
     # Core interaction loop
     # ------------------------------------------------------------------
