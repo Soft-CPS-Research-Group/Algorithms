@@ -19,6 +19,8 @@ Documentos ativos:
 - `rl_marl_algorithm_matrix_pt.md` - matriz pendente para comparar algoritmos
   RL/MARL contra baselines e KPIs comunitarios;
 - `entity_interface_playbook_pt.md` - contrato entity;
+- `entity_encoding_profiles_v1_pt.md` - perfis de encoding para Simulator
+  1.0.0 e bundles entity ativos;
 - `phd_framework_roadmap.md` - enquadramento de investigacao;
 - `inference_bundle.md` - export/inference;
 - `platform_guide.md` - plataforma;

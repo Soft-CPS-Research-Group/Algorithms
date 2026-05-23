@@ -279,6 +279,26 @@
       "active": true
     }
   },
+  "observation_bundles": {
+    "entity_core_electrical": {
+      "active": true
+    },
+    "entity_community_operational": {
+      "active": true
+    },
+    "entity_forecasts_existing": {
+      "active": true
+    },
+    "entity_forecasts_derived": {
+      "active": true
+    },
+    "entity_temporal_derived": {
+      "active": true
+    },
+    "entity_action_feedback": {
+      "active": true
+    }
+  },
   "agent": {
     "type": "citylearn.agents.rbc.BasicElectricVehicleRBC_ReferenceController",
     "attributes": {}
@@ -981,23 +1001,6 @@
           "nominal_power": 5.0
         }
       }
-    }
-  },
-  "interface": "entity",
-  "ev_departure_within_tolerance": 0.05,
-  "ev_departure_service_tolerance": 0.05,
-  "observation_bundles": {
-    "entity_core_electrical": {
-      "active": true
-    },
-    "entity_community_operational": {
-      "active": true
-    },
-    "entity_forecasts_existing": {
-      "active": true
-    },
-    "entity_temporal_derived": {
-      "active": true
     }
   }
 }

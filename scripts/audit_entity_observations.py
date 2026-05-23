@@ -31,7 +31,9 @@ BUNDLE_NAMES = (
     "entity_core_electrical",
     "entity_community_operational",
     "entity_forecasts_existing",
+    "entity_forecasts_derived",
     "entity_temporal_derived",
+    "entity_action_feedback",
 )
 
 
@@ -589,6 +591,7 @@ def run_audit(config_path: str, output_dir: Path, job_id: str) -> dict[str, Any]
         "interface": getattr(env, "interface", None),
         "topology_mode": getattr(env, "topology_mode", None),
         "seconds_per_time_step": getattr(env, "seconds_per_time_step", None),
+        "entity_encoding": config.get("simulator", {}).get("entity_encoding", {}),
         "num_agents": len(raw_names),
         "observation_bundles": _bundle_status(env, config),
         "total_observation_rows": len(observation_rows),

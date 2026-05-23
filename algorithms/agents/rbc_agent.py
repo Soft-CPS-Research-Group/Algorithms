@@ -858,6 +858,8 @@ class RuleBasedPolicy(BaseAgent):
                         f"{entity_prefix}connected_ev::battery_capacity_kwh",
                     ]
                 )
+            else:
+                candidates.append(f"{entity_prefix}{feature}")
 
         if charger_id:
             if feature in {"connected_state", "incoming_state"}:

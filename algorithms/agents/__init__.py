@@ -4,6 +4,7 @@ from algorithms.agents.baseline_policies import (  # noqa: F401
     NormalNoBatteryPolicy,
     NormalPolicy,
     RBCBasicPolicy,
+    RBCCommunityPolicy,
     RBCSmartPolicy,
     RandomPolicy,
 )

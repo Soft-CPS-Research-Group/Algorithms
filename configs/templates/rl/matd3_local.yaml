@@ -73,7 +73,7 @@ simulator:
   entity_encoding:
     enabled: true
     normalization: minmax_space
-    profile: maddpg_v2_compact
+    profile: maddpg_v3_operational
     clip: true
   reward_function: CostHardConstraintReward
   reward_function_kwargs:

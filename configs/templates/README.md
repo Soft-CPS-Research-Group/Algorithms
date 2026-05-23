@@ -10,4 +10,4 @@ Templates are grouped by purpose:
 - `legacy/`: older demo/docker compatibility templates.
 - `experimental/`: placeholders or non-primary experiments.
 
-Use `simulator.entity_encoding.profile` to switch MADDPG observation profiles, e.g. `maddpg_v1` or `maddpg_v2_compact`, instead of creating duplicate templates for each profile.
+Use `simulator.entity_encoding.profile` to switch MADDPG observation profiles, e.g. `maddpg_v1`, `maddpg_v2_compact`, `maddpg_v3_operational`, or `maddpg_v3_realtime`, instead of creating duplicate templates for each profile.

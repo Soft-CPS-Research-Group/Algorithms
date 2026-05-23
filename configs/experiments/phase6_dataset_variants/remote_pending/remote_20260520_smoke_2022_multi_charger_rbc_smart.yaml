@@ -136,9 +136,9 @@ algorithm:
     storage_charge_rate: 0.35
     storage_discharge_rate: 0.35
     price_charge_rate: 0.15
-    price_discharge_rate: 0.15
-    pv_charge_rate: 0.2
-    peak_discharge_rate: 0.2
+    price_discharge_rate: 0.35
+    pv_charge_rate: 0.45
+    peak_discharge_rate: 0.45
     storage_price_charge_soc_ceiling: 0.85
     storage_price_discharge_soc_floor: 0.3
     storage_peak_discharge_soc_floor: 0.3
@@ -152,8 +152,8 @@ algorithm:
     low_headroom_threshold_kw: 1.0
     ev_v2g_reserve_soc: 0.15
     ev_service_margin_rate: 0.05
-    ev_service_floor_rate: 1.0
-    ev_service_lookahead_hours: 24.0
+    ev_service_floor_rate: 0.25
+    ev_service_lookahead_hours: 4.0
     ev_service_target_soc: 0.0
     ev_deadline_buffer_hours: 0.25
     ev_v2g_min_departure_hours: 2.0

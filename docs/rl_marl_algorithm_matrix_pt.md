@@ -59,7 +59,7 @@ Formato:
 - seed `123`;
 - track `short`;
 - reward `CostServiceCommunityFeasiblePrecisionRewardV46`;
-- encoding `maddpg_v2_compact`;
+- encoding `maddpg_v3_operational`;
 - interface `entity`;
 - topologia `static`;
 - MLflow desligado;
@@ -80,7 +80,7 @@ Data: 2026-05-21.
 Foram corridos smokes locais no dataset 15s original, interface `entity`,
 janela `0..63`, 1 episodio, reward
 `CostServiceCommunityFeasiblePrecisionRewardV46` e encoding
-`maddpg_v2_compact`.
+`maddpg_v3_operational`.
 
 Resultado:
 
@@ -154,7 +154,7 @@ Detalhes:
 
 - dataset: `citylearn_challenge_2022_phase_all_plus_evs`;
 - interface: `entity`;
-- encoding: `maddpg_v2_compact`;
+- encoding: `maddpg_v3_operational`;
 - reward: `CostServiceCommunityFeasiblePrecisionRewardV46`;
 - `MATD3`/`MASAC`: 3 episodios de 2000 steps;
 - `IPPO`/`MAPPO`/`HAPPO`: 2 episodios de 2000 steps;

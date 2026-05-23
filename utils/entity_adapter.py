@@ -12,6 +12,20 @@ import numpy as np
 class EntityContractAdapter:
     """Convert entity observations/actions to algorithm-friendly per-building structures."""
 
+    _SUPPORTED_ENCODING_PROFILES = {
+        "minmax_space",
+        "maddpg_v1",
+        "maddpg_v2_compact",
+        "maddpg_v3_operational",
+        "maddpg_v3_realtime",
+    }
+    _MADDPG_STYLE_PROFILES = {
+        "maddpg_v1",
+        "maddpg_v2_compact",
+        "maddpg_v3_operational",
+        "maddpg_v3_realtime",
+    }
+
     _LEGACY_CHARGER_ALIASES = {
         "electric_vehicle_charger_state": "connected_state",
         "electric_vehicle_soc": "connected_ev_soc",
@@ -31,7 +45,7 @@ class EntityContractAdapter:
         self.normalization_enabled = bool(normalization_enabled)
         self.clip = bool(clip)
         self.encoding_profile = str(encoding_profile or "minmax_space").strip().lower()
-        if self.encoding_profile not in {"minmax_space", "maddpg_v1", "maddpg_v2_compact"}:
+        if self.encoding_profile not in self._SUPPORTED_ENCODING_PROFILES:
             logger.warning(
                 "Unsupported entity encoding profile '{}'; falling back to 'minmax_space'.",
                 self.encoding_profile,
@@ -501,7 +515,7 @@ class EntityContractAdapter:
         if not self.normalization_enabled:
             return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
 
-        if self.encoding_profile in {"maddpg_v1", "maddpg_v2_compact"}:
+        if self.encoding_profile in self._MADDPG_STYLE_PROFILES:
             layout_cache = self._maddpg_encoded_layout_cache.get(agent_index)
             cache_names = tuple(str(name) for name in observation_names)
             if (
@@ -527,11 +541,11 @@ class EntityContractAdapter:
                 collect_names=True,
             )
             keep_indices = None
-            if self.encoding_profile == "maddpg_v2_compact":
+            if self.encoding_profile != "maddpg_v1":
                 keep_indices = [
                     idx
                     for idx, name in enumerate(encoded_names)
-                    if self._is_maddpg_v2_compact_feature(name)
+                    if self._is_maddpg_profile_feature(name, self.encoding_profile)
                 ]
                 encoded = encoded[keep_indices]
                 encoded_names = [encoded_names[idx] for idx in keep_indices]
@@ -581,14 +595,14 @@ class EntityContractAdapter:
         return np.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
 
     def encoded_observation_names(self, observation_names: Sequence[Sequence[str]]) -> List[List[str]]:
-        if self.encoding_profile not in {"maddpg_v1", "maddpg_v2_compact"}:
+        if self.encoding_profile not in self._MADDPG_STYLE_PROFILES:
             return [[str(name) for name in group] for group in observation_names]
 
         encoded_names: List[List[str]] = []
         for group in observation_names:
             names = self._maddpg_v1_encoded_names(group)
-            if self.encoding_profile == "maddpg_v2_compact":
-                names = [name for name in names if self._is_maddpg_v2_compact_feature(name)]
+            if self.encoding_profile != "maddpg_v1":
+                names = [name for name in names if self._is_maddpg_profile_feature(name, self.encoding_profile)]
             encoded_names.append(names)
         return encoded_names
 
@@ -893,6 +907,16 @@ class EntityContractAdapter:
         return names
 
     @classmethod
+    def _is_maddpg_profile_feature(cls, name: str, profile: str) -> bool:
+        if profile == "maddpg_v2_compact":
+            return cls._is_maddpg_v2_compact_feature(name)
+        if profile == "maddpg_v3_operational":
+            return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=True)
+        if profile == "maddpg_v3_realtime":
+            return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=False)
+        return True
+
+    @classmethod
     def _is_maddpg_v2_compact_feature(cls, name: str) -> bool:
         """Keep the compact MADDPG observation set.
 
@@ -962,6 +986,158 @@ class EntityContractAdapter:
             return cls._is_maddpg_v2_compact_deferrable_feature(feature)
 
         return True
+
+    @classmethod
+    def _is_maddpg_v3_operational_feature(
+        cls,
+        name: str,
+        *,
+        include_forecast_features: bool,
+    ) -> bool:
+        """Keep a compact 1.0.0 operational observation set.
+
+        v3 keeps the v2 core plus the simulator 1.0.0 features that reduce
+        guesswork for controllers: feasible action capacity, EV/deferrable
+        deadline pressure, and last-action feedback. The realtime variant
+        drops simulator-derived perfect forecasts while preserving current
+        state, feasibility, and feedback features.
+        """
+
+        feature = cls._feature_tail_from_encoded_name(name)
+
+        if name.startswith("electric_vehicle_"):
+            return False
+
+        if name.startswith("district__"):
+            return cls._is_maddpg_v3_operational_district_feature(
+                feature,
+                include_forecast_features=include_forecast_features,
+            )
+
+        if name.startswith("storage::"):
+            return cls._is_maddpg_v3_operational_storage_feature(feature)
+
+        if name.startswith("charger::"):
+            return cls._is_maddpg_v3_operational_charger_feature(feature)
+
+        if name.startswith("deferrable_appliance::"):
+            return cls._is_maddpg_v3_operational_deferrable_feature(feature)
+
+        if feature.startswith("forecast_"):
+            return include_forecast_features
+
+        return cls._is_maddpg_v2_compact_feature(name)
+
+    @classmethod
+    def _is_maddpg_v3_operational_district_feature(
+        cls,
+        feature: str,
+        *,
+        include_forecast_features: bool,
+    ) -> bool:
+        if feature.startswith("forecast_"):
+            return include_forecast_features
+
+        if cls._is_maddpg_v2_compact_district_feature(feature):
+            return True
+
+        if "_energy_kwh_step" in feature:
+            return False
+
+        if feature.startswith("community_"):
+            return (
+                feature.endswith("_power_kw")
+                or feature.endswith("_headroom_kw")
+                or feature.endswith("_capacity_kw")
+                or feature.endswith("_available_power_kw")
+                or feature.endswith("_slack_kw")
+                or feature.endswith("_ratio")
+            )
+
+        return False
+
+    @classmethod
+    def _is_maddpg_v3_operational_storage_feature(cls, feature: str) -> bool:
+        if cls._is_maddpg_v2_compact_feature(f"storage::x::{feature}"):
+            return True
+
+        return feature in {
+            "can_charge",
+            "can_discharge",
+            "available_charge_power_kw",
+            "available_discharge_power_kw",
+            "available_charge_action_normalized",
+            "available_discharge_action_normalized",
+            "charge_headroom_ratio",
+            "discharge_available_ratio",
+            "usable_soc_ratio",
+            "last_requested_action_normalized",
+            "last_limited_action_normalized",
+            "last_applied_power_kw",
+            "last_projection_error_kw",
+            "applied_power_mean_prev_15m_kw",
+            "time_since_last_nonzero_action_hours_24h",
+            "clip_reason_soc_min",
+            "clip_reason_soc_max",
+            "clip_reason_power_limit",
+            "clip_reason_headroom",
+            "clip_reason_offline",
+        }
+
+    @classmethod
+    def _is_maddpg_v3_operational_charger_feature(cls, feature: str) -> bool:
+        if cls._is_maddpg_v2_compact_charger_feature(feature):
+            return True
+
+        return feature in {
+            "hours_until_departure_24h",
+            "time_until_departure_ratio",
+            "can_charge",
+            "can_discharge",
+            "available_charge_power_kw",
+            "available_discharge_power_kw",
+            "available_charge_action_normalized",
+            "available_discharge_action_normalized",
+            "max_deliverable_energy_until_departure_kwh",
+            "departure_energy_margin_kwh",
+            "departure_feasibility_ratio",
+            "min_required_action_normalized",
+            "last_requested_action_normalized",
+            "last_limited_action_normalized",
+            "last_applied_power_kw",
+            "last_projection_error_kw",
+            "applied_power_mean_prev_15m_kw",
+            "time_since_last_nonzero_action_hours_24h",
+            "clip_reason_no_ev",
+            "clip_reason_soc_min",
+            "clip_reason_soc_max",
+            "clip_reason_power_limit",
+            "clip_reason_headroom",
+            "clip_reason_not_v2g",
+        }
+
+    @classmethod
+    def _is_maddpg_v3_operational_deferrable_feature(cls, feature: str) -> bool:
+        if cls._is_maddpg_v2_compact_deferrable_feature(feature):
+            return True
+
+        return feature in {
+            "must_start_now",
+            "remaining_duration_hours",
+            "cycle_remaining_fraction_ratio",
+            "hours_until_earliest_start_24h",
+            "start_window_width_hours",
+            "start_power_kw",
+            "start_energy_kwh_step",
+            "last_start_requested",
+            "last_start_applied",
+            "start_blocked",
+            "clip_reason_not_pending",
+            "clip_reason_already_running",
+            "clip_reason_too_early",
+            "clip_reason_too_late",
+            "clip_reason_infeasible",
+        }
 
     @staticmethod
     def _feature_tail_from_encoded_name(name: str) -> str:
@@ -1205,11 +1381,19 @@ class EntityContractAdapter:
             "pending",
             "running",
             "can_start",
+            "can_charge",
+            "can_discharge",
             "deadline_missed",
             "must_run",
+            "must_start_now",
+            "start_blocked",
+            "last_start_requested",
+            "last_start_applied",
             "is_flexible",
         )
         if any(token in name for token in binary_tokens):
+            return True
+        if "clip_reason_" in name:
             return True
         if name.endswith("_available"):
             return True

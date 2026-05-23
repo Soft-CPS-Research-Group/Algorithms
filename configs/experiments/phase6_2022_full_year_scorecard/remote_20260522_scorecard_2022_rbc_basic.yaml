@@ -154,8 +154,8 @@ algorithm:
     low_headroom_threshold_kw: 2.0
     ev_v2g_reserve_soc: 0.15
     ev_service_margin_rate: 0.05
-    ev_service_floor_rate: 1.0
-    ev_service_lookahead_hours: 24.0
+    ev_service_floor_rate: 0.25
+    ev_service_lookahead_hours: 4.0
     ev_service_target_soc: 0.0
     ev_deadline_buffer_hours: 0.25
     ev_v2g_min_departure_hours: 2.0

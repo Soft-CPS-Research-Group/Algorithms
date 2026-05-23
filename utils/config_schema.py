@@ -160,7 +160,13 @@ class WrapperRewardConfig(BaseModel):
 class EntityEncodingConfig(BaseModel):
     enabled: Optional[bool] = None
     normalization: Literal["minmax_space"] = "minmax_space"
-    profile: Literal["minmax_space", "maddpg_v1", "maddpg_v2_compact"] = "minmax_space"
+    profile: Literal[
+        "minmax_space",
+        "maddpg_v1",
+        "maddpg_v2_compact",
+        "maddpg_v3_operational",
+        "maddpg_v3_realtime",
+    ] = "minmax_space"
     clip: bool = True
 
 
@@ -315,6 +321,12 @@ class RuleBasedHyperparameters(BaseModel):
     ev_price_charge_rate: float = Field(default=0.70, ge=0)
     ev_pv_charge_rate: float = Field(default=0.85, ge=0)
     ev_v2g_discharge_rate: float = Field(default=0.30, ge=0)
+    ev_community_charge_rate: float = Field(default=0.85, ge=0)
+    community_v2g_discharge_rate: float = Field(default=0.30, ge=0)
+    community_storage_charge_rate: float = Field(default=0.75, ge=0)
+    community_storage_discharge_rate: float = Field(default=0.65, ge=0)
+    community_surplus_threshold_kw: float = Field(default=0.25, ge=0)
+    community_import_threshold_kw: float = Field(default=7.0, ge=0)
     pv_surplus_threshold_kw: float = Field(default=0.25, ge=0)
     import_peak_threshold_kw: float = Field(default=7.0, ge=0)
     low_headroom_threshold_kw: float = Field(default=2.0, ge=0)
@@ -350,6 +362,7 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "NormalPolicy",
         "NormalNoBatteryPolicy",
         "RBCBasicPolicy",
+        "RBCCommunityPolicy",
         "RBCSmartPolicy",
     ]
     hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()

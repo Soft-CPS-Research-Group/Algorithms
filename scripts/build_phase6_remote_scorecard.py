@@ -167,6 +167,8 @@ def infer_policy(config_or_name: str) -> str:
         if "v48" in lowered:
             return "MADDPG_v48"
         return "MADDPG"
+    if "rbc_community" in lowered or "rbc-community" in lowered:
+        return "RBCCommunity"
     if "rbc_smart" in lowered or "rbc-smart" in lowered:
         return "RBCSmart"
     if "rbc_basic" in lowered or "rbc-basic" in lowered:
@@ -188,7 +190,7 @@ def infer_track(config_or_name: str) -> str:
         return "short"
     if "baseline" in lowered:
         return "baseline"
-    if "full" in lowered:
+    if "full" in lowered or "fullyear" in lowered or "scorecard" in lowered:
         return "full"
     return "unknown"
 

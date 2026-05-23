@@ -50,7 +50,7 @@ Base tecnica:
 - variantes ja preparadas:
   - `no_v2g`;
   - `multi_charger`;
-- perfil principal de observacoes: `maddpg_v2_compact`;
+- perfil principal de observacoes: `maddpg_v3_operational`;
 - candidato atual: `MADDPG V48`;
 - imagem remota atual: `sha-f20cc24`.
 - performance recente:
@@ -465,7 +465,7 @@ Configs preparadas:
 - datasets `15s` e `2022`;
 - variants `original`, `no_v2g`, `multi_charger`;
 - reward `CostServiceCommunityFeasiblePrecisionRewardV46`;
-- encoding `maddpg_v2_compact`;
+- encoding `maddpg_v3_operational`;
 - seed `123`;
 - MLflow desligado;
 - export de KPIs ativo.

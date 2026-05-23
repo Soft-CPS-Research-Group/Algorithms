@@ -10,6 +10,7 @@ from algorithms.agents.baseline_policies import (
     NormalNoBatteryPolicy,
     NormalPolicy,
     RBCBasicPolicy,
+    RBCCommunityPolicy,
     RBCSmartPolicy,
     RandomPolicy,
 )
@@ -30,6 +31,7 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
     "NormalPolicy": NormalPolicy,
     "RBCBasicPolicy": RBCBasicPolicy,
+    "RBCCommunityPolicy": RBCCommunityPolicy,
     "RBCSmartPolicy": RBCSmartPolicy,
     "RandomPolicy": RandomPolicy,
     "RuleBasedPolicy": RuleBasedPolicy,

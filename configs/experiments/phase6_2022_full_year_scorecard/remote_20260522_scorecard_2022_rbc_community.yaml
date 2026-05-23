@@ -1,9 +1,9 @@
 metadata:
-  experiment_name: remote_20260520_baseline_2022_multi_charger_rbc_smart
-  run_name: Remote 2026-05-20 2022 multi_charger rbc_smart
+  experiment_name: remote_20260522_scorecard_2022_rbc_community
+  run_name: remote 20260522 scorecard 2022 rbc community
   community_name: citylearn_2022
-  description: Remote-pending dataset-variant config generated from Algorithms commit
-    2c5f8fe; 2022 extra charger and phase stress test; source_config=remote_20260520_baseline_2022_rbc_smart.yaml.
+  description: Official scorecard full-year 2022 RBCCommunityPolicy; dataset citylearn_challenge_2022_phase_all_plus_evs_data_2026_05_21;
+    image sha-f20cc24; no checkpoints; no BAU exports.
   bundle_version: null
   alias_mapping_path: null
 runtime:
@@ -19,11 +19,11 @@ runtime:
 tracking:
   mlflow_enabled: false
   log_level: INFO
-  log_frequency: 128
-  mlflow_step_sample_interval: 128
+  log_frequency: 1024
+  mlflow_step_sample_interval: 1024
   mlflow_artifacts_profile: minimal
   progress_updates_enabled: true
-  progress_update_interval: 128
+  progress_update_interval: 1024
   system_metrics_enabled: false
   system_metrics_interval: 10
   action_diagnostics_enabled: true
@@ -42,12 +42,12 @@ checkpointing:
   reset_replay_buffer: false
   freeze_pretrained_layers: false
   fine_tune: false
-  checkpoint_interval: 999999
+  checkpoint_interval: null
   require_update_step: true
   require_initial_exploration_done: true
 simulator:
-  dataset_name: citylearn_challenge_2022_phase_all_plus_evs_multi_charger_data_2026_05_20
-  dataset_path: /data/datasets/citylearn_challenge_2022_phase_all_plus_evs_multi_charger_data_2026_05_20/schema.json
+  dataset_name: citylearn_challenge_2022_phase_all_plus_evs_data_2026_05_21
+  dataset_path: /data/datasets/citylearn_challenge_2022_phase_all_plus_evs_data_2026_05_21/schema.json
   central_agent: false
   interface: entity
   topology_mode: static
@@ -76,8 +76,8 @@ simulator:
   episodes: 1
   deterministic_finish: false
   simulation_start_time_step: 0
-  simulation_end_time_step: 1999
-  episode_time_steps: 2000
+  simulation_end_time_step: 8759
+  episode_time_steps: 8760
   export:
     mode: end
     export_kpis_on_episode_end: true
@@ -85,7 +85,9 @@ simulator:
     include_business_as_usual: false
     export_business_as_usual_timeseries: false
     kpi_round_decimals: null
-    session_name: remote_20260520_baseline_2022_multi_charger_rbc_smart
+    session_name: remote_20260522_scorecard_2022_rbc_community
+    kpis_final_episode_only: true
+    timeseries_final_episode_only: true
   wrapper_reward:
     enabled: false
     profile: cost_limits_v1
@@ -108,7 +110,7 @@ topology:
   action_dimensions: null
   action_space: null
 algorithm:
-  name: RBCSmartPolicy
+  name: RBCCommunityPolicy
   hyperparameters:
     seed: 123
     pv_charge_threshold: 0.0
@@ -139,6 +141,8 @@ algorithm:
     price_discharge_rate: 0.35
     pv_charge_rate: 0.45
     peak_discharge_rate: 0.45
+    community_storage_charge_rate: 0.55
+    community_storage_discharge_rate: 0.55
     storage_price_charge_soc_ceiling: 0.85
     storage_price_discharge_soc_floor: 0.3
     storage_peak_discharge_soc_floor: 0.3
@@ -146,9 +150,13 @@ algorithm:
     ev_normal_target_soc: 1.0
     ev_price_charge_rate: 0.7
     ev_pv_charge_rate: 0.85
+    ev_community_charge_rate: 0.85
     ev_v2g_discharge_rate: 0.3
+    community_v2g_discharge_rate: 0.35
     pv_surplus_threshold_kw: 0.5
+    community_surplus_threshold_kw: 0.5
     import_peak_threshold_kw: 10.0
+    community_import_threshold_kw: 10.0
     low_headroom_threshold_kw: 1.0
     ev_v2g_reserve_soc: 0.15
     ev_service_margin_rate: 0.05

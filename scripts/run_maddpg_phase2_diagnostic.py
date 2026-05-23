@@ -56,7 +56,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--episodes", type=int, default=3, help="Training episodes.")
     parser.add_argument("--steps", type=int, default=256, help="Steps per episode.")
     parser.add_argument("--start", type=int, default=0, help="Simulation start time step.")
-    parser.add_argument("--profile", default="maddpg_v2_compact", help="Entity encoding profile.")
+    parser.add_argument("--profile", default="maddpg_v3_operational", help="Entity encoding profile.")
     parser.add_argument("--batch-size", type=int, default=64, help="Replay batch size.")
     parser.add_argument("--buffer-capacity", type=int, default=10000, help="Replay buffer capacity.")
     parser.add_argument("--actor-layers", default="128,64", help="Comma-separated actor hidden layers.")
