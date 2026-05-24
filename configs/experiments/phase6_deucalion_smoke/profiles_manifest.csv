@@ -1,0 +1,3 @@
+config,algorithm,dataset_key,episodes,episode_time_steps,runtime_profiling_interval,direct_entity_model_observations,notes
+remote_20260524_deucalion_smoke_2022_maddpg_v3_direct_cpu.yaml,MADDPG,2022_all_plus_evs,1,256,32,true,CPU SIF smoke for optimized direct entity->maddpg_v3 path.
+remote_20260524_deucalion_smoke_2022_rbc_smart_cpu.yaml,RBCSmartPolicy,2022_all_plus_evs,1,256,32,false,CPU SIF smoke for smart RBC raw-observation path.

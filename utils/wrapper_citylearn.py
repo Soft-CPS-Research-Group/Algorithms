@@ -185,6 +185,7 @@ class Wrapper_CityLearn(RLC):
         self.global_step = 0
         self._encoded_observation_cache_key: Optional[tuple[int, ...]] = None
         self._encoded_observation_cache_value: Optional[List[np.ndarray]] = None
+        self._entity_model_observations_direct = False
         self._action_bounds_cache: Optional[List[tuple[np.ndarray, np.ndarray]]] = None
         training_cfg = config.get("training", {})
         checkpoint_cfg = config.get("checkpointing", {})
@@ -390,12 +391,25 @@ class Wrapper_CityLearn(RLC):
         self._apply_entity_layout(initial_observations, force_attach=False)
         self.reset()
 
-    def _apply_entity_layout(self, observation_payload: Mapping[str, Any], force_attach: bool) -> List[np.ndarray]:
+    def _apply_entity_layout(
+        self,
+        observation_payload: Mapping[str, Any],
+        force_attach: bool,
+        *,
+        model_observations: bool = False,
+    ) -> List[np.ndarray]:
         if not self._entity_interface_mode or self._entity_adapter is None:
             return []
 
         previous_version = self._entity_topology_version
-        agent_observations, observation_names, observation_spaces = self._entity_adapter.to_agent_observations(observation_payload)
+        if model_observations:
+            agent_observations, observation_names, observation_spaces = (
+                self._entity_adapter.to_agent_encoded_observations(observation_payload)
+            )
+        else:
+            agent_observations, observation_names, observation_spaces = (
+                self._entity_adapter.to_agent_observations(observation_payload)
+            )
         self._entity_topology_version = self._entity_adapter.topology_version
 
         self.episode_time_steps = int(getattr(self.episode_tracker, "episode_time_steps", self.episode_time_steps))
@@ -432,6 +446,29 @@ class Wrapper_CityLearn(RLC):
             self._attach_model_environment_metadata()
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
+
+    def _model_requires_raw_observation_context(self) -> bool:
+        if self.model is None:
+            return False
+        if bool(getattr(self.model, "use_raw_observations", False)):
+            return True
+        if bool(getattr(self.model, "requires_raw_observation_context", False)):
+            return True
+        if getattr(self.model, "_warm_start_policy", None) is not None:
+            return True
+        if getattr(self.model, "warm_start_policy_name", None):
+            return True
+        return False
+
+    def _can_use_direct_entity_model_observations(self) -> bool:
+        return (
+            self._entity_interface_mode
+            and self._entity_adapter is not None
+            and self._entity_encoding_profile != "minmax_space"
+            and not self.wrapper_reward_enabled
+            and not self.action_diagnostics_enabled
+            and not self._model_requires_raw_observation_context()
+        )
 
     def _attach_model_environment_metadata(self) -> None:
         if self.model is None:
@@ -598,9 +635,14 @@ class Wrapper_CityLearn(RLC):
             start_episode_time = time.time()
             deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
             export_this_episode = self._configure_episode_exports(episode, episodes)
+            self._entity_model_observations_direct = self._can_use_direct_entity_model_observations()
             raw_observations, _ = self.env.reset()
             if self._entity_interface_mode:
-                observations = self._apply_entity_layout(raw_observations, force_attach=True)
+                observations = self._apply_entity_layout(
+                    raw_observations,
+                    force_attach=True,
+                    model_observations=self._entity_model_observations_direct,
+                )
             else:
                 observations = raw_observations
             self.episode_time_steps = self.episode_tracker.episode_time_steps
@@ -653,13 +695,17 @@ class Wrapper_CityLearn(RLC):
                     )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 if self._entity_interface_mode:
-                    next_observations = self._apply_entity_layout(next_observations_raw, force_attach=False)
+                    next_observations = self._apply_entity_layout(
+                        next_observations_raw,
+                        force_attach=False,
+                        model_observations=self._entity_model_observations_direct,
+                    )
                 else:
                     next_observations = next_observations_raw
                 if should_profile_step:
-                    runtime_profile_metrics["Runtime/observation_encoding_seconds"] = (
-                        time.perf_counter() - phase_start_time
-                    )
+                    entity_layout_seconds = time.perf_counter() - phase_start_time
+                    runtime_profile_metrics["Runtime/observation_encoding_seconds"] = entity_layout_seconds
+                    runtime_profile_metrics["Runtime/entity_layout_seconds"] = entity_layout_seconds
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 rewards = self._shape_rewards(rewards, next_observations)
                 if should_profile_step:
@@ -683,6 +729,12 @@ class Wrapper_CityLearn(RLC):
                         runtime_profile_metrics["Runtime/agent_update_seconds"] = (
                             time.perf_counter() - phase_start_time
                         )
+                        runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = float(
+                            getattr(self, "_last_model_observation_encoding_seconds", 0.0) or 0.0
+                        )
+                        runtime_profile_metrics["Runtime/model_update_seconds"] = float(
+                            getattr(self, "_last_model_update_seconds", 0.0) or 0.0
+                        )
                     logger.debug("Model update executed at global step {}", self.global_step)
 
                     phase_start_time = time.perf_counter() if should_profile_step else 0.0
@@ -698,6 +750,8 @@ class Wrapper_CityLearn(RLC):
                         )
                 elif should_profile_step:
                     runtime_profile_metrics["Runtime/agent_update_seconds"] = 0.0
+                    runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = 0.0
+                    runtime_profile_metrics["Runtime/model_update_seconds"] = 0.0
                     runtime_profile_metrics["Runtime/checkpoint_seconds"] = 0.0
 
                 observations = [o for o in next_observations]
@@ -942,12 +996,19 @@ class Wrapper_CityLearn(RLC):
         if self.model is None:
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        encoded_observations = self._encode_observations_for_model(observations)
+        if self._entity_model_observations_direct:
+            encoded_observations = [
+                np.asarray(obs, dtype=np.float64) for obs in observations
+            ]
+        else:
+            encoded_observations = self._encode_observations_for_model(observations)
 
         observation_context_hook = getattr(self.model, "set_observation_context", None)
         if callable(observation_context_hook):
             observation_context_hook(
-                raw_observations=observations,
+                raw_observations=None
+                if self._entity_model_observations_direct
+                else observations,
                 encoded_observations=encoded_observations,
             )
 
@@ -1539,16 +1600,30 @@ class Wrapper_CityLearn(RLC):
         logger.debug(
             "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
-        encoded_observations = self._encode_observations_for_model(observations)
-        encoded_next_observations = self._encode_observations_for_model(next_observations)
+        phase_start_time = time.perf_counter()
+        if self._entity_model_observations_direct:
+            encoded_observations = [
+                np.asarray(obs, dtype=np.float64) for obs in observations
+            ]
+            encoded_next_observations = [
+                np.asarray(obs, dtype=np.float64) for obs in next_observations
+            ]
+            self._last_model_observation_encoding_seconds = 0.0
+        else:
+            encoded_observations = self._encode_observations_for_model(observations)
+            encoded_next_observations = self._encode_observations_for_model(next_observations)
+            self._last_model_observation_encoding_seconds = time.perf_counter() - phase_start_time
 
         # Pass updated parameters to model.update()
-        return self.model.update(observations = encoded_observations, actions= actions, rewards= reward,
+        phase_start_time = time.perf_counter()
+        update_result = self.model.update(observations = encoded_observations, actions= actions, rewards= reward,
                 next_observations= encoded_next_observations, terminated = terminated,
                 truncated = truncated,
                 update_target_step=self.update_target_step, global_learning_step=self.global_step,
                 update_step = self.update_step, initial_exploration_done= self.initial_exploration_done
         )
+        self._last_model_update_seconds = time.perf_counter() - phase_start_time
+        return update_result
 
     def _should_log_step(self, step: int) -> bool:
         return step % self.step_metric_interval == 0

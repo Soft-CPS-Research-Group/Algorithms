@@ -1,0 +1,5 @@
+dataset_key,dataset_path,tracked_files,notes
+2022_all_plus_evs,datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json,31,Required for both Deucalion CPU smoke configs.
+2022_all_plus_evs_multi_charger,datasets/citylearn_challenge_2022_phase_all_plus_evs_multi_charger_data_2026_05_20/schema.json,36,Active dataset bundle for later multi-charger comparisons.
+2022_all_plus_evs_no_v2g,datasets/citylearn_challenge_2022_phase_all_plus_evs_no_v2g_data_2026_05_20/schema.json,31,Active dataset bundle for later no-V2G comparisons.
+15s_service_parquet,datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json,31,Active 15s service dataset bundle for later scaling/performance checks.

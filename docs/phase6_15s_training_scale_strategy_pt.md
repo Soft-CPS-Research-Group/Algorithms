@@ -7,7 +7,7 @@ sem depender apenas de "mais horas de GPU".
 
 ## Problema Numerico
 
-Com os numeros atuais apos caches, replay compacto e integracao `softcpsrecsimulator==0.6.9`:
+Com os numeros da fase `softcpsrecsimulator==0.6.9`, apos caches, replay compacto e integracao:
 
 - MADDPG V48 em GPU, 15s/update60, micro-run: mediana perfilada perto de
   `0.036-0.040 s/step`, com wall-clock de job perto de `0.05-0.06 s/step`
@@ -25,16 +25,32 @@ Com os numeros atuais apos caches, replay compacto e integracao `softcpsrecsimul
 - 2022 horario full-year: `8760` steps;
 - 15s full-year: `365 * 24 * 3600 / 15 = 2,102,400` steps.
 
+Atualizacao `softcpsrecsimulator==1.0.2`, 2026-05-24:
+
+```text
+No dataset 2022 all-plus-EVs local, o MADDPG v3 operational passou a usar um
+plano compilado de encoding e uma via direta entity->MADDPG:
+  model_observation_encoding: ~79 ms/step -> ~6.4 ms/step
+  entity_layout:              ~10.5 ms/step -> ~1.1 ms/step
+  model_observation_encoding
+    na via direta:            ~0.0 ms/step
+  step perfilado mediano:     ~106 ms/step -> ~20.7 ms/step
+  loop sem profiler:          ~27.5 ms/step
+```
+
 Se treinarmos MADDPG em todos os steps 15s, mesmo com estas otimizacoes:
 
-- 1 episodio anual: cerca de `24-35h`, dependendo de profiling/export/hardware;
-- 6 episodios anuais: varios dias por seed.
+- 1 episodio anual: cerca de `16h` no loop local sem profiler, antes de medir
+  hardware remoto;
+- 6 episodios anuais: cerca de `4 dias` por seed, ainda caro para matriz
+  grande.
 
 Isto nao e uma estrategia aceitavel.
 
 ## Diagnostico Do Bottleneck
 
-O simulador/wrapper sem treino custa aproximadamente `0.05-0.09 s/step`.
+O simulador/wrapper sem treino custa aproximadamente dezenas de ms por step,
+dependendo do dataset, payload entity e export.
 
 MADDPG ainda tem custo relevante no algoritmo, sobretudo em steps de update:
 

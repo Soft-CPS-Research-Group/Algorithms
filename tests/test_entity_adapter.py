@@ -166,6 +166,50 @@ def test_entity_adapter_stable_order_and_aliases():
     assert observation_spaces[0].shape[0] == observations[0].shape[0]
 
 
+def test_entity_adapter_cached_source_plan_matches_collected_layout():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)
+    payload = _sample_observation_payload()
+
+    collected, observation_names, observation_spaces = adapter.to_agent_observations(payload)
+    cached, cached_names, cached_spaces = adapter.to_agent_observations(payload)
+
+    assert cached_names == observation_names
+    assert [space.shape for space in cached_spaces] == [space.shape for space in observation_spaces]
+    assert len(cached) == len(collected)
+    for cached_obs, collected_obs in zip(cached, collected):
+        np.testing.assert_allclose(cached_obs, collected_obs, atol=1e-9)
+
+
+def test_entity_adapter_direct_encoded_observations_match_normalize_path():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(
+        env,
+        normalization_enabled=True,
+        clip=True,
+        encoding_profile="maddpg_v3_operational",
+    )
+    payload = _sample_observation_payload()
+
+    observations, observation_names, observation_spaces = adapter.to_agent_observations(payload)
+    expected = [
+        adapter.normalize_observation(
+            agent_index=idx,
+            observation=obs,
+            observation_names=observation_names[idx],
+            observation_space=observation_spaces[idx],
+        )
+        for idx, obs in enumerate(observations)
+    ]
+    direct, direct_names, direct_spaces = adapter.to_agent_encoded_observations(payload)
+
+    assert direct_names == observation_names
+    assert [space.shape for space in direct_spaces] == [space.shape for space in observation_spaces]
+    assert len(direct) == len(expected)
+    for direct_obs, expected_obs in zip(direct, expected):
+        np.testing.assert_allclose(direct_obs, expected_obs, atol=1e-9)
+
+
 def test_entity_adapter_minmax_normalization_with_invalid_bounds_passthrough():
     env = _DummyEntityEnv()
     adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)

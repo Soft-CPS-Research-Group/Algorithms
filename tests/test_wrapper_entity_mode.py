@@ -204,6 +204,18 @@ class _DummyModel:
         return True
 
 
+class _EncodedDummyModel(_DummyModel):
+    def __init__(self):
+        super().__init__()
+        self.use_raw_observations = False
+        self.last_raw_observations = object()
+        self.last_encoded_observations = None
+
+    def set_observation_context(self, *, raw_observations=None, encoded_observations=None):
+        self.last_raw_observations = raw_observations
+        self.last_encoded_observations = encoded_observations
+
+
 def _entity_config() -> Dict[str, Any]:
     return {
         "runtime": {"log_dir": None},
@@ -312,3 +324,41 @@ def test_wrapper_entity_maddpg_profile_exports_serving_encoded_observations():
     assert "district__time_of_day_sin" in info["observation_names"][0]
     assert len(info["encoders"][0]) == len(info["observation_names"][0])
     assert all(spec["type"] == "NoNormalization" for spec in info["encoders"][0])
+
+
+def test_wrapper_entity_direct_model_observations_match_standard_encoding():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["algorithm"]["name"] = "MADDPG"
+    config["simulator"]["topology_mode"] = "static"
+    config["simulator"]["entity_encoding"]["profile"] = "maddpg_v1"
+    config["tracking"]["action_diagnostics_enabled"] = False
+
+    wrapper = Wrapper_CityLearn(env=env, config=config, job_id="entity-direct-model-observations")
+    model = _EncodedDummyModel()
+    wrapper.set_model(model)
+
+    assert wrapper._can_use_direct_entity_model_observations()
+
+    payload, _ = env.reset()
+    raw_observations = wrapper._apply_entity_layout(
+        payload,
+        force_attach=True,
+        model_observations=False,
+    )
+    expected = wrapper.get_all_encoded_observations(raw_observations)
+    direct = wrapper._apply_entity_layout(
+        payload,
+        force_attach=True,
+        model_observations=True,
+    )
+
+    assert len(direct) == len(expected)
+    for direct_obs, expected_obs in zip(direct, expected):
+        np.testing.assert_allclose(direct_obs, expected_obs, atol=1e-9)
+
+    wrapper._entity_model_observations_direct = True
+    wrapper.predict(direct)
+
+    assert model.last_raw_observations is None
+    assert model.last_encoded_observations is not None

@@ -9,6 +9,26 @@ from loguru import logger
 import numpy as np
 
 
+class _ObservationValueLookup:
+    """Lazy name lookup over one observation vector for cached encoder layouts."""
+
+    def __init__(self, observation: np.ndarray, index_by_name: Mapping[str, int]):
+        self._observation = observation
+        self._index_by_name = index_by_name
+
+    def get(self, name: str, default: float = 0.0) -> float:
+        index = self._index_by_name.get(str(name))
+        if index is None or index >= len(self._observation):
+            return default
+        try:
+            value = float(self._observation[index])
+        except (TypeError, ValueError):
+            return 0.0
+        if np.isnan(value) or np.isinf(value):
+            return 0.0
+        return value
+
+
 class EntityContractAdapter:
     """Convert entity observations/actions to algorithm-friendly per-building structures."""
 
@@ -99,6 +119,9 @@ class EntityContractAdapter:
         self._cached_observation_names: List[List[str]] = []
         self._cached_observation_spaces: List[spaces.Box] = []
         self._cached_observation_origins: List[List[Tuple[str, str]]] = []
+        self._cached_alias_sources: List[List[Tuple[str, int]]] = []
+        self._cached_observation_sources: List[List[Tuple[Any, ...]]] = []
+        self._cached_observation_source_groups: List[Dict[str, Any]] = []
         self._warned_invalid_bounds: set[str] = set()
 
     @staticmethod
@@ -156,6 +179,151 @@ class EntityContractAdapter:
                 mapping[int(pairs[idx, 0])] = int(pairs[idx, 1])
 
         return mapping
+
+    @staticmethod
+    def _compile_observation_source_group(
+        sources: Sequence[Tuple[Any, ...]],
+        alias_sources: Sequence[Tuple[str, int]],
+    ) -> Dict[str, Any]:
+        table_acc: Dict[str, Dict[str, List[int]]] = {}
+        ev_acc: Dict[str, Dict[str, List[int]]] = {}
+        constant_positions: List[int] = []
+        constant_values: List[float] = []
+
+        for position, source in enumerate(sources):
+            kind = str(source[0])
+            if kind == "constant":
+                constant_positions.append(position)
+                constant_values.append(float(source[1]))
+            elif kind == "table":
+                _, table_name, row, col = source
+                group = table_acc.setdefault(
+                    str(table_name),
+                    {"positions": [], "rows": [], "cols": []},
+                )
+                group["positions"].append(position)
+                group["rows"].append(int(row))
+                group["cols"].append(int(col))
+            elif kind == "ev_context":
+                _, context_label, charger_row, col = source
+                group = ev_acc.setdefault(
+                    str(context_label),
+                    {"positions": [], "charger_rows": [], "cols": []},
+                )
+                group["positions"].append(position)
+                group["charger_rows"].append(int(charger_row))
+                group["cols"].append(int(col))
+
+        table_groups = {
+            table_name: {
+                "positions": np.asarray(group["positions"], dtype=np.int64),
+                "rows": np.asarray(group["rows"], dtype=np.int64),
+                "cols": np.asarray(group["cols"], dtype=np.int64),
+            }
+            for table_name, group in table_acc.items()
+        }
+        ev_groups = {
+            context_label: {
+                "positions": np.asarray(group["positions"], dtype=np.int64),
+                "charger_rows": np.asarray(group["charger_rows"], dtype=np.int64),
+                "cols": np.asarray(group["cols"], dtype=np.int64),
+            }
+            for context_label, group in ev_acc.items()
+        }
+
+        base_size = len(sources)
+        alias_positions = np.asarray(
+            [base_size + idx for idx in range(len(alias_sources))],
+            dtype=np.int64,
+        )
+        alias_source_indices = np.asarray(
+            [int(source_idx) for _alias_name, source_idx in alias_sources],
+            dtype=np.int64,
+        )
+
+        return {
+            "size": base_size + len(alias_sources),
+            "table_groups": table_groups,
+            "ev_groups": ev_groups,
+            "constant_positions": np.asarray(constant_positions, dtype=np.int64),
+            "constant_values": np.asarray(constant_values, dtype=np.float64),
+            "alias_positions": alias_positions,
+            "alias_source_indices": alias_source_indices,
+        }
+
+    @staticmethod
+    def _observation_values_from_source_group(
+        source_group: Mapping[str, Any],
+        *,
+        table_lookup: Mapping[str, np.ndarray],
+        charger_connected_ev: Mapping[int, int],
+        charger_incoming_ev: Mapping[int, int],
+    ) -> np.ndarray:
+        values = np.zeros(int(source_group.get("size", 0)), dtype=np.float64)
+
+        constant_positions = source_group.get("constant_positions")
+        constant_values = source_group.get("constant_values")
+        if constant_positions is not None and len(constant_positions):
+            values[constant_positions] = constant_values
+
+        for table_name, group in (source_group.get("table_groups") or {}).items():
+            table = table_lookup.get(str(table_name))
+            if table is None or table.ndim != 2 or table.size == 0:
+                continue
+
+            rows = group["rows"]
+            cols = group["cols"]
+            positions = group["positions"]
+            valid = (
+                (rows >= 0)
+                & (cols >= 0)
+                & (rows < table.shape[0])
+                & (cols < table.shape[1])
+            )
+            if np.any(valid):
+                raw_values = table[rows[valid], cols[valid]]
+                values[positions[valid]] = np.nan_to_num(
+                    raw_values,
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                )
+
+        ev_table = table_lookup.get("ev")
+        if ev_table is not None and ev_table.ndim == 2 and ev_table.size:
+            for context_label, group in (source_group.get("ev_groups") or {}).items():
+                ev_row_map = (
+                    charger_connected_ev
+                    if str(context_label) == "connected_ev"
+                    else charger_incoming_ev
+                )
+                for position, charger_row, col in zip(
+                    group["positions"],
+                    group["charger_rows"],
+                    group["cols"],
+                ):
+                    ev_row = ev_row_map.get(int(charger_row))
+                    if (
+                        ev_row is not None
+                        and 0 <= int(ev_row) < ev_table.shape[0]
+                        and 0 <= int(col) < ev_table.shape[1]
+                    ):
+                        value = ev_table[int(ev_row), int(col)]
+                        values[int(position)] = EntityContractAdapter._safe_scalar(value, 0.0)
+
+        alias_positions = source_group.get("alias_positions")
+        alias_source_indices = source_group.get("alias_source_indices")
+        if alias_positions is not None and len(alias_positions):
+            valid = (
+                (alias_source_indices >= 0)
+                & (alias_source_indices < values.shape[0])
+                & (alias_positions >= 0)
+                & (alias_positions < values.shape[0])
+            )
+            if np.any(valid):
+                values[alias_positions[valid]] = values[alias_source_indices[valid]]
+
+        return values
 
     @staticmethod
     def _parse_topology_version(observation_payload: Mapping[str, Any]) -> int:
@@ -258,6 +426,9 @@ class EntityContractAdapter:
         self._cached_observation_names = []
         self._cached_observation_spaces = []
         self._cached_observation_origins = []
+        self._cached_alias_sources = []
+        self._cached_observation_sources = []
+        self._cached_observation_source_groups = []
         self._entity_action_layout_cache_key = None
         self._entity_action_routes = []
 
@@ -278,21 +449,6 @@ class EntityContractAdapter:
         ev_table = self._as_2d(tables.get("ev", []))
         deferrable_table = self._as_2d(tables.get("deferrable_appliance", []))
 
-        district_low = self._table_lows.get("district", np.zeros_like(district_table))
-        district_high = self._table_highs.get("district", np.zeros_like(district_table))
-        building_low = self._table_lows.get("building", np.zeros_like(building_table))
-        building_high = self._table_highs.get("building", np.zeros_like(building_table))
-        charger_low = self._table_lows.get("charger", np.zeros_like(charger_table))
-        charger_high = self._table_highs.get("charger", np.zeros_like(charger_table))
-        storage_low = self._table_lows.get("storage", np.zeros_like(storage_table))
-        storage_high = self._table_highs.get("storage", np.zeros_like(storage_table))
-        pv_low = self._table_lows.get("pv", np.zeros_like(pv_table))
-        pv_high = self._table_highs.get("pv", np.zeros_like(pv_table))
-        ev_low = self._table_lows.get("ev", np.zeros_like(ev_table))
-        ev_high = self._table_highs.get("ev", np.zeros_like(ev_table))
-        deferrable_low = self._table_lows.get("deferrable_appliance", np.zeros_like(deferrable_table))
-        deferrable_high = self._table_highs.get("deferrable_appliance", np.zeros_like(deferrable_table))
-
         charger_connected_ev = self._charger_ev_row_map(
             edges.get("charger_to_ev_connected", []),
             edges.get("charger_to_ev_connected_mask", []),
@@ -301,12 +457,40 @@ class EntityContractAdapter:
             edges.get("charger_to_ev_incoming", []),
             edges.get("charger_to_ev_incoming_mask", []),
         )
+        table_lookup = {
+            "district": district_table,
+            "building": building_table,
+            "charger": charger_table,
+            "storage": storage_table,
+            "pv": pv_table,
+            "ev": ev_table,
+            "deferrable_appliance": deferrable_table,
+        }
 
         observations: List[np.ndarray] = []
         observation_names: List[List[str]] = []
         observation_spaces: List[spaces.Box] = []
         observation_origins: List[List[Tuple[str, str]]] = []
-        collect_layout = len(self._cached_observation_names) != len(self._building_ids)
+        collect_layout = (
+            len(self._cached_observation_names) != len(self._building_ids)
+            or len(self._cached_observation_sources) != len(self._building_ids)
+            or len(self._cached_observation_source_groups) != len(self._building_ids)
+        )
+        if collect_layout:
+            district_low = self._table_lows.get("district", np.zeros_like(district_table))
+            district_high = self._table_highs.get("district", np.zeros_like(district_table))
+            building_low = self._table_lows.get("building", np.zeros_like(building_table))
+            building_high = self._table_highs.get("building", np.zeros_like(building_table))
+            charger_low = self._table_lows.get("charger", np.zeros_like(charger_table))
+            charger_high = self._table_highs.get("charger", np.zeros_like(charger_table))
+            storage_low = self._table_lows.get("storage", np.zeros_like(storage_table))
+            storage_high = self._table_highs.get("storage", np.zeros_like(storage_table))
+            pv_low = self._table_lows.get("pv", np.zeros_like(pv_table))
+            pv_high = self._table_highs.get("pv", np.zeros_like(pv_table))
+            ev_low = self._table_lows.get("ev", np.zeros_like(ev_table))
+            ev_high = self._table_highs.get("ev", np.zeros_like(ev_table))
+            deferrable_low = self._table_lows.get("deferrable_appliance", np.zeros_like(deferrable_table))
+            deferrable_high = self._table_highs.get("deferrable_appliance", np.zeros_like(deferrable_table))
 
         for building_index, building_id in enumerate(self._building_ids):
             names: List[str] = []
@@ -314,14 +498,36 @@ class EntityContractAdapter:
             lows: List[float] = []
             highs: List[float] = []
             origins: List[Tuple[str, str]] = []
+            alias_sources: List[Tuple[str, int]] = []
+            feature_sources: List[Tuple[Any, ...]] = []
 
-            def add_feature(name: str, value: float, low: float, high: float, origin: Tuple[str, str]):
-                names.append(str(name))
+            if not collect_layout:
+                observations.append(
+                    self._observation_values_from_source_group(
+                        self._cached_observation_source_groups[building_index],
+                        table_lookup=table_lookup,
+                        charger_connected_ev=charger_connected_ev,
+                        charger_incoming_ev=charger_incoming_ev,
+                    )
+                )
+                continue
+
+            def add_feature(
+                name: str,
+                value: float,
+                low: float,
+                high: float,
+                origin: Tuple[str, str],
+                source: Optional[Tuple[Any, ...]] = None,
+            ):
                 values.append(self._safe_scalar(value, 0.0))
                 if collect_layout:
+                    names.append(str(name))
                     lows.append(self._safe_scalar(low, -1.0e6))
                     highs.append(self._safe_scalar(high, 1.0e6))
                     origins.append(origin)
+                    if source is not None:
+                        feature_sources.append(source)
 
             for col, feature in enumerate(self._district_features):
                 add_feature(
@@ -330,6 +536,7 @@ class EntityContractAdapter:
                     district_low[0, col] if district_low.shape[1] > col else -1.0e6,
                     district_high[0, col] if district_high.shape[1] > col else 1.0e6,
                     ("district", feature),
+                    ("table", "district", 0, col),
                 )
 
             for col, feature in enumerate(self._building_features):
@@ -339,6 +546,7 @@ class EntityContractAdapter:
                     building_low[building_index, col] if building_low.shape[1] > col and building_low.shape[0] > building_index else -1.0e6,
                     building_high[building_index, col] if building_high.shape[1] > col and building_high.shape[0] > building_index else 1.0e6,
                     ("building", feature),
+                    ("table", "building", building_index, col),
                 )
 
             building_chargers = self._building_asset_rows.get("charger", [[] for _ in self._building_ids])[building_index]
@@ -358,6 +566,7 @@ class EntityContractAdapter:
                         storage_low[row, col] if storage_low.shape[0] > row and storage_low.shape[1] > col else -1.0e6,
                         storage_high[row, col] if storage_high.shape[0] > row and storage_high.shape[1] > col else 1.0e6,
                         ("storage", feature),
+                        ("table", "storage", row, col),
                     )
 
             for row in building_pvs:
@@ -369,6 +578,7 @@ class EntityContractAdapter:
                         pv_low[row, col] if pv_low.shape[0] > row and pv_low.shape[1] > col else -1.0e6,
                         pv_high[row, col] if pv_high.shape[0] > row and pv_high.shape[1] > col else 1.0e6,
                         ("pv", feature),
+                        ("table", "pv", row, col),
                     )
 
             for row in building_deferrables:
@@ -384,6 +594,7 @@ class EntityContractAdapter:
                         deferrable_low[row, col] if deferrable_low.shape[0] > row and deferrable_low.shape[1] > col else -1.0e6,
                         deferrable_high[row, col] if deferrable_high.shape[0] > row and deferrable_high.shape[1] > col else 1.0e6,
                         ("deferrable_appliance", feature),
+                        ("table", "deferrable_appliance", row, col),
                     )
 
             for row in building_chargers:
@@ -395,6 +606,7 @@ class EntityContractAdapter:
                         charger_low[row, col] if charger_low.shape[0] > row and charger_low.shape[1] > col else -1.0e6,
                         charger_high[row, col] if charger_high.shape[0] > row and charger_high.shape[1] > col else 1.0e6,
                         ("charger", feature),
+                        ("table", "charger", row, col),
                     )
 
                 def add_ev_context_features(context_label: str, ev_row: Optional[int]) -> None:
@@ -417,6 +629,7 @@ class EntityContractAdapter:
                             low_value,
                             high_value,
                             ("ev", feature),
+                            ("ev_context", context_label, row, col),
                         )
 
                 connected_ev_row = charger_connected_ev.get(row)
@@ -426,15 +639,37 @@ class EntityContractAdapter:
                 add_ev_context_features("incoming_ev", incoming_ev_row)
 
             # Operational counters per building.
-            add_feature("active_chargers_count", float(len(building_chargers)), 0.0, float(max(len(self._charger_ids), 1)), ("meta", "active_chargers_count"))
-            add_feature("active_storages_count", float(len(building_storages)), 0.0, float(max(len(self._storage_ids), 1)), ("meta", "active_storages_count"))
-            add_feature("active_pvs_count", float(len(building_pvs)), 0.0, float(max(len(self._pv_ids), 1)), ("meta", "active_pvs_count"))
+            add_feature(
+                "active_chargers_count",
+                float(len(building_chargers)),
+                0.0,
+                float(max(len(self._charger_ids), 1)),
+                ("meta", "active_chargers_count"),
+                ("constant", float(len(building_chargers))),
+            )
+            add_feature(
+                "active_storages_count",
+                float(len(building_storages)),
+                0.0,
+                float(max(len(self._storage_ids), 1)),
+                ("meta", "active_storages_count"),
+                ("constant", float(len(building_storages))),
+            )
+            add_feature(
+                "active_pvs_count",
+                float(len(building_pvs)),
+                0.0,
+                float(max(len(self._pv_ids), 1)),
+                ("meta", "active_pvs_count"),
+                ("constant", float(len(building_pvs))),
+            )
             add_feature(
                 "active_deferrable_appliances_count",
                 float(len(building_deferrables)),
                 0.0,
                 float(max(len(self._deferrable_ids), 1)),
                 ("meta", "active_deferrable_appliances_count"),
+                ("constant", float(len(building_deferrables))),
             )
 
             # RBC compatibility aliases from first connected charger if available.
@@ -450,34 +685,59 @@ class EntityContractAdapter:
                         charger_low[first_row, source_col] if charger_low.shape[0] > first_row and charger_low.shape[1] > source_col else 0.0,
                         charger_high[first_row, source_col] if charger_high.shape[0] > first_row and charger_high.shape[1] > source_col else 1.0,
                         ("charger", source_feature),
+                        ("table", "charger", first_row, source_col),
                     )
             else:
-                add_feature("electric_vehicle_charger_state", 0.0, 0.0, 1.0, ("charger", "connected_state"))
-                add_feature("electric_vehicle_soc", 0.0, 0.0, 100.0, ("charger", "connected_ev_soc"))
-                add_feature("electric_vehicle_required_soc_departure", 0.0, 0.0, 100.0, ("charger", "connected_ev_required_soc_departure"))
-                add_feature("electric_vehicle_departure_time", 0.0, 0.0, 24.0, ("charger", "connected_ev_departure_time_step"))
-
-            add_feature("electric_vehicle_is_flexible", 1.0, 0.0, 1.0, ("meta", "electric_vehicle_is_flexible"))
-
-            if "minute" not in names and "minutes" in names:
-                minute_idx = names.index("minutes")
+                add_feature("electric_vehicle_charger_state", 0.0, 0.0, 1.0, ("charger", "connected_state"), ("constant", 0.0))
+                add_feature("electric_vehicle_soc", 0.0, 0.0, 100.0, ("charger", "connected_ev_soc"), ("constant", 0.0))
                 add_feature(
-                    "minute",
-                    values[minute_idx],
-                    lows[minute_idx] if collect_layout else 0.0,
-                    highs[minute_idx] if collect_layout else 59.0,
-                    origins[minute_idx] if collect_layout else ("district", "minutes"),
+                    "electric_vehicle_required_soc_departure",
+                    0.0,
+                    0.0,
+                    100.0,
+                    ("charger", "connected_ev_required_soc_departure"),
+                    ("constant", 0.0),
+                )
+                add_feature(
+                    "electric_vehicle_departure_time",
+                    0.0,
+                    0.0,
+                    24.0,
+                    ("charger", "connected_ev_departure_time_step"),
+                    ("constant", 0.0),
                 )
 
-            if "solar_generation" not in names and "pv_power_kw" in names:
-                pv_idx = names.index("pv_power_kw")
-                add_feature(
-                    "solar_generation",
-                    values[pv_idx],
-                    lows[pv_idx] if collect_layout else 0.0,
-                    highs[pv_idx] if collect_layout else 1.0,
-                    origins[pv_idx] if collect_layout else ("pv", "pv_power_kw"),
+            add_feature(
+                "electric_vehicle_is_flexible",
+                1.0,
+                0.0,
+                1.0,
+                ("meta", "electric_vehicle_is_flexible"),
+                ("constant", 1.0),
             )
+
+            if collect_layout:
+                if "minute" not in names and "minutes" in names:
+                    minute_idx = names.index("minutes")
+                    alias_sources.append(("minute", minute_idx))
+                    add_feature(
+                        "minute",
+                        values[minute_idx],
+                        lows[minute_idx],
+                        highs[minute_idx],
+                        origins[minute_idx],
+                    )
+
+                if "solar_generation" not in names and "pv_power_kw" in names:
+                    pv_idx = names.index("pv_power_kw")
+                    alias_sources.append(("solar_generation", pv_idx))
+                    add_feature(
+                        "solar_generation",
+                        values[pv_idx],
+                        lows[pv_idx],
+                        highs[pv_idx],
+                        origins[pv_idx],
+                    )
 
             obs_vector = np.asarray(values, dtype=np.float64)
 
@@ -494,6 +754,17 @@ class EntityContractAdapter:
                     )
                 )
                 observation_origins.append(origins)
+                if len(self._cached_alias_sources) < len(self._building_ids):
+                    self._cached_alias_sources.append(alias_sources)
+                if len(self._cached_observation_sources) < len(self._building_ids):
+                    self._cached_observation_sources.append(feature_sources)
+                if len(self._cached_observation_source_groups) < len(self._building_ids):
+                    self._cached_observation_source_groups.append(
+                        self._compile_observation_source_group(
+                            feature_sources,
+                            alias_sources,
+                        )
+                    )
 
         if collect_layout:
             self._cached_observation_names = observation_names
@@ -502,6 +773,32 @@ class EntityContractAdapter:
 
         self._latest_observation_origins = self._cached_observation_origins
         return observations, self._cached_observation_names, self._cached_observation_spaces
+
+    def to_agent_encoded_observations(
+        self,
+        observation_payload: Mapping[str, Any],
+    ) -> Tuple[List[np.ndarray], List[List[str]], List[spaces.Box]]:
+        observations, observation_names, observation_spaces = self.to_agent_observations(
+            observation_payload
+        )
+        encoded_observations = [
+            self.normalize_observation(
+                agent_index=agent_index,
+                observation=observation,
+                observation_names=observation_names[agent_index]
+                if agent_index < len(observation_names)
+                else [],
+                observation_space=observation_spaces[agent_index]
+                if agent_index < len(observation_spaces)
+                else spaces.Box(
+                    low=np.full(len(observation), -1.0e6, dtype=np.float32),
+                    high=np.full(len(observation), 1.0e6, dtype=np.float32),
+                    dtype=np.float32,
+                ),
+            )
+            for agent_index, observation in enumerate(observations)
+        ]
+        return encoded_observations, observation_names, observation_spaces
 
     def normalize_observation(
         self,
@@ -523,15 +820,20 @@ class EntityContractAdapter:
                 and layout_cache.get("raw_names") == cache_names
                 and layout_cache.get("profile") == self.encoding_profile
             ):
+                compiled_ops = layout_cache.get("compiled_ops")
+                if compiled_ops is not None:
+                    return self._execute_maddpg_compiled_plan(values, layout_cache)
+
                 encoded, _ = self._encode_maddpg_v1(
                     observation=values,
                     observation_names=observation_names,
                     observation_space=observation_space,
                     collect_names=False,
+                    keep_names=layout_cache.get("encoded_name_set"),
+                    raw_name_index_pairs=layout_cache.get("candidate_raw_name_index_pairs"),
+                    value_name_index_pairs=layout_cache.get("value_name_index_pairs"),
+                    value_name_to_index=layout_cache.get("value_name_to_index"),
                 )
-                keep_indices = layout_cache.get("keep_indices")
-                if keep_indices is not None:
-                    encoded = encoded[keep_indices]
                 return encoded
 
             encoded, encoded_names = self._encode_maddpg_v1(
@@ -553,11 +855,33 @@ class EntityContractAdapter:
             while len(self._latest_encoded_observation_names) <= agent_index:
                 self._latest_encoded_observation_names.append([])
             self._latest_encoded_observation_names[agent_index] = encoded_names
+            value_name_index_pairs = [(name, idx) for idx, name in enumerate(cache_names)]
+            candidate_raw_name_set = self._candidate_raw_names_for_encoded_profile(
+                observation_names,
+                set(encoded_names),
+            )
+            compiled_ops = self._build_maddpg_compiled_plan(
+                observation_names=cache_names,
+                observation_space=observation_space,
+                profile=self.encoding_profile,
+            )
+            compiled_vectors = self._split_maddpg_compiled_ops(compiled_ops)
             self._maddpg_encoded_layout_cache[agent_index] = {
                 "raw_names": cache_names,
                 "profile": self.encoding_profile,
                 "encoded_names": encoded_names,
+                "encoded_name_set": set(encoded_names),
+                "candidate_raw_name_set": candidate_raw_name_set,
+                "candidate_raw_name_index_pairs": [
+                    (name, idx)
+                    for name, idx in value_name_index_pairs
+                    if name in candidate_raw_name_set
+                ],
+                "value_name_index_pairs": value_name_index_pairs,
+                "value_name_to_index": dict(value_name_index_pairs),
                 "keep_indices": keep_indices,
+                "compiled_ops": compiled_ops,
+                "compiled_vectors": compiled_vectors,
             }
             return encoded
 
@@ -606,6 +930,371 @@ class EntityContractAdapter:
             encoded_names.append(names)
         return encoded_names
 
+    def _build_maddpg_compiled_plan(
+        self,
+        *,
+        observation_names: Sequence[str],
+        observation_space: spaces.Box,
+        profile: str,
+    ) -> List[Tuple[Any, ...]]:
+        low = np.asarray(observation_space.low, dtype=np.float64)
+        high = np.asarray(observation_space.high, dtype=np.float64)
+        value_name_to_index = {str(name): idx for idx, name in enumerate(observation_names)}
+        ops: List[Tuple[Any, ...]] = []
+        emitted_time_of_day = False
+
+        def keep(name: str) -> bool:
+            return profile == "maddpg_v1" or self._is_maddpg_profile_feature(name, profile)
+
+        def append(output_name: str, op: Tuple[Any, ...]) -> None:
+            if keep(output_name):
+                ops.append(op)
+
+        for index, raw_name in enumerate(observation_names):
+            name = str(raw_name)
+            lo = self._safe_scalar(low[index], -1.0e6)
+            hi = self._safe_scalar(high[index], 1.0e6)
+
+            if name.startswith("electric_vehicle_") or name in {"minute", "solar_generation"}:
+                continue
+
+            if name.startswith("district__"):
+                feature = name.split("__", 1)[1]
+                if feature == "topology_version":
+                    continue
+
+                if feature == "month":
+                    append("district__month_sin", ("cyclic_sin", index, 12.0, 1.0))
+                    append("district__month_cos", ("cyclic_cos", index, 12.0, 1.0))
+                    continue
+
+                if feature == "day_type":
+                    append("district__day_type_sin", ("cyclic_sin", index, 7.0, 1.0))
+                    append("district__day_type_cos", ("cyclic_cos", index, 7.0, 1.0))
+                    append("district__is_weekend", ("is_weekend", index))
+                    continue
+
+                if feature in {"hour", "minutes", "seconds"}:
+                    if not emitted_time_of_day:
+                        hour_idx = value_name_to_index.get("district__hour")
+                        minute_idx = value_name_to_index.get("district__minutes")
+                        second_idx = value_name_to_index.get("district__seconds")
+                        append("district__time_of_day_sin", ("time_of_day_sin", hour_idx, minute_idx, second_idx))
+                        append("district__time_of_day_cos", ("time_of_day_cos", hour_idx, minute_idx, second_idx))
+                        emitted_time_of_day = True
+                    continue
+
+            if self._is_binary_feature(name):
+                append(name, ("binary", index))
+                continue
+
+            if self._is_soc_feature(name):
+                append(name, ("soc_fraction", index))
+                if name.endswith("connected_ev_required_soc_departure"):
+                    soc_name = self._replace_last_feature(name, "connected_ev_soc")
+                    append(
+                        self._replace_last_feature(name, "connected_ev_soc_deficit"),
+                        ("soc_deficit", index, value_name_to_index.get(soc_name)),
+                    )
+                if name.endswith("incoming_ev_required_soc_departure"):
+                    soc_name = self._replace_last_feature(name, "incoming_ev_estimated_soc_arrival")
+                    append(
+                        self._replace_last_feature(name, "incoming_ev_soc_deficit"),
+                        ("soc_deficit", index, value_name_to_index.get(soc_name)),
+                    )
+                continue
+
+            if name.endswith("connected_ev_departure_time_step"):
+                append(self._replace_last_feature(name, "connected_ev_hours_until_departure"), ("steps_until_hours24", index))
+                append(self._replace_last_feature(name, "connected_ev_departure_available"), ("nonnegative_available", index))
+                append(self._replace_last_feature(name, "connected_ev_departure_urgency_24h"), ("steps_until_urgency24", index))
+                continue
+
+            if name.endswith("incoming_ev_estimated_arrival_time_step"):
+                append(self._replace_last_feature(name, "incoming_ev_hours_until_arrival"), ("steps_until_hours24", index))
+                append(self._replace_last_feature(name, "incoming_ev_arrival_available"), ("nonnegative_available", index))
+                append(self._replace_last_feature(name, "incoming_ev_arrival_urgency_24h"), ("steps_until_urgency24", index))
+                continue
+
+            if name.endswith("incoming_ev_departure_time_step"):
+                append(self._replace_last_feature(name, "incoming_ev_hours_until_departure_from_time_step"), ("steps_until_hours24", index))
+                append(self._replace_last_feature(name, "incoming_ev_departure_available"), ("nonnegative_available", index))
+                append(self._replace_last_feature(name, "incoming_ev_departure_urgency_24h"), ("steps_until_urgency24", index))
+                continue
+
+            if name.startswith("deferrable_appliance::") and name.endswith("_time_step"):
+                base = name.removesuffix("_time_step")
+                append(f"{base}_time_of_day_sin", ("step_time_sin", index))
+                append(f"{base}_time_of_day_cos", ("step_time_cos", index))
+                append(f"{base}_available", ("nonnegative_available", index))
+                continue
+
+            if "hours_until_" in name:
+                append(f"{name}_24h", ("hours24", index))
+                continue
+
+            if name.endswith("slack_steps") or name.endswith("cycle_duration_steps") or name.endswith("remaining_duration_steps"):
+                append(f"{name}_day_ratio", ("steps_day_ratio", index))
+                continue
+
+            if name.endswith("remaining_energy_kwh"):
+                append(
+                    f"{name}_cycle_ratio",
+                    ("cycle_ratio", index, value_name_to_index.get(self._replace_last_feature(name, "cycle_energy_kwh"))),
+                )
+                continue
+
+            if name.endswith("current_step_energy_kwh"):
+                append(
+                    f"{name}_cycle_ratio",
+                    ("cycle_ratio", index, value_name_to_index.get(self._replace_last_feature(name, "cycle_energy_kwh"))),
+                )
+                continue
+
+            if name.endswith("cycle_peak_step_offset_ratio"):
+                append(name, ("clip_signed_unit", index))
+                continue
+
+            if name.endswith("_ratio") or name.endswith("priority"):
+                append(name, ("clip_unit_nonnegative", index))
+                continue
+
+            if name.endswith("last_charged_kwh") or name.endswith("electricity_consumption_kwh") or name == "net_electricity_consumption":
+                append(name, ("signed_by_bounds", index, lo, hi))
+                continue
+
+            if "headroom_kw" in name:
+                append(name, ("headroom_ratio", index, name, lo, hi))
+                continue
+
+            if name.endswith("constraint_violation_kwh"):
+                append(name, ("positive_by_high", index, hi, 0.5))
+                continue
+
+            if name.endswith("_kwh_step"):
+                append(name, ("step_energy_ratio", index, name, lo, hi))
+                continue
+
+            if (
+                name.endswith("energy_to_required_soc_kwh")
+                or name.endswith("energy_to_full_kwh")
+                or name.endswith("energy_available_kwh")
+            ):
+                append(name, ("energy_capacity_ratio", index, name, hi))
+                continue
+
+            if "battery_capacity_kwh" in name or name.endswith("capacity_kwh"):
+                append(name, ("positive_by_high", index, hi, 100.0))
+                continue
+
+            if (
+                name.endswith("nominal_power_kw")
+                or name.endswith("max_charging_power_kw")
+                or name.endswith("max_discharging_power_kw")
+            ):
+                append(name, ("positive_by_high", index, hi, 22.0))
+                continue
+
+            if name.endswith("_power_kw") or name.endswith("slack_kw"):
+                append(name, ("power_ratio", index, name, lo, hi))
+                continue
+
+            if "relative_humidity" in name:
+                append(name, ("scale_clip", index, 100.0, 0.0, 1.0))
+                continue
+
+            if "solar_irradiance" in name:
+                append(name, ("scale_clip", index, 1000.0, 0.0, 1.0))
+                continue
+
+            append(name, ("minmax", index, lo, hi))
+
+        return ops
+
+    @staticmethod
+    def _split_maddpg_compiled_ops(ops: Sequence[Tuple[Any, ...]]) -> Dict[str, Any]:
+        scalar_ops: List[Tuple[int, Tuple[Any, ...]]] = []
+        minmax_output_indices: List[int] = []
+        minmax_input_indices: List[int] = []
+        minmax_lows: List[float] = []
+        minmax_denominators: List[float] = []
+        minmax_valid: List[bool] = []
+
+        for output_index, op in enumerate(ops):
+            if op[0] != "minmax":
+                scalar_ops.append((output_index, op))
+                continue
+
+            _, input_index, low, high = op
+            denominator = float(high) - float(low)
+            valid = (
+                np.isfinite(low)
+                and np.isfinite(high)
+                and np.isfinite(denominator)
+                and denominator > 0.0
+            )
+            minmax_output_indices.append(output_index)
+            minmax_input_indices.append(int(input_index))
+            minmax_lows.append(float(low))
+            minmax_denominators.append(float(denominator) if valid else 1.0)
+            minmax_valid.append(bool(valid))
+
+        return {
+            "scalar_ops": scalar_ops,
+            "minmax_output_indices": np.asarray(minmax_output_indices, dtype=np.int64),
+            "minmax_input_indices": np.asarray(minmax_input_indices, dtype=np.int64),
+            "minmax_lows": np.asarray(minmax_lows, dtype=np.float64),
+            "minmax_denominators": np.asarray(minmax_denominators, dtype=np.float64),
+            "minmax_valid": np.asarray(minmax_valid, dtype=bool),
+        }
+
+    def _execute_maddpg_compiled_plan(
+        self,
+        observation: np.ndarray,
+        layout_cache: Mapping[str, Any],
+    ) -> np.ndarray:
+        ops = layout_cache.get("compiled_ops") or []
+        vectors = layout_cache.get("compiled_vectors") or {}
+        value_name_to_index = layout_cache.get("value_name_to_index") or {}
+        values_by_name = _ObservationValueLookup(observation, value_name_to_index)
+        encoded = np.empty(len(ops), dtype=np.float64)
+        steps_per_day = self.steps_per_day
+        seconds_per_time_step = self.seconds_per_time_step
+
+        minmax_output_indices = vectors.get("minmax_output_indices")
+        minmax_input_indices = vectors.get("minmax_input_indices")
+        if minmax_output_indices is not None and len(minmax_output_indices):
+            minmax_values = np.asarray(observation[minmax_input_indices], dtype=np.float64)
+            minmax_values = np.nan_to_num(minmax_values, nan=0.0, posinf=0.0, neginf=0.0)
+            minmax_valid = vectors["minmax_valid"]
+            minmax_encoded = np.zeros(len(minmax_output_indices), dtype=np.float64)
+            if np.any(minmax_valid):
+                minmax_encoded[minmax_valid] = np.clip(
+                    (
+                        minmax_values[minmax_valid]
+                        - vectors["minmax_lows"][minmax_valid]
+                    )
+                    / vectors["minmax_denominators"][minmax_valid],
+                    0.0,
+                    1.0,
+                )
+            encoded[minmax_output_indices] = minmax_encoded
+        scalar_ops = vectors.get("scalar_ops")
+        if scalar_ops is None:
+            scalar_ops = list(enumerate(ops))
+
+        def value_at(index: Optional[int], default: float = 0.0) -> float:
+            if index is None or index >= len(observation):
+                return default
+            try:
+                value = float(observation[index])
+            except (TypeError, ValueError):
+                return default
+            if np.isnan(value) or np.isinf(value):
+                return default
+            return value
+
+        def cyclic(value: float, *, period: float, offset: float) -> Tuple[float, float]:
+            angle = 2.0 * np.pi * ((value - offset) % period) / period
+            return float(np.sin(angle)), float(np.cos(angle))
+
+        for output_index, op in scalar_ops:
+            kind = op[0]
+
+            if kind == "binary":
+                encoded[output_index] = 1.0 if value_at(op[1]) > 0.5 else 0.0
+            elif kind == "soc_fraction":
+                value = value_at(op[1])
+                if value < 0.0:
+                    encoded[output_index] = 0.0
+                else:
+                    if value > 1.5:
+                        value /= 100.0
+                    encoded[output_index] = float(np.clip(value, 0.0, 1.0))
+            elif kind == "soc_deficit":
+                required = self._soc_fraction(value_at(op[1]))
+                soc = self._soc_fraction(value_at(op[2], value_at(op[1])))
+                encoded[output_index] = max(required - soc, 0.0)
+            elif kind == "cyclic_sin":
+                encoded[output_index] = cyclic(value_at(op[1]), period=op[2], offset=op[3])[0]
+            elif kind == "cyclic_cos":
+                encoded[output_index] = cyclic(value_at(op[1]), period=op[2], offset=op[3])[1]
+            elif kind == "is_weekend":
+                encoded[output_index] = 1.0 if int(round(value_at(op[1]))) in {6, 7} else 0.0
+            elif kind in {"time_of_day_sin", "time_of_day_cos"}:
+                hour = value_at(op[1])
+                minute = value_at(op[2])
+                second = value_at(op[3])
+                seconds_of_day = (hour % 24.0) * 3600.0 + minute * 60.0 + second
+                pair = cyclic(seconds_of_day, period=86400.0, offset=0.0)
+                encoded[output_index] = pair[0] if kind == "time_of_day_sin" else pair[1]
+            elif kind == "steps_until_hours24":
+                value = value_at(op[1])
+                hours = 24.0 if value < 0.0 else value * seconds_per_time_step / 3600.0
+                encoded[output_index] = float(np.clip(hours, 0.0, 24.0) / 24.0)
+            elif kind == "steps_until_urgency24":
+                value = value_at(op[1])
+                hours = 24.0 if value < 0.0 else value * seconds_per_time_step / 3600.0
+                encoded[output_index] = float(1.0 - np.clip(hours, 0.0, 24.0) / 24.0)
+            elif kind == "nonnegative_available":
+                encoded[output_index] = 1.0 if value_at(op[1]) >= 0.0 else 0.0
+            elif kind in {"step_time_sin", "step_time_cos"}:
+                value = value_at(op[1])
+                if value < 0.0:
+                    encoded[output_index] = 0.0
+                else:
+                    pair = cyclic(value % steps_per_day, period=steps_per_day, offset=0.0)
+                    encoded[output_index] = pair[0] if kind == "step_time_sin" else pair[1]
+            elif kind == "hours24":
+                encoded[output_index] = float(np.clip(value_at(op[1]), 0.0, 24.0) / 24.0)
+            elif kind == "steps_day_ratio":
+                value = value_at(op[1])
+                encoded[output_index] = 0.0 if value < 0.0 else float(np.clip(value / steps_per_day, 0.0, 1.0))
+            elif kind == "cycle_ratio":
+                numerator = value_at(op[1])
+                denominator = value_at(op[2])
+                encoded[output_index] = self._safe_ratio(numerator, denominator, default=0.0)
+            elif kind == "clip_signed_unit":
+                encoded[output_index] = float(np.clip(value_at(op[1]), -1.0, 1.0))
+            elif kind == "clip_unit_nonnegative":
+                value = value_at(op[1])
+                encoded[output_index] = 0.0 if value < 0.0 else float(np.clip(value, 0.0, 1.0))
+            elif kind == "signed_by_bounds":
+                encoded[output_index] = self._signed_by_bounds(value_at(op[1]), op[2], op[3])
+            elif kind == "headroom_ratio":
+                encoded[output_index] = self._headroom_ratio(name=op[2], value=value_at(op[1]), low=op[3], high=op[4])
+            elif kind == "positive_by_high":
+                encoded[output_index] = self._positive_by_high(value_at(op[1]), op[2], fallback=op[3])
+            elif kind == "step_energy_ratio":
+                encoded[output_index] = self._step_energy_ratio(
+                    name=op[2],
+                    value=value_at(op[1]),
+                    low=op[3],
+                    high=op[4],
+                    values_by_name=values_by_name,
+                )
+            elif kind == "energy_capacity_ratio":
+                encoded[output_index] = self._energy_capacity_ratio(
+                    name=op[2],
+                    value=value_at(op[1]),
+                    high=op[3],
+                    values_by_name=values_by_name,
+                )
+            elif kind == "power_ratio":
+                encoded[output_index] = self._power_ratio(
+                    name=op[2],
+                    value=value_at(op[1]),
+                    low=op[3],
+                    high=op[4],
+                    values_by_name=values_by_name,
+                )
+            elif kind == "scale_clip":
+                encoded[output_index] = float(np.clip(value_at(op[1]) / op[2], op[3], op[4]))
+            else:
+                encoded[output_index] = self._minmax(value_at(op[1]), op[2], op[3])
+
+        return encoded
+
     def _encode_maddpg_v1(
         self,
         *,
@@ -613,25 +1302,39 @@ class EntityContractAdapter:
         observation_names: Sequence[str],
         observation_space: spaces.Box,
         collect_names: bool = True,
+        keep_names: Optional[set[str]] = None,
+        raw_name_index_pairs: Optional[Sequence[Tuple[str, int]]] = None,
+        value_name_index_pairs: Optional[Sequence[Tuple[str, int]]] = None,
+        value_name_to_index: Optional[Mapping[str, int]] = None,
     ) -> Tuple[np.ndarray, List[str]]:
         low = np.asarray(observation_space.low, dtype=np.float64)
         high = np.asarray(observation_space.high, dtype=np.float64)
-        values_by_name = {
-            str(name): self._safe_scalar(observation[index], 0.0)
-            for index, name in enumerate(observation_names)
-        }
+        if value_name_index_pairs is None:
+            value_name_index_pairs = [
+                (str(name), index) for index, name in enumerate(observation_names)
+            ]
+        if raw_name_index_pairs is None:
+            raw_name_index_pairs = value_name_index_pairs
+        if value_name_to_index is not None:
+            values_by_name = _ObservationValueLookup(observation, value_name_to_index)
+        else:
+            values_by_name = {
+                name: self._safe_scalar(observation[index], 0.0)
+                for name, index in value_name_index_pairs
+            }
 
         encoded: List[float] = []
         encoded_names: List[str] = []
         emitted_time_of_day = False
 
         def append(name: str, value: float) -> None:
+            if keep_names is not None and name not in keep_names:
+                return
             if collect_names:
                 encoded_names.append(name)
             encoded.append(float(value))
 
-        for index, raw_name in enumerate(observation_names):
-            name = str(raw_name)
+        for name, index in raw_name_index_pairs:
             value = self._safe_scalar(observation[index], 0.0)
             lo = self._safe_scalar(low[index], -1.0e6)
             hi = self._safe_scalar(high[index], 1.0e6)
@@ -820,6 +1523,20 @@ class EntityContractAdapter:
             append(name, self._minmax(value, lo, hi))
 
         return np.asarray(encoded, dtype=np.float64), encoded_names
+
+    def _candidate_raw_names_for_encoded_profile(
+        self,
+        observation_names: Sequence[str],
+        encoded_name_set: set[str],
+    ) -> set[str]:
+        """Find raw names that can emit at least one kept encoded feature."""
+        candidates: set[str] = set()
+        for raw_name in observation_names:
+            name = str(raw_name)
+            possible_outputs = self._maddpg_v1_encoded_names([name])
+            if any(output_name in encoded_name_set for output_name in possible_outputs):
+                candidates.add(name)
+        return candidates
 
     def _maddpg_v1_encoded_names(self, observation_names: Sequence[str]) -> List[str]:
         names: List[str] = []

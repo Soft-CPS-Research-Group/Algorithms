@@ -10,7 +10,7 @@ custo, renovaveis e KPIs de servico.
 
 ## Versao Do Simulador
 
-O repo esta alinhado com `softcpsrecsimulator==0.6.9`.
+O repo esta alinhado com `softcpsrecsimulator==1.0.2`.
 
 Esta versao e importante porque traz melhorias de performance e permite reduzir
 o payload de observacoes que a reward precisa de receber. Isto reduz overhead
@@ -168,16 +168,27 @@ episodio. Por isso, pequenas diferencas em segundos/step mudam dias de runtime.
 |---|---:|---:|---:|
 | Antes das otimizacoes fortes | ~`0.108 s/step` | ~`2.6 dias` | ~`15.7 dias` |
 | Estimativa intermedia que chegou a ser usada | ~`0.062 s/step` | ~`1.5 dias` | ~`9 dias` |
-| Estado atual, wall-clock local | ~`0.050 s/step` | ~`29 h` | ~`7.3 dias` |
-| Estado atual, mediana perfilada | ~`0.037-0.040 s/step` | ~`22-23 h` | ~`5.4-5.8 dias` |
+| Estado com encoding compilado, loop local sem profiler | ~`0.035 s/step` | ~`20.4 h` | ~`5.1 dias` |
+| Estado com plano direto entity->MADDPG, loop local sem profiler | ~`0.028 s/step` | ~`16.1 h` | ~`4.0 dias` |
+| Estado com plano direto entity->MADDPG, mediana perfilada | ~`0.021 s/step` | ~`12.1 h` | ~`3.0 dias` |
 
 As maiores melhorias vieram de:
 
 - cache de encoding/entity layout;
+- plano compilado por fontes entity, evitando redescobrir tabelas/nomes por
+  feature em cada step;
+- via direta `entity payload -> maddpg_v3` para agentes neurais que nao
+  precisam de raw observations;
+- plano compilado para `maddpg_v3_operational`, com `minmax` vetorizado;
 - replay buffer compacto;
 - reduzir payload da reward com `required_observation_names`;
 - reduzir logs/exports/MLflow em runs longas;
 - manter GPU/AMP para treino MADDPG.
+
+Nota importante: RBCs e warm-start/behavior-cloning com teacher continuam a
+receber raw observations, porque precisam dos nomes/valores originais. A via
+direta e usada nos runs neurais sem raw context e com action diagnostics
+desligado.
 
 Ainda assim, full-year 15s multi-episodio continua caro. Para ciencia iterativa,
 o caminho recomendado e:

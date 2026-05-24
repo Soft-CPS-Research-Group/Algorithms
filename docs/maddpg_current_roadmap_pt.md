@@ -41,7 +41,7 @@ algoritmo e treino.
 
 Base tecnica:
 
-- simulador: `softcpsrecsimulator==0.6.9`;
+- simulador: `softcpsrecsimulator==1.0.2`;
 - interface: `entity`;
 - topologia MADDPG: `static`;
 - datasets principais:
@@ -52,13 +52,33 @@ Base tecnica:
   - `multi_charger`;
 - perfil principal de observacoes: `maddpg_v3_operational`;
 - candidato atual: `MADDPG V48`;
-- imagem remota atual: `sha-f20cc24`.
+- imagem remota atual: a reconstruir a partir do requirement `softcpsrecsimulator==1.0.2`.
 - performance recente:
   - replay compacto prealocado em NumPy/torch;
+  - entity layout cacheado por topologia/layout;
+  - encoding `maddpg_v3_operational` compilado e com bloco `minmax`
+    vetorizado;
   - rewards do repo declaram payload minimo de observacoes para o simulador;
   - configs novas exportam KPIs/series so no episodio final quando aplicavel;
   - BAU export fica desligado nas configs de treino/comparacao atuais;
-  - `step_many` existe no simulador 0.6.9, mas ainda fica em estudo antes de entrar no treino.
+  - `step_many` existe no simulador 1.0.2, mas ainda fica em estudo antes de entrar no treino.
+
+Perfil local curto, 2026-05-24, Simulator 1.0.2, 2022 all-plus-EVs, 17 agentes:
+
+```text
+MADDPG v3 operational:
+  mediana step perfilado:              ~20.7 ms
+  env.step:                            ~12.4 ms
+  entity->maddpg_v3 direto:            ~7.2 ms
+  model_observation_encoding:          ~0.0 ms
+  update neural MADDPG real:           ~0.6 ms
+  loop local sem profiler, 168 steps:  ~27.5 ms/step
+
+O antigo custo de `entity layout` caiu de ~10.5 ms para ~1.1 ms com o plano de
+fontes agrupado. Nos runs neurais sem raw context, o wrapper agora passa
+diretamente `entity payload -> maddpg_v3`, deixando o custo de encoding dentro
+da fase entity-model-observation e removendo o re-encoding no `update`.
+```
 
 O que ja esta solido:
 

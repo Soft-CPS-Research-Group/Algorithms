@@ -141,9 +141,64 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             0.0,
             float(hyper.get("deferrable_safety_margin_steps", 1.0)),
         )
+        self._obs_match_cache: Dict[int, Dict[tuple, List[tuple[str, int]]]] = {}
+
+    def attach_environment(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+        self._obs_match_cache = {}
 
     def _policy_type(self) -> str:
         return self.__class__.__name__
+
+    def _cached_observation_matches(
+        self,
+        obs_map: Mapping[str, int],
+        *,
+        suffixes: Sequence[str] = (),
+        include_tokens: Sequence[str] = (),
+        exclude_tokens: Sequence[str] = (),
+        prefix: str = "",
+    ) -> List[tuple[str, int]]:
+        """Return stable observation name/index matches for a static layout."""
+        include = tuple(str(token).lower() for token in include_tokens)
+        exclude = tuple(str(token).lower() for token in exclude_tokens)
+        suffix_key = tuple(str(suffix) for suffix in suffixes)
+        cache_key = (suffix_key, include, exclude, str(prefix))
+        map_cache = self._obs_match_cache.setdefault(id(obs_map), {})
+        cached = map_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        matches: List[tuple[str, int]] = []
+        for raw_name, index in obs_map.items():
+            name = str(raw_name)
+            if prefix and not name.startswith(prefix):
+                continue
+            if suffix_key and not any(name.endswith(suffix) for suffix in suffix_key):
+                continue
+            lowered = name.lower()
+            if include and not all(token in lowered for token in include):
+                continue
+            if exclude and any(token in lowered for token in exclude):
+                continue
+            matches.append((name, int(index)))
+
+        map_cache[cache_key] = matches
+        return matches
 
     def _get_first_value(
         self,
@@ -155,15 +210,21 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         default: float = 0.0,
     ) -> float:
         for name in names:
-            value = self._get_value(obs, dict(obs_map), name, default=float("nan"))
+            value = self._get_value(obs, obs_map, name, default=float("nan"))
             if not math.isnan(value):
                 return value
 
-        for raw_name in obs_map:
-            if any(str(raw_name).endswith(suffix) for suffix in suffixes):
-                value = self._get_value(obs, dict(obs_map), str(raw_name), default=float("nan"))
-                if not math.isnan(value):
-                    return value
+        if suffixes:
+            for name, index in self._cached_observation_matches(obs_map, suffixes=suffixes):
+                if index >= len(obs):
+                    continue
+                value = obs[index]
+                try:
+                    if math.isnan(value):
+                        continue
+                except TypeError:
+                    pass
+                return float(value)
 
         return default
 
@@ -186,13 +247,12 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             )
             for idx in (1, 2, 3)
         ]
-        for raw_name in obs_map:
-            name = str(raw_name)
-            if "forecast_price" not in name:
+        for _name, index in self._cached_observation_matches(obs_map, include_tokens=("forecast_price",)):
+            if index >= len(obs):
                 continue
-            value = self._get_value(obs, dict(obs_map), name, default=float("nan"))
+            value = obs[index]
             if not math.isnan(value):
-                forecasts.append(value)
+                forecasts.append(float(value))
         valid = [value for value in forecasts if not math.isnan(value)]
 
         if math.isnan(price):
@@ -221,17 +281,14 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         exclude_tokens: Sequence[str] = (),
     ) -> List[float]:
         values: List[float] = []
-        include = tuple(token.lower() for token in include_tokens)
-        exclude = tuple(token.lower() for token in exclude_tokens)
-        lookup = dict(obs_map)
-        for raw_name in obs_map:
-            name = str(raw_name)
-            lowered = name.lower()
-            if not all(token in lowered for token in include):
+        for _name, index in self._cached_observation_matches(
+            obs_map,
+            include_tokens=include_tokens,
+            exclude_tokens=exclude_tokens,
+        ):
+            if index >= len(obs):
                 continue
-            if exclude and any(token in lowered for token in exclude):
-                continue
-            value = self._get_value(obs, lookup, name, default=float("nan"))
+            value = obs[index]
             if math.isfinite(value):
                 values.append(float(value))
         return values
@@ -315,13 +372,13 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
 
     def _get_storage_soc(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
-        value = self._storage_soc_ratio(np.asarray(obs, dtype=float), dict(obs_map), default=self.storage_target_soc)
+        value = self._storage_soc_ratio(np.asarray(obs, dtype=float), obs_map, default=self.storage_target_soc)
         if math.isnan(value):
             return float(np.clip(self.storage_target_soc, 0.0, 1.0))
         return value
 
     def _storage_strategy_limits(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> tuple[float, float]:
-        observed_min, observed_max = self._observed_storage_soc_limits(np.asarray(obs, dtype=float), dict(obs_map))
+        observed_min, observed_max = self._observed_storage_soc_limits(np.asarray(obs, dtype=float), obs_map)
         min_soc = max(self.storage_min_soc, observed_min)
         max_soc = min(self.storage_max_soc, observed_max)
         if min_soc > max_soc:
@@ -525,13 +582,16 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         feature: str,
     ) -> float:
         suffix = f"::{feature}"
-        for raw_name in obs_map:
-            name = str(raw_name)
-            if not name.startswith("storage::") or not name.endswith(suffix):
+        for _name, index in self._cached_observation_matches(
+            obs_map,
+            suffixes=(suffix,),
+            prefix="storage::",
+        ):
+            if index >= len(obs):
                 continue
-            value = self._get_value(obs, dict(obs_map), name, default=float("nan"))
+            value = obs[index]
             if not math.isnan(value):
-                return value
+                return float(value)
         return float("nan")
 
     def _connected_ev_context(
@@ -544,10 +604,9 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
     ) -> Dict[str, float | bool | None]:
         charger_id = self._resolve_ev_charger_id(action_name, charger_info)
         building_name = self._agent_buildings.get(agent_idx)
-        lookup = dict(obs_map)
         state = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="connected_state",
@@ -556,7 +615,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
         current_soc = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="soc",
@@ -565,7 +624,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
         required_soc = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="required_soc_departure",
@@ -578,7 +637,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         fallback_capacity = self.default_capacity if charger_info is None else charger_info.capacity or self.default_capacity
         capacity = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="battery_capacity",
@@ -591,7 +650,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             required_soc /= 100.0
         hours = self._get_ev_departure_hours(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             default=self.flexibility_hours,
@@ -604,7 +663,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
         can_charge = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="can_charge",
@@ -613,7 +672,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
         can_discharge = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="can_discharge",
@@ -622,7 +681,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
         available_charge_action = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="available_charge_action_normalized",
@@ -631,7 +690,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
         available_discharge_action = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="available_discharge_action_normalized",
@@ -640,7 +699,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
         min_required_action = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="min_required_action_normalized",
@@ -649,7 +708,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
         departure_feasibility = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="departure_feasibility_ratio",
@@ -658,7 +717,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
         departure_margin = self._get_ev_value(
             obs,
-            lookup,
+            obs_map,
             charger_id=charger_id,
             building_name=building_name,
             feature="departure_energy_margin_kwh",
@@ -789,10 +848,10 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         obs_map: Mapping[str, int],
         prefix: str,
     ) -> bool:
-        pending = self._get_deferrable_value(obs, dict(obs_map), prefix, "pending", default=0.0)
-        running = self._get_deferrable_value(obs, dict(obs_map), prefix, "running", default=0.0)
-        can_start = self._get_deferrable_value(obs, dict(obs_map), prefix, "can_start", default=0.0)
-        deadline_missed = self._get_deferrable_value(obs, dict(obs_map), prefix, "deadline_missed", default=0.0)
+        pending = self._get_deferrable_value(obs, obs_map, prefix, "pending", default=0.0)
+        running = self._get_deferrable_value(obs, obs_map, prefix, "running", default=0.0)
+        can_start = self._get_deferrable_value(obs, obs_map, prefix, "can_start", default=0.0)
+        deadline_missed = self._get_deferrable_value(obs, obs_map, prefix, "deadline_missed", default=0.0)
         return pending > 0.5 and running <= 0.5 and can_start > 0.5 and deadline_missed <= 0.5
 
     def _deferrable_must_start_now(
@@ -801,22 +860,21 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         obs_map: Mapping[str, int],
         prefix: str,
     ) -> bool:
-        lookup = dict(obs_map)
-        must_start_now = self._get_deferrable_value(obs, lookup, prefix, "must_start_now", default=0.0)
+        must_start_now = self._get_deferrable_value(obs, obs_map, prefix, "must_start_now", default=0.0)
         if must_start_now > 0.5:
             return True
 
-        must_run = self._get_deferrable_value(obs, lookup, prefix, "must_run", default=0.0)
+        must_run = self._get_deferrable_value(obs, obs_map, prefix, "must_run", default=0.0)
         if must_run > 0.5:
             return True
 
-        slack_steps = self._get_deferrable_value(obs, lookup, prefix, "slack_steps", default=float("nan"))
+        slack_steps = self._get_deferrable_value(obs, obs_map, prefix, "slack_steps", default=float("nan"))
         if not math.isnan(slack_steps) and slack_steps >= 0.0:
             return slack_steps <= self.deferrable_safety_margin_steps
 
         hours_until_latest = self._get_deferrable_value(
             obs,
-            lookup,
+            obs_map,
             prefix,
             "hours_until_latest_start",
             default=float("nan"),
@@ -826,14 +884,14 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
 
         hours_until_deadline = self._get_deferrable_value(
             obs,
-            lookup,
+            obs_map,
             prefix,
             "hours_until_deadline",
             default=float("nan"),
         )
         remaining_steps = self._get_deferrable_value(
             obs,
-            lookup,
+            obs_map,
             prefix,
             "remaining_duration_steps",
             default=float("nan"),
@@ -841,7 +899,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         if math.isnan(remaining_steps) or remaining_steps <= 0.0:
             remaining_steps = self._get_deferrable_value(
                 obs,
-                lookup,
+                obs_map,
                 prefix,
                 "cycle_duration_steps",
                 default=float("nan"),
