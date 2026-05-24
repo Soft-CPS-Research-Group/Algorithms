@@ -996,7 +996,10 @@ class Wrapper_CityLearn(RLC):
         if self.model is None:
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        if self._entity_model_observations_direct:
+        direct_entity_model_observations = bool(
+            getattr(self, "_entity_model_observations_direct", False)
+        )
+        if direct_entity_model_observations:
             encoded_observations = [
                 np.asarray(obs, dtype=np.float64) for obs in observations
             ]
@@ -1007,7 +1010,7 @@ class Wrapper_CityLearn(RLC):
         if callable(observation_context_hook):
             observation_context_hook(
                 raw_observations=None
-                if self._entity_model_observations_direct
+                if direct_entity_model_observations
                 else observations,
                 encoded_observations=encoded_observations,
             )
@@ -1601,7 +1604,10 @@ class Wrapper_CityLearn(RLC):
             "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
         phase_start_time = time.perf_counter()
-        if self._entity_model_observations_direct:
+        direct_entity_model_observations = bool(
+            getattr(self, "_entity_model_observations_direct", False)
+        )
+        if direct_entity_model_observations:
             encoded_observations = [
                 np.asarray(obs, dtype=np.float64) for obs in observations
             ]
