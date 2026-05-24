@@ -333,17 +333,22 @@ def compute_ppo_loss(
     # Combined loss
     total_loss = policy_loss + value_coeff * value_loss - entropy_coeff * entropy
 
+    # Clip fraction: proportion of samples where ratio was clipped
+    clip_fraction = ((ratio - 1.0).abs() > clip_eps).float().mean().item()
+
     metrics = {
         "policy_loss": policy_loss.item(),
         "value_loss": value_loss.item(),
         "entropy": entropy.item(),
+        "clip_fraction": clip_fraction,
     }
 
     logger.debug(
-        "Computed PPO loss (policy_loss={:.6f}, value_loss={:.6f}, entropy={:.6f})",
+        "Computed PPO loss (policy_loss={:.6f}, value_loss={:.6f}, entropy={:.6f}, clip_frac={:.4f})",
         metrics["policy_loss"],
         metrics["value_loss"],
         metrics["entropy"],
+        metrics["clip_fraction"],
     )
 
     return total_loss, metrics

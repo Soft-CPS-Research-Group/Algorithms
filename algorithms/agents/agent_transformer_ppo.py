@@ -735,6 +735,7 @@ class AgentTransformerPPO(BaseAgent):
         self, state: _PerBuildingState, last_value: torch.Tensor
     ) -> None:
         state.buffer.compute_returns_and_advantages(last_value)
+        all_metrics: dict = {"policy_loss": [], "value_loss": [], "entropy": []}
         for _epoch in range(self._ppo_epochs):
             for batch in state.buffer.get_batches(self._minibatch_size):
                 state.optimizer.zero_grad()
@@ -774,6 +775,18 @@ class AgentTransformerPPO(BaseAgent):
                     self._max_grad_norm,
                 )
                 state.optimizer.step()
+                for k, v in _metrics.items():
+                    all_metrics.setdefault(k, []).append(v)
+        averaged = {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
+        building_id = getattr(state, "building_id", "?")
+        logger.info(
+            "PPO update [{}]: policy_loss={:.4f}, value_loss={:.4f}, entropy={:.4f}, clip_frac={:.3f}",
+            building_id,
+            averaged.get("policy_loss", 0.0),
+            averaged.get("value_loss", 0.0),
+            averaged.get("entropy", 0.0),
+            averaged.get("clip_fraction", 0.0),
+        )
 
     # ----- ONNX export --------------------------------------------------------
 
