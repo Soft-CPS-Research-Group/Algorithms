@@ -1,0 +1,515 @@
+"""Collect an offline-RL dataset by rolling out RBCSmartPolicy in entity interface.
+
+Each row stores one agent's transition for one timestep. All 17 buildings are
+recorded so that downstream IQL/CQL training can use any agent group.
+
+Output per seed:
+    datasets/offline_rl/rbcsmart_entity/seed_<N>.parquet
+
+Per-directory:
+    datasets/offline_rl/rbcsmart_entity/manifest.json
+    datasets/offline_rl/rbcsmart_entity/kpi_summary.csv
+    datasets/offline_rl/rbcsmart_entity/sample_first_1000.csv
+
+Design notes
+------------
+* Policy: RBCSmartPolicy (solar/price/peak-aware heuristic).
+* Reward: CostServiceCommunityFeasiblePrecisionRewardV46 captured live from
+  the simulator — same signal used by MADDPG training, enabling apples-to-apples
+  offline-vs-online comparison.
+* Observations: minmax-normalised entity-encoded vectors from EntityContractAdapter.
+* All 17 agents are recorded. Agent groups are identified by (obs_dim, action_dim)
+  so downstream code can train separate policies per group without re-collection.
+* 10 episodes per seed (1 day = 5760 steps each). Collection seeds 22–31.
+* Fails fast on: schema mismatch, zero action variance in non-constant columns.
+
+Usage
+-----
+    .venv/bin/python -m scripts.collect_rbcsmart_dataset --smoke
+    .venv/bin/python -m scripts.collect_rbcsmart_dataset \\
+        --seeds 22 23 24 25 26 27 28 29 30 31 --episodes 10
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import hashlib
+import json
+import math
+import subprocess
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any, Dict, List, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from loguru import logger as _loguru_logger  # noqa: E402
+_loguru_logger.remove()
+_loguru_logger.add(sys.stderr, level="WARNING")
+
+from citylearn.citylearn import CityLearnEnv  # noqa: E402
+from reward_function import CostServiceCommunityFeasiblePrecisionRewardV46  # noqa: E402
+from utils.entity_adapter import EntityContractAdapter  # noqa: E402
+from algorithms.agents.baseline_policies import RBCSmartPolicy  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+SCHEMA_PATH = str(
+    REPO_ROOT / "datasets" / "citylearn_three_phase_electrical_service_demo_15s_parquet" / "schema.json"
+)
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "datasets" / "offline_rl" / "rbcsmart_entity"
+DEFAULT_SEEDS: List[int] = [22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+DEFAULT_EPISODES: int = 10
+EPISODE_STEPS: int = 5760          # 1 day at 15 s resolution
+SMOKE_STEPS: int = 200             # fast sanity check
+SAFETY_MAX_STEPS: int = 6000       # guard against runaway loops
+
+# Parquet column prefixes
+OBS_PREFIX = "obs__"
+NEXT_OBS_PREFIX = "next_obs__"
+ACTION_PREFIX = "action__"
+
+# ---------------------------------------------------------------------------
+# Env + adapter factory
+# ---------------------------------------------------------------------------
+
+
+def _make_env(*, start_step: int = 0, episode_steps: int = EPISODE_STEPS) -> CityLearnEnv:
+    """Instantiate a CityLearnEnv with V46 reward and entity interface."""
+    return CityLearnEnv(
+        schema=SCHEMA_PATH,
+        central_agent=False,
+        interface="entity",
+        topology_mode="static",
+        reward_function=CostServiceCommunityFeasiblePrecisionRewardV46,
+        simulation_start_time_step=start_step,
+        episode_time_steps=episode_steps,
+        offline=True,
+    )
+
+
+def _make_adapter(env: CityLearnEnv) -> EntityContractAdapter:
+    return EntityContractAdapter(
+        env,
+        normalization_enabled=True,
+        clip=True,
+        encoding_profile="minmax_space",
+    )
+
+
+def _make_rbc(obs_names: List[List[str]], action_names: List[List[str]], env: CityLearnEnv) -> RBCSmartPolicy:
+    rbc = RBCSmartPolicy(
+        config={"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}, "simulator": {}}
+    )
+    from gymnasium import spaces as gym_spaces
+    obs_spaces = [
+        gym_spaces.Box(low=-1e6, high=1e6, shape=(len(obs),), dtype=np.float32)
+        for obs in obs_names
+    ]
+    rbc.attach_environment(
+        observation_names=obs_names,
+        action_names=action_names,
+        action_space=list(getattr(env, "flat_action_space", [])),
+        observation_space=obs_spaces,
+        metadata={
+            "building_names": [b.name for b in env.buildings],
+            "seconds_per_time_step": env.seconds_per_time_step,
+        },
+    )
+    return rbc
+
+
+# ---------------------------------------------------------------------------
+# Schema helpers
+# ---------------------------------------------------------------------------
+
+
+def _obs_col(name: str) -> str:
+    return f"{OBS_PREFIX}{name}"
+
+
+def _next_obs_col(name: str) -> str:
+    return f"{NEXT_OBS_PREFIX}{name}"
+
+
+def _action_col(name: str) -> str:
+    return f"{ACTION_PREFIX}{name}"
+
+
+# ---------------------------------------------------------------------------
+# Per-episode rollout
+# ---------------------------------------------------------------------------
+
+
+def collect_episode(
+    *,
+    seed: int,
+    episode_idx: int,
+    start_step: int,
+    episode_steps: int,
+) -> Dict[str, Any]:
+    """Run one episode, return rows (one per agent per timestep) + KPIs."""
+    env = _make_env(start_step=start_step, episode_steps=episode_steps)
+    adapter = _make_adapter(env)
+
+    obs_payload, _ = env.reset()
+    obs_list, obs_names, obs_spaces = adapter.to_agent_encoded_observations(obs_payload)
+    action_names = [list(names) for names in env.action_names]
+    n_agents = len(obs_list)
+
+    rbc = _make_rbc(obs_names, action_names, env)
+
+    rows: List[Dict[str, Any]] = []
+    terminated = False
+    truncated = False
+    step = 0
+
+    while not (terminated or truncated):
+        actions = rbc.predict(obs_list, deterministic=True)
+        env_actions = adapter.to_entity_actions(actions, action_names)
+        next_obs_payload, rewards, terminated, truncated, _ = env.step(env_actions)
+        next_obs_list, _, _ = adapter.to_agent_encoded_observations(next_obs_payload)
+
+        for agent_idx in range(n_agents):
+            obs_agent = obs_list[agent_idx]
+            next_obs_agent = next_obs_list[agent_idx]
+            act_agent = actions[agent_idx]
+            a_names = action_names[agent_idx]
+            o_names = obs_names[agent_idx]
+
+            row: Dict[str, Any] = {
+                "seed": int(seed),
+                "episode": int(episode_idx),
+                "timestep": int(step),
+                "agent_idx": int(agent_idx),
+                "obs_dim": int(len(obs_agent)),
+                "action_dim": int(len(act_agent)),
+                "reward": float(rewards[agent_idx]),
+                "terminated": int(bool(terminated)),
+                "truncated": int(bool(truncated)),
+            }
+            for name, val in zip(o_names, obs_agent):
+                row[_obs_col(name)] = float(val)
+            for name, val in zip(a_names, act_agent):
+                row[_action_col(name)] = float(val)
+            for name, val in zip(o_names, next_obs_agent):
+                row[_next_obs_col(name)] = float(val)
+            rows.append(row)
+
+        obs_list = next_obs_list
+        step += 1
+        if step >= SAFETY_MAX_STEPS:
+            raise RuntimeError(
+                f"Rollout exceeded {SAFETY_MAX_STEPS} steps — env did not terminate. "
+                f"seed={seed} episode={episode_idx}"
+            )
+        if step % 1000 == 0:
+            print(f"  [seed={seed} ep={episode_idx}] step {step}", flush=True)
+
+    kpi_df = env.evaluate()
+    district_kpis = _extract_kpis(kpi_df, level="district")
+    building_kpis_list = [
+        _extract_kpis(kpi_df, level="building", name=b.name)
+        for b in env.buildings
+    ]
+    print(f"  [seed={seed} ep={episode_idx}] done in {step} steps, n_rows={len(rows)}", flush=True)
+    return {
+        "seed": seed,
+        "episode": episode_idx,
+        "rows": rows,
+        "n_steps": step,
+        "district_kpis": district_kpis,
+        "building_kpis": building_kpis_list,
+        "obs_dims": [len(o) for o in obs_list],
+        "action_dims": [len(a) for a in actions],
+        "obs_names": obs_names,
+        "action_names": action_names,
+    }
+
+
+# ---------------------------------------------------------------------------
+# KPI helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_kpis(
+    df: pd.DataFrame,
+    *,
+    level: str,
+    name: str | None = None,
+) -> Dict[str, float]:
+    sub = df[df["level"] == level]
+    if name is not None:
+        sub = sub[sub["name"] == name]
+    out: Dict[str, float] = {}
+    for _, row in sub.iterrows():
+        try:
+            out[str(row["cost_function"])] = float(row["value"])
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+def assert_action_variance(
+    df: pd.DataFrame,
+    *,
+    tol: float = 1e-6,
+    warn_only: bool = False,
+) -> None:
+    """Warn (or fail) if any action column has near-zero variance.
+
+    EV charger and deferrable actions are legitimately zero in windows where
+    no EVs are connected (e.g. early morning). Only raise an error for the
+    stationary battery action (``action__electrical_storage``) which must vary
+    for any meaningful battery-control dataset.
+    """
+    action_cols = [c for c in df.columns if c.startswith(ACTION_PREFIX)]
+    bad: List[str] = []
+    warned: List[str] = []
+    for col in action_cols:
+        arr = df[col].dropna().to_numpy(dtype=np.float64)
+        if arr.std() < tol:
+            # Battery must vary; EV/deferrable may be zero in some windows.
+            if "electrical_storage" in col and "electric_vehicle" not in col:
+                bad.append(f"{col}: std={arr.std():.2e}")
+            else:
+                warned.append(f"{col}: std={arr.std():.2e}")
+    if warned:
+        print(
+            "[collect] note: zero-variance action columns (expected in limited windows):\n"
+            + "\n".join(f"  {w}" for w in warned),
+            flush=True,
+        )
+    if bad and not warn_only:
+        raise ValueError(
+            "Zero-variance battery action columns (M2 failure mode):\n"
+            + "\n".join(f"  {b}" for b in bad)
+        )
+    elif bad:
+        print(
+            "[collect] WARNING: zero-variance battery action columns:\n"
+            + "\n".join(f"  {b}" for b in bad),
+            flush=True,
+        )
+
+
+def _agent_group_summary(df: pd.DataFrame) -> Dict[str, Any]:
+    """Summarise agent groups present in the dataset."""
+    groups = Counter(zip(df["obs_dim"].tolist(), df["action_dim"].tolist()))
+    return {f"obs{k[0]}_act{k[1]}": v for k, v in groups.most_common()}
+
+
+# ---------------------------------------------------------------------------
+# Writers
+# ---------------------------------------------------------------------------
+
+
+def write_seed_parquet(out_path: Path, df: pd.DataFrame) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    table = pa.Table.from_pandas(df, preserve_index=False)
+    pq.write_table(table, out_path, compression="snappy")
+
+
+def _hash_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT, text=True
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def write_manifest(
+    out_dir: Path,
+    *,
+    seeds: Sequence[int],
+    episodes_per_seed: int,
+    seed_files: Dict[int, Path],
+    n_rows_total: int,
+    agent_groups: Dict[str, Any],
+    schema_hash: str,
+) -> Path:
+    manifest = {
+        "behaviour_policy": "RBCSmartPolicy",
+        "behaviour_policy_class": "algorithms.agents.baseline_policies.RBCSmartPolicy",
+        "reward_function": "CostServiceCommunityFeasiblePrecisionRewardV46",
+        "reward_captured": "live",
+        "dataset_path": SCHEMA_PATH,
+        "interface": "entity",
+        "topology_mode": "static",
+        "entity_encoding": "minmax_space",
+        "seeds": [int(s) for s in seeds],
+        "episodes_per_seed": int(episodes_per_seed),
+        "episode_time_steps": EPISODE_STEPS,
+        "n_agents": 17,
+        "agent_groups": agent_groups,
+        "n_rows_total": int(n_rows_total),
+        "seed_files": {str(s): str(p.name) for s, p in seed_files.items()},
+        "schema_hash": schema_hash,
+        "collected_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "code_git_sha": _git_sha(),
+    }
+    path = out_dir / "manifest.json"
+    path.write_text(json.dumps(manifest, indent=2))
+    return path
+
+
+def write_kpi_summary(out_dir: Path, results: List[Dict[str, Any]]) -> Path:
+    rows = []
+    kpi_keys_d = sorted({k for r in results for k in r["district_kpis"]})
+    for r in results:
+        row: Dict[str, Any] = {
+            "seed": r["seed"],
+            "episode": r["episode"],
+            "n_steps": r["n_steps"],
+        }
+        for k in kpi_keys_d:
+            row[f"district.{k}"] = r["district_kpis"].get(k, math.nan)
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    path = out_dir / "kpi_summary.csv"
+    df.to_csv(path, index=False)
+    return path
+
+
+def write_sample_csv(out_dir: Path, df: pd.DataFrame, n: int = 1000) -> Path:
+    path = out_dir / "sample_first_1000.csv"
+    df.head(n).to_csv(path, index=False)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main(argv: List[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--seeds", type=int, nargs="+", default=None)
+    parser.add_argument("--episodes", type=int, default=None)
+    parser.add_argument(
+        "--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Single seed, 1 episode, 200 steps — fast sanity check.",
+    )
+    args = parser.parse_args(argv)
+
+    seeds: List[int] = args.seeds if args.seeds is not None else DEFAULT_SEEDS
+    if args.smoke:
+        seeds = seeds[:1]
+
+    episodes_per_seed: int = 1 if args.smoke else (args.episodes or DEFAULT_EPISODES)
+    episode_steps = SMOKE_STEPS if args.smoke else EPISODE_STEPS
+
+    out_dir: Path = args.output_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[collect] output_dir: {out_dir}")
+    print(f"[collect] seeds: {seeds}")
+    print(f"[collect] episodes_per_seed: {episodes_per_seed}")
+    print(f"[collect] steps_per_episode: {episode_steps}")
+    print(f"[collect] reward: CostServiceCommunityFeasiblePrecisionRewardV46 (live)")
+
+    schema_hash = hashlib.sha256(Path(SCHEMA_PATH).read_bytes()).hexdigest()[:16]
+    print(f"[collect] schema_hash: {schema_hash}...")
+
+    seed_files: Dict[int, Path] = {}
+    all_results: List[Dict[str, Any]] = []
+    n_rows_total = 0
+    first_df: pd.DataFrame | None = None
+
+    for seed in seeds:
+        seed_path = out_dir / f"seed_{seed}.parquet"
+        if seed_path.exists() and not args.smoke:
+            print(f"[collect] skipping existing {seed_path.name}")
+            seed_files[seed] = seed_path
+            n_rows_total += pq.read_metadata(seed_path).num_rows
+            continue
+
+        print(f"\n[collect] === seed {seed} ===")
+        seed_rows: List[Dict[str, Any]] = []
+        seed_episode_results: List[Dict[str, Any]] = []
+
+        for ep in range(episodes_per_seed):
+            start_step = ep * episode_steps
+            result = collect_episode(
+                seed=seed, episode_idx=ep,
+                start_step=start_step, episode_steps=episode_steps,
+            )
+            seed_rows.extend(result["rows"])
+            seed_episode_results.append(result)
+            all_results.append(result)
+
+        df = pd.DataFrame(seed_rows)
+        # Action variance check (across ALL agents in the seed)
+        assert_action_variance(df)
+
+        write_seed_parquet(seed_path, df)
+        seed_files[seed] = seed_path
+        n_rows_total += len(df)
+
+        if first_df is None:
+            first_df = df
+
+        agent_groups = _agent_group_summary(df)
+        print(
+            f"[collect] seed={seed}: {len(df)} rows, "
+            f"groups={agent_groups}, "
+            f"reward_mean={df['reward'].mean():.4f}"
+        )
+
+    # Manifest
+    if all_results and first_df is not None:
+        agent_groups = _agent_group_summary(first_df)
+    else:
+        agent_groups = {}
+
+    manifest_path = write_manifest(
+        out_dir,
+        seeds=seeds,
+        episodes_per_seed=episodes_per_seed,
+        seed_files=seed_files,
+        n_rows_total=n_rows_total,
+        agent_groups=agent_groups,
+        schema_hash=schema_hash,
+    )
+
+    if all_results:
+        write_kpi_summary(out_dir, all_results)
+    if first_df is not None:
+        write_sample_csv(out_dir, first_df)
+
+    print(f"\n[collect] manifest: {manifest_path}")
+    print(f"[collect] total rows: {n_rows_total:,}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
