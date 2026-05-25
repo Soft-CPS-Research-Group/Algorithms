@@ -22,8 +22,10 @@ from algorithms.agents.masac_agent import MASAC
 from algorithms.agents.matd3_agent import MATD3
 from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO
 from algorithms.agents.rbc_agent import RuleBasedPolicy
+from algorithms.offline_rl.iql_entity_agent import IQLEntityAgent
 
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
+    "IQLEntityAgent": IQLEntityAgent,
     "HAPPO": HAPPO,
     "IPPO": IPPO,
     "MADDPG": MADDPG,
