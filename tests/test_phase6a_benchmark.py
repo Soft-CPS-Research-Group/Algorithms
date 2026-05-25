@@ -1118,8 +1118,8 @@ def test_phase6a_community_feasible_service_v45_teacher_clone_ev_focus_variant_p
     assert exploration["actor_storage_action_l2_penalty"] == 0.30
     assert exploration["actor_ev_v2g_action_l2_penalty"] == 24.0
     assert teacher_hyperparameters["price_charge_rate"] == 0.0
-    assert teacher_hyperparameters["storage_price_discharge_soc_floor"] == 0.30
-    assert teacher_hyperparameters["storage_peak_discharge_soc_floor"] == 0.30
+    assert teacher_hyperparameters["storage_price_discharge_soc_floor"] == 0.60
+    assert teacher_hyperparameters["storage_peak_discharge_soc_floor"] == 0.60
 
 
 def test_phase6a_community_feasible_service_v45_learning_teacher_variant_uses_soft_teacher(
@@ -1880,9 +1880,9 @@ def test_phase6a_rbc_smart_warm_start_uses_dataset_specific_teacher_hyperparamet
 
     assert teacher_hyperparameters["allow_v2g"] is True
     assert teacher_hyperparameters["price_charge_rate"] == 0.15
-    assert teacher_hyperparameters["storage_price_charge_soc_ceiling"] == 0.85
-    assert teacher_hyperparameters["storage_price_discharge_soc_floor"] == 0.30
-    assert teacher_hyperparameters["storage_peak_discharge_soc_floor"] == 0.30
+    assert teacher_hyperparameters["storage_price_charge_soc_ceiling"] == 0.60
+    assert teacher_hyperparameters["storage_price_discharge_soc_floor"] == 0.60
+    assert teacher_hyperparameters["storage_peak_discharge_soc_floor"] == 0.60
 
 
 def test_phase6a_community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_variant_keeps_bc_gate(

@@ -249,3 +249,38 @@ def test_validate_all_templates():
         with template_path.open("r", encoding="utf-8") as handle:
             template_config = yaml.safe_load(handle)
         validate_config(template_config)
+
+
+def test_rbc_community_templates_use_community_settlement_objective():
+    template_paths = [
+        Path("configs/templates/baselines/rbc_community_local.yaml"),
+        Path("configs/templates/baselines/rbc_community_2022_all_plus_evs_local.yaml"),
+    ]
+
+    for template_path in template_paths:
+        with template_path.open("r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+        kwargs = config["simulator"]["reward_function_kwargs"]
+        hyper = config["algorithm"]["hyperparameters"]
+
+        assert kwargs["local_cost_weight"] == pytest.approx(0.0)
+        assert kwargs["community_settlement_cost_weight"] == pytest.approx(1.0)
+        assert kwargs["community_local_price_ratio"] == pytest.approx(0.8)
+        assert kwargs["community_grid_export_price"] == pytest.approx(0.0)
+        assert hyper["community_local_price_ratio"] == pytest.approx(0.8)
+        assert hyper["community_grid_export_price"] == pytest.approx(0.0)
+
+
+def test_rbc_smart_templates_keep_house_level_cost_objective():
+    template_paths = [
+        Path("configs/templates/baselines/rbc_smart_local.yaml"),
+        Path("configs/templates/baselines/rbc_smart_2022_all_plus_evs_local.yaml"),
+    ]
+
+    for template_path in template_paths:
+        with template_path.open("r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+        kwargs = config["simulator"]["reward_function_kwargs"]
+
+        assert kwargs.get("local_cost_weight", 1.0) == pytest.approx(1.0)
+        assert kwargs["community_settlement_cost_weight"] == pytest.approx(0.0)
