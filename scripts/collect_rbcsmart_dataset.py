@@ -422,7 +422,10 @@ def main(argv: List[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     seeds: List[int] = args.seeds if args.seeds is not None else DEFAULT_SEEDS
-    if args.smoke:
+    if args.smoke and args.seeds is None:
+        # Only cap to 1 seed when --smoke is used without explicit --seeds.
+        # If the caller provides --seeds explicitly, honour that list so that
+        # multi-seed smoke runs (for train/val splits) are possible.
         seeds = seeds[:1]
 
     episodes_per_seed: int = 1 if args.smoke else (args.episodes or DEFAULT_EPISODES)

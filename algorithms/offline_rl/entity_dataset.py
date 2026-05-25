@@ -250,9 +250,13 @@ def load_entity_dataset(
     train_df = combined[train_mask].reset_index(drop=True)
     val_df = combined[val_mask].reset_index(drop=True)
 
-    # Extract arrays
+    # Extract arrays — fill NaN with 0.
+    # Entity observations are sparse: features absent in a given timestep
+    # (e.g. EV charger when no EV is present) are stored as NaN in the wide
+    # parquet.  Zero-filling is semantically correct: "feature absent → 0".
+    # The same applies to EV-charger action columns (NaN → no-charge = 0).
     def _to_array(df, cols):
-        return df[cols].to_numpy(dtype=np.float32)
+        return df[cols].fillna(0.0).to_numpy(dtype=np.float32)
 
     train_obs = _to_array(train_df, obs_cols)
     train_acts = _to_array(train_df, act_cols)

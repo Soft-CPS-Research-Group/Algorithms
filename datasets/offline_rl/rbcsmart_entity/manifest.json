@@ -1,0 +1,29 @@
+{
+  "behaviour_policy": "RBCSmartPolicy",
+  "behaviour_policy_class": "algorithms.agents.baseline_policies.RBCSmartPolicy",
+  "reward_function": "CostServiceCommunityFeasiblePrecisionRewardV46",
+  "reward_captured": "live",
+  "dataset_path": "/Users/guilherme.desousa/MEIA/Thesis/Project/repos/Algorithms/.worktrees/entity-iql/datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json",
+  "interface": "entity",
+  "topology_mode": "static",
+  "entity_encoding": "minmax_space",
+  "seeds": [
+    23
+  ],
+  "episodes_per_seed": 1,
+  "episode_time_steps": 5760,
+  "n_agents": 17,
+  "agent_groups": {
+    "obs627_act1": 1990,
+    "obs706_act2": 995,
+    "obs749_act3": 199,
+    "obs785_act3": 199
+  },
+  "n_rows_total": 3383,
+  "seed_files": {
+    "23": "seed_23.parquet"
+  },
+  "schema_hash": "c70b9e2647eff485",
+  "collected_at": "2026-05-25T22:00:39.700350+00:00",
+  "code_git_sha": "072b75d"
+}
