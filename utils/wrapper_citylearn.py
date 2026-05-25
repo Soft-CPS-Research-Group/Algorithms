@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -168,6 +169,9 @@ class Wrapper_CityLearn(RLC):
                 self._entity_encoding_policy,
             )
             self._entity_encoding_policy = "minmax_space"
+        self._entity_encoding_profile = str(
+            entity_encoding_cfg.get("profile", self._entity_encoding_policy)
+        ).strip().lower() or self._entity_encoding_policy
 
         if self._entity_interface_mode:
             self._initialize_entity_agent_state(env=env)
@@ -179,9 +183,14 @@ class Wrapper_CityLearn(RLC):
         self.update_step = False
         self.update_target_step = False
         self.global_step = 0
+        self._encoded_observation_cache_key: Optional[tuple[int, ...]] = None
+        self._encoded_observation_cache_value: Optional[List[np.ndarray]] = None
+        self._entity_model_observations_direct = False
+        self._action_bounds_cache: Optional[List[tuple[np.ndarray, np.ndarray]]] = None
         training_cfg = config.get("training", {})
         checkpoint_cfg = config.get("checkpointing", {})
         tracking_cfg = config.get("tracking", {})
+        export_cfg = simulator_cfg.get("export", {}) or {}
         wrapper_reward_cfg = simulator_cfg.get("wrapper_reward", {})
 
         self.steps_between_training_updates = training_cfg.get("steps_between_training_updates", 1)
@@ -218,7 +227,102 @@ class Wrapper_CityLearn(RLC):
             self.system_metrics_interval = 10
         if self.system_metrics_interval < 1:
             self.system_metrics_interval = 10
+        self.action_diagnostics_enabled = bool(tracking_cfg.get("action_diagnostics_enabled", False))
+        self.action_diagnostics_detail = str(
+            tracking_cfg.get("action_diagnostics_detail", "summary") or "summary"
+        ).strip().lower()
+        if self.action_diagnostics_detail not in {"summary", "per_action"}:
+            logger.warning(
+                "Unknown action_diagnostics_detail '{}'; falling back to 'summary'.",
+                self.action_diagnostics_detail,
+            )
+            self.action_diagnostics_detail = "summary"
+        self.action_saturation_tolerance = self._safe_float(
+            tracking_cfg.get("action_saturation_tolerance"),
+            default=0.01,
+        )
+        if self.action_saturation_tolerance < 0:
+            self.action_saturation_tolerance = 0.01
+        self.action_idle_tolerance = self._safe_float(
+            tracking_cfg.get("action_idle_tolerance"),
+            default=0.02,
+        )
+        if self.action_idle_tolerance < 0:
+            self.action_idle_tolerance = 0.02
+        self.reward_diagnostics_enabled = bool(tracking_cfg.get("reward_diagnostics_enabled", True))
+        self.reward_diagnostics_detail = str(
+            tracking_cfg.get("reward_diagnostics_detail", "summary") or "summary"
+        ).strip().lower()
+        if self.reward_diagnostics_detail not in {"summary", "per_agent"}:
+            logger.warning(
+                "Unknown reward_diagnostics_detail '{}'; falling back to 'summary'.",
+                self.reward_diagnostics_detail,
+            )
+            self.reward_diagnostics_detail = "summary"
+        self.runtime_profiling_enabled = bool(tracking_cfg.get("runtime_profiling_enabled", False))
+        try:
+            self.runtime_profiling_interval = int(tracking_cfg.get("runtime_profiling_interval", 512) or 512)
+        except (TypeError, ValueError):
+            self.runtime_profiling_interval = 512
+        if self.runtime_profiling_interval < 1:
+            self.runtime_profiling_interval = 512
+        self.runtime_profiling_detail = str(
+            tracking_cfg.get("runtime_profiling_detail", "summary") or "summary"
+        ).strip().lower()
+        if self.runtime_profiling_detail not in {"summary", "detailed"}:
+            logger.warning(
+                "Unknown runtime_profiling_detail '{}'; falling back to 'summary'.",
+                self.runtime_profiling_detail,
+            )
+            self.runtime_profiling_detail = "summary"
+        self.progress_phase_updates_enabled = bool(
+            tracking_cfg.get("progress_phase_updates_enabled", False)
+        )
+        self.progress_phase_start_step = self._coerce_non_negative_int(
+            tracking_cfg.get("progress_phase_start_step")
+        )
+        self.progress_phase_end_step = self._coerce_non_negative_int(
+            tracking_cfg.get("progress_phase_end_step")
+        )
+        self.max_step_seconds = self._coerce_positive_float(
+            tracking_cfg.get("max_step_seconds")
+        )
+        self.resource_guard_enabled = bool(tracking_cfg.get("resource_guard_enabled", False))
+        self.max_process_rss_mb = self._coerce_positive_float(
+            tracking_cfg.get("max_process_rss_mb")
+        )
+        self.min_available_ram_mb = self._coerce_positive_float(
+            tracking_cfg.get("min_available_ram_mb")
+        )
+        self._process = psutil.Process()
+        self._deferrable_wait_steps: Dict[tuple[int, str], int] = {}
         self.progress_tracker = ProgressTracker(progress_path)
+        self._configured_render_enabled = bool(getattr(self.env, "render_enabled", False))
+        self._configured_export_kpis_on_episode_end = bool(
+            export_cfg.get(
+                "export_kpis_on_episode_end",
+                getattr(self.env, "export_kpis_on_episode_end", False),
+            )
+        )
+        self._export_final_episode_only = bool(export_cfg.get("final_episode_only", False))
+        self._export_kpis_final_episode_only = bool(
+            export_cfg.get("kpis_final_episode_only", self._export_final_episode_only)
+        )
+        self._export_timeseries_final_episode_only = bool(
+            export_cfg.get("timeseries_final_episode_only", self._export_final_episode_only)
+        )
+        self._export_include_business_as_usual = bool(export_cfg.get("include_business_as_usual", True))
+        self._export_business_as_usual_timeseries = bool(
+            export_cfg.get("export_business_as_usual_timeseries", True)
+        )
+        self._export_kpi_round_decimals = export_cfg.get("kpi_round_decimals")
+        self._manual_kpi_export = self._configured_export_kpis_on_episode_end and (
+            not self._export_include_business_as_usual
+            or not self._export_business_as_usual_timeseries
+            or self._export_kpi_round_decimals is not None
+            or not self._export_kpis_final_episode_only
+        )
+        self._manual_kpi_exported_episodes: set[int | None] = set()
 
         self.wrapper_reward_enabled = bool(wrapper_reward_cfg.get("enabled", False))
         self.wrapper_reward_profile = str(wrapper_reward_cfg.get("profile", "cost_limits_v1")).strip() or "cost_limits_v1"
@@ -300,39 +404,61 @@ class Wrapper_CityLearn(RLC):
             self.env,
             normalization_enabled=self._entity_encoding_enabled and self._entity_encoding_policy == "minmax_space",
             clip=self._entity_encoding_clip,
+            encoding_profile=self._entity_encoding_profile,
         )
 
         initial_observations, _ = self.env.reset()
         self._apply_entity_layout(initial_observations, force_attach=False)
         self.reset()
 
-    def _apply_entity_layout(self, observation_payload: Mapping[str, Any], force_attach: bool) -> List[np.ndarray]:
+    def _apply_entity_layout(
+        self,
+        observation_payload: Mapping[str, Any],
+        force_attach: bool,
+        *,
+        model_observations: bool = False,
+    ) -> List[np.ndarray]:
         if not self._entity_interface_mode or self._entity_adapter is None:
             return []
 
         previous_version = self._entity_topology_version
-        agent_observations, observation_names, observation_spaces = self._entity_adapter.to_agent_observations(observation_payload)
+        if model_observations:
+            agent_observations, observation_names, observation_spaces = (
+                self._entity_adapter.to_agent_encoded_observations(observation_payload)
+            )
+        else:
+            agent_observations, observation_names, observation_spaces = (
+                self._entity_adapter.to_agent_observations(observation_payload)
+            )
         self._entity_topology_version = self._entity_adapter.topology_version
 
-        self.observation_names = observation_names
-        self.observation_space = observation_spaces
-        self.action_space = list(getattr(self.env, "flat_action_space", []))
-        self.action_names = [list(names) for names in getattr(self.env, "action_names", [])]
-        if len(self.action_names) < len(self.action_space):
-            self.action_names.extend([[] for _ in range(len(self.action_space) - len(self.action_names))])
-        elif len(self.action_names) > len(self.action_space):
-            self.action_names = self.action_names[: len(self.action_space)]
         self.episode_time_steps = int(getattr(self.episode_tracker, "episode_time_steps", self.episode_time_steps))
-        self.encoders = self.set_encoders()
 
         topology_changed = (
             force_attach
             or previous_version is None
             or self._entity_topology_version != previous_version
         )
-        if topology_changed and self._entity_dynamic_mode and self._algorithm_name == "MADDPG" and previous_version is not None:
+        if topology_changed:
+            self.observation_names = observation_names
+            self.observation_space = observation_spaces
+            self.action_space = list(getattr(self.env, "flat_action_space", []))
+            self.action_names = [list(names) for names in getattr(self.env, "action_names", [])]
+            if len(self.action_names) < len(self.action_space):
+                self.action_names.extend([[] for _ in range(len(self.action_space) - len(self.action_names))])
+            elif len(self.action_names) > len(self.action_space):
+                self.action_names = self.action_names[: len(self.action_space)]
+            self.encoders = self.set_encoders()
+            self._action_bounds_cache = None
+        fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
+        if (
+            topology_changed
+            and self._entity_dynamic_mode
+            and self._algorithm_name in fixed_topology_algorithms
+            and previous_version is not None
+        ):
             raise ValueError(
-                "MADDPG supports entity interface only with topology_mode='static'. "
+                f"{self._algorithm_name} supports entity interface only with topology_mode='static'. "
                 "Detected topology change during runtime."
             )
 
@@ -340,6 +466,29 @@ class Wrapper_CityLearn(RLC):
             self._attach_model_environment_metadata()
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
+
+    def _model_requires_raw_observation_context(self) -> bool:
+        if self.model is None:
+            return False
+        if bool(getattr(self.model, "use_raw_observations", False)):
+            return True
+        if bool(getattr(self.model, "requires_raw_observation_context", False)):
+            return True
+        if getattr(self.model, "_warm_start_policy", None) is not None:
+            return True
+        if getattr(self.model, "warm_start_policy_name", None):
+            return True
+        return False
+
+    def _can_use_direct_entity_model_observations(self) -> bool:
+        return (
+            self._entity_interface_mode
+            and self._entity_adapter is not None
+            and self._entity_encoding_profile != "minmax_space"
+            and not self.wrapper_reward_enabled
+            and not self.action_diagnostics_enabled
+            and not self._model_requires_raw_observation_context()
+        )
 
     def _attach_model_environment_metadata(self) -> None:
         if self.model is None:
@@ -380,6 +529,18 @@ class Wrapper_CityLearn(RLC):
                 if isinstance(building_ids, list):
                     return [str(name) for name in building_ids]
 
+        get_metadata = getattr(getattr(self.env, "unwrapped", self.env), "get_metadata", None)
+        if callable(get_metadata):
+            metadata = get_metadata() or {}
+            buildings = metadata.get("buildings", []) if isinstance(metadata, Mapping) else []
+            names = [
+                str(building.get("name"))
+                for building in buildings
+                if isinstance(building, Mapping) and building.get("name")
+            ]
+            if names:
+                return names
+
         return None
 
     @property
@@ -410,11 +571,259 @@ class Wrapper_CityLearn(RLC):
             return None
         return parsed if parsed > 0 else None
 
+    @staticmethod
+    def _coerce_non_negative_int(value) -> Optional[int]:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    @staticmethod
+    def _coerce_positive_float(value) -> Optional[float]:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if np.isnan(parsed) or np.isinf(parsed) or parsed <= 0.0:
+            return None
+        return parsed
+
     def _resolve_progress_totals(self, episodes: int) -> tuple[Optional[int], Optional[int]]:
         step_total = self._coerce_positive_int(self.episode_time_steps)
         if step_total is None:
             return None, None
         return step_total, episodes * step_total
+
+    def _progress_phase_in_window(self) -> bool:
+        if not self.progress_updates_enabled or not self.progress_phase_updates_enabled:
+            return False
+        if self.global_step % self.progress_update_interval != 0:
+            return False
+        if (
+            self.progress_phase_start_step is not None
+            and self.global_step < self.progress_phase_start_step
+        ):
+            return False
+        if (
+            self.progress_phase_end_step is not None
+            and self.global_step > self.progress_phase_end_step
+        ):
+            return False
+        return True
+
+    def _runtime_resource_snapshot(self) -> Dict[str, float]:
+        snapshot: Dict[str, float] = {}
+        try:
+            rss_mb = self._process.memory_info().rss / (1024 ** 2)
+            snapshot["process_rss_mb"] = round(float(rss_mb), 3)
+        except Exception:
+            pass
+
+        try:
+            virtual_memory = psutil.virtual_memory()
+            snapshot["system_available_ram_mb"] = round(
+                float(virtual_memory.available / (1024 ** 2)),
+                3,
+            )
+            snapshot["system_ram_percent"] = round(float(virtual_memory.percent), 3)
+        except Exception:
+            pass
+
+        if torch.cuda.is_available():
+            try:
+                snapshot["gpu_allocated_mb"] = round(
+                    float(torch.cuda.memory_allocated() / (1024 ** 2)),
+                    3,
+                )
+                snapshot["gpu_reserved_mb"] = round(
+                    float(torch.cuda.memory_reserved() / (1024 ** 2)),
+                    3,
+                )
+            except Exception:
+                pass
+
+        return snapshot
+
+    def _write_phase_progress(
+        self,
+        *,
+        phase: str,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+        rewards: Optional[List[float]] = None,
+        status: str = "running",
+        force: bool = False,
+        extra: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        if not force and not self._progress_phase_in_window():
+            return
+
+        payload_extra: Dict[str, Any] = {
+            "phase": phase,
+            "entity_topology_version": self._entity_topology_version,
+            "entity_model_observations_direct": bool(
+                getattr(self, "_entity_model_observations_direct", False)
+            ),
+        }
+        payload_extra.update(self._runtime_resource_snapshot())
+        if extra:
+            payload_extra.update(dict(extra))
+
+        self.progress_tracker.update(
+            episode=episode,
+            step=step,
+            global_step=self.global_step,
+            rewards=rewards,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            status=status,
+            extra=payload_extra,
+        )
+
+    def _enforce_resource_guards(
+        self,
+        *,
+        phase: str,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+    ) -> None:
+        if not self.resource_guard_enabled:
+            return
+
+        snapshot = self._runtime_resource_snapshot()
+        failures: List[str] = []
+        rss_mb = snapshot.get("process_rss_mb")
+        available_mb = snapshot.get("system_available_ram_mb")
+        if self.max_process_rss_mb is not None and rss_mb is not None and rss_mb > self.max_process_rss_mb:
+            failures.append(
+                f"process RSS {rss_mb:.1f} MB exceeded limit {self.max_process_rss_mb:.1f} MB"
+            )
+        if (
+            self.min_available_ram_mb is not None
+            and available_mb is not None
+            and available_mb < self.min_available_ram_mb
+        ):
+            failures.append(
+                f"available RAM {available_mb:.1f} MB below limit {self.min_available_ram_mb:.1f} MB"
+            )
+        if not failures:
+            return
+
+        message = "; ".join(failures)
+        self._write_phase_progress(
+            phase=phase,
+            episode=episode,
+            step=step,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            status="failed",
+            force=True,
+            extra={
+                "error_type": "ResourceGuardError",
+                "error_message": message,
+                **snapshot,
+            },
+        )
+        raise MemoryError(message)
+
+    def _enforce_step_duration_guard(
+        self,
+        *,
+        step_duration: float,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+        rewards: Optional[List[float]],
+    ) -> None:
+        if self.max_step_seconds is None or step_duration <= self.max_step_seconds:
+            return
+
+        message = (
+            f"Step duration {step_duration:.3f}s exceeded configured limit "
+            f"{self.max_step_seconds:.3f}s at global step {self.global_step}."
+        )
+        self._write_phase_progress(
+            phase="step_duration_guard",
+            episode=episode,
+            step=step,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            rewards=rewards,
+            status="failed",
+            force=True,
+            extra={
+                "error_type": "StepDurationGuardError",
+                "error_message": message,
+                "step_duration_seconds": round(float(step_duration), 6),
+                "max_step_seconds": round(float(self.max_step_seconds), 6),
+            },
+        )
+        raise TimeoutError(message)
+
+    def _configure_episode_exports(self, episode: int, episodes: int) -> bool:
+        """Enable KPI export and timeseries rendering independently per episode."""
+
+        is_final_episode = episode >= episodes - 1
+        export_this_episode = self._configured_export_kpis_on_episode_end and (
+            not self._export_kpis_final_episode_only or is_final_episode
+        )
+        render_this_episode = self._configured_render_enabled and (
+            not self._export_timeseries_final_episode_only or is_final_episode
+        )
+
+        if hasattr(self.env, "render_enabled"):
+            self.env.render_enabled = render_this_episode
+        if hasattr(self.env, "export_kpis_on_episode_end"):
+            self.env.export_kpis_on_episode_end = export_this_episode and not self._manual_kpi_export
+
+        return export_this_episode
+
+    def _export_episode_kpis_if_needed(
+        self,
+        export_this_episode: bool,
+        episode: int | None = None,
+        *,
+        is_final_episode: bool = False,
+    ) -> None:
+        if not export_this_episode or not self._manual_kpi_export:
+            return
+        if not hasattr(self.env, "export_final_kpis"):
+            logger.warning("Simulator does not expose export_final_kpis(); skipping manual KPI export.")
+            return
+        if episode in self._manual_kpi_exported_episodes:
+            return
+
+        export_business_as_usual_timeseries = self._export_business_as_usual_timeseries
+        if self._export_timeseries_final_episode_only:
+            export_business_as_usual_timeseries = export_business_as_usual_timeseries and is_final_episode
+
+        kwargs = {
+            "include_business_as_usual": self._export_include_business_as_usual,
+            "export_business_as_usual_timeseries": export_business_as_usual_timeseries,
+            "kpi_round_decimals": self._export_kpi_round_decimals,
+        }
+        if not self._export_kpis_final_episode_only and episode is not None:
+            kwargs["filepath"] = f"exported_kpis_ep{episode}.csv"
+
+        self.env.export_final_kpis(**kwargs)
+        if not self._export_kpis_final_episode_only and is_final_episode and episode is not None:
+            final_kwargs = dict(kwargs)
+            final_kwargs.pop("filepath", None)
+            self.env.export_final_kpis(**final_kwargs)
+
+        self._manual_kpi_exported_episodes.add(episode)
 
     def set_model(self, model: BaseAgent):
         """
@@ -441,9 +850,15 @@ class Wrapper_CityLearn(RLC):
         for episode in range(episodes):
             start_episode_time = time.time()
             deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
+            export_this_episode = self._configure_episode_exports(episode, episodes)
+            self._entity_model_observations_direct = self._can_use_direct_entity_model_observations()
             raw_observations, _ = self.env.reset()
             if self._entity_interface_mode:
-                observations = self._apply_entity_layout(raw_observations, force_attach=True)
+                observations = self._apply_entity_layout(
+                    raw_observations,
+                    force_attach=True,
+                    model_observations=self._entity_model_observations_direct,
+                )
             else:
                 observations = raw_observations
             self.episode_time_steps = self.episode_tracker.episode_time_steps
@@ -456,14 +871,67 @@ class Wrapper_CityLearn(RLC):
             while not (terminated or truncated):
                 step_start_time = time.time()
                 self.global_step += 1
+                should_profile_step = (
+                    self.runtime_profiling_enabled
+                    and self.global_step % self.runtime_profiling_interval == 0
+                )
+                step_profile_start_time = time.perf_counter() if should_profile_step else 0.0
+                runtime_profile_metrics: Dict[str, float] = {}
                 logger.debug(
                     "Global step {} (episode {}, timestep {})",
                     self.global_step,
                     episode,
                     time_step,
                 )
+                self._enforce_resource_guards(
+                    phase="step_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                self._write_phase_progress(
+                    phase="step_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
 
+                step_observations = [np.asarray(obs, dtype=np.float64) for obs in observations]
+                self._write_phase_progress(
+                    phase="predict_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 actions = self.predict(observations, deterministic=deterministic)
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/predict_seconds"] = (
+                        time.perf_counter() - phase_start_time
+                    )
+                self._write_phase_progress(
+                    phase="predict_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                self._write_phase_progress(
+                    phase="action_prepare_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 actions = self._clip_actions(actions)
                 if not self._entity_interface_mode:
                     self.actions = actions
@@ -471,16 +939,110 @@ class Wrapper_CityLearn(RLC):
 
                 # Apply actions to CityLearn environment
                 env_actions = self._to_env_actions(actions)
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/action_prepare_seconds"] = (
+                        time.perf_counter() - phase_start_time
+                    )
+                self._write_phase_progress(
+                    phase="action_prepare_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                self._write_phase_progress(
+                    phase="env_step_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 next_observations_raw, rewards, terminated, truncated, _ = self.env.step(env_actions)
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/env_step_seconds"] = (
+                        time.perf_counter() - phase_start_time
+                    )
+                self._write_phase_progress(
+                    phase="env_step_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
+                self._write_phase_progress(
+                    phase="entity_layout_start" if self._entity_interface_mode else "observation_prepare_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
+                phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 if self._entity_interface_mode:
-                    next_observations = self._apply_entity_layout(next_observations_raw, force_attach=False)
+                    next_observations = self._apply_entity_layout(
+                        next_observations_raw,
+                        force_attach=False,
+                        model_observations=self._entity_model_observations_direct,
+                    )
                 else:
                     next_observations = next_observations_raw
+                if should_profile_step:
+                    entity_layout_seconds = time.perf_counter() - phase_start_time
+                    runtime_profile_metrics["Runtime/observation_encoding_seconds"] = entity_layout_seconds
+                    runtime_profile_metrics["Runtime/entity_layout_seconds"] = entity_layout_seconds
+                self._write_phase_progress(
+                    phase="entity_layout_end" if self._entity_interface_mode else "observation_prepare_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
+                self._write_phase_progress(
+                    phase="reward_shaping_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
+                phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 rewards = self._shape_rewards(rewards, next_observations)
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/reward_shaping_seconds"] = (
+                        time.perf_counter() - phase_start_time
+                    )
+                self._write_phase_progress(
+                    phase="reward_shaping_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
                 rewards_list.append(rewards)
 
                 # Update model if not in deterministic mode
                 if not deterministic:
+                    self._write_phase_progress(
+                        phase="model_update_start",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
+                    phase_start_time = time.perf_counter() if should_profile_step else 0.0
                     self.update(
                         observations,
                         actions,
@@ -489,13 +1051,70 @@ class Wrapper_CityLearn(RLC):
                         terminated=terminated,
                         truncated=truncated,
                     )
+                    if should_profile_step:
+                        runtime_profile_metrics["Runtime/agent_update_seconds"] = (
+                            time.perf_counter() - phase_start_time
+                        )
+                        runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = float(
+                            getattr(self, "_last_model_observation_encoding_seconds", 0.0) or 0.0
+                        )
+                        runtime_profile_metrics["Runtime/model_update_seconds"] = float(
+                            getattr(self, "_last_model_update_seconds", 0.0) or 0.0
+                        )
                     logger.debug("Model update executed at global step {}", self.global_step)
+                    self._write_phase_progress(
+                        phase="model_update_end",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
 
+                    self._write_phase_progress(
+                        phase="checkpoint_start",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
+                    phase_start_time = time.perf_counter() if should_profile_step else 0.0
                     self.checkpoint_manager.maybe_save(
                         agent=self.model,
                         step=self.global_step,
                         initial_exploration_done=self.initial_exploration_done,
                         update_step=self.update_step,
+                    )
+                    if should_profile_step:
+                        runtime_profile_metrics["Runtime/checkpoint_seconds"] = (
+                            time.perf_counter() - phase_start_time
+                        )
+                    self._write_phase_progress(
+                        phase="checkpoint_end",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
+                elif should_profile_step:
+                    runtime_profile_metrics["Runtime/agent_update_seconds"] = 0.0
+                    runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = 0.0
+                    runtime_profile_metrics["Runtime/model_update_seconds"] = 0.0
+                    runtime_profile_metrics["Runtime/checkpoint_seconds"] = 0.0
+                elif self._progress_phase_in_window():
+                    self._write_phase_progress(
+                        phase="model_update_skipped",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
                     )
 
                 observations = [o for o in next_observations]
@@ -521,9 +1140,41 @@ class Wrapper_CityLearn(RLC):
 
                 # Step duration calculation
                 step_duration = time.time() - step_start_time
-
-                should_log_step = self._should_log_step(self.global_step)
+                self._enforce_resource_guards(
+                    phase="step_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                self._enforce_step_duration_guard(
+                    step_duration=step_duration,
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
+                self._write_phase_progress(
+                    phase="step_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                    extra={"step_duration_seconds": round(float(step_duration), 6)},
+                )
+                if should_profile_step:
+                    runtime_profile_metrics["Runtime/step_seconds"] = step_duration
+                    runtime_profile_metrics["Runtime/step_perf_seconds"] = (
+                        time.perf_counter() - step_profile_start_time
+                    )
+                should_log_step = self._should_log_step(self.global_step) or should_profile_step
                 if should_log_step:
+                    diagnostics_start_time = time.perf_counter()
                     metrics = {
                         f"Agent_{i}_Reward": reward for i, reward in enumerate(rewards)
                     }
@@ -534,6 +1185,17 @@ class Wrapper_CityLearn(RLC):
                         metrics["GPU_PyTorch_Allocated_MB"] = gpu_mem_allocated
                         metrics["GPU_PyTorch_Reserved_MB"] = gpu_mem_reserved
                     metrics["Step_Duration"] = step_duration
+                    if should_profile_step:
+                        metrics.update(runtime_profile_metrics)
+                    metrics.update(self._collect_model_status_metrics())
+                    metrics.update(self._build_action_diagnostic_metrics(actions, step_observations))
+                    metrics.update(self._build_reward_component_metrics())
+                    if not mlflow.active_run():
+                        metrics.update(self._consume_model_training_metrics())
+                    if should_profile_step:
+                        metrics["Runtime/diagnostics_build_seconds"] = (
+                            time.perf_counter() - diagnostics_start_time
+                        )
 
                     if mlflow.active_run():
                         mlflow.log_metrics(metrics, step=self.global_step)
@@ -566,9 +1228,20 @@ class Wrapper_CityLearn(RLC):
                         step_total=episode_step_total,
                         global_step_total=global_step_total,
                         status="running",
+                        extra={
+                            "phase": "step_end",
+                            "step_duration_seconds": round(float(step_duration), 6),
+                            **self._runtime_resource_snapshot(),
+                        },
                     )
 
                 time_step += 1
+
+            self._export_episode_kpis_if_needed(
+                export_this_episode,
+                episode=episode,
+                is_final_episode=episode + 1 >= episodes,
+            )
 
             if self.progress_updates_enabled and time_step > 0:
                 self.progress_tracker.update(
@@ -580,6 +1253,10 @@ class Wrapper_CityLearn(RLC):
                     step_total=episode_step_total,
                     global_step_total=global_step_total,
                     status="completed" if episode + 1 >= episodes else "running",
+                    extra={
+                        "phase": "episode_end",
+                        **self._runtime_resource_snapshot(),
+                    },
                 )
 
             # Compute rewards statistics for this episode
@@ -718,10 +1395,24 @@ class Wrapper_CityLearn(RLC):
         if self.model is None:
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        if getattr(self.model, "use_raw_observations", False):
-            encoded_observations = [np.asarray(obs, dtype=np.float64) for obs in observations]
+        direct_entity_model_observations = bool(
+            getattr(self, "_entity_model_observations_direct", False)
+        )
+        if direct_entity_model_observations:
+            encoded_observations = [
+                np.asarray(obs, dtype=np.float64) for obs in observations
+            ]
         else:
-            encoded_observations = self.get_all_encoded_observations(observations)
+            encoded_observations = self._encode_observations_for_model(observations)
+
+        observation_context_hook = getattr(self.model, "set_observation_context", None)
+        if callable(observation_context_hook):
+            observation_context_hook(
+                raw_observations=None
+                if direct_entity_model_observations
+                else observations,
+                encoded_observations=encoded_observations,
+            )
 
         actions = self.model.predict(encoded_observations, deterministic)
         if not self._entity_interface_mode:
@@ -745,35 +1436,52 @@ class Wrapper_CityLearn(RLC):
         if not isinstance(actions, list):
             raise ValueError("Model predicted actions must be provided as a list.")
 
+        action_bounds = self._get_action_bounds_cache()
         clipped_actions: List[List[float]] = []
-        for agent_idx, action_space in enumerate(self.action_space):
+        for agent_idx, (low, high) in enumerate(action_bounds):
             raw = actions[agent_idx] if agent_idx < len(actions) else []
             action_array = np.asarray(raw, dtype=np.float64).reshape(-1)
+            if low.shape[0] == 0 or high.shape[0] == 0:
+                clipped_actions.append(action_array.tolist())
+                continue
 
-            if hasattr(action_space, "low") and hasattr(action_space, "high"):
-                low = np.asarray(action_space.low, dtype=np.float64).reshape(-1)
-                high = np.asarray(action_space.high, dtype=np.float64).reshape(-1)
-                expected_dim = low.shape[0]
+            expected_dim = low.shape[0]
+            if action_array.shape[0] != expected_dim:
+                logger.warning(
+                    "Action dimension mismatch for agent {}: predicted={}, expected={}. "
+                    "Padding/truncating before clipping.",
+                    agent_idx,
+                    action_array.shape[0],
+                    expected_dim,
+                )
+                fixed = np.zeros(expected_dim, dtype=np.float64)
+                copy_dim = min(expected_dim, action_array.shape[0])
+                if copy_dim > 0:
+                    fixed[:copy_dim] = action_array[:copy_dim]
+                action_array = fixed
 
-                if action_array.shape[0] != expected_dim:
-                    logger.warning(
-                        "Action dimension mismatch for agent {}: predicted={}, expected={}. "
-                        "Padding/truncating before clipping.",
-                        agent_idx,
-                        action_array.shape[0],
-                        expected_dim,
-                    )
-                    fixed = np.zeros(expected_dim, dtype=np.float64)
-                    copy_dim = min(expected_dim, action_array.shape[0])
-                    if copy_dim > 0:
-                        fixed[:copy_dim] = action_array[:copy_dim]
-                    action_array = fixed
-
-                action_array = np.clip(action_array, low, high)
+            action_array = np.clip(action_array, low, high)
 
             clipped_actions.append(action_array.tolist())
 
         return clipped_actions
+
+    def _get_action_bounds_cache(self) -> List[tuple[np.ndarray, np.ndarray]]:
+        cached = getattr(self, "_action_bounds_cache", None)
+        if cached is not None and len(cached) == len(self.action_space):
+            return cached
+
+        bounds: List[tuple[np.ndarray, np.ndarray]] = []
+        for action_space in self.action_space:
+            if hasattr(action_space, "low") and hasattr(action_space, "high"):
+                low = np.asarray(action_space.low, dtype=np.float64).reshape(-1)
+                high = np.asarray(action_space.high, dtype=np.float64).reshape(-1)
+            else:
+                low = np.asarray([], dtype=np.float64)
+                high = np.asarray([], dtype=np.float64)
+            bounds.append((low, high))
+        self._action_bounds_cache = bounds
+        return bounds
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -784,6 +1492,356 @@ class Wrapper_CityLearn(RLC):
         if np.isnan(parsed) or np.isinf(parsed):
             return default
         return parsed
+
+    @staticmethod
+    def _metric_safe_name(value: Any) -> str:
+        text = str(value or "unknown")
+        safe = [char if char.isalnum() or char in {"_", "-", "."} else "_" for char in text]
+        return "".join(safe).strip("_") or "unknown"
+
+    @staticmethod
+    def _is_deferrable_action_name(action_name: str) -> bool:
+        raw = str(action_name or "").lower()
+        return "deferrable_appliance" in raw or raw.endswith("::start") or raw == "start"
+
+    @staticmethod
+    def _is_ev_action_name(action_name: str) -> bool:
+        raw = str(action_name or "").lower()
+        return "electric_vehicle_storage" in raw or "ev_storage" in raw
+
+    @staticmethod
+    def _charger_token_from_action_name(action_name: str) -> str | None:
+        match = re.search(r"charger_\d+_\d+", str(action_name or "").lower())
+        return match.group(0) if match else None
+
+    @staticmethod
+    def _is_storage_action_name(action_name: str) -> bool:
+        raw = str(action_name or "").lower()
+        return "electrical_storage" in raw or raw in {"battery", "storage"}
+
+    def _action_bounds_for_agent(self, agent_index: int, action_count: int) -> tuple[np.ndarray, np.ndarray]:
+        if agent_index < len(getattr(self, "action_space", [])):
+            action_space = self.action_space[agent_index]
+            if hasattr(action_space, "low") and hasattr(action_space, "high"):
+                low = np.asarray(action_space.low, dtype=np.float64).reshape(-1)
+                high = np.asarray(action_space.high, dtype=np.float64).reshape(-1)
+                if low.shape[0] == action_count and high.shape[0] == action_count:
+                    return low, high
+        return (
+            np.full(action_count, -1.0, dtype=np.float64),
+            np.full(action_count, 1.0, dtype=np.float64),
+        )
+
+    def _ev_connected_for_action(
+        self,
+        *,
+        agent_index: int,
+        observation: np.ndarray,
+        action_name: str,
+    ) -> Optional[bool]:
+        charger_token = self._charger_token_from_action_name(action_name)
+        if not charger_token:
+            return None
+        names = (
+            [str(name).lower() for name in self.observation_names[agent_index]]
+            if agent_index < len(getattr(self, "observation_names", []))
+            else []
+        )
+        if not names:
+            return None
+        values = np.asarray(observation, dtype=np.float64).reshape(-1)
+        for obs_index, obs_name in enumerate(names[: values.shape[0]]):
+            if charger_token not in obs_name:
+                continue
+            if obs_name.endswith("::connected_state") or obs_name.endswith("__connected_state"):
+                return bool(values[obs_index] > 0.5)
+        return None
+
+    def _build_action_diagnostic_metrics(
+        self,
+        actions: List[List[float]],
+        observations: List[np.ndarray],
+    ) -> Dict[str, float]:
+        if not getattr(self, "action_diagnostics_enabled", False):
+            return {}
+
+        rows: List[Dict[str, Any]] = []
+        deferrable_start_delays: List[float] = []
+        deferrable_pending_can_start_count = 0
+        deferrable_start_command_count = 0
+        deferrable_start_when_available_count = 0
+
+        for agent_index, agent_actions in enumerate(actions):
+            action_values = np.asarray(agent_actions, dtype=np.float64).reshape(-1)
+            low, high = self._action_bounds_for_agent(agent_index, action_values.shape[0])
+            span = np.maximum(high - low, 1.0e-9)
+            names = (
+                [str(name) for name in self.action_names[agent_index]]
+                if agent_index < len(getattr(self, "action_names", []))
+                else []
+            )
+
+            for action_index, value in enumerate(action_values):
+                action_name = names[action_index] if action_index < len(names) else f"action_{action_index}"
+                action_low = float(low[action_index])
+                action_high = float(high[action_index])
+                action_span = float(span[action_index])
+                threshold = action_low + 0.5 * action_span
+                category = "other"
+                if self._is_deferrable_action_name(action_name):
+                    category = "deferrable"
+                    threshold = action_low + 0.5 * action_span
+                    if getattr(self.model, "deferrable_trigger_threshold", None) is not None:
+                        threshold = action_low + float(self.model.deferrable_trigger_threshold) * action_span
+                    if value > threshold:
+                        deferrable_start_command_count += 1
+                    pending, can_start = self._deferrable_pending_can_start(
+                        agent_index=agent_index,
+                        observation=observations[agent_index] if agent_index < len(observations) else np.array([]),
+                        action_name=action_name,
+                    )
+                    if pending and can_start:
+                        deferrable_pending_can_start_count += 1
+                        if value > threshold:
+                            deferrable_start_when_available_count += 1
+                            key = (agent_index, action_name)
+                            deferrable_start_delays.append(float(self._deferrable_wait_steps.get(key, 0)))
+                            self._deferrable_wait_steps.pop(key, None)
+                        else:
+                            key = (agent_index, action_name)
+                            self._deferrable_wait_steps[key] = self._deferrable_wait_steps.get(key, 0) + 1
+                    else:
+                        self._deferrable_wait_steps.pop((agent_index, action_name), None)
+                elif self._is_ev_action_name(action_name):
+                    category = "ev"
+                elif self._is_storage_action_name(action_name):
+                    category = "storage"
+                ev_connected = (
+                    self._ev_connected_for_action(
+                        agent_index=agent_index,
+                        observation=observations[agent_index] if agent_index < len(observations) else np.array([]),
+                        action_name=action_name,
+                    )
+                    if category == "ev"
+                    else None
+                )
+
+                rows.append(
+                    {
+                        "agent_index": agent_index,
+                        "action_index": action_index,
+                        "action_name": action_name,
+                        "category": category,
+                        "ev_connected": ev_connected,
+                        "value": float(value),
+                        "low": action_low,
+                        "high": action_high,
+                        "span": action_span,
+                        "threshold": threshold,
+                    }
+                )
+
+        if not rows:
+            return {}
+
+        values = np.asarray([row["value"] for row in rows], dtype=np.float64)
+        lows = np.asarray([row["low"] for row in rows], dtype=np.float64)
+        highs = np.asarray([row["high"] for row in rows], dtype=np.float64)
+        spans = np.maximum(highs - lows, 1.0e-9)
+        saturation_tolerance = np.maximum(self.action_saturation_tolerance * spans, 1.0e-9)
+
+        metrics: Dict[str, float] = {
+            "Action/all_count": float(values.shape[0]),
+            "Action/all_mean": float(np.mean(values)),
+            "Action/all_std": float(np.std(values)),
+            "Action/all_min": float(np.min(values)),
+            "Action/all_max": float(np.max(values)),
+            "Action/near_low_fraction": float(np.mean(values <= lows + saturation_tolerance)),
+            "Action/near_high_fraction": float(np.mean(values >= highs - saturation_tolerance)),
+            "Action/near_zero_fraction": float(np.mean(np.abs(values) <= self.action_idle_tolerance)),
+        }
+
+        for category in ("storage", "ev", "deferrable"):
+            category_rows = [row for row in rows if row["category"] == category]
+            if not category_rows:
+                continue
+            category_values = np.asarray([row["value"] for row in category_rows], dtype=np.float64)
+            metrics[f"Action/{category}_count"] = float(category_values.shape[0])
+            metrics[f"Action/{category}_mean"] = float(np.mean(category_values))
+            metrics[f"Action/{category}_std"] = float(np.std(category_values))
+            if category in {"storage", "ev"}:
+                metrics[f"Action/{category}_positive_fraction"] = float(
+                    np.mean(category_values > self.action_idle_tolerance)
+                )
+                metrics[f"Action/{category}_negative_fraction"] = float(
+                    np.mean(category_values < -self.action_idle_tolerance)
+                )
+                metrics[f"Action/{category}_idle_fraction"] = float(
+                    np.mean(np.abs(category_values) <= self.action_idle_tolerance)
+                )
+                if category == "ev":
+                    connected_rows = [row for row in category_rows if row.get("ev_connected") is True]
+                    disconnected_rows = [row for row in category_rows if row.get("ev_connected") is False]
+                    for prefix, subset_rows in (
+                        ("ev_connected", connected_rows),
+                        ("ev_disconnected", disconnected_rows),
+                    ):
+                        if not subset_rows:
+                            continue
+                        subset_values = np.asarray([row["value"] for row in subset_rows], dtype=np.float64)
+                        metrics[f"Action/{prefix}_count"] = float(subset_values.shape[0])
+                        metrics[f"Action/{prefix}_mean"] = float(np.mean(subset_values))
+                        metrics[f"Action/{prefix}_std"] = float(np.std(subset_values))
+                        metrics[f"Action/{prefix}_positive_fraction"] = float(
+                            np.mean(subset_values > self.action_idle_tolerance)
+                        )
+                        metrics[f"Action/{prefix}_negative_fraction"] = float(
+                            np.mean(subset_values < -self.action_idle_tolerance)
+                        )
+                        metrics[f"Action/{prefix}_idle_fraction"] = float(
+                            np.mean(np.abs(subset_values) <= self.action_idle_tolerance)
+                        )
+            elif category == "deferrable":
+                thresholds = np.asarray([row["threshold"] for row in category_rows], dtype=np.float64)
+                metrics["Action/deferrable_on_fraction"] = float(np.mean(category_values > thresholds))
+                metrics["Action/deferrable_off_fraction"] = float(np.mean(category_values <= thresholds))
+
+        metrics["Deferrable/pending_can_start_count"] = float(deferrable_pending_can_start_count)
+        metrics["Deferrable/start_command_count"] = float(deferrable_start_command_count)
+        metrics["Deferrable/start_when_available_count"] = float(deferrable_start_when_available_count)
+        if deferrable_start_delays:
+            delays = np.asarray(deferrable_start_delays, dtype=np.float64)
+            metrics["Deferrable/start_delay_steps_mean"] = float(np.mean(delays))
+            metrics["Deferrable/start_delay_steps_max"] = float(np.max(delays))
+
+        if self.action_diagnostics_detail == "per_action":
+            for row in rows:
+                prefix = (
+                    "Action/"
+                    f"agent_{row['agent_index']}/"
+                    f"{row['action_index']}_{self._metric_safe_name(row['action_name'])}"
+                )
+                span = max(float(row["span"]), 1.0e-9)
+                tolerance = max(self.action_saturation_tolerance * span, 1.0e-9)
+                metrics[f"{prefix}/value"] = float(row["value"])
+                metrics[f"{prefix}/normalized"] = float((row["value"] - row["low"]) / span)
+                metrics[f"{prefix}/near_low"] = float(row["value"] <= row["low"] + tolerance)
+                metrics[f"{prefix}/near_high"] = float(row["value"] >= row["high"] - tolerance)
+
+        return metrics
+
+    def _deferrable_pending_can_start(
+        self,
+        *,
+        agent_index: int,
+        observation: np.ndarray,
+        action_name: str,
+    ) -> tuple[bool, bool]:
+        asset_id = self._deferrable_asset_id(action_name)
+        if not asset_id:
+            return False, False
+
+        lookup = self._build_observation_lookup(agent_index, observation)
+        pending = self._find_deferrable_observation(lookup, asset_id, "pending")
+        can_start = self._find_deferrable_observation(lookup, asset_id, "can_start")
+        return pending > 0.5, can_start > 0.5
+
+    @staticmethod
+    def _deferrable_asset_id(action_name: str) -> Optional[str]:
+        raw = str(action_name or "")
+        if raw.startswith("deferrable_appliance_"):
+            return raw[len("deferrable_appliance_") :]
+        if "::" in raw:
+            parts = raw.split("::")
+            if len(parts) >= 2:
+                asset = parts[-2].split("/")[-1]
+                return asset or None
+        return None
+
+    @staticmethod
+    def _find_deferrable_observation(
+        observation_lookup: Dict[str, float],
+        asset_id: str,
+        signal: str,
+    ) -> float:
+        for name, value in observation_lookup.items():
+            if "deferrable_appliance" not in name:
+                continue
+            if asset_id not in name:
+                continue
+            if name.endswith(f"::{signal}") or name.endswith(signal):
+                return value
+        return 0.0
+
+    def _collect_model_status_metrics(self) -> Dict[str, float]:
+        hook = getattr(self.model, "get_diagnostic_metrics", None)
+        if callable(hook):
+            return {str(key): self._safe_float(value) for key, value in hook().items()}
+        return {}
+
+    def _consume_model_training_metrics(self) -> Dict[str, float]:
+        hook = getattr(self.model, "consume_latest_training_metrics", None)
+        if callable(hook):
+            return {str(key): self._safe_float(value) for key, value in hook().items()}
+        return {}
+
+    def _build_reward_component_metrics(self) -> Dict[str, float]:
+        if not getattr(self, "reward_diagnostics_enabled", True):
+            return {}
+
+        reward_fn = getattr(self.env, "reward_function", None)
+        if reward_fn is None and hasattr(self.env, "unwrapped"):
+            reward_fn = getattr(self.env.unwrapped, "reward_function", None)
+        if reward_fn is None:
+            return {}
+
+        components_hook = getattr(reward_fn, "get_last_components", None)
+        if callable(components_hook):
+            components = components_hook()
+        else:
+            components = {
+                "per_agent": getattr(reward_fn, "last_components_by_agent", []),
+                "community": getattr(reward_fn, "last_community_components", {}),
+            }
+        if not isinstance(components, Mapping):
+            return {}
+
+        metrics: Dict[str, float] = {}
+        per_agent = components.get("per_agent", [])
+        if isinstance(per_agent, list) and per_agent:
+            numeric_keys = sorted(
+                {
+                    str(key)
+                    for row in per_agent
+                    if isinstance(row, Mapping)
+                    for key, value in row.items()
+                    if isinstance(value, (int, float))
+                }
+            )
+            for key in numeric_keys:
+                values = [
+                    self._safe_float(row.get(key), default=0.0)
+                    for row in per_agent
+                    if isinstance(row, Mapping)
+                ]
+                if not values:
+                    continue
+                safe_key = self._metric_safe_name(key)
+                array = np.asarray(values, dtype=np.float64)
+                metrics[f"RewardComponent/{safe_key}_mean"] = float(np.mean(array))
+                metrics[f"RewardComponent/{safe_key}_sum"] = float(np.sum(array))
+                if self.reward_diagnostics_detail == "per_agent":
+                    for agent_index, value in enumerate(array):
+                        metrics[f"RewardComponent/agent_{agent_index}/{safe_key}"] = float(value)
+
+        community = components.get("community", {})
+        if isinstance(community, Mapping):
+            for key, value in community.items():
+                if not isinstance(value, (int, float)):
+                    continue
+                metrics[f"RewardComponent/community/{self._metric_safe_name(key)}"] = self._safe_float(value)
+
+        return metrics
 
     def _build_observation_lookup(self, agent_index: int, observation: List[float]) -> Dict[str, float]:
         names: List[str] = []
@@ -925,7 +1983,7 @@ class Wrapper_CityLearn(RLC):
         if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
             self.update_step = True
         else:
-            self.update_step = self.time_step % self.steps_between_training_updates == 0
+            self.update_step = self.global_step % self.steps_between_training_updates == 0
         logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
 
         # Exploration phase ownership belongs to the algorithm.
@@ -940,27 +1998,56 @@ class Wrapper_CityLearn(RLC):
         if not self.target_update_interval:
             self.update_target_step = False
         else:
-            self.update_target_step = self.time_step % self.target_update_interval == 0
+            self.update_target_step = self.global_step % self.target_update_interval == 0
         logger.debug(
             "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
-        if getattr(self.model, "use_raw_observations", False):
-            encoded_observations = [np.asarray(obs, dtype=np.float64) for obs in observations]
-            encoded_next_observations = [np.asarray(obs, dtype=np.float64) for obs in next_observations]
+        phase_start_time = time.perf_counter()
+        direct_entity_model_observations = bool(
+            getattr(self, "_entity_model_observations_direct", False)
+        )
+        if direct_entity_model_observations:
+            encoded_observations = [
+                np.asarray(obs, dtype=np.float64) for obs in observations
+            ]
+            encoded_next_observations = [
+                np.asarray(obs, dtype=np.float64) for obs in next_observations
+            ]
+            self._last_model_observation_encoding_seconds = 0.0
         else:
-            encoded_observations = self.get_all_encoded_observations(observations)
-            encoded_next_observations = self.get_all_encoded_observations(next_observations)
+            encoded_observations = self._encode_observations_for_model(observations)
+            encoded_next_observations = self._encode_observations_for_model(next_observations)
+            self._last_model_observation_encoding_seconds = time.perf_counter() - phase_start_time
 
         # Pass updated parameters to model.update()
-        return self.model.update(observations = encoded_observations, actions= actions, rewards= reward,
+        phase_start_time = time.perf_counter()
+        update_result = self.model.update(observations = encoded_observations, actions= actions, rewards= reward,
                 next_observations= encoded_next_observations, terminated = terminated,
                 truncated = truncated,
                 update_target_step=self.update_target_step, global_learning_step=self.global_step,
                 update_step = self.update_step, initial_exploration_done= self.initial_exploration_done
         )
+        self._last_model_update_seconds = time.perf_counter() - phase_start_time
+        return update_result
 
     def _should_log_step(self, step: int) -> bool:
         return step % self.step_metric_interval == 0
+
+    def _encode_observations_for_model(self, observations: List[Any]) -> List[np.ndarray]:
+        if getattr(self.model, "use_raw_observations", False):
+            return [np.asarray(obs, dtype=np.float64) for obs in observations]
+
+        cache_key = tuple(id(obs) for obs in observations)
+        if (
+            getattr(self, "_encoded_observation_cache_key", None) == cache_key
+            and getattr(self, "_encoded_observation_cache_value", None) is not None
+        ):
+            return self._encoded_observation_cache_value
+
+        encoded_observations = self.get_all_encoded_observations(observations)
+        self._encoded_observation_cache_key = cache_key
+        self._encoded_observation_cache_value = encoded_observations
+        return encoded_observations
 
     def get_encoded_observations(self, index: int, observations: List[float]) -> np.ndarray:
         """Optimized encoding function using NumPy with proper type handling."""
@@ -1012,10 +2099,34 @@ class Wrapper_CityLearn(RLC):
                 "params": params,
             }
 
-        encoders_metadata = [
-            [_encode_params(encoder) for encoder in encoder_list]
-            for encoder_list in self.encoders
+        raw_observation_names = [
+            [str(name) for name in observation_group]
+            for observation_group in self.observation_names
         ]
+        encoded_observation_names = (
+            self._entity_adapter.encoded_observation_names(raw_observation_names)
+            if self._entity_interface_mode and self._entity_adapter is not None
+            else raw_observation_names
+        )
+        serves_encoded_observations = (
+            self._entity_interface_mode
+            and self._entity_adapter is not None
+            and self._entity_encoding_profile != "minmax_space"
+        )
+        serving_observation_names = (
+            encoded_observation_names if serves_encoded_observations else raw_observation_names
+        )
+
+        if serves_encoded_observations:
+            encoders_metadata = [
+                [{"type": "NoNormalization", "params": {}} for _ in observation_group]
+                for observation_group in serving_observation_names
+            ]
+        else:
+            encoders_metadata = [
+                [_encode_params(encoder) for encoder in encoder_list]
+                for encoder_list in self.encoders
+            ]
 
         action_bounds = []
         for space in self.action_space:
@@ -1065,7 +2176,9 @@ class Wrapper_CityLearn(RLC):
         building_names = self._resolve_building_names()
 
         return {
-            "observation_names": self.observation_names,
+            "observation_names": serving_observation_names,
+            "raw_observation_names": raw_observation_names,
+            "encoded_observation_names": encoded_observation_names,
             "encoders": encoders_metadata,
             "action_bounds": action_bounds,
             "action_names": flat_action_names,
@@ -1073,10 +2186,13 @@ class Wrapper_CityLearn(RLC):
             "building_names": building_names,
             "interface": getattr(self.env, "interface", "flat"),
             "topology_mode": getattr(self.env, "topology_mode", "static"),
+            "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "entity_encoding": {
                 "enabled": bool(self._entity_encoding_enabled),
                 "normalization": self._entity_encoding_policy,
+                "profile": self._entity_encoding_profile,
                 "clip": bool(self._entity_encoding_clip),
+                "serving_observation_names": "encoded" if serves_encoded_observations else "raw",
             },
             "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
             "reward_function": {

@@ -1,7 +1,7 @@
 import numpy as np
 
 from utils.wrapper_citylearn import Wrapper_CityLearn
-from utils.preprocessing import NoNormalization, PeriodicNormalization, RemoveFeature
+from utils.preprocessing import NormalizeWithMissing, PeriodicNormalization
 
 
 class MinimalEnv:
@@ -46,5 +46,7 @@ def test_default_encoder_rules_applied():
     encoders = wrapper.set_encoders()
 
     assert isinstance(encoders[0][0], PeriodicNormalization)
-    assert isinstance(encoders[0][1], RemoveFeature)
-    assert isinstance(encoders[0][2], NoNormalization)
+    assert encoders[0][0].x_max == 12
+    assert isinstance(encoders[0][1], NormalizeWithMissing)
+    assert encoders[0][1].clip is True
+    assert isinstance(encoders[0][2], NormalizeWithMissing)

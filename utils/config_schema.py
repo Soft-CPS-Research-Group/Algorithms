@@ -68,6 +68,98 @@ class TrackingConfig(BaseModel):
         ge=1,
         description="Collect system metrics every N steps when enabled",
     )
+    action_diagnostics_enabled: bool = Field(
+        default=False,
+        description="Log compact action distribution diagnostics during rollouts",
+    )
+    action_diagnostics_detail: Literal["summary", "per_action"] = Field(
+        default="summary",
+        description="Action diagnostics detail level",
+    )
+    action_saturation_tolerance: float = Field(
+        default=0.01,
+        ge=0,
+        description="Fraction of each action range considered near low/high bounds",
+    )
+    action_idle_tolerance: float = Field(
+        default=0.02,
+        ge=0,
+        description="Absolute tolerance around zero for action idle diagnostics",
+    )
+    training_diagnostics_enabled: bool = Field(
+        default=True,
+        description="Log MADDPG internal training diagnostics such as Q stats and gradient norms",
+    )
+    training_diagnostics_detail: Literal["summary", "per_agent"] = Field(
+        default="summary",
+        description="MADDPG training diagnostics detail level",
+    )
+    reward_diagnostics_enabled: bool = Field(
+        default=True,
+        description="Log reward function component diagnostics when the reward exposes them",
+    )
+    reward_diagnostics_detail: Literal["summary", "per_agent"] = Field(
+        default="summary",
+        description="Reward component diagnostics detail level",
+    )
+    runtime_profiling_enabled: bool = Field(
+        default=False,
+        description="Log coarse runtime timings for wrapper and agent phases",
+    )
+    runtime_profiling_interval: int = Field(
+        default=512,
+        ge=1,
+        description="Log runtime profiling metrics every N environment steps when enabled",
+    )
+    runtime_profiling_detail: Literal["summary", "detailed"] = Field(
+        default="summary",
+        description="Runtime profiling detail level",
+    )
+    progress_phase_updates_enabled: bool = Field(
+        default=False,
+        description="Write progress.json phase heartbeats around expensive wrapper phases",
+    )
+    progress_phase_start_step: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Optional first global step for detailed phase heartbeats",
+    )
+    progress_phase_end_step: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Optional last global step for detailed phase heartbeats",
+    )
+    max_step_seconds: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Abort training if a completed environment step exceeds this duration",
+    )
+    resource_guard_enabled: bool = Field(
+        default=False,
+        description="Abort training when configured process/system memory limits are crossed",
+    )
+    max_process_rss_mb: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Abort when process resident memory exceeds this threshold",
+    )
+    min_available_ram_mb: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Abort when system available RAM falls below this threshold",
+    )
+
+    @model_validator(mode="after")
+    def validate_phase_window(self) -> "TrackingConfig":
+        if (
+            self.progress_phase_start_step is not None
+            and self.progress_phase_end_step is not None
+            and self.progress_phase_end_step < self.progress_phase_start_step
+        ):
+            raise ValueError(
+                "tracking.progress_phase_end_step must be >= tracking.progress_phase_start_step"
+            )
+        return self
 
 
 class CheckpointingConfig(BaseModel):
@@ -86,6 +178,12 @@ class CheckpointingConfig(BaseModel):
 class SimulatorExportConfig(BaseModel):
     mode: Literal["none", "during", "end"] = "none"
     export_kpis_on_episode_end: bool = False
+    final_episode_only: bool = False
+    kpis_final_episode_only: Optional[bool] = None
+    timeseries_final_episode_only: Optional[bool] = None
+    include_business_as_usual: bool = True
+    export_business_as_usual_timeseries: bool = True
+    kpi_round_decimals: Optional[int] = Field(default=None, ge=0)
     session_name: Optional[str] = None
 
 
@@ -107,6 +205,13 @@ class WrapperRewardConfig(BaseModel):
 class EntityEncodingConfig(BaseModel):
     enabled: Optional[bool] = None
     normalization: Literal["minmax_space"] = "minmax_space"
+    profile: Literal[
+        "minmax_space",
+        "maddpg_v1",
+        "maddpg_v2_compact",
+        "maddpg_v3_operational",
+        "maddpg_v3_realtime",
+    ] = "minmax_space"
     clip: bool = True
 
 
@@ -119,6 +224,7 @@ class SimulatorConfig(BaseModel):
     reward_function: str
     reward_function_kwargs: Dict[str, Any] = Field(default_factory=dict)
     episodes: int = Field(default=1, ge=1)
+    deterministic_finish: bool = False
     simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
     simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
@@ -197,18 +303,33 @@ class ReplayBufferConfig(BaseModel):
     class_name: str = Field(alias="class")
     capacity: int = Field(ge=1)
     batch_size: int = Field(ge=1)
+    priority_fraction: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    priority_alpha: Optional[float] = Field(default=None, ge=0.0)
+    priority_epsilon: Optional[float] = Field(default=None, gt=0.0)
+    priority_mode: Optional[Literal["abs_reward", "negative_reward", "positive_reward"]] = None
+    priority_max: Optional[float] = Field(default=None, gt=0.0)
+    behavior_action_priority_weight: Optional[float] = Field(default=None, ge=0.0)
+    behavior_action_priority_mode: Optional[Literal["positive", "abs"]] = None
+    behavior_action_priority_scope: Optional[Literal["all", "ev"]] = None
+    observation_event_priority_weight: Optional[float] = Field(default=None, ge=0.0)
+    observation_event_priority_mode: Optional[Literal["ev_departure_service"]] = None
 
 
 class ExplorationParams(BaseModel):
     strategy: str
-    params: Dict[str, float]
+    params: Dict[str, Any]
 
 
 class AlgorithmHyperparameters(BaseModel):
     gamma: float = Field(gt=0)
+    require_cuda: bool = Field(
+        default=False,
+        description="If true, MADDPG fails during initialization unless CUDA is available.",
+    )
 
 
 class RuleBasedHyperparameters(BaseModel):
+    seed: Optional[int] = None
     pv_charge_threshold: float = Field(default=0.0, ge=0)
     flexibility_hours: float = Field(default=3.0, ge=0)
     emergency_hours: float = Field(default=1.0, ge=0)
@@ -219,6 +340,94 @@ class RuleBasedHyperparameters(BaseModel):
     energy_epsilon: float = Field(default=1e-3, ge=0)
     default_capacity_kwh: float = Field(default=60.0, ge=0)
     non_flexible_chargers: List[str] = Field(default_factory=list)
+    control_storage: bool = True
+    control_evs: bool = True
+    control_deferrables: bool = True
+    allow_v2g: bool = False
+    deferrable_start_action: float = Field(default=1.0, ge=0)
+    deferrable_urgency_threshold: float = Field(default=0.75, ge=0)
+    deferrable_slack_threshold: float = Field(default=0.25, ge=0)
+    deferrable_priority_threshold: float = Field(default=0.5, ge=0)
+    deferrable_safety_margin_steps: float = Field(default=1.0, ge=0)
+    storage_min_soc: float = Field(default=0.20, ge=0)
+    storage_max_soc: float = Field(default=0.90, ge=0)
+    storage_target_soc: float = Field(default=0.50, ge=0)
+    storage_charge_rate: float = Field(default=0.35, ge=0)
+    storage_discharge_rate: float = Field(default=0.35, ge=0)
+    price_charge_rate: float = Field(default=0.60, ge=0)
+    price_discharge_rate: float = Field(default=0.45, ge=0)
+    pv_charge_rate: float = Field(default=0.75, ge=0)
+    peak_discharge_rate: float = Field(default=0.65, ge=0)
+    storage_price_charge_soc_ceiling: float = Field(default=0.90, ge=0)
+    storage_price_discharge_soc_floor: float = Field(default=0.20, ge=0)
+    storage_peak_discharge_soc_floor: float = Field(default=0.20, ge=0)
+    normal_storage_discharge_import_threshold_kw: float = Field(default=0.25, ge=0)
+    storage_discharge_import_threshold_kw: float = Field(default=0.25, ge=0)
+    ev_normal_charge_rate: float = Field(default=1.0, ge=0)
+    ev_normal_target_soc: float = Field(default=1.0, ge=0)
+    ev_price_charge_rate: float = Field(default=0.70, ge=0)
+    ev_pv_charge_rate: float = Field(default=0.85, ge=0)
+    ev_v2g_discharge_rate: float = Field(default=0.30, ge=0)
+    ev_community_charge_rate: float = Field(default=0.85, ge=0)
+    community_v2g_discharge_rate: float = Field(default=0.30, ge=0)
+    community_storage_charge_rate: float = Field(default=0.75, ge=0)
+    community_storage_discharge_rate: float = Field(default=0.65, ge=0)
+    community_surplus_charge_soc_ceiling: float = Field(default=0.90, ge=0)
+    community_surplus_threshold_kw: float = Field(default=0.25, ge=0)
+    community_import_threshold_kw: float = Field(default=7.0, ge=0)
+    community_local_price_ratio: float = Field(default=0.8, ge=0)
+    community_grid_export_price: float = Field(default=0.0, ge=0)
+    pv_surplus_threshold_kw: float = Field(default=0.25, ge=0)
+    import_peak_threshold_kw: float = Field(default=7.0, ge=0)
+    low_headroom_threshold_kw: float = Field(default=2.0, ge=0)
+    ev_v2g_reserve_soc: float = Field(default=0.15, ge=0)
+    ev_service_margin_rate: float = Field(default=0.05, ge=0)
+    ev_service_floor_rate: float = Field(default=0.25, ge=0)
+    ev_service_lookahead_hours: float = Field(default=4.0, ge=0)
+    ev_service_target_soc: float = Field(default=0.0, ge=0)
+    ev_deadline_buffer_hours: float = Field(default=0.25, ge=0)
+    ev_v2g_min_departure_hours: float = Field(default=2.0, ge=0)
+    ev_v2g_service_margin_soc: float = Field(default=0.05, ge=0)
+
+
+class EVDataCollectionRBCHyperparameters(BaseModel):
+    target_building_index: int = Field(default=4, ge=0, description="0-based agent index of the building to collect transitions for")
+
+
+class EVDataCollectionRBCAlgorithmConfig(BaseModel):
+    name: Literal["EVDataCollectionRBC"]
+    hyperparameters: EVDataCollectionRBCHyperparameters = EVDataCollectionRBCHyperparameters()
+    networks: Optional[AlgorithmNetworks] = None
+    replay_buffer: Optional[ReplayBufferConfig] = None
+    exploration: Optional[ExplorationParams] = None
+
+
+class DistrictDataCollectionRBCHyperparameters(BaseModel):
+    noise_sigma: float = Field(
+        default=0.1,
+        ge=0.0,
+        description="Std-dev of Gaussian action noise on noisy episodes (clipped to [-1, 1]).",
+    )
+    noisy_episode_indices: List[int] = Field(
+        default_factory=lambda: [7, 8, 9],
+        description="0-based episode indices that should use noisy actions; others run clean RBC.",
+    )
+    seed: int = Field(
+        default=22,
+        description="Base seed; per-episode RNG uses seed + episode_index for reproducibility.",
+    )
+    rbc_hyperparameters: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional overrides forwarded to the inner RuleBasedPolicy.",
+    )
+
+
+class DistrictDataCollectionRBCAlgorithmConfig(BaseModel):
+    name: Literal["DistrictDataCollectionRBC"]
+    hyperparameters: DistrictDataCollectionRBCHyperparameters = DistrictDataCollectionRBCHyperparameters()
+    networks: Optional[AlgorithmNetworks] = None
+    replay_buffer: Optional[ReplayBufferConfig] = None
+    exploration: Optional[ExplorationParams] = None
 
 
 class EVDataCollectionRBCHyperparameters(BaseModel):
@@ -268,8 +477,8 @@ class TopologyConfig(BaseModel):
     action_space: Optional[Any] = None
 
 
-class MADDPGAlgorithmConfig(BaseModel):
-    name: Literal["MADDPG"]
+class ActorCriticAlgorithmConfig(BaseModel):
+    name: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
     hyperparameters: AlgorithmHyperparameters
     networks: AlgorithmNetworks
     replay_buffer: ReplayBufferConfig
@@ -277,7 +486,15 @@ class MADDPGAlgorithmConfig(BaseModel):
 
 
 class RuleBasedAlgorithmConfig(BaseModel):
-    name: Literal["RuleBasedPolicy"]
+    name: Literal[
+        "RuleBasedPolicy",
+        "RandomPolicy",
+        "NormalPolicy",
+        "NormalNoBatteryPolicy",
+        "RBCBasicPolicy",
+        "RBCCommunityPolicy",
+        "RBCSmartPolicy",
+    ]
     hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
@@ -381,7 +598,7 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[MADDPGAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig, EVDataCollectionRBCAlgorithmConfig, DistrictDataCollectionRBCAlgorithmConfig]
+    algorithm: Union[ActorCriticAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig, EVDataCollectionRBCAlgorithmConfig, DistrictDataCollectionRBCAlgorithmConfig]
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
@@ -389,9 +606,15 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
-        if self.algorithm.name == "MADDPG" and self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
+        fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
+        if (
+            self.algorithm.name in fixed_topology_algorithms
+            and self.simulator.interface == "entity"
+            and self.simulator.topology_mode == "dynamic"
+        ):
             raise ValueError(
-                "algorithm.name='MADDPG' does not support simulator.interface='entity' with simulator.topology_mode='dynamic'."
+                f"algorithm.name='{self.algorithm.name}' does not support simulator.interface='entity' "
+                "with simulator.topology_mode='dynamic'."
             )
 
         return self

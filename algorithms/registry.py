@@ -6,14 +6,36 @@ from typing import Dict, List, Type
 
 from loguru import logger
 
+from algorithms.agents.baseline_policies import (
+    NormalNoBatteryPolicy,
+    NormalPolicy,
+    RBCBasicPolicy,
+    RBCCommunityPolicy,
+    RBCSmartPolicy,
+    RandomPolicy,
+)
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.district_data_collection_agent import DistrictDataCollectionRBC
 from algorithms.agents.ev_data_collection_agent import EVDataCollectionRBC
 from algorithms.agents.maddpg_agent import MADDPG
+from algorithms.agents.masac_agent import MASAC
+from algorithms.agents.matd3_agent import MATD3
+from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO
 from algorithms.agents.rbc_agent import RuleBasedPolicy
 
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
+    "HAPPO": HAPPO,
+    "IPPO": IPPO,
     "MADDPG": MADDPG,
+    "MAPPO": MAPPO,
+    "MASAC": MASAC,
+    "MATD3": MATD3,
+    "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
+    "NormalPolicy": NormalPolicy,
+    "RBCBasicPolicy": RBCBasicPolicy,
+    "RBCCommunityPolicy": RBCCommunityPolicy,
+    "RBCSmartPolicy": RBCSmartPolicy,
+    "RandomPolicy": RandomPolicy,
     "RuleBasedPolicy": RuleBasedPolicy,
     "EVDataCollectionRBC": EVDataCollectionRBC,
     "DistrictDataCollectionRBC": DistrictDataCollectionRBC,

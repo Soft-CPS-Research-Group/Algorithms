@@ -101,9 +101,38 @@ def test_validate_config_accepts_simulator_export_and_time_controls(base_config)
     config["simulator"]["export"] = {
         "mode": "end",
         "export_kpis_on_episode_end": True,
+        "final_episode_only": True,
+        "include_business_as_usual": False,
+        "export_business_as_usual_timeseries": False,
+        "kpi_round_decimals": 4,
         "session_name": "session-a",
     }
     validate_config(config)
+
+
+def test_validate_config_accepts_runtime_safety_guards(base_config):
+    config = copy.deepcopy(base_config)
+    config["tracking"]["progress_phase_updates_enabled"] = True
+    config["tracking"]["progress_phase_start_step"] = 4500
+    config["tracking"]["progress_phase_end_step"] = 5700
+    config["tracking"]["max_step_seconds"] = 15.0
+    config["tracking"]["resource_guard_enabled"] = True
+    config["tracking"]["max_process_rss_mb"] = 12000.0
+    config["tracking"]["min_available_ram_mb"] = 1024.0
+    validate_config(config)
+
+
+def test_validate_config_rejects_invalid_runtime_safety_guards(base_config):
+    config = copy.deepcopy(base_config)
+    config["tracking"]["progress_phase_start_step"] = 5700
+    config["tracking"]["progress_phase_end_step"] = 4500
+    with pytest.raises(Exception):
+        validate_config(config)
+
+    config = copy.deepcopy(base_config)
+    config["tracking"]["max_step_seconds"] = 0
+    with pytest.raises(Exception):
+        validate_config(config)
 
 
 def test_validate_config_accepts_wrapper_reward_overrides(base_config):
@@ -213,10 +242,45 @@ def test_validate_config_rejects_invalid_tracking_intervals(base_config):
 
 
 def test_validate_all_templates():
-    template_paths = sorted(Path("configs/templates").glob("*.yaml"))
+    template_paths = sorted(Path("configs/templates").rglob("*.yaml"))
     assert template_paths, "No template files found under configs/templates"
 
     for template_path in template_paths:
         with template_path.open("r", encoding="utf-8") as handle:
             template_config = yaml.safe_load(handle)
         validate_config(template_config)
+
+
+def test_rbc_community_templates_use_community_settlement_objective():
+    template_paths = [
+        Path("configs/templates/baselines/rbc_community_local.yaml"),
+        Path("configs/templates/baselines/rbc_community_2022_all_plus_evs_local.yaml"),
+    ]
+
+    for template_path in template_paths:
+        with template_path.open("r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+        kwargs = config["simulator"]["reward_function_kwargs"]
+        hyper = config["algorithm"]["hyperparameters"]
+
+        assert kwargs["local_cost_weight"] == pytest.approx(0.0)
+        assert kwargs["community_settlement_cost_weight"] == pytest.approx(1.0)
+        assert kwargs["community_local_price_ratio"] == pytest.approx(0.8)
+        assert kwargs["community_grid_export_price"] == pytest.approx(0.0)
+        assert hyper["community_local_price_ratio"] == pytest.approx(0.8)
+        assert hyper["community_grid_export_price"] == pytest.approx(0.0)
+
+
+def test_rbc_smart_templates_keep_house_level_cost_objective():
+    template_paths = [
+        Path("configs/templates/baselines/rbc_smart_local.yaml"),
+        Path("configs/templates/baselines/rbc_smart_2022_all_plus_evs_local.yaml"),
+    ]
+
+    for template_path in template_paths:
+        with template_path.open("r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+        kwargs = config["simulator"]["reward_function_kwargs"]
+
+        assert kwargs.get("local_cost_weight", 1.0) == pytest.approx(1.0)
+        assert kwargs["community_settlement_cost_weight"] == pytest.approx(0.0)

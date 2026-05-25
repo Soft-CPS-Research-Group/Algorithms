@@ -7,11 +7,13 @@ import hashlib
 import json
 import os
 import subprocess
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 import mlflow
+import numpy as np
 import yaml
 from loguru import logger
 from pydantic import ValidationError
@@ -106,6 +108,38 @@ def _write_resolved_config(config: dict, output_path: Path) -> None:
         yaml.safe_dump(config, handle, sort_keys=False)
 
 
+def _mark_failed_outputs(path_info: dict[str, Path], exc: Exception) -> None:
+    """Persist a terminal failure state for orchestrators and long local runs."""
+    timestamp = datetime.utcnow().isoformat() + "Z"
+    result_payload = {
+        "status": "failed",
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "timestamp": timestamp,
+    }
+    result_payload["traceback"] = traceback.format_exc()
+    with open(path_info["result_path"], "w", encoding="utf-8") as result_file:
+        json.dump(result_payload, result_file, indent=2)
+
+    progress_payload: dict[str, Any] = {}
+    if path_info["progress_path"].exists():
+        try:
+            with open(path_info["progress_path"], "r", encoding="utf-8") as progress_file:
+                progress_payload = json.load(progress_file)
+        except (OSError, json.JSONDecodeError):
+            progress_payload = {}
+    progress_payload.update(
+        {
+            "status": "failed",
+            "timestamp": timestamp,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+    )
+    with open(path_info["progress_path"], "w", encoding="utf-8") as progress_file:
+        json.dump(progress_payload, progress_file, indent=2)
+
+
 def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
     """Prefer local schema payloads to avoid remote dataset-index lookups.
 
@@ -127,11 +161,56 @@ def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
         return dataset_path_value
 
     if isinstance(payload, dict):
-        if payload.get("root_directory") in (None, ""):
-            payload["root_directory"] = str(candidate.resolve().parent)
+        # A local schema must resolve sibling CSV/Parquet files from its own
+        # directory. Copied datasets can carry a root_directory from another
+        # repository, so local paths intentionally take precedence here.
+        payload["root_directory"] = str(candidate.resolve().parent)
         return payload
 
     return dataset_path_value
+
+
+def _resolve_agent_observation_dimensions(wrapper: Any, algorithm_name: Optional[str]) -> list[int]:
+    """Resolve the observation dimensions seen by the agent, after preprocessing.
+
+    The wrapper owns preprocessing, but neural agents build networks before the
+    first rollout. For agents that consume encoded observations, use the encoded
+    observation shape exposed by the wrapper's encoder method without changing
+    wrapper behavior.
+    """
+    fallback = list(getattr(wrapper, "observation_dimension", []) or [])
+    encoded_observation_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
+    if str(algorithm_name or "").strip() not in encoded_observation_algorithms:
+        return fallback
+
+    get_encoded = getattr(wrapper, "get_encoded_observations", None)
+    if not callable(get_encoded):
+        return fallback
+
+    observation_space = list(getattr(wrapper, "observation_space", []) or [])
+    observation_names = list(getattr(wrapper, "observation_names", []) or [])
+    dimensions: list[int] = []
+
+    try:
+        for index, space in enumerate(observation_space):
+            if hasattr(space, "low"):
+                sample = np.asarray(space.low, dtype=np.float64).reshape(-1)
+            elif index < len(observation_names):
+                sample = np.zeros(len(observation_names[index]), dtype=np.float64)
+            else:
+                sample = np.array([], dtype=np.float64)
+
+            encoded = np.asarray(get_encoded(index, sample), dtype=np.float64).reshape(-1)
+            dimensions.append(int(encoded.shape[0]))
+    except Exception as exc:
+        logger.warning(
+            "Could not resolve encoded observation dimensions for {}; falling back to raw dimensions: {}",
+            algorithm_name,
+            exc,
+        )
+        return fallback
+
+    return dimensions if dimensions else fallback
 
 
 def _validate_dynamic_entity_schema_input(
@@ -583,8 +662,12 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             progress_path=str(path_info["progress_path"]),
         )
 
-        # Populate derived dimensions required by MADDPG.
-        set_default_config(config, ["topology", "observation_dimensions"], wrapper.observation_dimension)
+        # Populate derived dimensions required by neural agents.
+        set_default_config(
+            config,
+            ["topology", "observation_dimensions"],
+            _resolve_agent_observation_dimensions(wrapper, algorithm_name),
+        )
         set_default_config(config, ["topology", "action_dimensions"], wrapper.action_dimension)
         set_default_config(config, ["topology", "num_agents"], len(wrapper.action_space))
         logger.debug(
@@ -632,7 +715,10 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         )
 
         logger.info("Starting training loop")
-        wrapper.learn(episodes=int(simulator_cfg.get("episodes", 1) or 1))
+        wrapper.learn(
+            episodes=int(simulator_cfg.get("episodes", 1) or 1),
+            deterministic_finish=bool(simulator_cfg.get("deterministic_finish", False)),
+        )
 
         # Ensure progress file reaches terminal state with 100% completion.
         completed_episodes = int(simulator_cfg.get("episodes", 1) or 1)
@@ -678,6 +764,17 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "status": "completed",
             "kpi_source": kpi_source,
             "export_kpis_on_episode_end": bool(export_cfg.get("export_kpis_on_episode_end", False)),
+            "export_final_episode_only": bool(export_cfg.get("final_episode_only", False)),
+            "export_kpis_final_episode_only": bool(
+                export_cfg.get("kpis_final_episode_only", export_cfg.get("final_episode_only", False))
+            ),
+            "export_timeseries_final_episode_only": bool(
+                export_cfg.get("timeseries_final_episode_only", export_cfg.get("final_episode_only", False))
+            ),
+            "export_include_business_as_usual": bool(export_cfg.get("include_business_as_usual", True)),
+            "export_business_as_usual_timeseries": bool(
+                export_cfg.get("export_business_as_usual_timeseries", True)
+            ),
             "simulation_data_dir": str(path_info["simulation_data_dir"]),
             "wrapper_reward_profile": wrapper_reward_metadata.get("profile"),
             "wrapper_reward_version": wrapper_reward_metadata.get("version"),
@@ -692,7 +789,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         # Dynamic entity mode can change agent cardinality at runtime.
         # Persist final topology before exporting artifacts/manifest.
         final_topology = config.setdefault("topology", {})
-        final_topology["observation_dimensions"] = wrapper.observation_dimension
+        final_topology["observation_dimensions"] = _resolve_agent_observation_dimensions(wrapper, algorithm_name)
         final_topology["action_dimensions"] = wrapper.action_dimension
         final_topology["num_agents"] = len(wrapper.action_space)
 
@@ -735,6 +832,10 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             )
 
         logger.info("Experiment complete")
+    except Exception as exc:
+        logger.exception("Experiment failed")
+        _mark_failed_outputs(path_info, exc)
+        raise
     finally:
         end_mlflow_run()
         try:

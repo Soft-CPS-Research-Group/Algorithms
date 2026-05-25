@@ -59,7 +59,7 @@ Sections:
   `episode_time_steps`), and export controls under `simulator.export`.
 - `training`: global update cadence knobs.
 - `topology`: **derived** environment dimensions (num agents, observation/action shapes). These remain null in version-controlled configs and are filled by the wrapper.
-- `algorithm`: algorithm name and its parameters. Runtime-supported algorithms are `MADDPG` and `RuleBasedPolicy`; `SingleAgentRL` is a schema placeholder that intentionally fails fast at runtime until implemented.
+- `algorithm`: algorithm name and its parameters. Runtime-supported algorithms are `MADDPG`, `RuleBasedPolicy`, `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy` and `RBCSmartPolicy`; `SingleAgentRL` is a schema placeholder that intentionally fails fast at runtime until implemented.
 - `bundle`: manifest/export options shared by all algorithms (`bundle_version`, `description`, alias map hint, artifact config defaults).
 
 ### Validation
@@ -77,7 +77,7 @@ This prevents students from launching malformed runs.
 2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. It also writes `jobs/<job_id>/config.resolved.yaml` with runtime-injected fields (for example `runtime.job_id`, `runtime.run_id`) plus derived topology. If enabled, simulator CSV exports are written under `jobs/<job_id>/results/simulation_data/`. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
 3. **Agent instantiation** – `create_agent(config)` looks up `algorithm.name` in `algorithms/registry.py`; the registry maps names to classes.
 4. **Wrapper** – handles the CityLearn loop, invoking `BaseAgent.predict`/`update`. It logs metrics and checkpoints using helper classes. Observation encoders are built from `configs/encoders/default.json` so training and serving stay aligned; update the JSON when the simulator exposes new features.
-5. **Artifacts** – After training, `agent.export_artifacts` writes ONNX models under `jobs/<job_id>/onnx_models/` (or `policy_agent_<index>.json` for `RuleBasedPolicy`), and `build_manifest` drops `jobs/<job_id>/artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. The training runner validates the bundle contract (`utils/bundle_validator.py`) before finalizing output. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.
+5. **Artifacts** – After training, `agent.export_artifacts` writes ONNX models under `jobs/<job_id>/onnx_models/` (or `policy_agent_<index>.json` for rule-based baselines), and `build_manifest` drops `jobs/<job_id>/artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. The training runner validates the bundle contract (`utils/bundle_validator.py`) before finalizing output. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.
 
 ## 4. Checkpointing
 
@@ -148,7 +148,7 @@ This manifest enables a separate inference service to apply the same preprocessi
 
 ### Worked Example: Adding a New Agent
 
-1. Duplicate `configs/templates/maddpg_local.yaml` and adjust fields for the new algorithm.
+1. Duplicate `configs/templates/maddpg/maddpg_local.yaml` and adjust fields for the new algorithm.
 2. Implement the agent class under `algorithms/agents/` and ensure it inherits `BaseAgent`.
 3. Register the agent name/class mapping in `algorithms/registry.py`.
 4. Extend `utils/config_schema.py` with a new Pydantic model if the algorithm introduces unique config fields.
