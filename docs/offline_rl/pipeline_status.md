@@ -358,3 +358,104 @@ all 50 rollouts; 0 non-finite reward values in `iql_with_reward.parquet`.
   further B5 gains are achievable without iterative data.
 - **Multi-building IQL**: extend to all 17 buildings to make district-level
   improvements visible.
+
+---
+
+## 7. Entity-interface pipeline (all-17-buildings offline RL)
+
+The old pipeline controlled only Building 5 (single-agent). This section
+documents the new entity-interface pipeline that trains **separate policies
+for all 17 buildings** simultaneously, enabling genuine district-level
+improvements.
+
+### 7.1 Motivation
+
+Controlling 1/17 buildings is structurally insufficient to move district-level
+KPIs beyond noise (Section 4 finding). The entity interface (CityLearn
+`simulator.interface: entity`) exposes heterogeneous per-agent observation
+and action vectors. Four distinct agent groups exist:
+
+| Group key | obs_dim | action_dim | # buildings |
+|-----------|---------|------------|-------------|
+| `obs627_act1` | 627 | 1 | 10 |
+| `obs706_act2` | 706 | 2 | 5 |
+| `obs749_act3` | 749 | 3 | 1 (Building_1) |
+| `obs785_act3` | 785 | 3 | 1 (Building_15) |
+
+A separate policy is trained per group.
+
+### 7.2 Data collection
+
+`scripts/collect_rbcsmart_dataset.py` rolls out `RBCSmartPolicy` (the
+solar/price/peak-aware heuristic) in entity interface mode and captures:
+
+- Live reward: `CostServiceCommunityFeasiblePrecisionRewardV46` per step
+- All 17 agents per timestep
+- Wide sparse parquet: 10 seeds × 10 episodes × 5760 steps/episode
+- Output: `datasets/offline_rl/rbcsmart_entity/seed_22..31.parquet`
+
+NaN values in the sparse parquet (EV charger features absent when EV
+unplugged) are filled with 0 at load time in `EntityOfflineDataset._to_array`
+— semantically correct since "feature absent → 0".
+
+### 7.3 IQL training (all groups)
+
+`algorithms/offline_rl/iql_entity_trainer.py` provides:
+- `train_entity_single_seed` — one group, one seed
+- `train_entity_multi_seed` — one group, N seeds
+- `train_all_groups` — all four groups, N seeds
+
+CLI: `scripts/train_iql_entity.py`
+
+Artefacts per seed: `policy.pt`, `q1.pt`, `q2.pt`, `value.pt`,
+`obs_standardiser.npz`, `metrics.jsonl`, `architecture.json`,
+`seed_summary.json`.
+
+Default: 5 training seeds (22–26), val seed = 26, 150k gradient steps,
+hidden [256, 256].
+
+### 7.4 CQL training (all groups)
+
+`algorithms/offline_rl/cql_entity_trainer.py` extends the IQL trainer with a
+conservative Q penalty:
+
+    L_CQL = cql_alpha * mean(logsumexp_rand(Q(s, a_rand)) - Q(s, a_data))
+
+Added per Q-update (both Q1 and Q2). Default `cql_alpha=0.2`,
+`cql_n_random_actions=10`.
+
+CLI: `scripts/train_cql_entity.py`
+
+Same artefact layout as IQL trainer.
+
+### 7.5 Inference agents
+
+| Class | Registry key | Description |
+|-------|-------------|-------------|
+| `IQLEntityAgent` | `"IQLEntityAgent"` | IQL policies for all 17 buildings |
+| `CQLEntityAgent` | `"CQLEntityAgent"` | CQL policies for all 17 buildings |
+
+Both agents:
+- Load the best-seed policy per group from a trained model dir
+- Dispatch at predict time by obs_dim (unique across groups)
+- Apply per-group `ObservationStandardiser`
+- Fill NaN with 0 (consistent with dataset loader)
+- `update()` is a no-op
+
+### 7.6 Status
+
+| Step | Status | Commit |
+|------|--------|--------|
+| Entity obs/action dims probed | Done | — |
+| Data collection (RBCSmart, V46 reward) | Done | `5714b95` |
+| EntityOfflineDataset + schema | Done | `072b75d` |
+| IQL entity trainer | Done | `7151153` |
+| IQL entity CLI (`train_iql_entity.py`) | Done | `7151153` |
+| NaN fix in entity dataset loader | Done | `7151153` |
+| IQLEntityAgent + registry | Done | `d61fe16` |
+| CQL entity trainer | Done | `bc9249a` |
+| CQLEntityAgent + registry | Done | `bc9249a` |
+| Full 10-seed data collection (seeds 22–31) | In progress | — |
+| Full 5-seed IQL training per group | Pending | — |
+| 3-way benchmark (RBCSmart vs IQL vs CQL) | Pending | — |
+
