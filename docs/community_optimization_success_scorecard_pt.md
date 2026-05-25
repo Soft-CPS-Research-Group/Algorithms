@@ -35,8 +35,11 @@ Depois de passar os gates, a ordenacao deve olhar para:
 
 - `Reject`: falha EV minimo, rede, deferrables ou SOC de storage.
 - `Inspect`: passa gates e reduz custo, mas com throughput/V2G/picos anormais.
-- `Candidate`: passa gates e melhora custo face a `RBCSmartPolicy`.
-- `Strong candidate`: passa gates, melhora custo face a `RBCSmartPolicy`, melhora ou nao degrada muito `ev_within_tolerance_feasible_rate`, e nao cria picos/throughput suspeitos.
+- `Candidate`: passa gates e melhora custo face a `RBCSmartPolicy` e
+  `RBCCommunityPolicy`, quando ambos forem aplicaveis.
+- `Strong candidate`: passa gates, melhora custo face aos RBCs fortes, melhora
+  ou nao degrada muito `ev_within_tolerance_feasible_rate`, e nao cria
+  picos/throughput suspeitos.
 
 ## Baselines de Referencia
 
@@ -46,7 +49,8 @@ A comparacao principal deve incluir:
 - `NormalNoBatteryPolicy`;
 - `NormalPolicy`;
 - `RBCBasicPolicy`;
-- `RBCSmartPolicy`, baseline heuristico forte;
+- `RBCSmartPolicy`, baseline heuristico local forte;
+- `RBCCommunityPolicy`, baseline heuristico comunitario forte;
 - candidato RL/MARL em avaliacao.
 
 Para resultados finais, reportar sempre a janela temporal usada. Resultados de janela curta nao devem ser apresentados como resultado anual.

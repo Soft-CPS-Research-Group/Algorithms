@@ -1,6 +1,6 @@
 # Update Para A Equipa: Baselines, MADDPG E Performance
 
-Data: 2026-05-21.
+Data: 2026-05-25.
 
 Este repo passou a ter uma base mais solida para comparar controladores RL/MARL
 contra baselines deterministicos. O objetivo deixou de ser "fazer MADDPG ganhar
@@ -28,6 +28,7 @@ configs.
 | `NormalPolicy` | Igual ao normal, mas com bateria simples para autoconsumo. | Baseline BAU (`Business as Usual`) operacional simples; pode ser pior que no-battery se bateria tiver perdas/ciclos maus. |
 | `RBCBasicPolicy` | Heuristica simples com urgencia, preco atual/previsao curta e limites. | Baseline inteligente medio. Nao deve ser oracle. |
 | `RBCSmartPolicy` | Heuristica mais forte: preco, PV, picos/headroom, EV service, storage conservador e V2G quando configurado/seguro. | Baseline forte principal para comparar candidatos RL/MARL. |
+| `RBCCommunityPolicy` | Heuristica comunitaria: usa import/export/surplus da comunidade, preco local comunitario, picos, EV service, deferrables e storage conservador. | Baseline comunitario forte; deve ser comparado lado a lado com Smart. |
 | `RuleBasedPolicy` | RBC legacy EV-focused. | Mantido para compatibilidade/debug. Nao usar na maior parte das comparacoes novas. |
 
 Configs locais principais:
@@ -38,6 +39,7 @@ python run_experiment.py --config configs/templates/baselines/normal_no_battery_
 python run_experiment.py --config configs/templates/baselines/normal_local.yaml
 python run_experiment.py --config configs/templates/baselines/rbc_basic_local.yaml
 python run_experiment.py --config configs/templates/baselines/rbc_smart_local.yaml
+python run_experiment.py --config configs/templates/baselines/rbc_community_local.yaml
 ```
 
 Para o dataset 2022 hourly/all-plus-EVs, usar as variantes:
@@ -70,14 +72,18 @@ python run_experiment.py --config configs/templates/maddpg/maddpg_local.yaml
 python run_experiment.py --config configs/templates/maddpg/maddpg_2022_all_plus_evs_local.yaml
 ```
 
-Para runs remotas/full-year ja existem configs preparadas em:
+Para runs remotas/full-year, gerar configs novos a partir dos templates quando
+houver imagem/SIF nova. Nao manter no repo batches remotos antigos. Os pontos de
+partida sao:
 
 ```bash
-configs/experiments/phase6_2022_full_year/
-configs/experiments/phase6_15s_scaling/
-configs/experiments/phase6_dataset_variants/remote_pending/
-configs/experiments/phase6_algorithm_matrix/remote_pending/
+configs/templates/baselines/
+configs/templates/maddpg/
+configs/templates/rl/
 ```
+
+Os configs concretos de submissao devem ficar em `runs/remote_configs/...` e so
+os resumos finais relevantes devem ser promovidos para `docs/`.
 
 ## Reward Functions E Receita V48
 
@@ -147,7 +153,7 @@ Comparacao principal:
 
 | KPI | Porque importa | Como ler |
 |---|---|---|
-| `community_cost_eur` | Custo total da comunidade. | Menor e melhor; comparar contra `RBCSmart` e BAU. |
+| `community_cost_eur` | Custo total da comunidade. | Menor e melhor; comparar contra `RBCSmart`, `RBCCommunity` e BAU. |
 | `cost_delta_to_bau_eur` / `cost_ratio_to_bau` | Ganho/perda contra BAU. | Negativo ou ratio < 1 e melhor. |
 | `ev_min_acceptable_feasible_rate` | EV saiu com pelo menos o minimo aceitavel. | Gate de servico; deve tender para 1.0. |
 | `ev_within_tolerance_feasible_rate` | EV saiu perto do SOC pedido, dentro da tolerancia. | Qualidade de otimizacao; mais exigente que minimo aceitavel. |
