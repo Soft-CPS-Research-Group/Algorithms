@@ -71,3 +71,23 @@ def test_progress_tracker_completed_status_forces_100_with_global_total(tmp_path
     payload = json.loads(progress_path.read_text(encoding="utf-8"))
     assert payload["progress_pct"] == 100.0
     assert payload["status"] == "completed"
+
+
+def test_progress_tracker_writes_extra_runtime_fields(tmp_path):
+    progress_path = tmp_path / "progress" / "progress.json"
+    tracker = ProgressTracker(str(progress_path))
+
+    tracker.update(
+        episode=0,
+        step=2,
+        global_step=3,
+        status="running",
+        extra={
+            "phase": "env_step_start",
+            "process_rss_mb": 123.4,
+        },
+    )
+
+    payload = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert payload["phase"] == "env_step_start"
+    assert payload["process_rss_mb"] == 123.4

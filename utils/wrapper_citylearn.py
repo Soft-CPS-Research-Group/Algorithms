@@ -275,6 +275,26 @@ class Wrapper_CityLearn(RLC):
                 self.runtime_profiling_detail,
             )
             self.runtime_profiling_detail = "summary"
+        self.progress_phase_updates_enabled = bool(
+            tracking_cfg.get("progress_phase_updates_enabled", False)
+        )
+        self.progress_phase_start_step = self._coerce_non_negative_int(
+            tracking_cfg.get("progress_phase_start_step")
+        )
+        self.progress_phase_end_step = self._coerce_non_negative_int(
+            tracking_cfg.get("progress_phase_end_step")
+        )
+        self.max_step_seconds = self._coerce_positive_float(
+            tracking_cfg.get("max_step_seconds")
+        )
+        self.resource_guard_enabled = bool(tracking_cfg.get("resource_guard_enabled", False))
+        self.max_process_rss_mb = self._coerce_positive_float(
+            tracking_cfg.get("max_process_rss_mb")
+        )
+        self.min_available_ram_mb = self._coerce_positive_float(
+            tracking_cfg.get("min_available_ram_mb")
+        )
+        self._process = psutil.Process()
         self._deferrable_wait_steps: Dict[tuple[int, str], int] = {}
         self.progress_tracker = ProgressTracker(progress_path)
         self._configured_render_enabled = bool(getattr(self.env, "render_enabled", False))
@@ -550,11 +570,206 @@ class Wrapper_CityLearn(RLC):
             return None
         return parsed if parsed > 0 else None
 
+    @staticmethod
+    def _coerce_non_negative_int(value) -> Optional[int]:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    @staticmethod
+    def _coerce_positive_float(value) -> Optional[float]:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if np.isnan(parsed) or np.isinf(parsed) or parsed <= 0.0:
+            return None
+        return parsed
+
     def _resolve_progress_totals(self, episodes: int) -> tuple[Optional[int], Optional[int]]:
         step_total = self._coerce_positive_int(self.episode_time_steps)
         if step_total is None:
             return None, None
         return step_total, episodes * step_total
+
+    def _progress_phase_in_window(self) -> bool:
+        if not self.progress_updates_enabled or not self.progress_phase_updates_enabled:
+            return False
+        if self.global_step % self.progress_update_interval != 0:
+            return False
+        if (
+            self.progress_phase_start_step is not None
+            and self.global_step < self.progress_phase_start_step
+        ):
+            return False
+        if (
+            self.progress_phase_end_step is not None
+            and self.global_step > self.progress_phase_end_step
+        ):
+            return False
+        return True
+
+    def _runtime_resource_snapshot(self) -> Dict[str, float]:
+        snapshot: Dict[str, float] = {}
+        try:
+            rss_mb = self._process.memory_info().rss / (1024 ** 2)
+            snapshot["process_rss_mb"] = round(float(rss_mb), 3)
+        except Exception:
+            pass
+
+        try:
+            virtual_memory = psutil.virtual_memory()
+            snapshot["system_available_ram_mb"] = round(
+                float(virtual_memory.available / (1024 ** 2)),
+                3,
+            )
+            snapshot["system_ram_percent"] = round(float(virtual_memory.percent), 3)
+        except Exception:
+            pass
+
+        if torch.cuda.is_available():
+            try:
+                snapshot["gpu_allocated_mb"] = round(
+                    float(torch.cuda.memory_allocated() / (1024 ** 2)),
+                    3,
+                )
+                snapshot["gpu_reserved_mb"] = round(
+                    float(torch.cuda.memory_reserved() / (1024 ** 2)),
+                    3,
+                )
+            except Exception:
+                pass
+
+        return snapshot
+
+    def _write_phase_progress(
+        self,
+        *,
+        phase: str,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+        rewards: Optional[List[float]] = None,
+        status: str = "running",
+        force: bool = False,
+        extra: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        if not force and not self._progress_phase_in_window():
+            return
+
+        payload_extra: Dict[str, Any] = {
+            "phase": phase,
+            "entity_topology_version": self._entity_topology_version,
+            "entity_model_observations_direct": bool(
+                getattr(self, "_entity_model_observations_direct", False)
+            ),
+        }
+        payload_extra.update(self._runtime_resource_snapshot())
+        if extra:
+            payload_extra.update(dict(extra))
+
+        self.progress_tracker.update(
+            episode=episode,
+            step=step,
+            global_step=self.global_step,
+            rewards=rewards,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            status=status,
+            extra=payload_extra,
+        )
+
+    def _enforce_resource_guards(
+        self,
+        *,
+        phase: str,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+    ) -> None:
+        if not self.resource_guard_enabled:
+            return
+
+        snapshot = self._runtime_resource_snapshot()
+        failures: List[str] = []
+        rss_mb = snapshot.get("process_rss_mb")
+        available_mb = snapshot.get("system_available_ram_mb")
+        if self.max_process_rss_mb is not None and rss_mb is not None and rss_mb > self.max_process_rss_mb:
+            failures.append(
+                f"process RSS {rss_mb:.1f} MB exceeded limit {self.max_process_rss_mb:.1f} MB"
+            )
+        if (
+            self.min_available_ram_mb is not None
+            and available_mb is not None
+            and available_mb < self.min_available_ram_mb
+        ):
+            failures.append(
+                f"available RAM {available_mb:.1f} MB below limit {self.min_available_ram_mb:.1f} MB"
+            )
+        if not failures:
+            return
+
+        message = "; ".join(failures)
+        self._write_phase_progress(
+            phase=phase,
+            episode=episode,
+            step=step,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            status="failed",
+            force=True,
+            extra={
+                "error_type": "ResourceGuardError",
+                "error_message": message,
+                **snapshot,
+            },
+        )
+        raise MemoryError(message)
+
+    def _enforce_step_duration_guard(
+        self,
+        *,
+        step_duration: float,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+        rewards: Optional[List[float]],
+    ) -> None:
+        if self.max_step_seconds is None or step_duration <= self.max_step_seconds:
+            return
+
+        message = (
+            f"Step duration {step_duration:.3f}s exceeded configured limit "
+            f"{self.max_step_seconds:.3f}s at global step {self.global_step}."
+        )
+        self._write_phase_progress(
+            phase="step_duration_guard",
+            episode=episode,
+            step=step,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            rewards=rewards,
+            status="failed",
+            force=True,
+            extra={
+                "error_type": "StepDurationGuardError",
+                "error_message": message,
+                "step_duration_seconds": round(float(step_duration), 6),
+                "max_step_seconds": round(float(self.max_step_seconds), 6),
+            },
+        )
+        raise TimeoutError(message)
 
     def _configure_episode_exports(self, episode: int, episodes: int) -> bool:
         """Enable KPI export and timeseries rendering independently per episode."""
@@ -667,14 +882,54 @@ class Wrapper_CityLearn(RLC):
                     episode,
                     time_step,
                 )
+                self._enforce_resource_guards(
+                    phase="step_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                self._write_phase_progress(
+                    phase="step_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
 
                 step_observations = [np.asarray(obs, dtype=np.float64) for obs in observations]
+                self._write_phase_progress(
+                    phase="predict_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 actions = self.predict(observations, deterministic=deterministic)
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/predict_seconds"] = (
                         time.perf_counter() - phase_start_time
                     )
+                self._write_phase_progress(
+                    phase="predict_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                self._write_phase_progress(
+                    phase="action_prepare_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 actions = self._clip_actions(actions)
                 if not self._entity_interface_mode:
@@ -687,12 +942,46 @@ class Wrapper_CityLearn(RLC):
                     runtime_profile_metrics["Runtime/action_prepare_seconds"] = (
                         time.perf_counter() - phase_start_time
                     )
+                self._write_phase_progress(
+                    phase="action_prepare_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                self._write_phase_progress(
+                    phase="env_step_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 next_observations_raw, rewards, terminated, truncated, _ = self.env.step(env_actions)
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/env_step_seconds"] = (
                         time.perf_counter() - phase_start_time
                     )
+                self._write_phase_progress(
+                    phase="env_step_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
+                self._write_phase_progress(
+                    phase="entity_layout_start" if self._entity_interface_mode else "observation_prepare_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 if self._entity_interface_mode:
                     next_observations = self._apply_entity_layout(
@@ -706,16 +995,52 @@ class Wrapper_CityLearn(RLC):
                     entity_layout_seconds = time.perf_counter() - phase_start_time
                     runtime_profile_metrics["Runtime/observation_encoding_seconds"] = entity_layout_seconds
                     runtime_profile_metrics["Runtime/entity_layout_seconds"] = entity_layout_seconds
+                self._write_phase_progress(
+                    phase="entity_layout_end" if self._entity_interface_mode else "observation_prepare_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
+                self._write_phase_progress(
+                    phase="reward_shaping_start",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 rewards = self._shape_rewards(rewards, next_observations)
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/reward_shaping_seconds"] = (
                         time.perf_counter() - phase_start_time
                     )
+                self._write_phase_progress(
+                    phase="reward_shaping_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
                 rewards_list.append(rewards)
 
                 # Update model if not in deterministic mode
                 if not deterministic:
+                    self._write_phase_progress(
+                        phase="model_update_start",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
                     phase_start_time = time.perf_counter() if should_profile_step else 0.0
                     self.update(
                         observations,
@@ -736,7 +1061,25 @@ class Wrapper_CityLearn(RLC):
                             getattr(self, "_last_model_update_seconds", 0.0) or 0.0
                         )
                     logger.debug("Model update executed at global step {}", self.global_step)
+                    self._write_phase_progress(
+                        phase="model_update_end",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
 
+                    self._write_phase_progress(
+                        phase="checkpoint_start",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
                     phase_start_time = time.perf_counter() if should_profile_step else 0.0
                     self.checkpoint_manager.maybe_save(
                         agent=self.model,
@@ -748,11 +1091,30 @@ class Wrapper_CityLearn(RLC):
                         runtime_profile_metrics["Runtime/checkpoint_seconds"] = (
                             time.perf_counter() - phase_start_time
                         )
+                    self._write_phase_progress(
+                        phase="checkpoint_end",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
                 elif should_profile_step:
                     runtime_profile_metrics["Runtime/agent_update_seconds"] = 0.0
                     runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = 0.0
                     runtime_profile_metrics["Runtime/model_update_seconds"] = 0.0
                     runtime_profile_metrics["Runtime/checkpoint_seconds"] = 0.0
+                elif self._progress_phase_in_window():
+                    self._write_phase_progress(
+                        phase="model_update_skipped",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
 
                 observations = [o for o in next_observations]
 
@@ -777,6 +1139,33 @@ class Wrapper_CityLearn(RLC):
 
                 # Step duration calculation
                 step_duration = time.time() - step_start_time
+                self._enforce_resource_guards(
+                    phase="step_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                )
+                self._enforce_step_duration_guard(
+                    step_duration=step_duration,
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                )
+                self._write_phase_progress(
+                    phase="step_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                    extra={"step_duration_seconds": round(float(step_duration), 6)},
+                )
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/step_seconds"] = step_duration
                     runtime_profile_metrics["Runtime/step_perf_seconds"] = (
@@ -838,6 +1227,11 @@ class Wrapper_CityLearn(RLC):
                         step_total=episode_step_total,
                         global_step_total=global_step_total,
                         status="running",
+                        extra={
+                            "phase": "step_end",
+                            "step_duration_seconds": round(float(step_duration), 6),
+                            **self._runtime_resource_snapshot(),
+                        },
                     )
 
                 time_step += 1
@@ -858,6 +1252,10 @@ class Wrapper_CityLearn(RLC):
                     step_total=episode_step_total,
                     global_step_total=global_step_total,
                     status="completed" if episode + 1 >= episodes else "running",
+                    extra={
+                        "phase": "episode_end",
+                        **self._runtime_resource_snapshot(),
+                    },
                 )
 
             # Compute rewards statistics for this episode

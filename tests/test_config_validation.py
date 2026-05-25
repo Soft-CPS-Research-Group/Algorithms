@@ -110,6 +110,31 @@ def test_validate_config_accepts_simulator_export_and_time_controls(base_config)
     validate_config(config)
 
 
+def test_validate_config_accepts_runtime_safety_guards(base_config):
+    config = copy.deepcopy(base_config)
+    config["tracking"]["progress_phase_updates_enabled"] = True
+    config["tracking"]["progress_phase_start_step"] = 4500
+    config["tracking"]["progress_phase_end_step"] = 5700
+    config["tracking"]["max_step_seconds"] = 15.0
+    config["tracking"]["resource_guard_enabled"] = True
+    config["tracking"]["max_process_rss_mb"] = 12000.0
+    config["tracking"]["min_available_ram_mb"] = 1024.0
+    validate_config(config)
+
+
+def test_validate_config_rejects_invalid_runtime_safety_guards(base_config):
+    config = copy.deepcopy(base_config)
+    config["tracking"]["progress_phase_start_step"] = 5700
+    config["tracking"]["progress_phase_end_step"] = 4500
+    with pytest.raises(Exception):
+        validate_config(config)
+
+    config = copy.deepcopy(base_config)
+    config["tracking"]["max_step_seconds"] = 0
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
 def test_validate_config_accepts_wrapper_reward_overrides(base_config):
     config = copy.deepcopy(base_config)
     config["simulator"]["wrapper_reward"] = {

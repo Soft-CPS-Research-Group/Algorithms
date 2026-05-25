@@ -115,6 +115,51 @@ class TrackingConfig(BaseModel):
         default="summary",
         description="Runtime profiling detail level",
     )
+    progress_phase_updates_enabled: bool = Field(
+        default=False,
+        description="Write progress.json phase heartbeats around expensive wrapper phases",
+    )
+    progress_phase_start_step: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Optional first global step for detailed phase heartbeats",
+    )
+    progress_phase_end_step: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Optional last global step for detailed phase heartbeats",
+    )
+    max_step_seconds: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Abort training if a completed environment step exceeds this duration",
+    )
+    resource_guard_enabled: bool = Field(
+        default=False,
+        description="Abort training when configured process/system memory limits are crossed",
+    )
+    max_process_rss_mb: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Abort when process resident memory exceeds this threshold",
+    )
+    min_available_ram_mb: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Abort when system available RAM falls below this threshold",
+    )
+
+    @model_validator(mode="after")
+    def validate_phase_window(self) -> "TrackingConfig":
+        if (
+            self.progress_phase_start_step is not None
+            and self.progress_phase_end_step is not None
+            and self.progress_phase_end_step < self.progress_phase_start_step
+        ):
+            raise ValueError(
+                "tracking.progress_phase_end_step must be >= tracking.progress_phase_start_step"
+            )
+        return self
 
 
 class CheckpointingConfig(BaseModel):

@@ -199,6 +199,38 @@ o caminho recomendado e:
 - usar Deucalion/server para matriz de runs longas;
 - comparar sempre contra baselines e BAU, nao apenas contra reward interna.
 
+## Guardrails Para Runs Longas
+
+Depois dos jobs full-year ficarem sem progresso visivel perto do ultimo
+heartbeat e de uma reproducao local tambem causar instabilidade da maquina, a
+leitura operacional passou a ser mais conservadora:
+
+- o problema nao parece ser uma linha isolada do dataset, porque janelas curtas
+  em volta do ponto suspeito passaram;
+- o padrao parece mais compativel com degradacao acumulada ou fase longa sem
+  heartbeat fino;
+- antes de relancar waves longas, os configs de diagnostico devem escrever
+  heartbeats por fase e limites de seguranca.
+
+Novos campos opcionais em `tracking`:
+
+```yaml
+progress_phase_updates_enabled: true
+progress_phase_start_step: 4500
+progress_phase_end_step: 5700
+progress_update_interval: 1
+resource_guard_enabled: true
+max_process_rss_mb: 12000
+min_available_ram_mb: 1024
+max_step_seconds: 15
+```
+
+Com isto, o `progress.json` passa a indicar a fase atual (`predict`,
+`env_step`, `entity_layout`, `model_update`, `checkpoint`, etc.), RSS do
+processo, RAM disponivel e duracao do step. Se o job passar dos limites
+configurados, falha cedo com `status=failed` em vez de ficar horas em
+`RUNNING` sem informacao util.
+
 ## Mensagem Principal
 
 Temos agora uma base melhor para fazer ciencia:
