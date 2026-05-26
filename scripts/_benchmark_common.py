@@ -56,7 +56,7 @@ from reward_function.V2G_Reward import V2GPenaltyReward  # noqa: E402
 # Constants (shared by every offline-RL benchmark)
 # ---------------------------------------------------------------------------
 
-DATASET_SCHEMA = "./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json"
+DATASET_SCHEMA = "./datasets/citylearn_three_phase_electrical_service_demo/schema.json"
 TARGET_BUILDING_INDEX = 4  # Building_5 in this dataset
 TARGET_BUILDING_NAME = "Building_5"
 
@@ -141,10 +141,10 @@ class RandomAgent(BaseAgent):
 # Env construction & rollout
 # ---------------------------------------------------------------------------
 #
-# Same env mode M2 used to collect the offline dataset: ``interface='flat',
-# topology_mode='static'``. CityLearn lets you override the schema's declared
-# topology mode explicitly, and that's what ``run_experiment.py`` does by
-# default. Under those flags:
+# Flat-interface environment used for legacy BC/IQL benchmarks.
+# Uses ``citylearn_three_phase_electrical_service_demo`` (static topology, 17
+# buildings) so the schema does not declare dynamic topology — that would force
+# ``interface='entity'`` and break flat-mode agents.  Under these flags:
 #   * ``env.reset()`` / ``env.step()`` return per-agent lists.
 #   * ``env.observation_names[i]`` are the 35-name flat per-building schema.
 #   * ``env.action_space`` is a list of per-agent ``Box`` spaces.
