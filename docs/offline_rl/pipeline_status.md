@@ -391,12 +391,29 @@ solar/price/peak-aware heuristic) in entity interface mode and captures:
 
 - Live reward: `CostServiceCommunityFeasiblePrecisionRewardV46` per step
 - All 17 agents per timestep
-- Wide sparse parquet: 10 seeds × 10 episodes × 5760 steps/episode
+- **1 episode per seed** × 5760 steps/episode (1 day at 15s resolution)
 - Output: `datasets/offline_rl/rbcsmart_entity/seed_22..31.parquet`
 
-NaN values in the sparse parquet (EV charger features absent when EV
-unplugged) are filled with 0 at load time in `EntityOfflineDataset._to_array`
-— semantically correct since "feature absent → 0".
+| Quantity | Value |
+|---|---|
+| Seeds | 10 (`22..31`) |
+| Steps per seed | 5 760 |
+| Rows per seed | 97 903 (17 agents × 5 759 steps) |
+| Total rows | 783 224 |
+| Disk footprint | ~840 MB (89 MB/seed compressed, snappy) |
+| Parquet format | Wide-sparse; 29 row groups/file (200-step batches) |
+
+**Implementation notes:**
+- Row accumulation was replaced with a streaming `_StreamingParquetWriter`
+  that flushes 200-step batches to avoid the ~5–10 GB Python dict OOM that
+  killed the original process after each episode.
+- Data loading (`load_entity_dataset`) uses column pruning: reads the parquet
+  schema + first row group to discover per-group columns, then issues
+  `pq.read_table(columns=needed)` per seed. 50× speedup vs loading all 2150
+  sparse columns (12 s vs >10 min for 10 seeds, obs627 group).
+
+NaN values (EV charger features absent when EV unplugged) are filled with 0
+at load time in `EntityOfflineDataset._to_array`.
 
 ### 7.3 IQL training (all groups)
 
@@ -411,8 +428,36 @@ Artefacts per seed: `policy.pt`, `q1.pt`, `q2.pt`, `value.pt`,
 `obs_standardiser.npz`, `metrics.jsonl`, `architecture.json`,
 `seed_summary.json`.
 
-Default: 5 training seeds (22–26), val seed = 26, 150k gradient steps,
-hidden [256, 256].
+**Completed run** (`runs/offline_iql_entity/run-001`):
+- Train seeds: 22–30 (9 seeds), val seed: 31
+- 50 000 gradient steps, hidden [256, 256], batch 256, lr 3e-4
+- Wall clock: ~4.2 hours (CPU, ~7.2 ms/step, 10 cores)
+
+| Group | Best val policy MSE | ± std |
+|-------|---------------------|-------|
+| `obs627_act1` | 2.7 × 10⁻⁵ | 3 × 10⁻⁶ |
+| `obs706_act2` | 5.1 × 10⁻⁵ | 1 × 10⁻⁶ |
+| `obs749_act3` | 4.1 × 10⁻⁵ | 1.4 × 10⁻⁵ |
+| `obs785_act3` | **6 × 10⁻⁶** | 1 × 10⁻⁶ |
+
+Training stable: `adv_clip_frac = 0` across all runs; val MSE converges
+smoothly by step ~30 000–48 000 (best steps vary per seed/group).
+
+**Preliminary benchmark** (eval seed 200 only, RBCSmart vs IQL):
+
+| KPI | RBCSmart | IQL | Δ |
+|-----|----------|-----|---|
+| `cost_total` | 7.685 | 6.047 | ▼21.3% |
+| `carbon_emissions_total` | 5.865 | 5.001 | ▼14.7% |
+| `daily_peak_average` | 4.296 | 2.794 | ▼35.0% |
+| `ramping_average` | 119.99 | 138.37 | ▲15.3% (worse) |
+| `annual_norm_unserved` | 0.000 | 0.000 | — |
+
+IQL shows strong cost (−21%) and peak (−35%) improvements at the district
+level — unlike the single-building pipeline, all 17 buildings are now
+controlled by learned policies, so gains are not diluted. The ramping
+regression (IQL is 15% worse) is expected: the training reward does not
+include an explicit ramping penalty.
 
 ### 7.4 CQL training (all groups)
 
@@ -422,11 +467,17 @@ conservative Q penalty:
     L_CQL = cql_alpha * mean(logsumexp_rand(Q(s, a_rand)) - Q(s, a_data))
 
 Added per Q-update (both Q1 and Q2). Default `cql_alpha=0.2`,
-`cql_n_random_actions=10`.
+`cql_n_random_actions=10` (reduced to 5 for the current run to limit
+per-step overhead).
 
 CLI: `scripts/train_cql_entity.py`
 
 Same artefact layout as IQL trainer.
+
+**In-progress run** (`runs/offline_cql_entity/run-001`):
+- Train seeds: 22–30, val seed: 31
+- 50 000 gradient steps, `cql_alpha=0.2`, `cql_n_random_actions=5`
+- Wall clock: ~16 ms/step (2× IQL due to random-action Q evaluations)
 
 ### 7.5 Inference agents
 
