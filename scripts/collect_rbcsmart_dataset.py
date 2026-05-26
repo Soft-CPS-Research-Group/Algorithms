@@ -22,6 +22,9 @@ Design notes
   so downstream code can train separate policies per group without re-collection.
 * 10 episodes per seed (1 day = 5760 steps each). Collection seeds 22–31.
 * Fails fast on: schema mismatch, zero action variance in non-constant columns.
+* Memory efficiency: rows are flushed to parquet in batches of BATCH_FLUSH_STEPS
+  environment steps (default 200) to avoid OOM when materialising wide-sparse
+  DataFrames for long episodes.
 
 Usage
 -----
@@ -41,7 +44,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -74,6 +77,7 @@ DEFAULT_EPISODES: int = 10
 EPISODE_STEPS: int = 5760          # 1 day at 15 s resolution
 SMOKE_STEPS: int = 200             # fast sanity check
 SAFETY_MAX_STEPS: int = 6000       # guard against runaway loops
+BATCH_FLUSH_STEPS: int = 200       # env steps between parquet row-group flushes
 
 # Parquet column prefixes
 OBS_PREFIX = "obs__"
@@ -148,6 +152,73 @@ def _action_col(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Streaming parquet writer
+# ---------------------------------------------------------------------------
+
+
+class _StreamingParquetWriter:
+    """Accumulates row dicts and flushes them as row groups to a single parquet file.
+
+    The schema (column set) is inferred from the *first* flush batch and then
+    reused for all subsequent batches. Missing columns in later batches are
+    filled with NaN, extra columns are dropped. In practice, since all 17
+    agents appear at every env step, the column set is identical across batches.
+    """
+
+    def __init__(self, path: Path, compression: str = "snappy") -> None:
+        self._path = path
+        self._compression = compression
+        self._writer: Optional[pq.ParquetWriter] = None
+        self._schema: Optional[pa.Schema] = None
+        self._n_rows_written = 0
+
+    def write_batch(self, rows: List[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+        df = pd.DataFrame(rows)
+        table = pa.Table.from_pandas(df, preserve_index=False)
+
+        if self._writer is None:
+            self._schema = table.schema
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._writer = pq.ParquetWriter(
+                str(self._path), schema=self._schema, compression=self._compression
+            )
+
+        # Align columns to schema (add missing as null, drop extras)
+        if table.schema != self._schema:
+            table = _align_table(table, self._schema)
+
+        self._writer.write_table(table)
+        self._n_rows_written += len(table)
+
+    def close(self) -> int:
+        """Close the writer and return total rows written."""
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
+        return self._n_rows_written
+
+    @property
+    def n_rows(self) -> int:
+        return self._n_rows_written
+
+
+def _align_table(table: pa.Table, schema: pa.Schema) -> pa.Table:
+    """Reindex a table to match the target schema; fill missing cols with null."""
+    cols = {}
+    for i, field in enumerate(schema):
+        if field.name in table.schema.names:
+            col = table.column(field.name)
+            if col.type != field.type:
+                col = col.cast(field.type)
+            cols[field.name] = col
+        else:
+            cols[field.name] = pa.array([None] * len(table), type=field.type)
+    return pa.table(cols, schema=schema)
+
+
+# ---------------------------------------------------------------------------
 # Per-episode rollout
 # ---------------------------------------------------------------------------
 
@@ -158,8 +229,20 @@ def collect_episode(
     episode_idx: int,
     start_step: int,
     episode_steps: int,
+    on_batch: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+    batch_flush_steps: int = BATCH_FLUSH_STEPS,
 ) -> Dict[str, Any]:
-    """Run one episode, return rows (one per agent per timestep) + KPIs."""
+    """Run one episode and return KPIs (+ rows only when ``on_batch`` is None).
+
+    Parameters
+    ----------
+    on_batch:
+        When provided, row dicts are flushed to this callback every
+        ``batch_flush_steps`` env steps instead of being accumulated in memory.
+        The returned ``"rows"`` key will be an empty list in this case.
+    batch_flush_steps:
+        How many env steps to collect before calling ``on_batch``.
+    """
     env = _make_env(start_step=start_step, episode_steps=episode_steps)
     adapter = _make_adapter(env)
 
@@ -217,17 +300,28 @@ def collect_episode(
         if step % 1000 == 0:
             print(f"  [seed={seed} ep={episode_idx}] step {step}", flush=True)
 
+        # Streaming flush
+        if on_batch is not None and step % batch_flush_steps == 0:
+            on_batch(rows)
+            rows = []
+
+    # Final flush of any remaining rows
+    if on_batch is not None and rows:
+        on_batch(rows)
+        rows = []
+
     kpi_df = env.evaluate()
     district_kpis = _extract_kpis(kpi_df, level="district")
     building_kpis_list = [
         _extract_kpis(kpi_df, level="building", name=b.name)
         for b in env.buildings
     ]
-    print(f"  [seed={seed} ep={episode_idx}] done in {step} steps, n_rows={len(rows)}", flush=True)
+    n_rows_episode = step * n_agents
+    print(f"  [seed={seed} ep={episode_idx}] done in {step} steps, n_rows={n_rows_episode}", flush=True)
     return {
         "seed": seed,
         "episode": episode_idx,
-        "rows": rows,
+        "rows": rows,  # empty when on_batch is used
         "n_steps": step,
         "district_kpis": district_kpis,
         "building_kpis": building_kpis_list,
@@ -309,10 +403,29 @@ def assert_action_variance(
         )
 
 
+def _action_variance_check_from_parquet(seed_path: Path) -> None:
+    """Read only action columns from the written parquet and check variance."""
+    pf = pq.ParquetFile(str(seed_path))
+    action_cols = [
+        c for c in pf.schema_arrow.names
+        if c.startswith(ACTION_PREFIX)
+    ]
+    if not action_cols:
+        return
+    df = pq.read_table(str(seed_path), columns=action_cols).to_pandas()
+    assert_action_variance(df)
+
+
 def _agent_group_summary(df: pd.DataFrame) -> Dict[str, Any]:
     """Summarise agent groups present in the dataset."""
     groups = Counter(zip(df["obs_dim"].tolist(), df["action_dim"].tolist()))
     return {f"obs{k[0]}_act{k[1]}": v for k, v in groups.most_common()}
+
+
+def _agent_group_summary_from_parquet(seed_path: Path) -> Dict[str, Any]:
+    """Read only obs_dim/action_dim columns to compute group summary."""
+    df = pq.read_table(str(seed_path), columns=["obs_dim", "action_dim"]).to_pandas()
+    return _agent_group_summary(df)
 
 
 # ---------------------------------------------------------------------------
@@ -396,9 +509,11 @@ def write_kpi_summary(out_dir: Path, results: List[Dict[str, Any]]) -> Path:
     return path
 
 
-def write_sample_csv(out_dir: Path, df: pd.DataFrame, n: int = 1000) -> Path:
+def write_sample_csv(out_dir: Path, seed_path: Path, n: int = 1000) -> Path:
+    """Write sample CSV by reading first N rows from an existing parquet file."""
+    df = pq.read_table(str(seed_path)).to_pandas().head(n)
     path = out_dir / "sample_first_1000.csv"
-    df.head(n).to_csv(path, index=False)
+    df.to_csv(path, index=False)
     return path
 
 
@@ -446,53 +561,70 @@ def main(argv: List[str] | None = None) -> int:
     seed_files: Dict[int, Path] = {}
     all_results: List[Dict[str, Any]] = []
     n_rows_total = 0
-    first_df: pd.DataFrame | None = None
+    first_seed_path: Optional[Path] = None
 
     for seed in seeds:
         seed_path = out_dir / f"seed_{seed}.parquet"
         if seed_path.exists() and not args.smoke:
             print(f"[collect] skipping existing {seed_path.name}")
             seed_files[seed] = seed_path
-            n_rows_total += pq.read_metadata(seed_path).num_rows
+            n_rows_total += pq.read_metadata(str(seed_path)).num_rows
+            if first_seed_path is None:
+                first_seed_path = seed_path
             continue
 
         print(f"\n[collect] === seed {seed} ===")
-        seed_rows: List[Dict[str, Any]] = []
         seed_episode_results: List[Dict[str, Any]] = []
+
+        # Use streaming writer to avoid OOM on wide-sparse DataFrames
+        streaming_writer = _StreamingParquetWriter(seed_path)
 
         for ep in range(episodes_per_seed):
             start_step = ep * episode_steps
             result = collect_episode(
                 seed=seed, episode_idx=ep,
                 start_step=start_step, episode_steps=episode_steps,
+                on_batch=streaming_writer.write_batch,
+                batch_flush_steps=BATCH_FLUSH_STEPS,
             )
-            seed_rows.extend(result["rows"])
             seed_episode_results.append(result)
             all_results.append(result)
 
-        df = pd.DataFrame(seed_rows)
-        # Action variance check (across ALL agents in the seed)
-        assert_action_variance(df)
-
-        write_seed_parquet(seed_path, df)
+        n_rows_seed = streaming_writer.close()
         seed_files[seed] = seed_path
-        n_rows_total += len(df)
+        n_rows_total += n_rows_seed
 
-        if first_df is None:
-            first_df = df
+        if first_seed_path is None:
+            first_seed_path = seed_path
 
-        agent_groups = _agent_group_summary(df)
+        # Action variance check: read only action cols back from parquet (memory-efficient)
+        _action_variance_check_from_parquet(seed_path)
+
+        # Compute group summary from lightweight read
+        agent_groups = _agent_group_summary_from_parquet(seed_path)
+        reward_mean = float(np.mean([
+            r["district_kpis"].get("carbon_emissions_intensity", float("nan"))
+            for r in seed_episode_results
+            if r["district_kpis"]
+        ])) if seed_episode_results else float("nan")
+
+        # Use mean reward from rows if available in results
+        all_rewards = [
+            v for r in seed_episode_results
+            for v in [r["district_kpis"].get("net_electricity_consumption_emission_intensity", float("nan"))]
+        ]
         print(
-            f"[collect] seed={seed}: {len(df)} rows, "
-            f"groups={agent_groups}, "
-            f"reward_mean={df['reward'].mean():.4f}"
+            f"[collect] seed={seed}: {n_rows_seed} rows, "
+            f"groups={agent_groups}"
         )
 
     # Manifest
-    if all_results and first_df is not None:
-        agent_groups = _agent_group_summary(first_df)
+    if seed_files:
+        # Compute agent groups from first available seed parquet
+        first_path = first_seed_path or next(iter(seed_files.values()))
+        agent_groups_global = _agent_group_summary_from_parquet(first_path)
     else:
-        agent_groups = {}
+        agent_groups_global = {}
 
     manifest_path = write_manifest(
         out_dir,
@@ -500,14 +632,14 @@ def main(argv: List[str] | None = None) -> int:
         episodes_per_seed=episodes_per_seed,
         seed_files=seed_files,
         n_rows_total=n_rows_total,
-        agent_groups=agent_groups,
+        agent_groups=agent_groups_global,
         schema_hash=schema_hash,
     )
 
     if all_results:
         write_kpi_summary(out_dir, all_results)
-    if first_df is not None:
-        write_sample_csv(out_dir, first_df)
+    if first_seed_path is not None:
+        write_sample_csv(out_dir, first_seed_path)
 
     print(f"\n[collect] manifest: {manifest_path}")
     print(f"[collect] total rows: {n_rows_total:,}")
