@@ -73,6 +73,10 @@ def _discover_group_columns(
 
     Takes the first row belonging to this group and finds all non-NaN obs
     and action columns — those are exactly the columns for this group.
+
+    .. deprecated::
+        Prefer :func:`_discover_group_cols_from_schema` which avoids
+        loading the full wide-sparse DataFrame.
     """
     mask = (df["obs_dim"] == obs_dim) & (df["action_dim"] == action_dim)
     if not mask.any():
@@ -169,6 +173,53 @@ class EntityOfflineDataset(Dataset):
 # ---------------------------------------------------------------------------
 
 
+def _discover_group_cols_from_schema(
+    parquet_files: List[Path],
+    *,
+    obs_dim: int,
+    action_dim: int,
+) -> Tuple[List[str], List[str]]:
+    """Read just enough data from the first parquet to identify obs/action cols.
+
+    Strategy (memory-efficient):
+    1. Read all column names from the parquet schema (zero data read).
+    2. Read only ``obs__*`` and ``action__*`` columns for the first seed,
+       filtered to the target group, to find non-NaN column names.
+    This avoids loading the full wide-sparse DataFrame for schema discovery.
+    """
+    schema = pq.read_schema(str(parquet_files[0]))
+    all_cols = schema.names
+    obs_schema_cols = sorted(c for c in all_cols if c.startswith(OBS_PREFIX))
+    act_schema_cols = sorted(c for c in all_cols if c.startswith(ACTION_PREFIX))
+
+    # Read a small slice of the first file to discover non-NaN columns
+    sample_table = pq.read_table(
+        str(parquet_files[0]),
+        columns=["obs_dim", "action_dim"] + obs_schema_cols + act_schema_cols,
+    )
+    sample_df = sample_table.to_pandas()
+    mask = (sample_df["obs_dim"] == obs_dim) & (sample_df["action_dim"] == action_dim)
+    if not mask.any():
+        raise ValueError(
+            f"No rows for group (obs_dim={obs_dim}, action_dim={action_dim}) "
+            f"in {parquet_files[0]}"
+        )
+    row = sample_df[mask].iloc[0]
+    obs_cols = [c for c in obs_schema_cols if not pd.isna(row[c])]
+    act_cols = [c for c in act_schema_cols if not pd.isna(row[c])]
+    if len(obs_cols) != obs_dim:
+        raise ValueError(
+            f"Expected {obs_dim} obs cols for group ({obs_dim},{action_dim}), "
+            f"got {len(obs_cols)}."
+        )
+    if len(act_cols) != action_dim:
+        raise ValueError(
+            f"Expected {action_dim} action cols for group ({obs_dim},{action_dim}), "
+            f"got {len(act_cols)}."
+        )
+    return obs_cols, act_cols
+
+
 def load_entity_dataset(
     data_dir: Path,
     *,
@@ -201,13 +252,23 @@ def load_entity_dataset(
     if not parquet_files:
         raise FileNotFoundError(f"No seed_*.parquet files found in {data_dir}")
 
-    # Load all seeds into one DataFrame, keeping only needed columns + meta
+    # Discover which columns belong to the target group (schema-only + 1 sample read)
+    obs_cols, act_cols = _discover_group_cols_from_schema(
+        parquet_files, obs_dim=obs_dim, action_dim=action_dim
+    )
+    next_obs_cols = [NEXT_OBS_PREFIX + c[len(OBS_PREFIX):] for c in obs_cols]
+    meta_cols = ["seed", "obs_dim", "action_dim", "reward", "terminated", "truncated"]
+    needed_cols = meta_cols + obs_cols + act_cols + next_obs_cols
+
+    # Load only needed columns from each parquet — avoids materialising ~8 GB
+    # of wide-sparse data when only ~300 MB is actually required per group.
     dfs = []
     all_seeds = []
     for pf in parquet_files:
         seed = int(pf.stem.split("_")[1])
         all_seeds.append(seed)
-        df_raw = pd.read_parquet(pf)
+        # Read only the columns we need; pyarrow skips irrelevant column chunks
+        df_raw = pq.read_table(str(pf), columns=needed_cols).to_pandas()
         mask = (df_raw["obs_dim"] == obs_dim) & (df_raw["action_dim"] == action_dim)
         dfs.append(df_raw[mask].copy())
 
@@ -217,12 +278,6 @@ def load_entity_dataset(
             f"No rows found for group (obs_dim={obs_dim}, action_dim={action_dim}) "
             f"in {data_dir}"
         )
-
-    obs_cols, act_cols = _discover_group_columns(combined, obs_dim=obs_dim, action_dim=action_dim)
-    next_obs_cols = [NEXT_OBS_PREFIX + c[len(OBS_PREFIX):] for c in obs_cols]
-    missing_next = [c for c in next_obs_cols if c not in combined.columns]
-    if missing_next:
-        raise ValueError(f"Missing next_obs columns: {missing_next[:5]}...")
 
     obs_names = [obs_name_from_col(c) for c in obs_cols]
     action_names = [action_name_from_col(c) for c in act_cols]
