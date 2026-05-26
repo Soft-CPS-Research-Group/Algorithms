@@ -1,14 +1,14 @@
 # Roadmap Atual RL/MARL
 
-Snapshot: 2026-05-25
+Snapshot: 2026-05-26
 
 Este e o documento operacional curto para a proxima ronda. A historia antiga de
 Phase 6 foi removida do repo; o que interessa agora e correr uma matriz limpa em
-cima do Simulator 1.0.2, dos encodings atuais e dos RBCs atualizados.
+cima do Simulator 1.1.0, dos encodings atuais e dos RBCs atualizados.
 
 ## Estado Atual
 
-- Simulador requerido: `softcpsrecsimulator==1.0.2`.
+- Simulador requerido: `softcpsrecsimulator==1.1.0`.
 - Interface principal: `entity`.
 - Topologia MADDPG atual: `static`.
 - Perfil RL default: `maddpg_v3_operational`.
@@ -56,7 +56,7 @@ Depois do push e da nova imagem/SIF:
 1. Gate 0: smoke curto em CPU Deucalion com `RBCSmartPolicy`,
    `RBCCommunityPolicy` e `MADDPG` em `maddpg_v3_operational`.
 2. Confirmar que a imagem publicada inclui este commit e
-   `softcpsrecsimulator==1.0.2`.
+   `softcpsrecsimulator==1.1.0`.
 3. Repor apenas os datasets/configs necessarios no orchestrator.
 4. Correr scorecard anual dos baselines:
    `Random`, `NormalNoBattery`, `Normal`, `RBCBasic`, `RBCSmart`,
@@ -79,20 +79,25 @@ dataset, reward, encoding e export settings.
 
 ## Performance Atual
 
-Leitura local recente para Simulator 1.0.2, 2022 all-plus-EVs, 17 agentes:
+Leitura local recente para Simulator 1.1.0, 2022 all-plus-EVs, 17 agentes:
 
 ```text
-MADDPG v3 operational:
-  mediana step perfilado:     ~20.7 ms
-  env.step:                   ~12.4 ms
-  entity->maddpg_v3 direto:   ~7.2 ms
-  update neural real:         ~0.6 ms
+RandomPolicy, all bundles, 700 steps:
+  wall time:                  ~13.6 ms/step
+  RSS delta:                  +13.7 MB
+
+RBCSmartPolicy, all bundles, 700 steps:
+  wall time:                  ~14.8 ms/step
+  RSS delta:                  +2.0 MB
+
+MADDPG v3 operational, 96-step smoke:
+  wall time:                  ~43.8 ms/step
+  RSS delta:                  +588.5 MB
 ```
 
-Isto ja removeu a aberração anterior perto de nove dias estimados para uma run
-longa, mas ainda e caro. O proximo corte deve vir do simulador ou de reducao de
-features/exports na ronda concreta, nao de voltar a duplicar encodings no
-wrapper.
+O ponto principal desta ronda e que o leak de `entity_action_feedback` deixou de
+aparecer nos smokes locais. O MADDPG continua caro em RAM por causa das redes e
+do replay buffer, nao por crescimento por step do cache do simulador.
 
 ## Regra De Trabalho
 

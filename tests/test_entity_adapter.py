@@ -458,7 +458,7 @@ def test_entity_adapter_maddpg_v2_compact_profile_drops_redundant_features():
     assert encoded[encoded_names.index(incoming_deficit)] == pytest.approx(0.45, abs=1e-6)
 
 
-def test_entity_adapter_maddpg_v3_operational_keeps_simulator_100_features():
+def test_entity_adapter_maddpg_v3_operational_keeps_simulator_110_features():
     env = _DummyEntityEnv()
     env.seconds_per_time_step = 15.0
     adapter = EntityContractAdapter(
@@ -471,13 +471,16 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_100_features():
     observation_names = [
         "district__hour",
         "district__minutes",
-        "district__forecast_price_mean_1h",
-        "district__forecast_community_import_power_mean_1h_kw",
+        "district__forecast_price_next_1h",
+        "district__forecast_community_net_next_1h_kw",
         "district__community_flexible_charge_capacity_kw",
-        "forecast_load_power_mean_1h_kw",
+        "forecast_load_next_1h_kw",
+        "forecast_net_next_1h_kw",
         "storage::B1/electrical_storage::can_charge",
         "storage::B1/electrical_storage::available_charge_action_normalized",
+        "storage::B1/electrical_storage::last_requested_power_kw",
         "storage::B1/electrical_storage::last_projection_error_kw",
+        "storage::B1/electrical_storage::clip_reason_soc_limit",
         "charger::B1/C1::connected_ev_soc",
         "charger::B1/C1::connected_ev_required_soc_departure",
         "charger::B1/C1::hours_until_departure",
@@ -487,10 +490,11 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_100_features():
         "charger::B1/C1::departure_energy_margin_kwh",
         "charger::B1/C1::min_required_action_normalized",
         "charger::B1/C1::last_requested_action_normalized",
-        "charger::B1/C1::clip_reason_headroom",
+        "charger::B1/C1::clip_reason_building_headroom",
         "deferrable_appliance::B1/deferrable_appliance_1::must_start_now",
         "deferrable_appliance::B1/deferrable_appliance_1::remaining_duration_hours",
         "deferrable_appliance::B1/deferrable_appliance_1::start_blocked",
+        "deferrable_appliance::B1/deferrable_appliance_1::clip_reason_deferrable_window",
     ]
     observation = np.array(
         [
@@ -500,9 +504,12 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_100_features():
             8.0,
             15.0,
             4.0,
+            3.0,
             1.0,
             0.7,
+            3.0,
             2.0,
+            1.0,
             0.45,
             0.80,
             3.0,
@@ -515,6 +522,7 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_100_features():
             1.0,
             1.0,
             0.5,
+            1.0,
             1.0,
         ],
         dtype=np.float32,
@@ -530,7 +538,10 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_100_features():
                 0.0,
                 0.0,
                 0.0,
+                0.0,
                 -22.0,
+                -10.0,
+                0.0,
                 -0.1,
                 -0.1,
                 0.0,
@@ -538,6 +549,7 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_100_features():
                 0.0,
                 0.0,
                 -100.0,
+                0.0,
                 0.0,
                 0.0,
                 0.0,
@@ -555,9 +567,12 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_100_features():
                 100.0,
                 100.0,
                 20.0,
+                20.0,
                 1.0,
                 1.0,
                 22.0,
+                10.0,
+                1.0,
                 1.0,
                 1.0,
                 24.0,
@@ -570,6 +585,7 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_100_features():
                 1.0,
                 1.0,
                 24.0,
+                1.0,
                 1.0,
             ],
             dtype=np.float32,
@@ -586,22 +602,26 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_100_features():
     encoded_names = adapter.encoded_observation_names([observation_names])[0]
 
     assert len(encoded) == len(encoded_names)
-    assert "district__forecast_price_mean_1h" in encoded_names
-    assert "district__forecast_community_import_power_mean_1h_kw" in encoded_names
+    assert "district__forecast_price_next_1h" in encoded_names
+    assert "district__forecast_community_net_next_1h_kw" in encoded_names
     assert "district__community_flexible_charge_capacity_kw" in encoded_names
-    assert "forecast_load_power_mean_1h_kw" in encoded_names
+    assert "forecast_load_next_1h_kw" in encoded_names
+    assert "forecast_net_next_1h_kw" in encoded_names
     assert "storage::B1/electrical_storage::available_charge_action_normalized" in encoded_names
+    assert "storage::B1/electrical_storage::last_requested_power_kw" in encoded_names
     assert "storage::B1/electrical_storage::last_projection_error_kw" in encoded_names
+    assert "storage::B1/electrical_storage::clip_reason_soc_limit" in encoded_names
     assert "charger::B1/C1::hours_until_departure_24h" in encoded_names
     assert "charger::B1/C1::available_charge_action_normalized" in encoded_names
     assert "charger::B1/C1::departure_feasibility_ratio" in encoded_names
     assert "charger::B1/C1::departure_energy_margin_kwh" in encoded_names
     assert "charger::B1/C1::min_required_action_normalized" in encoded_names
     assert "charger::B1/C1::last_requested_action_normalized" in encoded_names
-    assert "charger::B1/C1::clip_reason_headroom" in encoded_names
+    assert "charger::B1/C1::clip_reason_building_headroom" in encoded_names
     assert "deferrable_appliance::B1/deferrable_appliance_1::must_start_now" in encoded_names
     assert "deferrable_appliance::B1/deferrable_appliance_1::remaining_duration_hours" in encoded_names
     assert "deferrable_appliance::B1/deferrable_appliance_1::start_blocked" in encoded_names
+    assert "deferrable_appliance::B1/deferrable_appliance_1::clip_reason_deferrable_window" in encoded_names
 
     required = "charger::B1/C1::min_required_action_normalized"
     hours = "charger::B1/C1::hours_until_departure_24h"
@@ -620,8 +640,8 @@ def test_entity_adapter_maddpg_v3_realtime_drops_simulator_perfect_forecasts():
 
     observation_names = [
         "district__electricity_pricing",
-        "district__forecast_price_mean_1h",
-        "forecast_load_power_mean_1h_kw",
+        "district__forecast_price_next_1h",
+        "forecast_load_next_1h_kw",
         "charger::B1/C1::min_required_action_normalized",
     ]
     observation = np.array([0.2, 0.1, 4.0, 0.35], dtype=np.float32)
@@ -642,8 +662,8 @@ def test_entity_adapter_maddpg_v3_realtime_drops_simulator_perfect_forecasts():
     assert len(encoded) == len(encoded_names)
     assert "district__electricity_pricing" in encoded_names
     assert "charger::B1/C1::min_required_action_normalized" in encoded_names
-    assert "district__forecast_price_mean_1h" not in encoded_names
-    assert "forecast_load_power_mean_1h_kw" not in encoded_names
+    assert "district__forecast_price_next_1h" not in encoded_names
+    assert "forecast_load_next_1h_kw" not in encoded_names
 
 
 def test_entity_adapter_observation_dimension_is_stable_when_ev_links_toggle():

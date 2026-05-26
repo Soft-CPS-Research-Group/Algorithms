@@ -1711,9 +1711,9 @@ class EntityContractAdapter:
         *,
         include_forecast_features: bool,
     ) -> bool:
-        """Keep a compact 1.0.0 operational observation set.
+        """Keep a compact operational observation set.
 
-        v3 keeps the v2 core plus the simulator 1.0.0 features that reduce
+        v3 keeps the v2 core plus simulator entity features that reduce
         guesswork for controllers: feasible action capacity, EV/deferrable
         deadline pressure, and last-action feedback. The realtime variant
         drops simulator-derived perfect forecasts while preserving current
@@ -1790,14 +1790,24 @@ class EntityContractAdapter:
             "usable_soc_ratio",
             "last_requested_action_normalized",
             "last_limited_action_normalized",
+            "last_requested_power_kw",
+            "last_limited_power_kw",
             "last_applied_power_kw",
             "last_projection_error_kw",
+            "applied_energy_prev_15m_kwh",
             "applied_power_mean_prev_15m_kw",
+            "time_since_last_nonzero_action_hours",
             "time_since_last_nonzero_action_hours_24h",
+            "clip_reason_availability",
             "clip_reason_soc_min",
             "clip_reason_soc_max",
+            "clip_reason_soc_limit",
             "clip_reason_power_limit",
             "clip_reason_headroom",
+            "clip_reason_building_headroom",
+            "clip_reason_phase_headroom",
+            "clip_reason_export_headroom",
+            "clip_reason_outage",
             "clip_reason_offline",
         }
 
@@ -1821,15 +1831,26 @@ class EntityContractAdapter:
             "min_required_action_normalized",
             "last_requested_action_normalized",
             "last_limited_action_normalized",
+            "last_requested_power_kw",
+            "last_limited_power_kw",
             "last_applied_power_kw",
             "last_projection_error_kw",
+            "applied_energy_prev_15m_kwh",
             "applied_power_mean_prev_15m_kw",
+            "time_since_last_nonzero_action_hours",
             "time_since_last_nonzero_action_hours_24h",
+            "clip_reason_availability",
             "clip_reason_no_ev",
             "clip_reason_soc_min",
             "clip_reason_soc_max",
+            "clip_reason_soc_limit",
             "clip_reason_power_limit",
             "clip_reason_headroom",
+            "clip_reason_building_headroom",
+            "clip_reason_phase_headroom",
+            "clip_reason_export_headroom",
+            "clip_reason_outage",
+            "clip_reason_deferrable_window",
             "clip_reason_not_v2g",
         }
 
@@ -1849,6 +1870,14 @@ class EntityContractAdapter:
             "last_start_requested",
             "last_start_applied",
             "start_blocked",
+            "clip_reason_availability",
+            "clip_reason_power_limit",
+            "clip_reason_soc_limit",
+            "clip_reason_building_headroom",
+            "clip_reason_phase_headroom",
+            "clip_reason_export_headroom",
+            "clip_reason_outage",
+            "clip_reason_deferrable_window",
             "clip_reason_not_pending",
             "clip_reason_already_running",
             "clip_reason_too_early",

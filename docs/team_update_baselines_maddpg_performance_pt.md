@@ -1,6 +1,6 @@
 # Update Para A Equipa: Baselines, MADDPG E Performance
 
-Data: 2026-05-25.
+Data: 2026-05-26.
 
 Este repo passou a ter uma base mais solida para comparar controladores RL/MARL
 contra baselines deterministicos. O objetivo deixou de ser "fazer MADDPG ganhar
@@ -10,11 +10,12 @@ custo, renovaveis e KPIs de servico.
 
 ## Versao Do Simulador
 
-O repo esta alinhado com `softcpsrecsimulator==1.0.2`.
+O repo esta alinhado com `softcpsrecsimulator==1.1.0`.
 
-Esta versao e importante porque traz melhorias de performance e permite reduzir
-o payload de observacoes que a reward precisa de receber. Isto reduz overhead
-quando a reward nao precisa de todas as observacoes do simulador.
+Esta versao e importante porque remove o leak dominante de
+`entity_action_feedback`, substitui a grelha pesada de
+`entity_forecasts_derived` por forecasts compactos `forecast_*_next_*` e reduz
+overhead de montagem das observacoes entity.
 
 ## Novos Baselines
 

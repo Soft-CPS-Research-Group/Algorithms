@@ -1006,6 +1006,46 @@ def test_rbc_smart_policy_uses_local_forecast_surplus_for_storage_ev_and_deferra
     assert actions[0][2] == pytest.approx(1.0)
 
 
+def test_rbc_smart_policy_uses_compact_local_net_forecast_for_surplus():
+    agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}})
+    names = _base_observation_names() + [
+        "forecast_net_next_1h_kw",
+    ]
+    _attach(agent, names, _action_names())
+    obs = np.array(
+        [
+            0.20,
+            np.nan,
+            np.nan,
+            np.nan,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.5,
+            1.0,
+            0.7,
+            0.8,
+            60.0,
+            10.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.1,
+            0.9,
+            -4.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][0] == pytest.approx(0.75)
+    assert actions[0][1] == pytest.approx(0.85)
+    assert actions[0][2] == pytest.approx(1.0)
+
+
 def test_rbc_smart_policy_uses_local_forecast_stress_for_storage_and_v2g():
     agent = RBCSmartPolicy(
         {
@@ -1017,6 +1057,53 @@ def test_rbc_smart_policy_uses_local_forecast_stress_for_storage_and_v2g():
     )
     names = _base_observation_names() + [
         "forecast_import_peak_next_15m_kw",
+    ]
+    _attach(agent, names, _action_names())
+    obs = np.array(
+        [
+            0.20,
+            np.nan,
+            np.nan,
+            np.nan,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.6,
+            1.0,
+            0.9,
+            0.5,
+            60.0,
+            5.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.1,
+            0.9,
+            12.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][0] < 0.0
+    assert actions[0][1] == pytest.approx(-0.25)
+    assert actions[0][2] == pytest.approx(0.0)
+
+
+def test_rbc_smart_policy_uses_compact_local_net_forecast_for_stress():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {"allow_v2g": True, "ev_v2g_discharge_rate": 0.25},
+            }
+        }
+    )
+    names = _base_observation_names() + [
+        "forecast_net_next_15m_kw",
     ]
     _attach(agent, names, _action_names())
     obs = np.array(
@@ -1538,6 +1625,53 @@ def test_rbc_community_policy_uses_forecast_community_surplus_for_storage_ev_and
     assert actions[0][2] == pytest.approx(1.0)
 
 
+def test_rbc_community_policy_uses_compact_community_net_forecast_for_surplus():
+    agent = RBCCommunityPolicy(
+        {
+            "algorithm": {
+                "name": "RBCCommunityPolicy",
+                "hyperparameters": {"community_storage_charge_rate": 0.55},
+            }
+        }
+    )
+    observation_names = _base_observation_names() + [
+        "district__forecast_community_net_next_1h_kw",
+    ]
+    _attach(agent, observation_names, _action_names())
+    obs = np.array(
+        [
+            0.20,
+            np.nan,
+            np.nan,
+            np.nan,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.5,
+            1.0,
+            0.7,
+            0.8,
+            60.0,
+            10.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.1,
+            0.9,
+            -8.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][0] == pytest.approx(0.55)
+    assert actions[0][1] == pytest.approx(0.85)
+    assert actions[0][2] == pytest.approx(1.0)
+
+
 def test_rbc_community_policy_uses_safe_v2g_under_community_stress():
     agent = RBCCommunityPolicy(
         {
@@ -1599,6 +1733,53 @@ def test_rbc_community_policy_uses_forecast_community_stress_for_storage_and_v2g
     )
     observation_names = _base_observation_names() + [
         "district__forecast_community_import_peak_next_15m_kw",
+    ]
+    _attach(agent, observation_names, _action_names())
+    obs = np.array(
+        [
+            0.20,
+            np.nan,
+            np.nan,
+            np.nan,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.6,
+            1.0,
+            0.9,
+            0.5,
+            60.0,
+            5.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.1,
+            0.9,
+            20.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][0] < 0.0
+    assert actions[0][1] == pytest.approx(-0.35)
+    assert actions[0][2] == pytest.approx(0.0)
+
+
+def test_rbc_community_policy_uses_compact_community_net_forecast_for_stress():
+    agent = RBCCommunityPolicy(
+        {
+            "algorithm": {
+                "name": "RBCCommunityPolicy",
+                "hyperparameters": {"allow_v2g": True, "community_v2g_discharge_rate": 0.35},
+            }
+        }
+    )
+    observation_names = _base_observation_names() + [
+        "district__forecast_community_net_next_15m_kw",
     ]
     _attach(agent, observation_names, _action_names())
     obs = np.array(
