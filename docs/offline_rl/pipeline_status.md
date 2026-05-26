@@ -474,10 +474,17 @@ CLI: `scripts/train_cql_entity.py`
 
 Same artefact layout as IQL trainer.
 
-**In-progress run** (`runs/offline_cql_entity/run-001`):
-- Train seeds: 22–30, val seed: 31
+**Completed run** (`runs/offline_cql_entity/run-001`):
+- Train seeds: 22–30 (9 seeds), val seed: 31
 - 50 000 gradient steps, `cql_alpha=0.2`, `cql_n_random_actions=5`
-- Wall clock: ~16 ms/step (2× IQL due to random-action Q evaluations)
+- Wall clock: ~16 ms/step (2× IQL); total ~7.5 h (CPU)
+
+| Group | Best val policy MSE | ± std |
+|-------|---------------------|-------|
+| `obs627_act1` | 2.6 × 10⁻⁵ | 3 × 10⁻⁶ |
+| `obs706_act2` | 5.0 × 10⁻⁵ | 2 × 10⁻⁶ |
+| `obs749_act3` | 7.9 × 10⁻⁵ | 1.9 × 10⁻⁵ |
+| `obs785_act3` | **5 × 10⁻⁶** | 1 × 10⁻⁶ |
 
 ### 7.5 Inference agents
 
@@ -493,7 +500,32 @@ Both agents:
 - Fill NaN with 0 (consistent with dataset loader)
 - `update()` is a no-op
 
-### 7.6 Status
+### 7.6 Three-way benchmark (RBCSmart vs IQL vs CQL)
+
+**Completed run** (`runs/benchmark_entity/results.json`):
+- Eval seeds: 200–204 (5 seeds × 1 episode = 5 × 5 759 steps each agent)
+- Script: `scripts/benchmark_entity_agents.py`
+
+| KPI | RBCSmart | IQL | Δ(IQL) | CQL | Δ(CQL) |
+|-----|----------|-----|--------|-----|--------|
+| `cost_total` | 7.42 ± 0.88 | 5.83 ± 0.89 | **▼21.5%** | 6.07 ± 0.92 | ▼18.3% |
+| `carbon_emissions_total` | 5.71 ± 0.56 | 4.87 ± 0.57 | **▼14.7%** | 5.03 ± 0.59 | ▼12.0% |
+| `daily_peak_average` | 4.14 ± 0.13 | 2.94 ± 0.19 | **▼29.2%** | 3.22 ± 0.02 | ▼22.2% |
+| `ramping_average` | 186.80 ± 44.76 | 126.04 ± 13.06 | ▼32.5% | **85.29 ± 1.96** | **▼54.3%** |
+| `electricity_consumption_total` | 6.82 ± 0.78 | 5.43 ± 0.81 | **▼20.4%** | 5.65 ± 0.84 | ▼17.1% |
+| `annual_norm_unserved_energy` | 0.000 | 0.000 | — | 0.000 | — |
+| `zero_net_energy` | −0.52 ± 0.17 | −3.59 ± 0.13 | ▼587% | −3.17 ± 0.18 | ▼508% |
+
+**Key findings:**
+- Both learned agents dominate RBCSmart on every KPI.
+- IQL wins on cost (−21.5%), carbon (−14.7%), peak (−29.2%), and consumption (−20.4%).
+- CQL wins on ramping (−54.3% vs IQL's −32.5%) — the conservative Q penalty yields
+  smoother charging policies that reduce power fluctuations.
+- No unserved energy for any agent across all seeds.
+- The earlier smoke result showing IQL worse on ramping (seed 200 only) was a single-seed
+  artefact; averaged over 5 seeds, IQL also improves ramping significantly.
+
+### 7.7 Status
 
 | Step | Status | Commit |
 |------|--------|--------|
@@ -506,7 +538,9 @@ Both agents:
 | IQLEntityAgent + registry | Done | `d61fe16` |
 | CQL entity trainer | Done | `bc9249a` |
 | CQLEntityAgent + registry | Done | `bc9249a` |
-| Full 10-seed data collection (seeds 22–31) | In progress | — |
-| Full 5-seed IQL training per group | Pending | — |
-| 3-way benchmark (RBCSmart vs IQL vs CQL) | Pending | — |
+| Full 10-seed data collection (seeds 22–31) | Done | `0463aaa` |
+| Full 9-seed IQL training per group | Done | — |
+| Full 9-seed CQL training per group | Done | — |
+| 3-way benchmark (RBCSmart vs IQL vs CQL) | Done | — |
+| Pre-existing test failures fixed | Done | `fffec3e` |
 

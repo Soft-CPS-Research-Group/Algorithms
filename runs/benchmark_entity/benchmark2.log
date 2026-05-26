@@ -1,0 +1,116 @@
+Couldn't import dot_parser, loading of dot files will not be possible.
+[benchmark] eval_seeds = [200, 201, 202, 203, 204]
+[benchmark] iql_root   = runs/offline_iql_entity/run-001
+[benchmark] cql_root   = runs/offline_cql_entity/run-001
+
+=== RBCSmart rollouts ===
+  [RBC seed=200] step 1000
+  [RBC seed=200] step 2000
+  [RBC seed=200] step 3000
+  [RBC seed=200] step 4000
+  [RBC seed=200] step 5000
+  [RBC seed=200] done in 5759 steps
+  [RBC seed=201] step 1000
+  [RBC seed=201] step 2000
+  [RBC seed=201] step 3000
+  [RBC seed=201] step 4000
+  [RBC seed=201] step 5000
+  [RBC seed=201] done in 5759 steps
+  [RBC seed=202] step 1000
+  [RBC seed=202] step 2000
+  [RBC seed=202] step 3000
+  [RBC seed=202] step 4000
+  [RBC seed=202] step 5000
+  [RBC seed=202] done in 5759 steps
+  [RBC seed=203] step 1000
+  [RBC seed=203] step 2000
+  [RBC seed=203] step 3000
+  [RBC seed=203] step 4000
+  [RBC seed=203] step 5000
+  [RBC seed=203] done in 5759 steps
+  [RBC seed=204] step 1000
+  [RBC seed=204] step 2000
+  [RBC seed=204] step 3000
+  [RBC seed=204] step 4000
+  [RBC seed=204] step 5000
+  [RBC seed=204] done in 5759 steps
+
+=== IQL rollouts ===
+  [IQL seed=200] step 1000
+  [IQL seed=200] step 2000
+  [IQL seed=200] step 3000
+  [IQL seed=200] step 4000
+  [IQL seed=200] step 5000
+  [IQL seed=200] done in 5759 steps
+  [IQL seed=201] step 1000
+  [IQL seed=201] step 2000
+  [IQL seed=201] step 3000
+  [IQL seed=201] step 4000
+  [IQL seed=201] step 5000
+  [IQL seed=201] done in 5759 steps
+  [IQL seed=202] step 1000
+  [IQL seed=202] step 2000
+  [IQL seed=202] step 3000
+  [IQL seed=202] step 4000
+  [IQL seed=202] step 5000
+  [IQL seed=202] done in 5759 steps
+  [IQL seed=203] step 1000
+  [IQL seed=203] step 2000
+  [IQL seed=203] step 3000
+  [IQL seed=203] step 4000
+  [IQL seed=203] step 5000
+  [IQL seed=203] done in 5759 steps
+  [IQL seed=204] step 1000
+  [IQL seed=204] step 2000
+  [IQL seed=204] step 3000
+  [IQL seed=204] step 4000
+  [IQL seed=204] step 5000
+  [IQL seed=204] done in 5759 steps
+
+=== CQL rollouts ===
+  [CQL seed=200] step 1000
+  [CQL seed=200] step 2000
+  [CQL seed=200] step 3000
+  [CQL seed=200] step 4000
+  [CQL seed=200] step 5000
+  [CQL seed=200] done in 5759 steps
+  [CQL seed=201] step 1000
+  [CQL seed=201] step 2000
+  [CQL seed=201] step 3000
+  [CQL seed=201] step 4000
+  [CQL seed=201] step 5000
+  [CQL seed=201] done in 5759 steps
+  [CQL seed=202] step 1000
+  [CQL seed=202] step 2000
+  [CQL seed=202] step 3000
+  [CQL seed=202] step 4000
+  [CQL seed=202] step 5000
+  [CQL seed=202] done in 5759 steps
+  [CQL seed=203] step 1000
+  [CQL seed=203] step 2000
+  [CQL seed=203] step 3000
+  [CQL seed=203] step 4000
+  [CQL seed=203] step 5000
+  [CQL seed=203] done in 5759 steps
+  [CQL seed=204] step 1000
+  [CQL seed=204] step 2000
+  [CQL seed=204] step 3000
+  [CQL seed=204] step 4000
+  [CQL seed=204] step 5000
+  [CQL seed=204] done in 5759 steps
+
+
+=== Benchmark Results ===
+Eval seeds: [200, 201, 202, 203, 204]  (n=5)
+
+KPI                                                      RBCSmart                    IQL   Δ(IQL-RBC)                    CQL   Δ(CQL-RBC)
+-----------------------------------------------------------------------------------------------------------------------------------------
+cost_total                                        7.4241 ± 0.8796        5.8279 ± 0.8868       ▼21.5%        6.0662 ± 0.9197       ▼18.3%
+carbon_emissions_total                            5.7084 ± 0.5565        4.8689 ± 0.5689       ▼14.7%        5.0255 ± 0.5872       ▼12.0%
+daily_peak_average                                4.1438 ± 0.1295        2.9352 ± 0.1854       ▼29.2%        3.2248 ± 0.0244       ▼22.2%
+ramping_average                                186.8025 ± 44.7637     126.0377 ± 13.0599       ▼32.5%       85.2890 ± 1.9615       ▼54.3%
+annual_normalized_unserved_energy_total           0.0000 ± 0.0000        0.0000 ± 0.0000                     0.0000 ± 0.0000             
+electricity_consumption_total                     6.8204 ± 0.7845        5.4299 ± 0.8121       ▼20.4%        5.6527 ± 0.8358       ▼17.1%
+zero_net_energy                                  -0.5220 ± 0.1717       -3.5885 ± 0.1269      ▼587.5%       -3.1728 ± 0.1838      ▼507.8%
+
+[benchmark] Results saved to runs/benchmark_entity/results.json
