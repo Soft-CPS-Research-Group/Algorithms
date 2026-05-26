@@ -70,16 +70,16 @@ SCHEMA_PATH = str(
 DEFAULT_EVAL_SEEDS: Tuple[int, ...] = tuple(range(200, 210))
 
 HEADLINE_KPIs = (
-    "ev_departure_success_rate",   # Gate criterion (higher = better)
     "cost_total",                  # Primary KPI (lower = better)
     "carbon_emissions_total",      # Secondary
     "daily_peak_average",          # Community/peak
-    "ramping_average",             # Ramping
-    "annual_normalized_unserved_energy_total",  # Feasibility
-    "bess_throughput_total_kwh",   # Battery utilisation
+    "ramping_average",             # Ramping (lower = better)
+    "annual_normalized_unserved_energy_total",  # Feasibility (lower = better)
+    "electricity_consumption_total",  # Energy
+    "zero_net_energy",             # ZNE (higher = better: less net import)
 )
 
-HIGHER_IS_BETTER = {"ev_departure_success_rate", "bess_throughput_total_kwh"}
+HIGHER_IS_BETTER = {"zero_net_energy"}
 
 
 # ---------------------------------------------------------------------------
