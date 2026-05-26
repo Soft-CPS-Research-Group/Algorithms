@@ -8,22 +8,36 @@
   "topology_mode": "static",
   "entity_encoding": "minmax_space",
   "seeds": [
-    23
+    22,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
   ],
   "episodes_per_seed": 1,
   "episode_time_steps": 5760,
   "n_agents": 17,
   "agent_groups": {
-    "obs627_act1": 1990,
-    "obs706_act2": 995,
-    "obs749_act3": 199,
-    "obs785_act3": 199
+    "obs627_act1": 57590,
+    "obs706_act2": 28795,
+    "obs749_act3": 5759,
+    "obs785_act3": 5759
   },
-  "n_rows_total": 3383,
+  "n_rows_total": 783224,
   "seed_files": {
-    "23": "seed_23.parquet"
+    "22": "seed_22.parquet",
+    "25": "seed_25.parquet",
+    "26": "seed_26.parquet",
+    "27": "seed_27.parquet",
+    "28": "seed_28.parquet",
+    "29": "seed_29.parquet",
+    "30": "seed_30.parquet",
+    "31": "seed_31.parquet"
   },
   "schema_hash": "c70b9e2647eff485",
-  "collected_at": "2026-05-25T22:00:39.700350+00:00",
-  "code_git_sha": "072b75d"
+  "collected_at": "2026-05-26T01:25:56.134932+00:00",
+  "code_git_sha": "83cde96"
 }
