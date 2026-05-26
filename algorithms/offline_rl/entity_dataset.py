@@ -183,19 +183,18 @@ def _discover_group_cols_from_schema(
 
     Strategy (memory-efficient):
     1. Read all column names from the parquet schema (zero data read).
-    2. Read only ``obs__*`` and ``action__*`` columns for the first seed,
-       filtered to the target group, to find non-NaN column names.
-    This avoids loading the full wide-sparse DataFrame for schema discovery.
+    2. Read only the FIRST ROW GROUP (~3400 rows) with obs/act columns to
+       identify which columns are non-NaN for the target group.
+    This is far cheaper than reading the full file (97k rows × 2150 cols).
     """
-    schema = pq.read_schema(str(parquet_files[0]))
-    all_cols = schema.names
+    pf = pq.ParquetFile(str(parquet_files[0]))
+    all_cols = pf.schema_arrow.names
     obs_schema_cols = sorted(c for c in all_cols if c.startswith(OBS_PREFIX))
     act_schema_cols = sorted(c for c in all_cols if c.startswith(ACTION_PREFIX))
 
-    # Read a small slice of the first file to discover non-NaN columns
-    sample_table = pq.read_table(
-        str(parquet_files[0]),
-        columns=["obs_dim", "action_dim"] + obs_schema_cols + act_schema_cols,
+    # Read only the first row group — contains all agent groups (17 agents/step)
+    sample_table = pf.read_row_group(
+        0, columns=["obs_dim", "action_dim"] + obs_schema_cols + act_schema_cols
     )
     sample_df = sample_table.to_pandas()
     mask = (sample_df["obs_dim"] == obs_dim) & (sample_df["action_dim"] == action_dim)
