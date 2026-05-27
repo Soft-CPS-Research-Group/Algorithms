@@ -255,8 +255,17 @@ def test_entity_adapter_maddpg_v1_profile_encodes_time_and_ev_features():
     assert "electric_vehicle_soc" not in encoded_names
 
     deficit_name = "charger::B1/C1::connected_ev_soc_deficit"
+    surplus_name = "charger::B1/C1::connected_ev_soc_surplus"
+    error_name = "charger::B1/C1::connected_ev_soc_error_signed"
+    charge_to_required_name = "charger::B1/C1::max_charge_to_required_soc_action_normalized"
     assert deficit_name in encoded_names
+    assert surplus_name in encoded_names
+    assert error_name in encoded_names
+    assert charge_to_required_name in encoded_names
     assert encoded[encoded_names.index(deficit_name)] == pytest.approx(0.35, abs=1e-6)
+    assert encoded[encoded_names.index(surplus_name)] == pytest.approx(0.0, abs=1e-6)
+    assert encoded[encoded_names.index(error_name)] == pytest.approx(0.35, abs=1e-6)
+    assert encoded[encoded_names.index(charge_to_required_name)] == pytest.approx(0.35, abs=1e-6)
 
     hours_name = "charger::B1/C1::connected_ev_hours_until_departure"
     assert hours_name in encoded_names
@@ -616,6 +625,9 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_110_features():
     assert "charger::B1/C1::departure_feasibility_ratio" in encoded_names
     assert "charger::B1/C1::departure_energy_margin_kwh" in encoded_names
     assert "charger::B1/C1::min_required_action_normalized" in encoded_names
+    assert "charger::B1/C1::connected_ev_soc_surplus" in encoded_names
+    assert "charger::B1/C1::connected_ev_soc_error_signed" in encoded_names
+    assert "charger::B1/C1::max_charge_to_required_soc_action_normalized" in encoded_names
     assert "charger::B1/C1::last_requested_action_normalized" in encoded_names
     assert "charger::B1/C1::clip_reason_building_headroom" in encoded_names
     assert "deferrable_appliance::B1/deferrable_appliance_1::must_start_now" in encoded_names
@@ -625,8 +637,14 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_110_features():
 
     required = "charger::B1/C1::min_required_action_normalized"
     hours = "charger::B1/C1::hours_until_departure_24h"
+    surplus = "charger::B1/C1::connected_ev_soc_surplus"
+    error = "charger::B1/C1::connected_ev_soc_error_signed"
+    charge_to_required = "charger::B1/C1::max_charge_to_required_soc_action_normalized"
     assert encoded[encoded_names.index(required)] == pytest.approx(0.35, abs=1e-6)
     assert encoded[encoded_names.index(hours)] == pytest.approx(3.0 / 24.0, abs=1e-6)
+    assert encoded[encoded_names.index(surplus)] == pytest.approx(0.0, abs=1e-6)
+    assert encoded[encoded_names.index(error)] == pytest.approx(0.35, abs=1e-6)
+    assert encoded[encoded_names.index(charge_to_required)] == pytest.approx(0.35, abs=1e-6)
 
 
 def test_entity_adapter_maddpg_v3_realtime_drops_simulator_perfect_forecasts():
