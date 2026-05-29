@@ -134,6 +134,32 @@ class TrackingConfig(BaseModel):
         gt=0,
         description="Abort training if a completed environment step exceeds this duration",
     )
+    stall_watchdog_enabled: bool = Field(
+        default=False,
+        description="Arm a faulthandler watchdog around wrapper phases to diagnose stalled jobs",
+    )
+    stall_watchdog_timeout_seconds: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Seconds without completing the current phase before dumping thread stacks",
+    )
+    stall_watchdog_exit_on_timeout: bool = Field(
+        default=True,
+        description="Exit the process after dumping stacks when the stall watchdog fires",
+    )
+    stall_watchdog_repeat: bool = Field(
+        default=False,
+        description="Repeat watchdog stack dumps when exit_on_timeout is false",
+    )
+    stall_watchdog_traceback_file: Optional[str] = Field(
+        default=None,
+        description="Optional path for stall watchdog stack dumps; defaults to the run log directory",
+    )
+    stall_watchdog_context_interval_steps: int = Field(
+        default=1,
+        ge=1,
+        description="Write stall watchdog context every N step_start phases to reduce remote I/O",
+    )
     resource_guard_enabled: bool = Field(
         default=False,
         description="Abort training when configured process/system memory limits are crossed",

@@ -225,3 +225,41 @@ Conclusao Wave 4:
 - Validar que cada algoritmo neural arranca em CUDA, faz updates, termina, exporta artifacts e sincroniza resultados.
 - Nao usar custo isolado como criterio de sucesso em smoke. A metrica de gate para treino serio continua a ser servico EV primeiro, especialmente `ev_min_acceptable_feasible_rate`.
 - Para runs candidatas, bater `RBCBasicPolicy` significa custo abaixo de `17675.9 EUR`, `ev_min_acceptable_feasible_rate` perto de `1.0`, violacoes eletricas `0`, e throughput/V2G sem abuso operacional.
+
+## Atualizacao Wave 5 / W6
+
+Fonte Wave 5: `runs/remote_results/phase10_wave5_completed_20260528/summary.csv`.
+Scorecard W5 contra RBCSmart:
+
+- Tabela limpa: `docs/phase10_wave5_candidate_scorecard_clean.csv`.
+- Markdown: `docs/phase10_wave5_candidate_scorecard_pt.md`.
+
+Resultado: nenhuma run W5 passou os gates RBCSmart. O padrao confirma o
+diagnostico anterior:
+
+- Sem BC/warm-start, custo pode descer em janelas curtas, mas EV min e EV tol
+  falham.
+- Com BC/warm-start, EV min sobe ate perto do gate, mas EV tol continua baixa
+  e bateria/V2G ficam altos.
+- A falha ja nao parece ser mapping/encoding puro; o proximo passo e treino
+  guiado + controlo de throughput.
+
+Para W6, o alvo operacional passa a ser `RBCSmartPolicy`, nao por custo puro,
+mas porque e a melhor referencia comunitaria equilibrada: menor import/export,
+melhor autoconsumo, picos melhores e custo apenas ~`208 EUR` acima de
+`RBCBasicPolicy`.
+
+Plano implementado em `docs/phase10_w6_guided_training_plan_pt.md`.
+
+Configs W6 geradas localmente em `runs/generated_configs/phase10_w6/`:
+
+- `w6-smoke-local`: `8` configs, 4 recipes MADDPG com 2 seeds, `256`
+  steps.
+- `w6a-local`: `40` configs, incluindo RBCSmart/RBCCommunity nas quatro
+  janelas e 4 recipes MADDPG com 2 seeds.
+- `w6b-remote-smoke`: `4` configs MADDPG, A100, `64 GB`, `4 CPUs`, `4h`.
+- `w6c-full-year`: `8` configs MADDPG/MATD3, A100, `96 GB`, `4 CPUs`, `12h`,
+  watchdog ligado.
+
+Regra: nao promover full-year W6C ate W6A/W6B mostrarem EV gate e custo de
+janela contra RBCSmart.

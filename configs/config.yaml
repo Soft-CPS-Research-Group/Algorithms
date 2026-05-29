@@ -45,6 +45,14 @@ tracking:
   training_diagnostics_detail: summary
   reward_diagnostics_enabled: true
   reward_diagnostics_detail: summary
+  # Stall watchdog is disabled by default. Enable on remote diagnostic runs to
+  # dump Python thread stacks if a wrapper phase blocks longer than the timeout.
+  stall_watchdog_enabled: false
+  stall_watchdog_timeout_seconds: null
+  stall_watchdog_exit_on_timeout: true
+  stall_watchdog_repeat: false
+  stall_watchdog_traceback_file: null
+  stall_watchdog_context_interval_steps: 1
 
 # Checkpoint behavior for saving and optional resume/fine-tuning workflows.
 checkpointing:
