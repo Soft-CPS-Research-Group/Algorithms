@@ -12,7 +12,6 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from loguru import logger
 from torch.distributions import Normal
 
@@ -75,8 +74,9 @@ class ActorHead(nn.Module):
         # Get action means
         means = self.mlp(ca_embeddings)  # [batch, N_ca, 1]
 
-        # Get standard deviation
-        std = torch.exp(self.log_std).expand_as(means)
+        # Get standard deviation (clamped to prevent entropy collapse/divergence)
+        log_std_clamped = torch.clamp(self.log_std, min=-2.0, max=0.5)
+        std = torch.exp(log_std_clamped).expand_as(means)
 
         # Create normal distribution
         dist = Normal(means, std)
@@ -323,8 +323,9 @@ def compute_ppo_loss(
     surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * advantages
     policy_loss = -torch.min(surr1, surr2).mean()
 
-    # Value loss (MSE)
-    value_loss = F.mse_loss(values, returns)
+    # Value loss (clipped MSE to prevent value function divergence)
+    value_loss_unclipped = (values - returns) ** 2
+    value_loss = torch.clamp(value_loss_unclipped, max=100.0).mean()
 
     # Entropy bonus (approximate using log_probs)
     # For squashed Gaussian, entropy is complex; use simple approximation

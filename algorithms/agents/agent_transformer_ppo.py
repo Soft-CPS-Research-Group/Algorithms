@@ -127,6 +127,7 @@ class AgentTransformerPPO(BaseAgent):
         self._entropy_coeff = float(h.get("entropy_coeff", 0.0))
         self._value_coeff = float(h.get("value_coeff", 0.5))
         self._max_grad_norm = float(h.get("max_grad_norm", 0.5))
+        self._reward_clip = float(h.get("reward_clip", 10.0))  # clip rewards to [-clip, 0]
         self._actor_hidden_dim = int(
             h.get("actor_hidden_dim", max(32, self._d_model * 2))
         )
@@ -267,7 +268,7 @@ class AgentTransformerPPO(BaseAgent):
                 observation=obs_t.squeeze(0),
                 action=act_t.squeeze(0),
                 log_prob=log_prob.squeeze(0),
-                reward=float(rewards[b]),
+                reward=max(float(rewards[b]), -self._reward_clip),
                 value=value,
                 done=done,
             )
@@ -671,7 +672,8 @@ class AgentTransformerPPO(BaseAgent):
         current Normal(mean, std)+tanh distribution. Returns ``[B, N_ca]``.
         """
         means = actor.mlp(ca_embeddings)  # [B, N_ca, 1]
-        std = torch.exp(actor.log_std).expand_as(means)
+        log_std_clamped = torch.clamp(actor.log_std, min=-2.0, max=0.5)
+        std = torch.exp(log_std_clamped).expand_as(means)
         pre_tanh = _atanh_safe(actions_tanh)
         # log p(pre_tanh) - log(1 - tanh(pre_tanh)^2)
         normal = torch.distributions.Normal(means, std)
