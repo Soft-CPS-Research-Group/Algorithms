@@ -90,16 +90,22 @@ HIGHER_IS_BETTER = {"zero_net_energy"}
 EPISODE_STEPS: int = 5760  # 1 day at 15-second resolution (matches training data)
 
 
-def _make_env(seed: int) -> CityLearnEnv:
+def _make_env(
+    seed: int,
+    *,
+    schema_path: str = SCHEMA_PATH,
+    episode_steps: int = EPISODE_STEPS,
+    offline: bool = True,
+) -> CityLearnEnv:
     return CityLearnEnv(
-        schema=SCHEMA_PATH,
+        schema=schema_path,
         central_agent=False,
         interface="entity",
         topology_mode="static",
         reward_function=CostServiceCommunityFeasiblePrecisionRewardV46,
         random_seed=int(seed),
-        episode_time_steps=EPISODE_STEPS,
-        offline=True,
+        episode_time_steps=episode_steps,
+        offline=offline,
     )
 
 
@@ -176,6 +182,7 @@ def entity_rollout(
     env_seed: int,
     label: str,
     max_steps: int = 6000,
+    env_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run one full-episode entity rollout and return KPIs.
 
@@ -183,7 +190,8 @@ def entity_rollout(
     EntityContractAdapter.  If the agent is not an IQL/CQL entity agent,
     it is called directly (e.g. RBCSmartPolicy which handles its own dispatch).
     """
-    env = _make_env(env_seed)
+    _env_kwargs = env_kwargs or {}
+    env = _make_env(env_seed, **_env_kwargs)
     adapter = _make_adapter(env)
 
     obs_payload, _ = env.reset()
@@ -238,9 +246,10 @@ def entity_rollout(
     }
 
 
-def rbc_rollout(*, env_seed: int) -> Dict[str, Any]:
+def rbc_rollout(*, env_seed: int, env_kwargs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """RBCSmartPolicy rollout with the entity adapter."""
-    env = _make_env(env_seed)
+    _env_kwargs = env_kwargs or {}
+    env = _make_env(env_seed, **_env_kwargs)
     adapter = _make_adapter(env)
 
     obs_payload, _ = env.reset()
@@ -349,9 +358,28 @@ def _print_report(
 # ---------------------------------------------------------------------------
 
 
-def parse_args() -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--schema",
+        default=SCHEMA_PATH,
+        help="Path to CityLearn schema.json (default: 15s parquet dataset).",
+    )
+    p.add_argument(
+        "--episode-steps",
+        type=int,
+        default=None,
+        dest="episode_steps",
+        help="Steps per episode. Auto-detected from schema if not given.",
+    )
+    p.add_argument(
+        "--no-offline",
+        dest="offline",
+        action="store_false",
+        default=True,
+        help="Disable offline=True (use for CSV-based datasets).",
     )
     p.add_argument("--iql-root", type=Path, default=None,
                    help="Output root from train_iql_entity.py")
@@ -368,26 +396,41 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", type=Path, default=None,
                    help="Optional JSON output path for results")
     p.add_argument("--device", default="cpu")
-    return p.parse_args()
+    return p
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: Optional[List[str]] = None) -> int:
+    args = _build_parser().parse_args(argv)
+    from algorithms.offline_rl.entity_schema import episode_steps_for_schema
+    episode_steps = (
+        args.episode_steps
+        if args.episode_steps is not None
+        else episode_steps_for_schema(args.schema)
+    )
+    env_kwargs: Dict[str, Any] = dict(
+        schema_path=args.schema,
+        episode_steps=episode_steps,
+        offline=args.offline,
+    )
+
     eval_seeds = [int(s) for s in args.eval_seeds.split(",") if s.strip()]
     if not eval_seeds:
         print("[benchmark] ERROR: --eval-seeds is empty", file=sys.stderr)
         return 1
 
-    print(f"[benchmark] eval_seeds = {eval_seeds}")
-    print(f"[benchmark] iql_root   = {args.iql_root}")
-    print(f"[benchmark] cql_root   = {args.cql_root}")
+    print(f"[benchmark] eval_seeds    = {eval_seeds}")
+    print(f"[benchmark] schema        = {args.schema}")
+    print(f"[benchmark] episode_steps = {episode_steps}")
+    print(f"[benchmark] offline       = {args.offline}")
+    print(f"[benchmark] iql_root      = {args.iql_root}")
+    print(f"[benchmark] cql_root      = {args.cql_root}")
     print()
 
     # --- RBCSmart rollouts ---
     print("=== RBCSmart rollouts ===")
     rbc_runs: List[Dict[str, Any]] = []
     for seed in eval_seeds:
-        rbc_runs.append(rbc_rollout(env_seed=seed))
+        rbc_runs.append(rbc_rollout(env_seed=seed, env_kwargs=env_kwargs))
 
     # --- IQL rollouts ---
     iql_runs: Optional[List[Dict[str, Any]]] = None
@@ -399,7 +442,7 @@ def main() -> int:
         iql_runs = []
         for seed in eval_seeds:
             iql_runs.append(
-                entity_rollout(iql_agent, env_seed=seed, label="IQL")
+                entity_rollout(iql_agent, env_seed=seed, label="IQL", env_kwargs=env_kwargs)
             )
 
     # --- CQL rollouts ---
@@ -412,7 +455,7 @@ def main() -> int:
         cql_runs = []
         for seed in eval_seeds:
             cql_runs.append(
-                entity_rollout(cql_agent, env_seed=seed, label="CQL")
+                entity_rollout(cql_agent, env_seed=seed, label="CQL", env_kwargs=env_kwargs)
             )
 
     # --- Aggregate ---
