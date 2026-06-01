@@ -89,17 +89,23 @@ ACTION_PREFIX = "action__"
 # ---------------------------------------------------------------------------
 
 
-def _make_env(*, start_step: int = 0, episode_steps: int = EPISODE_STEPS) -> CityLearnEnv:
+def _make_env(
+    *,
+    start_step: int = 0,
+    episode_steps: int = EPISODE_STEPS,
+    schema_path: str = SCHEMA_PATH,
+    offline: bool = True,
+) -> CityLearnEnv:
     """Instantiate a CityLearnEnv with V46 reward and entity interface."""
     return CityLearnEnv(
-        schema=SCHEMA_PATH,
+        schema=schema_path,
         central_agent=False,
         interface="entity",
         topology_mode="static",
         reward_function=CostServiceCommunityFeasiblePrecisionRewardV46,
         simulation_start_time_step=start_step,
         episode_time_steps=episode_steps,
-        offline=True,
+        offline=offline,
     )
 
 
@@ -229,6 +235,8 @@ def collect_episode(
     episode_idx: int,
     start_step: int,
     episode_steps: int,
+    schema_path: str = SCHEMA_PATH,
+    offline: bool = True,
     on_batch: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     batch_flush_steps: int = BATCH_FLUSH_STEPS,
 ) -> Dict[str, Any]:
@@ -243,7 +251,7 @@ def collect_episode(
     batch_flush_steps:
         How many env steps to collect before calling ``on_batch``.
     """
-    env = _make_env(start_step=start_step, episode_steps=episode_steps)
+    env = _make_env(start_step=start_step, episode_steps=episode_steps, schema_path=schema_path, offline=offline)
     adapter = _make_adapter(env)
 
     obs_payload, _ = env.reset()
@@ -522,19 +530,48 @@ def write_sample_csv(out_dir: Path, seed_path: Path, n: int = 1000) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def main(argv: List[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seeds", type=int, nargs="+", default=None)
-    parser.add_argument("--episodes", type=int, default=None)
-    parser.add_argument(
-        "--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument(
+        "--schema",
+        default=SCHEMA_PATH,
+        help="Path to CityLearn schema.json (default: 15s parquet dataset).",
     )
-    parser.add_argument(
+    p.add_argument(
+        "--episode-steps",
+        type=int,
+        default=None,
+        dest="episode_steps",
+        help="Steps per episode. Defaults to one calendar day for the schema's "
+             "time resolution (86400 // seconds_per_time_step).",
+    )
+    p.add_argument(
+        "--no-offline",
+        dest="offline",
+        action="store_false",
+        default=True,
+        help="Disable offline=True in CityLearnEnv (needed for CSV-based datasets).",
+    )
+    p.add_argument("--seeds", type=int, nargs="+", default=None)
+    p.add_argument("--episodes", type=int, default=None)
+    p.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    p.add_argument(
         "--smoke",
         action="store_true",
         help="Single seed, 1 episode, 200 steps — fast sanity check.",
     )
-    args = parser.parse_args(argv)
+    return p
+
+
+def main(argv: List[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+
+    from algorithms.offline_rl.entity_schema import episode_steps_for_schema
+    resolved_episode_steps = (
+        args.episode_steps
+        if args.episode_steps is not None
+        else episode_steps_for_schema(args.schema)
+    )
 
     seeds: List[int] = args.seeds if args.seeds is not None else DEFAULT_SEEDS
     if args.smoke and args.seeds is None:
@@ -544,18 +581,20 @@ def main(argv: List[str] | None = None) -> int:
         seeds = seeds[:1]
 
     episodes_per_seed: int = 1 if args.smoke else (args.episodes or DEFAULT_EPISODES)
-    episode_steps = SMOKE_STEPS if args.smoke else EPISODE_STEPS
+    episode_steps = SMOKE_STEPS if args.smoke else resolved_episode_steps
 
     out_dir: Path = args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    print(f"[collect] schema:            {args.schema}")
     print(f"[collect] output_dir: {out_dir}")
     print(f"[collect] seeds: {seeds}")
     print(f"[collect] episodes_per_seed: {episodes_per_seed}")
     print(f"[collect] steps_per_episode: {episode_steps}")
+    print(f"[collect] offline: {args.offline}")
     print(f"[collect] reward: CostServiceCommunityFeasiblePrecisionRewardV46 (live)")
 
-    schema_hash = hashlib.sha256(Path(SCHEMA_PATH).read_bytes()).hexdigest()[:16]
+    schema_hash = hashlib.sha256(Path(args.schema).read_bytes()).hexdigest()[:16]
     print(f"[collect] schema_hash: {schema_hash}...")
 
     seed_files: Dict[int, Path] = {}
@@ -584,6 +623,7 @@ def main(argv: List[str] | None = None) -> int:
             result = collect_episode(
                 seed=seed, episode_idx=ep,
                 start_step=start_step, episode_steps=episode_steps,
+                schema_path=args.schema, offline=args.offline,
                 on_batch=streaming_writer.write_batch,
                 batch_flush_steps=BATCH_FLUSH_STEPS,
             )
