@@ -78,6 +78,7 @@ class AgentGroupSpec:
     action_dim: int
     obs_names: List[str] = field(default_factory=list)
     action_names: List[str] = field(default_factory=list)
+    buildings: List[str] = field(default_factory=list)
 
     @property
     def group_key(self) -> str:
@@ -129,3 +130,69 @@ def obs_cols_for_group(all_obs_cols: List[str], obs_dim: int) -> List[str]:
     # filter rows for that group and take the non-NaN obs columns; that is done
     # in EntityDataset.  This helper exists for tests / introspection.
     return all_obs_cols[:obs_dim]
+
+
+# ---------------------------------------------------------------------------
+# Schema utility functions
+# ---------------------------------------------------------------------------
+
+import json as _json
+from pathlib import Path as _Path
+from typing import Union as _Union
+
+
+def episode_steps_for_schema(schema_path: _Union[str, _Path]) -> int:
+    """Return the number of environment steps in one calendar day.
+
+    Reads ``seconds_per_time_step`` from the CityLearn schema JSON.
+    Falls back to 3600 (hourly) if the key is absent.
+    """
+    raw = _json.loads(_Path(schema_path).read_text())
+    sps = int(raw.get("seconds_per_time_step", 3600))
+    return 86400 // sps
+
+
+def probe_agent_groups(schema_path: _Union[str, _Path]) -> List["AgentGroupSpec"]:
+    """Instantiate the CityLearn env once to discover (obs_dim, action_dim) per building.
+
+    Groups buildings that share the same (obs_dim, action_dim) into one
+    ``AgentGroupSpec``.  Works for any dataset without requiring a
+    pre-collected parquet file.
+
+    Note: creates and immediately discards a CityLearnEnv (takes a few seconds).
+    """
+    from collections import defaultdict as _dd
+    from citylearn.citylearn import CityLearnEnv as _Env
+    from utils.entity_adapter import EntityContractAdapter as _Adapter
+
+    env = _Env(
+        schema=str(schema_path),
+        central_agent=False,
+        interface="entity",
+        topology_mode="static",
+        episode_time_steps=1,
+    )
+    payload = env.reset()
+    adapter = _Adapter(env, normalization_enabled=False, clip=False)
+    obs_list = adapter.to_agent_encoded_observations(payload)
+    building_names = [b.name for b in env.buildings]
+    action_space = env.action_space
+
+    groups: dict = _dd(list)
+    for i, (obs, space) in enumerate(zip(obs_list, action_space)):
+        key = (len(obs), int(len(space.low.flatten())))
+        groups[key].append(building_names[i])
+
+    return [
+        AgentGroupSpec(obs_dim=k[0], action_dim=k[1], buildings=sorted(v))
+        for k, v in sorted(groups.items())
+    ]
+
+
+def buildings_to_group_keys(
+    buildings: List[str],
+    groups: List["AgentGroupSpec"],
+) -> List[str]:
+    """Return group_key strings for groups that contain any of ``buildings``."""
+    requested = set(buildings)
+    return [g.group_key for g in groups if any(b in requested for b in g.buildings)]
