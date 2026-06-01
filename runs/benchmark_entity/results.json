@@ -1,0 +1,554 @@
+{
+  "eval_seeds": [
+    200,
+    201,
+    202,
+    203,
+    204
+  ],
+  "iql_root": "runs/offline_iql_entity/run-001",
+  "cql_root": "runs/offline_cql_entity/run-001",
+  "RBCSmart": {
+    "runs": [
+      {
+        "env_seed": 200,
+        "label": "RBCSmart",
+        "district": {
+          "all_time_peak_average": 4.296271040205629,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 5.865095678444334,
+          "cost_total": 7.684743077510311,
+          "daily_one_minus_load_factor_average": 1.0368292861584323,
+          "daily_peak_average": 4.296271040205629,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 7.032547421398018,
+          "monthly_one_minus_load_factor_average": 1.0368292861584323,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 119.98620043009775,
+          "zero_net_energy": -0.4843263930802693
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 201,
+        "label": "RBCSmart",
+        "district": {
+          "all_time_peak_average": 3.977177570940158,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 4.912662171140605,
+          "cost_total": 6.1780935622503215,
+          "daily_one_minus_load_factor_average": 1.024534341926992,
+          "daily_peak_average": 3.977177570940158,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 5.728047530888549,
+          "monthly_one_minus_load_factor_average": 1.024534341926992,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 187.39949268238595,
+          "zero_net_energy": -0.4103572409053014
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 202,
+        "label": "RBCSmart",
+        "district": {
+          "all_time_peak_average": 4.074553492834594,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 5.351430885952304,
+          "cost_total": 6.841264526925491,
+          "daily_one_minus_load_factor_average": 1.0252644795348078,
+          "daily_peak_average": 4.074553492834594,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 6.297024435921236,
+          "monthly_one_minus_load_factor_average": 1.0252644795348078,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 227.34846023600298,
+          "zero_net_energy": -0.3914435627838875
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 203,
+        "label": "RBCSmart",
+        "district": {
+          "all_time_peak_average": 4.074553492834594,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 5.840943880684549,
+          "cost_total": 7.625219377794686,
+          "daily_one_minus_load_factor_average": 1.029092325042783,
+          "daily_peak_average": 4.074553492834594,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 6.983747656650778,
+          "monthly_one_minus_load_factor_average": 1.029092325042783,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 241.9511952264934,
+          "zero_net_energy": -0.46519262363366753
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 204,
+        "label": "RBCSmart",
+        "district": {
+          "all_time_peak_average": 4.296271040205629,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 6.571928044078927,
+          "cost_total": 8.790934859642686,
+          "daily_one_minus_load_factor_average": 1.0295610003584454,
+          "daily_peak_average": 4.296271040205629,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 8.060701171585885,
+          "monthly_one_minus_load_factor_average": 1.0295610003584454,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 157.3271256472365,
+          "zero_net_energy": -0.8586421481942578
+        },
+        "steps": 5759
+      }
+    ],
+    "aggregate": {
+      "cost_total": {
+        "mean": 7.424051080824699,
+        "std": 0.879642037551095,
+        "n": 5
+      },
+      "carbon_emissions_total": {
+        "mean": 5.708412132060143,
+        "std": 0.5564939781860633,
+        "n": 5
+      },
+      "daily_peak_average": {
+        "mean": 4.14376532740412,
+        "std": 0.1294975069774301,
+        "n": 5
+      },
+      "ramping_average": {
+        "mean": 186.8024948444433,
+        "std": 44.76365815783458,
+        "n": 5
+      },
+      "annual_normalized_unserved_energy_total": {
+        "mean": 0.0,
+        "std": 0.0,
+        "n": 5
+      },
+      "electricity_consumption_total": {
+        "mean": 6.820413643288893,
+        "std": 0.7844988054158397,
+        "n": 5
+      },
+      "zero_net_energy": {
+        "mean": -0.5219923937194767,
+        "std": 0.17174597711526013,
+        "n": 5
+      }
+    }
+  },
+  "IQL": {
+    "runs": [
+      {
+        "env_seed": 200,
+        "label": "IQL",
+        "district": {
+          "all_time_peak_average": 2.7937212964474893,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 5.000587130298229,
+          "cost_total": 6.046888522448074,
+          "daily_one_minus_load_factor_average": 0.9629464927420149,
+          "daily_peak_average": 2.7937212964474893,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 5.614384678166113,
+          "monthly_one_minus_load_factor_average": 0.9629464927420149,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 138.36535406912205,
+          "zero_net_energy": -3.560650222746874
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 201,
+        "label": "IQL",
+        "district": {
+          "all_time_peak_average": 2.7802520293964434,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 4.133345473359854,
+          "cost_total": 4.64925939116255,
+          "daily_one_minus_load_factor_average": 0.976242683107461,
+          "daily_peak_average": 2.7802520293964434,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 4.371836860674389,
+          "monthly_one_minus_load_factor_average": 0.976242683107461,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 104.69881750844533,
+          "zero_net_energy": -3.4973669144193202
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 202,
+        "label": "IQL",
+        "district": {
+          "all_time_peak_average": 3.158473270626784,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 4.478867378841502,
+          "cost_total": 5.223041878729433,
+          "daily_one_minus_load_factor_average": 0.9880767236931193,
+          "daily_peak_average": 3.158473270626784,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 4.873750733982014,
+          "monthly_one_minus_load_factor_average": 0.9880767236931193,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 131.8056053178792,
+          "zero_net_energy": -3.55692207359395
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 203,
+        "label": "IQL",
+        "district": {
+          "all_time_peak_average": 3.165775368638806,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 4.910853416758589,
+          "cost_total": 5.937204268288745,
+          "daily_one_minus_load_factor_average": 0.9874209694781997,
+          "daily_peak_average": 3.165775368638806,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 5.50714731217503,
+          "monthly_one_minus_load_factor_average": 0.9874209694781997,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 117.48718217909177,
+          "zero_net_energy": -3.4919394061138114
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 204,
+        "label": "IQL",
+        "district": {
+          "all_time_peak_average": 2.777766896183092,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 5.820724332814932,
+          "cost_total": 7.2828817379869495,
+          "daily_one_minus_load_factor_average": 0.9460992952065618,
+          "daily_peak_average": 2.777766896183092,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 6.782138527015442,
+          "monthly_one_minus_load_factor_average": 0.9460992952065618,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 137.83174662122786,
+          "zero_net_energy": -3.8356493826927998
+        },
+        "steps": 5759
+      }
+    ],
+    "aggregate": {
+      "cost_total": {
+        "mean": 5.82785515972315,
+        "std": 0.8867832063723439,
+        "n": 5
+      },
+      "carbon_emissions_total": {
+        "mean": 4.868875546414621,
+        "std": 0.5689001765232952,
+        "n": 5
+      },
+      "daily_peak_average": {
+        "mean": 2.935197772258523,
+        "std": 0.1853786575121168,
+        "n": 5
+      },
+      "ramping_average": {
+        "mean": 126.03774113915324,
+        "std": 13.059851326054538,
+        "n": 5
+      },
+      "annual_normalized_unserved_energy_total": {
+        "mean": 0.0,
+        "std": 0.0,
+        "n": 5
+      },
+      "electricity_consumption_total": {
+        "mean": 5.429851622402597,
+        "std": 0.8120776291526772,
+        "n": 5
+      },
+      "zero_net_energy": {
+        "mean": -3.5885055999133515,
+        "std": 0.12687378004686423,
+        "n": 5
+      }
+    }
+  },
+  "CQL": {
+    "runs": [
+      {
+        "env_seed": 200,
+        "label": "CQL",
+        "district": {
+          "all_time_peak_average": 3.2418840066700665,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 5.149882045227155,
+          "cost_total": 6.296443082055305,
+          "daily_one_minus_load_factor_average": 0.964718138994378,
+          "daily_peak_average": 3.2418840066700665,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 5.844874652569146,
+          "monthly_one_minus_load_factor_average": 0.964718138994378,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 82.4332567576862,
+          "zero_net_energy": -3.0840170608605804
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 201,
+        "label": "CQL",
+        "district": {
+          "all_time_peak_average": 3.243725223898071,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 4.165528856895926,
+          "cost_total": 4.714065872854986,
+          "daily_one_minus_load_factor_average": 0.9819927090384295,
+          "daily_peak_average": 3.243725223898071,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 4.442273388463439,
+          "monthly_one_minus_load_factor_average": 0.9819927090384295,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 84.65448949786402,
+          "zero_net_energy": -3.2972952020485953
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 202,
+        "label": "CQL",
+        "district": {
+          "all_time_peak_average": 3.194015764162044,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 4.649051374357619,
+          "cost_total": 5.463628110492028,
+          "daily_one_minus_load_factor_average": 0.9669585242137956,
+          "daily_peak_average": 3.194015764162044,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 5.097253196754323,
+          "monthly_one_minus_load_factor_average": 0.9669585242137956,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 88.53236656647276,
+          "zero_net_energy": -3.1257982505697233
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 203,
+        "label": "CQL",
+        "district": {
+          "all_time_peak_average": 3.2481485866899518,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 5.258672228587451,
+          "cost_total": 6.4292017202167004,
+          "daily_one_minus_load_factor_average": 0.9620989614537488,
+          "daily_peak_average": 3.2481485866899518,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 5.968356931290734,
+          "monthly_one_minus_load_factor_average": 0.9620989614537488,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 85.1579791581587,
+          "zero_net_energy": -2.9106584645637024
+        },
+        "steps": 5759
+      },
+      {
+        "env_seed": 204,
+        "label": "CQL",
+        "district": {
+          "all_time_peak_average": 3.1960302459504604,
+          "annual_normalized_unserved_energy_total": 0.0,
+          "carbon_emissions_total": 5.904509890884101,
+          "cost_total": 7.427535426561035,
+          "daily_one_minus_load_factor_average": 0.9507509377538786,
+          "daily_peak_average": 3.1960302459504604,
+          "discomfort_cold_delta_average": 0.0,
+          "discomfort_cold_delta_maximum": 0.0,
+          "discomfort_cold_delta_minimum": 0.0,
+          "discomfort_cold_proportion": NaN,
+          "discomfort_hot_delta_average": 0.0,
+          "discomfort_hot_delta_maximum": 0.0,
+          "discomfort_hot_delta_minimum": 0.0,
+          "discomfort_hot_proportion": NaN,
+          "discomfort_proportion": NaN,
+          "electricity_consumption_total": 6.910809551089865,
+          "monthly_one_minus_load_factor_average": 0.9507509377538786,
+          "one_minus_thermal_resilience_proportion": NaN,
+          "power_outage_normalized_unserved_energy_total": 0.0,
+          "ramping_average": 85.66682902931512,
+          "zero_net_energy": -3.44600978783361
+        },
+        "steps": 5759
+      }
+    ],
+    "aggregate": {
+      "cost_total": {
+        "mean": 6.066174842436011,
+        "std": 0.9197147216366199,
+        "n": 5
+      },
+      "carbon_emissions_total": {
+        "mean": 5.02552887919045,
+        "std": 0.5871562824633889,
+        "n": 5
+      },
+      "daily_peak_average": {
+        "mean": 3.2247607654741186,
+        "std": 0.0243743476276637,
+        "n": 5
+      },
+      "ramping_average": {
+        "mean": 85.28898420189935,
+        "std": 1.9614902988797691,
+        "n": 5
+      },
+      "annual_normalized_unserved_energy_total": {
+        "mean": 0.0,
+        "std": 0.0,
+        "n": 5
+      },
+      "electricity_consumption_total": {
+        "mean": 5.652713544033501,
+        "std": 0.8358305773468704,
+        "n": 5
+      },
+      "zero_net_energy": {
+        "mean": -3.1727557531752426,
+        "std": 0.18382186651480795,
+        "n": 5
+      }
+    }
+  }
+}

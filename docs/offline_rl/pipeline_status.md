@@ -358,3 +358,189 @@ all 50 rollouts; 0 non-finite reward values in `iql_with_reward.parquet`.
   further B5 gains are achievable without iterative data.
 - **Multi-building IQL**: extend to all 17 buildings to make district-level
   improvements visible.
+
+---
+
+## 7. Entity-interface pipeline (all-17-buildings offline RL)
+
+The old pipeline controlled only Building 5 (single-agent). This section
+documents the new entity-interface pipeline that trains **separate policies
+for all 17 buildings** simultaneously, enabling genuine district-level
+improvements.
+
+### 7.1 Motivation
+
+Controlling 1/17 buildings is structurally insufficient to move district-level
+KPIs beyond noise (Section 4 finding). The entity interface (CityLearn
+`simulator.interface: entity`) exposes heterogeneous per-agent observation
+and action vectors. Four distinct agent groups exist:
+
+| Group key | obs_dim | action_dim | # buildings |
+|-----------|---------|------------|-------------|
+| `obs627_act1` | 627 | 1 | 10 |
+| `obs706_act2` | 706 | 2 | 5 |
+| `obs749_act3` | 749 | 3 | 1 (Building_1) |
+| `obs785_act3` | 785 | 3 | 1 (Building_15) |
+
+A separate policy is trained per group.
+
+### 7.2 Data collection
+
+`scripts/collect_rbcsmart_dataset.py` rolls out `RBCSmartPolicy` (the
+solar/price/peak-aware heuristic) in entity interface mode and captures:
+
+- Live reward: `CostServiceCommunityFeasiblePrecisionRewardV46` per step
+- All 17 agents per timestep
+- **1 episode per seed** × 5760 steps/episode (1 day at 15s resolution)
+- Output: `datasets/offline_rl/rbcsmart_entity/seed_22..31.parquet`
+
+| Quantity | Value |
+|---|---|
+| Seeds | 10 (`22..31`) |
+| Steps per seed | 5 760 |
+| Rows per seed | 97 903 (17 agents × 5 759 steps) |
+| Total rows | 783 224 |
+| Disk footprint | ~840 MB (89 MB/seed compressed, snappy) |
+| Parquet format | Wide-sparse; 29 row groups/file (200-step batches) |
+
+**Implementation notes:**
+- Row accumulation was replaced with a streaming `_StreamingParquetWriter`
+  that flushes 200-step batches to avoid the ~5–10 GB Python dict OOM that
+  killed the original process after each episode.
+- Data loading (`load_entity_dataset`) uses column pruning: reads the parquet
+  schema + first row group to discover per-group columns, then issues
+  `pq.read_table(columns=needed)` per seed. 50× speedup vs loading all 2150
+  sparse columns (12 s vs >10 min for 10 seeds, obs627 group).
+
+NaN values (EV charger features absent when EV unplugged) are filled with 0
+at load time in `EntityOfflineDataset._to_array`.
+
+### 7.3 IQL training (all groups)
+
+`algorithms/offline_rl/iql_entity_trainer.py` provides:
+- `train_entity_single_seed` — one group, one seed
+- `train_entity_multi_seed` — one group, N seeds
+- `train_all_groups` — all four groups, N seeds
+
+CLI: `scripts/train_iql_entity.py`
+
+Artefacts per seed: `policy.pt`, `q1.pt`, `q2.pt`, `value.pt`,
+`obs_standardiser.npz`, `metrics.jsonl`, `architecture.json`,
+`seed_summary.json`.
+
+**Completed run** (`runs/offline_iql_entity/run-001`):
+- Train seeds: 22–30 (9 seeds), val seed: 31
+- 50 000 gradient steps, hidden [256, 256], batch 256, lr 3e-4
+- Wall clock: ~4.2 hours (CPU, ~7.2 ms/step, 10 cores)
+
+| Group | Best val policy MSE | ± std |
+|-------|---------------------|-------|
+| `obs627_act1` | 2.7 × 10⁻⁵ | 3 × 10⁻⁶ |
+| `obs706_act2` | 5.1 × 10⁻⁵ | 1 × 10⁻⁶ |
+| `obs749_act3` | 4.1 × 10⁻⁵ | 1.4 × 10⁻⁵ |
+| `obs785_act3` | **6 × 10⁻⁶** | 1 × 10⁻⁶ |
+
+Training stable: `adv_clip_frac = 0` across all runs; val MSE converges
+smoothly by step ~30 000–48 000 (best steps vary per seed/group).
+
+**Preliminary benchmark** (eval seed 200 only, RBCSmart vs IQL):
+
+| KPI | RBCSmart | IQL | Δ |
+|-----|----------|-----|---|
+| `cost_total` | 7.685 | 6.047 | ▼21.3% |
+| `carbon_emissions_total` | 5.865 | 5.001 | ▼14.7% |
+| `daily_peak_average` | 4.296 | 2.794 | ▼35.0% |
+| `ramping_average` | 119.99 | 138.37 | ▲15.3% (worse) |
+| `annual_norm_unserved` | 0.000 | 0.000 | — |
+
+IQL shows strong cost (−21%) and peak (−35%) improvements at the district
+level — unlike the single-building pipeline, all 17 buildings are now
+controlled by learned policies, so gains are not diluted. The ramping
+regression (IQL is 15% worse) is expected: the training reward does not
+include an explicit ramping penalty.
+
+### 7.4 CQL training (all groups)
+
+`algorithms/offline_rl/cql_entity_trainer.py` extends the IQL trainer with a
+conservative Q penalty:
+
+    L_CQL = cql_alpha * mean(logsumexp_rand(Q(s, a_rand)) - Q(s, a_data))
+
+Added per Q-update (both Q1 and Q2). Default `cql_alpha=0.2`,
+`cql_n_random_actions=10` (reduced to 5 for the current run to limit
+per-step overhead).
+
+CLI: `scripts/train_cql_entity.py`
+
+Same artefact layout as IQL trainer.
+
+**Completed run** (`runs/offline_cql_entity/run-001`):
+- Train seeds: 22–30 (9 seeds), val seed: 31
+- 50 000 gradient steps, `cql_alpha=0.2`, `cql_n_random_actions=5`
+- Wall clock: ~16 ms/step (2× IQL); total ~7.5 h (CPU)
+
+| Group | Best val policy MSE | ± std |
+|-------|---------------------|-------|
+| `obs627_act1` | 2.6 × 10⁻⁵ | 3 × 10⁻⁶ |
+| `obs706_act2` | 5.0 × 10⁻⁵ | 2 × 10⁻⁶ |
+| `obs749_act3` | 7.9 × 10⁻⁵ | 1.9 × 10⁻⁵ |
+| `obs785_act3` | **5 × 10⁻⁶** | 1 × 10⁻⁶ |
+
+### 7.5 Inference agents
+
+| Class | Registry key | Description |
+|-------|-------------|-------------|
+| `IQLEntityAgent` | `"IQLEntityAgent"` | IQL policies for all 17 buildings |
+| `CQLEntityAgent` | `"CQLEntityAgent"` | CQL policies for all 17 buildings |
+
+Both agents:
+- Load the best-seed policy per group from a trained model dir
+- Dispatch at predict time by obs_dim (unique across groups)
+- Apply per-group `ObservationStandardiser`
+- Fill NaN with 0 (consistent with dataset loader)
+- `update()` is a no-op
+
+### 7.6 Three-way benchmark (RBCSmart vs IQL vs CQL)
+
+**Completed run** (`runs/benchmark_entity/results.json`):
+- Eval seeds: 200–204 (5 seeds × 1 episode = 5 × 5 759 steps each agent)
+- Script: `scripts/benchmark_entity_agents.py`
+
+| KPI | RBCSmart | IQL | Δ(IQL) | CQL | Δ(CQL) |
+|-----|----------|-----|--------|-----|--------|
+| `cost_total` | 7.42 ± 0.88 | 5.83 ± 0.89 | **▼21.5%** | 6.07 ± 0.92 | ▼18.3% |
+| `carbon_emissions_total` | 5.71 ± 0.56 | 4.87 ± 0.57 | **▼14.7%** | 5.03 ± 0.59 | ▼12.0% |
+| `daily_peak_average` | 4.14 ± 0.13 | 2.94 ± 0.19 | **▼29.2%** | 3.22 ± 0.02 | ▼22.2% |
+| `ramping_average` | 186.80 ± 44.76 | 126.04 ± 13.06 | ▼32.5% | **85.29 ± 1.96** | **▼54.3%** |
+| `electricity_consumption_total` | 6.82 ± 0.78 | 5.43 ± 0.81 | **▼20.4%** | 5.65 ± 0.84 | ▼17.1% |
+| `annual_norm_unserved_energy` | 0.000 | 0.000 | — | 0.000 | — |
+| `zero_net_energy` | −0.52 ± 0.17 | −3.59 ± 0.13 | ▼587% | −3.17 ± 0.18 | ▼508% |
+
+**Key findings:**
+- Both learned agents dominate RBCSmart on every KPI.
+- IQL wins on cost (−21.5%), carbon (−14.7%), peak (−29.2%), and consumption (−20.4%).
+- CQL wins on ramping (−54.3% vs IQL's −32.5%) — the conservative Q penalty yields
+  smoother charging policies that reduce power fluctuations.
+- No unserved energy for any agent across all seeds.
+- The earlier smoke result showing IQL worse on ramping (seed 200 only) was a single-seed
+  artefact; averaged over 5 seeds, IQL also improves ramping significantly.
+
+### 7.7 Status
+
+| Step | Status | Commit |
+|------|--------|--------|
+| Entity obs/action dims probed | Done | — |
+| Data collection (RBCSmart, V46 reward) | Done | `5714b95` |
+| EntityOfflineDataset + schema | Done | `072b75d` |
+| IQL entity trainer | Done | `7151153` |
+| IQL entity CLI (`train_iql_entity.py`) | Done | `7151153` |
+| NaN fix in entity dataset loader | Done | `7151153` |
+| IQLEntityAgent + registry | Done | `d61fe16` |
+| CQL entity trainer | Done | `bc9249a` |
+| CQLEntityAgent + registry | Done | `bc9249a` |
+| Full 10-seed data collection (seeds 22–31) | Done | `0463aaa` |
+| Full 9-seed IQL training per group | Done | — |
+| Full 9-seed CQL training per group | Done | — |
+| 3-way benchmark (RBCSmart vs IQL vs CQL) | Done | — |
+| Pre-existing test failures fixed | Done | `fffec3e` |
+

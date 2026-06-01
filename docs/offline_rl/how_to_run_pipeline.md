@@ -324,6 +324,133 @@ docs/offline_rl/
 
 ---
 
+## Step 7: Entity Pipeline (all 17 buildings, any dataset)
+
+The entity pipeline trains separate IQL/CQL policies for each agent group
+(defined by equipment heterogeneity) and benchmarks them against RBCSmart.
+
+### Quick start — one command
+
+```bash
+# 15-second parquet dataset (default):
+.venv/bin/python -m scripts.run_entity_pipeline --output runs/pipeline_001
+
+# Hourly dataset (faster, ~240× less data per episode):
+.venv/bin/python -m scripts.run_entity_pipeline \
+    --schema datasets/citylearn_three_phase_electrical_service_demo/schema.json \
+    --no-offline \
+    --output runs/pipeline_hourly_001
+```
+
+### Step-by-step (manual)
+
+**7.1 Collect offline dataset**
+
+```bash
+# 15s parquet (offline=True, default)
+.venv/bin/python -m scripts.collect_rbcsmart_dataset \
+    --seeds 22 23 24 25 26 27 28 29 30 31 \
+    --episodes 1 \
+    --output-dir datasets/offline_rl/rbcsmart_entity
+
+# Hourly CSV (offline must be disabled)
+.venv/bin/python -m scripts.collect_rbcsmart_dataset \
+    --schema datasets/citylearn_three_phase_electrical_service_demo/schema.json \
+    --no-offline \
+    --seeds 22 23 24 25 26 27 28 29 30 31 \
+    --episodes 1 \
+    --output-dir datasets/offline_rl/rbcsmart_hourly
+```
+
+**7.2 Train IQL**
+
+```bash
+.venv/bin/python -m scripts.train_iql_entity \
+    --data-dir datasets/offline_rl/rbcsmart_entity \
+    --output runs/offline_iql_entity/run-002 \
+    --seeds 22,23,24,25,26,27,28,29,30 \
+    --val-seeds 31 \
+    --gradient-steps 50000 \
+    --device cpu
+```
+
+**7.3 Train CQL**
+
+```bash
+.venv/bin/python -m scripts.train_cql_entity \
+    --data-dir datasets/offline_rl/rbcsmart_entity \
+    --output runs/offline_cql_entity/run-002 \
+    --seeds 22,23,24,25,26,27,28,29,30 \
+    --val-seeds 31 \
+    --gradient-steps 50000 \
+    --device cpu
+```
+
+**7.4 Benchmark (3-way)**
+
+```bash
+# 15s parquet:
+.venv/bin/python -m scripts.benchmark_entity_agents \
+    --iql-root runs/offline_iql_entity/run-002 \
+    --cql-root runs/offline_cql_entity/run-002 \
+    --eval-seeds 200,201,202,203,204,205,206,207,208,209 \
+    --output runs/benchmark_entity/results_run002.json
+
+# Hourly dataset:
+.venv/bin/python -m scripts.benchmark_entity_agents \
+    --schema datasets/citylearn_three_phase_electrical_service_demo/schema.json \
+    --no-offline \
+    --iql-root runs/offline_iql_hourly/run-001 \
+    --eval-seeds 200,201,202,203,204,205,206,207,208,209 \
+    --output runs/benchmark_entity/results_hourly.json
+```
+
+### Targeting specific buildings
+
+Use `--buildings` in `run_entity_pipeline.py` to train and evaluate only the groups
+containing those buildings. Groups are discovered automatically from the schema.
+
+```bash
+# Train + eval only Building_5 group (obs706_act2):
+.venv/bin/python -m scripts.run_entity_pipeline \
+    --output runs/b5_only \
+    --buildings Building_5 \
+    --algorithm iql
+```
+
+### Dataset comparison
+
+| Dataset | `seconds_per_time_step` | Steps/day | Train time (50k steps, CPU) |
+|---------|------------------------|-----------|----------------------------|
+| `citylearn_three_phase_electrical_service_demo_15s_parquet` | 15 | 5760 | ~4–5 h |
+| `citylearn_three_phase_electrical_service_demo` | 3600 | 24 | ~20–30 min |
+
+### Agent groups (15s parquet — probed from env)
+
+| Group key | obs_dim | action_dim | Buildings | Equipment |
+|-----------|---------|------------|-----------|-----------|
+| `obs627_act1` | 627 | 1 | B2,B3,B6,B8,B9,B11,B13,B14,B16,B17 | Storage only |
+| `obs706_act2` | 706 | 2 | B4,B5,B7,B10,B12 | Storage + 1 EV charger |
+| `obs749_act3` | 749 | 3 | B1 | Storage + EV + deferrable |
+| `obs785_act3` | 785 | 3 | B15 | Storage + 2 EV chargers |
+
+> For the hourly dataset, obs_dims will differ (no `minutes`/`seconds` features).
+> Run `run_entity_pipeline.py --steps collect` once to collect data; the loader
+> auto-discovers the actual dims from the parquet.
+
+### Outputs
+
+```
+runs/pipeline_<name>/
+├── data/                    # Collected parquet (seed_22..31.parquet, manifest.json)
+├── models-iql/              # IQL artifacts (per group, per seed)
+├── models-cql/              # CQL artifacts
+└── benchmark/
+    └── results.json         # KPI comparison table
+```
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

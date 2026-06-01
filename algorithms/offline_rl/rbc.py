@@ -74,6 +74,7 @@ class OfflineRBC(RuleBasedPolicy):
         obs_map: Dict[str, int],
         charger_info: Optional[ChargerInfo],
         bounds,
+        action_name: str = "",
     ) -> float:
         # Build a *patched* obs_map that includes the v1 bare names mapped to
         # whichever namespaced index actually exists for this agent's chargers.
@@ -109,4 +110,5 @@ class OfflineRBC(RuleBasedPolicy):
             patched,
             charger_info,
             bounds,
+            action_name,
         )
