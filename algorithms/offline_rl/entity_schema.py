@@ -78,6 +78,7 @@ class AgentGroupSpec:
     action_dim: int
     obs_names: List[str] = field(default_factory=list)
     action_names: List[str] = field(default_factory=list)
+    # Note: List[str] is mutable despite frozen=True; callers should not mutate this field.
     buildings: List[str] = field(default_factory=list)
 
     @property
@@ -170,19 +171,20 @@ def probe_agent_groups(schema_path: _Union[str, _Path]) -> List["AgentGroupSpec"
         central_agent=False,
         interface="entity",
         topology_mode="static",
-        episode_time_steps=1,
+        episode_time_steps=1,  # minimal episode to make reset() cheap; we only need obs/action dims
     )
-    payload = env.reset()
-    adapter = _Adapter(env, normalization_enabled=False, clip=False)
-    obs_list = adapter.to_agent_encoded_observations(payload)
-    building_names = [b.name for b in env.buildings]
-    action_space = env.action_space
-
-    groups: dict = _dd(list)
-    for i, (obs, space) in enumerate(zip(obs_list, action_space)):
-        key = (len(obs), int(len(space.low.flatten())))
-        groups[key].append(building_names[i])
-
+    try:
+        payload = env.reset()
+        adapter = _Adapter(env, normalization_enabled=False, clip=False)
+        obs_list = adapter.to_agent_encoded_observations(payload)
+        building_names = [b.name for b in env.buildings]
+        action_space = env.action_space
+        groups: dict = _dd(list)
+        for i, (obs, space) in enumerate(zip(obs_list, action_space)):
+            key = (len(obs), len(space.low.flatten()))
+            groups[key].append(building_names[i])
+    finally:
+        env.close()
     return [
         AgentGroupSpec(obs_dim=k[0], action_dim=k[1], buildings=sorted(v))
         for k, v in sorted(groups.items())

@@ -12,10 +12,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 HOURLY_SCHEMA = REPO_ROOT / "datasets" / "citylearn_three_phase_electrical_service_demo" / "schema.json"
 PARQUET_SCHEMA = REPO_ROOT / "datasets" / "citylearn_three_phase_electrical_service_demo_15s_parquet" / "schema.json"
 
+@pytest.mark.skipif(not HOURLY_SCHEMA.exists(), reason="hourly dataset not present")
 def test_episode_steps_for_schema_hourly():
     steps = episode_steps_for_schema(HOURLY_SCHEMA)
     assert steps == 24  # 86400 // 3600
 
+@pytest.mark.skipif(not PARQUET_SCHEMA.exists(), reason="15s parquet dataset not present")
 def test_episode_steps_for_schema_15s():
     steps = episode_steps_for_schema(PARQUET_SCHEMA)
     assert steps == 5760  # 86400 // 15
