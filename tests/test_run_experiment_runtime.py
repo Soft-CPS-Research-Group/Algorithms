@@ -427,6 +427,7 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert captured_env_kwargs["topology_mode"] == "static"
     assert captured_env_kwargs["render_mode"] == "end"
     assert captured_env_kwargs["export_kpis_on_episode_end"] is True
+    assert captured_env_kwargs["export_only_final_episode"] is True
     assert captured_env_kwargs["render_session_name"] == "job-session"
     assert captured_env_kwargs["simulation_start_time_step"] == 12
     assert captured_env_kwargs["simulation_end_time_step"] == 48

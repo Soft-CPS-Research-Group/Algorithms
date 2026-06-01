@@ -231,6 +231,7 @@ class MATD3(MADDPG):
                         _action_saturation,
                         _storage_action_l2,
                         _ev_v2g_action_l2,
+                        _ev_v2g_action_mass,
                         actor_regularization,
                     ) = self._actor_action_regularization_terms(agent_idx, predicted_action)
                     behavior_cloning_loss = self._actor_behavior_cloning_loss(

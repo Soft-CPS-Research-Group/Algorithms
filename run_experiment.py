@@ -640,6 +640,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "offline": True,
             "render_mode": export_cfg.get("mode", "none"),
             "export_kpis_on_episode_end": export_cfg.get("export_kpis_on_episode_end", False),
+            "export_only_final_episode": export_cfg.get("final_episode_only", True),
             "render_directory": str(path_info["simulation_data_dir"]),
         }
         reward_function_kwargs = simulator_cfg.get("reward_function_kwargs")

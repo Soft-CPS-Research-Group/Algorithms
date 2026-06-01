@@ -49,7 +49,9 @@ def test_w6a_local_matrix_generates_guided_window_configs(tmp_path):
     assert simulator["episode_time_steps"] == 2048
     assert simulator["episodes"] == 8
     assert simulator["deterministic_finish"] is True
-    assert simulator["export"]["include_business_as_usual"] is False
+    assert simulator["export"]["include_business_as_usual"] is True
+    assert simulator["export"]["export_business_as_usual_timeseries"] is True
+    assert simulator["export"]["kpis_final_episode_only"] is True
     assert simulator["export"]["timeseries_final_episode_only"] is True
 
     algorithm = config["algorithm"]
@@ -73,6 +75,161 @@ def test_w6a_local_matrix_generates_guided_window_configs(tmp_path):
     assert exploration["actor_storage_action_l2_penalty"] == 0.004
     assert exploration["actor_ev_v2g_action_l2_penalty"] == 0.05
     assert exploration["actor_behavior_cloning_extra_updates"] == 1
+    assert config["tracking"]["tags"]["recipe"] == "w6_ev_only_bc_primary"
+    assert config["tracking"]["tags"]["window"] == "win0_0000_2048"
+    assert config["tracking"]["tags"]["seed"] == 123
+
+
+def test_w6a_local_can_generate_clone_improvement_variants(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_clone_cost_nudge", "w6_clone_tight_v2g_storage"],
+        include_baselines=False,
+    )
+
+    assert len(rows) == 8
+
+    cost_nudge = next(row for row in rows if row["recipe"] == "w6_clone_cost_nudge")
+    cost_config = _load(Path(cost_nudge["config_path"]))
+    validate_config(cost_config)
+    cost_exploration = cost_config["algorithm"]["exploration"]["params"]
+    assert cost_exploration["actor_behavior_cloning_weight"] == 0.35
+    assert cost_exploration["actor_behavior_cloning_min_weight"] == 0.2
+    assert cost_exploration["actor_policy_loss_weight"] == 0.05
+    assert cost_exploration["actor_policy_loss_warmup_weight"] == 0.01
+
+    tight = next(row for row in rows if row["recipe"] == "w6_clone_tight_v2g_storage")
+    tight_config = _load(Path(tight["config_path"]))
+    validate_config(tight_config)
+    tight_exploration = tight_config["algorithm"]["exploration"]["params"]
+    assert tight_exploration["actor_policy_loss_weight"] == 0.0
+    assert tight_exploration["actor_storage_action_l2_penalty"] == 0.01
+    assert tight_exploration["actor_ev_v2g_action_l2_penalty"] == 0.15
+
+
+def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_clone_cost_nudge_v2g_tight", "w6_clone_cost_v47_precision"],
+        include_baselines=False,
+    )
+
+    assert len(rows) == 8
+
+    tight = next(row for row in rows if row["recipe"] == "w6_clone_cost_nudge_v2g_tight")
+    tight_config = _load(Path(tight["config_path"]))
+    validate_config(tight_config)
+    assert tight_config["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV46"
+    assert tight_config["simulator"]["reward_function_kwargs"]["ev_v2g_service_penalty"] == 1200.0
+    assert tight_config["simulator"]["reward_function_kwargs"]["battery_throughput_penalty"] == 0.03
+    assert tight_config["algorithm"]["exploration"]["params"]["actor_ev_v2g_action_l2_penalty"] == 0.25
+
+    softwall_rows = generate_w6_configs(
+        output_dir=tmp_path / "softwall",
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_clone_cost_ev_v2g_softwall"],
+        include_baselines=False,
+    )
+    softwall_config = _load(Path(softwall_rows[0]["config_path"]))
+    validate_config(softwall_config)
+    assert softwall_config["algorithm"]["exploration"]["params"]["actor_ev_v2g_action_l2_penalty"] == 8.0
+
+    highclip_rows = generate_w6_configs(
+        output_dir=tmp_path / "highclip",
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_clone_cost_v2g_highclip"],
+        include_baselines=False,
+    )
+    highclip_config = _load(Path(highclip_rows[0]["config_path"]))
+    validate_config(highclip_config)
+    assert highclip_config["algorithm"]["exploration"]["params"]["reward_normalization_clip"] == 25.0
+
+    masswall_rows = generate_w6_configs(
+        output_dir=tmp_path / "masswall",
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_clone_cost_ev_v2g_masswall_gentle"],
+        include_baselines=False,
+    )
+    masswall_config = _load(Path(masswall_rows[0]["config_path"]))
+    validate_config(masswall_config)
+    masswall_exploration = masswall_config["algorithm"]["exploration"]["params"]
+    assert masswall_exploration["actor_ev_v2g_action_l2_penalty"] == 4.0
+    assert masswall_exploration["actor_ev_v2g_action_mass_penalty"] == 8.0
+
+    energywall_rows = generate_w6_configs(
+        output_dir=tmp_path / "energywall",
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_clone_cost_ev_v2g_energywall"],
+        include_baselines=False,
+    )
+    energywall_config = _load(Path(energywall_rows[0]["config_path"]))
+    validate_config(energywall_config)
+    assert energywall_config["simulator"]["reward_function_kwargs"]["ev_v2g_discharge_penalty"] == 1.0
+
+    tight_energywall_rows = generate_w6_configs(
+        output_dir=tmp_path / "tight_energywall",
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_clone_cost_ev_v2g_energywall_battery_tight"],
+        include_baselines=False,
+    )
+    tight_energywall_config = _load(Path(tight_energywall_rows[0]["config_path"]))
+    validate_config(tight_energywall_config)
+    tight_energywall_exploration = tight_energywall_config["algorithm"]["exploration"]["params"]
+    assert tight_energywall_exploration["actor_storage_action_l2_penalty"] == 0.02
+    assert tight_energywall_exploration["actor_ev_v2g_action_mass_penalty"] == 6.0
+    assert tight_energywall_config["simulator"]["reward_function_kwargs"]["battery_throughput_penalty"] == 0.05
+
+    flex_rows = generate_w6_configs(
+        output_dir=tmp_path / "flex",
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_flex_v2g_safe_value"],
+        include_baselines=False,
+    )
+    flex_config = _load(Path(flex_rows[0]["config_path"]))
+    validate_config(flex_config)
+    assert flex_config["simulator"]["reward_function"] == "CostServiceCommunityPeakDeadlineRewardV52"
+    assert flex_config["simulator"]["reward_function_kwargs"]["community_peak_import_penalty"] == 0.002
+    assert flex_config["algorithm"]["exploration"]["params"]["actor_ev_v2g_action_mass_penalty"] == 0.8
+
+    flex_followup_rows = generate_w6_configs(
+        output_dir=tmp_path / "flex_followups",
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_flex_margin_teacher_storage_tight", "w6_flex_v2g_open_value"],
+        include_baselines=False,
+    )
+    storage_tight = next(
+        row for row in flex_followup_rows if row["recipe"] == "w6_flex_margin_teacher_storage_tight"
+    )
+    storage_tight_config = _load(Path(storage_tight["config_path"]))
+    validate_config(storage_tight_config)
+    assert storage_tight_config["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV46"
+    assert storage_tight_config["simulator"]["reward_function_kwargs"]["battery_throughput_penalty"] == 0.014
+    assert storage_tight_config["algorithm"]["exploration"]["params"]["actor_storage_action_l2_penalty"] == 0.014
+
+    v2g_open = next(row for row in flex_followup_rows if row["recipe"] == "w6_flex_v2g_open_value")
+    v2g_open_config = _load(Path(v2g_open["config_path"]))
+    validate_config(v2g_open_config)
+    assert v2g_open_config["simulator"]["reward_function"] == "CostServiceCommunityPeakDeadlineRewardV52"
+    assert v2g_open_config["simulator"]["reward_function_kwargs"]["ev_v2g_service_penalty"] == 2000.0
+    assert v2g_open_config["algorithm"]["exploration"]["params"]["actor_ev_v2g_action_mass_penalty"] == 0.45
+
+    precision = next(row for row in rows if row["recipe"] == "w6_clone_cost_v47_precision")
+    precision_config = _load(Path(precision["config_path"]))
+    validate_config(precision_config)
+    assert precision_config["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV47"
+    assert precision_config["tracking"]["tags"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV47"
+    assert precision["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV47"
 
 
 def test_w6c_full_year_matrix_generates_maddpg_and_matd3_remote_configs(tmp_path):
@@ -83,7 +240,7 @@ def test_w6c_full_year_matrix_generates_maddpg_and_matd3_remote_configs(tmp_path
         row
         for row in rows
         if row["algorithm"] == "MATD3"
-        and row["recipe"] == "w6_balanced_bc_storage_light"
+        and row["recipe"] == "w6_clone_cost_ev_v2g_masswall_gentle"
         and row["seed"] == 456
     )
     config = _load(Path(matd3["config_path"]))
@@ -102,3 +259,21 @@ def test_w6c_full_year_matrix_generates_maddpg_and_matd3_remote_configs(tmp_path
     assert config["execution"]["deucalion"]["mem_gb"] == 96
     assert config["execution"]["deucalion"]["cpus_per_task"] == 4
     assert config["execution"]["deucalion"]["gpus"] == 1
+
+
+def test_w6a_local_allows_explicit_matd3_comparator(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_flex_v2g_safe_value"],
+        algorithms=["MATD3"],
+        include_baselines=False,
+    )
+
+    assert len(rows) == 4
+    config = _load(Path(rows[0]["config_path"]))
+    validate_config(config)
+    assert config["algorithm"]["name"] == "MATD3"
+    assert config["algorithm"]["hyperparameters"]["require_cuda"] is False
+    assert config["algorithm"]["exploration"]["params"]["target_policy_smoothing"] is True

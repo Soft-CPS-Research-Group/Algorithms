@@ -845,6 +845,42 @@ def test_cost_hard_constraint_reward_penalizes_v2g_when_ev_is_below_service_targ
     assert components["ev_service_penalty"] == pytest.approx(39.08)
 
 
+def test_cost_hard_constraint_reward_can_penalize_any_ev_v2g_discharge():
+    reward = CostHardConstraintReward(
+        env_metadata={"central_agent": False},
+        ev_departure_service_tolerance=0.05,
+        ev_departure_window_hours=4.0,
+        ev_v2g_service_penalty=200.0,
+        ev_v2g_discharge_penalty=1.5,
+    )
+
+    rewards = reward.calculate(
+        [
+            {
+                "net_electricity_consumption": 0.0,
+                "electricity_pricing": 0.0,
+                "electric_vehicles_chargers_dict": {
+                    "charger_a": {
+                        "connected": True,
+                        "battery_soc": 0.90,
+                        "required_soc": 0.80,
+                        "hours_until_departure": 4.0,
+                        "last_charged_kwh": -2.0,
+                    }
+                },
+            }
+        ]
+    )
+
+    assert rewards[0] == pytest.approx(-3.0)
+    components = reward.get_last_components()["per_agent"][0]
+    assert components["ev_v2g_discharge_kwh_sum"] == pytest.approx(2.0)
+    assert components["ev_v2g_service_risk_sum"] == pytest.approx(0.0)
+    assert components["ev_v2g_service_abuse_penalty"] == pytest.approx(0.0)
+    assert components["ev_v2g_discharge_penalty_amount"] == pytest.approx(3.0)
+    assert components["ev_service_penalty"] == pytest.approx(3.0)
+
+
 def test_cost_hard_constraint_reward_penalizes_ev_over_service_above_target_band():
     reward = CostHardConstraintReward(
         env_metadata={"central_agent": False},

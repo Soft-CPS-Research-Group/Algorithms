@@ -179,6 +179,10 @@ class MADDPG(BaseAgent):
             0.0,
             float(exploration_cfg.get("actor_ev_v2g_action_l2_penalty", 0.0) or 0.0),
         )
+        self.actor_ev_v2g_action_mass_penalty = max(
+            0.0,
+            float(exploration_cfg.get("actor_ev_v2g_action_mass_penalty", 0.0) or 0.0),
+        )
         self.actor_action_saturation_threshold = float(
             np.clip(float(exploration_cfg.get("actor_action_saturation_threshold", 0.85) or 0.85), 0.0, 1.0)
         )
@@ -920,6 +924,7 @@ class MADDPG(BaseAgent):
         actor_action_saturation_values: List[float] = []
         actor_storage_action_l2_values: List[float] = []
         actor_ev_v2g_action_l2_values: List[float] = []
+        actor_ev_v2g_action_mass_values: List[float] = []
         actor_behavior_cloning_loss_values: List[float] = []
         actor_behavior_cloning_ev_loss_values: List[float] = []
         actor_behavior_cloning_storage_loss_values: List[float] = []
@@ -968,6 +973,7 @@ class MADDPG(BaseAgent):
                         action_saturation,
                         storage_action_l2,
                         ev_v2g_action_l2,
+                        ev_v2g_action_mass,
                         actor_regularization,
                     ) = self._actor_action_regularization_terms(
                         agent_num,
@@ -1011,6 +1017,7 @@ class MADDPG(BaseAgent):
                 actor_action_saturation_values.append(float(action_saturation.detach().item()))
                 actor_storage_action_l2_values.append(float(storage_action_l2.detach().item()))
                 actor_ev_v2g_action_l2_values.append(float(ev_v2g_action_l2.detach().item()))
+                actor_ev_v2g_action_mass_values.append(float(ev_v2g_action_mass.detach().item()))
                 actor_behavior_cloning_loss_values.append(float(behavior_cloning_loss.detach().item()))
                 actor_behavior_cloning_ev_loss_values.append(float(behavior_cloning_ev_loss.detach().item()))
                 actor_behavior_cloning_storage_loss_values.append(
@@ -1035,6 +1042,7 @@ class MADDPG(BaseAgent):
             actor_action_saturation_values = [0.0 for _ in range(self.num_agents)]
             actor_storage_action_l2_values = [0.0 for _ in range(self.num_agents)]
             actor_ev_v2g_action_l2_values = [0.0 for _ in range(self.num_agents)]
+            actor_ev_v2g_action_mass_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_ev_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_storage_loss_values = [0.0 for _ in range(self.num_agents)]
@@ -1068,6 +1076,7 @@ class MADDPG(BaseAgent):
                 "MADDPG/actor_action_saturation_excess_mean": float(np.mean(actor_action_saturation_values)),
                 "MADDPG/actor_storage_action_l2_mean": float(np.mean(actor_storage_action_l2_values)),
                 "MADDPG/actor_ev_v2g_action_l2_mean": float(np.mean(actor_ev_v2g_action_l2_values)),
+                "MADDPG/actor_ev_v2g_action_mass_mean": float(np.mean(actor_ev_v2g_action_mass_values)),
                 "MADDPG/actor_behavior_cloning_loss_mean": float(np.mean(actor_behavior_cloning_loss_values)),
                 "MADDPG/actor_behavior_cloning_ev_loss_mean": float(
                     np.mean(actor_behavior_cloning_ev_loss_values)
@@ -1143,6 +1152,7 @@ class MADDPG(BaseAgent):
                     training_metrics[f"MADDPG/actor_action_saturation_excess_agent_{agent_num}"] = actor_action_saturation_values[agent_num]
                     training_metrics[f"MADDPG/actor_storage_action_l2_agent_{agent_num}"] = actor_storage_action_l2_values[agent_num]
                     training_metrics[f"MADDPG/actor_ev_v2g_action_l2_agent_{agent_num}"] = actor_ev_v2g_action_l2_values[agent_num]
+                    training_metrics[f"MADDPG/actor_ev_v2g_action_mass_agent_{agent_num}"] = actor_ev_v2g_action_mass_values[agent_num]
                     training_metrics[f"MADDPG/actor_behavior_cloning_loss_agent_{agent_num}"] = (
                         actor_behavior_cloning_loss_values[agent_num]
                     )
@@ -1340,6 +1350,9 @@ class MADDPG(BaseAgent):
             ),
             "MADDPG/actor_ev_v2g_action_l2_penalty": float(
                 getattr(self, "actor_ev_v2g_action_l2_penalty", 0.0)
+            ),
+            "MADDPG/actor_ev_v2g_action_mass_penalty": float(
+                getattr(self, "actor_ev_v2g_action_mass_penalty", 0.0)
             ),
             "MADDPG/actor_behavior_cloning_weight": float(
                 getattr(self, "actor_behavior_cloning_weight", 0.0)
@@ -1896,7 +1909,7 @@ class MADDPG(BaseAgent):
         self,
         agent_idx: int,
         scaled_action: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         normalized_action = self._normalize_scaled_action_tensor(agent_idx, scaled_action)
         action_l2 = normalized_action.pow(2).mean()
         threshold = float(getattr(self, "actor_action_saturation_threshold", 0.85))
@@ -1912,13 +1925,26 @@ class MADDPG(BaseAgent):
             normalized_action,
             predicate=self._is_ev_action_name,
         )
+        ev_v2g_action_mass = self._negative_masked_action_mass(
+            agent_idx,
+            scaled_action,
+            predicate=self._is_ev_action_name,
+        )
         regularization = (
             float(getattr(self, "actor_action_l2_penalty", 0.0)) * action_l2
             + float(getattr(self, "actor_action_saturation_penalty", 0.0)) * saturation_excess
             + float(getattr(self, "actor_storage_action_l2_penalty", 0.0)) * storage_action_l2
             + float(getattr(self, "actor_ev_v2g_action_l2_penalty", 0.0)) * ev_v2g_action_l2
+            + float(getattr(self, "actor_ev_v2g_action_mass_penalty", 0.0)) * ev_v2g_action_mass
         )
-        return action_l2, saturation_excess, storage_action_l2, ev_v2g_action_l2, regularization
+        return (
+            action_l2,
+            saturation_excess,
+            storage_action_l2,
+            ev_v2g_action_l2,
+            ev_v2g_action_mass,
+            regularization,
+        )
 
     def _masked_action_l2(
         self,
@@ -1958,6 +1984,31 @@ class MADDPG(BaseAgent):
         effective_mask = mask * negative_mask
         denominator = torch.clamp(effective_mask.sum(), min=1.0)
         return (normalized_action.pow(2) * effective_mask).sum() / denominator
+
+    def _negative_masked_action_mass(
+        self,
+        agent_idx: int,
+        scaled_action: torch.Tensor,
+        *,
+        predicate,
+    ) -> torch.Tensor:
+        names = self._action_names_for_agent(agent_idx)
+        mask_values = [
+            1.0 if action_idx < len(names) and predicate(names[action_idx]) else 0.0
+            for action_idx in range(scaled_action.shape[1])
+        ]
+        if not any(mask_values):
+            return scaled_action.new_tensor(0.0)
+
+        mask = torch.as_tensor(mask_values, dtype=scaled_action.dtype, device=scaled_action.device).view(1, -1)
+        low = torch.as_tensor(
+            np.abs(self._action_low_for_agent(agent_idx)[: scaled_action.shape[1]]),
+            dtype=scaled_action.dtype,
+            device=scaled_action.device,
+        ).view(1, -1)
+        negative_fraction = torch.relu(-scaled_action) / torch.clamp(low, min=1.0e-6)
+        denominator = torch.clamp(mask.sum() * scaled_action.shape[0], min=1.0)
+        return (negative_fraction * mask).sum() / denominator
 
     def _actor_behavior_cloning_extra_updates_for_step(
         self,

@@ -39,6 +39,10 @@ class RuntimeConfig(BaseModel):
 
 class TrackingConfig(BaseModel):
     mlflow_enabled: bool = Field(default=True, description="If false, skips MLflow tracking")
+    tags: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional run labels preserved in resolved configs and artifacts.",
+    )
     log_level: str = Field(default="INFO", description="Loguru log level")
     log_frequency: int = Field(default=1, ge=1, description="Log metrics every N environment steps")
     mlflow_step_sample_interval: int = Field(

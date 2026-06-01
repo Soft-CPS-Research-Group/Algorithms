@@ -70,6 +70,7 @@ class CostHardConstraintReward(RewardFunction):
         ev_departure_window_penalty_mode: str = "shortfall",
         ev_departure_window_shortfall_cap_soc: Optional[float] = None,
         ev_v2g_service_penalty: float = 0.0,
+        ev_v2g_discharge_penalty: float = 0.0,
         ev_departure_deficit_penalty: float = 120.0,
         ev_departure_missed_penalty: float = 250.0,
         ev_default_charging_power_kw: float = 7.4,
@@ -112,6 +113,7 @@ class CostHardConstraintReward(RewardFunction):
             ev_departure_window_shortfall_cap_soc
         )
         self.ev_v2g_service_penalty = float(ev_v2g_service_penalty)
+        self.ev_v2g_discharge_penalty = float(ev_v2g_discharge_penalty)
         self.ev_departure_deficit_penalty = float(ev_departure_deficit_penalty)
         self.ev_departure_missed_penalty = float(ev_departure_missed_penalty)
         self.ev_default_charging_power_kw = max(float(ev_default_charging_power_kw), 1.0e-6)
@@ -597,6 +599,7 @@ class CostHardConstraintReward(RewardFunction):
                 "ev_schedule_penalty_deficit_sum": 0.0,
                 "ev_schedule_deficit_penalty": 0.0,
                 "ev_v2g_discharge_kwh_sum": 0.0,
+                "ev_v2g_discharge_penalty_amount": 0.0,
                 "ev_v2g_service_risk_sum": 0.0,
                 "ev_v2g_service_abuse_penalty": 0.0,
                 "ev_departure_window_count": 0.0,
@@ -653,6 +656,7 @@ class CostHardConstraintReward(RewardFunction):
             * self.state_penalty_scale
         )
         discharge_kwh = max(-self._safe_float(charged_energy_kwh, default=0.0), 0.0)
+        v2g_discharge_penalty = discharge_kwh * self.ev_v2g_discharge_penalty * priority_weight
         v2g_service_risk = service_shortfall + schedule_deficit
         v2g_penalty = self._ev_v2g_service_penalty(
             discharge_kwh=discharge_kwh,
@@ -705,6 +709,7 @@ class CostHardConstraintReward(RewardFunction):
             "ev_schedule_penalty_deficit_sum": schedule_penalty_deficit,
             "ev_schedule_deficit_penalty": schedule_penalty,
             "ev_v2g_discharge_kwh_sum": discharge_kwh,
+            "ev_v2g_discharge_penalty_amount": v2g_discharge_penalty,
             "ev_v2g_service_risk_sum": v2g_service_risk,
             "ev_v2g_service_abuse_penalty": v2g_penalty,
             "ev_departure_window_count": departure_window_count,
@@ -716,6 +721,7 @@ class CostHardConstraintReward(RewardFunction):
             "ev_service_penalty": (
                 dense_penalty
                 + schedule_penalty
+                + v2g_discharge_penalty
                 + v2g_penalty
                 + window_penalty
                 + missed_penalty

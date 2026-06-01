@@ -35,7 +35,16 @@ DATASET_PATH = "./datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.js
 REMOTE_DATASET_PATH = "datasets/citylearn_challenge_2022_phase_all_plus_evs"
 REWARD_FUNCTION = "CostServiceCommunityFeasiblePrecisionRewardV46"
 DEFAULT_SEEDS = (123, 456)
-DEFAULT_PROMOTION_RECIPES = ("w6_ev_only_bc_primary", "w6_balanced_bc_storage_light")
+DEFAULT_LOCAL_RECIPES = (
+    "w6_ev_only_bc_primary",
+    "w6_balanced_bc_storage_light",
+    "w6_fast_decay_less_teacher",
+    "w6_clone_diagnostic",
+)
+DEFAULT_PROMOTION_RECIPES = (
+    "w6_flex_margin_teacher_storage_tight",
+    "w6_clone_cost_ev_v2g_masswall_gentle",
+)
 LOCAL_WINDOWS = (
     ("win0_0000_2048", 0, 2048),
     ("win1_2048_4096", 2048, 2048),
@@ -55,10 +64,14 @@ class Recipe:
     storage_l2: float
     ev_v2g_l2: float
     teacher_phaseout_steps: int
+    ev_v2g_mass: float = 0.0
     actor_policy_loss_weight: float = 1.0
     actor_policy_loss_warmup_weight: float = 0.03
     extra_bc_updates: int = 1
     extra_bc_steps: int = 2048
+    reward_function: str = REWARD_FUNCTION
+    reward_kwargs: tuple[tuple[str, Any], ...] = ()
+    reward_normalization_clip: float = 10.0
     note: str = ""
 
 
@@ -114,6 +127,455 @@ RECIPES: dict[str, Recipe] = {
         extra_bc_updates=4,
         extra_bc_steps=4096,
         note="Diagnostic clone of RBCSmart; not a promotion candidate by itself.",
+    ),
+    "w6_clone_cost_nudge": Recipe(
+        name="w6_clone_cost_nudge",
+        bc_weight=0.350,
+        bc_min_weight=0.200,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.006,
+        ev_v2g_l2=0.075,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.050,
+        actor_policy_loss_warmup_weight=0.010,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        note="Clone-like policy with a small critic cost gradient to try to close the RBCSmart cost gap.",
+    ),
+    "w6_clone_tight_v2g_storage": Recipe(
+        name="w6_clone_tight_v2g_storage",
+        bc_weight=0.500,
+        bc_min_weight=0.500,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.010,
+        ev_v2g_l2=0.150,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.0,
+        actor_policy_loss_warmup_weight=0.0,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        note="Clone diagnostic with stronger storage and EV V2G regularization.",
+    ),
+    "w6_clone_cost_gentle_regularized": Recipe(
+        name="w6_clone_cost_gentle_regularized",
+        bc_weight=0.450,
+        bc_min_weight=0.300,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.010,
+        ev_v2g_l2=0.150,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.020,
+        actor_policy_loss_warmup_weight=0.005,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        note="Clone-like policy with a smaller critic gradient and tighter V2G/storage regularization.",
+    ),
+    "w6_clone_cost_nudge_v2g_tight": Recipe(
+        name="w6_clone_cost_nudge_v2g_tight",
+        bc_weight=0.350,
+        bc_min_weight=0.200,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.012,
+        ev_v2g_l2=0.250,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.050,
+        actor_policy_loss_warmup_weight=0.010,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1200.0),
+            ("battery_throughput_penalty", 0.030),
+        ),
+        note="Cost nudge with stronger actor and reward penalties against EV V2G/storage churn.",
+    ),
+    "w6_clone_cost_v47_precision": Recipe(
+        name="w6_clone_cost_v47_precision",
+        bc_weight=0.420,
+        bc_min_weight=0.260,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.010,
+        ev_v2g_l2=0.180,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.030,
+        actor_policy_loss_warmup_weight=0.006,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_function="CostServiceCommunityFeasiblePrecisionRewardV47",
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1000.0),
+            ("battery_throughput_penalty", 0.020),
+        ),
+        note="V47 precision profile with moderate cost gradient and V2G/storage discipline.",
+    ),
+    "w6_clone_cost_v50_deadline": Recipe(
+        name="w6_clone_cost_v50_deadline",
+        bc_weight=0.420,
+        bc_min_weight=0.260,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.010,
+        ev_v2g_l2=0.180,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.030,
+        actor_policy_loss_warmup_weight=0.006,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_function="CostServiceCommunityDeadlineValueRewardV50",
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1100.0),
+            ("battery_throughput_penalty", 0.020),
+        ),
+        note="Deadline-value reward test to see if stronger service shaping can preserve EV while reducing cost.",
+    ),
+    "w6_clone_cost_v52_peak": Recipe(
+        name="w6_clone_cost_v52_peak",
+        bc_weight=0.420,
+        bc_min_weight=0.260,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.010,
+        ev_v2g_l2=0.180,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.030,
+        actor_policy_loss_warmup_weight=0.006,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_function="CostServiceCommunityPeakDeadlineRewardV52",
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1100.0),
+            ("battery_throughput_penalty", 0.018),
+        ),
+        note="Peak/deadline reward test for community peak pressure without hard action guards.",
+    ),
+    "w6_clone_cost_ev_v2g_softwall": Recipe(
+        name="w6_clone_cost_ev_v2g_softwall",
+        bc_weight=0.350,
+        bc_min_weight=0.200,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.012,
+        ev_v2g_l2=8.0,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.050,
+        actor_policy_loss_warmup_weight=0.010,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1200.0),
+            ("battery_throughput_penalty", 0.030),
+        ),
+        note="Cost nudge with a soft EV-discharge wall in the actor loss, not a hard action guard.",
+    ),
+    "w6_clone_cost_ev_v2g_softwall_gentle": Recipe(
+        name="w6_clone_cost_ev_v2g_softwall_gentle",
+        bc_weight=0.450,
+        bc_min_weight=0.300,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.012,
+        ev_v2g_l2=8.0,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.020,
+        actor_policy_loss_warmup_weight=0.005,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1200.0),
+            ("battery_throughput_penalty", 0.030),
+        ),
+        note="Gentler cost nudge with soft EV-discharge wall and stronger clone anchoring.",
+    ),
+    "w6_clone_cost_ev_v2g_softwall_storage": Recipe(
+        name="w6_clone_cost_ev_v2g_softwall_storage",
+        bc_weight=0.380,
+        bc_min_weight=0.240,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.35,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.020,
+        ev_v2g_l2=8.0,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.040,
+        actor_policy_loss_warmup_weight=0.008,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1200.0),
+            ("battery_throughput_penalty", 0.040),
+        ),
+        note="Soft EV-discharge wall plus stronger storage anchoring to reduce battery churn.",
+    ),
+    "w6_clone_cost_v2g_highclip": Recipe(
+        name="w6_clone_cost_v2g_highclip",
+        bc_weight=0.350,
+        bc_min_weight=0.200,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.012,
+        ev_v2g_l2=0.250,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.050,
+        actor_policy_loss_warmup_weight=0.010,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1600.0),
+            ("battery_throughput_penalty", 0.040),
+        ),
+        reward_normalization_clip=25.0,
+        note="Cost nudge with less reward clipping so V2G/storage penalties reach the critic.",
+    ),
+    "w6_clone_cost_softwall_highclip": Recipe(
+        name="w6_clone_cost_softwall_highclip",
+        bc_weight=0.380,
+        bc_min_weight=0.240,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.012,
+        ev_v2g_l2=8.0,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.040,
+        actor_policy_loss_warmup_weight=0.008,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1600.0),
+            ("battery_throughput_penalty", 0.040),
+        ),
+        reward_normalization_clip=25.0,
+        note="Soft EV-discharge wall with higher reward clip to test critic sensitivity to penalties.",
+    ),
+    "w6_clone_cost_ev_v2g_masswall": Recipe(
+        name="w6_clone_cost_ev_v2g_masswall",
+        bc_weight=0.380,
+        bc_min_weight=0.240,
+        ev_bc_multiplier=16.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.012,
+        ev_v2g_l2=4.0,
+        ev_v2g_mass=8.0,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.040,
+        actor_policy_loss_warmup_weight=0.008,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1400.0),
+            ("battery_throughput_penalty", 0.035),
+        ),
+        reward_normalization_clip=25.0,
+        note="Soft V2G mass penalty to reduce frequent EV micro-discharge without a hard guard.",
+    ),
+    "w6_clone_cost_ev_v2g_masswall_gentle": Recipe(
+        name="w6_clone_cost_ev_v2g_masswall_gentle",
+        bc_weight=0.480,
+        bc_min_weight=0.340,
+        ev_bc_multiplier=18.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.012,
+        ev_v2g_l2=4.0,
+        ev_v2g_mass=8.0,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.020,
+        actor_policy_loss_warmup_weight=0.005,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("ev_v2g_service_penalty", 1400.0),
+            ("battery_throughput_penalty", 0.035),
+        ),
+        reward_normalization_clip=25.0,
+        note="Mass-wall variant with stronger EV teacher anchoring to recover the EV gate.",
+    ),
+    "w6_clone_cost_ev_v2g_energywall": Recipe(
+        name="w6_clone_cost_ev_v2g_energywall",
+        bc_weight=0.450,
+        bc_min_weight=0.320,
+        ev_bc_multiplier=18.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.012,
+        ev_v2g_l2=2.0,
+        ev_v2g_mass=4.0,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.030,
+        actor_policy_loss_warmup_weight=0.006,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("ev_v2g_discharge_penalty", 1.0),
+            ("ev_v2g_service_penalty", 900.0),
+            ("battery_throughput_penalty", 0.025),
+        ),
+        reward_normalization_clip=25.0,
+        note="Reward-level EV V2G energy penalty so the critic stops valuing V2G discharge as free cost reduction.",
+    ),
+    "w6_clone_cost_ev_v2g_energywall_battery_tight": Recipe(
+        name="w6_clone_cost_ev_v2g_energywall_battery_tight",
+        bc_weight=0.460,
+        bc_min_weight=0.340,
+        ev_bc_multiplier=18.0,
+        storage_bc_multiplier=0.30,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.020,
+        ev_v2g_l2=3.0,
+        ev_v2g_mass=6.0,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.025,
+        actor_policy_loss_warmup_weight=0.006,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("ev_v2g_discharge_penalty", 1.0),
+            ("ev_v2g_service_penalty", 900.0),
+            ("battery_throughput_penalty", 0.050),
+        ),
+        reward_normalization_clip=25.0,
+        note="Energywall variant with stronger storage/throughput discipline after battery rose above RBCSmart.",
+    ),
+    "w6_flex_v2g_safe_value": Recipe(
+        name="w6_flex_v2g_safe_value",
+        bc_weight=0.420,
+        bc_min_weight=0.260,
+        ev_bc_multiplier=14.0,
+        storage_bc_multiplier=0.20,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.005,
+        ev_v2g_l2=0.40,
+        ev_v2g_mass=0.80,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.035,
+        actor_policy_loss_warmup_weight=0.008,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_function="CostServiceCommunityPeakDeadlineRewardV52",
+        reward_kwargs=(
+            ("community_settlement_cost_weight", 1.25),
+            ("community_peak_import_penalty", 0.0020),
+            ("community_export_penalty", 0.00035),
+            ("ev_v2g_service_penalty", 1400.0),
+            ("battery_throughput_penalty", 0.004),
+        ),
+        reward_normalization_clip=25.0,
+        note="Flex recipe: allow useful V2G/storage, punish only service-risk V2G hard, value community peaks.",
+    ),
+    "w6_flex_storage_peak_value": Recipe(
+        name="w6_flex_storage_peak_value",
+        bc_weight=0.400,
+        bc_min_weight=0.240,
+        ev_bc_multiplier=14.0,
+        storage_bc_multiplier=0.12,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.002,
+        ev_v2g_l2=1.00,
+        ev_v2g_mass=2.00,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.045,
+        actor_policy_loss_warmup_weight=0.010,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_function="CostServiceCommunityPeakDeadlineRewardV52",
+        reward_kwargs=(
+            ("community_settlement_cost_weight", 1.30),
+            ("community_peak_import_penalty", 0.0025),
+            ("community_export_penalty", 0.00035),
+            ("ev_v2g_service_penalty", 1100.0),
+            ("battery_throughput_penalty", 0.0015),
+        ),
+        reward_normalization_clip=25.0,
+        note="Flex recipe: prioritize stationary storage/peak value with low throughput cost and moderate EV V2G guard.",
+    ),
+    "w6_flex_v2g_margin_teacher": Recipe(
+        name="w6_flex_v2g_margin_teacher",
+        bc_weight=0.460,
+        bc_min_weight=0.300,
+        ev_bc_multiplier=18.0,
+        storage_bc_multiplier=0.18,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.006,
+        ev_v2g_l2=0.80,
+        ev_v2g_mass=1.50,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.030,
+        actor_policy_loss_warmup_weight=0.006,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("community_settlement_cost_weight", 1.18),
+            ("community_peak_import_penalty", 0.0016),
+            ("ev_v2g_service_penalty", 1600.0),
+            ("battery_throughput_penalty", 0.006),
+        ),
+        reward_normalization_clip=25.0,
+        note="Flex recipe: keep strong EV teacher margin while reopening safe V2G and battery value.",
+    ),
+    "w6_flex_margin_teacher_storage_tight": Recipe(
+        name="w6_flex_margin_teacher_storage_tight",
+        bc_weight=0.460,
+        bc_min_weight=0.320,
+        ev_bc_multiplier=18.0,
+        storage_bc_multiplier=0.22,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.014,
+        ev_v2g_l2=0.80,
+        ev_v2g_mass=1.50,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.030,
+        actor_policy_loss_warmup_weight=0.006,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_kwargs=(
+            ("community_settlement_cost_weight", 1.16),
+            ("community_peak_import_penalty", 0.0014),
+            ("ev_v2g_service_penalty", 1600.0),
+            ("battery_throughput_penalty", 0.014),
+        ),
+        reward_normalization_clip=25.0,
+        note="Flex follow-up: same EV margin as margin_teacher, but tighter storage throughput discipline.",
+    ),
+    "w6_flex_v2g_open_value": Recipe(
+        name="w6_flex_v2g_open_value",
+        bc_weight=0.450,
+        bc_min_weight=0.300,
+        ev_bc_multiplier=18.0,
+        storage_bc_multiplier=0.14,
+        zero_ev_target_weight=5.0,
+        storage_l2=0.004,
+        ev_v2g_l2=0.25,
+        ev_v2g_mass=0.45,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.035,
+        actor_policy_loss_warmup_weight=0.008,
+        extra_bc_updates=4,
+        extra_bc_steps=4096,
+        reward_function="CostServiceCommunityPeakDeadlineRewardV52",
+        reward_kwargs=(
+            ("community_settlement_cost_weight", 1.25),
+            ("community_peak_import_penalty", 0.0022),
+            ("community_export_penalty", 0.00035),
+            ("ev_v2g_service_penalty", 2000.0),
+            ("battery_throughput_penalty", 0.005),
+        ),
+        reward_normalization_clip=25.0,
+        note="Flex follow-up: reopen EV V2G value while keeping strong EV margin and service-risk penalty.",
     ),
 }
 
@@ -187,7 +649,7 @@ def _stage_recipes(stage: str, requested: Sequence[str] | None) -> tuple[str, ..
     if requested:
         selected = _normalise_requested(requested, ())
     elif stage in {"w6-smoke-local", "w6a-local"}:
-        selected = tuple(RECIPES)
+        selected = DEFAULT_LOCAL_RECIPES
     else:
         selected = DEFAULT_PROMOTION_RECIPES
 
@@ -208,7 +670,7 @@ def _stage_algorithms(stage: str, requested: Sequence[str] | None) -> tuple[str,
     unsupported = [name for name in selected if name not in {"MADDPG", "MATD3"}]
     if unsupported:
         raise ValueError(f"W6 only supports MADDPG/MATD3 here, got: {', '.join(unsupported)}")
-    if stage in {"w6-smoke-local", "w6a-local", "w6b-remote-smoke"} and any(
+    if stage in {"w6b-remote-smoke"} and any(
         name != "MADDPG" for name in selected
     ):
         raise ValueError(f"{stage} is intentionally MADDPG-only.")
@@ -338,6 +800,8 @@ def _apply_simulator(
     steps: int,
     episodes: int,
     deterministic_finish: bool,
+    reward_function: str = REWARD_FUNCTION,
+    reward_kwargs: Mapping[str, Any] | None = None,
 ) -> None:
     simulator = config.setdefault("simulator", {})
     simulator["dataset_name"] = DATASET_NAME
@@ -354,8 +818,8 @@ def _apply_simulator(
             "clip": True,
         }
     )
-    simulator["reward_function"] = REWARD_FUNCTION
-    simulator["reward_function_kwargs"] = {}
+    simulator["reward_function"] = str(reward_function)
+    simulator["reward_function_kwargs"] = dict(reward_kwargs or {})
     simulator["episodes"] = int(episodes)
     simulator["deterministic_finish"] = bool(deterministic_finish)
     simulator["simulation_start_time_step"] = int(start)
@@ -369,8 +833,8 @@ def _apply_simulator(
             "final_episode_only": True,
             "kpis_final_episode_only": True,
             "timeseries_final_episode_only": True,
-            "include_business_as_usual": False,
-            "export_business_as_usual_timeseries": False,
+            "include_business_as_usual": True,
+            "export_business_as_usual_timeseries": True,
             "kpi_round_decimals": None,
             "session_name": session_name,
         }
@@ -456,6 +920,14 @@ def _build_baseline_config(
         description="W6 same-window rule-based baseline for guided training gates.",
     )
     _apply_tracking(config, stage=stage, runtime=runtime)
+    config.setdefault("tracking", {}).setdefault("tags", {}).update(
+        {
+            "stage": stage,
+            "recipe": policy_name,
+            "window": window_name,
+            "seed": int(seed),
+        }
+    )
     _apply_checkpointing(config)
     _apply_simulator(
         config,
@@ -498,6 +970,16 @@ def _build_rl_config(
         description=f"W6 guided training recipe: {recipe.note}",
     )
     _apply_tracking(config, stage=stage, runtime=runtime)
+    config.setdefault("tracking", {}).setdefault("tags", {}).update(
+        {
+            "stage": stage,
+            "algorithm": str(algorithm_name),
+            "recipe": recipe.name,
+            "window": window_name,
+            "seed": int(seed),
+            "reward_function": recipe.reward_function,
+        }
+    )
     _apply_checkpointing(config)
     _apply_simulator(
         config,
@@ -506,6 +988,8 @@ def _build_rl_config(
         steps=steps,
         episodes=int(runtime["episodes"]),
         deterministic_finish=bool(runtime["deterministic_finish"]),
+        reward_function=recipe.reward_function,
+        reward_kwargs=dict(recipe.reward_kwargs),
     )
 
     training = config.setdefault("training", {})
@@ -580,6 +1064,7 @@ def _build_rl_config(
             "actor_action_saturation_penalty": 0.01,
             "actor_storage_action_l2_penalty": float(recipe.storage_l2),
             "actor_ev_v2g_action_l2_penalty": float(recipe.ev_v2g_l2),
+            "actor_ev_v2g_action_mass_penalty": float(recipe.ev_v2g_mass),
             "actor_action_saturation_threshold": 0.85,
             "actor_behavior_cloning_weight": float(recipe.bc_weight),
             "actor_behavior_cloning_min_weight": float(recipe.bc_min_weight),
@@ -596,7 +1081,7 @@ def _build_rl_config(
             "actor_ev_behavior_cloning_zero_target_weight": float(recipe.zero_ev_target_weight),
             "actor_ev_behavior_cloning_zero_target_threshold": 0.05,
             "reward_normalization": True,
-            "reward_normalization_clip": 10.0,
+            "reward_normalization_clip": float(recipe.reward_normalization_clip),
             "reward_normalization_epsilon": 1.0e-8,
         }
     )
@@ -617,6 +1102,7 @@ def _matrix_row(
     steps: int,
     seed: int,
     runtime: Mapping[str, Any],
+    reward_function: str = REWARD_FUNCTION,
 ) -> dict[str, Any]:
     deucalion = runtime.get("deucalion") or {}
     return {
@@ -632,7 +1118,7 @@ def _matrix_row(
         "episode_steps": steps,
         "episodes": runtime["episodes"] if recipe not in {"RBCSmartPolicy", "RBCCommunityPolicy"} else 1,
         "deterministic_finish": runtime["deterministic_finish"],
-        "reward_function": REWARD_FUNCTION,
+        "reward_function": reward_function,
         "teacher_policy": "RBCSmartPolicy" if recipe.startswith("w6_") else "",
         "deucalion_partition": deucalion.get("partition", ""),
         "deucalion_time": deucalion.get("time", ""),
@@ -732,6 +1218,7 @@ def generate_w6_configs(
                             steps=steps,
                             seed=selected_seeds[0],
                             runtime=runtime,
+                            reward_function=REWARD_FUNCTION,
                         )
                     )
 
@@ -765,6 +1252,7 @@ def generate_w6_configs(
                                 steps=steps,
                                 seed=int(seed),
                                 runtime=runtime,
+                                reward_function=recipe.reward_function,
                             )
                         )
 
