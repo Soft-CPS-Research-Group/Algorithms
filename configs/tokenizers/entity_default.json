@@ -10,7 +10,20 @@
       "^electric_vehicle_departure_time$",
       "^electric_vehicle_is_flexible$",
       "^charging_total_service_power_kw$",
-      "^charging_phase_L[123]_power_kw$"
+      "^charging_phase_L[123]_power_kw$",
+      "^district__community_flexible_.*$",
+      "^district__hour_(sin|cos)$",
+      "^district__day_type_(sin|cos)$",
+      "^district__month_(sin|cos)$",
+      "^district__seconds_of_day_(sin|cos)$",
+      "^district__is_weekend$",
+      "^pv_surplus_(power_kw|energy_kwh_step)$",
+      "^building_(import|export)_headroom_kw$",
+      "^(import|export)_phase_headroom_kw$",
+      "^flexible_(charge|discharge)_(power_capacity_kw|energy_capacity_kwh_step)$",
+      "^flexible_energy_(to_full_kwh|available_kwh)$",
+      "^(hour|day_type|month|seconds_of_day)_(sin|cos)$",
+      "^is_weekend$"
     ]
   },
 
