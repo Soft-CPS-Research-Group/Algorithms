@@ -224,6 +224,59 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     assert v2g_open_config["simulator"]["reward_function_kwargs"]["ev_v2g_service_penalty"] == 2000.0
     assert v2g_open_config["algorithm"]["exploration"]["params"]["actor_ev_v2g_action_mass_penalty"] == 0.45
 
+    ev_repair_rows = generate_w6_configs(
+        output_dir=tmp_path / "ev_repair",
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_flex_ev_gate_repair_strong_bc"],
+        include_baselines=False,
+    )
+    ev_repair_config = _load(Path(ev_repair_rows[0]["config_path"]))
+    validate_config(ev_repair_config)
+    ev_repair_exploration = ev_repair_config["algorithm"]["exploration"]["params"]
+    assert ev_repair_exploration["warm_start_policy_phaseout_steps"] == 8192
+    assert ev_repair_exploration["actor_behavior_cloning_weight"] == 0.68
+    assert ev_repair_exploration["actor_behavior_cloning_min_weight"] == 0.52
+    assert ev_repair_exploration["actor_ev_behavior_cloning_multiplier"] == 28.0
+    assert ev_repair_exploration["actor_policy_loss_weight"] == 0.01
+    assert ev_repair_config["simulator"]["reward_function_kwargs"]["ev_v2g_service_penalty"] == 1800.0
+    assert ev_repair_config["simulator"]["reward_function_kwargs"]["battery_throughput_penalty"] == 0.018
+
+    ev_repair_followup_rows = generate_w6_configs(
+        output_dir=tmp_path / "ev_repair_followups",
+        stage="w6a-local",
+        seeds=[123],
+        recipes=[
+            "w6_flex_ev_gate_repair_mid_bc",
+            "w6_flex_ev_gate_repair_cost_push",
+            "w6_flex_ev_gate_repair_policy_open",
+        ],
+        include_baselines=False,
+    )
+    assert len(ev_repair_followup_rows) == 12
+    mid_config = _load(
+        Path(next(row for row in ev_repair_followup_rows if row["recipe"] == "w6_flex_ev_gate_repair_mid_bc")["config_path"])
+    )
+    validate_config(mid_config)
+    mid_exploration = mid_config["algorithm"]["exploration"]["params"]
+    assert mid_exploration["actor_behavior_cloning_weight"] == 0.56
+    assert mid_exploration["actor_ev_behavior_cloning_multiplier"] == 22.0
+    assert mid_exploration["warm_start_policy_phaseout_steps"] == 6144
+
+    cost_push_config = _load(
+        Path(next(row for row in ev_repair_followup_rows if row["recipe"] == "w6_flex_ev_gate_repair_cost_push")["config_path"])
+    )
+    validate_config(cost_push_config)
+    assert cost_push_config["simulator"]["reward_function_kwargs"]["community_settlement_cost_weight"] == 1.24
+    assert cost_push_config["algorithm"]["exploration"]["params"]["actor_policy_loss_weight"] == 0.026
+
+    policy_open_config = _load(
+        Path(next(row for row in ev_repair_followup_rows if row["recipe"] == "w6_flex_ev_gate_repair_policy_open")["config_path"])
+    )
+    validate_config(policy_open_config)
+    assert policy_open_config["algorithm"]["exploration"]["params"]["warm_start_policy_phaseout_steps"] == 3072
+    assert policy_open_config["algorithm"]["exploration"]["params"]["actor_behavior_cloning_extra_updates"] == 2
+
     precision = next(row for row in rows if row["recipe"] == "w6_clone_cost_v47_precision")
     precision_config = _load(Path(precision["config_path"]))
     validate_config(precision_config)

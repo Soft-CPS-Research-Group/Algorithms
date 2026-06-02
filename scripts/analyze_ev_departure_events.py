@@ -84,10 +84,6 @@ def _event_rows(path: Path, tolerance: float) -> list[dict[str, Any]]:
     connected = frame["Is EV Connected"].astype(bool)
     departure_time = pd.to_numeric(frame["EV Departure Time"], errors="coerce")
     departures = frame[connected & (departure_time == 0)].copy()
-    if "EV Name" in departures.columns:
-        departures = departures.drop_duplicates(subset=["EV Name"], keep="first")
-    else:
-        departures = departures.head(1)
     rows: list[dict[str, Any]] = []
     for _, event in departures.iterrows():
         soc = _finite_float(event.get("EV SOC-%"))
