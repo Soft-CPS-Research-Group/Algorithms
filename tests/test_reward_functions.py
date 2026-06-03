@@ -36,6 +36,75 @@ def test_cost_minimization_reward_matches_import_export_cost_math():
     assert rewards[1] == pytest.approx(0.4)
 
 
+def test_cost_reward_prefers_storing_pv_export_to_avoid_later_import():
+    reward = CostHardConstraintReward(
+        env_metadata={"central_agent": False},
+        local_cost_weight=1.0,
+        export_credit_ratio=0.0,
+        community_settlement_cost_weight=0.0,
+    )
+
+    export_then_import = reward.calculate(
+        [{"net_electricity_consumption": -1.0, "electricity_pricing": 0.10}]
+    )[0] + reward.calculate(
+        [{"net_electricity_consumption": 1.0, "electricity_pricing": 0.50}]
+    )[0]
+    store_then_avoid_import = reward.calculate(
+        [{"net_electricity_consumption": 0.0, "electricity_pricing": 0.10}]
+    )[0] + reward.calculate(
+        [{"net_electricity_consumption": 0.0, "electricity_pricing": 0.50}]
+    )[0]
+
+    assert store_then_avoid_import > export_then_import
+    assert export_then_import == pytest.approx(-0.50)
+    assert store_then_avoid_import == pytest.approx(0.0)
+
+
+def test_community_settlement_prefers_local_self_consumption_to_grid_import():
+    reward = CostHardConstraintReward(
+        env_metadata={"central_agent": False},
+        local_cost_weight=0.0,
+        community_settlement_cost_weight=1.0,
+        community_local_price_ratio=0.8,
+        community_grid_export_price=0.0,
+    )
+
+    export_then_grid_import = sum(
+        reward.calculate(
+            [
+                {"net_electricity_consumption": -1.0, "electricity_pricing": 0.10},
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.10},
+            ]
+        )
+    ) + sum(
+        reward.calculate(
+            [
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.50},
+                {"net_electricity_consumption": 1.0, "electricity_pricing": 0.50},
+            ]
+        )
+    )
+    local_self_consumption = sum(
+        reward.calculate(
+            [
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.10},
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.10},
+            ]
+        )
+    ) + sum(
+        reward.calculate(
+            [
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.50},
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.50},
+            ]
+        )
+    )
+
+    assert local_self_consumption > export_then_grid_import
+    assert export_then_grid_import == pytest.approx(-0.50)
+    assert local_self_consumption == pytest.approx(0.0)
+
+
 def test_named_cost_service_reward_profiles_set_default_weights():
     guard = CostServiceGuardRewardV2(env_metadata={"central_agent": False})
     balanced = CostServiceCostBalancedRewardV3(env_metadata={"central_agent": False})

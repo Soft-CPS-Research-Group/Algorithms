@@ -67,16 +67,17 @@ algorithm:
     emergency_charge_rate: 1.0
     ev_price_charge_rate: 0.70
     ev_pv_charge_rate: 0.85
-    ev_v2g_discharge_rate: 0.10
-    ev_v2g_reserve_soc: 0.25
+    ev_v2g_discharge_rate: 0.18
+    ev_v2g_reserve_soc: 0.0
     ev_service_margin_rate: 0.05
     ev_service_floor_rate: 0.25
     ev_service_lookahead_hours: 4.0
     ev_service_target_soc: 0.0
     ev_deadline_buffer_hours: 0.25
-    ev_v2g_min_departure_hours: 2.0
-    ev_v2g_service_margin_soc: 0.10
-    price_charge_rate: 0.15
+    ev_v2g_min_departure_hours: 1.0
+    ev_v2g_service_margin_soc: 0.02
+    ev_v2g_buffer_soc: 0.12
+    price_charge_rate: 0.0
     price_discharge_rate: 0.15
     pv_charge_rate: 0.45
     peak_discharge_rate: 0.25
@@ -84,8 +85,8 @@ algorithm:
     storage_max_soc: 0.75
     storage_target_soc: 0.60
     storage_price_charge_soc_ceiling: 0.60
-    storage_price_discharge_soc_floor: 0.60
-    storage_peak_discharge_soc_floor: 0.60
+    storage_price_discharge_soc_floor: 0.45
+    storage_peak_discharge_soc_floor: 0.45
     storage_discharge_import_threshold_kw: 0.50
     community_local_price_ratio: 0.8
     community_grid_export_price: 0.0
@@ -96,3 +97,4 @@ algorithm:
     deferrable_urgency_threshold: 0.60
     deferrable_slack_threshold: 0.40
     deferrable_safety_margin_steps: 1.0
+    deferrable_import_block_threshold_kw: 2.0

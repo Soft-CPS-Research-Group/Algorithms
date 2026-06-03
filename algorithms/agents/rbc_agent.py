@@ -270,7 +270,10 @@ class RuleBasedPolicy(BaseAgent):
             "ev_deadline_buffer_hours",
             "ev_v2g_min_departure_hours",
             "ev_v2g_service_margin_soc",
+            "ev_v2g_buffer_soc",
             "deferrable_safety_margin_steps",
+            "deferrable_import_block_threshold_kw",
+            "deferrable_community_import_block_threshold_kw",
         ):
             if hasattr(self, attr):
                 hyperparameters[attr] = getattr(self, attr)
