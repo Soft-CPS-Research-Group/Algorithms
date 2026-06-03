@@ -747,6 +747,7 @@ def test_rbc_smart_policy_uses_simulator_min_required_ev_action():
                     "ev_service_margin_rate": 0.0,
                     "ev_service_lookahead_hours": 0.0,
                     "ev_deadline_buffer_hours": 0.0,
+                    "ev_service_soc_tolerance": 0.001,
                 },
             }
         }
@@ -1181,7 +1182,7 @@ def test_rbc_smart_policy_uses_local_forecast_stress_for_storage_and_v2g():
 
     actions = agent.predict([obs])
 
-    assert actions[0][0] < 0.0
+    assert actions[0][0] == pytest.approx(0.0)
     assert actions[0][1] == pytest.approx(-0.25)
     assert actions[0][2] == pytest.approx(0.0)
 
@@ -1228,7 +1229,7 @@ def test_rbc_smart_policy_uses_compact_local_net_forecast_for_stress():
 
     actions = agent.predict([obs])
 
-    assert actions[0][0] < 0.0
+    assert actions[0][0] == pytest.approx(0.0)
     assert actions[0][1] == pytest.approx(-0.25)
     assert actions[0][2] == pytest.approx(0.0)
 
@@ -1245,6 +1246,7 @@ def test_rbc_smart_policy_boosts_ev_service_when_departure_feasibility_is_low():
                     "ev_service_lookahead_hours": 0.0,
                     "ev_deadline_buffer_hours": 0.0,
                     "emergency_charge_rate": 0.75,
+                    "ev_service_soc_tolerance": 0.001,
                 },
             }
         }
@@ -1457,7 +1459,9 @@ def test_rbc_smart_policy_uses_v2g_for_useful_import_without_price_spike():
 
 
 def test_rbc_smart_policy_caps_ev_charge_at_required_soc_target():
-    agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}})
+    agent = RBCSmartPolicy(
+        {"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {"ev_service_soc_tolerance": 0.001}}}
+    )
     _attach(agent, _base_observation_names(), _action_names())
     obs = np.array(
         [
@@ -1488,6 +1492,78 @@ def test_rbc_smart_policy_caps_ev_charge_at_required_soc_target():
     actions = agent.predict([obs])
 
     assert 0.0 < actions[0][1] < 0.10
+
+
+def test_rbc_smart_policy_ignores_min_required_action_when_ev_is_at_target():
+    agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}})
+    names = _base_observation_names() + [
+        "charger::Building_1/charger_1_1::min_required_action_normalized",
+    ]
+    _attach(agent, names, _action_names())
+    obs = np.array(
+        [
+            0.10,
+            0.10,
+            0.10,
+            0.10,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            0.5,
+            1.0,
+            0.5005,
+            0.50,
+            60.0,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.75,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] == pytest.approx(0.0)
+
+
+def test_rbc_smart_policy_default_ev_tolerance_ignores_small_service_gap():
+    agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}})
+    _attach(agent, _base_observation_names(), _action_names())
+    obs = np.array(
+        [
+            0.10,
+            0.10,
+            0.10,
+            0.10,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.5,
+            1.0,
+            0.76,
+            0.80,
+            60.0,
+            0.25,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] == pytest.approx(0.0)
 
 
 def test_rbc_smart_policy_does_not_discharge_storage_to_zero_credit_export():
@@ -1522,6 +1598,51 @@ def test_rbc_smart_policy_does_not_discharge_storage_to_zero_credit_export():
     actions = agent.predict([obs])
 
     assert actions[0][0] == pytest.approx(0.0)
+
+
+def test_rbc_smart_policy_storage_charge_tracks_real_surplus_and_soc_room():
+    agent = RBCSmartPolicy(
+        {
+            "simulator": {"dataset_path": "datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json"},
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {"pv_charge_rate": 0.9, "storage_max_soc": 0.75},
+            },
+        }
+    )
+    _attach(agent, _base_observation_names() + ["export_power_kw"], _action_names())
+    obs = np.array(
+        [
+            0.10,
+            0.10,
+            0.10,
+            0.10,
+            10.0,
+            1.0,
+            0.0,
+            10.0,
+            0.50,
+            0.0,
+            0.0,
+            0.0,
+            60.0,
+            10.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            7.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    # Building batteries are 6.4 kWh/5 kW. From 50% to the 75% strategy ceiling,
+    # there is 1.6 kWh room, so a one-hour step must cap the normalized action.
+    assert actions[0][0] == pytest.approx(1.6 / 5.0)
 
 
 def test_rbc_smart_policy_discharges_storage_when_expensive_import_is_present():
@@ -1685,7 +1806,7 @@ def test_rbc_community_policy_uses_community_surplus_for_storage_ev_and_deferrab
 
     actions = agent.predict([obs])
 
-    assert actions[0][0] == pytest.approx(0.55)
+    assert actions[0][0] == pytest.approx(1.0)
     assert actions[0][1] == pytest.approx(0.8108108108108115)
     assert actions[0][2] == pytest.approx(1.0)
 
@@ -1988,7 +2109,7 @@ def test_rbc_community_policy_uses_forecast_community_stress_for_storage_and_v2g
 
     actions = agent.predict([obs])
 
-    assert actions[0][0] < 0.0
+    assert actions[0][0] == pytest.approx(0.0)
     assert actions[0][1] == pytest.approx(-0.27027027027027023)
     assert actions[0][2] == pytest.approx(0.0)
 
@@ -2035,7 +2156,7 @@ def test_rbc_community_policy_uses_compact_community_net_forecast_for_stress():
 
     actions = agent.predict([obs])
 
-    assert actions[0][0] < 0.0
+    assert actions[0][0] == pytest.approx(0.0)
     assert actions[0][1] == pytest.approx(-0.27027027027027023)
     assert actions[0][2] == pytest.approx(0.0)
 
@@ -2145,7 +2266,7 @@ def test_rbc_community_policy_still_charges_storage_from_free_local_pv_above_com
 
     actions = agent.predict([obs])
 
-    assert actions[0][0] == pytest.approx(0.45)
+    assert actions[0][0] == pytest.approx(1.0)
 
 
 def test_rbc_community_policy_does_not_discharge_storage_without_current_import_to_serve():

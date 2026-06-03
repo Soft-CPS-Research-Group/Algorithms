@@ -32,6 +32,7 @@ class ChargerInfo:
 @dataclass(slots=True)
 class StorageInfo:
     nominal_power: float
+    capacity: float = 0.0
     phase_connection: Optional[str] = None
 
 
@@ -1129,6 +1130,7 @@ class RuleBasedPolicy(BaseAgent):
             if storage_attrs:
                 storage_info[building_name] = StorageInfo(
                     nominal_power=float(storage_attrs.get("nominal_power", storage_attrs.get("power", 0.0)) or 0.0),
+                    capacity=float(storage_attrs.get("capacity", storage_attrs.get("energy_capacity", 0.0)) or 0.0),
                     phase_connection=storage_attrs.get("phase_connection"),
                 )
 
