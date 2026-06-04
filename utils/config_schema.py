@@ -245,6 +245,26 @@ class EntityEncodingConfig(BaseModel):
     clip: bool = True
 
 
+class CommunityMarketKpisConfig(BaseModel):
+    community_local_traded_enabled: bool = True
+    community_self_consumption_enabled: bool = True
+
+
+class CommunityMarketConfig(BaseModel):
+    enabled: bool = True
+    local_price_ratio_to_grid_import: float = Field(default=0.8, ge=0.0, le=1.0)
+    intra_community_sell_ratio: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    grid_export_price: float = Field(default=0.0, ge=0.0)
+    import_member_weights: Dict[str, float] = Field(default_factory=dict)
+    kpis: CommunityMarketKpisConfig = CommunityMarketKpisConfig()
+
+    @model_validator(mode="after")
+    def default_sell_ratio(self) -> "CommunityMarketConfig":
+        if self.intra_community_sell_ratio is None:
+            self.intra_community_sell_ratio = self.local_price_ratio_to_grid_import
+        return self
+
+
 class SimulatorConfig(BaseModel):
     dataset_name: str
     dataset_path: str
@@ -261,6 +281,7 @@ class SimulatorConfig(BaseModel):
     export: SimulatorExportConfig = SimulatorExportConfig()
     wrapper_reward: WrapperRewardConfig = WrapperRewardConfig()
     entity_encoding: EntityEncodingConfig = EntityEncodingConfig()
+    community_market: Optional[CommunityMarketConfig] = None
 
     @field_validator("episode_time_steps")
     @classmethod

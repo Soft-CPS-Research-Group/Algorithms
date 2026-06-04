@@ -255,7 +255,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
                             bounds,
                         )
                     elif self.control_deferrables and self._is_deferrable_action_name(str(action_name), obs_map):
-                        value = self._compute_deferrable_action(obs, obs_map, str(action_name), bounds)
+                        value = self._compute_deferrable_action(agent_idx, obs, obs_map, str(action_name), bounds)
                     else:
                         value = 0.0
 
@@ -312,7 +312,11 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         if local_first:
             remaining -= self._consume_budget_kw(agent_idx, "local_surplus_kw", remaining)
         if community_first and remaining > self.energy_epsilon:
-            self._consume_budget_kw(agent_idx, "community_surplus_kw", remaining)
+            remaining -= self._consume_budget_kw(agent_idx, "community_surplus_kw", remaining)
+        if remaining > self.energy_epsilon:
+            budget = self._dispatch_budgets.get(agent_idx)
+            if budget is not None:
+                budget["local_import_kw"] = max(0.0, budget.get("local_import_kw", 0.0)) + remaining
 
     def _record_ev_discharge_dispatch(
         self,
@@ -439,10 +443,10 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             hour = self._get_hour(obs, obs_map)
             cheap = hour <= 7.0 or hour >= 22.0
             expensive = 17.0 <= hour <= 21.0
-            return {"price": 0.0, "cheap": cheap, "expensive": expensive}
+            return {"price": 0.0, "cheap": cheap, "expensive": expensive, "near_forecast_peak": expensive}
 
         if not valid:
-            return {"price": price, "cheap": False, "expensive": False}
+            return {"price": price, "cheap": False, "expensive": False, "near_forecast_peak": False}
 
         forecast_mean = float(np.mean(valid))
         forecast_min = float(np.min(valid))
@@ -450,7 +454,13 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         spread = max(forecast_max - forecast_min, abs(forecast_mean) * 0.05, 1.0e-9)
         cheap = price <= forecast_mean - 0.20 * spread or price <= forecast_min + 0.10 * spread
         expensive = price >= forecast_mean + 0.20 * spread or price >= forecast_max - 0.10 * spread
-        return {"price": price, "cheap": cheap, "expensive": expensive}
+        near_forecast_peak = price >= forecast_max - max(0.10 * spread, 0.005)
+        return {
+            "price": price,
+            "cheap": cheap,
+            "expensive": expensive,
+            "near_forecast_peak": near_forecast_peak,
+        }
 
     def _forecast_values(
         self,
@@ -549,6 +559,17 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             obs_map,
             ["forecast_community_headroom"],
             default=float("inf"),
+        )
+
+    def _forecast_solar_resource_expected(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> bool:
+        pv_values = self._forecast_values(obs, obs_map, ["forecast_pv"], exclude_tokens=["community"])
+        community_pv_values = self._forecast_values(obs, obs_map, ["forecast_community_pv"])
+        irradiance_values = self._forecast_values(obs, obs_map, ["solar_irradiance_predicted"])
+        return (
+            max((max(0.0, value) for value in pv_values), default=0.0) > self.pv_surplus_threshold_kw
+            or max((max(0.0, value) for value in community_pv_values), default=0.0)
+            > self.community_surplus_threshold_kw
+            or max((max(0.0, value) for value in irradiance_values), default=0.0) > 100.0
         )
 
     def _get_storage_soc(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
@@ -727,7 +748,16 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             )
         )
         if has_explicit_import_export:
-            return max(0.0, export_power - import_power, physical_surplus)
+            # When the simulator exposes explicit import/export, trust the
+            # measured net flow over passive PV-load for import. For export,
+            # only count the part that is also explained by passive PV surplus:
+            # export can be caused by a previous storage/V2G discharge and
+            # should not be reclassified as fresh solar available to charge.
+            if export_power > self.energy_epsilon:
+                return min(export_power, physical_surplus) if physical_surplus > self.energy_epsilon else 0.0
+            if import_power > self.energy_epsilon:
+                return 0.0
+            return physical_surplus
         if export_power > self.energy_epsilon:
             return max(export_power, physical_surplus)
         return physical_surplus
@@ -1078,6 +1108,41 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             required_rate = max(required_rate, simulator_required)
         return float(np.clip(required_rate + max(0.0, margin_rate), 0.0, 1.0))
 
+    def _ev_departure_is_infeasible(self, ctx: Mapping[str, float | bool | None]) -> bool:
+        departure_margin = self._ctx_float(ctx, "departure_margin")
+        if not math.isnan(departure_margin) and departure_margin < -self.energy_epsilon:
+            return True
+
+        departure_feasibility = self._ctx_float(ctx, "departure_feasibility")
+        # Simulator ratio is required energy divided by maximum deliverable energy.
+        # Values <= 1 are feasible; values > 1 indicate the charger cannot hit the target.
+        return not math.isnan(departure_feasibility) and departure_feasibility > 1.0 + self.energy_epsilon
+
+    def _ev_departure_is_tight(self, ctx: Mapping[str, float | bool | None]) -> bool:
+        if self._ev_departure_is_infeasible(ctx):
+            return True
+
+        departure_feasibility = self._ctx_float(ctx, "departure_feasibility")
+        if not math.isnan(departure_feasibility) and departure_feasibility >= 0.95:
+            return True
+
+        departure_margin = self._ctx_float(ctx, "departure_margin")
+        return not math.isnan(departure_margin) and departure_margin <= self.energy_epsilon
+
+    def _ev_can_wait_for_expected_solar(
+        self,
+        ctx: Mapping[str, float | bool | None],
+        obs: np.ndarray,
+        obs_map: Mapping[str, int],
+    ) -> bool:
+        if self._ev_departure_is_infeasible(ctx):
+            return False
+        if float(ctx["hours_to_departure"]) <= max(self.emergency_hours, self.ev_service_lookahead_hours):
+            return False
+        if self._ev_departure_is_tight(ctx):
+            return False
+        return self._forecast_solar_resource_expected(obs, obs_map)
+
     def _safe_ev_charge_rate(
         self,
         ctx: Mapping[str, float | bool | None],
@@ -1123,14 +1188,10 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         if required_rate <= self.energy_epsilon:
             return 0.0
 
-        departure_margin = self._ctx_float(ctx, "departure_margin")
-        departure_feasibility = self._ctx_float(ctx, "departure_feasibility")
         hours = float(ctx["hours_to_departure"])
-        if (not math.isnan(departure_margin) and departure_margin < 0.0) or (
-            not math.isnan(departure_feasibility) and departure_feasibility < 0.75
-        ):
+        if self._ev_departure_is_infeasible(ctx):
             return max(required_rate, self.emergency_charge_rate)
-        if not math.isnan(departure_feasibility) and departure_feasibility < 1.0:
+        if self._ev_departure_is_tight(ctx):
             return max(required_rate, self.ev_service_floor_rate)
         if hours <= self.emergency_hours or required_rate >= 0.80:
             return max(required_rate, self.emergency_charge_rate)
@@ -1146,8 +1207,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         if not math.isnan(departure_margin) and departure_margin < 0.0:
             return True
 
-        departure_feasibility = self._ctx_float(ctx, "departure_feasibility")
-        if not math.isnan(departure_feasibility) and departure_feasibility < 1.0:
+        if self._ev_departure_is_infeasible(ctx) or self._ev_departure_is_tight(ctx):
             return True
 
         hours = float(ctx["hours_to_departure"])
@@ -1309,11 +1369,13 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             )
             if not ctx.get("connected"):
                 continue
+            if self._ev_can_wait_for_expected_solar(ctx, obs, obs_map):
+                continue
             if self._minimum_ev_service_charge_rate(ctx) > self.energy_epsilon:
                 return True
             if self._ev_service_gap(ctx) > self.energy_epsilon and (
                 float(ctx["hours_to_departure"]) <= self.ev_service_lookahead_hours
-                or self._ctx_float(ctx, "departure_feasibility") < 1.0
+                or self._ev_departure_is_infeasible(ctx)
             ):
                 return True
         return False
@@ -1371,11 +1433,13 @@ class NormalPolicy(_OperationalBaselinePolicy):
 
     def _compute_deferrable_action(
         self,
+        agent_idx: int,
         obs: np.ndarray,
         obs_map: Dict[str, int],
         action_name: str,
         bounds: Sequence[float],
     ) -> float:
+        del agent_idx
         prefix = self._resolve_deferrable_observation_prefix(action_name, obs_map)
         if prefix is None:
             return 0.0
@@ -1398,14 +1462,30 @@ class NormalPolicy(_OperationalBaselinePolicy):
         del action_name
         soc = self._get_storage_soc(obs, obs_map)
         min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
-        surplus = self._pv_surplus_kw(obs, obs_map)
-        import_power = self._get_import_power(obs, obs_map)
+        surplus = self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
+        import_power = self._budget_value(agent_idx, "local_import_kw", self._get_import_power(obs, obs_map))
         low, high = bounds
 
         if surplus > self.pv_surplus_threshold_kw and soc < max_soc:
-            return self._clip_storage_action(self.storage_charge_rate, obs, obs_map, bounds)
+            charge_rate = self._storage_power_limited_charge_rate(
+                agent_idx,
+                surplus,
+                self.storage_charge_rate,
+                obs=obs,
+                obs_map=obs_map,
+                target_soc=max_soc,
+            )
+            return self._clip_storage_action(charge_rate, obs, obs_map, bounds)
         if import_power > self.normal_storage_discharge_import_threshold_kw and soc > min_soc:
-            return self._clip_storage_action(-self.storage_discharge_rate, obs, obs_map, bounds)
+            discharge_rate = self._storage_power_limited_discharge_rate(
+                agent_idx,
+                import_power,
+                self.storage_discharge_rate,
+                obs=obs,
+                obs_map=obs_map,
+                reserve_soc=min_soc,
+            )
+            return self._clip_storage_action(-discharge_rate, obs, obs_map, bounds)
         return float(np.clip(0.0, low, high))
 
 
@@ -1461,11 +1541,13 @@ class RBCBasicPolicy(_OperationalBaselinePolicy):
 
     def _compute_deferrable_action(
         self,
+        agent_idx: int,
         obs: np.ndarray,
         obs_map: Dict[str, int],
         action_name: str,
         bounds: Sequence[float],
     ) -> float:
+        del agent_idx
         prefix = self._resolve_deferrable_observation_prefix(action_name, obs_map)
         if prefix is None:
             return 0.0
@@ -1531,6 +1613,7 @@ class RBCSmartPolicy(RBCBasicPolicy):
         service_gap = self._ev_service_gap(ctx)
         service_rate = self._minimum_ev_service_charge_rate(ctx)
         urgent_service = self._ev_service_is_urgent(ctx)
+        wait_for_solar = self._ev_can_wait_for_expected_solar(ctx, obs, obs_map)
         price_ctx = self._get_price_context(obs, obs_map)
         surplus = self._pv_surplus_kw(obs, obs_map)
         forecast_surplus = self._forecast_local_surplus_kw(obs, obs_map)
@@ -1546,6 +1629,7 @@ class RBCSmartPolicy(RBCBasicPolicy):
             and low < 0.0
             and safe_v2g_rate > self.energy_epsilon
             and useful_local_import
+            and (bool(price_ctx["expensive"]) or stressed_or_forecast)
             and surplus <= self.pv_surplus_threshold_kw
         ):
             v2g_rate = self._ev_power_limited_discharge_rate(ctx, import_power, safe_v2g_rate)
@@ -1567,7 +1651,7 @@ class RBCSmartPolicy(RBCBasicPolicy):
             action = self._safe_ev_charge_rate(buffered_ctx, charge_rate, bounds)
             self._record_ev_charge_dispatch(agent_idx, buffered_ctx, action, local_first=True)
             return action
-        if not urgent_service:
+        if wait_for_solar or not urgent_service:
             return 0.0
         if (
             bool(price_ctx["cheap"])
@@ -1575,11 +1659,16 @@ class RBCSmartPolicy(RBCBasicPolicy):
             and surplus <= self.pv_surplus_threshold_kw
             and forecast_surplus <= self.pv_surplus_threshold_kw
         ):
-            return self._safe_ev_charge_rate(ctx, max(service_rate, self.ev_price_charge_rate), bounds)
-        return self._safe_ev_charge_rate(ctx, service_rate, bounds)
+            action = self._safe_ev_charge_rate(ctx, max(service_rate, self.ev_price_charge_rate), bounds)
+            self._record_ev_charge_dispatch(agent_idx, ctx, action, local_first=True)
+            return action
+        action = self._safe_ev_charge_rate(ctx, service_rate, bounds)
+        self._record_ev_charge_dispatch(agent_idx, ctx, action, local_first=True)
+        return action
 
     def _compute_deferrable_action(
         self,
+        agent_idx: int,
         obs: np.ndarray,
         obs_map: Dict[str, int],
         action_name: str,
@@ -1593,7 +1682,7 @@ class RBCSmartPolicy(RBCBasicPolicy):
 
         urgency = self._get_deferrable_value(obs, obs_map, prefix, "urgency_ratio", default=0.0)
         slack = self._get_deferrable_value(obs, obs_map, prefix, "slack_ratio", default=1.0)
-        surplus = self._pv_surplus_kw(obs, obs_map)
+        surplus = self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
         stressed_or_forecast = self._is_grid_stressed_or_forecast_stressed(obs, obs_map)
         import_blocking = self._deferrable_grid_import_is_blocking(obs, obs_map)
 
@@ -1623,7 +1712,7 @@ class RBCSmartPolicy(RBCBasicPolicy):
         del action_name
         soc = self._get_storage_soc(obs, obs_map)
         min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
-        surplus = self._pv_surplus_kw(obs, obs_map)
+        surplus = self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
         forecast_surplus = self._forecast_local_surplus_kw(obs, obs_map)
         price_ctx = self._get_price_context(obs, obs_map)
         import_power = self._budget_value(agent_idx, "local_import_kw", self._get_import_power(obs, obs_map))
@@ -1662,14 +1751,16 @@ class RBCSmartPolicy(RBCBasicPolicy):
             )
             return self._clip_storage_action(charge_rate, obs, obs_map, bounds)
         if (
-            (import_power > self.storage_discharge_import_threshold_kw or has_ev_service_demand or has_deferrable_demand)
+            (
+                import_power > self.storage_discharge_import_threshold_kw
+                or ((has_ev_service_demand or has_deferrable_demand) and import_power > self.energy_epsilon)
+            )
             and not local_surplus_now
             and soc > max(min_soc, self.storage_price_discharge_soc_floor)
         ):
-            useful_power = import_power if import_power > self.storage_discharge_import_threshold_kw else self.import_peak_threshold_kw
             discharge_rate = self._storage_power_limited_discharge_rate(
                 agent_idx,
-                useful_power,
+                import_power,
                 self.storage_discharge_rate,
                 obs=obs,
                 obs_map=obs_map,
@@ -1752,6 +1843,7 @@ class RBCCommunityPolicy(RBCSmartPolicy):
         service_gap = self._ev_service_gap(ctx)
         service_rate = self._minimum_ev_service_charge_rate(ctx)
         urgent_service = self._ev_service_is_urgent(ctx)
+        wait_for_solar = self._ev_can_wait_for_expected_solar(ctx, obs, obs_map)
         price_ctx = self._get_price_context(obs, obs_map)
         local_surplus = self._pv_surplus_kw(obs, obs_map)
         community_surplus = self._community_surplus_kw(obs, obs_map)
@@ -1775,6 +1867,12 @@ class RBCCommunityPolicy(RBCSmartPolicy):
             and low < 0.0
             and safe_v2g_rate > self.energy_epsilon
             and (useful_community_import or useful_local_import)
+            and (
+                bool(price_ctx["near_forecast_peak"])
+                or local_stressed
+                or community_stressed
+                or (community_stressed_or_forecast and not bool(price_ctx["cheap"]))
+            )
             and local_surplus <= self.pv_surplus_threshold_kw
             and community_surplus <= self.community_surplus_threshold_kw
         ):
@@ -1817,7 +1915,7 @@ class RBCCommunityPolicy(RBCSmartPolicy):
                 community_first=True,
             )
             return action
-        if not urgent_service:
+        if wait_for_solar or not urgent_service:
             return 0.0
         if (
             bool(price_ctx["cheap"])
@@ -1826,11 +1924,28 @@ class RBCCommunityPolicy(RBCSmartPolicy):
             and community_surplus <= self.community_surplus_threshold_kw
             and forecast_community_surplus <= self.community_surplus_threshold_kw
         ):
-            return self._safe_ev_charge_rate(ctx, max(service_rate, self.ev_price_charge_rate), bounds)
-        return self._safe_ev_charge_rate(ctx, service_rate, bounds)
+            action = self._safe_ev_charge_rate(ctx, max(service_rate, self.ev_price_charge_rate), bounds)
+            self._record_ev_charge_dispatch(
+                agent_idx,
+                ctx,
+                action,
+                local_first=True,
+                community_first=community_discounted,
+            )
+            return action
+        action = self._safe_ev_charge_rate(ctx, service_rate, bounds)
+        self._record_ev_charge_dispatch(
+            agent_idx,
+            ctx,
+            action,
+            local_first=True,
+            community_first=community_discounted,
+        )
+        return action
 
     def _compute_deferrable_action(
         self,
+        agent_idx: int,
         obs: np.ndarray,
         obs_map: Dict[str, int],
         action_name: str,
@@ -1844,8 +1959,12 @@ class RBCCommunityPolicy(RBCSmartPolicy):
 
         urgency = self._get_deferrable_value(obs, obs_map, prefix, "urgency_ratio", default=0.0)
         slack = self._get_deferrable_value(obs, obs_map, prefix, "slack_ratio", default=1.0)
-        local_surplus = self._pv_surplus_kw(obs, obs_map)
-        community_surplus = self._community_surplus_kw(obs, obs_map)
+        local_surplus = self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
+        community_surplus = self._budget_value(
+            agent_idx,
+            "community_surplus_kw",
+            self._community_surplus_kw(obs, obs_map),
+        )
         community_stressed_or_forecast = self._is_community_stressed_or_forecast_stressed(obs, obs_map)
         community_discounted = self._community_energy_is_discounted()
         import_blocking = self._deferrable_community_import_is_blocking(obs, obs_map)
@@ -1881,8 +2000,12 @@ class RBCCommunityPolicy(RBCSmartPolicy):
         del action_name
         soc = self._get_storage_soc(obs, obs_map)
         min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
-        local_surplus = self._pv_surplus_kw(obs, obs_map)
-        community_surplus = self._community_surplus_kw(obs, obs_map)
+        local_surplus = self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
+        community_surplus = self._budget_value(
+            agent_idx,
+            "community_surplus_kw",
+            self._community_surplus_kw(obs, obs_map),
+        )
         forecast_community_surplus = self._forecast_community_surplus_kw(obs, obs_map)
         price_ctx = self._get_price_context(obs, obs_map)
         community_stressed = self._is_community_stressed(obs, obs_map)
@@ -1949,14 +2072,18 @@ class RBCCommunityPolicy(RBCSmartPolicy):
             return self._clip_storage_action(charge_rate, obs, obs_map, bounds)
 
         if (
-            (useful_community_import or useful_local_import or has_ev_service_demand or has_deferrable_demand)
+            (
+                useful_local_import
+                or (
+                    (has_ev_service_demand or has_deferrable_demand)
+                    and max(import_power, community_import) > self.energy_epsilon
+                )
+            )
             and not local_surplus_now
             and not community_surplus_now
             and soc > max(min_soc, self.storage_price_discharge_soc_floor)
         ):
             useful_power = max(import_power, community_import)
-            if useful_power <= self.energy_epsilon:
-                useful_power = self.community_import_threshold_kw
             discharge_rate = self._storage_power_limited_discharge_rate(
                 agent_idx,
                 useful_power,

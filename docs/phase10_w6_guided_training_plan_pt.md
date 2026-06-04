@@ -1,55 +1,47 @@
-# Phase 10 W6 - Treino Guiado Contra RBCSmart
+# Phase 10 W6 - Treino Guiado Contra RBCs Fortes
 
-Objetivo: deixar de fazer sweeps full-year cegos e atacar o modo de falha real:
-EV service melhora com teacher/BC, mas ainda ha excesso de bateria/V2G e custo
-acima de `RBCSmartPolicy`.
+Snapshot: 2026-06-04.
 
-## Alvo Oficial
+Objetivo: treinar `MADDPG` e `MATD3` sem voltar a sweeps cegos. A comparacao
+principal passa por bater `RBCSmartPolicy` e `RBCCommunityPolicy` na mesma
+janela, dataset, versao do simulador e politica de export.
 
-`RBCSmartPolicy` e o alvo W6. Uma run so e promovida se passar:
+## Alvos
 
-- `ev_min_acceptable_feasible_rate >= 0.99`
-- `electrical_violation_kwh == 0`
-- `ev_within_tolerance_rate >= 0.40`
-- custo full-year `<= 17884.3`
-- bateria preferencialmente `<= 49000 kWh`
-- metricas comunitarias dentro de ~3% de RBCSmart, salvo melhoria clara de custo
+Um candidato RL/MARL so e promovido se:
 
-`cost_ratio_to_bau` continua fora do gate porque BAU esta desligado de proposito.
+- `ev_min_acceptable_feasible_rate >= 0.99`;
+- `electrical_violation_kwh == 0`;
+- `ev_within_tolerance_feasible_rate >= 0.40` como alvo inicial;
+- custo oficial do simulador menor ou igual ao melhor RBC forte da mesma janela;
+- bateria/V2G sem abuso evidente;
+- import/export/self-consumption/picos nao degradam sem ganho claro de custo.
 
-## Implementacao
+O custo oficial vem do simulador:
 
-Gerador de configs:
+1. `district_cost_community_market_settled_total_eur`, quando existe;
+2. `district_cost_total_control_eur`, como fallback.
 
-```bash
-.venv/bin/python scripts/generate_phase10_w6_configs.py --stage all --output-dir runs/generated_configs/phase10_w6
-```
+Nao usar custo recalculado do lado dos algoritmos para scorecard.
 
-Saidas geradas:
-
-- `runs/generated_configs/phase10_w6/run_matrix.csv`
-- `runs/generated_configs/phase10_w6/run_matrix.json`
-- `runs/generated_configs/phase10_w6/w6a-local/*.yaml`
-- `runs/generated_configs/phase10_w6/w6b-remote-smoke/*.yaml`
-- `runs/generated_configs/phase10_w6/w6c-full-year/*.yaml`
-
-Scorecard contra RBCSmart:
+## Geração De Configs
 
 ```bash
-.venv/bin/python scripts/build_phase10_candidate_scorecard.py \
-  --summary-csv runs/remote_results/phase10_wave5_completed_20260528/summary.csv \
-  --output-csv docs/phase10_wave5_candidate_scorecard_clean.csv \
-  --output-md docs/phase10_wave5_candidate_scorecard_pt.md
+.venv/bin/python scripts/generate_phase10_w6_configs.py \
+  --stage all \
+  --output-dir runs/generated_configs/phase10_w6
 ```
 
-## Matriz W6
+As configs geradas ficam em `runs/`, nao em `docs/`.
 
-| Stage | Conteudo | Recursos |
+Stages relevantes:
+
+| Stage | Conteudo | Uso |
 |---|---|---|
-| `w6-smoke-local` | 4 recipes MADDPG, 2 seeds, 256 steps | local |
-| `w6a-local` | RBCSmart/RBCCommunity por janela + 4 recipes MADDPG, 2 seeds, 4 janelas, 8 episodios | local |
-| `w6b-remote-smoke` | Top 2 recipes MADDPG, 2 seeds, 4096 steps | A100, 64 GB, 4 CPUs, 4h |
-| `w6c-full-year` | Top 2 recipes, MADDPG + MATD3, 2 seeds, 2 episodios full-year | A100, 96 GB, 4 CPUs, 12h |
+| `w6-smoke-local` | MADDPG/MATD3 curto | validar wiring local |
+| `w6a-local` | janelas locais + RBCs | escolher recipes |
+| `w6b-remote-smoke` | smoke remoto curto | validar imagem/SIF/CUDA/export |
+| `w6c-full-year` | full-year static | comparar contra RBCs fortes |
 
 Janelas locais:
 
@@ -58,52 +50,68 @@ Janelas locais:
 - `4096:6144`
 - `6144:8192`
 
-## Recipes
+## Recipes Prioritárias
 
-| Recipe | BC | Teacher | Storage | Regularizacao |
-|---|---:|---|---|---|
-| `w6_ev_only_bc_primary` | `0.06 -> 0.006` | `RBCSmartPolicy`, blend `4096` | BC `0.0` | storage L2 `0.004`, EV V2G L2 `0.05` |
-| `w6_balanced_bc_storage_light` | `0.04 -> 0.004` | `RBCSmartPolicy`, blend `4096` | BC `0.15` | storage L2 `0.008`, EV V2G L2 `0.05` |
-| `w6_fast_decay_less_teacher` | `0.03 -> 0.0` | `RBCSmartPolicy`, blend `2048` | BC `0.0` | storage L2 `0.004`, EV V2G L2 `0.05` |
-| `w6_clone_diagnostic` | `0.50 -> 0.50` | `RBCSmartPolicy`, policy loss `0` | BC `0.25` | diagnostico de mapping/clonagem |
+Para continuar trabalho novo, priorizar:
 
-Todos usam `CostServiceCommunityFeasiblePrecisionRewardV46`,
-`RewardWeightedMultiAgentReplayBuffer`, `priority_fraction=0.35`,
-`priority_mode=negative_reward` e prioridade de eventos EV em partidas.
+- `w6_flex_ev_gate_repair_mid_bc`
+- `w6_flex_ev_gate_repair_cost_push`
+- `w6_flex_ev_gate_repair_policy_open`
+- `w6_flex_v2g_open_value`, apenas como diagnostico de V2G/value
 
-## Watchdog
+Todas devem manter:
 
-O watchdog de stall fica desligado em local/smoke e ligado nos full-year. Para
-nao pesar em I/O, o contexto JSON so e reescrito a cada
-`stall_watchdog_context_interval_steps=64` nos `step_start`.
+- teacher/warm-start com `RBCSmartPolicy`;
+- `RewardWeightedMultiAgentReplayBuffer`;
+- prioridade de eventos EV;
+- reward comunitaria com `community_settlement_cost_weight > 0`;
+- export final-only em runs multi-episodio/longas.
 
-## Decisao Operacional
+## Algoritmos
 
-Nao lancar `w6c-full-year` ate:
+Primarios:
 
-1. `w6a-local` confirmar que pelo menos uma recipe bate RBCSmart na propria janela;
-2. `w6b-remote-smoke` validar CUDA/update/export/RAM;
-3. scorecard W6 mostrar EV gate e custo de janela aceitaveis.
+- `MADDPG`
+- `MATD3`
 
-## Validacao Local Inicial
+Adiar `MASAC`, `IPPO`, `MAPPO` e `HAPPO` ate haver uma recipe estavel nos dois
+primarios. Esses algoritmos ja serviram para smoke infra, mas ainda nao ha sinal
+forte para gastar full-year neles.
 
-Executado em 2026-05-29:
+## Dynamic Topology
 
-- `w6-smoke-local`: 8/8 completed, `exported_kpis.csv` presente em todas.
-- `w6a-local` baselines: 8/8 completed, `exported_kpis.csv` presente em todas.
+Dynamic topology fica reservado para baselines/RBCs por agora.
 
-O smoke de 256 steps valida schema, runner, replay, teacher/warm-start,
-export final-only e manifest flow. Nao distingue performance entre recipes
-porque o episodio e curto e ainda dominado pelo teacher.
+`MADDPG` e `MATD3` assumem layout fixo; `entity + dynamic` deve continuar a
+falhar cedo no schema para estes algoritmos.
 
-Targets RBCSmart por janela:
+## Test Plan Antes De Remote
 
-| Window | Cost EUR | EV min | EV tol | Battery kWh | V2G kWh | Import kWh | Export kWh | Solar self-cons. |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `0:2048` | 4018.1 | 1.000 | 0.406 | 5886 | 0.74 | 37252 | 11127 | 0.514 |
-| `2048:4096` | 4671.2 | 1.000 | 0.479 | 5417 | 0.00 | 42291 | 6925 | 0.509 |
-| `4096:6144` | 5535.3 | 1.000 | 0.417 | 5474 | 0.00 | 37162 | 13456 | 0.422 |
-| `6144:8192` | 2727.7 | 1.000 | 0.434 | 5916 | 0.00 | 32563 | 17761 | 0.458 |
+1. Validar configs com schema.
+2. Smoke local curto para `MADDPG` e `MATD3`.
+3. Smoke dynamic local dos RBCs quando o dataset dynamic mudar.
+4. Testes:
 
-Targets RBCCommunity por janela ficam como referencia comunitaria secundaria,
-mas o gate W6A continua a ser bater a RBCSmart da propria janela.
+```bash
+.venv/bin/python -m pytest -q \
+  tests/test_dataset_config.py \
+  tests/test_config_validation.py \
+  tests/test_baseline_policies.py \
+  tests/test_phase10_w6_configs.py \
+  tests/test_reward_functions.py
+```
+
+## Recursos Remotos
+
+- Smokes CPU/server: usar margem suficiente, mas sem GPU se nao for necessario.
+- Smokes GPU: A100, 64 GB RAM, 4 CPUs, 4h.
+- Full-year RL: A100, 96 GB RAM, 4 CPUs, 12h.
+- Nenhum job deve pedir mais de 48h.
+
+## Decisão
+
+Promover para full-year apenas se:
+
+- baselines full-year novos ja estiverem fechados com Simulator 1.5.1;
+- smoke remoto confirmar imagem/SIF e export;
+- recipe local/remota curta passar gates de EV/rede sem throughput absurdo.

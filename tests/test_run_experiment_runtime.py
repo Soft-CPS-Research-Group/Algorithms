@@ -493,6 +493,31 @@ def test_resolve_citylearn_schema_input_prefers_local_schema_directory(tmp_path)
     assert schema_input["root_directory"] == str(dataset_dir.resolve())
 
 
+def test_resolve_citylearn_schema_input_applies_community_market_overlay(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    schema_path = dataset_dir / "schema.json"
+    schema_path.write_text(
+        json.dumps({"root_directory": "data/datasets/from-other-repo", "buildings": {}}),
+        encoding="utf-8",
+    )
+
+    schema_input = runner._resolve_citylearn_schema_input(
+        str(schema_path),
+        {
+            "community_market": {
+                "enabled": True,
+                "local_price_ratio_to_grid_import": 0.7,
+                "grid_export_price": 0.0,
+            }
+        },
+    )
+
+    assert schema_input["community_market"]["enabled"] is True
+    assert schema_input["community_market"]["local_price_ratio_to_grid_import"] == 0.7
+    assert schema_input["community_market"]["intra_community_sell_ratio"] == 0.7
+
+
 def test_run_experiment_refreshes_topology_after_dynamic_changes(monkeypatch, tmp_path):
     config = _build_enabled_config(artifact_profile="minimal")
     config["tracking"]["mlflow_enabled"] = False

@@ -481,19 +481,31 @@ class RuleBasedPolicy(BaseAgent):
         obs: np.ndarray,
         obs_map: Dict[str, int],
     ) -> Tuple[float, float]:
-        min_soc = self._first_available_observation_value(
-            obs,
-            obs_map,
+        def storage_value(names: Sequence[str], suffix: str, default: float) -> float:
+            for name in names:
+                value = self._get_value(obs, obs_map, name, default=float("nan"))
+                if not math.isnan(value):
+                    return value
+
+            storage_suffix = f"::{suffix}"
+            for raw_name in obs_map:
+                raw = str(raw_name)
+                if raw.startswith("storage::") and raw.endswith(storage_suffix):
+                    value = self._get_value(obs, obs_map, raw, default=float("nan"))
+                    if not math.isnan(value):
+                        return value
+
+            return default
+
+        min_soc = storage_value(
             ("electrical_storage_soc_min_ratio",),
-            suffixes=("::soc_min_ratio",),
-            default=0.0,
+            "soc_min_ratio",
+            0.0,
         )
-        max_soc = self._first_available_observation_value(
-            obs,
-            obs_map,
+        max_soc = storage_value(
             ("electrical_storage_soc_max_ratio",),
-            suffixes=("::soc_max_ratio",),
-            default=1.0,
+            "soc_max_ratio",
+            1.0,
         )
         if abs(min_soc) > 1.5:
             min_soc /= 100.0

@@ -10,7 +10,7 @@ import subprocess
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 import mlflow
 import numpy as np
@@ -140,7 +140,23 @@ def _mark_failed_outputs(path_info: dict[str, Path], exc: Exception) -> None:
         json.dump(progress_payload, progress_file, indent=2)
 
 
-def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
+def _community_market_overlay(simulator_cfg: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(simulator_cfg, Mapping):
+        return None
+    community_market = simulator_cfg.get("community_market")
+    if not isinstance(community_market, Mapping):
+        return None
+
+    overlay = dict(community_market)
+    if overlay.get("intra_community_sell_ratio") is None:
+        overlay["intra_community_sell_ratio"] = overlay.get("local_price_ratio_to_grid_import", 0.8)
+    return overlay
+
+
+def _resolve_citylearn_schema_input(
+    dataset_path_value: Any,
+    simulator_cfg: Mapping[str, Any] | None = None,
+) -> Any:
     """Prefer local schema payloads to avoid remote dataset-index lookups.
 
     CityLearn may query remote dataset registries when receiving a string schema
@@ -165,6 +181,9 @@ def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
         # directory. Copied datasets can carry a root_directory from another
         # repository, so local paths intentionally take precedence here.
         payload["root_directory"] = str(candidate.resolve().parent)
+        community_market = _community_market_overlay(simulator_cfg)
+        if community_market is not None:
+            payload["community_market"] = community_market
         return payload
 
     return dataset_path_value
@@ -623,7 +642,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
 
         simulator_cfg = config["simulator"]
         export_cfg = simulator_cfg.get("export", {})
-        schema_input = _resolve_citylearn_schema_input(simulator_cfg["dataset_path"])
+        schema_input = _resolve_citylearn_schema_input(simulator_cfg["dataset_path"], simulator_cfg)
         interface_mode = str(simulator_cfg.get("interface", "flat")).strip().lower() or "flat"
         topology_mode = str(simulator_cfg.get("topology_mode", "static")).strip().lower() or "static"
         _validate_dynamic_entity_schema_input(

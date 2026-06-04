@@ -9,9 +9,14 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+COMMUNITY_COST_KPI_CANDIDATES = (
+    "district_cost_community_market_settled_total_eur",
+    "district_community_settled_cost_total_eur",
+    "district_cost_total_control_eur",
+)
 
 KPI_KEYS = {
-    "community_cost_eur": "district_cost_total_control_eur",
+    "community_cost_eur": COMMUNITY_COST_KPI_CANDIDATES,
     "community_import_kwh": "district_energy_grid_total_import_control_kwh",
     "community_export_kwh": "district_energy_grid_total_export_control_kwh",
     "community_net_exchange_kwh": "district_energy_grid_total_net_exchange_control_kwh",
@@ -84,6 +89,30 @@ def _read_config(job_dir: Path) -> Mapping[str, Any]:
         return {}
 
 
+def _district_kpi_value(rows: Mapping[str, Mapping[str, Any]], kpi_name: str) -> float | None:
+    return _float(rows.get(kpi_name, {}).get("District"))
+
+
+def _district_kpi_candidate_value(
+    rows: Mapping[str, Mapping[str, Any]],
+    kpi_names: str | Sequence[str],
+) -> float | None:
+    if isinstance(kpi_names, str):
+        return _district_kpi_value(rows, kpi_names)
+
+    fallback: float | None = None
+    for index, kpi_name in enumerate(kpi_names):
+        value = _district_kpi_value(rows, kpi_name)
+        if value is None:
+            continue
+        if index == len(kpi_names) - 1:
+            fallback = value
+        elif abs(value) > 1e-12:
+            return value
+
+    return fallback
+
+
 def _read_district_kpis(job_dir: Path) -> dict[str, float | None]:
     candidates = sorted((job_dir / "results" / "simulation_data").glob("**/exported_kpis.csv"))
     if not candidates:
@@ -93,8 +122,9 @@ def _read_district_kpis(job_dir: Path) -> dict[str, float | None]:
         rows = {row["KPI"]: row for row in csv.DictReader(handle)}
 
     values: dict[str, float | None] = {}
-    for output_name, kpi_name in KPI_KEYS.items():
-        values[output_name] = _float(rows.get(kpi_name, {}).get("District"))
+    for output_name, kpi_names in KPI_KEYS.items():
+        values[output_name] = _district_kpi_candidate_value(rows, kpi_names)
+
     return values
 
 

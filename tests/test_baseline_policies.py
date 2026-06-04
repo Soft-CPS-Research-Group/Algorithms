@@ -9,6 +9,7 @@ from algorithms.agents.baseline_policies import (
     RBCSmartPolicy,
     RandomPolicy,
 )
+from algorithms.agents.rbc_agent import StorageInfo
 
 
 class DummySpace:
@@ -388,6 +389,100 @@ def test_rbc_smart_policy_does_not_charge_storage_at_observed_soc_max():
     )
 
     actions = agent.predict([np.array([4.0, 1.0, 0.85, 0.10, 0.85, 10.0], dtype=float)])
+
+    assert actions[0][0] == pytest.approx(0.0)
+
+
+def test_rbc_smart_policy_ignores_ev_soc_limits_when_limiting_storage():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {"storage_max_soc": 0.75, "pv_charge_rate": 1.0},
+            }
+        }
+    )
+    observation_names = [
+        "pv_power_kw",
+        "load_power_kw",
+        "export_power_kw",
+        "import_power_kw",
+        "storage::Building_1/electrical_storage::soc",
+        "storage::Building_1/electrical_storage::soc_min_ratio",
+        "charger::Building_1/charger_1_1::connected_ev::soc_max_ratio",
+    ]
+    agent.attach_environment(
+        observation_names=[observation_names],
+        action_names=[["electrical_storage"]],
+        action_space=[DummySpace([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+
+    actions = agent.predict([np.array([9.0, 1.0, 8.0, 0.0, 0.10, 0.0, 0.0], dtype=float)])
+
+    assert actions[0][0] > 0.0
+
+
+def test_rbc_smart_policy_trusts_explicit_import_over_passive_pv_surplus():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {
+                    "storage_discharge_import_threshold_kw": 0.25,
+                    "storage_price_discharge_soc_floor": 0.20,
+                },
+            }
+        }
+    )
+    observation_names = [
+        "pv_power_kw",
+        "load_power_kw",
+        "export_power_kw",
+        "import_power_kw",
+        "storage::Building_1/electrical_storage::soc",
+        "storage::Building_1/electrical_storage::soc_min_ratio",
+    ]
+    agent.attach_environment(
+        observation_names=[observation_names],
+        action_names=[["electrical_storage"]],
+        action_space=[DummySpace([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+
+    actions = agent.predict([np.array([3.0, 1.0, 0.0, 1.5, 0.60, 0.0], dtype=float)])
+
+    assert actions[0][0] <= 0.0
+
+
+def test_rbc_smart_policy_does_not_treat_non_pv_export_as_charge_surplus():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {"storage_discharge_import_threshold_kw": 0.25},
+            }
+        }
+    )
+    observation_names = [
+        "pv_power_kw",
+        "load_power_kw",
+        "export_power_kw",
+        "import_power_kw",
+        "storage::Building_1/electrical_storage::soc",
+        "storage::Building_1/electrical_storage::soc_min_ratio",
+    ]
+    agent.attach_environment(
+        observation_names=[observation_names],
+        action_names=[["electrical_storage"]],
+        action_space=[DummySpace([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+
+    actions = agent.predict([np.array([0.1, 1.0, 0.8, 0.0, 0.50, 0.0], dtype=float)])
 
     assert actions[0][0] == pytest.approx(0.0)
 
@@ -1234,7 +1329,7 @@ def test_rbc_smart_policy_uses_compact_local_net_forecast_for_stress():
     assert actions[0][2] == pytest.approx(0.0)
 
 
-def test_rbc_smart_policy_boosts_ev_service_when_departure_feasibility_is_low():
+def test_rbc_smart_policy_boosts_ev_service_when_departure_feasibility_is_infeasible():
     agent = RBCSmartPolicy(
         {
             "algorithm": {
@@ -1267,7 +1362,7 @@ def test_rbc_smart_policy_boosts_ev_service_when_departure_feasibility_is_low():
             10.0,
             0.5,
             1.0,
-            0.79,
+            0.50,
             0.80,
             60.0,
             10.0,
@@ -1277,14 +1372,71 @@ def test_rbc_smart_policy_boosts_ev_service_when_departure_feasibility_is_low():
             0.0,
             0.0,
             1.0,
-            0.60,
+            1.20,
         ],
         dtype=float,
     )
 
     actions = agent.predict([obs])
 
-    assert actions[0][1] == pytest.approx(0.08108108108108115)
+    assert actions[0][1] == pytest.approx(0.75)
+
+
+def test_rbc_smart_policy_waits_for_solar_when_ev_departure_is_feasible():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {
+                    "flex_trickle_charge": 0.0,
+                    "ev_service_floor_rate": 0.25,
+                    "ev_service_margin_rate": 0.05,
+                    "ev_service_lookahead_hours": 4.0,
+                    "ev_deadline_buffer_hours": 0.25,
+                },
+            }
+        }
+    )
+    names = _base_observation_names() + [
+        "charger::Building_1/charger_1_1::min_required_action_normalized",
+        "charger::Building_1/charger_1_1::departure_feasibility_ratio",
+        "charger::Building_1/charger_1_1::departure_energy_margin_kwh",
+        "district__direct_solar_irradiance_predicted_2",
+    ]
+    _attach(agent, names, _action_names())
+    obs = np.array(
+        [
+            0.20,
+            np.nan,
+            np.nan,
+            np.nan,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.5,
+            1.0,
+            0.25,
+            0.87,
+            60.0,
+            12.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.2818,
+            0.8267,
+            7.8,
+            815.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] == pytest.approx(0.0)
 
 
 def test_rbc_smart_policy_price_charge_ceiling_is_not_capped_by_storage_target():
@@ -1530,6 +1682,82 @@ def test_rbc_smart_policy_ignores_min_required_action_when_ev_is_at_target():
     actions = agent.predict([obs])
 
     assert actions[0][1] == pytest.approx(0.0)
+
+
+def test_rbc_smart_policy_limits_storage_charge_to_surplus_left_after_ev_charge():
+    agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}})
+    _attach(agent, _base_observation_names(), _action_names())
+    agent._dataset_info = {
+        "storage_info": {"Building_1": StorageInfo(nominal_power=10.0, capacity=100.0, phase_connection=None)}
+    }
+    obs = np.array(
+        [
+            0.10,
+            0.10,
+            0.10,
+            0.10,
+            10.0,
+            0.0,
+            0.0,
+            20.0,
+            0.5,
+            1.0,
+            0.20,
+            0.80,
+            60.0,
+            4.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] == pytest.approx(1.0)
+    assert actions[0][0] == pytest.approx((10.0 - 7.4) / 10.0)
+
+
+def test_rbc_smart_policy_can_discharge_storage_to_cover_urgent_ev_import():
+    agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}})
+    _attach(agent, _base_observation_names(), _action_names())
+    agent._dataset_info = {
+        "storage_info": {"Building_1": StorageInfo(nominal_power=10.0, capacity=100.0, phase_connection=None)}
+    }
+    obs = np.array(
+        [
+            0.50,
+            0.50,
+            0.50,
+            0.50,
+            0.0,
+            0.0,
+            0.0,
+            20.0,
+            0.6,
+            1.0,
+            0.20,
+            0.80,
+            60.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] > 0.0
+    assert actions[0][0] < 0.0
 
 
 def test_rbc_smart_policy_default_ev_tolerance_ignores_small_service_gap():
