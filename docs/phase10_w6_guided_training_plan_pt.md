@@ -112,6 +112,6 @@ falhar cedo no schema para estes algoritmos.
 
 Promover para full-year apenas se:
 
-- baselines full-year novos ja estiverem fechados com Simulator 1.5.1;
+- baselines full-year novos ja estiverem fechados com Simulator 1.5.3;
 - smoke remoto confirmar imagem/SIF e export;
 - recipe local/remota curta passar gates de EV/rede sem throughput absurdo.

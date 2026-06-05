@@ -10,7 +10,7 @@ intermedios foram removidos do repo. Resultados brutos devem ficar em
 ## Leitura Principal
 
 - `team_update_baselines_maddpg_performance_pt.md` - estado atual para a equipa:
-  baselines, MADDPG/MATD3, Simulator 1.5.1, dynamic datasets e proximos passos.
+  baselines, MADDPG/MATD3, Simulator 1.5.3, dynamic datasets e proximos passos.
 - `community_optimization_success_scorecard_pt.md` - gates e KPIs para decidir
   se um controlador e candidato serio.
 - `phase10_w6_guided_training_plan_pt.md` - plano atual de treino guiado para
@@ -23,7 +23,7 @@ intermedios foram removidos do repo. Resultados brutos devem ficar em
 - `inference_bundle.md` - contrato de export/inference.
 - `entity_interface_playbook_pt.md` - contrato entity do Simulator.
 - `entity_encoding_profiles_v1_pt.md` - perfis de encoding ativos para
-  Simulator 1.5.1.
+  Simulator 1.5.3.
 - `simulator_limits.md` - limites e cuidados conhecidos do simulador.
 
 ## Algoritmos E Comparadores

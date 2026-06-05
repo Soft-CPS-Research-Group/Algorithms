@@ -7,7 +7,7 @@ scorecards obsoletos foi removido do repo; resultados brutos ficam em `runs/`.
 
 ## Estado Atual
 
-- Simulador: `softcpsrecsimulator==1.5.1`.
+- Simulador: `softcpsrecsimulator==1.5.3`.
 - Dataset principal anual: `citylearn_challenge_2022_phase_all_plus_evs`.
 - Interface principal: `entity`.
 - Topologia neural suportada: `static`.
@@ -98,7 +98,7 @@ Depois do commit, push e nova imagem/SIF:
 1. Smoke remoto curto de `RBCSmartPolicy`, `RBCCommunityPolicy`, `MADDPG` e
    `MATD3`.
 2. Baselines full-year no dataset anual/static para fixar a nova escala de custo
-   com Simulator 1.5.1.
+   com Simulator 1.5.3.
 3. Baselines dynamic do Gustavo/Jorge no server, nao em GPU, usando o dataset
    dynamic inteiro.
 4. Runs W6 para `MADDPG` e `MATD3` apenas se os smokes e baselines baterem

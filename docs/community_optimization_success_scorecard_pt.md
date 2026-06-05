@@ -32,7 +32,8 @@ Depois de passar os gates, a ordenacao deve olhar para:
 | 8 | `v2g_export_kwh` | util apenas se nao sacrificar EV service/rede/custo |
 
 Nota sobre custo: desde `softcpsrecsimulator==1.5.1`, o custo oficial vem do
-simulador e ja recorta exportacao a zero (`max(net_kWh, 0) * price`). Portanto
+simulador e ja recorta exportacao a zero (`max(net_kWh, 0) * price`). A versao
+operacional atual e `softcpsrecsimulator==1.5.3`. Portanto
 `community_cost_eur` deve mapear diretamente para o KPI de custo do simulador:
 quando o mercado comunitario esta ativo, primeiro
 `district_cost_community_market_settled_total_eur`; caso contrario,

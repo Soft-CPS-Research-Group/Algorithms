@@ -1,8 +1,8 @@
-# Perfis de encoding entity para Simulator 1.5.1
+# Perfis de encoding entity para Simulator 1.5.3
 
 Snapshot: 2026-06-04
 
-O Simulator 1.5.1 expoe todos os bundles entity ativos nos datasets principais,
+O Simulator 1.5.3 expoe todos os bundles entity ativos nos datasets principais,
 mas o bundle `entity_forecasts_derived` passou a ser compacto:
 
 ```text
@@ -28,7 +28,7 @@ maddpg_v1:
 
 maddpg_v2_compact:
   perfil compacto anterior. Mantido para reproduzir experiências antigas.
-  Não é o melhor default para Simulator 1.5.1 porque filtra várias features
+  Não é o melhor default para Simulator 1.5.3 porque filtra várias features
   novas de deadline, capacidade factível e feedback.
 
 maddpg_v3_operational:
@@ -67,7 +67,7 @@ Reprodução antiga:
 Nota de performance:
 
 ```text
-O Simulator 1.5.1 mantem a grelha compacta de forecasts derivados e evita o leak de
+O Simulator 1.5.3 mantem a grelha compacta de forecasts derivados e evita o leak de
 `entity_action_feedback`. No smoke local 2022 all-plus-EVs com todos os bundles
 ativos, RandomPolicy 700 steps ficou com +13.7 MB RSS e 13.6 ms/step wall.
 
