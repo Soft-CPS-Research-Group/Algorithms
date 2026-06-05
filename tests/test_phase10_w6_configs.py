@@ -21,7 +21,11 @@ def test_w6_smoke_local_generates_one_short_config_per_recipe(tmp_path):
         assert config["simulator"]["episode_time_steps"] == 256
         assert config["simulator"]["simulation_end_time_step"] == 255
         assert config["simulator"]["episodes"] == 1
-        assert config["algorithm"]["exploration"]["params"]["random_exploration_steps"] == 64
+        exploration = config["algorithm"]["exploration"]["params"]
+        assert exploration["random_exploration_steps"] == 64
+        assert exploration["n_step_returns"] == 8
+        assert exploration["actor_policy_loss_normalization"] is True
+        assert exploration["actor_offline_bc_pretrain_steps"] == 8
 
 
 def test_w6a_local_matrix_generates_guided_window_configs(tmp_path):
@@ -79,9 +83,18 @@ def test_w6a_local_matrix_generates_guided_window_configs(tmp_path):
     assert exploration["actor_storage_action_l2_penalty"] == 0.004
     assert exploration["actor_ev_v2g_action_l2_penalty"] == 0.05
     assert exploration["actor_behavior_cloning_extra_updates"] == 1
+    assert exploration["n_step_returns"] == 8
+    assert exploration["n_step_gamma"] == 0.995
+    assert exploration["n_step_priority_aggregation"] == "max"
+    assert exploration["actor_policy_loss_normalization"] is True
+    assert exploration["actor_policy_loss_normalization_max_scale"] == 100.0
+    assert exploration["actor_offline_bc_pretrain_steps"] == 64
+    assert exploration["actor_offline_bc_pretrain_min_replay"] == 256
     assert config["tracking"]["tags"]["recipe"] == "w6_ev_only_bc_primary"
     assert config["tracking"]["tags"]["window"] == "win0_0000_2048"
     assert config["tracking"]["tags"]["seed"] == 123
+    assert config["tracking"]["tags"]["n_step_returns"] == 8
+    assert config["tracking"]["tags"]["actor_policy_loss_normalization"] is True
 
 
 def test_w6a_local_can_generate_clone_improvement_variants(tmp_path):
@@ -136,6 +149,8 @@ def test_w6a_local_can_generate_residual_community_recipe(tmp_path):
     assert exploration["residual_policy_enabled"] is True
     assert exploration["residual_action_scale"] == 0.08
     assert exploration["residual_action_final_scale"] == 0.28
+    assert exploration["n_step_returns"] == 8
+    assert exploration["actor_policy_loss_normalization"] is True
     assert config["tracking"]["tags"]["teacher_policy"] == "RBCCommunityPolicy"
     assert config["tracking"]["tags"]["residual_policy"] is True
 
@@ -332,8 +347,12 @@ def test_w6c_full_year_matrix_generates_maddpg_and_matd3_remote_configs(tmp_path
 
     assert config["algorithm"]["name"] == "MATD3"
     assert config["algorithm"]["hyperparameters"]["require_cuda"] is True
-    assert config["algorithm"]["exploration"]["params"]["target_policy_smoothing"] is True
-    assert config["algorithm"]["exploration"]["params"]["actor_update_interval"] == 2
+    exploration = config["algorithm"]["exploration"]["params"]
+    assert exploration["target_policy_smoothing"] is True
+    assert exploration["actor_update_interval"] == 2
+    assert exploration["n_step_returns"] == 8
+    assert exploration["actor_policy_loss_normalization"] is True
+    assert exploration["actor_offline_bc_pretrain_steps"] == 128
     assert config["simulator"]["episodes"] == 2
     assert config["simulator"]["episode_time_steps"] == 8760
     assert config["simulator"]["deterministic_finish"] is True

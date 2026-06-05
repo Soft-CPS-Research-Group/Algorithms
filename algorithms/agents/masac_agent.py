@@ -148,16 +148,19 @@ class MASAC(MADDPG):
         done = bool(terminated or truncated)
         self._update_reward_normalizer(rewards)
         behavior_actions = self._transition_behavior_actions(actions)
+        next_behavior_actions = self._transition_next_behavior_actions(behavior_actions)
         priority_boost = self._transition_observation_event_priority_boost()
-        self._push_replay_transition(
+        self._store_replay_transition(
             observations=observations,
             actions=actions,
             rewards=rewards,
             next_observations=next_observations,
             done=done,
             behavior_actions=behavior_actions,
+            next_behavior_actions=next_behavior_actions,
             priority_boost=priority_boost,
         )
+        self._maybe_run_actor_offline_bc_pretraining(global_learning_step)
 
         if len(self.replay_buffer) < self.batch_size:
             return
@@ -204,7 +207,10 @@ class MASAC(MADDPG):
                 min_q_next = torch.minimum(q1_next, q2_next)
                 alpha = self._alpha(agent_idx).detach()
                 soft_value = min_q_next - alpha * next_log_probs[agent_idx]
-                target = rewards_all[agent_idx] + self.gamma * soft_value * (1 - dones_all[agent_idx])
+                bootstrap_gamma = float(getattr(self, "n_step_gamma", getattr(self, "gamma", 0.99))) ** int(
+                    getattr(self, "n_step_returns", 1) or 1
+                )
+                target = rewards_all[agent_idx] + bootstrap_gamma * soft_value * (1 - dones_all[agent_idx])
                 if self.critic_target_clip_abs > 0.0:
                     target = torch.clamp(target, -self.critic_target_clip_abs, self.critic_target_clip_abs)
                 q_targets.append(target)

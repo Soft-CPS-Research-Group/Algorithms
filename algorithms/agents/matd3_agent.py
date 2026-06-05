@@ -99,7 +99,7 @@ class MATD3(MADDPG):
         behavior_actions = self._transition_behavior_actions(actions)
         next_behavior_actions = self._transition_next_behavior_actions(behavior_actions)
         priority_boost = self._transition_observation_event_priority_boost()
-        self._push_replay_transition(
+        self._store_replay_transition(
             observations=observations,
             actions=actions,
             rewards=rewards,
@@ -109,6 +109,7 @@ class MATD3(MADDPG):
             next_behavior_actions=next_behavior_actions,
             priority_boost=priority_boost,
         )
+        self._maybe_run_actor_offline_bc_pretraining(global_learning_step)
 
         if len(self.replay_buffer) < self.batch_size:
             return
@@ -162,7 +163,10 @@ class MATD3(MADDPG):
                 q1_next = self.critic_targets[agent_idx](global_next_state, global_next_actions)
                 q2_next = self.critic_targets_2[agent_idx](global_next_state, global_next_actions)
                 q_next = torch.minimum(q1_next, q2_next)
-                target = rewards_all[agent_idx] + self.gamma * q_next * (1 - dones_all[agent_idx])
+                bootstrap_gamma = float(getattr(self, "n_step_gamma", getattr(self, "gamma", 0.99))) ** int(
+                    getattr(self, "n_step_returns", 1) or 1
+                )
+                target = rewards_all[agent_idx] + bootstrap_gamma * q_next * (1 - dones_all[agent_idx])
                 if self.critic_target_clip_abs > 0.0:
                     target = torch.clamp(target, -self.critic_target_clip_abs, self.critic_target_clip_abs)
                 q_targets.append(target)
@@ -227,6 +231,9 @@ class MATD3(MADDPG):
         total_actor_loss = 0.0
         actor_loss_values: List[float] = []
         actor_policy_loss_values: List[float] = []
+        actor_policy_loss_weighted_values: List[float] = []
+        actor_policy_loss_scale_values: List[float] = []
+        actor_policy_q_abs_mean_values: List[float] = []
         actor_grad_norm_values: List[float] = []
         actor_bc_values: List[float] = []
         actor_reg_values: List[float] = []
@@ -252,8 +259,19 @@ class MATD3(MADDPG):
                 global_predicted_actions = torch.cat(joint_policy_actions, dim=1)
 
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
-                    actor_policy_loss = -critic(global_state, global_predicted_actions).mean()
-                    weighted_actor_policy_loss = actor_policy_loss_effective_weight * actor_policy_loss
+                    (
+                        actor_policy_loss,
+                        actor_policy_loss_for_optimization,
+                        actor_policy_loss_scale,
+                        actor_policy_q_abs_mean,
+                    ) = self._actor_policy_loss_from_critic(
+                        critic,
+                        global_state,
+                        global_predicted_actions,
+                    )
+                    weighted_actor_policy_loss = (
+                        actor_policy_loss_effective_weight * actor_policy_loss_for_optimization
+                    )
                     (
                         _action_l2,
                         _action_saturation,
@@ -294,6 +312,9 @@ class MATD3(MADDPG):
                 total_actor_loss += float(actor_loss.detach().item())
                 actor_loss_values.append(float(actor_loss.detach().item()))
                 actor_policy_loss_values.append(float(actor_policy_loss.detach().item()))
+                actor_policy_loss_weighted_values.append(float(weighted_actor_policy_loss.detach().item()))
+                actor_policy_loss_scale_values.append(float(actor_policy_loss_scale.detach().item()))
+                actor_policy_q_abs_mean_values.append(float(actor_policy_q_abs_mean.detach().item()))
                 actor_reg_values.append(float(actor_regularization.detach().item()))
                 actor_bc_values.append(float(behavior_cloning_loss.detach().item()))
                 actor_grad_norm_values.append(float(actor_grad_norm))
@@ -305,6 +326,9 @@ class MATD3(MADDPG):
         else:
             actor_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_policy_loss_values = [0.0 for _ in range(self.num_agents)]
+            actor_policy_loss_weighted_values = [0.0 for _ in range(self.num_agents)]
+            actor_policy_loss_scale_values = [1.0 for _ in range(self.num_agents)]
+            actor_policy_q_abs_mean_values = [0.0 for _ in range(self.num_agents)]
             actor_reg_values = [0.0 for _ in range(self.num_agents)]
             actor_bc_values = [0.0 for _ in range(self.num_agents)]
             actor_grad_norm_values = [0.0 for _ in range(self.num_agents)]
@@ -323,6 +347,13 @@ class MATD3(MADDPG):
                 "MATD3/actor_update_performed": float(actor_update_due),
                 "MATD3/actor_loss_mean": float(np.mean(actor_loss_values)),
                 "MATD3/actor_policy_loss_mean": float(np.mean(actor_policy_loss_values)),
+                "MATD3/actor_policy_loss_weighted_mean": float(np.mean(actor_policy_loss_weighted_values)),
+                "MATD3/actor_policy_loss_effective_weight": float(actor_policy_loss_effective_weight),
+                "MATD3/actor_policy_loss_normalization_enabled": float(
+                    getattr(self, "actor_policy_loss_normalization", False)
+                ),
+                "MATD3/actor_policy_loss_scale_mean": float(np.mean(actor_policy_loss_scale_values)),
+                "MATD3/actor_policy_q_abs_mean": float(np.mean(actor_policy_q_abs_mean_values)),
                 "MATD3/actor_regularization_loss_mean": float(np.mean(actor_reg_values)),
                 "MATD3/actor_behavior_cloning_loss_mean": float(np.mean(actor_bc_values)),
                 "MATD3/actor_behavior_cloning_effective_weight": float(
@@ -342,6 +373,9 @@ class MATD3(MADDPG):
                 "MATD3/reward_raw_mean": float(raw_rewards_all.mean().item()),
                 "MATD3/reward_train_mean": float(rewards_all.mean().item()),
                 "MATD3/replay_buffer_size": float(len(self.replay_buffer)),
+                "MATD3/replay_push_count": float(getattr(self, "_replay_push_count", 0)),
+                "MATD3/n_step_returns": float(getattr(self, "n_step_returns", 1)),
+                "MATD3/n_step_queue_size": float(getattr(self, "_last_n_step_queue_size", 0)),
                 "MATD3/target_policy_smoothing": float(getattr(self, "target_policy_smoothing", False)),
                 "MATD3/target_policy_noise": float(getattr(self, "target_policy_noise", 0.0)),
                 "MATD3/target_policy_noise_clip": float(getattr(self, "target_policy_noise_clip", 0.0)),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+
 import numpy as np
 import pytest
 import torch
@@ -29,6 +31,9 @@ def _build_agent_for_exploration() -> MADDPG:
     agent.warm_start_policy_phaseout_steps = 0
     agent.warm_start_policy_phaseout_mode = "probability"
     agent.actor_behavior_cloning_source = "replay_action"
+    agent.actor_policy_loss_normalization = False
+    agent.actor_policy_loss_normalization_epsilon = 1.0e-3
+    agent.actor_policy_loss_normalization_max_scale = 100.0
     agent._warm_start_policy = None
     agent._latest_raw_observations = None
     agent._warned_missing_raw_context = False
@@ -387,6 +392,90 @@ def test_actor_policy_loss_effective_weight_can_ramp_after_start_step():
     assert agent._actor_policy_loss_effective_weight(5) == pytest.approx(0.05)
     assert agent._actor_policy_loss_effective_weight(20) == pytest.approx(0.525)
     assert agent._actor_policy_loss_effective_weight(40) == pytest.approx(1.0)
+
+
+def test_actor_policy_loss_can_be_normalized_by_q_scale():
+    class SumCritic(torch.nn.Module):
+        def forward(self, global_state, global_actions):
+            del global_state
+            return global_actions.sum(dim=1, keepdim=True) + 4.0
+
+    agent = _build_agent_for_exploration()
+    state = torch.zeros((3, 2), dtype=torch.float32)
+    actions = torch.zeros((3, 2), dtype=torch.float32)
+
+    raw_loss, optimized_loss, scale, q_abs_mean = agent._actor_policy_loss_from_critic(
+        SumCritic(),
+        state,
+        actions,
+    )
+    assert raw_loss.item() == pytest.approx(-4.0)
+    assert optimized_loss.item() == pytest.approx(-4.0)
+    assert scale.item() == pytest.approx(1.0)
+    assert q_abs_mean.item() == pytest.approx(4.0)
+
+    agent.actor_policy_loss_normalization = True
+    raw_loss, optimized_loss, scale, q_abs_mean = agent._actor_policy_loss_from_critic(
+        SumCritic(),
+        state,
+        actions,
+    )
+    assert raw_loss.item() == pytest.approx(-4.0)
+    assert optimized_loss.item() == pytest.approx(-1.0)
+    assert scale.item() == pytest.approx(0.25)
+    assert q_abs_mean.item() == pytest.approx(4.0)
+
+
+def test_n_step_replay_pushes_discounted_oldest_transition():
+    class FakeReplayBuffer:
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, *args, **kwargs):
+            self.pushes.append((args, kwargs))
+
+    agent = MADDPG.__new__(MADDPG)
+    agent.num_agents = 1
+    agent.replay_buffer = FakeReplayBuffer()
+    agent.n_step_returns = 3
+    agent.n_step_gamma = 0.5
+    agent.n_step_priority_aggregation = "max"
+    agent._n_step_queue = deque()
+    agent._last_n_step_queue_size = 0
+    agent._replay_push_count = 0
+
+    def transition(step: int):
+        value = float(step)
+        return {
+            "observations": [np.array([value], dtype=np.float32)],
+            "actions": [np.array([value + 0.1], dtype=np.float32)],
+            "rewards": [value],
+            "next_observations": [np.array([value + 10.0], dtype=np.float32)],
+            "behavior_actions": [np.array([value + 0.2], dtype=np.float32)],
+            "next_behavior_actions": [np.array([value + 0.3], dtype=np.float32)],
+        }
+
+    for step, boost in [(1, 1.0), (2, 3.0), (4, 2.0)]:
+        payload = transition(step)
+        agent._store_replay_transition(
+            **payload,
+            done=False,
+            priority_boost=boost,
+        )
+
+    assert len(agent.replay_buffer.pushes) == 1
+    args, kwargs = agent.replay_buffer.pushes[0]
+    states, actions, rewards, next_states, done = args
+    assert states[0].tolist() == pytest.approx([1.0])
+    assert actions[0].tolist() == pytest.approx([1.1])
+    assert rewards == pytest.approx([1.0 + 0.5 * 2.0 + 0.25 * 4.0])
+    assert next_states[0].tolist() == pytest.approx([14.0])
+    assert done is False
+    assert kwargs["behavior_actions"][0].tolist() == pytest.approx([1.2])
+    assert kwargs["next_behavior_actions"][0].tolist() == pytest.approx([4.3])
+    assert kwargs["priority_boost"] == pytest.approx(3.0)
+    assert agent._replay_push_count == 1
+    assert agent._last_n_step_queue_size == 2
 
 
 def test_train_during_initial_exploration_can_enable_warmup_updates():

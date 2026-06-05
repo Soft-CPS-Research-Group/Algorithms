@@ -82,6 +82,12 @@ class Recipe:
     residual_ev_action_scale_multiplier: float = 1.0
     residual_deferrable_action_scale_multiplier: float = 1.0
     replay_observation_event_priority_mode: str = "ev_departure_service"
+    n_step_returns: int = 8
+    n_step_gamma: float = 0.995
+    actor_policy_loss_normalization: bool = True
+    actor_policy_loss_normalization_max_scale: float = 100.0
+    actor_offline_bc_pretrain_steps: int = 64
+    actor_offline_bc_pretrain_weight: float = 1.0
     note: str = ""
 
 
@@ -969,6 +975,19 @@ def _stage_runtime(stage: str) -> dict[str, Any]:
     raise ValueError(f"Unsupported W6 stage: {stage}")
 
 
+def _stage_offline_bc_pretrain_steps(recipe: Recipe, stage: str) -> int:
+    configured = max(0, int(recipe.actor_offline_bc_pretrain_steps or 0))
+    if configured <= 0:
+        return 0
+    if stage == "w6-smoke-local":
+        return min(configured, 8)
+    if stage in {"w6a-local", "w6b-remote-smoke"}:
+        return min(configured, 64)
+    if stage == "w6c-full-year":
+        return max(configured, 128)
+    return configured
+
+
 def _apply_tracking(config: dict[str, Any], *, stage: str, runtime: Mapping[str, Any]) -> None:
     tracking = config.setdefault("tracking", {})
     tracking.update(
@@ -1196,6 +1215,8 @@ def _build_rl_config(
             "reward_function": recipe.reward_function,
             "teacher_policy": recipe.teacher_policy,
             "residual_policy": bool(recipe.residual_policy_enabled),
+            "n_step_returns": int(recipe.n_step_returns),
+            "actor_policy_loss_normalization": bool(recipe.actor_policy_loss_normalization),
         }
     )
     _apply_checkpointing(config)
@@ -1283,10 +1304,18 @@ def _build_rl_config(
             "critic_loss": "huber",
             "critic_huber_beta": 1.0,
             "critic_target_clip_abs": 25.0,
+            "n_step_returns": int(recipe.n_step_returns),
+            "n_step_gamma": float(recipe.n_step_gamma),
+            "n_step_priority_aggregation": "max",
             "actor_policy_loss_weight": float(recipe.actor_policy_loss_weight),
             "actor_policy_loss_warmup_weight": float(recipe.actor_policy_loss_warmup_weight),
             "actor_policy_loss_warmup_start_step": random_steps,
             "actor_policy_loss_warmup_steps": int(recipe.teacher_phaseout_steps),
+            "actor_policy_loss_normalization": bool(recipe.actor_policy_loss_normalization),
+            "actor_policy_loss_normalization_epsilon": 1.0e-3,
+            "actor_policy_loss_normalization_max_scale": float(
+                recipe.actor_policy_loss_normalization_max_scale
+            ),
             "actor_action_l2_penalty": 0.0,
             "actor_action_saturation_penalty": 0.01,
             "actor_storage_action_l2_penalty": float(recipe.storage_l2),
@@ -1301,6 +1330,10 @@ def _build_rl_config(
             "actor_behavior_cloning_extra_update_start_step": random_steps,
             "actor_behavior_cloning_extra_update_end_step": extra_bc_end,
             "actor_behavior_cloning_source": "warm_start_policy",
+            "actor_offline_bc_pretrain_steps": int(_stage_offline_bc_pretrain_steps(recipe, stage)),
+            "actor_offline_bc_pretrain_weight": float(recipe.actor_offline_bc_pretrain_weight),
+            "actor_offline_bc_pretrain_min_replay": int(algorithm["replay_buffer"]["batch_size"]),
+            "actor_offline_bc_pretrain_sync_targets": True,
             "actor_ev_behavior_cloning_multiplier": float(recipe.ev_bc_multiplier),
             "actor_storage_behavior_cloning_multiplier": float(recipe.storage_bc_multiplier),
             "actor_ev_behavior_cloning_positive_target_weight": 1.0,
