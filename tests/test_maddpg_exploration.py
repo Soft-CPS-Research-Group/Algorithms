@@ -154,6 +154,28 @@ def test_actor_action_regularization_uses_normalized_bounds():
     assert regularization.item() == pytest.approx(0.054, abs=1e-6)
 
 
+def test_actor_action_regularization_can_penalize_residual_delta_from_teacher():
+    agent = _build_agent_for_exploration()
+    agent.action_low = [np.array([0.0, -2.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0, 2.0], dtype=np.float32)]
+    agent.actor_action_l2_penalty = 0.0
+    agent.actor_action_saturation_penalty = 0.0
+    agent.actor_storage_action_l2_penalty = 0.0
+    agent.actor_ev_v2g_action_l2_penalty = 0.0
+    agent.actor_ev_v2g_action_mass_penalty = 0.0
+    agent.actor_residual_delta_l2_penalty = 0.5
+
+    action = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+    teacher_action = torch.tensor([[0.5, 2.0]], dtype=torch.float32)
+    *_, regularization = agent._actor_action_regularization_terms(
+        0,
+        action,
+        base_action=teacher_action,
+    )
+
+    assert regularization.item() == pytest.approx(0.5, abs=1e-6)
+
+
 def test_actor_action_regularization_can_target_storage_and_ev_v2g_actions():
     agent = _build_agent_for_exploration()
     agent.action_dimension = [3, 1]
@@ -191,6 +213,36 @@ def test_actor_behavior_cloning_loss_uses_normalized_bounds():
     loss = agent._actor_behavior_cloning_loss(0, predicted, replay)
 
     assert loss.item() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_critic_action_features_can_include_teacher_and_normalized_delta():
+    agent = _build_agent_for_exploration()
+    agent.action_low = [
+        np.array([0.0, -2.0], dtype=np.float32),
+        np.array([0.0], dtype=np.float32),
+    ]
+    agent.action_high = [
+        np.array([1.0, 2.0], dtype=np.float32),
+        np.array([10.0], dtype=np.float32),
+    ]
+    agent.critic_action_input_mode = "final_base_delta_normalized"
+
+    actions = [
+        torch.tensor([[1.0, 0.0]], dtype=torch.float32),
+        torch.tensor([[8.0]], dtype=torch.float32),
+    ]
+    base_actions = [
+        torch.tensor([[0.5, 2.0]], dtype=torch.float32),
+        torch.tensor([[3.0]], dtype=torch.float32),
+    ]
+
+    features = agent._critic_action_features(actions, base_actions)
+
+    assert features.shape == (1, 9)
+    assert features.tolist()[0] == pytest.approx(
+        [1.0, 0.0, 0.5, 2.0, 0.5, -0.5, 8.0, 3.0, 0.5],
+        abs=1e-6,
+    )
 
 
 def test_actor_behavior_cloning_loss_can_weight_ev_actions_more_than_storage():

@@ -149,10 +149,12 @@ def test_w6a_local_can_generate_residual_community_recipe(tmp_path):
     assert exploration["residual_policy_enabled"] is True
     assert exploration["residual_action_scale"] == 0.08
     assert exploration["residual_action_final_scale"] == 0.28
+    assert exploration["actor_residual_delta_l2_penalty"] == 0.02
     assert exploration["n_step_returns"] == 8
     assert exploration["actor_policy_loss_normalization"] is True
     assert config["tracking"]["tags"]["teacher_policy"] == "RBCCommunityPolicy"
     assert config["tracking"]["tags"]["residual_policy"] is True
+    assert config["tracking"]["tags"]["actor_residual_delta_l2_penalty"] == 0.02
 
 
 def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
@@ -339,7 +341,7 @@ def test_w6c_full_year_matrix_generates_maddpg_and_matd3_remote_configs(tmp_path
         row
         for row in rows
         if row["algorithm"] == "MATD3"
-        and row["recipe"] == "w6_clone_cost_ev_v2g_masswall_gentle"
+        and row["recipe"] == "w6_residual_comm_cost_push"
         and row["seed"] == 456
     )
     config = _load(Path(matd3["config_path"]))
@@ -352,7 +354,12 @@ def test_w6c_full_year_matrix_generates_maddpg_and_matd3_remote_configs(tmp_path
     assert exploration["actor_update_interval"] == 2
     assert exploration["n_step_returns"] == 8
     assert exploration["actor_policy_loss_normalization"] is True
+    assert exploration["warm_start_policy"] == "RBCCommunityPolicy"
+    assert exploration["residual_policy_enabled"] is True
+    assert exploration["critic_action_input_mode"] == "final_base_delta_normalized"
     assert exploration["actor_offline_bc_pretrain_steps"] == 128
+    assert matd3["teacher_policy"] == "RBCCommunityPolicy"
+    assert matd3["critic_action_input_mode"] == "final_base_delta_normalized"
     assert config["simulator"]["episodes"] == 2
     assert config["simulator"]["episode_time_steps"] == 8760
     assert config["simulator"]["deterministic_finish"] is True

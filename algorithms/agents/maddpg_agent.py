@@ -198,6 +198,10 @@ class MADDPG(BaseAgent):
             0.0,
             float(exploration_cfg.get("actor_ev_v2g_action_mass_penalty", 0.0) or 0.0),
         )
+        self.actor_residual_delta_l2_penalty = max(
+            0.0,
+            float(exploration_cfg.get("actor_residual_delta_l2_penalty", 0.0) or 0.0),
+        )
         self.actor_action_saturation_threshold = float(
             np.clip(float(exploration_cfg.get("actor_action_saturation_threshold", 0.85) or 0.85), 0.0, 1.0)
         )
@@ -350,6 +354,18 @@ class MADDPG(BaseAgent):
             float(exploration_cfg.get("residual_deferrable_action_scale_multiplier", 1.0) or 0.0),
         )
         self._last_residual_action_scale = 0.0
+        self.critic_action_input_mode = str(
+            exploration_cfg.get("critic_action_input_mode", "final") or "final"
+        ).strip().lower()
+        if self.critic_action_input_mode not in {
+            "final",
+            "final_base_delta",
+            "final_base_delta_normalized",
+        }:
+            raise ValueError(
+                "MADDPG critic_action_input_mode must be one of 'final', "
+                "'final_base_delta' or 'final_base_delta_normalized'."
+            )
         self.reward_normalization_enabled = bool(exploration_cfg.get("reward_normalization", False))
         self.reward_normalization_clip = float(exploration_cfg.get("reward_normalization_clip", 10.0) or 10.0)
         if self.reward_normalization_clip <= 0.0:
@@ -807,7 +823,7 @@ class MADDPG(BaseAgent):
             state_size = self.observation_dimension[i]
             action_size = self.action_dimension[i]
             global_state_size = sum(self.observation_dimension)
-            global_action_size = sum(self.action_dimension)
+            global_action_size = self._critic_global_action_feature_size()
 
             actors.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
             critics.append(build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device))
@@ -959,7 +975,10 @@ class MADDPG(BaseAgent):
         phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         global_state = torch.cat(states, dim=1)
         global_next_state = torch.cat(next_states, dim=1)
-        global_actions = torch.cat(actions_all, dim=1)
+        global_actions = self._critic_action_features(
+            actions_all,
+            behavior_actions_all,
+        )
         if should_log_runtime_profile:
             runtime_profile_metrics["MADDPG/runtime_tensor_prepare_seconds"] = (
                 time.perf_counter() - phase_start_time
@@ -978,7 +997,10 @@ class MADDPG(BaseAgent):
                 if self.target_policy_smoothing:
                     next_action = self._add_target_policy_smoothing(agent_idx, next_action)
                 next_policy_actions.append(next_action)
-            global_next_actions = torch.cat(next_policy_actions, dim=1)
+            global_next_actions = self._critic_action_features(
+                next_policy_actions,
+                next_behavior_actions_all,
+            )
             q_targets_next = torch.stack(
                 [critic(global_next_state, global_next_actions) for critic in self.critic_targets]
             )
@@ -1093,6 +1115,7 @@ class MADDPG(BaseAgent):
         actor_storage_action_l2_values: List[float] = []
         actor_ev_v2g_action_l2_values: List[float] = []
         actor_ev_v2g_action_mass_values: List[float] = []
+        actor_residual_delta_l2_values: List[float] = []
         actor_behavior_cloning_loss_values: List[float] = []
         actor_behavior_cloning_ev_loss_values: List[float] = []
         actor_behavior_cloning_storage_loss_values: List[float] = []
@@ -1138,7 +1161,10 @@ class MADDPG(BaseAgent):
                 )
                 joint_policy_actions = list(detached_policy_actions)
                 joint_policy_actions[agent_num] = predicted_action
-                global_predicted_actions = torch.cat(joint_policy_actions, dim=1)
+                global_predicted_actions = self._critic_action_features(
+                    joint_policy_actions,
+                    behavior_actions_all,
+                )
 
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
                     (
@@ -1164,8 +1190,14 @@ class MADDPG(BaseAgent):
                     ) = self._actor_action_regularization_terms(
                         agent_num,
                         predicted_action,
+                        base_action=behavior_actions_all[agent_num],
                     )
                     behavior_cloning_loss = self._actor_behavior_cloning_loss(
+                        agent_num,
+                        predicted_action,
+                        behavior_actions_all[agent_num],
+                    )
+                    residual_delta_l2 = self._residual_delta_l2(
                         agent_num,
                         predicted_action,
                         behavior_actions_all[agent_num],
@@ -1211,6 +1243,7 @@ class MADDPG(BaseAgent):
                 actor_storage_action_l2_values.append(float(storage_action_l2.detach().item()))
                 actor_ev_v2g_action_l2_values.append(float(ev_v2g_action_l2.detach().item()))
                 actor_ev_v2g_action_mass_values.append(float(ev_v2g_action_mass.detach().item()))
+                actor_residual_delta_l2_values.append(float(residual_delta_l2.detach().item()))
                 actor_behavior_cloning_loss_values.append(float(behavior_cloning_loss.detach().item()))
                 actor_behavior_cloning_ev_loss_values.append(float(behavior_cloning_ev_loss.detach().item()))
                 actor_behavior_cloning_storage_loss_values.append(
@@ -1238,6 +1271,7 @@ class MADDPG(BaseAgent):
             actor_storage_action_l2_values = [0.0 for _ in range(self.num_agents)]
             actor_ev_v2g_action_l2_values = [0.0 for _ in range(self.num_agents)]
             actor_ev_v2g_action_mass_values = [0.0 for _ in range(self.num_agents)]
+            actor_residual_delta_l2_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_ev_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_storage_loss_values = [0.0 for _ in range(self.num_agents)]
@@ -1277,6 +1311,7 @@ class MADDPG(BaseAgent):
                 "MADDPG/actor_storage_action_l2_mean": float(np.mean(actor_storage_action_l2_values)),
                 "MADDPG/actor_ev_v2g_action_l2_mean": float(np.mean(actor_ev_v2g_action_l2_values)),
                 "MADDPG/actor_ev_v2g_action_mass_mean": float(np.mean(actor_ev_v2g_action_mass_values)),
+                "MADDPG/actor_residual_delta_l2_mean": float(np.mean(actor_residual_delta_l2_values)),
                 "MADDPG/actor_behavior_cloning_loss_mean": float(np.mean(actor_behavior_cloning_loss_values)),
                 "MADDPG/actor_behavior_cloning_ev_loss_mean": float(
                     np.mean(actor_behavior_cloning_ev_loss_values)
@@ -1305,6 +1340,13 @@ class MADDPG(BaseAgent):
                 ),
                 "MADDPG/actor_behavior_cloning_source_warm_start_policy": float(
                     getattr(self, "actor_behavior_cloning_source", "replay_action") == "warm_start_policy"
+                ),
+                "MADDPG/critic_action_input_mode_final_base_delta": float(
+                    getattr(self, "critic_action_input_mode", "final")
+                    in {"final_base_delta", "final_base_delta_normalized"}
+                ),
+                "MADDPG/critic_action_input_mode_delta_normalized": float(
+                    getattr(self, "critic_action_input_mode", "final") == "final_base_delta_normalized"
                 ),
                 "MADDPG/residual_policy_enabled": float(
                     getattr(self, "residual_policy_enabled", False)
@@ -1368,6 +1410,7 @@ class MADDPG(BaseAgent):
                     training_metrics[f"MADDPG/actor_storage_action_l2_agent_{agent_num}"] = actor_storage_action_l2_values[agent_num]
                     training_metrics[f"MADDPG/actor_ev_v2g_action_l2_agent_{agent_num}"] = actor_ev_v2g_action_l2_values[agent_num]
                     training_metrics[f"MADDPG/actor_ev_v2g_action_mass_agent_{agent_num}"] = actor_ev_v2g_action_mass_values[agent_num]
+                    training_metrics[f"MADDPG/actor_residual_delta_l2_agent_{agent_num}"] = actor_residual_delta_l2_values[agent_num]
                     training_metrics[f"MADDPG/actor_behavior_cloning_loss_agent_{agent_num}"] = (
                         actor_behavior_cloning_loss_values[agent_num]
                     )
@@ -1690,6 +1733,9 @@ class MADDPG(BaseAgent):
             ),
             "MADDPG/actor_ev_v2g_action_mass_penalty": float(
                 getattr(self, "actor_ev_v2g_action_mass_penalty", 0.0)
+            ),
+            "MADDPG/actor_residual_delta_l2_penalty": float(
+                getattr(self, "actor_residual_delta_l2_penalty", 0.0)
             ),
             "MADDPG/actor_behavior_cloning_weight": float(
                 getattr(self, "actor_behavior_cloning_weight", 0.0)
@@ -2169,6 +2215,53 @@ class MADDPG(BaseAgent):
             return float("inf")
         return min(candidates)
 
+    def _critic_global_action_feature_size(self) -> int:
+        base_size = int(sum(self.action_dimension))
+        if getattr(self, "critic_action_input_mode", "final") in {
+            "final_base_delta",
+            "final_base_delta_normalized",
+        }:
+            return base_size * 3
+        return base_size
+
+    def _critic_action_features(
+        self,
+        actions: List[torch.Tensor],
+        base_actions: Optional[List[torch.Tensor]] = None,
+    ) -> torch.Tensor:
+        """Build centralized critic action input.
+
+        Residual training is clearer when the critic sees the policy action,
+        the teacher/base action, and the learned correction separately. The
+        default mode preserves the legacy action-only critic input.
+        """
+        mode = getattr(self, "critic_action_input_mode", "final")
+        if mode == "final" or base_actions is None:
+            return torch.cat(actions, dim=1)
+
+        features: list[torch.Tensor] = []
+        for agent_idx, action in enumerate(actions):
+            base = base_actions[agent_idx] if agent_idx < len(base_actions) else action
+            base = base.to(dtype=action.dtype, device=action.device)
+            if base.dim() == 1 and action.dim() == 2:
+                base = base.view(1, -1).expand(action.shape[0], -1)
+            elif base.dim() == 1:
+                base = base.reshape(action.shape)
+            elif action.dim() == 1 and base.dim() == 2:
+                base = base.reshape(action.shape)
+
+            delta = action - base
+            if mode == "final_base_delta_normalized":
+                span = torch.as_tensor(
+                    self._action_span_for_agent(agent_idx),
+                    dtype=action.dtype,
+                    device=action.device,
+                )
+                delta = delta / torch.clamp(span, min=1.0e-6)
+            features.extend((action, base, delta))
+
+        return torch.cat(features, dim=1)
+
     def _current_residual_base_actions(self) -> Optional[List[List[float]]]:
         if not getattr(self, "residual_policy_enabled", False):
             return None
@@ -2465,6 +2558,7 @@ class MADDPG(BaseAgent):
         self,
         agent_idx: int,
         scaled_action: torch.Tensor,
+        base_action: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         normalized_action = self._normalize_scaled_action_tensor(agent_idx, scaled_action)
         action_l2 = normalized_action.pow(2).mean()
@@ -2486,12 +2580,14 @@ class MADDPG(BaseAgent):
             scaled_action,
             predicate=self._is_ev_action_name,
         )
+        residual_delta_l2 = self._residual_delta_l2(agent_idx, scaled_action, base_action)
         regularization = (
             float(getattr(self, "actor_action_l2_penalty", 0.0)) * action_l2
             + float(getattr(self, "actor_action_saturation_penalty", 0.0)) * saturation_excess
             + float(getattr(self, "actor_storage_action_l2_penalty", 0.0)) * storage_action_l2
             + float(getattr(self, "actor_ev_v2g_action_l2_penalty", 0.0)) * ev_v2g_action_l2
             + float(getattr(self, "actor_ev_v2g_action_mass_penalty", 0.0)) * ev_v2g_action_mass
+            + float(getattr(self, "actor_residual_delta_l2_penalty", 0.0)) * residual_delta_l2
         )
         return (
             action_l2,
@@ -2501,6 +2597,21 @@ class MADDPG(BaseAgent):
             ev_v2g_action_mass,
             regularization,
         )
+
+    def _residual_delta_l2(
+        self,
+        agent_idx: int,
+        scaled_action: torch.Tensor,
+        base_action: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if base_action is None or float(getattr(self, "actor_residual_delta_l2_penalty", 0.0) or 0.0) <= 0.0:
+            return scaled_action.new_tensor(0.0)
+        base_action = base_action.to(dtype=scaled_action.dtype, device=scaled_action.device)
+        if base_action.shape != scaled_action.shape:
+            return scaled_action.new_tensor(0.0)
+        normalized_action = self._normalize_scaled_action_tensor(agent_idx, scaled_action)
+        normalized_base = self._normalize_scaled_action_tensor(agent_idx, base_action)
+        return (normalized_action - normalized_base).pow(2).mean()
 
     def _masked_action_l2(
         self,

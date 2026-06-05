@@ -33,7 +33,7 @@ class MATD3(MADDPG):
         actors, critics, actor_targets, critic_targets = [], [], [], []
         self.critics_2, self.critic_targets_2 = [], []
         global_state_size = sum(self.observation_dimension)
-        global_action_size = sum(self.action_dimension)
+        global_action_size = self._critic_global_action_feature_size()
         for agent_idx in range(self.num_agents):
             state_size = self.observation_dimension[agent_idx]
             action_size = self.action_dimension[agent_idx]
@@ -143,7 +143,10 @@ class MATD3(MADDPG):
 
         global_state = torch.cat(states, dim=1)
         global_next_state = torch.cat(next_states, dim=1)
-        global_actions = torch.cat(actions_all, dim=1)
+        global_actions = self._critic_action_features(
+            actions_all,
+            behavior_actions_all,
+        )
 
         with torch.no_grad():
             next_policy_actions = []
@@ -156,7 +159,10 @@ class MATD3(MADDPG):
                 )
                 next_action = self._add_target_policy_smoothing(agent_idx, next_action)
                 next_policy_actions.append(next_action)
-            global_next_actions = torch.cat(next_policy_actions, dim=1)
+            global_next_actions = self._critic_action_features(
+                next_policy_actions,
+                next_behavior_actions_all,
+            )
 
             q_targets = []
             for agent_idx in range(self.num_agents):
@@ -237,6 +243,7 @@ class MATD3(MADDPG):
         actor_grad_norm_values: List[float] = []
         actor_bc_values: List[float] = []
         actor_reg_values: List[float] = []
+        actor_residual_delta_l2_values: List[float] = []
         actor_behavior_cloning_effective_weight = self._actor_behavior_cloning_effective_weight(
             global_learning_step
         )
@@ -256,7 +263,10 @@ class MATD3(MADDPG):
                 )
                 joint_policy_actions = list(detached_policy_actions)
                 joint_policy_actions[agent_idx] = predicted_action
-                global_predicted_actions = torch.cat(joint_policy_actions, dim=1)
+                global_predicted_actions = self._critic_action_features(
+                    joint_policy_actions,
+                    behavior_actions_all,
+                )
 
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
                     (
@@ -279,8 +289,17 @@ class MATD3(MADDPG):
                         _ev_v2g_action_l2,
                         _ev_v2g_action_mass,
                         actor_regularization,
-                    ) = self._actor_action_regularization_terms(agent_idx, predicted_action)
+                    ) = self._actor_action_regularization_terms(
+                        agent_idx,
+                        predicted_action,
+                        base_action=behavior_actions_all[agent_idx],
+                    )
                     behavior_cloning_loss = self._actor_behavior_cloning_loss(
+                        agent_idx,
+                        predicted_action,
+                        behavior_actions_all[agent_idx],
+                    )
+                    residual_delta_l2 = self._residual_delta_l2(
                         agent_idx,
                         predicted_action,
                         behavior_actions_all[agent_idx],
@@ -317,6 +336,7 @@ class MATD3(MADDPG):
                 actor_policy_q_abs_mean_values.append(float(actor_policy_q_abs_mean.detach().item()))
                 actor_reg_values.append(float(actor_regularization.detach().item()))
                 actor_bc_values.append(float(behavior_cloning_loss.detach().item()))
+                actor_residual_delta_l2_values.append(float(residual_delta_l2.detach().item()))
                 actor_grad_norm_values.append(float(actor_grad_norm))
 
                 if update_target_step:
@@ -331,6 +351,7 @@ class MATD3(MADDPG):
             actor_policy_q_abs_mean_values = [0.0 for _ in range(self.num_agents)]
             actor_reg_values = [0.0 for _ in range(self.num_agents)]
             actor_bc_values = [0.0 for _ in range(self.num_agents)]
+            actor_residual_delta_l2_values = [0.0 for _ in range(self.num_agents)]
             actor_grad_norm_values = [0.0 for _ in range(self.num_agents)]
 
         if should_log_step_metrics and self.training_diagnostics_enabled:
@@ -355,9 +376,17 @@ class MATD3(MADDPG):
                 "MATD3/actor_policy_loss_scale_mean": float(np.mean(actor_policy_loss_scale_values)),
                 "MATD3/actor_policy_q_abs_mean": float(np.mean(actor_policy_q_abs_mean_values)),
                 "MATD3/actor_regularization_loss_mean": float(np.mean(actor_reg_values)),
+                "MATD3/actor_residual_delta_l2_mean": float(np.mean(actor_residual_delta_l2_values)),
                 "MATD3/actor_behavior_cloning_loss_mean": float(np.mean(actor_bc_values)),
                 "MATD3/actor_behavior_cloning_effective_weight": float(
                     actor_behavior_cloning_effective_weight
+                ),
+                "MATD3/critic_action_input_mode_final_base_delta": float(
+                    getattr(self, "critic_action_input_mode", "final")
+                    in {"final_base_delta", "final_base_delta_normalized"}
+                ),
+                "MATD3/critic_action_input_mode_delta_normalized": float(
+                    getattr(self, "critic_action_input_mode", "final") == "final_base_delta_normalized"
                 ),
                 "MATD3/residual_policy_enabled": float(
                     getattr(self, "residual_policy_enabled", False)

@@ -42,8 +42,8 @@ DEFAULT_LOCAL_RECIPES = (
     "w6_clone_diagnostic",
 )
 DEFAULT_PROMOTION_RECIPES = (
-    "w6_flex_margin_teacher_storage_tight",
-    "w6_clone_cost_ev_v2g_masswall_gentle",
+    "w6_residual_comm_constraint",
+    "w6_residual_comm_cost_push",
 )
 LOCAL_WINDOWS = (
     ("win0_0000_2048", 0, 2048),
@@ -88,6 +88,8 @@ class Recipe:
     actor_policy_loss_normalization_max_scale: float = 100.0
     actor_offline_bc_pretrain_steps: int = 64
     actor_offline_bc_pretrain_weight: float = 1.0
+    critic_action_input_mode: str = "final"
+    residual_delta_l2: float = 0.0
     note: str = ""
 
 
@@ -715,6 +717,8 @@ RECIPES: dict[str, Recipe] = {
         residual_ev_action_scale_multiplier=0.50,
         residual_deferrable_action_scale_multiplier=0.80,
         replay_observation_event_priority_mode="combined",
+        critic_action_input_mode="final_base_delta_normalized",
+        residual_delta_l2=0.020,
         note="Residual over RBCCommunity: conservative deltas, strict EV gate, community cost/peak/export value.",
     ),
     "w6_residual_comm_cost_push": Recipe(
@@ -751,6 +755,8 @@ RECIPES: dict[str, Recipe] = {
         residual_ev_action_scale_multiplier=0.60,
         residual_deferrable_action_scale_multiplier=1.00,
         replay_observation_event_priority_mode="combined",
+        critic_action_input_mode="final_base_delta_normalized",
+        residual_delta_l2=0.010,
         note="Residual over RBCCommunity: lower BC and stronger cost/peak/export pressure.",
     ),
     "w6_residual_smart_ev_safe": Recipe(
@@ -784,6 +790,8 @@ RECIPES: dict[str, Recipe] = {
         residual_ev_action_scale_multiplier=0.45,
         residual_deferrable_action_scale_multiplier=0.80,
         replay_observation_event_priority_mode="combined",
+        critic_action_input_mode="final_base_delta_normalized",
+        residual_delta_l2=0.025,
         note="Residual over RBCSmart: service-safe comparator for checking whether community teacher hurts EV gates.",
     ),
 }
@@ -1217,6 +1225,8 @@ def _build_rl_config(
             "residual_policy": bool(recipe.residual_policy_enabled),
             "n_step_returns": int(recipe.n_step_returns),
             "actor_policy_loss_normalization": bool(recipe.actor_policy_loss_normalization),
+            "critic_action_input_mode": recipe.critic_action_input_mode,
+            "actor_residual_delta_l2_penalty": float(recipe.residual_delta_l2),
         }
     )
     _apply_checkpointing(config)
@@ -1316,11 +1326,13 @@ def _build_rl_config(
             "actor_policy_loss_normalization_max_scale": float(
                 recipe.actor_policy_loss_normalization_max_scale
             ),
+            "critic_action_input_mode": str(recipe.critic_action_input_mode),
             "actor_action_l2_penalty": 0.0,
             "actor_action_saturation_penalty": 0.01,
             "actor_storage_action_l2_penalty": float(recipe.storage_l2),
             "actor_ev_v2g_action_l2_penalty": float(recipe.ev_v2g_l2),
             "actor_ev_v2g_action_mass_penalty": float(recipe.ev_v2g_mass),
+            "actor_residual_delta_l2_penalty": float(recipe.residual_delta_l2),
             "actor_action_saturation_threshold": 0.85,
             "actor_behavior_cloning_weight": float(recipe.bc_weight),
             "actor_behavior_cloning_min_weight": float(recipe.bc_min_weight),
@@ -1375,6 +1387,9 @@ def _matrix_row(
     seed: int,
     runtime: Mapping[str, Any],
     reward_function: str = REWARD_FUNCTION,
+    teacher_policy: str = "",
+    critic_action_input_mode: str = "final",
+    residual_delta_l2: float = 0.0,
 ) -> dict[str, Any]:
     deucalion = runtime.get("deucalion") or {}
     return {
@@ -1391,7 +1406,9 @@ def _matrix_row(
         "episodes": runtime["episodes"] if recipe not in {"RBCSmartPolicy", "RBCCommunityPolicy"} else 1,
         "deterministic_finish": runtime["deterministic_finish"],
         "reward_function": reward_function,
-        "teacher_policy": "RBCSmartPolicy" if recipe.startswith("w6_") else "",
+        "teacher_policy": teacher_policy,
+        "critic_action_input_mode": critic_action_input_mode,
+        "actor_residual_delta_l2_penalty": residual_delta_l2,
         "deucalion_partition": deucalion.get("partition", ""),
         "deucalion_time": deucalion.get("time", ""),
         "deucalion_cpus_per_task": deucalion.get("cpus_per_task", ""),
@@ -1525,6 +1542,9 @@ def generate_w6_configs(
                                 seed=int(seed),
                                 runtime=runtime,
                                 reward_function=recipe.reward_function,
+                                teacher_policy=recipe.teacher_policy,
+                                critic_action_input_mode=recipe.critic_action_input_mode,
+                                residual_delta_l2=recipe.residual_delta_l2,
                             )
                         )
 
@@ -1544,6 +1564,8 @@ def generate_w6_configs(
             "deterministic_finish",
             "reward_function",
             "teacher_policy",
+            "critic_action_input_mode",
+            "actor_residual_delta_l2_penalty",
             "deucalion_partition",
             "deucalion_time",
             "deucalion_cpus_per_task",
