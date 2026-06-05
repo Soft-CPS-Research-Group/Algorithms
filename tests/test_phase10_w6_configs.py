@@ -61,6 +61,10 @@ def test_w6a_local_matrix_generates_guided_window_configs(tmp_path):
     assert algorithm["replay_buffer"]["priority_fraction"] == 0.35
     assert algorithm["replay_buffer"]["priority_mode"] == "negative_reward"
     assert algorithm["replay_buffer"]["observation_event_priority_mode"] == "ev_departure_service"
+    assert algorithm["networks"]["critic"]["class"] == "LateFusionCritic"
+    assert algorithm["networks"]["critic"]["state_layers"] == [1024, 512]
+    assert algorithm["networks"]["critic"]["action_layers"] == [256]
+    assert algorithm["networks"]["critic"]["joint_layers"] == [512, 256]
 
     exploration = algorithm["exploration"]["params"]
     assert exploration["initial_exploration_strategy"] == "policy"
@@ -107,6 +111,33 @@ def test_w6a_local_can_generate_clone_improvement_variants(tmp_path):
     assert tight_exploration["actor_policy_loss_weight"] == 0.0
     assert tight_exploration["actor_storage_action_l2_penalty"] == 0.01
     assert tight_exploration["actor_ev_v2g_action_l2_penalty"] == 0.15
+
+
+def test_w6a_local_can_generate_residual_community_recipe(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w6_residual_comm_constraint"],
+        algorithms=["MATD3"],
+        include_baselines=False,
+    )
+
+    assert len(rows) == 4
+    config = _load(Path(rows[0]["config_path"]))
+    validate_config(config)
+
+    assert config["algorithm"]["name"] == "MATD3"
+    assert config["algorithm"]["networks"]["critic"]["class"] == "LateFusionCritic"
+    assert config["simulator"]["reward_function"] == "CostServiceCommunityResidualConstraintRewardV53"
+    assert config["algorithm"]["replay_buffer"]["observation_event_priority_mode"] == "combined"
+    exploration = config["algorithm"]["exploration"]["params"]
+    assert exploration["warm_start_policy"] == "RBCCommunityPolicy"
+    assert exploration["residual_policy_enabled"] is True
+    assert exploration["residual_action_scale"] == 0.08
+    assert exploration["residual_action_final_scale"] == 0.28
+    assert config["tracking"]["tags"]["teacher_policy"] == "RBCCommunityPolicy"
+    assert config["tracking"]["tags"]["residual_policy"] is True
 
 
 def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):

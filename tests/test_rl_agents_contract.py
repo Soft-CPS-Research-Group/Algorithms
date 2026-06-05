@@ -8,9 +8,11 @@ import pytest
 import torch
 import yaml
 
+from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.agents.matd3_agent import MATD3
 from algorithms.agents.masac_agent import MASAC
 from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO
+from algorithms.utils.networks import LateFusionCritic
 from algorithms.registry import create_agent, is_algorithm_supported
 from utils.config_schema import validate_config
 
@@ -136,6 +138,24 @@ def test_registry_supports_new_rl_agents(algorithm_name):
     assert is_algorithm_supported(algorithm_name)
     agent = create_agent(_base_rl_config(algorithm_name))
     assert agent.__class__.__name__ == algorithm_name
+
+
+@pytest.mark.parametrize("agent_cls", [MADDPG, MATD3, MASAC])
+def test_centralized_critic_respects_configured_late_fusion_class(agent_cls):
+    config = _base_rl_config(agent_cls.__name__)
+    config["algorithm"]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
+    config["algorithm"]["networks"]["critic"].update(
+        {
+            "class": "LateFusionCritic",
+            "state_layers": [16],
+            "action_layers": [8],
+            "joint_layers": [16],
+        }
+    )
+
+    agent = agent_cls(config)
+
+    assert isinstance(agent.critics[0], LateFusionCritic)
 
 
 @pytest.mark.parametrize("algorithm_name", ["MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"])

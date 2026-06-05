@@ -13,7 +13,7 @@ from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.maddpg_agent import MADDPG
-from algorithms.utils.networks import Actor, Critic
+from algorithms.utils.networks import Actor, build_critic_network
 
 
 class MATD3(MADDPG):
@@ -28,7 +28,7 @@ class MATD3(MADDPG):
     def _initialize_networks(self):
         logger.debug("Initializing MATD3 actor and twin critic networks.")
         actor_fc_units = self.config["algorithm"]["networks"]["actor"]["layers"]
-        critic_fc_units = self.config["algorithm"]["networks"]["critic"]["layers"]
+        critic_cfg = self.config["algorithm"]["networks"]["critic"]
 
         actors, critics, actor_targets, critic_targets = [], [], [], []
         self.critics_2, self.critic_targets_2 = [], []
@@ -41,11 +41,15 @@ class MATD3(MADDPG):
             actors.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
             actor_targets.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
 
-            critics.append(Critic(global_state_size, global_action_size, self.seed, critic_fc_units).to(self.device))
-            critic_targets.append(Critic(global_state_size, global_action_size, self.seed, critic_fc_units).to(self.device))
-            self.critics_2.append(Critic(global_state_size, global_action_size, self.seed + 7919, critic_fc_units).to(self.device))
+            critics.append(build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device))
+            critic_targets.append(
+                build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device)
+            )
+            self.critics_2.append(
+                build_critic_network(global_state_size, global_action_size, self.seed + 7919, critic_cfg).to(self.device)
+            )
             self.critic_targets_2.append(
-                Critic(global_state_size, global_action_size, self.seed + 7919, critic_fc_units).to(self.device)
+                build_critic_network(global_state_size, global_action_size, self.seed + 7919, critic_cfg).to(self.device)
             )
 
         for actor, actor_target in zip(actors, actor_targets):
@@ -93,6 +97,7 @@ class MATD3(MADDPG):
         done = bool(terminated or truncated)
         self._update_reward_normalizer(rewards)
         behavior_actions = self._transition_behavior_actions(actions)
+        next_behavior_actions = self._transition_next_behavior_actions(behavior_actions)
         priority_boost = self._transition_observation_event_priority_boost()
         self._push_replay_transition(
             observations=observations,
@@ -101,6 +106,7 @@ class MATD3(MADDPG):
             next_observations=next_observations,
             done=done,
             behavior_actions=behavior_actions,
+            next_behavior_actions=next_behavior_actions,
             priority_boost=priority_boost,
         )
 
@@ -111,13 +117,19 @@ class MATD3(MADDPG):
         if not update_step:
             return
 
-        if hasattr(self.replay_buffer, "sample_with_behavior_actions"):
+        if hasattr(self.replay_buffer, "sample_with_policy_context_actions"):
+            states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all, next_behavior_actions_all = (
+                self.replay_buffer.sample_with_policy_context_actions()
+            )
+        elif hasattr(self.replay_buffer, "sample_with_behavior_actions"):
             states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all = (
                 self.replay_buffer.sample_with_behavior_actions()
             )
+            next_behavior_actions_all = behavior_actions_all
         else:
             states, actions_all, rewards_all, next_states, dones_all = self.replay_buffer.sample()
             behavior_actions_all = actions_all
+            next_behavior_actions_all = actions_all
 
         raw_rewards_all = torch.stack(rewards_all).to(self.device, dtype=torch.float32, non_blocking=True)
         rewards_all = self._normalize_reward_tensor(raw_rewards_all)
@@ -125,6 +137,7 @@ class MATD3(MADDPG):
         states = [state.to(self.device, non_blocking=True) for state in states]
         actions_all = [action.to(self.device, non_blocking=True) for action in actions_all]
         behavior_actions_all = [action.to(self.device, non_blocking=True) for action in behavior_actions_all]
+        next_behavior_actions_all = [action.to(self.device, non_blocking=True) for action in next_behavior_actions_all]
         next_states = [state.to(self.device, non_blocking=True) for state in next_states]
 
         global_state = torch.cat(states, dim=1)
@@ -134,7 +147,12 @@ class MATD3(MADDPG):
         with torch.no_grad():
             next_policy_actions = []
             for agent_idx in range(self.num_agents):
-                next_action = self._scale_action_tensor(agent_idx, self.actor_targets[agent_idx](next_states[agent_idx]))
+                next_action = self._policy_action_from_actor_output(
+                    agent_idx,
+                    self.actor_targets[agent_idx](next_states[agent_idx]),
+                    base_action=next_behavior_actions_all[agent_idx],
+                    global_learning_step=global_learning_step,
+                )
                 next_action = self._add_target_policy_smoothing(agent_idx, next_action)
                 next_policy_actions.append(next_action)
             global_next_actions = torch.cat(next_policy_actions, dim=1)
@@ -196,7 +214,12 @@ class MATD3(MADDPG):
 
         with torch.no_grad():
             detached_policy_actions = [
-                self._scale_action_tensor(agent_idx, actor(state)).detach()
+                self._policy_action_from_actor_output(
+                    agent_idx,
+                    actor(state),
+                    base_action=behavior_actions_all[agent_idx],
+                    global_learning_step=global_learning_step,
+                ).detach()
                 for agent_idx, (actor, state) in enumerate(zip(self.actors, states))
             ]
 
@@ -218,7 +241,12 @@ class MATD3(MADDPG):
             for agent_idx, (actor, critic, optimizer) in enumerate(
                 zip(self.actors, self.critics, self.actor_optimizers)
             ):
-                predicted_action = self._scale_action_tensor(agent_idx, actor(states[agent_idx]))
+                predicted_action = self._policy_action_from_actor_output(
+                    agent_idx,
+                    actor(states[agent_idx]),
+                    base_action=behavior_actions_all[agent_idx],
+                    global_learning_step=global_learning_step,
+                )
                 joint_policy_actions = list(detached_policy_actions)
                 joint_policy_actions[agent_idx] = predicted_action
                 global_predicted_actions = torch.cat(joint_policy_actions, dim=1)
@@ -256,9 +284,11 @@ class MATD3(MADDPG):
                 self.scaler.update()
 
                 with torch.no_grad():
-                    detached_policy_actions[agent_idx] = self._scale_action_tensor(
+                    detached_policy_actions[agent_idx] = self._policy_action_from_actor_output(
                         agent_idx,
                         actor(states[agent_idx]),
+                        base_action=behavior_actions_all[agent_idx],
+                        global_learning_step=global_learning_step,
                     ).detach()
 
                 total_actor_loss += float(actor_loss.detach().item())
@@ -297,6 +327,12 @@ class MATD3(MADDPG):
                 "MATD3/actor_behavior_cloning_loss_mean": float(np.mean(actor_bc_values)),
                 "MATD3/actor_behavior_cloning_effective_weight": float(
                     actor_behavior_cloning_effective_weight
+                ),
+                "MATD3/residual_policy_enabled": float(
+                    getattr(self, "residual_policy_enabled", False)
+                ),
+                "MATD3/residual_action_scale_effective": float(
+                    getattr(self, "_last_residual_action_scale", 0.0)
                 ),
                 "MATD3/actor_grad_norm_mean": float(np.mean(actor_grad_norm_values)),
                 "MATD3/q1_expected_mean": float(q1_flat.mean().item()),

@@ -332,6 +332,9 @@ class NetworkConfig(BaseModel):
     class_name: str = Field(alias="class")
     layers: List[int]
     lr: float = Field(gt=0)
+    state_layers: Optional[List[int]] = None
+    action_layers: Optional[List[int]] = None
+    joint_layers: Optional[List[int]] = None
 
     @field_validator("layers")
     @classmethod
@@ -340,6 +343,15 @@ class NetworkConfig(BaseModel):
             raise ValueError("layers must contain at least one hidden dimension")
         if any(layer <= 0 for layer in value):
             raise ValueError("layers must be positive integers")
+        return value
+
+    @field_validator("state_layers", "action_layers", "joint_layers")
+    @classmethod
+    def validate_optional_layers(cls, value: Optional[List[int]]) -> Optional[List[int]]:
+        if value is None:
+            return value
+        if any(layer <= 0 for layer in value):
+            raise ValueError("network tower layers must be positive integers")
         return value
 
 
@@ -363,7 +375,9 @@ class ReplayBufferConfig(BaseModel):
     behavior_action_priority_mode: Optional[Literal["positive", "abs"]] = None
     behavior_action_priority_scope: Optional[Literal["all", "ev"]] = None
     observation_event_priority_weight: Optional[float] = Field(default=None, ge=0.0)
-    observation_event_priority_mode: Optional[Literal["ev_departure_service"]] = None
+    observation_event_priority_mode: Optional[
+        Literal["ev_departure_service", "ev_pv_price_peak", "combined"]
+    ] = None
 
 
 class ExplorationParams(BaseModel):
@@ -592,7 +606,16 @@ class ProjectConfig(BaseModel):
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain dictionary using original key names (aliases)."""
-        return self.model_dump(by_alias=True)
+        payload = self.model_dump(by_alias=True)
+        networks = payload.get("algorithm", {}).get("networks")
+        if isinstance(networks, dict):
+            for network in networks.values():
+                if not isinstance(network, dict):
+                    continue
+                for key in ("state_layers", "action_layers", "joint_layers"):
+                    if network.get(key) is None:
+                        network.pop(key, None)
+        return payload
 
 
 def validate_config(raw_config: Dict[str, Any]) -> ProjectConfig:

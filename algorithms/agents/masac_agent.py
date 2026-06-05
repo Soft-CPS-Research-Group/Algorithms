@@ -13,7 +13,7 @@ from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.maddpg_agent import MADDPG
-from algorithms.utils.networks import Critic, GaussianActor
+from algorithms.utils.networks import GaussianActor, build_critic_network
 
 
 class MASAC(MADDPG):
@@ -24,7 +24,6 @@ class MASAC(MADDPG):
         actor_cfg = self.config["algorithm"]["networks"]["actor"]
         critic_cfg = self.config["algorithm"]["networks"]["critic"]
         actor_fc_units = actor_cfg["layers"]
-        critic_fc_units = critic_cfg["layers"]
         exploration_cfg = self.config["algorithm"]["exploration"]["params"]
 
         self.initial_log_std = float(exploration_cfg.get("initial_log_std", -0.5))
@@ -63,11 +62,15 @@ class MASAC(MADDPG):
                     max_log_std=self.max_log_std,
                 ).to(self.device)
             )
-            critics.append(Critic(global_state_size, global_action_size, self.seed, critic_fc_units).to(self.device))
-            critic_targets.append(Critic(global_state_size, global_action_size, self.seed, critic_fc_units).to(self.device))
-            self.critics_2.append(Critic(global_state_size, global_action_size, self.seed + 7919, critic_fc_units).to(self.device))
+            critics.append(build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device))
+            critic_targets.append(
+                build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device)
+            )
+            self.critics_2.append(
+                build_critic_network(global_state_size, global_action_size, self.seed + 7919, critic_cfg).to(self.device)
+            )
             self.critic_targets_2.append(
-                Critic(global_state_size, global_action_size, self.seed + 7919, critic_fc_units).to(self.device)
+                build_critic_network(global_state_size, global_action_size, self.seed + 7919, critic_cfg).to(self.device)
             )
             configured_target = exploration_cfg.get("target_entropy")
             self.target_entropy.append(

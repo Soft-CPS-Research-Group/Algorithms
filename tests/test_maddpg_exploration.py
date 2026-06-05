@@ -588,6 +588,37 @@ def test_noop_actor_initialization_sets_initial_scaled_action_near_noop():
     assert scaled[1] == pytest.approx(0.0, abs=1e-5)
 
 
+def test_residual_policy_action_adds_bounded_delta_to_base_action():
+    agent = MADDPG.__new__(MADDPG)
+    agent.action_dimension = [2]
+    agent.action_low = [np.array([-1.0, 0.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0, 2.0], dtype=np.float32)]
+    agent.action_names = [["electrical_storage::charge", "charger::charge"]]
+    agent.residual_policy_enabled = True
+    agent.residual_action_scale = 0.10
+    agent.residual_action_final_scale = 0.20
+    agent.residual_action_start_step = 0
+    agent.residual_action_growth_steps = 10
+    agent.residual_storage_action_scale_multiplier = 0.5
+    agent.residual_ev_action_scale_multiplier = 1.0
+    agent.residual_deferrable_action_scale_multiplier = 1.0
+    agent.exploration_step = 10
+
+    raw_action = torch.tensor([[1.0, -1.0]], dtype=torch.float32)
+    base_action = torch.tensor([[0.0, 1.0]], dtype=torch.float32)
+
+    action = agent._policy_action_from_actor_output(
+        0,
+        raw_action,
+        base_action=base_action,
+        global_learning_step=10,
+    )
+
+    assert action.detach().numpy()[0, 0] == pytest.approx(0.1, abs=1e-6)
+    assert action.detach().numpy()[0, 1] == pytest.approx(0.8, abs=1e-6)
+    assert agent._last_residual_action_scale == pytest.approx(0.2)
+
+
 def test_maddpg_rejects_single_agent_prioritized_replay_buffer():
     agent = MADDPG.__new__(MADDPG)
     agent.num_agents = 1

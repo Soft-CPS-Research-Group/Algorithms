@@ -2277,6 +2277,19 @@ class Wrapper_CityLearn(RLC):
             encoded_next_observations = self._encode_observations_for_model(next_observations)
             self._last_model_observation_encoding_seconds = time.perf_counter() - phase_start_time
 
+        transition_context_hook = getattr(self.model, "set_transition_context", None)
+        if callable(transition_context_hook):
+            transition_context_hook(
+                raw_observations=None
+                if direct_entity_model_observations
+                else observations,
+                raw_next_observations=None
+                if direct_entity_model_observations
+                else next_observations,
+                encoded_observations=encoded_observations,
+                encoded_next_observations=encoded_next_observations,
+            )
+
         # Pass updated parameters to model.update()
         phase_start_time = time.perf_counter()
         update_result = self.model.update(observations = encoded_observations, actions= actions, rewards= reward,

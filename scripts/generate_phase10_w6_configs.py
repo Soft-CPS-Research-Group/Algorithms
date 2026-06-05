@@ -72,6 +72,16 @@ class Recipe:
     reward_function: str = REWARD_FUNCTION
     reward_kwargs: tuple[tuple[str, Any], ...] = ()
     reward_normalization_clip: float = 10.0
+    teacher_policy: str = "RBCSmartPolicy"
+    residual_policy_enabled: bool = False
+    residual_action_scale: float = 0.0
+    residual_action_final_scale: float = 0.0
+    residual_action_start_step: int = 0
+    residual_action_growth_steps: int = 0
+    residual_storage_action_scale_multiplier: float = 1.0
+    residual_ev_action_scale_multiplier: float = 1.0
+    residual_deferrable_action_scale_multiplier: float = 1.0
+    replay_observation_event_priority_mode: str = "ev_departure_service"
     note: str = ""
 
 
@@ -673,6 +683,103 @@ RECIPES: dict[str, Recipe] = {
         reward_normalization_clip=25.0,
         note="Flex follow-up: reopen EV V2G value while keeping strong EV margin and service-risk penalty.",
     ),
+    "w6_residual_comm_constraint": Recipe(
+        name="w6_residual_comm_constraint",
+        bc_weight=0.120,
+        bc_min_weight=0.020,
+        ev_bc_multiplier=8.0,
+        storage_bc_multiplier=0.40,
+        zero_ev_target_weight=3.0,
+        storage_l2=0.002,
+        ev_v2g_l2=0.080,
+        ev_v2g_mass=0.120,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.080,
+        actor_policy_loss_warmup_weight=0.020,
+        extra_bc_updates=3,
+        extra_bc_steps=4096,
+        reward_function="CostServiceCommunityResidualConstraintRewardV53",
+        reward_normalization_clip=25.0,
+        teacher_policy="RBCCommunityPolicy",
+        residual_policy_enabled=True,
+        residual_action_scale=0.08,
+        residual_action_final_scale=0.28,
+        residual_action_growth_steps=4096,
+        residual_storage_action_scale_multiplier=0.65,
+        residual_ev_action_scale_multiplier=0.50,
+        residual_deferrable_action_scale_multiplier=0.80,
+        replay_observation_event_priority_mode="combined",
+        note="Residual over RBCCommunity: conservative deltas, strict EV gate, community cost/peak/export value.",
+    ),
+    "w6_residual_comm_cost_push": Recipe(
+        name="w6_residual_comm_cost_push",
+        bc_weight=0.070,
+        bc_min_weight=0.006,
+        ev_bc_multiplier=6.0,
+        storage_bc_multiplier=0.25,
+        zero_ev_target_weight=2.5,
+        storage_l2=0.0015,
+        ev_v2g_l2=0.060,
+        ev_v2g_mass=0.080,
+        teacher_phaseout_steps=3072,
+        actor_policy_loss_weight=0.120,
+        actor_policy_loss_warmup_weight=0.025,
+        extra_bc_updates=2,
+        extra_bc_steps=3072,
+        reward_function="CostServiceCommunityResidualConstraintRewardV53",
+        reward_kwargs=(
+            ("community_settlement_cost_weight", 1.32),
+            ("community_peak_import_penalty", 0.0024),
+            ("community_export_penalty", 0.00075),
+            ("ev_departure_deficit_penalty", 1350.0),
+            ("ev_v2g_service_penalty", 1250.0),
+            ("battery_throughput_penalty", 0.0020),
+        ),
+        reward_normalization_clip=30.0,
+        teacher_policy="RBCCommunityPolicy",
+        residual_policy_enabled=True,
+        residual_action_scale=0.10,
+        residual_action_final_scale=0.36,
+        residual_action_growth_steps=4096,
+        residual_storage_action_scale_multiplier=0.80,
+        residual_ev_action_scale_multiplier=0.60,
+        residual_deferrable_action_scale_multiplier=1.00,
+        replay_observation_event_priority_mode="combined",
+        note="Residual over RBCCommunity: lower BC and stronger cost/peak/export pressure.",
+    ),
+    "w6_residual_smart_ev_safe": Recipe(
+        name="w6_residual_smart_ev_safe",
+        bc_weight=0.140,
+        bc_min_weight=0.030,
+        ev_bc_multiplier=10.0,
+        storage_bc_multiplier=0.20,
+        zero_ev_target_weight=3.5,
+        storage_l2=0.0025,
+        ev_v2g_l2=0.100,
+        ev_v2g_mass=0.160,
+        teacher_phaseout_steps=4096,
+        actor_policy_loss_weight=0.070,
+        actor_policy_loss_warmup_weight=0.015,
+        extra_bc_updates=3,
+        extra_bc_steps=4096,
+        reward_function="CostServiceCommunityResidualConstraintRewardV53",
+        reward_kwargs=(
+            ("ev_departure_deficit_penalty", 1450.0),
+            ("ev_departure_missed_penalty", 4200.0),
+            ("ev_v2g_service_penalty", 1450.0),
+        ),
+        reward_normalization_clip=25.0,
+        teacher_policy="RBCSmartPolicy",
+        residual_policy_enabled=True,
+        residual_action_scale=0.06,
+        residual_action_final_scale=0.24,
+        residual_action_growth_steps=4096,
+        residual_storage_action_scale_multiplier=0.65,
+        residual_ev_action_scale_multiplier=0.45,
+        residual_deferrable_action_scale_multiplier=0.80,
+        replay_observation_event_priority_mode="combined",
+        note="Residual over RBCSmart: service-safe comparator for checking whether community teacher hurts EV gates.",
+    ),
 }
 
 
@@ -715,6 +822,19 @@ def _validated(payload: Mapping[str, Any]) -> dict[str, Any]:
 def _rbc_smart_hyperparameters() -> dict[str, Any]:
     payload = _validated(_load_yaml(RBC_SMART_2022_TEMPLATE))
     return dict(payload.get("algorithm", {}).get("hyperparameters", {}) or {})
+
+
+def _rbc_community_hyperparameters() -> dict[str, Any]:
+    payload = _validated(_load_yaml(RBC_COMMUNITY_2022_TEMPLATE))
+    return dict(payload.get("algorithm", {}).get("hyperparameters", {}) or {})
+
+
+def _teacher_hyperparameters(policy_name: str) -> dict[str, Any]:
+    if policy_name == "RBCCommunityPolicy":
+        return _rbc_community_hyperparameters()
+    if policy_name == "RBCSmartPolicy":
+        return _rbc_smart_hyperparameters()
+    return {}
 
 
 def _normalise_requested(values: Sequence[str] | None, default: Sequence[str]) -> tuple[str, ...]:
@@ -1074,6 +1194,8 @@ def _build_rl_config(
             "window": window_name,
             "seed": int(seed),
             "reward_function": recipe.reward_function,
+            "teacher_policy": recipe.teacher_policy,
+            "residual_policy": bool(recipe.residual_policy_enabled),
         }
     )
     _apply_checkpointing(config)
@@ -1099,6 +1221,15 @@ def _build_rl_config(
         "gamma": 0.995,
         "require_cuda": bool(runtime["require_cuda"]),
     }
+    algorithm.setdefault("networks", {}).setdefault("critic", {}).update(
+        {
+            "class": "LateFusionCritic",
+            "layers": [1024, 512, 256],
+            "state_layers": [1024, 512],
+            "action_layers": [256],
+            "joint_layers": [512, 256],
+        }
+    )
     algorithm["replay_buffer"] = {
         "class": "RewardWeightedMultiAgentReplayBuffer",
         "capacity": 200000,
@@ -1112,7 +1243,7 @@ def _build_rl_config(
         "behavior_action_priority_mode": "positive",
         "behavior_action_priority_scope": "ev",
         "observation_event_priority_weight": 8.0,
-        "observation_event_priority_mode": "ev_departure_service",
+        "observation_event_priority_mode": str(recipe.replay_observation_event_priority_mode),
     }
 
     exploration = algorithm.setdefault("exploration", {}).setdefault("params", {})
@@ -1131,8 +1262,8 @@ def _build_rl_config(
             "end_initial_exploration_time_step": random_steps,
             "random_exploration_steps": random_steps,
             "initial_exploration_strategy": "policy",
-            "warm_start_policy": "RBCSmartPolicy",
-            "warm_start_policy_hyperparameters": _rbc_smart_hyperparameters(),
+            "warm_start_policy": str(recipe.teacher_policy),
+            "warm_start_policy_hyperparameters": _teacher_hyperparameters(recipe.teacher_policy),
             "warm_start_policy_deterministic": True,
             "warm_start_policy_noise_scale": 0.0,
             "warm_start_policy_phaseout_steps": int(recipe.teacher_phaseout_steps),
@@ -1179,6 +1310,18 @@ def _build_rl_config(
             "reward_normalization": True,
             "reward_normalization_clip": float(recipe.reward_normalization_clip),
             "reward_normalization_epsilon": 1.0e-8,
+            "residual_policy_enabled": bool(recipe.residual_policy_enabled),
+            "residual_action_scale": float(recipe.residual_action_scale),
+            "residual_action_final_scale": float(recipe.residual_action_final_scale),
+            "residual_action_start_step": int(recipe.residual_action_start_step),
+            "residual_action_growth_steps": int(recipe.residual_action_growth_steps),
+            "residual_storage_action_scale_multiplier": float(
+                recipe.residual_storage_action_scale_multiplier
+            ),
+            "residual_ev_action_scale_multiplier": float(recipe.residual_ev_action_scale_multiplier),
+            "residual_deferrable_action_scale_multiplier": float(
+                recipe.residual_deferrable_action_scale_multiplier
+            ),
         }
     )
 

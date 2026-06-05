@@ -17,7 +17,7 @@ from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.constants import DEFAULT_ONNX_OPSET
-from algorithms.utils.networks import Actor, Critic
+from algorithms.utils.networks import Actor, build_critic_network
 from algorithms.utils.replay_buffer import (
     MultiAgentReplayBuffer,
     PrioritizedReplayBuffer,
@@ -272,6 +272,44 @@ class MADDPG(BaseAgent):
             raise ValueError(
                 "MADDPG actor_behavior_cloning_source must be 'replay_action' or 'warm_start_policy'."
             )
+        self.residual_policy_enabled = bool(exploration_cfg.get("residual_policy_enabled", False))
+        self.residual_action_scale = float(
+            np.clip(float(exploration_cfg.get("residual_action_scale", 0.0) or 0.0), 0.0, 1.0)
+        )
+        self.residual_action_final_scale = float(
+            np.clip(
+                float(
+                    exploration_cfg.get(
+                        "residual_action_final_scale",
+                        self.residual_action_scale,
+                    )
+                    or 0.0
+                ),
+                0.0,
+                1.0,
+            )
+        )
+        self.residual_action_start_step = max(
+            0,
+            int(exploration_cfg.get("residual_action_start_step", 0) or 0),
+        )
+        self.residual_action_growth_steps = max(
+            0,
+            int(exploration_cfg.get("residual_action_growth_steps", 0) or 0),
+        )
+        self.residual_storage_action_scale_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("residual_storage_action_scale_multiplier", 1.0) or 0.0),
+        )
+        self.residual_ev_action_scale_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("residual_ev_action_scale_multiplier", 1.0) or 0.0),
+        )
+        self.residual_deferrable_action_scale_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("residual_deferrable_action_scale_multiplier", 1.0) or 0.0),
+        )
+        self._last_residual_action_scale = 0.0
         self.reward_normalization_enabled = bool(exploration_cfg.get("reward_normalization", False))
         self.reward_normalization_clip = float(exploration_cfg.get("reward_normalization_clip", 10.0) or 10.0)
         if self.reward_normalization_clip <= 0.0:
@@ -290,9 +328,14 @@ class MADDPG(BaseAgent):
         self.replay_observation_event_priority_mode = str(
             replay_cfg.get("observation_event_priority_mode", "ev_departure_service") or "ev_departure_service"
         ).strip().lower()
-        if self.replay_observation_event_priority_mode not in {"ev_departure_service"}:
+        if self.replay_observation_event_priority_mode not in {
+            "ev_departure_service",
+            "ev_pv_price_peak",
+            "combined",
+        }:
             raise ValueError(
-                "MADDPG replay_buffer.observation_event_priority_mode must be 'ev_departure_service'."
+                "MADDPG replay_buffer.observation_event_priority_mode must be one of "
+                "'ev_departure_service', 'ev_pv_price_peak' or 'combined'."
             )
         self._last_observation_event_priority_boost = 0.0
         self.critic_loss_function = str(exploration_cfg.get("critic_loss", "mse") or "mse").strip().lower()
@@ -381,14 +424,18 @@ class MADDPG(BaseAgent):
         self.observation_names: List[List[str]] = [[] for _ in range(int(self.num_agents))]
         self.observation_space: List[Any] = []
         self._latest_raw_observations: Optional[List[np.ndarray]] = None
+        self._latest_raw_next_observations: Optional[List[np.ndarray]] = None
         self._latest_encoded_observations: Optional[List[np.ndarray]] = None
+        self._latest_encoded_next_observations: Optional[List[np.ndarray]] = None
         self._warm_start_policy = None
         self._warned_missing_raw_context = False
         self._last_warm_start_policy_actions: Optional[List[List[float]]] = None
+        self._last_warm_start_next_policy_actions: Optional[List[List[float]]] = None
         self._last_warm_start_phaseout_probability = 0.0
         self._last_warm_start_phaseout_used = False
         self._noop_actor_initialized = False
         self._replay_push_accepts_behavior_actions: Optional[bool] = None
+        self._replay_push_accepts_next_behavior_actions: Optional[bool] = None
         self._replay_push_accepts_priority_boost: Optional[bool] = None
         self.replay_buffer = self._initialize_replay_buffer()
         self.actors, self.critics, self.actor_targets, self.critic_targets = self._initialize_networks()
@@ -522,6 +569,7 @@ class MADDPG(BaseAgent):
             NormalNoBatteryPolicy,
             NormalPolicy,
             RBCBasicPolicy,
+            RBCCommunityPolicy,
             RBCSmartPolicy,
             RandomPolicy,
         )
@@ -533,6 +581,7 @@ class MADDPG(BaseAgent):
             "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
             "NormalPolicy": NormalPolicy,
             "RBCBasicPolicy": RBCBasicPolicy,
+            "RBCCommunityPolicy": RBCCommunityPolicy,
             "RBCSmartPolicy": RBCSmartPolicy,
         }
         policy_cls = policy_registry.get(str(self.warm_start_policy_name))
@@ -562,6 +611,13 @@ class MADDPG(BaseAgent):
             metadata=metadata,
         )
         logger.info("MADDPG initial exploration will use warm-start policy '{}'.", self.warm_start_policy_name)
+        if getattr(self, "residual_policy_enabled", False):
+            logger.info(
+                "MADDPG residual policy enabled over warm-start policy '{}' with scale {} -> {}.",
+                self.warm_start_policy_name,
+                self.residual_action_scale,
+                self.residual_action_final_scale,
+            )
 
     def set_observation_context(
         self,
@@ -581,6 +637,37 @@ class MADDPG(BaseAgent):
             else None
         )
         self._last_warm_start_policy_actions = None
+
+    def set_transition_context(
+        self,
+        *,
+        raw_observations: Optional[List[np.ndarray]] = None,
+        raw_next_observations: Optional[List[np.ndarray]] = None,
+        encoded_observations: Optional[List[np.ndarray]] = None,
+        encoded_next_observations: Optional[List[np.ndarray]] = None,
+    ) -> None:
+        """Receive current/next observation context for teacher-aware replay."""
+        if raw_observations is not None:
+            self._latest_raw_observations = [
+                np.asarray(obs, dtype=np.float64) for obs in raw_observations
+            ]
+        self._latest_raw_next_observations = (
+            [np.asarray(obs, dtype=np.float64) for obs in raw_next_observations]
+            if raw_next_observations is not None
+            else None
+        )
+        if encoded_observations is not None:
+            self._latest_encoded_observations = [
+                np.asarray(obs, dtype=np.float64) for obs in encoded_observations
+            ]
+        self._latest_encoded_next_observations = (
+            [np.asarray(obs, dtype=np.float64) for obs in encoded_next_observations]
+            if encoded_next_observations is not None
+            else None
+        )
+        self._last_warm_start_next_policy_actions = self._predict_warm_start_policy_for_observations(
+            self._latest_raw_next_observations,
+        )
 
     def _apply_noop_actor_initialization(self) -> None:
         if not getattr(self, "noop_actor_initialization", False) or getattr(self, "_noop_actor_initialized", False):
@@ -661,7 +748,7 @@ class MADDPG(BaseAgent):
     def _initialize_networks(self):
         logger.debug("Initializing actor and critic networks.")
         actor_fc_units = self.config["algorithm"]["networks"]["actor"]["layers"]
-        critic_fc_units = self.config["algorithm"]["networks"]["critic"]["layers"]
+        critic_cfg = self.config["algorithm"]["networks"]["critic"]
 
         actors, critics, actor_targets, critic_targets = [], [], [], []
         for i in range(self.num_agents):
@@ -671,9 +758,9 @@ class MADDPG(BaseAgent):
             global_action_size = sum(self.action_dimension)
 
             actors.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
-            critics.append(Critic(global_state_size, global_action_size, self.seed, critic_fc_units).to(self.device))
+            critics.append(build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device))
             actor_targets.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
-            critic_targets.append(Critic(global_state_size, global_action_size, self.seed, critic_fc_units).to(self.device))
+            critic_targets.append(build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device))
 
         for actor, actor_target in zip(actors, actor_targets):
             actor_target.load_state_dict(actor.state_dict())
@@ -718,6 +805,7 @@ class MADDPG(BaseAgent):
 
         phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         behavior_actions = self._transition_behavior_actions(actions)
+        next_behavior_actions = self._transition_next_behavior_actions(behavior_actions)
         if should_log_runtime_profile:
             runtime_profile_metrics["MADDPG/runtime_behavior_action_seconds"] = (
                 time.perf_counter() - phase_start_time
@@ -738,6 +826,7 @@ class MADDPG(BaseAgent):
             next_observations=next_observations,
             done=done,
             behavior_actions=behavior_actions,
+            next_behavior_actions=next_behavior_actions,
             priority_boost=priority_boost,
         )
         if should_log_runtime_profile:
@@ -776,13 +865,19 @@ class MADDPG(BaseAgent):
             return
 
         phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
-        if hasattr(self.replay_buffer, "sample_with_behavior_actions"):
+        if hasattr(self.replay_buffer, "sample_with_policy_context_actions"):
+            states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all, next_behavior_actions_all = (
+                self.replay_buffer.sample_with_policy_context_actions()
+            )
+        elif hasattr(self.replay_buffer, "sample_with_behavior_actions"):
             states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all = (
                 self.replay_buffer.sample_with_behavior_actions()
             )
+            next_behavior_actions_all = behavior_actions_all
         else:
             states, actions_all, rewards_all, next_states, dones_all = self.replay_buffer.sample()
             behavior_actions_all = actions_all
+            next_behavior_actions_all = actions_all
         if should_log_runtime_profile:
             runtime_profile_metrics["MADDPG/runtime_replay_sample_seconds"] = (
                 time.perf_counter() - phase_start_time
@@ -795,6 +890,7 @@ class MADDPG(BaseAgent):
         states = [s.to(self.device, non_blocking=True) for s in states]
         actions_all = [a.to(self.device, non_blocking=True) for a in actions_all]
         behavior_actions_all = [a.to(self.device, non_blocking=True) for a in behavior_actions_all]
+        next_behavior_actions_all = [a.to(self.device, non_blocking=True) for a in next_behavior_actions_all]
         next_states = [ns.to(self.device, non_blocking=True) for ns in next_states]
         if should_log_runtime_profile:
             runtime_profile_metrics["MADDPG/runtime_tensor_transfer_seconds"] = (
@@ -814,7 +910,12 @@ class MADDPG(BaseAgent):
         with torch.no_grad():
             next_policy_actions = []
             for agent_idx in range(self.num_agents):
-                next_action = self._scale_action_tensor(agent_idx, self.actor_targets[agent_idx](next_states[agent_idx]))
+                next_action = self._policy_action_from_actor_output(
+                    agent_idx,
+                    self.actor_targets[agent_idx](next_states[agent_idx]),
+                    base_action=next_behavior_actions_all[agent_idx],
+                    global_learning_step=global_learning_step,
+                )
                 if self.target_policy_smoothing:
                     next_action = self._add_target_policy_smoothing(agent_idx, next_action)
                 next_policy_actions.append(next_action)
@@ -903,7 +1004,12 @@ class MADDPG(BaseAgent):
         phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         with torch.no_grad():
             detached_policy_actions = [
-                self._scale_action_tensor(agent_idx, actor(state)).detach()
+                self._policy_action_from_actor_output(
+                    agent_idx,
+                    actor(state),
+                    base_action=behavior_actions_all[agent_idx],
+                    global_learning_step=global_learning_step,
+                ).detach()
                 for agent_idx, (actor, state) in enumerate(zip(self.actors, states))
             ]
         if should_log_runtime_profile:
@@ -960,7 +1066,12 @@ class MADDPG(BaseAgent):
                 actor_behavior_cloning_extra_loss_values.extend(extra_losses)
                 actor_behavior_cloning_extra_grad_norm_values.extend(extra_grad_norms)
 
-                predicted_action = self._scale_action_tensor(agent_num, actor(obs))
+                predicted_action = self._policy_action_from_actor_output(
+                    agent_num,
+                    actor(obs),
+                    base_action=behavior_actions_all[agent_num],
+                    global_learning_step=global_learning_step,
+                )
                 joint_policy_actions = list(detached_policy_actions)
                 joint_policy_actions[agent_num] = predicted_action
                 global_predicted_actions = torch.cat(joint_policy_actions, dim=1)
@@ -1006,7 +1117,12 @@ class MADDPG(BaseAgent):
 
                 # Keep cached detached actions in sync with sequential actor updates.
                 with torch.no_grad():
-                    detached_policy_actions[agent_num] = self._scale_action_tensor(agent_num, actor(obs)).detach()
+                    detached_policy_actions[agent_num] = self._policy_action_from_actor_output(
+                        agent_num,
+                        actor(obs),
+                        base_action=behavior_actions_all[agent_num],
+                        global_learning_step=global_learning_step,
+                    ).detach()
 
                 total_actor_loss += actor_loss.item()
                 actor_loss_values.append(float(actor_loss.item()))
@@ -1106,6 +1222,12 @@ class MADDPG(BaseAgent):
                 "MADDPG/actor_behavior_cloning_source_warm_start_policy": float(
                     getattr(self, "actor_behavior_cloning_source", "replay_action") == "warm_start_policy"
                 ),
+                "MADDPG/residual_policy_enabled": float(
+                    getattr(self, "residual_policy_enabled", False)
+                ),
+                "MADDPG/residual_action_scale_effective": float(
+                    getattr(self, "_last_residual_action_scale", 0.0)
+                ),
                 "MADDPG/reward_raw_mean": float(raw_rewards_all.mean().item()),
                 "MADDPG/reward_raw_std": float(raw_rewards_all.std(unbiased=False).item()),
                 "MADDPG/reward_train_mean": float(rewards_all.mean().item()),
@@ -1189,14 +1311,20 @@ class MADDPG(BaseAgent):
         done: bool,
         behavior_actions: List[Any],
         priority_boost: float,
+        next_behavior_actions: Optional[List[Any]] = None,
     ) -> None:
         """Push a transition while preserving compatibility with simple buffers."""
         push = self.replay_buffer.push
         kwargs: Dict[str, Any] = {}
 
         accepts_behavior_actions = getattr(self, "_replay_push_accepts_behavior_actions", None)
+        accepts_next_behavior_actions = getattr(self, "_replay_push_accepts_next_behavior_actions", None)
         accepts_priority_boost = getattr(self, "_replay_push_accepts_priority_boost", None)
-        if accepts_behavior_actions is None or accepts_priority_boost is None:
+        if (
+            accepts_behavior_actions is None
+            or accepts_next_behavior_actions is None
+            or accepts_priority_boost is None
+        ):
             try:
                 parameters = inspect.signature(push).parameters
             except (TypeError, ValueError):
@@ -1206,12 +1334,16 @@ class MADDPG(BaseAgent):
                 for parameter in parameters.values()
             )
             accepts_behavior_actions = accepts_kwargs or "behavior_actions" in parameters
+            accepts_next_behavior_actions = accepts_kwargs or "next_behavior_actions" in parameters
             accepts_priority_boost = accepts_kwargs or "priority_boost" in parameters
             self._replay_push_accepts_behavior_actions = accepts_behavior_actions
+            self._replay_push_accepts_next_behavior_actions = accepts_next_behavior_actions
             self._replay_push_accepts_priority_boost = accepts_priority_boost
 
         if accepts_behavior_actions:
             kwargs["behavior_actions"] = behavior_actions
+        if accepts_next_behavior_actions and next_behavior_actions is not None:
+            kwargs["next_behavior_actions"] = next_behavior_actions
         if accepts_priority_boost:
             kwargs["priority_boost"] = priority_boost
 
@@ -1393,6 +1525,20 @@ class MADDPG(BaseAgent):
             "MADDPG/actor_behavior_cloning_source_warm_start_policy": float(
                 getattr(self, "actor_behavior_cloning_source", "replay_action") == "warm_start_policy"
             ),
+            "MADDPG/residual_policy_enabled": float(getattr(self, "residual_policy_enabled", False)),
+            "MADDPG/residual_action_scale": float(getattr(self, "residual_action_scale", 0.0)),
+            "MADDPG/residual_action_final_scale": float(
+                getattr(self, "residual_action_final_scale", 0.0)
+            ),
+            "MADDPG/residual_action_scale_effective": float(
+                getattr(self, "_last_residual_action_scale", 0.0)
+            ),
+            "MADDPG/residual_action_start_step": float(
+                getattr(self, "residual_action_start_step", 0)
+            ),
+            "MADDPG/residual_action_growth_steps": float(
+                getattr(self, "residual_action_growth_steps", 0)
+            ),
             "MADDPG/replay_observation_event_priority_weight": float(
                 getattr(self, "replay_observation_event_priority_weight", 0.0)
             ),
@@ -1447,11 +1593,23 @@ class MADDPG(BaseAgent):
         return self._predict_with_exploration(observations)
 
     def _predict_deterministic(self, observations):
+        base_actions = self._current_residual_base_actions()
         actions = []
         with torch.inference_mode():
             for agent_idx, (actor, obs) in enumerate(zip(self.actors, observations)):
                 raw_action = actor(torch.as_tensor(obs, dtype=torch.float32, device=self.device))
-                action = self._scale_action_tensor(agent_idx, raw_action).cpu().numpy()
+                base_action = None
+                if base_actions is not None and agent_idx < len(base_actions):
+                    base_action = torch.as_tensor(
+                        base_actions[agent_idx],
+                        dtype=raw_action.dtype,
+                        device=raw_action.device,
+                    )
+                action = self._policy_action_from_actor_output(
+                    agent_idx,
+                    raw_action,
+                    base_action=base_action,
+                ).cpu().numpy()
                 actions.append(action)
         logger.debug("Deterministic actions predicted: {}", actions)
         return actions
@@ -1589,6 +1747,23 @@ class MADDPG(BaseAgent):
             return [list(action) for action in self._last_warm_start_policy_actions]
         return self._predict_warm_start_policy(apply_noise=False, deterministic=True)
 
+    def _transition_next_behavior_actions(self, fallback_actions: List[Any]) -> List[Any]:
+        if (
+            getattr(self, "_warm_start_policy", None) is None
+            or getattr(self, "_latest_raw_next_observations", None) is None
+            or (
+                not getattr(self, "residual_policy_enabled", False)
+                and getattr(self, "actor_behavior_cloning_source", "replay_action") != "warm_start_policy"
+            )
+        ):
+            return fallback_actions
+        if self._last_warm_start_next_policy_actions is not None:
+            return [list(action) for action in self._last_warm_start_next_policy_actions]
+        predicted = self._predict_warm_start_policy_for_observations(
+            getattr(self, "_latest_raw_next_observations", None)
+        )
+        return predicted if predicted is not None else fallback_actions
+
     def _transition_observation_event_priority_boost(self) -> float:
         weight = float(getattr(self, "replay_observation_event_priority_weight", 0.0) or 0.0)
         if weight <= 0.0:
@@ -1602,10 +1777,18 @@ class MADDPG(BaseAgent):
             self._last_observation_event_priority_boost = 0.0
             return 0.0
 
-        scores = [
-            self._ev_departure_service_priority_score(agent_idx, observation)
-            for agent_idx, observation in enumerate(observations)
-        ]
+        mode = getattr(self, "replay_observation_event_priority_mode", "ev_departure_service")
+        scores = []
+        for agent_idx, observation in enumerate(observations):
+            ev_score = self._ev_departure_service_priority_score(agent_idx, observation)
+            energy_score = self._pv_price_peak_priority_score(agent_idx, observation)
+            if mode == "ev_departure_service":
+                score = ev_score
+            elif mode == "ev_pv_price_peak":
+                score = energy_score
+            else:
+                score = max(ev_score, energy_score)
+            scores.append(score)
         score = float(max(scores, default=0.0))
         boost = weight * score
         self._last_observation_event_priority_boost = boost
@@ -1677,6 +1860,47 @@ class MADDPG(BaseAgent):
 
         return float(np.clip(max(deficit_signal, urgency * (0.25 + deficit_signal)), 0.0, 1.0))
 
+    def _pv_price_peak_priority_score(self, agent_idx: int, observation: Any) -> float:
+        names = self.observation_names[agent_idx] if agent_idx < len(self.observation_names) else []
+        values = np.asarray(observation, dtype=np.float64).reshape(-1)
+        if not names or values.size == 0:
+            return 0.0
+
+        pv = self._max_observation_value(
+            names,
+            values,
+            include=("pv", "solar", "photovoltaic", "production"),
+            exclude=("soc", "required", "arrival", "departure"),
+            finite_only=True,
+        )
+        price = self._max_observation_value(
+            names,
+            values,
+            include=("price", "pricing", "tariff", "electricity_rate"),
+            finite_only=True,
+        )
+        import_load = self._max_observation_value(
+            names,
+            values,
+            include=("net_electricity_consumption", "community_import", "grid_import", "net_import"),
+            finite_only=True,
+        )
+        min_net_exchange = self._min_observation_value(
+            names,
+            values,
+            include=("net_electricity_consumption", "community_export", "grid_export", "net_export"),
+            finite_only=True,
+        )
+        export_load = -min_net_exchange if np.isfinite(min_net_exchange) else 0.0
+
+        pv_score = float(np.clip(pv / 10.0, 0.0, 1.0))
+        price_score = float(np.clip(price, 0.0, 1.0))
+        if price > 1.0:
+            price_score = float(np.clip(price / 0.5, 0.0, 1.0))
+        import_score = float(np.clip(import_load / 25.0, 0.0, 1.0))
+        export_score = float(np.clip(export_load / 10.0, 0.0, 1.0))
+        return float(np.clip(max(0.65 * pv_score, 0.75 * price_score, import_score, export_score), 0.0, 1.0))
+
     @staticmethod
     def _max_observation_value(
         names: List[str],
@@ -1727,6 +1951,34 @@ class MADDPG(BaseAgent):
         if not candidates:
             return float("inf")
         return min(candidates)
+
+    def _current_residual_base_actions(self) -> Optional[List[List[float]]]:
+        if not getattr(self, "residual_policy_enabled", False):
+            return None
+        predicted = self._predict_warm_start_policy_for_observations(self._latest_raw_observations)
+        if predicted is not None:
+            self._last_warm_start_policy_actions = [list(action) for action in predicted]
+            return predicted
+        return [
+            self._noop_action_for_agent(agent_idx).astype(np.float64).tolist()
+            for agent_idx in range(int(self.num_agents))
+        ]
+
+    def _predict_warm_start_policy_for_observations(
+        self,
+        observations: Optional[List[np.ndarray]],
+    ) -> Optional[List[List[float]]]:
+        if self._warm_start_policy is None or observations is None:
+            return None
+        actions = self._warm_start_policy.predict(
+            observations,
+            deterministic=bool(getattr(self, "warm_start_policy_deterministic", True)),
+        )
+        clipped_actions: List[List[float]] = []
+        for agent_idx, action in enumerate(actions):
+            action_array = np.asarray(action, dtype=np.float64).reshape(-1)
+            clipped_actions.append(self._clip_action_array(agent_idx, action_array).tolist())
+        return clipped_actions
 
     def _predict_warm_start_policy(
         self,
@@ -1861,6 +2113,93 @@ class MADDPG(BaseAgent):
         )
         scaled = low + 0.5 * (raw_action + 1.0) * (high - low)
         return torch.max(torch.min(scaled, high), low)
+
+    def _policy_action_from_actor_output(
+        self,
+        agent_idx: int,
+        raw_action: torch.Tensor,
+        *,
+        base_action: Optional[torch.Tensor] = None,
+        global_learning_step: Optional[int] = None,
+    ) -> torch.Tensor:
+        if (
+            not getattr(self, "residual_policy_enabled", False)
+            or base_action is None
+            or float(getattr(self, "residual_action_final_scale", 0.0) or 0.0) <= 0.0
+        ):
+            return self._scale_action_tensor(agent_idx, raw_action)
+
+        base = base_action.to(dtype=raw_action.dtype, device=raw_action.device)
+        if base.dim() == 1 and raw_action.dim() == 2:
+            base = base.view(1, -1).expand(raw_action.shape[0], -1)
+        elif base.dim() == 1:
+            base = base.reshape(raw_action.shape)
+        elif raw_action.dim() == 1 and base.dim() == 2:
+            base = base.reshape(raw_action.shape)
+
+        span = torch.as_tensor(
+            self._action_span_for_agent(agent_idx),
+            dtype=raw_action.dtype,
+            device=raw_action.device,
+        )
+        scale = self._residual_action_effective_scale(global_learning_step)
+        scale_mask = self._residual_action_scale_mask(
+            agent_idx,
+            action_dim=int(raw_action.shape[-1]),
+            dtype=raw_action.dtype,
+            device=raw_action.device,
+        )
+        residual = 0.5 * span * scale * scale_mask * raw_action
+        return self._clip_action_tensor(agent_idx, base + residual)
+
+    def _residual_action_effective_scale(self, global_learning_step: Optional[int] = None) -> float:
+        if not getattr(self, "residual_policy_enabled", False):
+            self._last_residual_action_scale = 0.0
+            return 0.0
+
+        step = int(
+            self.exploration_step if global_learning_step is None else global_learning_step
+        )
+        start_step = int(getattr(self, "residual_action_start_step", 0) or 0)
+        if step < start_step:
+            self._last_residual_action_scale = 0.0
+            return 0.0
+
+        initial = float(getattr(self, "residual_action_scale", 0.0) or 0.0)
+        final = float(getattr(self, "residual_action_final_scale", initial) or 0.0)
+        growth_steps = int(getattr(self, "residual_action_growth_steps", 0) or 0)
+        if growth_steps <= 0:
+            value = final
+        else:
+            progress = min(max((step - start_step) / growth_steps, 0.0), 1.0)
+            value = initial + (final - initial) * progress
+        self._last_residual_action_scale = float(np.clip(value, 0.0, 1.0))
+        return self._last_residual_action_scale
+
+    def _residual_action_scale_mask(
+        self,
+        agent_idx: int,
+        *,
+        action_dim: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        values = np.ones(int(action_dim), dtype=np.float32)
+        names = self._action_names_for_agent(agent_idx)
+        for action_idx, action_name in enumerate(names[: int(action_dim)]):
+            if self._is_storage_action_name(action_name):
+                values[action_idx] *= float(
+                    getattr(self, "residual_storage_action_scale_multiplier", 1.0)
+                )
+            if self._is_ev_action_name(action_name):
+                values[action_idx] *= float(
+                    getattr(self, "residual_ev_action_scale_multiplier", 1.0)
+                )
+            if self._is_deferrable_action_name(action_name):
+                values[action_idx] *= float(
+                    getattr(self, "residual_deferrable_action_scale_multiplier", 1.0)
+                )
+        return torch.as_tensor(values, dtype=dtype, device=device)
 
     def _clip_action_tensor(self, agent_idx: int, action: torch.Tensor) -> torch.Tensor:
         low = torch.as_tensor(
@@ -2054,7 +2393,11 @@ class MADDPG(BaseAgent):
         loss_values: List[float] = []
         grad_norm_values: List[float] = []
         for _ in range(extra_updates):
-            predicted_action = self._scale_action_tensor(agent_num, actor(observations))
+            predicted_action = self._policy_action_from_actor_output(
+                agent_num,
+                actor(observations),
+                base_action=behavior_actions,
+            )
             with autocast(device_type=self.device.type, enabled=self.use_amp):
                 behavior_cloning_loss = self._actor_behavior_cloning_loss(
                     agent_num,

@@ -39,6 +39,19 @@ def test_validate_config_invalid_network_layers(base_config):
         validate_config(config)
 
 
+def test_validate_config_accepts_late_fusion_critic_layers(base_config):
+    config = copy.deepcopy(base_config)
+    config["algorithm"]["networks"]["critic"] = {
+        "class": "LateFusionCritic",
+        "layers": [64, 32],
+        "state_layers": [64],
+        "action_layers": [32],
+        "joint_layers": [64, 32],
+        "lr": 1.0e-3,
+    }
+    validate_config(config)
+
+
 def test_validate_config_accepts_deucalion_execution(base_config):
     config = copy.deepcopy(base_config)
     config["execution"] = {

@@ -2031,3 +2031,48 @@ class CostServiceCommunityPeakDeadlineRewardV52(CostHardConstraintReward):
         params = dict(self.DEFAULT_KWARGS)
         params.update(kwargs)
         super().__init__(env_metadata, **params)
+
+
+class CostServiceCommunityResidualConstraintRewardV53(CostHardConstraintReward):
+    """Phase 10 residual-policy reward: protect EV service while valuing community shape.
+
+    V53 is meant for residual training over RBCCommunity/RBCSmart teachers. It
+    keeps EV deadlines strict enough to preserve the service gate, removes any
+    local export-credit ambiguity, and raises community import/export/peak terms
+    so small residual actions have a clear reason to improve self-consumption
+    and grid shape beyond the teacher policy.
+    """
+
+    DEFAULT_KWARGS = {
+        **CostServiceCommunityPeakDeadlineRewardV52.DEFAULT_KWARGS,
+        "local_cost_weight": 0.0,
+        "export_credit_ratio": 0.0,
+        "community_settlement_cost_weight": 1.22,
+        "community_peak_import_penalty": 0.0020,
+        "community_export_penalty": 0.00055,
+        "ev_departure_window_hours": 6.0,
+        "ev_connected_deficit_penalty": 105.0,
+        "ev_connected_deficit_exponent": 2.0,
+        "ev_schedule_deficit_penalty": 980.0,
+        "ev_schedule_deficit_exponent": 1.45,
+        "ev_schedule_deficit_cap_soc": 0.08,
+        "ev_departure_window_shortfall_cap_soc": 0.08,
+        "ev_departure_deficit_penalty": 1250.0,
+        "ev_departure_missed_penalty": 3600.0,
+        "ev_over_service_tolerance": 0.04,
+        "ev_over_service_penalty": 900.0,
+        "ev_v2g_service_penalty": 1150.0,
+        "ev_v2g_discharge_penalty": 0.10,
+        "battery_throughput_penalty": 0.0025,
+        "battery_soc_min": 0.0,
+        "battery_soc_max": 1.0,
+        "use_observed_storage_soc_limits": True,
+        "community_penalty_divide_by_agents": True,
+        "scale_state_penalties_by_time_step": True,
+        "state_penalty_reference_seconds": 3600.0,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)
