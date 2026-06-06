@@ -358,6 +358,16 @@ class MATD3(MADDPG):
             q1_flat = torch.cat([tensor.reshape(-1) for tensor in q1_expected_tensors])
             q2_flat = torch.cat([tensor.reshape(-1) for tensor in q2_expected_tensors])
             q_target_flat = torch.cat([target.reshape(-1) for target in q_targets])
+            policy_deviation_metrics = self._tensor_action_deviation_metrics(
+                detached_policy_actions,
+                behavior_actions_all,
+                prefix="MATD3/policy_vs_teacher",
+            )
+            replay_deviation_metrics = self._tensor_action_deviation_metrics(
+                actions_all,
+                behavior_actions_all,
+                prefix="MATD3/replay_vs_teacher",
+            )
             metrics: Dict[str, float] = {
                 "MATD3/critic_1_loss_mean": float(np.mean(critic_loss_values)),
                 "MATD3/critic_2_loss_mean": float(np.mean(critic_2_loss_values)),
@@ -417,6 +427,8 @@ class MATD3(MADDPG):
                     metrics[f"MATD3/critic_2_loss_agent_{agent_idx}"] = critic_2_loss_values[agent_idx]
                     metrics[f"MATD3/critic_gap_abs_agent_{agent_idx}"] = critic_gap_values[agent_idx]
                     metrics[f"MATD3/actor_loss_agent_{agent_idx}"] = actor_loss_values[agent_idx]
+            metrics.update(policy_deviation_metrics)
+            metrics.update(replay_deviation_metrics)
             self._record_training_metrics(metrics, global_learning_step)
 
     def get_diagnostic_metrics(self) -> Dict[str, float]:

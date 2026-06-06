@@ -500,6 +500,7 @@ class MADDPG(BaseAgent):
         self._last_warm_start_next_policy_actions: Optional[List[List[float]]] = None
         self._last_warm_start_phaseout_probability = 0.0
         self._last_warm_start_phaseout_used = False
+        self._last_policy_action_diagnostics: Dict[str, float] = {}
         self._noop_actor_initialized = False
         self._replay_push_accepts_behavior_actions: Optional[bool] = None
         self._replay_push_accepts_next_behavior_actions: Optional[bool] = None
@@ -1293,6 +1294,16 @@ class MADDPG(BaseAgent):
             metrics_start_time = time.perf_counter()
             q_expected_flat = torch.cat([tensor.reshape(-1) for tensor in q_expected_stat_tensors])
             q_targets_flat = q_targets.detach().reshape(-1)
+            policy_deviation_metrics = self._tensor_action_deviation_metrics(
+                detached_policy_actions,
+                behavior_actions_all,
+                prefix="MADDPG/policy_vs_teacher",
+            )
+            replay_deviation_metrics = self._tensor_action_deviation_metrics(
+                actions_all,
+                behavior_actions_all,
+                prefix="MADDPG/replay_vs_teacher",
+            )
             training_metrics: Dict[str, float] = {
                 "MADDPG/average_critic_loss": critic_loss_scalar,
                 "MADDPG/average_actor_loss": total_actor_loss / self.num_agents,
@@ -1429,6 +1440,8 @@ class MADDPG(BaseAgent):
                     time.perf_counter() - metrics_start_time
                 )
                 training_metrics.update(runtime_profile_metrics)
+            training_metrics.update(policy_deviation_metrics)
+            training_metrics.update(replay_deviation_metrics)
             self._record_training_metrics(training_metrics, global_learning_step)
 
         log_message = "Update complete. Avg Critic Loss: {:.4f}, Avg Actor Loss: {:.4f}."
@@ -1830,6 +1843,7 @@ class MADDPG(BaseAgent):
                     ),
                 }
             )
+        metrics.update(getattr(self, "_last_policy_action_diagnostics", {}) or {})
         return metrics
 
     def consume_latest_training_metrics(self) -> Dict[str, float]:
@@ -1874,6 +1888,11 @@ class MADDPG(BaseAgent):
                     base_action=base_action,
                 ).cpu().numpy()
                 actions.append(action)
+        self._last_policy_action_diagnostics = self._numpy_action_deviation_metrics(
+            actions=actions,
+            base_actions=base_actions,
+            prefix="MADDPG/predict",
+        )
         logger.debug("Deterministic actions predicted: {}", actions)
         return actions
 
@@ -1882,10 +1901,31 @@ class MADDPG(BaseAgent):
         if self.exploration_step <= self.random_exploration_steps:
             initial_strategy = getattr(self, "initial_exploration_strategy", "uniform_full_range")
             if initial_strategy == "policy":
-                return self._predict_warm_start_policy()
+                actions = self._predict_warm_start_policy()
+                self._last_policy_action_diagnostics = {
+                    "MADDPG/predict/base_available": 1.0,
+                    "MADDPG/predict/using_warm_start_policy": 1.0,
+                    "MADDPG/predict/using_noop_centered": 0.0,
+                    "MADDPG/predict/using_uniform_random": 0.0,
+                }
+                return actions
             if initial_strategy == "noop_centered":
-                return self._predict_noop_centered()
-            return self._predict_random()
+                actions = self._predict_noop_centered()
+                self._last_policy_action_diagnostics = {
+                    "MADDPG/predict/base_available": 0.0,
+                    "MADDPG/predict/using_warm_start_policy": 0.0,
+                    "MADDPG/predict/using_noop_centered": 1.0,
+                    "MADDPG/predict/using_uniform_random": 0.0,
+                }
+                return actions
+            actions = self._predict_random()
+            self._last_policy_action_diagnostics = {
+                "MADDPG/predict/base_available": 0.0,
+                "MADDPG/predict/using_warm_start_policy": 0.0,
+                "MADDPG/predict/using_noop_centered": 0.0,
+                "MADDPG/predict/using_uniform_random": 1.0,
+            }
+            return actions
 
         phaseout_probability = self._warm_start_phaseout_probability()
         self._last_warm_start_phaseout_probability = float(phaseout_probability)
@@ -1897,7 +1937,15 @@ class MADDPG(BaseAgent):
             and np.random.random() < phaseout_probability
         ):
             self._last_warm_start_phaseout_used = True
-            return self._predict_warm_start_policy()
+            actions = self._predict_warm_start_policy()
+            self._last_policy_action_diagnostics = {
+                "MADDPG/predict/base_available": 1.0,
+                "MADDPG/predict/using_warm_start_policy": 1.0,
+                "MADDPG/predict/using_noop_centered": 0.0,
+                "MADDPG/predict/using_uniform_random": 0.0,
+                "MADDPG/predict/warm_start_phaseout_probability": float(phaseout_probability),
+            }
+            return actions
 
         deterministic_actions = self._predict_deterministic(observations)
 
@@ -1919,9 +1967,37 @@ class MADDPG(BaseAgent):
                 phaseout_probability=phaseout_probability,
             )
             self._last_warm_start_phaseout_used = True
+            self._last_policy_action_diagnostics = self._numpy_action_deviation_metrics(
+                actions=blended_actions,
+                base_actions=warm_start_actions,
+                prefix="MADDPG/predict",
+            )
+            self._last_policy_action_diagnostics.update(
+                {
+                    "MADDPG/predict/using_warm_start_policy": 0.0,
+                    "MADDPG/predict/using_noop_centered": 0.0,
+                    "MADDPG/predict/using_uniform_random": 0.0,
+                    "MADDPG/predict/warm_start_phaseout_probability": float(phaseout_probability),
+                    "MADDPG/predict/warm_start_phaseout_blend": 1.0,
+                }
+            )
             logger.debug("Blended phase-out exploration actions predicted: {}", blended_actions)
             return blended_actions
 
+        self._last_policy_action_diagnostics = self._numpy_action_deviation_metrics(
+            actions=noisy_actions,
+            base_actions=getattr(self, "_last_warm_start_policy_actions", None),
+            prefix="MADDPG/predict",
+        )
+        self._last_policy_action_diagnostics.update(
+            {
+                "MADDPG/predict/using_warm_start_policy": 0.0,
+                "MADDPG/predict/using_noop_centered": 0.0,
+                "MADDPG/predict/using_uniform_random": 0.0,
+                "MADDPG/predict/warm_start_phaseout_probability": float(phaseout_probability),
+                "MADDPG/predict/warm_start_phaseout_blend": 0.0,
+            }
+        )
         logger.debug("Actions with exploration applied: {}", noisy_actions)
         return [action.tolist() for action in noisy_actions]
 
@@ -1965,6 +2041,151 @@ class MADDPG(BaseAgent):
                 )
             blended_actions.append(self._clip_action_array(agent_idx, blended).tolist())
         return blended_actions
+
+    def _tensor_action_deviation_metrics(
+        self,
+        actions: List[torch.Tensor],
+        base_actions: Optional[List[torch.Tensor]],
+        *,
+        prefix: str,
+    ) -> Dict[str, float]:
+        """Summarize how far final policy actions move from teacher/base actions.
+
+        These values are diagnostics only. They are computed independently from
+        residual regularization so runs with zero residual penalty still reveal
+        whether the actor is actually learning corrections or just replaying the
+        teacher.
+        """
+        if base_actions is None:
+            return {f"{prefix}/base_available": 0.0}
+
+        rows: list[tuple[str, torch.Tensor]] = []
+        for agent_idx, action in enumerate(actions):
+            if agent_idx >= len(base_actions):
+                continue
+            base = base_actions[agent_idx].to(dtype=action.dtype, device=action.device)
+            if base.dim() == 1 and action.dim() == 2:
+                base = base.view(1, -1).expand(action.shape[0], -1)
+            elif base.dim() == 1:
+                base = base.reshape(action.shape)
+            elif action.dim() == 1 and base.dim() == 2:
+                base = base.reshape(action.shape)
+            if base.shape != action.shape:
+                continue
+
+            low = torch.as_tensor(
+                self._action_low_for_agent(agent_idx),
+                dtype=action.dtype,
+                device=action.device,
+            )
+            high = torch.as_tensor(
+                self._action_high_for_agent(agent_idx),
+                dtype=action.dtype,
+                device=action.device,
+            )
+            span = torch.clamp(high - low, min=1.0e-6)
+            normalized_delta = (action - base) / span
+            final_normalized = self._normalize_scaled_action_tensor(agent_idx, action)
+            base_normalized = self._normalize_scaled_action_tensor(agent_idx, base)
+            names = self._action_names_for_agent(agent_idx)
+
+            for action_idx in range(int(action.shape[-1])):
+                category = "other"
+                action_name = names[action_idx] if action_idx < len(names) else ""
+                if self._is_ev_action_name(action_name):
+                    category = "ev"
+                elif self._is_storage_action_name(action_name):
+                    category = "storage"
+                elif self._is_deferrable_action_name(action_name):
+                    category = "deferrable"
+                rows.append(
+                    (
+                        category,
+                        torch.stack(
+                            (
+                                normalized_delta[..., action_idx].abs().reshape(-1).mean(),
+                                normalized_delta[..., action_idx].pow(2).reshape(-1).mean(),
+                                final_normalized[..., action_idx].abs().reshape(-1).mean(),
+                                base_normalized[..., action_idx].abs().reshape(-1).mean(),
+                                (final_normalized[..., action_idx].abs() >= 0.98)
+                                .to(dtype=action.dtype)
+                                .reshape(-1)
+                                .mean(),
+                                (base_normalized[..., action_idx].abs() >= 0.98)
+                                .to(dtype=action.dtype)
+                                .reshape(-1)
+                                .mean(),
+                                (action[..., action_idx] > base[..., action_idx])
+                                .to(dtype=action.dtype)
+                                .reshape(-1)
+                                .mean(),
+                                (action[..., action_idx] < base[..., action_idx])
+                                .to(dtype=action.dtype)
+                                .reshape(-1)
+                                .mean(),
+                            )
+                        ),
+                    )
+                )
+
+        if not rows:
+            return {f"{prefix}/base_available": 0.0}
+
+        metrics: Dict[str, float] = {f"{prefix}/base_available": 1.0}
+        labels = (
+            "delta_abs_mean",
+            "delta_l2_mean",
+            "final_abs_mean",
+            "base_abs_mean",
+            "final_saturation_rate",
+            "base_saturation_rate",
+            "delta_positive_rate",
+            "delta_negative_rate",
+        )
+        all_values = torch.stack([value for _, value in rows])
+        for label_idx, label in enumerate(labels):
+            metrics[f"{prefix}/{label}"] = float(all_values[:, label_idx].mean().detach().cpu().item())
+
+        for category in ("ev", "storage", "deferrable", "other"):
+            category_values = [value for row_category, value in rows if row_category == category]
+            if not category_values:
+                continue
+            stacked = torch.stack(category_values)
+            metrics[f"{prefix}/{category}_action_count"] = float(len(category_values))
+            for label_idx, label in enumerate(labels):
+                metrics[f"{prefix}/{category}_{label}"] = float(
+                    stacked[:, label_idx].mean().detach().cpu().item()
+                )
+        return metrics
+
+    def _numpy_action_deviation_metrics(
+        self,
+        *,
+        actions: List[Any],
+        base_actions: Optional[List[Any]],
+        prefix: str,
+    ) -> Dict[str, float]:
+        if base_actions is None:
+            return {f"{prefix}/base_available": 0.0}
+        tensor_actions: List[torch.Tensor] = []
+        tensor_base_actions: List[torch.Tensor] = []
+        for agent_idx, action in enumerate(actions):
+            if agent_idx >= len(base_actions):
+                continue
+            tensor_actions.append(
+                torch.as_tensor(np.asarray(action, dtype=np.float32).reshape(1, -1), device=self.device)
+            )
+            tensor_base_actions.append(
+                torch.as_tensor(
+                    np.asarray(base_actions[agent_idx], dtype=np.float32).reshape(1, -1),
+                    device=self.device,
+                )
+            )
+        return self._tensor_action_deviation_metrics(
+            tensor_actions,
+            tensor_base_actions,
+            prefix=prefix,
+        )
 
     def _scale_exploration_noise(self, agent_idx: int, noise: np.ndarray) -> np.ndarray:
         scaled_noise = np.asarray(noise, dtype=np.float64).copy()
@@ -2604,7 +2825,7 @@ class MADDPG(BaseAgent):
         scaled_action: torch.Tensor,
         base_action: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        if base_action is None or float(getattr(self, "actor_residual_delta_l2_penalty", 0.0) or 0.0) <= 0.0:
+        if base_action is None:
             return scaled_action.new_tensor(0.0)
         base_action = base_action.to(dtype=scaled_action.dtype, device=scaled_action.device)
         if base_action.shape != scaled_action.shape:

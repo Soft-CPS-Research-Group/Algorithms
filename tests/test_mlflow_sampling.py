@@ -175,6 +175,35 @@ def test_maddpg_diagnostic_metrics_are_consumable_without_mlflow():
     assert agent.consume_latest_training_metrics() == {}
 
 
+def test_maddpg_action_deviation_metrics_are_independent_from_penalty():
+    agent = MADDPG.__new__(MADDPG)
+    agent.device = torch.device("cpu")
+    agent.num_agents = 1
+    agent.action_dimension = [3]
+    agent.action_low = [np.asarray([-1.0, -2.0, 0.0], dtype=np.float32)]
+    agent.action_high = [np.asarray([1.0, 2.0, 4.0], dtype=np.float32)]
+    agent.action_names = [["electric_vehicle_charger", "electrical_storage", "deferrable_appliance_start"]]
+    agent.actor_residual_delta_l2_penalty = 0.0
+
+    final_action = torch.tensor([[0.5, -1.0, 3.0]], dtype=torch.float32)
+    teacher_action = torch.tensor([[0.0, -1.0, 1.0]], dtype=torch.float32)
+
+    metrics = agent._tensor_action_deviation_metrics(
+        [final_action],
+        [teacher_action],
+        prefix="MADDPG/test",
+    )
+    residual_delta = agent._residual_delta_l2(0, final_action, teacher_action)
+
+    assert metrics["MADDPG/test/base_available"] == 1.0
+    assert metrics["MADDPG/test/ev_action_count"] == 1.0
+    assert metrics["MADDPG/test/storage_action_count"] == 1.0
+    assert metrics["MADDPG/test/deferrable_action_count"] == 1.0
+    assert metrics["MADDPG/test/ev_delta_abs_mean"] == pytest.approx(0.25)
+    assert metrics["MADDPG/test/storage_delta_abs_mean"] == pytest.approx(0.0)
+    assert residual_delta.item() > 0.0
+
+
 def test_maddpg_reward_normalization_uses_running_stats():
     agent = MADDPG.__new__(MADDPG)
     agent.reward_normalization_enabled = True

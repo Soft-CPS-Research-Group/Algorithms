@@ -21,6 +21,9 @@ def test_w6_smoke_local_generates_one_short_config_per_recipe(tmp_path):
         assert config["simulator"]["episode_time_steps"] == 256
         assert config["simulator"]["simulation_end_time_step"] == 255
         assert config["simulator"]["episodes"] == 1
+        assert config["simulator"]["deterministic_finish"] is False
+        assert config["algorithm"]["replay_buffer"]["batch_size"] == 64
+        assert config["algorithm"]["replay_buffer"]["capacity"] == 20000
         exploration = config["algorithm"]["exploration"]["params"]
         assert exploration["random_exploration_steps"] == 64
         assert exploration["n_step_returns"] == 8
@@ -155,6 +158,36 @@ def test_w6a_local_can_generate_residual_community_recipe(tmp_path):
     assert config["tracking"]["tags"]["teacher_policy"] == "RBCCommunityPolicy"
     assert config["tracking"]["tags"]["residual_policy"] is True
     assert config["tracking"]["tags"]["actor_residual_delta_l2_penalty"] == 0.02
+
+
+def test_w6_remote_smoke_can_generate_w7_matd3_residual_repair(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6b-remote-smoke",
+        seeds=[123],
+        recipes=["w7_residual_comm_ev_repair"],
+        algorithms=["MATD3"],
+        include_baselines=False,
+    )
+
+    assert len(rows) == 1
+    config = _load(Path(rows[0]["config_path"]))
+    validate_config(config)
+
+    assert config["algorithm"]["name"] == "MATD3"
+    assert config["simulator"]["episode_time_steps"] == 4096
+    assert config["simulator"]["reward_function"] == "CostServiceCommunityResidualConstraintRewardV53"
+    assert config["simulator"]["reward_function_kwargs"]["ev_departure_missed_penalty"] == 4600.0
+    assert config["execution"]["deucalion"]["gpus"] == 1
+    exploration = config["algorithm"]["exploration"]["params"]
+    assert exploration["warm_start_policy"] == "RBCCommunityPolicy"
+    assert exploration["residual_policy_enabled"] is True
+    assert exploration["residual_action_final_scale"] == 0.45
+    assert exploration["residual_ev_action_scale_multiplier"] == 0.70
+    assert exploration["critic_action_input_mode"] == "final_base_delta_normalized"
+    assert exploration["actor_policy_loss_weight"] == 0.18
+    assert exploration["actor_behavior_cloning_min_weight"] == 0.012
+    assert exploration["n_step_returns"] == 12
 
 
 def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):

@@ -794,6 +794,101 @@ RECIPES: dict[str, Recipe] = {
         residual_delta_l2=0.025,
         note="Residual over RBCSmart: service-safe comparator for checking whether community teacher hurts EV gates.",
     ),
+    "w7_residual_comm_ev_repair": Recipe(
+        name="w7_residual_comm_ev_repair",
+        bc_weight=0.220,
+        bc_min_weight=0.012,
+        ev_bc_multiplier=14.0,
+        storage_bc_multiplier=0.12,
+        zero_ev_target_weight=4.0,
+        storage_l2=0.0012,
+        ev_v2g_l2=0.055,
+        ev_v2g_mass=0.065,
+        teacher_phaseout_steps=3072,
+        actor_policy_loss_weight=0.180,
+        actor_policy_loss_warmup_weight=0.020,
+        extra_bc_updates=2,
+        extra_bc_steps=3072,
+        reward_function="CostServiceCommunityResidualConstraintRewardV53",
+        reward_kwargs=(
+            ("community_settlement_cost_weight", 1.34),
+            ("community_peak_import_penalty", 0.0026),
+            ("community_export_penalty", 0.00080),
+            ("ev_connected_deficit_penalty", 125.0),
+            ("ev_schedule_deficit_penalty", 1150.0),
+            ("ev_departure_deficit_penalty", 1650.0),
+            ("ev_departure_missed_penalty", 4600.0),
+            ("ev_v2g_service_penalty", 1550.0),
+            ("ev_over_service_penalty", 1050.0),
+            ("battery_throughput_penalty", 0.0018),
+        ),
+        reward_normalization_clip=30.0,
+        teacher_policy="RBCCommunityPolicy",
+        residual_policy_enabled=True,
+        residual_action_scale=0.10,
+        residual_action_final_scale=0.45,
+        residual_action_growth_steps=4096,
+        residual_storage_action_scale_multiplier=0.90,
+        residual_ev_action_scale_multiplier=0.70,
+        residual_deferrable_action_scale_multiplier=1.00,
+        replay_observation_event_priority_mode="combined",
+        n_step_returns=12,
+        n_step_gamma=0.997,
+        actor_policy_loss_normalization=True,
+        actor_policy_loss_normalization_max_scale=150.0,
+        actor_offline_bc_pretrain_steps=96,
+        actor_offline_bc_pretrain_weight=0.80,
+        critic_action_input_mode="final_base_delta_normalized",
+        residual_delta_l2=0.006,
+        note="W7 primary: MATD3/MADDPG residual over RBCCommunity with stronger EV gate repair and larger usable residual.",
+    ),
+    "w7_residual_comm_cost_open": Recipe(
+        name="w7_residual_comm_cost_open",
+        bc_weight=0.120,
+        bc_min_weight=0.004,
+        ev_bc_multiplier=9.0,
+        storage_bc_multiplier=0.08,
+        zero_ev_target_weight=3.0,
+        storage_l2=0.0008,
+        ev_v2g_l2=0.035,
+        ev_v2g_mass=0.040,
+        teacher_phaseout_steps=2048,
+        actor_policy_loss_weight=0.240,
+        actor_policy_loss_warmup_weight=0.030,
+        extra_bc_updates=1,
+        extra_bc_steps=2048,
+        reward_function="CostServiceCommunityResidualConstraintRewardV53",
+        reward_kwargs=(
+            ("community_settlement_cost_weight", 1.42),
+            ("community_peak_import_penalty", 0.0030),
+            ("community_export_penalty", 0.00100),
+            ("ev_connected_deficit_penalty", 115.0),
+            ("ev_schedule_deficit_penalty", 1080.0),
+            ("ev_departure_deficit_penalty", 1550.0),
+            ("ev_departure_missed_penalty", 4400.0),
+            ("ev_v2g_service_penalty", 1450.0),
+            ("battery_throughput_penalty", 0.0015),
+        ),
+        reward_normalization_clip=35.0,
+        teacher_policy="RBCCommunityPolicy",
+        residual_policy_enabled=True,
+        residual_action_scale=0.14,
+        residual_action_final_scale=0.55,
+        residual_action_growth_steps=4096,
+        residual_storage_action_scale_multiplier=1.00,
+        residual_ev_action_scale_multiplier=0.85,
+        residual_deferrable_action_scale_multiplier=1.00,
+        replay_observation_event_priority_mode="combined",
+        n_step_returns=12,
+        n_step_gamma=0.997,
+        actor_policy_loss_normalization=True,
+        actor_policy_loss_normalization_max_scale=180.0,
+        actor_offline_bc_pretrain_steps=64,
+        actor_offline_bc_pretrain_weight=0.60,
+        critic_action_input_mode="final_base_delta_normalized",
+        residual_delta_l2=0.003,
+        note="W7 comparator: more policy freedom to check whether cost/self-consumption improves once EV gate repair is stable.",
+    ),
 }
 
 
@@ -900,10 +995,6 @@ def _stage_algorithms(stage: str, requested: Sequence[str] | None) -> tuple[str,
     unsupported = [name for name in selected if name not in {"MADDPG", "MATD3"}]
     if unsupported:
         raise ValueError(f"W6 only supports MADDPG/MATD3 here, got: {', '.join(unsupported)}")
-    if stage in {"w6b-remote-smoke"} and any(
-        name != "MADDPG" for name in selected
-    ):
-        raise ValueError(f"{stage} is intentionally MADDPG-only.")
     return selected
 
 
@@ -911,7 +1002,7 @@ def _stage_runtime(stage: str) -> dict[str, Any]:
     if stage == "w6-smoke-local":
         return {
             "episodes": 1,
-            "deterministic_finish": True,
+            "deterministic_finish": False,
             "random_exploration_steps": 64,
             "require_cuda": False,
             "updates_every": 4,
@@ -1261,10 +1352,12 @@ def _build_rl_config(
             "joint_layers": [512, 256],
         }
     )
+    smoke_local = stage == "w6-smoke-local"
+    replay_batch_size = 64 if smoke_local else 256
     algorithm["replay_buffer"] = {
         "class": "RewardWeightedMultiAgentReplayBuffer",
-        "capacity": 200000,
-        "batch_size": 256,
+        "capacity": 20000 if smoke_local else 200000,
+        "batch_size": replay_batch_size,
         "priority_fraction": 0.35,
         "priority_alpha": 0.60,
         "priority_epsilon": 0.001,
