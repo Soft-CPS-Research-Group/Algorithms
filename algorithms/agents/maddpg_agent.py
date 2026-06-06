@@ -2169,16 +2169,17 @@ class MADDPG(BaseAgent):
             return {f"{prefix}/base_available": 0.0}
         tensor_actions: List[torch.Tensor] = []
         tensor_base_actions: List[torch.Tensor] = []
+        device = getattr(self, "device", torch.device("cpu"))
         for agent_idx, action in enumerate(actions):
             if agent_idx >= len(base_actions):
                 continue
             tensor_actions.append(
-                torch.as_tensor(np.asarray(action, dtype=np.float32).reshape(1, -1), device=self.device)
+                torch.as_tensor(np.asarray(action, dtype=np.float32).reshape(1, -1), device=device)
             )
             tensor_base_actions.append(
                 torch.as_tensor(
                     np.asarray(base_actions[agent_idx], dtype=np.float32).reshape(1, -1),
-                    device=self.device,
+                    device=device,
                 )
             )
         return self._tensor_action_deviation_metrics(
