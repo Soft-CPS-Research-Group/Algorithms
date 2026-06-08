@@ -29,7 +29,7 @@ tracking:
 
 checkpointing:
   resume_training: true
-  checkpoint_run_id: "b9e8183787e340baab1ab3ab220d618a"
+  checkpoint_run_id: "b9e8183787e340baab1ab3ab220d618a" # CRUCIAL: set this to the run_id of your desired checkpoint run!
   checkpoint_artifact: "checkpoints"
   use_best_checkpoint_artifact: false
   reset_replay_buffer: false
@@ -56,7 +56,7 @@ simulator:
     clip: true
   reward_function: CostServiceCommunityFeasiblePrecisionRewardV46
   reward_function_kwargs: {}  # Use V46 battle-tested defaults
-  episodes: 200
+  episodes: 2
   episode_time_steps: 11520 # 5760
   simulation_start_time_step: 0
   simulation_end_time_step: 2102399
@@ -82,7 +82,11 @@ pipeline:
     count: 1
     hyperparameters:
       output_mode: "signal"
-      obs_dim: 9
+      # Set-based CC: one signal per building, N-agnostic (shared actor head).
+      c_dim: 12          # community-context width  (_build_community_context)
+      b_dim: 7           # per-building feature width (_build_building_features)
+      num_buildings: 17  # training batch size; trained model runs on any N
+      hidden_dims: [128, 128]
       cc_action_interval: 60
       num_steps: 96
       lr: 1.0e-4

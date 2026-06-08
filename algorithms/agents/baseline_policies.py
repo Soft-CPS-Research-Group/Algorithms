@@ -2170,3 +2170,62 @@ class RBCCommunityPolicy(RBCSmartPolicy):
         if price_charge_allowed:
             return self._clip_storage_action(self.price_charge_rate, obs, obs_map, bounds)
         return float(np.clip(0.0, low, high))
+
+
+class SignalAwareRBC(RBCSmartPolicy):
+    """RBCSmartPolicy that follows a high-level community signal for battery control.
+
+    Designed to be the low-level stage in a CCLevel1 → SignalAwareRBC pipeline.
+
+    The CC emits a global signal via the Pipeline ``context`` argument:
+        +1  (increase)  →  charge battery at full rate
+        -1  (reduce)    →  discharge battery at full rate
+         0  (neutral)   →  delegate to RBCSmartPolicy (solar/price/EV heuristics)
+
+    EV charging is always delegated to RBCSmartPolicy regardless of signal.
+
+    When used standalone (no context / context=None), behaves identically to
+    RBCSmartPolicy.
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        self._cc_signal: float = 0.0   # set each predict() call from context
+
+    def _policy_type(self) -> str:
+        return "signal_aware_rbc"
+
+    def predict(
+        self,
+        observations: List[np.ndarray],
+        deterministic: bool | None = None,
+        *,
+        context: Any = None,
+    ) -> List[List[float]]:
+        """Extract CC signal from context then run parent predict."""
+        if context is not None:
+            try:
+                self._cc_signal = float(context)
+            except (TypeError, ValueError):
+                self._cc_signal = 0.0
+        else:
+            self._cc_signal = 0.0
+        return super().predict(observations, deterministic)
+
+    def _compute_storage_action(
+        self,
+        agent_idx: int,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        action_name: str,
+        bounds: Sequence[float],
+    ) -> float:
+        """Override battery with CC signal; fall back to RBCSmartPolicy when neutral."""
+        if self._cc_signal > 0.0:
+            # CC says increase → charge battery
+            return self._clip_storage_action(1.0, obs, obs_map, bounds)
+        if self._cc_signal < 0.0:
+            # CC says reduce → discharge battery
+            return self._clip_storage_action(-1.0, obs, obs_map, bounds)
+        # Neutral (0.0) → let RBCSmartPolicy decide (solar, price, peak heuristics)
+        return super()._compute_storage_action(agent_idx, obs, obs_map, action_name, bounds)

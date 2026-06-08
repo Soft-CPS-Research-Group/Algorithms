@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+import numpy as np
 from loguru import logger
 
 from algorithms.execution_unit import ExecutionUnit
@@ -216,6 +217,15 @@ class Ensemble(ExecutionUnit):
         *,
         context: Any = None,
     ) -> List[Any]:
+        # Per-member context distribution. A hierarchical manager (e.g. the CC)
+        # emits ONE signal per member as an array of length == ensemble size.
+        # In that case member i receives its own element context[i]. A scalar
+        # (or any non-matching context) is broadcast unchanged to every member.
+        ctx_is_per_member = (
+            isinstance(context, (list, tuple, np.ndarray))
+            and len(context) == len(self.agents)
+        )
+
         results: List[Any] = []
         for index, agent in enumerate(self.agents):
             if index >= len(observations):
@@ -231,7 +241,8 @@ class Ensemble(ExecutionUnit):
             else:
                 obs_slice = [observations[index]]
 
-            output = agent.predict(obs_slice, deterministic, context=context)
+            member_context = context[index] if ctx_is_per_member else context
+            output = agent.predict(obs_slice, deterministic, context=member_context)
 
             # Contract: each member receives one obs slice and must return
             # exactly one row (the action vector for that member). Anything

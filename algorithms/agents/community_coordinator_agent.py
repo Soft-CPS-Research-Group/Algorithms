@@ -1,42 +1,35 @@
 """
-Community Coordinator (CC) Agent.
+Community Coordinator (CC) Agent — Phase 1.
 
-The CC is the *manager* in a hierarchical multi-agent setup:
+The CC is the *manager* in a hierarchical multi-agent setup.
+It outputs one continuous action per building: o1 ∈ (-1, 1).
 
-    ┌────────────────────────────────────────────────────────────┐
-    │  CommunityCoordinatorAgent (this file)                     │
-    │  ─ neural policy that outputs ONE scalar action `o1` ∈     │
-    │    (-1, 1) every CC decision                               │
-    │  ─ learned with PPO                                        │
-    └────────────────────────────────────────────────────────────┘
-                              │  o1 (community-wide signal)
-                              ▼
-    ┌────────────────────────────────────────────────────────────┐
-    │  Rule-Based Controller (RBC) — _rbc_act()                  │
-    │  ─ fixed (NOT learned) per-building translator             │
-    │  ─ takes o1 + per-building observation → action vector     │
-    │    for that building (battery + EV chargers + appliances)  │
-    └────────────────────────────────────────────────────────────┘
-                              │  per-building actions
-                              ▼
-                          CityLearn env
+    o1 > 0  →  charge battery
+    o1 < 0  →  discharge battery
+    o1 = 0  →  idle
 
-Reinforcement-learning glossary used below
-    state          : numerical summary of the environment the CC sees.
-    action (o1)    : scalar in (-1, 1). Positive = charge batteries.
-                     Negative = discharge.
-    reward         : scalar feedback per env step (e.g. -cost).
-    rollout buffer : a fixed-size queue of (state, action, reward …)
-                     tuples. PPO needs many tuples before each update
-                     because it estimates gradients from a batch.
-    actor-critic   : two networks sharing inputs.
-                       - actor:  state → action distribution
-                       - critic: state → expected return (value)
-    GAE            : Generalized Advantage Estimation. Smooths the
-                     reward signal into "advantages" used by the actor.
-    PPO            : Proximal Policy Optimization. Trust-region style
-                     update that clips how much the new policy can
-                     differ from the old one.
+EV charger slots are zeroed (idle) — EV management is delegated to
+Building Agents in Phase 2.
+
+The CC is trained with PPO. Its reward is computed *internally* from the
+quality of its own decisions, not from the environment reward signal:
+
+    urgency_i = price_delta + net_weight × net_power_i
+    reward_i  = -o1_i × urgency_i
+    reward    = sum_i( reward_i )
+
+    price_delta = price_now - mean(price_now, pred_1, pred_2, pred_3)
+    net_power_i = building i's net grid draw (kW); positive = importing
+
+Two complementary signals:
+  1. price_delta  — temporal: charge cheap, discharge dear (global)
+  2. net_power_i  — spatial:  prioritise buildings that are importing
+                              heavily (per-building urgency)
+
+A building heavily importing at peak price = maximum urgency to
+discharge.  Both signals must align for full reward — this prevents
+the CC from ignoring per-building context and just following price.
+Evaluated at decision time — independent of BA actions or env outcomes.
 """
 
 from __future__ import annotations
@@ -55,41 +48,33 @@ from torch.optim import Adam
 
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.constants import DEFAULT_ONNX_OPSET
-from algorithms.utils.ppo import PPOActorCritic, RolloutBuffer
+from algorithms.utils.hierarchical_ppo import (
+    HierarchicalActorCritic,
+    HierarchicalRolloutBuffer,
+)
 
 
 class RunningMeanStd:
     """
-    Online estimator of mean and variance, vector or scalar.
+    Online estimator of mean and variance (Welford's algorithm).
 
-    Implements Welford's algorithm: numerically stable, O(1) per update,
-    no need to keep the full history. Used in two places:
-
-      1. State normalization. Neural networks train poorly when input
-         features have very different scales (e.g. price ~0.5 vs net
-         power ~30). We track running mean/std per feature and feed the
-         network `(x - mean) / std` instead of raw `x`.
-      2. Reward scaling. PPO's combined loss mixes pg_loss, v_loss, and
-         entropy. If returns are huge, v_loss dominates and the actor
-         barely trains. We track the std of running discounted returns
-         and divide rewards by it before storing in the rollout buffer.
-
-    `shape` is the feature dimension (e.g. 9 for the CC state).
-    `shape=()` (the default) makes it a scalar tracker.
+    Used for:
+      1. State normalisation — feeds (x - mean) / std to the network.
+      2. Reward scaling    — divides by running return std to keep
+                             PPO value targets at O(1).
     """
 
     def __init__(self, shape: tuple = ()) -> None:
-        self._n: int          = 0
+        self._n: int           = 0
         self._mean: np.ndarray = np.zeros(shape, dtype=np.float64)
-        self._M2:  np.ndarray = np.zeros(shape, dtype=np.float64)
+        self._M2:  np.ndarray  = np.zeros(shape, dtype=np.float64)
 
     def update(self, x: np.ndarray | float) -> None:
         x = np.asarray(x, dtype=np.float64)
         self._n += 1
-        delta  = x - self._mean
-        self._mean += delta / self._n
-        delta2 = x - self._mean
-        self._M2 += delta * delta2
+        delta        = x - self._mean
+        self._mean  += delta / self._n
+        self._M2    += delta * (x - self._mean)
 
     @property
     def mean(self) -> np.ndarray:
@@ -103,25 +88,18 @@ class RunningMeanStd:
 
 
 class CommunityCoordinatorAgent(BaseAgent):
-    """PPO-trained manager that outputs a single community-level signal."""
+    """PPO-trained manager that outputs one battery action per building."""
 
     # ─────────────────────────── Construction ───────────────────────────
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
 
-        # The wrapper reads this flag to decide which observations to pass.
-        # `True` = give us raw per-building observations from CityLearn.
         self.use_raw_observations = True
 
         hyper = (config.get("algorithm", {}).get("hyperparameters") or {})
 
         # ── PPO hyperparameters ────────────────────────────────────────
-        # `gamma` (discount) and `gae_lambda` shape how rewards turn into
-        # returns/advantages. `clip_coef` bounds the PPO policy update.
-        # `vf_coef` / `ent_coef` weigh the critic loss / entropy bonus
-        # inside the combined PPO loss. `target_kl` early-stops PPO epochs
-        # if the new policy drifts too far from the old one.
         self._gamma           = hyper.get("gamma",           0.99)
         self._gae_lambda      = hyper.get("gae_lambda",      0.95)
         self._num_epochs      = hyper.get("num_epochs",      10)
@@ -132,50 +110,53 @@ class CommunityCoordinatorAgent(BaseAgent):
         self._max_grad_norm   = hyper.get("max_grad_norm",   0.5)
         self._target_kl       = hyper.get("target_kl",       0.02)
 
-        # ── Network + optimiser ────────────────────────────────────────
-        # `obs_dim` MUST equal the length of the list returned by
-        # `_build_community_state`. The actor-critic outputs one scalar
-        # action; that is the `1` below.
-        obs_dim = hyper.get("obs_dim", 9)
-        self._obs_dim       = obs_dim
-        self.actor_critic   = PPOActorCritic(obs_dim, 1)
-        self.ppo_optim      = Adam(self.actor_critic.parameters(), lr=hyper.get("lr"))
+        # ── Network + optimiser (set-based, N-agnostic) ─────────────────
+        c_dim         = hyper.get("c_dim",          12)
+        b_dim         = hyper.get("b_dim",           7)
+        num_buildings = hyper.get("num_buildings",  17)
+        hidden_dims   = hyper.get("hidden_dims",     [128, 128])
+        self._c_dim         = c_dim
+        self._b_dim         = b_dim
+        self._num_buildings = num_buildings
+        # Weight on per-building net-power term in decision reward.
+        # Balances ~0.05 price_delta against ~5 kW net_power → default 0.01.
+        self._net_weight: float = float(hyper.get("net_weight", 0.01))
 
-        # ── Input / reward normalization ───────────────────────────────
-        # Both stats are updated as data streams in (online), then used to
-        # normalize the state fed to the network (`obs_rms`) and the reward
-        # written to the buffer (`ret_rms`). See RunningMeanStd docstring.
-        self._obs_rms       = RunningMeanStd(shape=(obs_dim,))
-        self._ret_rms       = RunningMeanStd()
-        self._return_running: float = 0.0   # discounted-return accumulator
+        self.actor_critic = HierarchicalActorCritic(c_dim, b_dim, hidden_dims)
+        self.ppo_optim    = Adam(self.actor_critic.parameters(), lr=hyper.get("lr", 1e-4))
 
-        # PPO collects `num_steps` transitions before each gradient update.
-        # Larger = more stable but slower wall-clock.
-        self.rollout_buffer = RolloutBuffer(hyper.get("num_steps"), obs_dim, 1)
+        # ── Normalisation ──────────────────────────────────────────────
+        self._community_rms   = RunningMeanStd(shape=(c_dim,))
+        self._building_rms    = RunningMeanStd(shape=(b_dim,))
+        self._ret_rms         = RunningMeanStd()
+        self._return_running: float = 0.0
+
+        # ── Rollout buffer ─────────────────────────────────────────────
+        self.rollout_buffer  = HierarchicalRolloutBuffer(
+            hyper.get("num_steps"), c_dim, b_dim, num_buildings
+        )
         self._ppo_update_count = 0
 
-        # ── Temporal abstraction (HRL idea) ─────────────────────────────
-        # If `cc_action_interval` (K) > 1, the CC re-decides only every K
-        # env steps and its action is held constant in between. The reward
-        # for that one CC decision is the SUM of the K env-step rewards.
-        # K=1 disables abstraction (CC acts every env step).
-        self._cc_action_interval: int   = hyper.get("cc_action_interval", 1)
-        self._step_in_interval:   int   = 0
-        self._cached_o1:          float = 0.0
-        self._cached_state:       Optional[np.ndarray] = None
-        self._cached_logprob:     float = 0.0
-        self._cached_value:       float = 0.0
-        self._accumulated_reward: float = 0.0
+        # ── Temporal abstraction ───────────────────────────────────────
+        self._cc_action_interval: int = hyper.get("cc_action_interval", 1)
+        self._step_in_interval:   int = 0
 
-        # ── Output mode ─────────────────────────────────────────────────
-        # "actions" (default): return per-building action vectors via RBC.
-        # "signal": return the raw o1 scalar for the next pipeline stage.
+        # Cached state from the most recent CC decision.
+        self._cached_o1:            np.ndarray            = np.zeros(num_buildings, dtype=np.float32)
+        self._cached_raw_community: Optional[np.ndarray]  = None  # (c_dim,) raw values
+        self._cached_raw_buildings: Optional[np.ndarray]  = None  # (N, b_dim) raw values — for reward
+        self._cached_community:     Optional[np.ndarray]  = None  # (c_dim,) normalised
+        self._cached_buildings:     Optional[np.ndarray]  = None  # (N, b_dim) normalised
+        self._cached_logprob:       float                 = 0.0
+        self._cached_value:         float                 = 0.0
+        self._accumulated_reward:   float                 = 0.0
+
+        # ── Output mode ────────────────────────────────────────────────
+        # "actions" (default, Phase 1): CC sends actions directly to env.
+        # "signal"  (Phase 2): CC passes o1 array downstream to BAs.
         self._output_mode: str = hyper.get("output_mode", "actions")
 
-        # ── Decision trace (diagnostic only) ────────────────────────────
-        # One row per CC decision: state + action + value estimate.
-        # Flushed to CSV + MLflow at episode end so we can plot whether
-        # the CC actually learned to charge cheap / discharge expensive.
+        # ── Decision trace (diagnostics) ──────────────────────────────
         self._episode_count:  int        = 0
         self._global_cc_step: int        = 0
         self._decision_trace: List[dict] = []
@@ -189,7 +170,7 @@ class CommunityCoordinatorAgent(BaseAgent):
         observation_space: List[Any],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Cache name → index lookups so we can read observations by name."""
+        """Cache name→index lookups for observations and actions."""
         self._obs_index    = [{n: i for i, n in enumerate(ns)} for ns in observation_names]
         self._action_index = [{n: i for i, n in enumerate(ns)} for ns in action_names]
         self._action_dims  = [len(ns) for ns in action_names]
@@ -204,13 +185,11 @@ class CommunityCoordinatorAgent(BaseAgent):
         context: Any = None,
     ) -> List[List[float]]:
         """
-        Called once per env step. Returns a per-building action vector.
+        Returns a per-building action vector each env step.
 
-        At the START of a CC interval (every K env steps) we run the
-        actor-critic to sample a fresh `o1`. For the remaining K-1 steps
-        we re-use the cached `o1`. Either way, the RBC translates `o1` +
-        the per-building observation into the action vector CityLearn
-        expects.
+        Battery slot = o1 (clamped at SoC limits).
+        EV charger slots = 0.0 (idle — EV management is BA's job).
+        All other slots = 0.0.
         """
         if self._step_in_interval == 0:
             self._sample_new_decision(observations)
@@ -218,17 +197,38 @@ class CommunityCoordinatorAgent(BaseAgent):
         if self._output_mode == "signal":
             return self._cached_o1
 
-        return [self._rbc_act(observations[i], i, self._cached_o1)
-                for i in range(len(observations))]
+        actions = []
+        for i, (building_obs, action_dim) in enumerate(
+            zip(observations, self._action_dims)
+        ):
+            idx         = self._obs_index[i]
+            act         = [0.0] * action_dim
+            o1          = float(self._cached_o1[i]) if i < len(self._cached_o1) else 0.0
+
+            for action_name, slot in self._action_index[i].items():
+                if action_name == "electrical_storage":
+                    soc = float(building_obs[idx["electrical_storage_soc_ratio"]]) \
+                          if "electrical_storage_soc_ratio" in idx else 0.5
+                    if o1 > 0 and soc >= 0.95:
+                        act[slot] = 0.0   # full — can't charge more
+                    elif o1 < 0 and soc <= 0.05:
+                        act[slot] = 0.0   # empty — can't discharge more
+                    else:
+                        act[slot] = o1
+                # EV chargers and everything else: idle (0.0)
+
+            actions.append(act)
+
+        return actions
 
     def update(
         self,
-        observations:      List[np.ndarray],
-        actions:           List[np.ndarray],
-        rewards:           List[float],
-        next_observations: List[np.ndarray],
-        terminated:        bool,
-        truncated:         bool,
+        observations:             List[np.ndarray],
+        actions:                  List[np.ndarray],
+        rewards:                  List[float],      # env reward — IGNORED (CC uses internal)
+        next_observations:        List[np.ndarray],
+        terminated:               bool,
+        truncated:                bool,
         *,
         update_target_step:       bool,
         global_learning_step:     int,
@@ -236,91 +236,82 @@ class CommunityCoordinatorAgent(BaseAgent):
         initial_exploration_done: bool,
     ) -> None:
         """
-        Called once per env step. Accumulates reward over the CC interval
-        and, at the interval boundary, writes one transition into the
-        rollout buffer. When the buffer fills, runs a PPO update.
+        Accumulates CC's internally-computed reward over the action interval,
+        then pushes one transition to the rollout buffer.
+        PPO fires when the buffer fills.
         """
         done = terminated or truncated
 
-        # Accumulate reward across env steps that fall under the same CC decision.
-        self._accumulated_reward += float(sum(rewards))
+        # ── Internal reward: decision quality at decision time ──────────
+        # reward_i = -o1_i × (price_now - ref_price)
+        # Summed over buildings → one scalar per env step.
+        cc_reward = self._compute_decision_reward()
+        self._accumulated_reward += cc_reward
         self._step_in_interval   += 1
 
         interval_complete = (self._step_in_interval >= self._cc_action_interval) or done
         if not interval_complete:
             return
 
-        # ── Push one CC-level transition to the rollout buffer ──────────
-        assert self._cached_state is not None, "predict() must run before update()"
+        assert self._cached_community is not None, "predict() must run before update()"
 
-        # Reward scaling: maintain a running discounted return, track its
-        # std, and divide the raw reward by that std before storing. This
-        # keeps PPO's value targets at O(1) regardless of reward units.
-        # Sign is preserved (we do NOT subtract the mean).
+        # Reward scaling: divide by running return std (keeps PPO targets O(1)).
         raw_reward = self._accumulated_reward
-        self._return_running = self._gamma * self._return_running + raw_reward
+        self._return_running  = self._gamma * self._return_running + raw_reward
         self._ret_rms.update(self._return_running)
         scaled_reward = float(raw_reward / max(float(self._ret_rms.std), 1e-8))
 
         self.rollout_buffer.add(
-            obs     = self._cached_state,
-            action  = self._cached_o1,
-            logprob = self._cached_logprob,
-            reward  = scaled_reward,
-            done    = done,
-            value   = self._cached_value,
+            community = self._cached_community,
+            buildings = self._cached_buildings,
+            action    = self._cached_o1,
+            logprob   = self._cached_logprob,
+            reward    = scaled_reward,
+            done      = done,
+            value     = self._cached_value,
         )
 
-        # Reset interval accumulators.
         self._step_in_interval   = 0
         self._accumulated_reward = 0.0
         if done:
-            # Discounted return resets at episode boundary; std accumulates across episodes.
             self._return_running = 0.0
-
-        # Episode end → write the decision trace for this episode to disk.
-        if done:
             self._flush_decision_trace()
 
-        # Buffer full → compute advantages and run PPO.
         if self.rollout_buffer.full:
             self._learn_from_rollout(next_observations, done)
 
     # ─────────────────────── Lifecycle / artifacts ──────────────────────
 
     def export_artifacts(self, output_dir, context=None):
-        """Export the actor (just the policy mean network) to ONNX."""
+        """Export the shared actor head to ONNX (N-agnostic)."""
         export_root = Path(output_dir)
-        onnx_dir = export_root / "onnx_models"
+        onnx_dir    = export_root / "onnx_models"
         onnx_dir.mkdir(parents=True, exist_ok=True)
         export_path = onnx_dir / "community_coordinator.onnx"
 
-        obs_dim = self.actor_critic.actor_mean[0].in_features
-        dummy_input = torch.randn(1, obs_dim)
+        in_dim      = self._c_dim + self._b_dim
+        dummy_input = torch.randn(1, in_dim)
 
         torch.onnx.export(
-            self.actor_critic.actor_mean,
+            self.actor_critic.actor_head,
             dummy_input,
             str(export_path),
             export_params=True,
             opset_version=DEFAULT_ONNX_OPSET,
             do_constant_folding=True,
-            input_names=["community_state"],
+            input_names=["community_building_state"],
             output_names=["o1"],
             dynamic_axes={
-                "community_state": {0: "batch_size"},
-                "o1":              {0: "batch_size"},
+                "community_building_state": {0: "n_buildings"},
+                "o1":                       {0: "n_buildings"},
             },
         )
 
         return {
             "format": "onnx",
             "artifacts": [
-                {
-                    "path":         str(export_path.relative_to(export_root)),
-                    "format":       "onnx",
-                    "agent_index":  i,
-                }
+                {"path": str(export_path.relative_to(export_root)), "format": "onnx",
+                 "agent_index": i}
                 for i in range(len(self._action_dims))
             ],
         }
@@ -329,18 +320,21 @@ class CommunityCoordinatorAgent(BaseAgent):
         path = Path(output_dir) / f"cc_step_{step}.pt"
         torch.save(
             {
-                "step":              step,
-                "actor_critic":      self.actor_critic.state_dict(),
-                "optimizer":         self.ppo_optim.state_dict(),
-                "obs_rms_n":         self._obs_rms._n,
-                "obs_rms_mean":      self._obs_rms._mean.copy(),
-                "obs_rms_M2":        self._obs_rms._M2.copy(),
-                "ret_rms_n":         self._ret_rms._n,
-                "ret_rms_mean":      self._ret_rms._mean.copy(),
-                "ret_rms_M2":        self._ret_rms._M2.copy(),
-                "return_running":    self._return_running,
-                "ppo_update_count":  self._ppo_update_count,
-                "global_cc_step":    self._global_cc_step,
+                "step":               step,
+                "actor_critic":       self.actor_critic.state_dict(),
+                "optimizer":          self.ppo_optim.state_dict(),
+                "community_rms_n":    self._community_rms._n,
+                "community_rms_mean": self._community_rms._mean.copy(),
+                "community_rms_M2":   self._community_rms._M2.copy(),
+                "building_rms_n":     self._building_rms._n,
+                "building_rms_mean":  self._building_rms._mean.copy(),
+                "building_rms_M2":    self._building_rms._M2.copy(),
+                "ret_rms_n":          self._ret_rms._n,
+                "ret_rms_mean":       self._ret_rms._mean.copy(),
+                "ret_rms_M2":         self._ret_rms._M2.copy(),
+                "return_running":     self._return_running,
+                "ppo_update_count":   self._ppo_update_count,
+                "global_cc_step":     self._global_cc_step,
             },
             path,
         )
@@ -360,296 +354,247 @@ class CommunityCoordinatorAgent(BaseAgent):
         ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
         self.actor_critic.load_state_dict(ckpt["actor_critic"])
         self.ppo_optim.load_state_dict(ckpt["optimizer"])
-        self._obs_rms._n    = ckpt["obs_rms_n"]
-        self._obs_rms._mean = ckpt["obs_rms_mean"]
-        self._obs_rms._M2   = ckpt["obs_rms_M2"]
-        self._ret_rms._n    = ckpt["ret_rms_n"]
-        self._ret_rms._mean = ckpt["ret_rms_mean"]
-        self._ret_rms._M2   = ckpt["ret_rms_M2"]
-        self._return_running   = float(ckpt["return_running"])
-        self._ppo_update_count = int(ckpt.get("ppo_update_count", 0))
-        self._global_cc_step   = int(ckpt.get("global_cc_step", 0))
+        self._community_rms._n    = ckpt["community_rms_n"]
+        self._community_rms._mean = ckpt["community_rms_mean"]
+        self._community_rms._M2   = ckpt["community_rms_M2"]
+        self._building_rms._n     = ckpt["building_rms_n"]
+        self._building_rms._mean  = ckpt["building_rms_mean"]
+        self._building_rms._M2    = ckpt["building_rms_M2"]
+        self._ret_rms._n          = ckpt["ret_rms_n"]
+        self._ret_rms._mean       = ckpt["ret_rms_mean"]
+        self._ret_rms._M2         = ckpt["ret_rms_M2"]
+        self._return_running      = float(ckpt["return_running"])
+        self._ppo_update_count    = int(ckpt.get("ppo_update_count", 0))
+        self._global_cc_step      = int(ckpt.get("global_cc_step", 0))
         logger.info("CC checkpoint loaded ← {} (step {})", path, ckpt.get("step"))
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
-        # No warm-up exploration phase: PPO learns from the very first rollout.
         return True
 
     # ───────────────────── Internal: state & action ─────────────────────
 
     def _sample_new_decision(self, observations: List[np.ndarray]) -> None:
-        """Run the actor-critic once and cache the result for K env steps."""
-        raw_state = np.array(self._build_community_state(observations), dtype=np.float32)
+        """Run actor-critic once and cache result for the next K env steps."""
+        raw_community = self._build_community_context(observations)
+        raw_buildings = self._build_building_features(observations)
 
-        # Update running input stats with the *raw* state, then feed the
-        # *normalized* state to the network. Storing the normalized state
-        # in the buffer keeps train and infer distributions matched.
-        norm_state = self._normalize_state(raw_state, update_stats=True)
+        norm_community, norm_buildings = self._normalize_state(
+            raw_community, raw_buildings, update_stats=True
+        )
 
-        state_tensor = torch.tensor(norm_state, dtype=torch.float32).unsqueeze(0)
+        community_t = torch.tensor(norm_community, dtype=torch.float32).unsqueeze(0)
+        buildings_t = torch.tensor(norm_buildings, dtype=torch.float32).unsqueeze(0)
 
-        # No grad: this is inference, not training.
         with torch.no_grad():
-            action, log_prob, _, value = self.actor_critic.get_action_and_value(state_tensor)
+            action, log_prob, _, value = self.actor_critic.get_action_and_value(
+                community_t, buildings_t
+            )
 
-        self._cached_o1      = float(action.squeeze().item())
-        self._cached_state   = norm_state          # normalized: this is what PPO sees
-        self._cached_logprob = float(log_prob.item())
-        self._cached_value   = float(value.item())
+        self._cached_o1            = action.squeeze(0).numpy().astype(np.float32)
+        self._cached_raw_community = raw_community     # raw: for internal reward
+        self._cached_raw_buildings = raw_buildings     # raw: for per-building reward
+        self._cached_community     = norm_community    # normalised: for PPO buffer
+        self._cached_buildings     = norm_buildings
+        self._cached_logprob       = float(log_prob.item())
+        self._cached_value         = float(value.item())
 
-        # Decision trace logs the RAW state so plots are interpretable
-        # (price stays in $/kWh, net stays in kW, etc.).
-        self._log_decision(observations, raw_state)
+        self._log_decision(observations, raw_community)
 
-    def _normalize_state(self, raw_state: np.ndarray, *, update_stats: bool) -> np.ndarray:
+    def _compute_decision_reward(self) -> float:
         """
-        Standardize a 9-dim state with the current running mean/std.
+        reward_i = -o1_i × (price_delta + net_weight × net_power_i)
+        reward   = sum_i( reward_i )
 
-        `update_stats=True` is for the live decision path (we see this
-        state once and want to fold it into the running estimate).
-        `update_stats=False` is for re-evaluating the post-rollout
-        bootstrap state inside `_learn_from_rollout` (we don't want to
-        bias the stats by counting that one extra observation).
+        Two complementary signals:
+          price_delta  = price_now − mean(price_now, pred_1..3)
+                         Temporal: charge cheap, discharge dear.
+          net_power_i  = building i net grid draw at decision time (kW).
+                         Spatial: prioritise buildings that are importing.
+
+        Together: discharge at peak price in a heavily-importing building
+        = maximum reward. Charge at low price in an exporting building
+        (absorbing surplus PV) = also rewarded.
+
+        Returns 0 if no decision has been cached yet.
+
+        Building feature indices (must match _build_building_features):
+          0: soc_ratio  1: pv_power_kw  2: net_power_kw  3: ev_charging_kw
+          4: active_chargers  5: ev_soc  6: ev_is_flexible
         """
+        if self._cached_raw_community is None or self._cached_raw_buildings is None:
+            return 0.0
+
+        # ── Temporal signal (community-level) ────────────────────────────
+        c = self._cached_raw_community
+        # c indices: 0=price, 1=pred_1, 2=pred_2, 3=pred_3
+        price       = float(c[0])
+        ref_price   = float((c[0] + c[1] + c[2] + c[3]) / 4.0)
+        price_delta = price - ref_price
+
+        # ── Spatial signal (per-building) ─────────────────────────────────
+        # net_power_kw at feature index 2; positive = importing from grid.
+        N = len(self._cached_o1)
+        net_power = self._cached_raw_buildings[:N, 2]   # shape (N,)
+
+        # ── Combined urgency + decision quality ───────────────────────────
+        urgency      = price_delta + self._net_weight * net_power   # shape (N,)
+        per_building = -self._cached_o1 * urgency                   # shape (N,)
+        return float(np.sum(per_building))
+
+    def _normalize_state(
+        self,
+        raw_community: np.ndarray,
+        raw_buildings: np.ndarray,
+        *,
+        update_stats: bool,
+    ) -> tuple[np.ndarray, np.ndarray]:
         if update_stats:
-            self._obs_rms.update(raw_state)
-        return ((raw_state - self._obs_rms.mean) / self._obs_rms.std).astype(np.float32)
+            self._community_rms.update(raw_community)
+            for row in raw_buildings:
+                self._building_rms.update(row)
 
-    def _build_community_state(self, observations: List[np.ndarray]) -> List[float]:
+        norm_community = (
+            (raw_community - self._community_rms.mean) / self._community_rms.std
+        ).astype(np.float32)
+        norm_buildings = (
+            (raw_buildings - self._building_rms.mean) / self._building_rms.std
+        ).astype(np.float32)
+        return norm_community, norm_buildings
+
+    def _build_community_context(self, observations: List[np.ndarray]) -> np.ndarray:
         """
-        Build the 9-dim state vector the actor-critic sees.
+        Community-context vector (length c_dim) from district aggregates.
+        All values read from the first building (district fields are identical
+        across buildings in entity mode).
 
-        District-level fields are precomputed by CityLearn (entity mode);
-        we still average SoC manually because CityLearn doesn't expose
-        a district aggregate for it.
-
-        IMPORTANT: this list's length must equal `obs_dim` in the config.
+        Index layout (must stay in sync with _compute_decision_reward):
+          0: price_now   1: pred_1   2: pred_2   3: pred_3
+          4: hour        5: carbon   6: net_kw   7: import_kw
+          8: pv_kw       9: headroom 10: evs     11: chargers
         """
         obs0 = observations[0]
         idx0 = self._obs_index[0]
 
-        community_net     = float(obs0[idx0["district__community_net_power_kw"]])
-        community_pv      = float(obs0[idx0["district__community_pv_power_kw"]])
-        community_import  = float(obs0[idx0["district__community_import_power_kw"]])
-        current_price     = float(obs0[idx0["district__electricity_pricing"]])
-        predicted_price_1 = float(obs0[idx0["district__electricity_pricing_predicted_1"]])
-        predicted_price_2 = float(obs0[idx0["district__electricity_pricing_predicted_2"]])
-        predicted_price_3 = float(obs0[idx0["district__electricity_pricing_predicted_3"]])
-        hour_of_day       = float(obs0[idx0["district__hour"]])
+        def g(name: str) -> float:
+            return float(obs0[idx0[name]]) if name in idx0 else 0.0
 
-        total_soc, n = 0.0, 0
+        return np.array([
+            g("district__electricity_pricing"),
+            g("district__electricity_pricing_predicted_1"),
+            g("district__electricity_pricing_predicted_2"),
+            g("district__electricity_pricing_predicted_3"),
+            g("district__hour"),
+            g("district__carbon_intensity"),
+            g("district__community_net_power_kw"),
+            g("district__community_import_power_kw"),
+            g("district__community_pv_power_kw"),
+            g("district__community_building_headroom_kw"),
+            g("district__active_evs_count"),
+            g("district__active_chargers_count"),
+        ], dtype=np.float32)
+
+    def _build_building_features(self, observations: List[np.ndarray]) -> np.ndarray:
+        """
+        Per-building feature matrix, shape (num_buildings, b_dim).
+        Missing fields default to 0 (e.g. building without EV).
+        """
+        features = np.zeros((self._num_buildings, self._b_dim), dtype=np.float32)
+
         for i, building_obs in enumerate(observations):
+            if i >= self._num_buildings:
+                break
             idx = self._obs_index[i]
-            if "electrical_storage_soc_ratio" in idx:
-                total_soc += float(building_obs[idx["electrical_storage_soc_ratio"]])
-                n += 1
-        avg_soc = total_soc / max(n, 1)
 
-        return [
-            community_net, community_pv, community_import, avg_soc,
-            current_price, predicted_price_1, predicted_price_2, predicted_price_3,
-            hour_of_day,
-        ]
+            def g(name: str) -> float:
+                return float(building_obs[idx[name]]) if name in idx else 0.0
 
-    # Hours-to-departure threshold below which the RBC forces full EV
-    # charging regardless of o1. Ensures EVs always leave with enough charge.
-    _EV_MUST_CHARGE_HOURS: int = 3
+            features[i] = [
+                g("electrical_storage_soc_ratio"),
+                g("pv_power_kw"),
+                g("net_power_kw"),
+                g("ev_charging_power_kw"),
+                g("active_chargers_count"),
+                g("electric_vehicle_soc"),
+                g("electric_vehicle_is_flexible"),
+            ]
 
-    # SoC gap threshold (as % points: required_soc - current_soc). If the
-    # EV is this far below its required departure SoC, force charging even
-    # if departure is not imminent.
-    _EV_MUST_CHARGE_SOC_GAP: float = 50.0
-
-    def _rbc_act(
-        self,
-        building_obs: np.ndarray,
-        building_idx: int,
-        o1:           float,
-    ) -> List[float]:
-        """
-        Rule-based local controller. Translates the CC's `o1` into an
-        action vector for one building.
-
-        Battery rule:
-          Follow `o1` directly, clamped at SoC boundaries [0.05, 0.95].
-
-        EV rule (smart charging):
-          The CC is a community-level manager — it doesn't know departure
-          schedules of individual EVs. The RBC enforces those constraints.
-
-          Two-zone logic:
-            MUST-CHARGE zone: departure ≤ 3h OR SoC gap > 50 pp
-              → charge at 1.0 regardless of o1 (EV WILL leave charged).
-            FLEXIBLE zone: departure > 3h AND SoC gap ≤ 50 pp
-              → o1 > 0 (CC says energy is cheap) → charge at 1.0
-              → o1 ≤ 0 (CC says energy is expensive) → pause (0.0)
-
-          EVs cannot be discharged (no V2G), so the negative side of o1
-          only pauses charging, never reverses it.
-
-        Everything else (e.g. washing machines): no-op (0.0).
-        """
-        idx = self._obs_index[building_idx]
-        building_actions = [0.0] * self._action_dims[building_idx]
-
-        for action_name, slot in self._action_index[building_idx].items():
-
-            if action_name == "electrical_storage":
-                soc = (float(building_obs[idx["electrical_storage_soc_ratio"]])
-                       if "electrical_storage_soc_ratio" in idx else 0.5)
-                if   o1 > 0 and soc >= 0.95: building_actions[slot] = 0.0
-                elif o1 < 0 and soc <= 0.05: building_actions[slot] = 0.0
-                else:                        building_actions[slot] = o1
-
-            elif action_name.startswith("electric_vehicle_storage_charger_"):
-                building_actions[slot] = self._ev_action(
-                    building_obs, idx, action_name, o1
-                )
-
-        return building_actions
-
-    def _ev_action(
-        self,
-        building_obs: np.ndarray,
-        idx:          dict,
-        action_name:  str,
-        o1:           float,
-    ) -> float:
-        """
-        Decide EV charger action for one charger slot.
-        Returns 1.0 (charge), 0.0 (pause), or 0.0 (not connected).
-        """
-        charger_id   = action_name[len("electric_vehicle_storage_charger_"):]
-        building_num = charger_id.split("_")[0]
-        prefix       = f"charger::Building_{building_num}/charger_{charger_id}"
-
-        connected = float(building_obs[idx[f"{prefix}::connected_state"]]) \
-                    if f"{prefix}::connected_state" in idx else 0.0
-
-        if connected <= 0:
-            return 0.0  # no EV plugged in
-
-        # Read departure countdown and SoC info (all in the same obs vector).
-        hours_to_departure = float(building_obs[idx[f"{prefix}::connected_ev_departure_time_step"]]) \
-                             if f"{prefix}::connected_ev_departure_time_step" in idx else 24.0
-        ev_soc             = float(building_obs[idx[f"{prefix}::connected_ev_soc"]]) \
-                             if f"{prefix}::connected_ev_soc" in idx else 0.0
-        required_soc       = float(building_obs[idx[f"{prefix}::connected_ev_required_soc_departure"]]) \
-                             if f"{prefix}::connected_ev_required_soc_departure" in idx else 80.0
-
-        soc_gap = max(0.0, required_soc - ev_soc)
-
-        # Must-charge: RBC overrides CC to protect departure readiness.
-        must_charge = (
-            hours_to_departure <= self._EV_MUST_CHARGE_HOURS
-            or soc_gap >= self._EV_MUST_CHARGE_SOC_GAP
-        )
-        if must_charge:
-            return 1.0
-
-        # Flexible window: follow CC signal (positive = charge, ≤0 = pause).
-        return 1.0 if o1 > 0 else 0.0
+        return features
 
     # ──────────────────────── Internal: learning ────────────────────────
 
     def _learn_from_rollout(self, next_observations: List[np.ndarray], done: bool) -> None:
-        """
-        Buffer is full → finalise advantages with GAE and run PPO.
-
-        GAE needs an estimate of the value AFTER the last collected step,
-        which is the critic's prediction at `next_observations`.
-        """
-        raw_next_state  = np.array(self._build_community_state(next_observations), dtype=np.float32)
-        norm_next_state = self._normalize_state(raw_next_state, update_stats=False)
-        next_state_tensor = torch.tensor(norm_next_state, dtype=torch.float32).unsqueeze(0)
+        raw_next_community = self._build_community_context(next_observations)
+        raw_next_buildings = self._build_building_features(next_observations)
+        norm_next_community, norm_next_buildings = self._normalize_state(
+            raw_next_community, raw_next_buildings, update_stats=False
+        )
+        community_t = torch.tensor(norm_next_community, dtype=torch.float32).unsqueeze(0)
+        buildings_t = torch.tensor(norm_next_buildings, dtype=torch.float32).unsqueeze(0)
 
         with torch.no_grad():
-            last_value = float(self.actor_critic.critic(next_state_tensor).item())
+            _, _, _, last_value_t = self.actor_critic.get_action_and_value(
+                community_t, buildings_t
+            )
 
         self.rollout_buffer.compute_gae(
-            last_value  = last_value,
-            last_done   = done,
-            gae_lambda  = self._gae_lambda,
+            last_value = float(last_value_t.item()),
+            last_done  = done,
+            gamma      = self._gamma,
+            gae_lambda = self._gae_lambda,
         )
         self._run_ppo_update()
         self.rollout_buffer.reset()
 
     def _run_ppo_update(self) -> None:
-        """
-        One PPO learning phase over the contents of the rollout buffer.
-
-        The combined loss being minimised is:
-
-            loss = pg_loss  +  vf_coef * v_loss  -  ent_coef * entropy
-
-        - pg_loss (policy / actor): clipped surrogate. Uses the ratio
-              r = exp(log π_new(a|s) - log π_old(a|s))
-          and minimises the worse of `-A · r` and `-A · clip(r, 1±ε)`.
-          The clip prevents large policy jumps from a single update.
-        - v_loss (value / critic): MSE between predicted value and the
-          GAE target return, also clipped for stability.
-        - entropy: encourages exploration. Subtracted (negative sign)
-          so higher entropy lowers loss.
-
-        We make `num_epochs` passes over the same data, in mini-batches.
-        After each mini-batch we estimate KL divergence between old and
-        new policy; if it crosses `1.5 * target_kl` we early-stop to
-        avoid destructive updates.
-        """
         data             = self.rollout_buffer.get()
-        batch_obs        = data["obs"]
+        batch_community  = data["community"]
+        batch_buildings  = data["buildings"]
         batch_actions    = data["actions"]
         batch_logprobs   = data["logprobs"]
         batch_returns    = data["returns"]
         batch_advantages = data["advantages"]
 
-        # Pre-update predicted values, used for clipped value loss below.
-        old_values = torch.tensor(self.rollout_buffer.values, dtype=torch.float32)
-
+        old_values  = torch.tensor(self.rollout_buffer.values, dtype=torch.float32)
         num_steps   = self.rollout_buffer.num_steps
         kl_exceeded = False
-        pg_loss = v_loss = entropy_loss = torch.tensor(0.0)  # for logger
+        pg_loss = v_loss = entropy_loss = torch.tensor(0.0)
 
         for _ in range(self._num_epochs):
             if kl_exceeded:
                 break
-
             indices = np.random.permutation(num_steps)
 
             for start in range(0, num_steps, self._mini_batch_size):
                 mb = indices[start : start + self._mini_batch_size]
 
                 _, new_logprobs, entropy, new_values = self.actor_critic.get_action_and_value(
-                    batch_obs[mb], action=batch_actions[mb]
+                    batch_community[mb], batch_buildings[mb], action=batch_actions[mb]
                 )
                 new_values = new_values.squeeze()
 
-                # Importance-sampling ratio (new vs old policy probability).
-                log_ratio = new_logprobs - batch_logprobs[mb]
-                ratio     = torch.exp(log_ratio)
+                log_ratio  = new_logprobs - batch_logprobs[mb]
+                ratio      = torch.exp(log_ratio)
+                approx_kl  = ((ratio - 1) - log_ratio).mean().item()
 
-                # KL early-stopping check (Schulman et al.'s low-variance estimator).
-                approx_kl = ((ratio - 1) - log_ratio).mean().item()
                 if self._target_kl is not None and approx_kl > 1.5 * self._target_kl:
                     kl_exceeded = True
                     break
 
-                # Clipped surrogate policy loss.
                 mb_adv  = batch_advantages[mb]
                 pg_loss = torch.max(
                     -mb_adv * ratio,
                     -mb_adv * torch.clamp(ratio, 1 - self._clip_coef, 1 + self._clip_coef),
                 ).mean()
 
-                # Clipped value loss (PPO-G).
                 v_unclipped = (new_values - batch_returns[mb]) ** 2
                 v_clipped   = old_values[mb] + (new_values - old_values[mb]).clamp(
                     -self._clip_coef, self._clip_coef
                 )
-                v_loss = 0.5 * torch.max(v_unclipped, (v_clipped - batch_returns[mb]) ** 2).mean()
+                v_loss = 0.5 * torch.max(
+                    v_unclipped, (v_clipped - batch_returns[mb]) ** 2
+                ).mean()
 
                 entropy_loss = entropy.mean()
-
                 loss = pg_loss + self._vf_coef * v_loss - self._ent_coef * entropy_loss
 
                 self.ppo_optim.zero_grad()
@@ -677,64 +622,89 @@ class CommunityCoordinatorAgent(BaseAgent):
 
     # ──────────────────────── Internal: logging ─────────────────────────
 
-    def _log_decision(self, observations: List[np.ndarray], state: np.ndarray) -> None:
-        """Append one row to the in-memory decision trace for this episode."""
+    def _log_decision(self, observations: List[np.ndarray], community: np.ndarray) -> None:
+        """Append one row to the in-memory decision trace."""
         idx0 = self._obs_index[0]
         obs0 = observations[0]
-        self._decision_trace.append({
-            "cc_step":      self._global_cc_step,
-            "hour":         float(obs0[idx0["district__hour"]]),
-            "month":        float(obs0[idx0["district__month"]]),
-            "price":        float(obs0[idx0["district__electricity_pricing"]]),
-            "pred_price_1": float(obs0[idx0["district__electricity_pricing_predicted_1"]]),
-            "pred_price_2": float(obs0[idx0["district__electricity_pricing_predicted_2"]]),
-            "pred_price_3": float(obs0[idx0["district__electricity_pricing_predicted_3"]]),
-            "community_net":float(obs0[idx0["district__community_net_power_kw"]]),
-            "avg_soc":      float(state[3]),     # index 3 in _build_community_state
-            "o1":           self._cached_o1,
-            "value_est":    self._cached_value,
-        })
+
+        def _g(name: str) -> float:
+            return float(obs0[idx0[name]]) if name in idx0 else 0.0
+
+        o1 = np.asarray(self._cached_o1, dtype=np.float64)
+
+        row: dict = {
+            "cc_step":              self._global_cc_step,
+            "month":                _g("district__month"),
+            "hour":                 _g("district__hour"),
+            "price":                _g("district__electricity_pricing"),
+            "pred_price_1":         _g("district__electricity_pricing_predicted_1"),
+            "pred_price_2":         _g("district__electricity_pricing_predicted_2"),
+            "pred_price_3":         _g("district__electricity_pricing_predicted_3"),
+            "carbon_intensity":     _g("district__carbon_intensity"),
+            "community_net_kw":     _g("district__community_net_power_kw"),
+            "community_import_kw":  _g("district__community_import_power_kw"),
+            "community_pv_kw":      _g("district__community_pv_power_kw"),
+            "community_headroom_kw":_g("district__community_building_headroom_kw"),
+            "active_evs":           _g("district__active_evs_count"),
+            "active_chargers":      _g("district__active_chargers_count"),
+            "o1_mean":              float(o1.mean()),
+            "o1_std":               float(o1.std()),
+            "o1_min":               float(o1.min()),
+            "o1_max":               float(o1.max()),
+            "value_est":            self._cached_value,
+            "decision_reward":      self._compute_decision_reward(),
+        }
+
+        for i, sig in enumerate(o1):
+            row[f"o1_b{i}"] = float(sig)
+
+        self._decision_trace.append(row)
         self._global_cc_step += 1
 
     def _flush_decision_trace(self) -> None:
-        """Write the current episode's decision trace to a CSV + MLflow artifact."""
+        """Write episode decision trace to CSV + log MLflow metrics."""
         if not self._decision_trace:
             return
 
         self._episode_count += 1
-        ep = self._episode_count
+        ep     = self._episode_count
         fields = list(self._decision_trace[0].keys())
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".csv", prefix=f"cc_decisions_ep{ep}_", delete=False,
         ) as f:
             tmp_path = f.name
-            writer = csv.DictWriter(f, fieldnames=fields)
+            writer   = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
             writer.writerows(self._decision_trace)
 
-        # Per-episode arbitrage signal: correlation between current price and
-        # the CC's action. We want this NEGATIVE — high price → discharge (o1<0),
-        # low price → charge (o1>0). Logged to MLflow as a chart we can watch.
-        prices  = np.array([row["price"] for row in self._decision_trace], dtype=np.float64)
-        actions = np.array([row["o1"]    for row in self._decision_trace], dtype=np.float64)
-        if len(prices) > 1 and prices.std() > 0 and actions.std() > 0:
+        prices  = np.array([r["price"]   for r in self._decision_trace], dtype=np.float64)
+        actions = np.array([r["o1_mean"] for r in self._decision_trace], dtype=np.float64)
+        rewards = np.array([r["decision_reward"] for r in self._decision_trace], dtype=np.float64)
+
+        if len(prices) > 1 and prices.std() > 1e-6 and actions.std() > 1e-6:
             corr_price_o1 = float(np.corrcoef(prices, actions)[0, 1])
         else:
-            corr_price_o1 = 0.0
+            corr_price_o1 = float("nan")
+
+        cross_building_std = float(np.mean([r["o1_std"] for r in self._decision_trace]))
 
         logger.info(
-            "CC ep{} → {} decisions → corr(price,o1)={:+.3f} mean_o1={:+.3f} → {}",
-            ep, len(self._decision_trace), corr_price_o1, float(actions.mean()), tmp_path,
+            "CC ep{} → {} steps | corr(price,o1)={:+.3f} | mean_reward={:+.4f} | "
+            "cross_std={:.3f} → {}",
+            ep, len(self._decision_trace), corr_price_o1,
+            float(rewards.mean()), cross_building_std, tmp_path,
         )
 
         if mlflow.active_run():
             mlflow.log_artifact(tmp_path, artifact_path="decision_traces")
             mlflow.log_metrics(
                 {
-                    "CC_corr_price_o1": corr_price_o1,
-                    "CC_mean_o1":       float(actions.mean()),
-                    "CC_std_o1":        float(actions.std()),
+                    "CC_corr_price_o1":        corr_price_o1 if not np.isnan(corr_price_o1) else 0.0,
+                    "CC_mean_o1":              float(actions.mean()),
+                    "CC_mean_o1_over_time_std":float(actions.std()),
+                    "CC_cross_building_std":   cross_building_std,
+                    "CC_mean_decision_reward": float(rewards.mean()),
                 },
                 step=ep,
             )

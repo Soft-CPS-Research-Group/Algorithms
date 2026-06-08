@@ -511,6 +511,35 @@ class CommunityCoordinatorAlgorithmConfig(BaseModel):
     hyperparameters: CCHyperparameters = CCHyperparameters()
 
 
+class CCLevel1Hyperparameters(BaseModel):
+    """Hyperparameters for the Level-1 global-signal CC (discrete {-1,0,+1})."""
+    c_dim:              int        = Field(default=18,   gt=0)
+    hidden_dims:        List[int]  = Field(default=[128, 128])
+    cc_action_interval: int        = Field(default=4,    gt=0)   # 4 × 15min = 1h
+    ma_window:          int        = Field(default=96,   gt=0)   # 96 × 15min = 24h
+    num_steps:          int        = Field(default=96,   gt=0)
+    lr:                 float      = Field(default=1e-4, gt=0)
+    gamma:              float      = Field(default=0.99, gt=0, lt=1)
+    gae_lambda:         float      = Field(default=0.95, gt=0, le=1)
+    num_epochs:         int        = Field(default=10,   gt=0)
+    mini_batch_size:    int        = Field(default=64,   gt=0)
+    clip_coef:          float      = Field(default=0.2,  gt=0)
+    vf_coef:            float      = Field(default=0.5,  gt=0)
+    ent_coef:           float      = Field(default=0.01, ge=0)
+    max_grad_norm:      float      = Field(default=0.5,  gt=0)
+    target_kl:          Optional[float] = Field(default=0.1, gt=0)
+    shaping_weight:     float           = Field(default=1.0, ge=0)
+    output_mode:        Literal["actions", "signal"] = "actions"
+
+
+class CCLevel1AlgorithmConfig(BaseModel):
+    """Pipeline stage for the Level-1 Community Coordinator."""
+    algorithm: Literal["CCLevel1"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
+    hyperparameters: CCLevel1Hyperparameters = CCLevel1Hyperparameters()
+
+
 class BuildingAgentStageConfig(BaseModel):
     """Pipeline stage describing a BuildingAgent (per-building PPO worker)."""
 
@@ -542,6 +571,7 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "RBCBasicPolicy",
         "RBCCommunityPolicy",
         "RBCSmartPolicy",
+        "SignalAwareRBC",
     ]
     count: int = Field(default=1, ge=1)
     frozen: bool = False
@@ -575,6 +605,7 @@ class SingleAgentRLStageConfig(BaseModel):
 
 PipelineStageConfig = Union[
     BuildingAgentStageConfig,
+    CCLevel1AlgorithmConfig,
     CommunityCoordinatorAlgorithmConfig,
     ActorCriticAlgorithmConfig,
     RuleBasedAlgorithmConfig,

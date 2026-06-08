@@ -1,10 +1,14 @@
-# Community Coordinator — local development template.
-# Experiment: A-O1-S-MLP (Path A input, O1 output, single-step, MLP only)
-# Inner local controller: RuleBasedPolicy (fixed, not trained)
+# Community Coordinator Level 1 — local development template.
+#
+# Level 1: Global Community Signal
+# CC observes community aggregates only. Emits one global discrete signal:
+#   -1 (reduce) / 0 (neutral) / +1 (increase)
+# Low-level rule maps signal to battery charge/discharge for every building.
+# No per-building features, no EV/SoC/headroom observations.
 
 metadata:
-  experiment_name: "cc_local_template"
-  run_name: "CC Local Run — A-O1-S-MLP"
+  experiment_name: "cc_level1"
+  run_name: "CC-L1 Global Signal"
 
 runtime:
   log_dir: null
@@ -36,7 +40,7 @@ checkpointing:
   reset_replay_buffer: false
   freeze_pretrained_layers: false
   fine_tune: false
-  checkpoint_interval: 57600
+  checkpoint_interval: 960   # ~10 days at 15-min steps (was 57600 at 15s)
 
 bundle:
   bundle_version: null
@@ -46,8 +50,8 @@ bundle:
   artifact_config: {}
 
 simulator:
-  dataset_name: citylearn_three_phase_electrical_service_demo_15s_parquet
-  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json
+  dataset_name: citylearn_three_phase_electrical_service_demo_15min_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15min_parquet/schema.json
   central_agent: false
   interface: entity
   topology_mode: static
@@ -55,11 +59,11 @@ simulator:
     enabled: true
     normalization: minmax_space
     clip: true
-  reward_function: CCReward
-  episodes: 150
-  episode_time_steps: 5760     # 1 day at 15-second timesteps (5760 × 15s = 86400s)
+  reward_function: CCRewardLevel1
+  episodes: 2310             # ~7h wall (6 min / 33 eps baseline → 420 min target)
+  episode_time_steps: 672    # 1 WEEK at 15-min timesteps (7 × 96 = 672 steps)
   simulation_start_time_step: 0
-  simulation_end_time_step: 17280
+  simulation_end_time_step: 34944  # full dataset: 52 unique weeks (52 × 672)
   export:
     mode: end
     export_kpis_on_episode_end: true
@@ -76,20 +80,38 @@ topology:
   action_dimensions: null
   action_space: null
 
-# Algorithm family and hyperparameters.
+# Two-stage pipeline: CCLevel1 (manager) → SignalAwareRBC × N (workers)
+#
+#  CCLevel1 observes community aggregates, emits global signal {-1, 0, +1}.
+#  Signal passed as Pipeline context to SignalAwareRBC ensemble.
+#  SignalAwareRBC: ±1 → force battery charge/discharge; 0 → RBCSmartPolicy logic.
+#  EV charging always handled by RBCSmartPolicy regardless of signal.
 pipeline:
-  - algorithm: "CommunityCoordinator"
+  - algorithm: "CCLevel1"
     count: 1
     hyperparameters:
-      # Network input dim — must equal len(_build_community_state()) output
-      obs_dim: 9   # [net, pv, import, avg_soc, price, pred1, pred2, pred3, hour]
+      # Community-context width (must match _build_community_context index layout)
+      # 0-3: price + 3 forecasts  |  4-8: time (sin/cos/weekend)
+      # 9-10: month (sin/cos)     |  11-15: community power
+      # 16: import_ma             |  17: peak_import_ref
+      c_dim: 18
+      hidden_dims: [128, 128]
 
-      # Temporal abstraction (disabled for baseline — CC acts every env step)
-      cc_action_interval: 60  # 15-min abstraction: CC decides every 60 × 15s = 15 min
+      # Return signal as Pipeline context → downstream SignalAwareRBC executes
+      output_mode: signal
 
-      # Rollout — counted in CC decisions; with K=1, 1 CC decision = 1 env step
-      # 2048 ≈ 4 PPO updates per episode (8760 env steps/ep)
-      num_steps: 96           # matches CC decisions/episode (5760 steps / 60 interval)
+      # Temporal abstraction: CC decides every hour = 4 × 15-min steps
+      # RBC acts every 15 min (every env step)
+      cc_action_interval: 4
+
+      # Moving-average window for import features (96 steps = 24 h at 15-min resolution)
+      ma_window: 96
+
+      # Rollout buffer
+      num_steps: 96
+
+      # Decision-quality shaping (anti-collapse)
+      shaping_weight: 1.0
 
       # Optimiser
       lr: 1.0e-4
@@ -99,12 +121,15 @@ pipeline:
       gae_lambda: 0.95
 
       # PPO update
-      num_epochs: 10          # gradient passes over each rollout
+      num_epochs: 10
       mini_batch_size: 64
-      clip_coef: 0.2          # PPO clip epsilon
-      vf_coef: 0.5            # value loss weight
-      ent_coef: 0.005         # entropy bonus weight — enough to slow premature convergence
-      max_grad_norm: 0.5      # gradient clipping
-      target_kl: 0.1          # KL early-stopping threshold (null to disable)
+      clip_coef: 0.2
+      vf_coef: 0.5
+      ent_coef: 0.05
+      max_grad_norm: 0.5
+      target_kl: 0.1
+
+  - algorithm: "SignalAwareRBC"
+    count: 17   # one per building — matches dataset
 
 execution: null
