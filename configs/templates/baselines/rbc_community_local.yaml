@@ -57,16 +57,16 @@ training:
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
-
-algorithm:
-  name: "RBCCommunityPolicy"
+pipeline:
+- algorithm: RBCCommunityPolicy
+  count: 1
   hyperparameters:
     allow_v2g: true
     flexibility_hours: 3.0
     emergency_hours: 1.0
     flex_trickle_charge: 0.0
     emergency_charge_rate: 1.0
-    ev_price_charge_rate: 0.70
+    ev_price_charge_rate: 0.7
     ev_pv_charge_rate: 0.85
     ev_community_charge_rate: 0.85
     ev_v2g_discharge_rate: 0.18
@@ -96,14 +96,14 @@ algorithm:
     storage_discharge_import_threshold_kw: 0.50
     community_local_price_ratio: 0.8
     community_grid_export_price: 0.0
-    pv_surplus_threshold_kw: 0.50
-    community_surplus_threshold_kw: 0.50
+    pv_surplus_threshold_kw: 0.5
+    community_surplus_threshold_kw: 0.5
     import_peak_threshold_kw: 10.0
     community_import_threshold_kw: 10.0
     low_headroom_threshold_kw: 1.0
     deferrable_start_action: 1.0
-    deferrable_urgency_threshold: 0.60
-    deferrable_slack_threshold: 0.40
+    deferrable_urgency_threshold: 0.6
+    deferrable_slack_threshold: 0.4
     deferrable_safety_margin_steps: 1.0
     deferrable_import_block_threshold_kw: 2.0
     deferrable_community_import_block_threshold_kw: 8.0

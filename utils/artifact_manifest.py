@@ -33,10 +33,7 @@ def build_manifest(
         },
         "training": config.get("training", {}),
         "topology": config.get("topology", {}),
-        "algorithm": {
-            "name": config.get("algorithm", {}).get("name"),
-            "hyperparameters": config.get("algorithm", {}).get("hyperparameters", {}),
-        },
+        "pipeline": _summarise_pipeline(config),
         "environment": environment_metadata,
         "agent": normalized_agent_metadata,
     }
@@ -56,6 +53,24 @@ def write_manifest(manifest: Dict[str, Any], output_dir: str) -> Path:
     return path
 
 
+def _summarise_pipeline(config: Dict[str, Any]) -> list:
+    """Build the manifest's pipeline summary from the resolved config."""
+    pipeline_cfg = config.get("pipeline") or []
+    summary = []
+    for index, stage in enumerate(pipeline_cfg):
+        if not isinstance(stage, dict):
+            continue
+        summary.append(
+            {
+                "stage_index": index,
+                "algorithm": stage.get("algorithm"),
+                "count": int(stage.get("count", 1) or 1),
+                "hyperparameters": stage.get("hyperparameters", {}) or {},
+            }
+        )
+    return summary
+
+
 def _merge_bundle_metadata(metadata: Dict[str, Any], bundle_cfg: Dict[str, Any]) -> None:
     """Backfill bundle metadata keys when provided in the `bundle` config section."""
     if not metadata.get("bundle_version") and bundle_cfg.get("bundle_version"):
@@ -67,21 +82,84 @@ def _merge_bundle_metadata(metadata: Dict[str, Any], bundle_cfg: Dict[str, Any])
 
 
 def _normalize_agent_metadata(agent_metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure the manifest carries canonical artifact entries."""
-    metadata = dict(agent_metadata or {})
-    artifacts = metadata.get("artifacts") or []
-    default_format = metadata.get("format") or "onnx"
+    """Ensure the manifest carries canonical artifact entries.
 
+    Pipeline and Ensemble composites nest artifacts under ``stages``/``agents``.
+    This function flattens those shapes into the standard
+    ``{"format": ..., "artifacts": [...]}`` structure that
+    :func:`utils.bundle_validator.validate_bundle_contract` expects.
+    """
+    metadata = dict(agent_metadata or {})
+    top_format = metadata.get("format") or "onnx"
+
+    if top_format == "pipeline":
+        metadata = _flatten_pipeline_metadata(metadata)
+        top_format = metadata.get("format") or "onnx"
+    elif top_format == "ensemble":
+        metadata = _flatten_ensemble_metadata(metadata)
+        top_format = metadata.get("format") or "onnx"
+
+    artifacts = metadata.get("artifacts") or []
     normalized_artifacts = []
     for raw_artifact in artifacts:
         artifact = dict(raw_artifact or {})
-        artifact.setdefault("format", default_format)
+        artifact.setdefault("format", top_format)
         artifact["config"] = dict(artifact.get("config") or {})
         normalized_artifacts.append(artifact)
 
-    metadata["format"] = default_format
+    metadata["format"] = top_format
     metadata["artifacts"] = normalized_artifacts
     return metadata
+
+
+def _flatten_pipeline_metadata(pipeline_meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten a pipeline's nested stage artifacts into a top-level artifact list.
+
+    The leaf stage (last stage) determines the top-level format. Artifacts from
+    all stages are merged; agent_index values are kept as-is since each stage
+    already owns a disjoint slice of the agent pool.
+    """
+    stages = pipeline_meta.get("stages") or []
+    if not stages:
+        return {"format": "none", "artifacts": [], "stages": []}
+
+    leaf = stages[-1]
+    top_format = leaf.get("format") or "onnx"
+    artifacts: list = []
+    for stage in stages:
+        for artifact in stage.get("artifacts") or []:
+            artifacts.append(dict(artifact))
+
+    result = {k: v for k, v in pipeline_meta.items() if k not in ("format", "artifacts")}
+    result["format"] = top_format
+    result["artifacts"] = artifacts
+    return result
+
+
+def _flatten_ensemble_metadata(ensemble_meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten an ensemble's per-member artifacts into a top-level artifact list.
+
+    Each ensemble member is responsible for one agent slot. The member's local
+    ``agent_index`` (always 0 from its own perspective) is replaced with the
+    member's global index so the manifest reflects the correct slot numbering.
+    """
+    members = ensemble_meta.get("agents") or []
+    if not members:
+        return {"format": "none", "artifacts": [], "agents": []}
+
+    top_format = members[0].get("format") or "onnx"
+    artifacts: list = []
+    for member in members:
+        global_index = member.get("agent_index", len(artifacts))
+        for artifact in member.get("artifacts") or []:
+            flat = dict(artifact)
+            flat["agent_index"] = global_index
+            artifacts.append(flat)
+
+    result = {k: v for k, v in ensemble_meta.items() if k not in ("format", "artifacts")}
+    result["format"] = top_format
+    result["artifacts"] = artifacts
+    return result
 
 
 def _json_default(obj: Any) -> Any:

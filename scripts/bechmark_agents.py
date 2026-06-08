@@ -110,6 +110,9 @@ EV_GATE_FALLBACK_KPIS = (
 )
 
 
+from utils.pipeline_utils import summarise_pipeline_algorithms
+
+
 def _safe_float(value: Any) -> Optional[float]:
     try:
         return float(value)
@@ -288,7 +291,7 @@ def _load_job_record(job_dir: Path, kpis: List[str]) -> Optional[Dict[str, Any]]
         "job_dir": str(job_dir),
         "job_id": job_dir.name,
         "seed": config_payload.get("training", {}).get("seed"),
-        "algorithm": config_payload.get("algorithm", {}).get("name"),
+        "algorithm": summarise_pipeline_algorithms(config_payload, default=None),
         "kpi_source": kpi_source,
         "kpi_source_path": kpi_source_path,
         "kpis": selected_kpis,

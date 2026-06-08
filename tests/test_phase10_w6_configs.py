@@ -11,6 +11,10 @@ def _load(path: Path) -> dict:
         return yaml.safe_load(handle)
 
 
+def _alg(config: dict) -> dict:
+    return config["pipeline"][0]
+
+
 def test_w6_smoke_local_generates_one_short_config_per_recipe(tmp_path):
     rows = generate_w6_configs(output_dir=tmp_path, stage="w6-smoke-local", seeds=[123])
 
@@ -22,9 +26,9 @@ def test_w6_smoke_local_generates_one_short_config_per_recipe(tmp_path):
         assert config["simulator"]["simulation_end_time_step"] == 255
         assert config["simulator"]["episodes"] == 1
         assert config["simulator"]["deterministic_finish"] is False
-        assert config["algorithm"]["replay_buffer"]["batch_size"] == 64
-        assert config["algorithm"]["replay_buffer"]["capacity"] == 20000
-        exploration = config["algorithm"]["exploration"]["params"]
+        assert _alg(config)["replay_buffer"]["batch_size"] == 64
+        assert _alg(config)["replay_buffer"]["capacity"] == 20000
+        exploration = _alg(config)["exploration"]["params"]
         assert exploration["random_exploration_steps"] == 64
         assert exploration["n_step_returns"] == 8
         assert exploration["actor_policy_loss_normalization"] is True
@@ -61,8 +65,8 @@ def test_w6a_local_matrix_generates_guided_window_configs(tmp_path):
     assert simulator["export"]["kpis_final_episode_only"] is True
     assert simulator["export"]["timeseries_final_episode_only"] is True
 
-    algorithm = config["algorithm"]
-    assert algorithm["name"] == "MADDPG"
+    algorithm = _alg(config)
+    assert algorithm["algorithm"] == "MADDPG"
     assert algorithm["replay_buffer"]["class"] == "RewardWeightedMultiAgentReplayBuffer"
     assert algorithm["replay_buffer"]["capacity"] == 200000
     assert algorithm["replay_buffer"]["priority_fraction"] == 0.35
@@ -114,7 +118,7 @@ def test_w6a_local_can_generate_clone_improvement_variants(tmp_path):
     cost_nudge = next(row for row in rows if row["recipe"] == "w6_clone_cost_nudge")
     cost_config = _load(Path(cost_nudge["config_path"]))
     validate_config(cost_config)
-    cost_exploration = cost_config["algorithm"]["exploration"]["params"]
+    cost_exploration = _alg(cost_config)["exploration"]["params"]
     assert cost_exploration["actor_behavior_cloning_weight"] == 0.35
     assert cost_exploration["actor_behavior_cloning_min_weight"] == 0.2
     assert cost_exploration["actor_policy_loss_weight"] == 0.05
@@ -123,7 +127,7 @@ def test_w6a_local_can_generate_clone_improvement_variants(tmp_path):
     tight = next(row for row in rows if row["recipe"] == "w6_clone_tight_v2g_storage")
     tight_config = _load(Path(tight["config_path"]))
     validate_config(tight_config)
-    tight_exploration = tight_config["algorithm"]["exploration"]["params"]
+    tight_exploration = _alg(tight_config)["exploration"]["params"]
     assert tight_exploration["actor_policy_loss_weight"] == 0.0
     assert tight_exploration["actor_storage_action_l2_penalty"] == 0.01
     assert tight_exploration["actor_ev_v2g_action_l2_penalty"] == 0.15
@@ -143,11 +147,11 @@ def test_w6a_local_can_generate_residual_community_recipe(tmp_path):
     config = _load(Path(rows[0]["config_path"]))
     validate_config(config)
 
-    assert config["algorithm"]["name"] == "MATD3"
-    assert config["algorithm"]["networks"]["critic"]["class"] == "LateFusionCritic"
+    assert _alg(config)["algorithm"] == "MATD3"
+    assert _alg(config)["networks"]["critic"]["class"] == "LateFusionCritic"
     assert config["simulator"]["reward_function"] == "CostServiceCommunityResidualConstraintRewardV53"
-    assert config["algorithm"]["replay_buffer"]["observation_event_priority_mode"] == "combined"
-    exploration = config["algorithm"]["exploration"]["params"]
+    assert _alg(config)["replay_buffer"]["observation_event_priority_mode"] == "combined"
+    exploration = _alg(config)["exploration"]["params"]
     assert exploration["warm_start_policy"] == "RBCCommunityPolicy"
     assert exploration["residual_policy_enabled"] is True
     assert exploration["residual_action_scale"] == 0.08
@@ -174,12 +178,12 @@ def test_w6_remote_smoke_can_generate_w7_matd3_residual_repair(tmp_path):
     config = _load(Path(rows[0]["config_path"]))
     validate_config(config)
 
-    assert config["algorithm"]["name"] == "MATD3"
+    assert _alg(config)["algorithm"] == "MATD3"
     assert config["simulator"]["episode_time_steps"] == 4096
     assert config["simulator"]["reward_function"] == "CostServiceCommunityResidualConstraintRewardV53"
     assert config["simulator"]["reward_function_kwargs"]["ev_departure_missed_penalty"] == 4600.0
     assert config["execution"]["deucalion"]["gpus"] == 1
-    exploration = config["algorithm"]["exploration"]["params"]
+    exploration = _alg(config)["exploration"]["params"]
     assert exploration["warm_start_policy"] == "RBCCommunityPolicy"
     assert exploration["residual_policy_enabled"] is True
     assert exploration["residual_action_final_scale"] == 0.45
@@ -247,7 +251,7 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     assert tight_config["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV46"
     assert tight_config["simulator"]["reward_function_kwargs"]["ev_v2g_service_penalty"] == 1200.0
     assert tight_config["simulator"]["reward_function_kwargs"]["battery_throughput_penalty"] == 0.03
-    assert tight_config["algorithm"]["exploration"]["params"]["actor_ev_v2g_action_l2_penalty"] == 0.25
+    assert _alg(tight_config)["exploration"]["params"]["actor_ev_v2g_action_l2_penalty"] == 0.25
 
     softwall_rows = generate_w6_configs(
         output_dir=tmp_path / "softwall",
@@ -258,7 +262,7 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     )
     softwall_config = _load(Path(softwall_rows[0]["config_path"]))
     validate_config(softwall_config)
-    assert softwall_config["algorithm"]["exploration"]["params"]["actor_ev_v2g_action_l2_penalty"] == 8.0
+    assert _alg(softwall_config)["exploration"]["params"]["actor_ev_v2g_action_l2_penalty"] == 8.0
 
     highclip_rows = generate_w6_configs(
         output_dir=tmp_path / "highclip",
@@ -269,7 +273,7 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     )
     highclip_config = _load(Path(highclip_rows[0]["config_path"]))
     validate_config(highclip_config)
-    assert highclip_config["algorithm"]["exploration"]["params"]["reward_normalization_clip"] == 25.0
+    assert _alg(highclip_config)["exploration"]["params"]["reward_normalization_clip"] == 25.0
 
     masswall_rows = generate_w6_configs(
         output_dir=tmp_path / "masswall",
@@ -280,7 +284,7 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     )
     masswall_config = _load(Path(masswall_rows[0]["config_path"]))
     validate_config(masswall_config)
-    masswall_exploration = masswall_config["algorithm"]["exploration"]["params"]
+    masswall_exploration = _alg(masswall_config)["exploration"]["params"]
     assert masswall_exploration["actor_ev_v2g_action_l2_penalty"] == 4.0
     assert masswall_exploration["actor_ev_v2g_action_mass_penalty"] == 8.0
 
@@ -304,7 +308,7 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     )
     tight_energywall_config = _load(Path(tight_energywall_rows[0]["config_path"]))
     validate_config(tight_energywall_config)
-    tight_energywall_exploration = tight_energywall_config["algorithm"]["exploration"]["params"]
+    tight_energywall_exploration = _alg(tight_energywall_config)["exploration"]["params"]
     assert tight_energywall_exploration["actor_storage_action_l2_penalty"] == 0.02
     assert tight_energywall_exploration["actor_ev_v2g_action_mass_penalty"] == 6.0
     assert tight_energywall_config["simulator"]["reward_function_kwargs"]["battery_throughput_penalty"] == 0.05
@@ -320,7 +324,7 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     validate_config(flex_config)
     assert flex_config["simulator"]["reward_function"] == "CostServiceCommunityPeakDeadlineRewardV52"
     assert flex_config["simulator"]["reward_function_kwargs"]["community_peak_import_penalty"] == 0.002
-    assert flex_config["algorithm"]["exploration"]["params"]["actor_ev_v2g_action_mass_penalty"] == 0.8
+    assert _alg(flex_config)["exploration"]["params"]["actor_ev_v2g_action_mass_penalty"] == 0.8
 
     flex_followup_rows = generate_w6_configs(
         output_dir=tmp_path / "flex_followups",
@@ -336,14 +340,14 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     validate_config(storage_tight_config)
     assert storage_tight_config["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV46"
     assert storage_tight_config["simulator"]["reward_function_kwargs"]["battery_throughput_penalty"] == 0.014
-    assert storage_tight_config["algorithm"]["exploration"]["params"]["actor_storage_action_l2_penalty"] == 0.014
+    assert _alg(storage_tight_config)["exploration"]["params"]["actor_storage_action_l2_penalty"] == 0.014
 
     v2g_open = next(row for row in flex_followup_rows if row["recipe"] == "w6_flex_v2g_open_value")
     v2g_open_config = _load(Path(v2g_open["config_path"]))
     validate_config(v2g_open_config)
     assert v2g_open_config["simulator"]["reward_function"] == "CostServiceCommunityPeakDeadlineRewardV52"
     assert v2g_open_config["simulator"]["reward_function_kwargs"]["ev_v2g_service_penalty"] == 2000.0
-    assert v2g_open_config["algorithm"]["exploration"]["params"]["actor_ev_v2g_action_mass_penalty"] == 0.45
+    assert _alg(v2g_open_config)["exploration"]["params"]["actor_ev_v2g_action_mass_penalty"] == 0.45
 
     ev_repair_rows = generate_w6_configs(
         output_dir=tmp_path / "ev_repair",
@@ -354,7 +358,7 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     )
     ev_repair_config = _load(Path(ev_repair_rows[0]["config_path"]))
     validate_config(ev_repair_config)
-    ev_repair_exploration = ev_repair_config["algorithm"]["exploration"]["params"]
+    ev_repair_exploration = _alg(ev_repair_config)["exploration"]["params"]
     assert ev_repair_exploration["warm_start_policy_phaseout_steps"] == 8192
     assert ev_repair_exploration["actor_behavior_cloning_weight"] == 0.68
     assert ev_repair_exploration["actor_behavior_cloning_min_weight"] == 0.52
@@ -379,7 +383,7 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
         Path(next(row for row in ev_repair_followup_rows if row["recipe"] == "w6_flex_ev_gate_repair_mid_bc")["config_path"])
     )
     validate_config(mid_config)
-    mid_exploration = mid_config["algorithm"]["exploration"]["params"]
+    mid_exploration = _alg(mid_config)["exploration"]["params"]
     assert mid_exploration["actor_behavior_cloning_weight"] == 0.56
     assert mid_exploration["actor_ev_behavior_cloning_multiplier"] == 22.0
     assert mid_exploration["warm_start_policy_phaseout_steps"] == 6144
@@ -389,14 +393,14 @@ def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     )
     validate_config(cost_push_config)
     assert cost_push_config["simulator"]["reward_function_kwargs"]["community_settlement_cost_weight"] == 1.24
-    assert cost_push_config["algorithm"]["exploration"]["params"]["actor_policy_loss_weight"] == 0.026
+    assert _alg(cost_push_config)["exploration"]["params"]["actor_policy_loss_weight"] == 0.026
 
     policy_open_config = _load(
         Path(next(row for row in ev_repair_followup_rows if row["recipe"] == "w6_flex_ev_gate_repair_policy_open")["config_path"])
     )
     validate_config(policy_open_config)
-    assert policy_open_config["algorithm"]["exploration"]["params"]["warm_start_policy_phaseout_steps"] == 3072
-    assert policy_open_config["algorithm"]["exploration"]["params"]["actor_behavior_cloning_extra_updates"] == 2
+    assert _alg(policy_open_config)["exploration"]["params"]["warm_start_policy_phaseout_steps"] == 3072
+    assert _alg(policy_open_config)["exploration"]["params"]["actor_behavior_cloning_extra_updates"] == 2
 
     precision = next(row for row in rows if row["recipe"] == "w6_clone_cost_v47_precision")
     precision_config = _load(Path(precision["config_path"]))
@@ -420,9 +424,9 @@ def test_w6c_full_year_matrix_generates_maddpg_and_matd3_remote_configs(tmp_path
     config = _load(Path(matd3["config_path"]))
     validate_config(config)
 
-    assert config["algorithm"]["name"] == "MATD3"
-    assert config["algorithm"]["hyperparameters"]["require_cuda"] is True
-    exploration = config["algorithm"]["exploration"]["params"]
+    assert _alg(config)["algorithm"] == "MATD3"
+    assert _alg(config)["hyperparameters"]["require_cuda"] is True
+    exploration = _alg(config)["exploration"]["params"]
     assert exploration["target_policy_smoothing"] is True
     assert exploration["actor_update_interval"] == 2
     assert exploration["n_step_returns"] == 8
@@ -457,6 +461,6 @@ def test_w6a_local_allows_explicit_matd3_comparator(tmp_path):
     assert len(rows) == 4
     config = _load(Path(rows[0]["config_path"]))
     validate_config(config)
-    assert config["algorithm"]["name"] == "MATD3"
-    assert config["algorithm"]["hyperparameters"]["require_cuda"] is False
-    assert config["algorithm"]["exploration"]["params"]["target_policy_smoothing"] is True
+    assert _alg(config)["algorithm"] == "MATD3"
+    assert _alg(config)["hyperparameters"]["require_cuda"] is False
+    assert _alg(config)["exploration"]["params"]["target_policy_smoothing"] is True

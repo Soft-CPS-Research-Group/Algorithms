@@ -62,8 +62,8 @@ training:
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
-
-algorithm:
-  name: "RandomPolicy"
+pipeline:
+- algorithm: RandomPolicy
+  count: 1
   hyperparameters:
     seed: 123

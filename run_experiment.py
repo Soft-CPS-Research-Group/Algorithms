@@ -23,14 +23,15 @@ from reward_function.registry import (
     REWARD_FUNCTION_MAP,
     get_available_reward_function_names,
 )
-from algorithms.agents.base_agent import BaseAgent
+from algorithms.execution_unit import ExecutionUnit
 from algorithms.registry import (
+    ENCODED_OBSERVATION_ALGORITHMS,
+    build_execution_unit,
     build_unsupported_algorithm_message,
-    create_agent,
-    is_algorithm_supported,
 )
 from utils.helpers import set_default_config
 from utils.mlflow_helper import end_mlflow_run, start_mlflow_run
+from utils.pipeline_utils import summarise_pipeline_algorithms
 from utils.wrapper_citylearn import Wrapper_CityLearn as Wrapper
 from utils.artifact_manifest import build_manifest, write_manifest
 from utils.bundle_validator import validate_bundle_contract
@@ -198,8 +199,7 @@ def _resolve_agent_observation_dimensions(wrapper: Any, algorithm_name: Optional
     wrapper behavior.
     """
     fallback = list(getattr(wrapper, "observation_dimension", []) or [])
-    encoded_observation_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
-    if str(algorithm_name or "").strip() not in encoded_observation_algorithms:
+    if str(algorithm_name or "").strip() not in ENCODED_OBSERVATION_ALGORITHMS:
         return fallback
 
     get_encoded = getattr(wrapper, "get_encoded_observations", None)
@@ -305,7 +305,7 @@ def _build_mlflow_run_url(base_url: Optional[str], experiment_id: Optional[str],
 def _build_mlflow_tags(config: dict[str, Any], *, job_id: str, run_name: str, config_hash: str, git_sha: Optional[str]) -> dict[str, str]:
     simulator_cfg = config.get("simulator", {})
     dataset_name = simulator_cfg.get("dataset_name") or simulator_cfg.get("dataset_path") or "unknown_dataset"
-    algorithm_name = (config.get("algorithm", {}) or {}).get("name", "unknown_algorithm")
+    algorithm_name = summarise_pipeline_algorithms(config) or "unknown_algorithm"
     tags: dict[str, str] = {
         "opeva.job_id": str(job_id),
         "opeva.algorithm": str(algorithm_name),
@@ -345,16 +345,16 @@ def _build_checkpoint_artifact_candidates(checkpoint_artifact: str) -> list[str]
     return deduplicated
 
 
-def _agent_supports_checkpoint_loading(agent: BaseAgent) -> bool:
-    """Return whether the agent overrides ``BaseAgent.load_checkpoint``."""
+def _agent_supports_checkpoint_loading(agent: ExecutionUnit) -> bool:
+    """Return whether the unit overrides the default ``load_checkpoint``."""
     load_checkpoint = getattr(type(agent), "load_checkpoint", None)
     if load_checkpoint is None:
         return False
-    return load_checkpoint is not BaseAgent.load_checkpoint
+    return load_checkpoint is not ExecutionUnit.load_checkpoint
 
 
 def _resolve_best_checkpoint_run_id(
-    agent: BaseAgent,
+    agent: ExecutionUnit,
     *,
     experiment_name: Optional[str],
 ) -> Optional[str]:
@@ -435,7 +435,7 @@ def _resolve_local_checkpoint_path(
 
 def _resume_agent_from_checkpoint(
     *,
-    agent: BaseAgent,
+    agent: ExecutionUnit,
     config: dict[str, Any],
     tracking_uri: str,
     checkpoints_dir: Path,
@@ -498,11 +498,21 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         raise SystemExit(1) from exc
 
     config = config_model.to_dict()
-    algorithm_name = (config.get("algorithm", {}) or {}).get("name")
-    if not is_algorithm_supported(algorithm_name):
-        message = build_unsupported_algorithm_message(algorithm_name)
+    pipeline_cfg = config.get("pipeline") or []
+    if not pipeline_cfg:
+        message = build_unsupported_algorithm_message(None)
         logger.error(message)
         raise ValueError(message)
+    # Derive the algorithm name used for observation-dimension resolution.
+    # Prefer the first neural stage (needs encoded obs); fall back to first stage.
+    algorithm_name: Optional[str] = next(
+        (
+            stage.get("algorithm")
+            for stage in pipeline_cfg
+            if isinstance(stage, dict) and stage.get("algorithm") in ENCODED_OBSERVATION_ALGORITHMS
+        ),
+        pipeline_cfg[0].get("algorithm") if pipeline_cfg and isinstance(pipeline_cfg[0], dict) else None,
+    )
 
     metadata = config.get("metadata", {})
     if not isinstance(metadata, dict):
@@ -725,7 +735,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         _write_resolved_config(config, resolved_config_path)
         logger.info("Resolved runtime config written to {}", resolved_config_path)
 
-        agent = create_agent(config=config)
+        agent = build_execution_unit(config=config)
         wrapper.set_model(agent)
         _resume_agent_from_checkpoint(
             agent=agent,

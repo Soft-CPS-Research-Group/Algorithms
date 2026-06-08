@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Literal
 
+# Imported here to avoid circular imports — registry imports from agents,
+# agents do not import from config_schema.
+from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
+
 
 class MetadataConfig(BaseModel):
     experiment_name: str = Field(..., min_length=1, description="Name registered in MLflow")
@@ -464,7 +468,8 @@ class TopologyConfig(BaseModel):
 
 
 class ActorCriticAlgorithmConfig(BaseModel):
-    name: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
+    algorithm: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
     hyperparameters: AlgorithmHyperparameters
     networks: AlgorithmNetworks
     replay_buffer: ReplayBufferConfig
@@ -472,7 +477,7 @@ class ActorCriticAlgorithmConfig(BaseModel):
 
 
 class RuleBasedAlgorithmConfig(BaseModel):
-    name: Literal[
+    algorithm: Literal[
         "RuleBasedPolicy",
         "RandomPolicy",
         "NormalPolicy",
@@ -481,18 +486,39 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "RBCCommunityPolicy",
         "RBCSmartPolicy",
     ]
+    count: int = Field(default=1, ge=1)
     hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
 
 
-class SingleAgentRLAlgorithmConfig(BaseModel):
-    name: Literal["SingleAgentRL"]
+class SingleAgentRLStageConfig(BaseModel):
+    """Pipeline stage placeholder for SingleAgentRL (no runtime impl yet)."""
+
+    algorithm: Literal["SingleAgentRL"]
+    count: int = Field(default=1, ge=1)
     hyperparameters: AlgorithmHyperparameters
     policy: Optional[str] = Field(default=None, description="Identifier for the policy architecture")
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
+
+    @model_validator(mode="after")
+    def reject_placeholder(self) -> "SingleAgentRLStageConfig":
+        raise ValueError(
+            "Algorithm 'SingleAgentRL' is a schema placeholder and has no runtime "
+            "implementation yet. Use one of: MADDPG, MATD3, MASAC, IPPO, MAPPO, HAPPO, "
+            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartPolicy, RandomPolicy, "
+            "NormalPolicy, NormalNoBatteryPolicy."
+        )
+        return self  # unreachable; satisfies type checker
+
+
+PipelineStageConfig = Union[
+    ActorCriticAlgorithmConfig,
+    RuleBasedAlgorithmConfig,
+    SingleAgentRLStageConfig,
+]
 
 
 class DeucalionExecutionConfig(BaseModel):
@@ -584,7 +610,15 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[ActorCriticAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig]
+    pipeline: List[PipelineStageConfig] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Ordered list of execution stages. A single-element list represents "
+            "a single agent (current default). Multi-element lists describe a "
+            "vertical hierarchy (top stage feeds context to the next)."
+        ),
+    )
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
@@ -592,14 +626,15 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
-        fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
+        stage_names = {stage.algorithm for stage in self.pipeline}
+        conflicting = stage_names & ENCODED_OBSERVATION_ALGORITHMS
         if (
-            self.algorithm.name in fixed_topology_algorithms
+            conflicting
             and self.simulator.interface == "entity"
             and self.simulator.topology_mode == "dynamic"
         ):
             raise ValueError(
-                f"algorithm.name='{self.algorithm.name}' does not support simulator.interface='entity' "
+                f"Pipeline stages {sorted(conflicting)} do not support simulator.interface='entity' "
                 "with simulator.topology_mode='dynamic'."
             )
 
@@ -621,4 +656,16 @@ class ProjectConfig(BaseModel):
 
 def validate_config(raw_config: Dict[str, Any]) -> ProjectConfig:
     """Validate a raw configuration dictionary and return the structured model."""
+    if isinstance(raw_config, dict) and "algorithm" in raw_config and "pipeline" not in raw_config:
+        raise ValueError(
+            "Configuration uses the deprecated top-level 'algorithm' key. "
+            "Migrate to a 'pipeline' list, e.g.:\n\n"
+            "  pipeline:\n"
+            "    - algorithm: \"<name>\"\n"
+            "      count: 1\n"
+            "      hyperparameters: { ... }\n"
+            "      networks: { ... }   # if applicable\n"
+            "      replay_buffer: { ... }   # if applicable\n"
+            "      exploration: { ... }   # if applicable\n"
+        )
     return ProjectConfig.model_validate(raw_config)

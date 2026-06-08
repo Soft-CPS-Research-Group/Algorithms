@@ -140,27 +140,33 @@ topology:
   observation_dimensions: null
   action_dimensions: null
   action_space: null
-
-# Algorithm family and hyperparameters.
-algorithm:
-  name: "MASAC"
+execution: null
+pipeline:
+- algorithm: MASAC
+  count: 1
   hyperparameters:
     gamma: 0.995
   networks:
     actor:
-      class: "Actor"
-      layers: [1024, 512, 256]
-      lr: 5.0e-5
+      class: Actor
+      layers:
+      - 1024
+      - 512
+      - 256
+      lr: 5.0e-05
     critic:
-      class: "Critic"
-      layers: [1024, 512, 256]
-      lr: 5.0e-4
+      class: Critic
+      layers:
+      - 1024
+      - 512
+      - 256
+      lr: 0.0005
   replay_buffer:
-    class: "MultiAgentReplayBuffer"
+    class: MultiAgentReplayBuffer
     capacity: 200000
     batch_size: 256
   exploration:
-    strategy: "SAC"
+    strategy: SAC
     params:
       bias: 0.0
       sigma: 0.15
@@ -191,7 +197,7 @@ algorithm:
       actor_update_interval: 1
       target_policy_smoothing: false
       target_policy_noise: 0.05
-      target_policy_noise_clip: 0.10
+      target_policy_noise_clip: 0.1
       actor_action_l2_penalty: 0.0
       actor_action_saturation_penalty: 0.0
       actor_storage_action_l2_penalty: 0.0
@@ -205,14 +211,11 @@ algorithm:
       actor_behavior_cloning_decay_steps: 0
       reward_normalization: true
       reward_normalization_clip: 10.0
-      reward_normalization_epsilon: 1.0e-8
+      reward_normalization_epsilon: 1.0e-08
       initial_log_std: -0.5
       min_log_std: -5.0
       max_log_std: 1.0
       entropy_alpha: 0.2
       automatic_entropy_tuning: true
-      alpha_lr: 5.0e-5
+      alpha_lr: 5.0e-05
       target_entropy: null
-
-# Optional worker-specific overrides; omitted for local execution.
-execution: null

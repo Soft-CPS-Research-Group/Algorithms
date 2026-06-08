@@ -1,3 +1,4 @@
+import inspect
 import json
 import faulthandler
 import re
@@ -16,7 +17,8 @@ from citylearn.agents.rlc import RLC
 from citylearn.citylearn import CityLearnEnv
 from loguru import logger
 
-from algorithms.agents.base_agent import BaseAgent
+from algorithms.execution_unit import ExecutionUnit
+from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
 from utils.entity_adapter import EntityContractAdapter
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
@@ -131,19 +133,18 @@ class Wrapper_CityLearn(RLC):
     def __init__(
         self,
         env: CityLearnEnv,
-        model: BaseAgent = None,
+        model: Optional[ExecutionUnit] = None,
         config=None,
         job_id=None,
         progress_path=None,
         **kwargs,
     ):
-        """
-        Wrapper for CityLearn RLC that delegates custom behavior to a BaseAgent model.
+        """Wrapper for CityLearn RLC that delegates predict/update to a model.
 
-        Parameters:
-        - env: CityLearnEnv instance for the simulation environment.
-        - model: BaseAgent instance implementing custom predict and update logic.
-        - **kwargs: Additional arguments passed to the RLC constructor.
+        The ``model`` is any :class:`ExecutionUnit` — a single agent, a
+        :class:`~algorithms.pipeline.Pipeline`, or an
+        :class:`~algorithms.pipeline.Ensemble`. The wrapper interacts with
+        the same surface regardless of the underlying architecture.
         """
         config = config or {}
         self.config = config
@@ -154,7 +155,14 @@ class Wrapper_CityLearn(RLC):
             simulator_cfg.get("topology_mode", getattr(env, "topology_mode", "static"))
         ).strip().lower() or "static"
         self._entity_dynamic_mode = self._entity_interface_mode and self._entity_topology_mode == "dynamic"
-        self._algorithm_name = str((config.get("algorithm", {}) or {}).get("name", "")).strip()
+        # Names of every algorithm that appears anywhere in the pipeline.
+        # Used to gate behaviour (e.g. MADDPG cannot run with dynamic
+        # entity topology) without depending on a single-algorithm model.
+        self._algorithm_names: set[str] = {
+            str(stage.get("algorithm", "")).strip()
+            for stage in (config.get("pipeline") or [])
+            if isinstance(stage, dict) and stage.get("algorithm")
+        }
         self._entity_topology_version: Optional[int] = None
         self._entity_adapter: Optional[EntityContractAdapter] = None
         self.model = model
@@ -476,15 +484,15 @@ class Wrapper_CityLearn(RLC):
                 self.action_names = self.action_names[: len(self.action_space)]
             self.encoders = self.set_encoders()
             self._action_bounds_cache = None
-        fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
+        conflicting = self._algorithm_names & ENCODED_OBSERVATION_ALGORITHMS
         if (
             topology_changed
             and self._entity_dynamic_mode
-            and self._algorithm_name in fixed_topology_algorithms
+            and conflicting
             and previous_version is not None
         ):
             raise ValueError(
-                f"{self._algorithm_name} supports entity interface only with topology_mode='static'. "
+                f"{sorted(conflicting)} support entity interface only with topology_mode='static'. "
                 "Detected topology change during runtime."
             )
 
@@ -1030,26 +1038,31 @@ class Wrapper_CityLearn(RLC):
         if self._export_timeseries_final_episode_only:
             export_business_as_usual_timeseries = export_business_as_usual_timeseries and is_final_episode
 
-        kwargs = {
+        candidate_kwargs: Dict[str, Any] = {
             "include_business_as_usual": self._export_include_business_as_usual,
             "export_business_as_usual_timeseries": export_business_as_usual_timeseries,
             "kpi_round_decimals": self._export_kpi_round_decimals,
         }
         if not self._export_kpis_final_episode_only and episode is not None:
-            kwargs["filepath"] = f"exported_kpis_ep{episode}.csv"
+            candidate_kwargs["filepath"] = f"exported_kpis_ep{episode}.csv"
 
+        sig = inspect.signature(self.env.export_final_kpis)
+        has_var_keyword = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+        if has_var_keyword:
+            kwargs = candidate_kwargs
+        else:
+            kwargs = {k: v for k, v in candidate_kwargs.items() if k in sig.parameters}
         self.env.export_final_kpis(**kwargs)
         if not self._export_kpis_final_episode_only and is_final_episode and episode is not None:
-            final_kwargs = dict(kwargs)
-            final_kwargs.pop("filepath", None)
+            final_kwargs = {k: v for k, v in kwargs.items() if k != "filepath"}
             self.env.export_final_kpis(**final_kwargs)
 
         self._manual_kpi_exported_episodes.add(episode)
 
-    def set_model(self, model: BaseAgent):
-        """
-        Set the model after initialization.
-        """
+    def set_model(self, model: ExecutionUnit):
+        """Set the model (any :class:`ExecutionUnit`) after initialization."""
         self.model = model
         self._attach_model_environment_metadata()
 

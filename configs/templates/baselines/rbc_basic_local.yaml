@@ -53,15 +53,15 @@ training:
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
-
-algorithm:
-  name: "RBCBasicPolicy"
+pipeline:
+- algorithm: RBCBasicPolicy
+  count: 1
   hyperparameters:
     flexibility_hours: 3.0
     emergency_hours: 1.0
     flex_trickle_charge: 0.0
     emergency_charge_rate: 1.0
-    ev_price_charge_rate: 0.70
+    ev_price_charge_rate: 0.7
     ev_service_margin_rate: 0.05
     ev_service_floor_rate: 0.25
     ev_service_lookahead_hours: 4.0
@@ -71,10 +71,10 @@ algorithm:
     price_discharge_rate: 0.15
     storage_min_soc: 0.35
     storage_max_soc: 0.75
-    storage_target_soc: 0.50
-    storage_price_charge_soc_ceiling: 0.60
-    storage_price_discharge_soc_floor: 0.60
+    storage_target_soc: 0.5
+    storage_price_charge_soc_ceiling: 0.6
+    storage_price_discharge_soc_floor: 0.6
     deferrable_start_action: 1.0
-    deferrable_urgency_threshold: 0.60
-    deferrable_slack_threshold: 0.40
+    deferrable_urgency_threshold: 0.6
+    deferrable_slack_threshold: 0.4
     deferrable_safety_margin_steps: 1.0
