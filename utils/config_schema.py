@@ -335,6 +335,7 @@ class NetworkConfig(BaseModel):
     state_layers: Optional[List[int]] = None
     action_layers: Optional[List[int]] = None
     joint_layers: Optional[List[int]] = None
+    head_layers: Optional[List[int]] = None
 
     @field_validator("layers")
     @classmethod
@@ -345,7 +346,7 @@ class NetworkConfig(BaseModel):
             raise ValueError("layers must be positive integers")
         return value
 
-    @field_validator("state_layers", "action_layers", "joint_layers")
+    @field_validator("state_layers", "action_layers", "joint_layers", "head_layers")
     @classmethod
     def validate_optional_layers(cls, value: Optional[List[int]]) -> Optional[List[int]]:
         if value is None:

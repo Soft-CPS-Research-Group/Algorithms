@@ -142,13 +142,14 @@ def test_actor_action_regularization_uses_normalized_bounds():
     agent.actor_action_saturation_threshold = 0.80
 
     action = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
-    action_l2, saturation_excess, storage_l2, ev_v2g_l2, ev_v2g_mass, regularization = (
+    action_l2, saturation_excess, storage_l2, storage_smoothness_l2, ev_v2g_l2, ev_v2g_mass, regularization = (
         agent._actor_action_regularization_terms(0, action)
     )
 
     assert action_l2.item() == pytest.approx(0.5, abs=1e-6)
     assert saturation_excess.item() == pytest.approx(0.02, abs=1e-6)
     assert storage_l2.item() == pytest.approx(0.0, abs=1e-6)
+    assert storage_smoothness_l2.item() == pytest.approx(0.0, abs=1e-6)
     assert ev_v2g_l2.item() == pytest.approx(0.0, abs=1e-6)
     assert ev_v2g_mass.item() == pytest.approx(0.0, abs=1e-6)
     assert regularization.item() == pytest.approx(0.054, abs=1e-6)
@@ -191,11 +192,12 @@ def test_actor_action_regularization_can_target_storage_and_ev_v2g_actions():
     agent.actor_storage_behavior_cloning_multiplier = 1.0
 
     action = torch.tensor([[0.5, -0.5, 1.0], [-0.5, 0.0, 0.0]], dtype=torch.float32)
-    _, _, storage_l2, ev_v2g_l2, ev_v2g_mass, regularization = agent._actor_action_regularization_terms(
+    _, _, storage_l2, storage_smoothness_l2, ev_v2g_l2, ev_v2g_mass, regularization = agent._actor_action_regularization_terms(
         0, action
     )
 
     assert storage_l2.item() == pytest.approx(0.25, abs=1e-6)
+    assert storage_smoothness_l2.item() == pytest.approx(0.0, abs=1e-6)
     assert ev_v2g_l2.item() == pytest.approx(0.25, abs=1e-6)
     assert ev_v2g_mass.item() == pytest.approx(0.25, abs=1e-6)
     assert regularization.item() == pytest.approx(0.150, abs=1e-6)

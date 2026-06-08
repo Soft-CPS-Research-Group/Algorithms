@@ -204,6 +204,22 @@ def test_maddpg_action_deviation_metrics_are_independent_from_penalty():
     assert residual_delta.item() > 0.0
 
 
+def test_maddpg_ev_priority_uses_departure_feasibility_features():
+    agent = MADDPG.__new__(MADDPG)
+    agent.observation_names = [[
+        "charger::connected_ev_departure_available",
+        "charger::connected_ev_departure_feasibility_ratio",
+        "charger::connected_ev_departure_energy_margin_kwh",
+    ]]
+
+    score = agent._ev_departure_service_priority_score(
+        0,
+        np.asarray([1.0, 1.15, -4.0], dtype=np.float32),
+    )
+
+    assert score > 0.0
+
+
 def test_maddpg_reward_normalization_uses_running_stats():
     agent = MADDPG.__new__(MADDPG)
     agent.reward_normalization_enabled = True

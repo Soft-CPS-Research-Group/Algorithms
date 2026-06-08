@@ -293,6 +293,7 @@ class MASAC(MADDPG):
                         _action_l2,
                         _action_saturation,
                         _storage_action_l2,
+                        _storage_smoothness_l2,
                         _ev_v2g_action_l2,
                         _ev_v2g_action_mass,
                         actor_regularization,

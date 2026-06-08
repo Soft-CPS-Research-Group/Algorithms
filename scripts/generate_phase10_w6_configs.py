@@ -90,6 +90,14 @@ class Recipe:
     actor_offline_bc_pretrain_weight: float = 1.0
     critic_action_input_mode: str = "final"
     residual_delta_l2: float = 0.0
+    actor_class: str = "Actor"
+    actor_head_layers: tuple[int, ...] = ()
+    actor_community_context_enabled: bool = False
+    actor_frame_stack_steps: int = 1
+    actor_auxiliary_loss_weight: float = 0.0
+    actor_auxiliary_hidden_layers: tuple[int, ...] = ()
+    actor_storage_smoothness_l2: float = 0.0
+    actor_storage_smoothness_deadband: float = 0.10
     note: str = ""
 
 
@@ -889,6 +897,108 @@ RECIPES: dict[str, Recipe] = {
         residual_delta_l2=0.003,
         note="W7 comparator: more policy freedom to check whether cost/self-consumption improves once EV gate repair is stable.",
     ),
+    "w7_residual_comm_ev_dense_conservative": Recipe(
+        name="w7_residual_comm_ev_dense_conservative",
+        bc_weight=0.420,
+        bc_min_weight=0.240,
+        ev_bc_multiplier=24.0,
+        storage_bc_multiplier=0.18,
+        zero_ev_target_weight=7.0,
+        storage_l2=0.006,
+        ev_v2g_l2=0.45,
+        ev_v2g_mass=0.90,
+        teacher_phaseout_steps=6144,
+        actor_policy_loss_weight=0.060,
+        actor_policy_loss_warmup_weight=0.008,
+        extra_bc_updates=3,
+        extra_bc_steps=4096,
+        reward_function="CostServiceCommunityDenseEVResidualRewardV54",
+        reward_kwargs=(
+            ("community_settlement_cost_weight", 1.18),
+            ("community_peak_import_penalty", 0.0018),
+            ("community_export_penalty", 0.00050),
+            ("ev_connected_deficit_penalty", 165.0),
+            ("ev_schedule_deficit_penalty", 1650.0),
+            ("ev_departure_deficit_penalty", 1750.0),
+            ("ev_departure_missed_penalty", 5200.0),
+            ("ev_v2g_service_penalty", 2000.0),
+            ("battery_throughput_penalty", 0.0045),
+        ),
+        reward_normalization_clip=30.0,
+        teacher_policy="RBCCommunityPolicy",
+        residual_policy_enabled=True,
+        residual_action_scale=0.04,
+        residual_action_final_scale=0.20,
+        residual_action_growth_steps=8192,
+        residual_storage_action_scale_multiplier=0.50,
+        residual_ev_action_scale_multiplier=0.32,
+        residual_deferrable_action_scale_multiplier=0.70,
+        replay_observation_event_priority_mode="combined",
+        n_step_returns=16,
+        n_step_gamma=0.997,
+        actor_policy_loss_normalization=True,
+        actor_policy_loss_normalization_max_scale=80.0,
+        actor_offline_bc_pretrain_steps=128,
+        actor_offline_bc_pretrain_weight=1.0,
+        critic_action_input_mode="final_base_delta_normalized",
+        residual_delta_l2=0.060,
+        note="W7 conservative repair: dense EV schedule reward and small residual trust region over RBCCommunity.",
+    ),
+    "w7_residual_comm_ev_dense_heads": Recipe(
+        name="w7_residual_comm_ev_dense_heads",
+        bc_weight=0.420,
+        bc_min_weight=0.240,
+        ev_bc_multiplier=24.0,
+        storage_bc_multiplier=0.18,
+        zero_ev_target_weight=7.0,
+        storage_l2=0.006,
+        ev_v2g_l2=0.45,
+        ev_v2g_mass=0.90,
+        teacher_phaseout_steps=6144,
+        actor_policy_loss_weight=0.060,
+        actor_policy_loss_warmup_weight=0.008,
+        extra_bc_updates=3,
+        extra_bc_steps=4096,
+        reward_function="CostServiceCommunityDenseEVResidualRewardV54",
+        reward_kwargs=(
+            ("community_settlement_cost_weight", 1.18),
+            ("community_peak_import_penalty", 0.0018),
+            ("community_export_penalty", 0.00050),
+            ("ev_connected_deficit_penalty", 165.0),
+            ("ev_schedule_deficit_penalty", 1650.0),
+            ("ev_departure_deficit_penalty", 1750.0),
+            ("ev_departure_missed_penalty", 5200.0),
+            ("ev_v2g_service_penalty", 2000.0),
+            ("battery_throughput_penalty", 0.0045),
+        ),
+        reward_normalization_clip=30.0,
+        teacher_policy="RBCCommunityPolicy",
+        residual_policy_enabled=True,
+        residual_action_scale=0.04,
+        residual_action_final_scale=0.20,
+        residual_action_growth_steps=8192,
+        residual_storage_action_scale_multiplier=0.50,
+        residual_ev_action_scale_multiplier=0.32,
+        residual_deferrable_action_scale_multiplier=0.70,
+        replay_observation_event_priority_mode="combined",
+        n_step_returns=16,
+        n_step_gamma=0.997,
+        actor_policy_loss_normalization=True,
+        actor_policy_loss_normalization_max_scale=80.0,
+        actor_offline_bc_pretrain_steps=128,
+        actor_offline_bc_pretrain_weight=1.0,
+        critic_action_input_mode="final_base_delta_normalized",
+        residual_delta_l2=0.060,
+        actor_class="SemanticMultiHeadActor",
+        actor_head_layers=(64,),
+        actor_community_context_enabled=True,
+        actor_frame_stack_steps=3,
+        actor_auxiliary_loss_weight=0.020,
+        actor_auxiliary_hidden_layers=(64,),
+        actor_storage_smoothness_l2=0.010,
+        actor_storage_smoothness_deadband=0.18,
+        note="W7 conservative repair plus semantic actor heads, deploy-time community context, short frame stack and auxiliary temporal losses.",
+    ),
 }
 
 
@@ -1318,6 +1428,11 @@ def _build_rl_config(
             "actor_policy_loss_normalization": bool(recipe.actor_policy_loss_normalization),
             "critic_action_input_mode": recipe.critic_action_input_mode,
             "actor_residual_delta_l2_penalty": float(recipe.residual_delta_l2),
+            "actor_class": recipe.actor_class,
+            "actor_community_context_enabled": bool(recipe.actor_community_context_enabled),
+            "actor_frame_stack_steps": int(recipe.actor_frame_stack_steps),
+            "actor_auxiliary_loss_weight": float(recipe.actor_auxiliary_loss_weight),
+            "actor_storage_smoothness_l2_penalty": float(recipe.actor_storage_smoothness_l2),
         }
     )
     _apply_checkpointing(config)
@@ -1352,6 +1467,12 @@ def _build_rl_config(
             "joint_layers": [512, 256],
         }
     )
+    actor_cfg = algorithm.setdefault("networks", {}).setdefault("actor", {})
+    actor_cfg["class"] = str(recipe.actor_class)
+    if recipe.actor_head_layers:
+        actor_cfg["head_layers"] = [int(value) for value in recipe.actor_head_layers]
+    else:
+        actor_cfg.pop("head_layers", None)
     smoke_local = stage == "w6-smoke-local"
     replay_batch_size = 64 if smoke_local else 256
     algorithm["replay_buffer"] = {
@@ -1426,6 +1547,14 @@ def _build_rl_config(
             "actor_ev_v2g_action_l2_penalty": float(recipe.ev_v2g_l2),
             "actor_ev_v2g_action_mass_penalty": float(recipe.ev_v2g_mass),
             "actor_residual_delta_l2_penalty": float(recipe.residual_delta_l2),
+            "actor_storage_smoothness_l2_penalty": float(recipe.actor_storage_smoothness_l2),
+            "actor_storage_smoothness_deadband": float(recipe.actor_storage_smoothness_deadband),
+            "actor_community_context_enabled": bool(recipe.actor_community_context_enabled),
+            "actor_frame_stack_steps": int(recipe.actor_frame_stack_steps),
+            "actor_auxiliary_loss_weight": float(recipe.actor_auxiliary_loss_weight),
+            "actor_auxiliary_hidden_layers": [
+                int(value) for value in recipe.actor_auxiliary_hidden_layers
+            ],
             "actor_action_saturation_threshold": 0.85,
             "actor_behavior_cloning_weight": float(recipe.bc_weight),
             "actor_behavior_cloning_min_weight": float(recipe.bc_min_weight),
@@ -1483,6 +1612,11 @@ def _matrix_row(
     teacher_policy: str = "",
     critic_action_input_mode: str = "final",
     residual_delta_l2: float = 0.0,
+    actor_class: str = "Actor",
+    actor_community_context_enabled: bool = False,
+    actor_frame_stack_steps: int = 1,
+    actor_auxiliary_loss_weight: float = 0.0,
+    actor_storage_smoothness_l2: float = 0.0,
 ) -> dict[str, Any]:
     deucalion = runtime.get("deucalion") or {}
     return {
@@ -1502,6 +1636,11 @@ def _matrix_row(
         "teacher_policy": teacher_policy,
         "critic_action_input_mode": critic_action_input_mode,
         "actor_residual_delta_l2_penalty": residual_delta_l2,
+        "actor_class": actor_class,
+        "actor_community_context_enabled": actor_community_context_enabled,
+        "actor_frame_stack_steps": actor_frame_stack_steps,
+        "actor_auxiliary_loss_weight": actor_auxiliary_loss_weight,
+        "actor_storage_smoothness_l2_penalty": actor_storage_smoothness_l2,
         "deucalion_partition": deucalion.get("partition", ""),
         "deucalion_time": deucalion.get("time", ""),
         "deucalion_cpus_per_task": deucalion.get("cpus_per_task", ""),
@@ -1638,6 +1777,11 @@ def generate_w6_configs(
                                 teacher_policy=recipe.teacher_policy,
                                 critic_action_input_mode=recipe.critic_action_input_mode,
                                 residual_delta_l2=recipe.residual_delta_l2,
+                                actor_class=recipe.actor_class,
+                                actor_community_context_enabled=recipe.actor_community_context_enabled,
+                                actor_frame_stack_steps=recipe.actor_frame_stack_steps,
+                                actor_auxiliary_loss_weight=recipe.actor_auxiliary_loss_weight,
+                                actor_storage_smoothness_l2=recipe.actor_storage_smoothness_l2,
                             )
                         )
 
@@ -1659,6 +1803,11 @@ def generate_w6_configs(
             "teacher_policy",
             "critic_action_input_mode",
             "actor_residual_delta_l2_penalty",
+            "actor_class",
+            "actor_community_context_enabled",
+            "actor_frame_stack_steps",
+            "actor_auxiliary_loss_weight",
+            "actor_storage_smoothness_l2_penalty",
             "deucalion_partition",
             "deucalion_time",
             "deucalion_cpus_per_task",

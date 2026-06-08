@@ -12,7 +12,7 @@ from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.agents.matd3_agent import MATD3
 from algorithms.agents.masac_agent import MASAC
 from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO
-from algorithms.utils.networks import LateFusionCritic
+from algorithms.utils.networks import LateFusionCritic, MultiHeadActor, SemanticMultiHeadActor
 from algorithms.registry import create_agent, is_algorithm_supported
 from utils.config_schema import validate_config
 
@@ -156,6 +156,41 @@ def test_centralized_critic_respects_configured_late_fusion_class(agent_cls):
     agent = agent_cls(config)
 
     assert isinstance(agent.critics[0], LateFusionCritic)
+
+
+@pytest.mark.parametrize("agent_cls", [MADDPG, MATD3])
+def test_maddpg_family_respects_configured_multi_head_actor(agent_cls):
+    config = _base_rl_config(agent_cls.__name__)
+    config["algorithm"]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
+    config["algorithm"]["networks"]["actor"].update(
+        {
+            "class": "MultiHeadActor",
+            "head_layers": [8],
+        }
+    )
+
+    agent = agent_cls(config)
+
+    assert isinstance(agent.actors[0], MultiHeadActor)
+
+
+@pytest.mark.parametrize("agent_cls", [MADDPG, MATD3])
+def test_maddpg_family_rebuilds_semantic_actor_after_environment_attach(agent_cls):
+    config = _base_rl_config(agent_cls.__name__)
+    config["algorithm"]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
+    config["algorithm"]["networks"]["actor"].update(
+        {
+            "class": "SemanticMultiHeadActor",
+            "head_layers": [8],
+        }
+    )
+
+    agent = agent_cls(config)
+    _attach_bounds(agent)
+
+    assert isinstance(agent.actors[0], SemanticMultiHeadActor)
+    assert agent.actors[0].group_indices == [[0]]
+    assert agent.actors[1].group_indices == [[0], [1]]
 
 
 @pytest.mark.parametrize("algorithm_name", ["MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"])

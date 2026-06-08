@@ -9,6 +9,7 @@ from reward_function.cost_hard_constraint_reward import (
     CostServiceCommunityFeasiblePrecisionRewardV46,
     CostServiceCommunityFeasiblePrecisionRewardV47,
     CostServiceCommunityDeadlineValueRewardV50,
+    CostServiceCommunityDenseEVResidualRewardV54,
     CostServiceCommunityPeakDeadlineRewardV52,
     CostServiceCommunityPrecisionValueRewardV51,
     CostServiceCommunityResidualConstraintRewardV53,
@@ -38,6 +39,7 @@ __all__ = [
     "CostServiceCommunityPrecisionValueRewardV51",
     "CostServiceCommunityPeakDeadlineRewardV52",
     "CostServiceCommunityResidualConstraintRewardV53",
+    "CostServiceCommunityDenseEVResidualRewardV54",
     "CostMinimizationReward",
     "V2GPenaltyReward",
 ]

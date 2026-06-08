@@ -190,6 +190,46 @@ def test_w6_remote_smoke_can_generate_w7_matd3_residual_repair(tmp_path):
     assert exploration["n_step_returns"] == 12
 
 
+def test_w6_remote_smoke_can_generate_w7_dense_conservative_and_headed_variants(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6b-remote-smoke",
+        seeds=[123],
+        recipes=[
+            "w7_residual_comm_ev_dense_conservative",
+            "w7_residual_comm_ev_dense_heads",
+        ],
+        algorithms=["MATD3"],
+        include_baselines=False,
+    )
+
+    assert len(rows) == 2
+
+    conservative = next(row for row in rows if row["recipe"] == "w7_residual_comm_ev_dense_conservative")
+    conservative_config = _load(Path(conservative["config_path"]))
+    validate_config(conservative_config)
+    assert conservative_config["simulator"]["reward_function"] == "CostServiceCommunityDenseEVResidualRewardV54"
+    assert conservative_config["simulator"]["reward_function_kwargs"]["ev_schedule_deficit_penalty"] == 1650.0
+    assert conservative_config["algorithm"]["networks"]["actor"]["class"] == "Actor"
+    conservative_exploration = conservative_config["algorithm"]["exploration"]["params"]
+    assert conservative_exploration["residual_action_final_scale"] == 0.20
+    assert conservative_exploration["residual_ev_action_scale_multiplier"] == 0.32
+    assert conservative_exploration["actor_residual_delta_l2_penalty"] == 0.06
+    assert conservative_exploration["n_step_returns"] == 16
+
+    headed = next(row for row in rows if row["recipe"] == "w7_residual_comm_ev_dense_heads")
+    headed_config = _load(Path(headed["config_path"]))
+    validate_config(headed_config)
+    assert headed_config["algorithm"]["networks"]["actor"]["class"] == "SemanticMultiHeadActor"
+    assert headed_config["algorithm"]["networks"]["actor"]["head_layers"] == [64]
+    assert headed_config["tracking"]["tags"]["actor_class"] == "SemanticMultiHeadActor"
+    headed_exploration = headed_config["algorithm"]["exploration"]["params"]
+    assert headed_exploration["actor_community_context_enabled"] is True
+    assert headed_exploration["actor_frame_stack_steps"] == 3
+    assert headed_exploration["actor_auxiliary_loss_weight"] == 0.020
+    assert headed_exploration["actor_storage_smoothness_l2_penalty"] == 0.010
+
+
 def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     rows = generate_w6_configs(
         output_dir=tmp_path,

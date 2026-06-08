@@ -22,6 +22,8 @@ def test_reward_registry_contains_expected_reward_functions():
     assert "CostServiceCommunityDeadlineValueRewardV50" in names
     assert "CostServiceCommunityPrecisionValueRewardV51" in names
     assert "CostServiceCommunityPeakDeadlineRewardV52" in names
+    assert "CostServiceCommunityResidualConstraintRewardV53" in names
+    assert "CostServiceCommunityDenseEVResidualRewardV54" in names
 
     assert REWARD_FUNCTION_MAP["CostMinimizationReward"].__name__ == "CostMinimizationReward"
     assert REWARD_FUNCTION_MAP["CostHardConstraintReward"].__name__ == "CostHardConstraintReward"
@@ -56,4 +58,12 @@ def test_reward_registry_contains_expected_reward_functions():
     assert (
         REWARD_FUNCTION_MAP["CostServiceCommunityPeakDeadlineRewardV52"].__name__
         == "CostServiceCommunityPeakDeadlineRewardV52"
+    )
+    assert (
+        REWARD_FUNCTION_MAP["CostServiceCommunityResidualConstraintRewardV53"].__name__
+        == "CostServiceCommunityResidualConstraintRewardV53"
+    )
+    assert (
+        REWARD_FUNCTION_MAP["CostServiceCommunityDenseEVResidualRewardV54"].__name__
+        == "CostServiceCommunityDenseEVResidualRewardV54"
     )

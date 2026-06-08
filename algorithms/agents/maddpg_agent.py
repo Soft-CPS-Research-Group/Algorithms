@@ -18,7 +18,7 @@ from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.constants import DEFAULT_ONNX_OPSET
-from algorithms.utils.networks import Actor, build_critic_network
+from algorithms.utils.networks import build_actor_network, build_critic_network
 from algorithms.utils.replay_buffer import (
     MultiAgentReplayBuffer,
     PrioritizedReplayBuffer,
@@ -202,6 +202,48 @@ class MADDPG(BaseAgent):
             0.0,
             float(exploration_cfg.get("actor_residual_delta_l2_penalty", 0.0) or 0.0),
         )
+        self.actor_storage_smoothness_l2_penalty = max(
+            0.0,
+            float(exploration_cfg.get("actor_storage_smoothness_l2_penalty", 0.0) or 0.0),
+        )
+        self.actor_storage_smoothness_deadband = max(
+            0.0,
+            float(exploration_cfg.get("actor_storage_smoothness_deadband", 0.10) or 0.10),
+        )
+        self.actor_community_context_enabled = bool(
+            exploration_cfg.get("actor_community_context_enabled", False)
+        )
+        self.actor_community_context_features = tuple(
+            str(value)
+            for value in (
+                exploration_cfg.get("actor_community_context_features")
+                or (
+                    "community_net_power",
+                    "community_import_power",
+                    "community_export_power",
+                    "community_pv_power",
+                    "community_ev_power",
+                    "community_bess_power",
+                    "community_headroom",
+                    "community_export_headroom",
+                    "ev_departure_pressure",
+                    "storage_soc_mean",
+                )
+            )
+        )
+        self.actor_frame_stack_steps = max(
+            1,
+            int(exploration_cfg.get("actor_frame_stack_steps", 1) or 1),
+        )
+        self.actor_auxiliary_loss_weight = max(
+            0.0,
+            float(exploration_cfg.get("actor_auxiliary_loss_weight", 0.0) or 0.0),
+        )
+        self.actor_auxiliary_hidden_layers = [
+            int(value)
+            for value in (exploration_cfg.get("actor_auxiliary_hidden_layers") or [])
+            if int(value) > 0
+        ]
         self.actor_action_saturation_threshold = float(
             np.clip(float(exploration_cfg.get("actor_action_saturation_threshold", 0.85) or 0.85), 0.0, 1.0)
         )
@@ -486,10 +528,27 @@ class MADDPG(BaseAgent):
         if self.num_agents is None or self.observation_dimension is None or self.action_dimension is None:
             raise ValueError("Topology information (num_agents / observation_dimensions / action_dimensions) is required for MADDPG.")
 
+        self._base_observation_dimension = [int(value) for value in self.observation_dimension]
+        self._actor_community_context_dim = (
+            len(self.actor_community_context_features) if self.actor_community_context_enabled else 0
+        )
+        self._actor_core_observation_dimension = [
+            dim + self._actor_community_context_dim for dim in self._base_observation_dimension
+        ]
+        self.observation_dimension = [
+            dim * self.actor_frame_stack_steps for dim in self._actor_core_observation_dimension
+        ]
+
         self.action_low, self.action_high = self._default_action_bounds()
         self.action_names: List[List[str]] = [[] for _ in range(int(self.num_agents))]
         self.observation_names: List[List[str]] = [[] for _ in range(int(self.num_agents))]
         self.observation_space: List[Any] = []
+        self._actor_observation_history: List[deque] = [
+            deque(maxlen=max(0, self.actor_frame_stack_steps - 1))
+            for _ in range(int(self.num_agents))
+        ]
+        self._last_actor_core_observations: Optional[List[np.ndarray]] = None
+        self._last_augmented_policy_observations: Optional[List[np.ndarray]] = None
         self._latest_raw_observations: Optional[List[np.ndarray]] = None
         self._latest_raw_next_observations: Optional[List[np.ndarray]] = None
         self._latest_encoded_observations: Optional[List[np.ndarray]] = None
@@ -592,6 +651,7 @@ class MADDPG(BaseAgent):
             highs[agent_idx] = high
         self.action_low = lows
         self.action_high = highs
+        self._rebuild_actor_networks_for_semantic_heads_if_needed()
         self._configure_replay_behavior_action_priority()
         self._initialize_warm_start_policy(
             observation_names=observation_names,
@@ -601,6 +661,36 @@ class MADDPG(BaseAgent):
             metadata=metadata,
         )
         self._apply_noop_actor_initialization()
+
+    def _rebuild_actor_networks_for_semantic_heads_if_needed(self) -> None:
+        if not hasattr(self, "config"):
+            return
+        actor_cfg = self.config["algorithm"]["networks"].get("actor", {})
+        class_name = str(actor_cfg.get("class") or actor_cfg.get("class_name") or "Actor")
+        if class_name != "SemanticMultiHeadActor":
+            return
+        if getattr(self, "_semantic_actor_layout_attached", False):
+            return
+        if not getattr(self, "action_names", None):
+            return
+
+        self.actors = []
+        self.actor_targets = []
+        self.actor_aux_heads = []
+        for agent_idx in range(self.num_agents):
+            cfg = self._actor_network_config_for_agent(agent_idx)
+            state_size = int(self.observation_dimension[agent_idx])
+            action_size = int(self.action_dimension[agent_idx])
+            actor = build_actor_network(state_size, action_size, self.seed, cfg).to(self.device)
+            actor_target = build_actor_network(state_size, action_size, self.seed, cfg).to(self.device)
+            actor_target.load_state_dict(actor.state_dict())
+            self.actors.append(actor)
+            self.actor_targets.append(actor_target)
+            self.actor_aux_heads.append(self._build_actor_auxiliary_head(actor).to(self.device))
+        self.actor_optimizers = self._initialize_actor_optimizers()
+        self._noop_actor_initialized = False
+        self._semantic_actor_layout_attached = True
+        logger.info("Rebuilt MADDPG actors with semantic action heads from environment action metadata.")
 
     def _configure_replay_behavior_action_priority(self) -> None:
         replay_buffer = getattr(self, "replay_buffer", None)
@@ -738,6 +828,209 @@ class MADDPG(BaseAgent):
             self._latest_raw_next_observations,
         )
 
+    def _prepare_policy_actor_observations(self, observations: List[Any]) -> List[np.ndarray]:
+        if self._observations_look_augmented(observations):
+            return [np.asarray(obs, dtype=np.float32).reshape(-1) for obs in observations]
+
+        core_observations = self._actor_core_observations(observations)
+        augmented = [
+            self._stack_actor_core_observation(agent_idx, core)
+            for agent_idx, core in enumerate(core_observations)
+        ]
+        self._last_actor_core_observations = [core.copy() for core in core_observations]
+        self._last_augmented_policy_observations = [obs.copy() for obs in augmented]
+
+        for agent_idx, core in enumerate(core_observations):
+            if agent_idx < len(self._actor_observation_history):
+                self._actor_observation_history[agent_idx].appendleft(core.copy())
+
+        return augmented
+
+    def _prepare_transition_actor_observations(
+        self,
+        observations: List[Any],
+        next_observations: List[Any],
+        *,
+        done: bool,
+    ) -> tuple[List[np.ndarray], List[np.ndarray]]:
+        if self._observations_look_augmented(observations):
+            current_augmented = [np.asarray(obs, dtype=np.float32).reshape(-1) for obs in observations]
+        elif self._last_augmented_policy_observations is not None:
+            current_augmented = [obs.copy() for obs in self._last_augmented_policy_observations]
+        else:
+            current_core = self._actor_core_observations(observations)
+            current_augmented = [
+                self._stack_actor_core_observation(agent_idx, core)
+                for agent_idx, core in enumerate(current_core)
+            ]
+            for agent_idx, core in enumerate(current_core):
+                if agent_idx < len(self._actor_observation_history):
+                    self._actor_observation_history[agent_idx].appendleft(core.copy())
+
+        if self._observations_look_augmented(next_observations):
+            next_augmented = [np.asarray(obs, dtype=np.float32).reshape(-1) for obs in next_observations]
+        else:
+            next_core = self._actor_core_observations(next_observations)
+            next_augmented = [
+                self._stack_actor_core_observation(agent_idx, core)
+                for agent_idx, core in enumerate(next_core)
+            ]
+
+        self._last_augmented_policy_observations = None
+        self._last_actor_core_observations = None
+        if done:
+            self._clear_actor_observation_history()
+
+        return current_augmented, next_augmented
+
+    def _clear_actor_observation_history(self) -> None:
+        for history in getattr(self, "_actor_observation_history", []):
+            history.clear()
+
+    def _observations_look_augmented(self, observations: List[Any]) -> bool:
+        if not observations:
+            return False
+        if len(observations) != len(self.observation_dimension):
+            return False
+        return all(
+            np.asarray(obs).reshape(-1).shape[0] == int(self.observation_dimension[agent_idx])
+            for agent_idx, obs in enumerate(observations)
+        )
+
+    def _actor_core_observations(self, observations: List[Any]) -> List[np.ndarray]:
+        base_observations = [
+            np.nan_to_num(np.asarray(obs, dtype=np.float32).reshape(-1), nan=0.0, posinf=0.0, neginf=0.0)
+            for obs in observations
+        ]
+        if not self.actor_community_context_enabled:
+            return base_observations
+
+        context = self._community_context_vector(base_observations)
+        return [
+            np.concatenate((obs, context.astype(np.float32, copy=False))).astype(np.float32, copy=False)
+            for obs in base_observations
+        ]
+
+    def _stack_actor_core_observation(self, agent_idx: int, core_observation: np.ndarray) -> np.ndarray:
+        core = np.asarray(core_observation, dtype=np.float32).reshape(-1)
+        frame_stack = int(getattr(self, "actor_frame_stack_steps", 1) or 1)
+        if frame_stack <= 1:
+            return core
+
+        expected_core_dim = int(self._actor_core_observation_dimension[agent_idx])
+        if core.shape[0] != expected_core_dim:
+            core = self._resize_vector(core, expected_core_dim)
+        frames = [core]
+        history = self._actor_observation_history[agent_idx] if agent_idx < len(self._actor_observation_history) else []
+        for previous in list(history)[: frame_stack - 1]:
+            frames.append(self._resize_vector(previous, expected_core_dim))
+        while len(frames) < frame_stack:
+            frames.append(np.zeros(expected_core_dim, dtype=np.float32))
+        return np.concatenate(frames).astype(np.float32, copy=False)
+
+    @staticmethod
+    def _resize_vector(values: Any, expected_dim: int) -> np.ndarray:
+        array = np.nan_to_num(np.asarray(values, dtype=np.float32).reshape(-1), nan=0.0, posinf=0.0, neginf=0.0)
+        if array.shape[0] == expected_dim:
+            return array
+        resized = np.zeros(expected_dim, dtype=np.float32)
+        count = min(expected_dim, array.shape[0])
+        if count > 0:
+            resized[:count] = array[:count]
+        return resized
+
+    def _community_context_vector(self, observations: List[np.ndarray]) -> np.ndarray:
+        values = []
+        for feature in self.actor_community_context_features:
+            values.append(self._community_context_feature_value(feature, observations))
+        return np.clip(np.asarray(values, dtype=np.float32), -5.0, 5.0)
+
+    def _community_context_feature_value(self, feature: str, observations: List[np.ndarray]) -> float:
+        key = str(feature).strip().lower()
+        if key == "community_net_power":
+            return self._named_observation_aggregate(observations, ("community_net_power",), mode="mean")
+        if key == "community_import_power":
+            return self._named_observation_aggregate(observations, ("community_import_power",), mode="mean")
+        if key == "community_export_power":
+            return self._named_observation_aggregate(observations, ("community_export_power",), mode="mean")
+        if key == "community_pv_power":
+            return self._named_observation_aggregate(observations, ("community_pv_power",), mode="mean")
+        if key == "community_ev_power":
+            return self._named_observation_aggregate(observations, ("community_ev_power",), mode="mean")
+        if key == "community_bess_power":
+            return self._named_observation_aggregate(observations, ("community_bess_power",), mode="mean")
+        if key == "community_headroom":
+            return self._named_observation_aggregate(
+                observations,
+                ("community_building_headroom", "community_phase_headroom"),
+                mode="min",
+            )
+        if key == "community_export_headroom":
+            return self._named_observation_aggregate(
+                observations,
+                ("community_building_export_headroom", "community_phase_export_headroom"),
+                mode="min",
+            )
+        if key == "ev_departure_pressure":
+            return self._ev_departure_pressure_context(observations)
+        if key == "storage_soc_mean":
+            return self._named_observation_aggregate(
+                observations,
+                ("storage::", "soc"),
+                mode="mean",
+                require_all_tokens=True,
+            )
+        return self._named_observation_aggregate(observations, (key,), mode="mean")
+
+    def _named_observation_aggregate(
+        self,
+        observations: List[np.ndarray],
+        tokens: tuple[str, ...],
+        *,
+        mode: str,
+        require_all_tokens: bool = False,
+    ) -> float:
+        candidates: List[float] = []
+        lowered_tokens = tuple(str(token).lower() for token in tokens)
+        for agent_idx, observation in enumerate(observations):
+            names = self.observation_names[agent_idx] if agent_idx < len(self.observation_names) else []
+            for obs_idx, raw_name in enumerate(names[: observation.shape[0]]):
+                name = str(raw_name).lower()
+                matched = (
+                    all(token in name for token in lowered_tokens)
+                    if require_all_tokens
+                    else any(token in name for token in lowered_tokens)
+                )
+                if not matched:
+                    continue
+                value = float(observation[obs_idx])
+                if np.isfinite(value):
+                    candidates.append(value)
+        if not candidates:
+            return 0.0
+        if mode == "min":
+            return float(np.min(candidates))
+        if mode == "max":
+            return float(np.max(candidates))
+        return float(np.mean(candidates))
+
+    def _ev_departure_pressure_context(self, observations: List[np.ndarray]) -> float:
+        pressures: List[float] = []
+        for agent_idx, observation in enumerate(observations):
+            names = self.observation_names[agent_idx] if agent_idx < len(self.observation_names) else []
+            for obs_idx, raw_name in enumerate(names[: observation.shape[0]]):
+                name = str(raw_name).lower()
+                value = float(observation[obs_idx])
+                if not np.isfinite(value):
+                    continue
+                if "departure_feasibility" in name:
+                    pressures.append(float(np.clip(value - 0.85, 0.0, 0.5) / 0.5))
+                elif "departure_energy_margin" in name:
+                    pressures.append(float(np.clip(-value / 20.0, 0.0, 1.0)))
+                elif "connected_ev_soc_error_signed" in name or "incoming_ev_soc_error_signed" in name:
+                    pressures.append(float(np.clip(-value, 0.0, 1.0)))
+        return float(np.max(pressures)) if pressures else 0.0
+
     def _apply_noop_actor_initialization(self) -> None:
         if not getattr(self, "noop_actor_initialization", False) or getattr(self, "_noop_actor_initialized", False):
             return
@@ -747,10 +1040,28 @@ class MADDPG(BaseAgent):
         for agent_idx, (actor, actor_target) in enumerate(zip(self.actors, self.actor_targets)):
             target_bias = self._noop_raw_actor_bias(agent_idx)
             for model in (actor, actor_target):
-                output_layer = getattr(model, "fc_layers", [])[-1]
+                if hasattr(model, "set_output_bias"):
+                    model.set_output_bias(
+                        torch.as_tensor(
+                            target_bias,
+                            dtype=torch.float32,
+                            device=next(model.parameters()).device,
+                        )
+                    )
+                    continue
+                output_layers = getattr(model, "fc_layers", [])
+                if not output_layers:
+                    continue
+                output_layer = output_layers[-1]
                 with torch.no_grad():
                     output_layer.weight.zero_()
-                    output_layer.bias.copy_(torch.as_tensor(target_bias, dtype=output_layer.bias.dtype, device=output_layer.bias.device))
+                    output_layer.bias.copy_(
+                        torch.as_tensor(
+                            target_bias,
+                            dtype=output_layer.bias.dtype,
+                            device=output_layer.bias.device,
+                        )
+                    )
 
         self._noop_actor_initialized = True
         logger.info("Applied MADDPG no-op-aware actor initialization.")
@@ -816,20 +1127,22 @@ class MADDPG(BaseAgent):
 
     def _initialize_networks(self):
         logger.debug("Initializing actor and critic networks.")
-        actor_fc_units = self.config["algorithm"]["networks"]["actor"]["layers"]
         critic_cfg = self.config["algorithm"]["networks"]["critic"]
 
         actors, critics, actor_targets, critic_targets = [], [], [], []
+        self.actor_aux_heads = []
         for i in range(self.num_agents):
             state_size = self.observation_dimension[i]
             action_size = self.action_dimension[i]
             global_state_size = sum(self.observation_dimension)
             global_action_size = self._critic_global_action_feature_size()
+            actor_cfg = self._actor_network_config_for_agent(i)
 
-            actors.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
+            actors.append(build_actor_network(state_size, action_size, self.seed, actor_cfg).to(self.device))
             critics.append(build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device))
-            actor_targets.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
+            actor_targets.append(build_actor_network(state_size, action_size, self.seed, actor_cfg).to(self.device))
             critic_targets.append(build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device))
+            self.actor_aux_heads.append(self._build_actor_auxiliary_head(actors[-1]).to(self.device))
 
         for actor, actor_target in zip(actors, actor_targets):
             actor_target.load_state_dict(actor.state_dict())
@@ -840,9 +1153,60 @@ class MADDPG(BaseAgent):
 
     def _initialize_optimizers(self):
         logger.debug("Initializing optimizers.")
-        actor_optimizers = [torch.optim.Adam(actor.parameters(), lr=self.lr_actor) for actor in self.actors]
+        actor_optimizers = self._initialize_actor_optimizers()
         critic_optimizers = [torch.optim.Adam(critic.parameters(), lr=self.lr_critic) for critic in self.critics]
         return actor_optimizers, critic_optimizers
+
+    def _initialize_actor_optimizers(self) -> List[torch.optim.Optimizer]:
+        actor_optimizers = []
+        aux_heads = getattr(self, "actor_aux_heads", [])
+        for agent_idx, actor in enumerate(self.actors):
+            parameters = list(actor.parameters())
+            if agent_idx < len(aux_heads):
+                parameters.extend(list(aux_heads[agent_idx].parameters()))
+            actor_optimizers.append(torch.optim.Adam(parameters, lr=self.lr_actor))
+        return actor_optimizers
+
+    def _actor_network_config_for_agent(self, agent_idx: int) -> Dict[str, Any]:
+        actor_cfg = deepcopy(self.config["algorithm"]["networks"]["actor"])
+        class_name = str(actor_cfg.get("class") or actor_cfg.get("class_name") or "Actor")
+        if class_name == "SemanticMultiHeadActor":
+            actor_cfg["action_groups"] = self._semantic_action_groups_for_agent(agent_idx)
+        return actor_cfg
+
+    def _semantic_action_groups_for_agent(self, agent_idx: int) -> Dict[str, List[int]]:
+        names = self._action_names_for_agent(agent_idx)
+        action_dim = int(self.action_dimension[agent_idx])
+        groups: Dict[str, List[int]] = {"ev": [], "storage": [], "deferrable": [], "other": []}
+        for action_idx in range(action_dim):
+            action_name = names[action_idx] if action_idx < len(names) else ""
+            if self._is_ev_action_name(action_name):
+                groups["ev"].append(action_idx)
+            elif self._is_storage_action_name(action_name):
+                groups["storage"].append(action_idx)
+            elif self._is_deferrable_action_name(action_name):
+                groups["deferrable"].append(action_idx)
+            else:
+                groups["other"].append(action_idx)
+        return groups
+
+    def _build_actor_auxiliary_head(self, actor: torch.nn.Module) -> torch.nn.Module:
+        output_dim = self._actor_auxiliary_target_dim()
+        feature_dim = int(getattr(actor, "feature_size", 0) or 0)
+        if output_dim <= 0 or self.actor_auxiliary_loss_weight <= 0.0 or feature_dim <= 0:
+            return torch.nn.Identity()
+        layers: List[torch.nn.Module] = []
+        input_dim = feature_dim
+        for hidden_dim in self.actor_auxiliary_hidden_layers:
+            layers.append(torch.nn.Linear(input_dim, hidden_dim))
+            layers.append(torch.nn.ReLU())
+            input_dim = hidden_dim
+        layers.append(torch.nn.Linear(input_dim, output_dim))
+        return torch.nn.Sequential(*layers)
+
+    @staticmethod
+    def _actor_auxiliary_target_dim() -> int:
+        return 3
 
     def update(
         self,
@@ -861,6 +1225,11 @@ class MADDPG(BaseAgent):
         logger.debug("Starting update phase.")
         update_start_time = time.time()
         update_perf_start_time = time.perf_counter()
+        observations, next_observations = self._prepare_transition_actor_observations(
+            observations,
+            next_observations,
+            done=bool(terminated or truncated),
+        )
         should_log_runtime_profile = self._should_runtime_profile_step(global_learning_step)
         runtime_profile_metrics: Dict[str, float] = {}
 
@@ -1114,9 +1483,11 @@ class MADDPG(BaseAgent):
         actor_action_l2_values: List[float] = []
         actor_action_saturation_values: List[float] = []
         actor_storage_action_l2_values: List[float] = []
+        actor_storage_smoothness_values: List[float] = []
         actor_ev_v2g_action_l2_values: List[float] = []
         actor_ev_v2g_action_mass_values: List[float] = []
         actor_residual_delta_l2_values: List[float] = []
+        actor_auxiliary_loss_values: List[float] = []
         actor_behavior_cloning_loss_values: List[float] = []
         actor_behavior_cloning_ev_loss_values: List[float] = []
         actor_behavior_cloning_storage_loss_values: List[float] = []
@@ -1185,6 +1556,7 @@ class MADDPG(BaseAgent):
                         action_l2,
                         action_saturation,
                         storage_action_l2,
+                        storage_smoothness_l2,
                         ev_v2g_action_l2,
                         ev_v2g_action_mass,
                         actor_regularization,
@@ -1192,6 +1564,13 @@ class MADDPG(BaseAgent):
                         agent_num,
                         predicted_action,
                         base_action=behavior_actions_all[agent_num],
+                        state=obs,
+                    )
+                    actor_auxiliary_loss = self._actor_auxiliary_prediction_loss(
+                        agent_num,
+                        actor,
+                        obs,
+                        next_states[agent_num],
                     )
                     behavior_cloning_loss = self._actor_behavior_cloning_loss(
                         agent_num,
@@ -1213,7 +1592,14 @@ class MADDPG(BaseAgent):
                     behavior_cloning_regularization = (
                         actor_behavior_cloning_effective_weight * behavior_cloning_loss
                     )
-                    total_regularization = actor_regularization + behavior_cloning_regularization
+                    auxiliary_regularization = (
+                        float(getattr(self, "actor_auxiliary_loss_weight", 0.0)) * actor_auxiliary_loss
+                    )
+                    total_regularization = (
+                        actor_regularization
+                        + behavior_cloning_regularization
+                        + auxiliary_regularization
+                    )
                     actor_loss = weighted_actor_policy_loss + total_regularization
 
                 actor_optimizer.zero_grad(set_to_none=True)
@@ -1242,9 +1628,11 @@ class MADDPG(BaseAgent):
                 actor_action_l2_values.append(float(action_l2.detach().item()))
                 actor_action_saturation_values.append(float(action_saturation.detach().item()))
                 actor_storage_action_l2_values.append(float(storage_action_l2.detach().item()))
+                actor_storage_smoothness_values.append(float(storage_smoothness_l2.detach().item()))
                 actor_ev_v2g_action_l2_values.append(float(ev_v2g_action_l2.detach().item()))
                 actor_ev_v2g_action_mass_values.append(float(ev_v2g_action_mass.detach().item()))
                 actor_residual_delta_l2_values.append(float(residual_delta_l2.detach().item()))
+                actor_auxiliary_loss_values.append(float(actor_auxiliary_loss.detach().item()))
                 actor_behavior_cloning_loss_values.append(float(behavior_cloning_loss.detach().item()))
                 actor_behavior_cloning_ev_loss_values.append(float(behavior_cloning_ev_loss.detach().item()))
                 actor_behavior_cloning_storage_loss_values.append(
@@ -1270,9 +1658,11 @@ class MADDPG(BaseAgent):
             actor_action_l2_values = [0.0 for _ in range(self.num_agents)]
             actor_action_saturation_values = [0.0 for _ in range(self.num_agents)]
             actor_storage_action_l2_values = [0.0 for _ in range(self.num_agents)]
+            actor_storage_smoothness_values = [0.0 for _ in range(self.num_agents)]
             actor_ev_v2g_action_l2_values = [0.0 for _ in range(self.num_agents)]
             actor_ev_v2g_action_mass_values = [0.0 for _ in range(self.num_agents)]
             actor_residual_delta_l2_values = [0.0 for _ in range(self.num_agents)]
+            actor_auxiliary_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_ev_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_storage_loss_values = [0.0 for _ in range(self.num_agents)]
@@ -1320,9 +1710,11 @@ class MADDPG(BaseAgent):
                 "MADDPG/actor_action_l2_mean": float(np.mean(actor_action_l2_values)),
                 "MADDPG/actor_action_saturation_excess_mean": float(np.mean(actor_action_saturation_values)),
                 "MADDPG/actor_storage_action_l2_mean": float(np.mean(actor_storage_action_l2_values)),
+                "MADDPG/actor_storage_smoothness_l2_mean": float(np.mean(actor_storage_smoothness_values)),
                 "MADDPG/actor_ev_v2g_action_l2_mean": float(np.mean(actor_ev_v2g_action_l2_values)),
                 "MADDPG/actor_ev_v2g_action_mass_mean": float(np.mean(actor_ev_v2g_action_mass_values)),
                 "MADDPG/actor_residual_delta_l2_mean": float(np.mean(actor_residual_delta_l2_values)),
+                "MADDPG/actor_auxiliary_loss_mean": float(np.mean(actor_auxiliary_loss_values)),
                 "MADDPG/actor_behavior_cloning_loss_mean": float(np.mean(actor_behavior_cloning_loss_values)),
                 "MADDPG/actor_behavior_cloning_ev_loss_mean": float(
                     np.mean(actor_behavior_cloning_ev_loss_values)
@@ -1419,9 +1811,11 @@ class MADDPG(BaseAgent):
                     training_metrics[f"MADDPG/actor_action_l2_agent_{agent_num}"] = actor_action_l2_values[agent_num]
                     training_metrics[f"MADDPG/actor_action_saturation_excess_agent_{agent_num}"] = actor_action_saturation_values[agent_num]
                     training_metrics[f"MADDPG/actor_storage_action_l2_agent_{agent_num}"] = actor_storage_action_l2_values[agent_num]
+                    training_metrics[f"MADDPG/actor_storage_smoothness_l2_agent_{agent_num}"] = actor_storage_smoothness_values[agent_num]
                     training_metrics[f"MADDPG/actor_ev_v2g_action_l2_agent_{agent_num}"] = actor_ev_v2g_action_l2_values[agent_num]
                     training_metrics[f"MADDPG/actor_ev_v2g_action_mass_agent_{agent_num}"] = actor_ev_v2g_action_mass_values[agent_num]
                     training_metrics[f"MADDPG/actor_residual_delta_l2_agent_{agent_num}"] = actor_residual_delta_l2_values[agent_num]
+                    training_metrics[f"MADDPG/actor_auxiliary_loss_agent_{agent_num}"] = actor_auxiliary_loss_values[agent_num]
                     training_metrics[f"MADDPG/actor_behavior_cloning_loss_agent_{agent_num}"] = (
                         actor_behavior_cloning_loss_values[agent_num]
                     )
@@ -1741,6 +2135,12 @@ class MADDPG(BaseAgent):
             "MADDPG/actor_storage_action_l2_penalty": float(
                 getattr(self, "actor_storage_action_l2_penalty", 0.0)
             ),
+            "MADDPG/actor_storage_smoothness_l2_penalty": float(
+                getattr(self, "actor_storage_smoothness_l2_penalty", 0.0)
+            ),
+            "MADDPG/actor_storage_smoothness_deadband": float(
+                getattr(self, "actor_storage_smoothness_deadband", 0.0)
+            ),
             "MADDPG/actor_ev_v2g_action_l2_penalty": float(
                 getattr(self, "actor_ev_v2g_action_l2_penalty", 0.0)
             ),
@@ -1749,6 +2149,15 @@ class MADDPG(BaseAgent):
             ),
             "MADDPG/actor_residual_delta_l2_penalty": float(
                 getattr(self, "actor_residual_delta_l2_penalty", 0.0)
+            ),
+            "MADDPG/actor_community_context_enabled": float(
+                getattr(self, "actor_community_context_enabled", False)
+            ),
+            "MADDPG/actor_frame_stack_steps": float(
+                getattr(self, "actor_frame_stack_steps", 1)
+            ),
+            "MADDPG/actor_auxiliary_loss_weight": float(
+                getattr(self, "actor_auxiliary_loss_weight", 0.0)
             ),
             "MADDPG/actor_behavior_cloning_weight": float(
                 getattr(self, "actor_behavior_cloning_weight", 0.0)
@@ -1865,9 +2274,10 @@ class MADDPG(BaseAgent):
 
     def predict(self, observations, deterministic: bool = False) -> List[List[float]]:
         logger.debug("Predicting actions with deterministic={}.", deterministic)
+        actor_observations = self._prepare_policy_actor_observations(observations)
         if deterministic:
-            return self._predict_deterministic(observations)
-        return self._predict_with_exploration(observations)
+            return self._predict_deterministic(actor_observations)
+        return self._predict_with_exploration(actor_observations)
 
     def _predict_deterministic(self, observations):
         base_actions = self._current_residual_base_actions()
@@ -2331,6 +2741,18 @@ class MADDPG(BaseAgent):
             include=("required_average_power", "avg_power_to_departure"),
             finite_only=True,
         )
+        departure_feasibility = self._max_observation_value(
+            names,
+            values,
+            include=("departure_feasibility",),
+            finite_only=True,
+        )
+        departure_margin = self._min_observation_value(
+            names,
+            values,
+            include=("departure_energy_margin",),
+            finite_only=True,
+        )
 
         # These observations may be raw physical values or already normalized
         # entity features depending on the encoding profile. Clamp each signal
@@ -2339,6 +2761,12 @@ class MADDPG(BaseAgent):
             float(np.clip(soc_deficit, 0.0, 1.0)),
             float(np.clip(energy_deficit / 20.0, 0.0, 1.0)),
             float(np.clip(required_power / 7.4, 0.0, 1.0)),
+            float(np.clip(departure_feasibility - 0.85, 0.0, 0.5) / 0.5)
+            if np.isfinite(departure_feasibility)
+            else 0.0,
+            float(np.clip(-departure_margin / 20.0, 0.0, 1.0))
+            if np.isfinite(departure_margin)
+            else 0.0,
         )
         if deficit_signal <= 1.0e-6:
             return 0.0
@@ -2781,7 +3209,8 @@ class MADDPG(BaseAgent):
         agent_idx: int,
         scaled_action: torch.Tensor,
         base_action: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        state: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         normalized_action = self._normalize_scaled_action_tensor(agent_idx, scaled_action)
         action_l2 = normalized_action.pow(2).mean()
         threshold = float(getattr(self, "actor_action_saturation_threshold", 0.85))
@@ -2802,11 +3231,17 @@ class MADDPG(BaseAgent):
             scaled_action,
             predicate=self._is_ev_action_name,
         )
+        storage_smoothness_l2 = self._storage_action_smoothness_l2(
+            agent_idx,
+            normalized_action,
+            state,
+        )
         residual_delta_l2 = self._residual_delta_l2(agent_idx, scaled_action, base_action)
         regularization = (
             float(getattr(self, "actor_action_l2_penalty", 0.0)) * action_l2
             + float(getattr(self, "actor_action_saturation_penalty", 0.0)) * saturation_excess
             + float(getattr(self, "actor_storage_action_l2_penalty", 0.0)) * storage_action_l2
+            + float(getattr(self, "actor_storage_smoothness_l2_penalty", 0.0)) * storage_smoothness_l2
             + float(getattr(self, "actor_ev_v2g_action_l2_penalty", 0.0)) * ev_v2g_action_l2
             + float(getattr(self, "actor_ev_v2g_action_mass_penalty", 0.0)) * ev_v2g_action_mass
             + float(getattr(self, "actor_residual_delta_l2_penalty", 0.0)) * residual_delta_l2
@@ -2815,10 +3250,157 @@ class MADDPG(BaseAgent):
             action_l2,
             saturation_excess,
             storage_action_l2,
+            storage_smoothness_l2,
             ev_v2g_action_l2,
             ev_v2g_action_mass,
             regularization,
         )
+
+    def _storage_action_smoothness_l2(
+        self,
+        agent_idx: int,
+        normalized_action: torch.Tensor,
+        state: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if (
+            state is None
+            or float(getattr(self, "actor_storage_smoothness_l2_penalty", 0.0) or 0.0) <= 0.0
+        ):
+            return normalized_action.new_tensor(0.0)
+
+        targets = self._storage_last_action_targets(agent_idx, state, normalized_action)
+        if targets is None:
+            return normalized_action.new_tensor(0.0)
+
+        mask, target_values = targets
+        if mask.sum() <= 0:
+            return normalized_action.new_tensor(0.0)
+        deadband = float(getattr(self, "actor_storage_smoothness_deadband", 0.10) or 0.0)
+        excess = torch.relu((normalized_action - target_values).abs() - deadband).pow(2)
+        denominator = torch.clamp(mask.sum() * normalized_action.shape[0], min=1.0)
+        return (excess * mask).sum() / denominator
+
+    def _storage_last_action_targets(
+        self,
+        agent_idx: int,
+        state: torch.Tensor,
+        normalized_action: torch.Tensor,
+    ) -> Optional[tuple[torch.Tensor, torch.Tensor]]:
+        action_names = self._action_names_for_agent(agent_idx)
+        storage_indices = [
+            index
+            for index, action_name in enumerate(action_names[: normalized_action.shape[1]])
+            if self._is_storage_action_name(action_name)
+        ]
+        if not storage_indices:
+            return None
+
+        base_dim = int(self._base_observation_dimension[agent_idx])
+        base_state = state[:, :base_dim] if state.dim() == 2 else state[:base_dim].view(1, -1)
+        observation_names = self.observation_names[agent_idx] if agent_idx < len(self.observation_names) else []
+        candidate_indices = [
+            obs_idx
+            for obs_idx, raw_name in enumerate(observation_names[:base_dim])
+            if "storage" in str(raw_name).lower()
+            and (
+                "last_limited_action_normalized" in str(raw_name).lower()
+                or "last_requested_action_normalized" in str(raw_name).lower()
+            )
+        ]
+        if not candidate_indices:
+            return None
+
+        mask = normalized_action.new_zeros((1, normalized_action.shape[1]))
+        target = normalized_action.new_zeros((normalized_action.shape[0], normalized_action.shape[1]))
+        for ordinal, action_idx in enumerate(storage_indices):
+            if ordinal >= len(candidate_indices):
+                break
+            obs_idx = candidate_indices[ordinal]
+            mask[0, action_idx] = 1.0
+            target[:, action_idx] = torch.clamp(base_state[:, obs_idx], -1.0, 1.0)
+        return mask, target
+
+    def _actor_auxiliary_prediction_loss(
+        self,
+        agent_idx: int,
+        actor: torch.nn.Module,
+        state: torch.Tensor,
+        next_state: torch.Tensor,
+    ) -> torch.Tensor:
+        if float(getattr(self, "actor_auxiliary_loss_weight", 0.0) or 0.0) <= 0.0:
+            return state.new_tensor(0.0)
+        aux_heads = getattr(self, "actor_aux_heads", [])
+        if agent_idx >= len(aux_heads) or isinstance(aux_heads[agent_idx], torch.nn.Identity):
+            return state.new_tensor(0.0)
+        if not hasattr(actor, "encode"):
+            return state.new_tensor(0.0)
+
+        features = actor.encode(state)
+        prediction = aux_heads[agent_idx](features)
+        target = self._actor_auxiliary_targets(agent_idx, next_state, prediction)
+        return smooth_l1_loss(prediction, target.detach())
+
+    def _actor_auxiliary_targets(
+        self,
+        agent_idx: int,
+        state: torch.Tensor,
+        reference: torch.Tensor,
+    ) -> torch.Tensor:
+        base_dim = int(self._base_observation_dimension[agent_idx])
+        base_state = state[:, :base_dim] if state.dim() == 2 else state[:base_dim].view(1, -1)
+        names = self.observation_names[agent_idx] if agent_idx < len(self.observation_names) else []
+
+        ev_risk = self._aux_target_from_named_state(
+            base_state,
+            names,
+            include=("departure_feasibility",),
+            transform="feasibility_pressure",
+        )
+        ev_margin_risk = self._aux_target_from_named_state(
+            base_state,
+            names,
+            include=("departure_energy_margin",),
+            transform="negative_margin_pressure",
+        )
+        ev_risk = torch.maximum(ev_risk, ev_margin_risk)
+        pv_surplus = self._aux_target_from_named_state(
+            base_state,
+            names,
+            include=("community_export_power", "community_pv_power"),
+            transform="positive",
+        )
+        import_peak = self._aux_target_from_named_state(
+            base_state,
+            names,
+            include=("community_import_power", "community_net_power"),
+            transform="positive",
+        )
+        target = torch.cat((ev_risk, pv_surplus, import_peak), dim=1)
+        return target.to(dtype=reference.dtype, device=reference.device)
+
+    def _aux_target_from_named_state(
+        self,
+        state: torch.Tensor,
+        names: List[str],
+        *,
+        include: tuple[str, ...],
+        transform: str,
+    ) -> torch.Tensor:
+        indices = [
+            idx
+            for idx, raw_name in enumerate(names[: state.shape[1]])
+            if any(token in str(raw_name).lower() for token in include)
+        ]
+        if not indices:
+            return state.new_zeros((state.shape[0], 1))
+        values = state[:, indices]
+        if transform == "feasibility_pressure":
+            values = torch.clamp(values - 0.85, min=0.0, max=0.5) / 0.5
+        elif transform == "negative_margin_pressure":
+            values = torch.clamp(-values / 20.0, min=0.0, max=1.0)
+        else:
+            values = torch.clamp(values, min=0.0, max=1.0)
+        return values.max(dim=1, keepdim=True).values
 
     def _residual_delta_l2(
         self,
@@ -3303,6 +3885,8 @@ class MADDPG(BaseAgent):
             checkpoint[f"critic_state_dict_{i}"] = self.critics[i].state_dict()
             checkpoint[f"actor_target_state_dict_{i}"] = self.actor_targets[i].state_dict()
             checkpoint[f"critic_target_state_dict_{i}"] = self.critic_targets[i].state_dict()
+            if i < len(getattr(self, "actor_aux_heads", [])):
+                checkpoint[f"actor_aux_head_state_dict_{i}"] = self.actor_aux_heads[i].state_dict()
             checkpoint[f"actor_optimizer_state_dict_{i}"] = self.actor_optimizers[i].state_dict()
             checkpoint[f"critic_optimizer_state_dict_{i}"] = self.critic_optimizers[i].state_dict()
 
@@ -3352,6 +3936,9 @@ class MADDPG(BaseAgent):
                 self.critic_targets[i].load_state_dict(
                     checkpoint.get(f"critic_target_state_dict_{i}", checkpoint[f"critic_state_dict_{i}"])
                 )
+            aux_state = checkpoint.get(f"actor_aux_head_state_dict_{i}")
+            if aux_state is not None and i < len(getattr(self, "actor_aux_heads", [])):
+                self.actor_aux_heads[i].load_state_dict(aux_state)
             if not self.fine_tune:
                 self.actor_optimizers[i].load_state_dict(checkpoint[f"actor_optimizer_state_dict_{i}"])
                 self.critic_optimizers[i].load_state_dict(checkpoint[f"critic_optimizer_state_dict_{i}"])
@@ -3475,6 +4062,8 @@ class MADDPG(BaseAgent):
                     "path": str(relative_path),
                     "format": "onnx",
                     "observation_dimension": self.observation_dimension[i],
+                    "base_observation_dimension": self._base_observation_dimension[i],
+                    "observation_augmentation": self._actor_observation_augmentation_metadata(i),
                     "action_dimension": self.action_dimension[i],
                     "config": artifact_config,
                 }
@@ -3484,3 +4073,19 @@ class MADDPG(BaseAgent):
                 mlflow.log_artifact(str(export_path), artifact_path="onnx")
 
         return metadata
+
+    def _actor_observation_augmentation_metadata(self, agent_idx: int) -> Dict[str, Any]:
+        return {
+            "community_context_enabled": bool(getattr(self, "actor_community_context_enabled", False)),
+            "community_context_features": list(getattr(self, "actor_community_context_features", ())),
+            "community_context_dimension": int(getattr(self, "_actor_community_context_dim", 0)),
+            "frame_stack_steps": int(getattr(self, "actor_frame_stack_steps", 1)),
+            "base_observation_names": [
+                str(name)
+                for name in (
+                    self.observation_names[agent_idx]
+                    if agent_idx < len(getattr(self, "observation_names", []))
+                    else []
+                )
+            ],
+        }

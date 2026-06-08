@@ -2076,3 +2076,43 @@ class CostServiceCommunityResidualConstraintRewardV53(CostHardConstraintReward):
         params = dict(self.DEFAULT_KWARGS)
         params.update(kwargs)
         super().__init__(env_metadata, **params)
+
+
+class CostServiceCommunityDenseEVResidualRewardV54(CostHardConstraintReward):
+    """Phase 10 W7 profile: dense EV schedule signal for conservative residual RL.
+
+    Departure failures are sparse one-step events, so a residual policy can
+    learn thousands of apparently good steps and only discover the EV mistake at
+    departure. V54 keeps V53's community objective but makes the recoverable EV
+    schedule deficit visible throughout the connected period. This is intended
+    for small residual corrections over RBCCommunity, not for unconstrained
+    free-form policies.
+    """
+
+    DEFAULT_KWARGS = {
+        **CostServiceCommunityResidualConstraintRewardV53.DEFAULT_KWARGS,
+        "community_settlement_cost_weight": 1.18,
+        "community_peak_import_penalty": 0.0018,
+        "community_export_penalty": 0.00050,
+        "ev_departure_window_hours": 8.0,
+        "ev_connected_deficit_penalty": 155.0,
+        "ev_connected_deficit_exponent": 1.6,
+        "ev_schedule_deficit_penalty": 1500.0,
+        "ev_schedule_deficit_exponent": 1.20,
+        "ev_schedule_deficit_cap_soc": 0.12,
+        "ev_departure_window_shortfall_cap_soc": 0.10,
+        "ev_departure_deficit_penalty": 1600.0,
+        "ev_departure_missed_penalty": 4800.0,
+        "ev_over_service_tolerance": 0.04,
+        "ev_over_service_penalty": 1150.0,
+        "ev_v2g_service_penalty": 1850.0,
+        "ev_v2g_discharge_penalty": 0.12,
+        "battery_throughput_penalty": 0.004,
+        "scale_state_penalties_by_time_step": True,
+        "state_penalty_reference_seconds": 3600.0,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)

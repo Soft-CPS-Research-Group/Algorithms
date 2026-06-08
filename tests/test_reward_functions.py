@@ -11,6 +11,7 @@ from reward_function.cost_hard_constraint_reward import (
     CostServiceCommunityFeasiblePrecisionRewardV46,
     CostServiceCommunityFeasiblePrecisionRewardV47,
     CostServiceCommunityDeadlineValueRewardV50,
+    CostServiceCommunityDenseEVResidualRewardV54,
     CostServiceCommunityPeakDeadlineRewardV52,
     CostServiceCommunityPrecisionValueRewardV51,
     CostServiceCommunityServiceBandRewardV42,
@@ -120,6 +121,7 @@ def test_named_cost_service_reward_profiles_set_default_weights():
     deadline_value = CostServiceCommunityDeadlineValueRewardV50(env_metadata={"central_agent": False})
     precision_value = CostServiceCommunityPrecisionValueRewardV51(env_metadata={"central_agent": False})
     peak_deadline = CostServiceCommunityPeakDeadlineRewardV52(env_metadata={"central_agent": False})
+    dense_ev_residual = CostServiceCommunityDenseEVResidualRewardV54(env_metadata={"central_agent": False})
 
     assert guard.ev_departure_window_hours == pytest.approx(4.0)
     assert guard.ev_v2g_service_penalty == pytest.approx(200.0)
@@ -178,6 +180,11 @@ def test_named_cost_service_reward_profiles_set_default_weights():
     assert peak_deadline.ev_over_service_tolerance == pytest.approx(0.035)
     assert peak_deadline.ev_over_service_penalty == pytest.approx(720.0)
     assert peak_deadline.battery_throughput_penalty == pytest.approx(0.0035)
+    assert dense_ev_residual.ev_departure_window_hours == pytest.approx(8.0)
+    assert dense_ev_residual.ev_connected_deficit_penalty == pytest.approx(155.0)
+    assert dense_ev_residual.ev_schedule_deficit_penalty == pytest.approx(1500.0)
+    assert dense_ev_residual.ev_departure_missed_penalty == pytest.approx(4800.0)
+    assert dense_ev_residual.community_settlement_cost_weight == pytest.approx(1.18)
 
 
 def test_cost_hard_constraint_reward_declares_minimal_observation_payload():
