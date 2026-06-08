@@ -855,7 +855,7 @@ class MADDPG(BaseAgent):
     ) -> tuple[List[np.ndarray], List[np.ndarray]]:
         if self._observations_look_augmented(observations):
             current_augmented = [np.asarray(obs, dtype=np.float32).reshape(-1) for obs in observations]
-        elif self._last_augmented_policy_observations is not None:
+        elif getattr(self, "_last_augmented_policy_observations", None) is not None:
             current_augmented = [obs.copy() for obs in self._last_augmented_policy_observations]
         else:
             current_core = self._actor_core_observations(observations)
@@ -864,8 +864,9 @@ class MADDPG(BaseAgent):
                 for agent_idx, core in enumerate(current_core)
             ]
             for agent_idx, core in enumerate(current_core):
-                if agent_idx < len(self._actor_observation_history):
-                    self._actor_observation_history[agent_idx].appendleft(core.copy())
+                history = getattr(self, "_actor_observation_history", [])
+                if agent_idx < len(history):
+                    history[agent_idx].appendleft(core.copy())
 
         if self._observations_look_augmented(next_observations):
             next_augmented = [np.asarray(obs, dtype=np.float32).reshape(-1) for obs in next_observations]
@@ -890,10 +891,11 @@ class MADDPG(BaseAgent):
     def _observations_look_augmented(self, observations: List[Any]) -> bool:
         if not observations:
             return False
-        if len(observations) != len(self.observation_dimension):
+        observation_dimension = getattr(self, "observation_dimension", None)
+        if observation_dimension is None or len(observations) != len(observation_dimension):
             return False
         return all(
-            np.asarray(obs).reshape(-1).shape[0] == int(self.observation_dimension[agent_idx])
+            np.asarray(obs).reshape(-1).shape[0] == int(observation_dimension[agent_idx])
             for agent_idx, obs in enumerate(observations)
         )
 
@@ -902,7 +904,7 @@ class MADDPG(BaseAgent):
             np.nan_to_num(np.asarray(obs, dtype=np.float32).reshape(-1), nan=0.0, posinf=0.0, neginf=0.0)
             for obs in observations
         ]
-        if not self.actor_community_context_enabled:
+        if not getattr(self, "actor_community_context_enabled", False):
             return base_observations
 
         context = self._community_context_vector(base_observations)
@@ -917,11 +919,13 @@ class MADDPG(BaseAgent):
         if frame_stack <= 1:
             return core
 
-        expected_core_dim = int(self._actor_core_observation_dimension[agent_idx])
+        core_dims = getattr(self, "_actor_core_observation_dimension", None)
+        expected_core_dim = int(core_dims[agent_idx]) if core_dims is not None else int(core.shape[0])
         if core.shape[0] != expected_core_dim:
             core = self._resize_vector(core, expected_core_dim)
         frames = [core]
-        history = self._actor_observation_history[agent_idx] if agent_idx < len(self._actor_observation_history) else []
+        histories = getattr(self, "_actor_observation_history", [])
+        history = histories[agent_idx] if agent_idx < len(histories) else []
         for previous in list(history)[: frame_stack - 1]:
             frames.append(self._resize_vector(previous, expected_core_dim))
         while len(frames) < frame_stack:
@@ -2634,11 +2638,15 @@ class MADDPG(BaseAgent):
     def _transition_behavior_actions(self, actions: List[Any]) -> List[Any]:
         if (
             getattr(self, "actor_behavior_cloning_source", "replay_action") != "warm_start_policy"
-            or self._warm_start_policy is None
-            or self._latest_raw_observations is None
+            or getattr(self, "_warm_start_policy", None) is None
+            or getattr(self, "_latest_raw_observations", None) is None
         ):
             return actions
-        if self.warm_start_policy_deterministic and self._last_warm_start_policy_actions is not None:
+        if getattr(self, "warm_start_policy_deterministic", True) and getattr(
+            self,
+            "_last_warm_start_policy_actions",
+            None,
+        ) is not None:
             return [list(action) for action in self._last_warm_start_policy_actions]
         return self._predict_warm_start_policy(apply_noise=False, deterministic=True)
 
@@ -2652,7 +2660,7 @@ class MADDPG(BaseAgent):
             )
         ):
             return fallback_actions
-        if self._last_warm_start_next_policy_actions is not None:
+        if getattr(self, "_last_warm_start_next_policy_actions", None) is not None:
             return [list(action) for action in self._last_warm_start_next_policy_actions]
         predicted = self._predict_warm_start_policy_for_observations(
             getattr(self, "_latest_raw_next_observations", None)
@@ -4015,6 +4023,11 @@ class MADDPG(BaseAgent):
         logger.info("Exporting MADDPG actors to ONNX under {}", onnx_dir)
 
         metadata: Dict[str, Any] = {"format": "onnx", "artifacts": []}
+        base_observation_dimension = getattr(
+            self,
+            "_base_observation_dimension",
+            getattr(self, "observation_dimension", []),
+        )
 
         for i, actor in enumerate(self.actors):
             export_path = onnx_dir / f"agent_{i}.onnx"
@@ -4062,7 +4075,11 @@ class MADDPG(BaseAgent):
                     "path": str(relative_path),
                     "format": "onnx",
                     "observation_dimension": self.observation_dimension[i],
-                    "base_observation_dimension": self._base_observation_dimension[i],
+                    "base_observation_dimension": (
+                        base_observation_dimension[i]
+                        if i < len(base_observation_dimension)
+                        else self.observation_dimension[i]
+                    ),
                     "observation_augmentation": self._actor_observation_augmentation_metadata(i),
                     "action_dimension": self.action_dimension[i],
                     "config": artifact_config,
