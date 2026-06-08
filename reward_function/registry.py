@@ -9,6 +9,8 @@ from citylearn.reward_function import RewardFunction
 from reward_function.V2G_Reward import V2GPenaltyReward
 from reward_function.ba_reward import BAReward
 from reward_function.cc_reward import CCReward
+from reward_function.cc_reward_level1 import CCRewardLevel1
+from reward_function.cc_reward_phase1 import CCRewardPhase1
 from reward_function.cost_hard_constraint_reward import (
     CostHardConstraintReward,
     CostServiceCostBalancedRewardV3,
@@ -34,6 +36,8 @@ REWARD_FUNCTION_MAP: Dict[str, Type[RewardFunction]] = {
     "BAReward": BAReward,
     "RewardFunction": RewardFunction,
     "CCReward": CCReward,
+    "CCRewardLevel1": CCRewardLevel1,
+    "CCRewardPhase1": CCRewardPhase1,
     "V2GPenaltyReward": V2GPenaltyReward,
     "CostMinimizationReward": CostMinimizationReward,
     "CostHardConstraintReward": CostHardConstraintReward,

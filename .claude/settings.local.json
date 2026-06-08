@@ -47,7 +47,8 @@
       "Bash(xargs python3 -c ' *)",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d.get\\('mlflow_run_id'\\) or d.get\\('run_id'\\) or 'not found'\\)\")",
       "Bash(find /Users/pedro.monteiro/Desktop/Masters/master-thesis -type f \\\\\\( -name \"*.tex\" -o -name \"*.md\" \\\\\\) | head -50)",
-      "Bash(python3 -m json.tool)"
+      "Bash(python3 -m json.tool)",
+      "Bash(xargs cat)"
     ]
   }
 }

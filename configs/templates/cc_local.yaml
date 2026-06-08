@@ -1,10 +1,14 @@
-# Community Coordinator — local development template.
-# Experiment: A-O1-S-MLP (Path A input, O1 output, single-step, MLP only)
-# Inner local controller: RuleBasedPolicy (fixed, not trained)
+# Community Coordinator Level 1 — local development template.
+#
+# Level 1: Global Community Signal
+# CC observes community aggregates only. Emits one global discrete signal:
+#   -1 (reduce) / 0 (neutral) / +1 (increase)
+# Low-level rule maps signal to battery charge/discharge for every building.
+# No per-building features, no EV/SoC/headroom observations.
 
 metadata:
-  experiment_name: "cc_local_template"
-  run_name: "CC Local Run — A-O1-S-MLP"
+  experiment_name: "cc_level1"
+  run_name: "CC-L1 Global Signal"
 
 runtime:
   log_dir: null
@@ -55,11 +59,11 @@ simulator:
     enabled: true
     normalization: minmax_space
     clip: true
-  reward_function: CCReward
-  episodes: 150
-  episode_time_steps: 5760     # 1 day at 15-second timesteps (5760 × 15s = 86400s)
+  reward_function: CCRewardLevel1
+  episodes: 33               # 33 × 1-week episodes ≈ 5h wall (~9.1 min/ep incl. 7 PPO updates)
+  episode_time_steps: 40320  # 1 WEEK at 15s timesteps (7 × 5760 = 40320 steps)
   simulation_start_time_step: 0
-  simulation_end_time_step: 17280
+  simulation_end_time_step: 322560  # 8 unique weeks (8 × 40320)
   export:
     mode: end
     export_kpis_on_episode_end: true
@@ -76,20 +80,27 @@ topology:
   action_dimensions: null
   action_space: null
 
-# Algorithm family and hyperparameters.
+# Algorithm — Level-1 CC (global discrete signal, community-only obs)
 pipeline:
-  - algorithm: "CommunityCoordinator"
+  - algorithm: "CCLevel1"
     count: 1
     hyperparameters:
-      # Network input dim — must equal len(_build_community_state()) output
-      obs_dim: 9   # [net, pv, import, avg_soc, price, pred1, pred2, pred3, hour]
+      # Community-context width (must match _build_community_context index layout)
+      # 0-3: price + 3 forecasts  |  4-8: time (sin/cos/weekend)
+      # 9-10: month (sin/cos)     |  11-15: community power
+      # 16: import_ma             |  17: peak_import_ref
+      c_dim: 18
+      hidden_dims: [128, 128]
 
-      # Temporal abstraction (disabled for baseline — CC acts every env step)
-      cc_action_interval: 60  # 15-min abstraction: CC decides every 60 × 15s = 15 min
+      # Temporal abstraction: CC decides every 60 × 15s = 15 min
+      # Week episode = 40320/60 = 672 CC decisions → buffer of 96 fills 7×/ep
+      cc_action_interval: 60
 
-      # Rollout — counted in CC decisions; with K=1, 1 CC decision = 1 env step
-      # 2048 ≈ 4 PPO updates per episode (8760 env steps/ep)
-      num_steps: 96           # matches CC decisions/episode (5760 steps / 60 interval)
+      # Moving-average window for import features (96 steps = 24 h)
+      ma_window: 96
+
+      # Rollout buffer — 7 PPO updates per week-episode
+      num_steps: 96
 
       # Optimiser
       lr: 1.0e-4
@@ -99,12 +110,12 @@ pipeline:
       gae_lambda: 0.95
 
       # PPO update
-      num_epochs: 10          # gradient passes over each rollout
+      num_epochs: 10
       mini_batch_size: 64
-      clip_coef: 0.2          # PPO clip epsilon
-      vf_coef: 0.5            # value loss weight
-      ent_coef: 0.005         # entropy bonus weight — enough to slow premature convergence
-      max_grad_norm: 0.5      # gradient clipping
-      target_kl: 0.1          # KL early-stopping threshold (null to disable)
+      clip_coef: 0.2
+      vf_coef: 0.5
+      ent_coef: 0.01         # discrete action — entropy bonus prevents collapse to one action
+      max_grad_norm: 0.5
+      target_kl: 0.1
 
 execution: null
