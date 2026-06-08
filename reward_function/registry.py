@@ -7,6 +7,8 @@ from typing import Dict, Type
 from citylearn.reward_function import RewardFunction
 
 from reward_function.V2G_Reward import V2GPenaltyReward
+from reward_function.ba_reward import BAReward
+from reward_function.cc_reward import CCReward
 from reward_function.cost_hard_constraint_reward import (
     CostHardConstraintReward,
     CostServiceCostBalancedRewardV3,
@@ -29,7 +31,9 @@ from reward_function.cost_hard_constraint_reward import (
 from reward_function.cost_minimization_reward import CostMinimizationReward
 
 REWARD_FUNCTION_MAP: Dict[str, Type[RewardFunction]] = {
+    "BAReward": BAReward,
     "RewardFunction": RewardFunction,
+    "CCReward": CCReward,
     "V2GPenaltyReward": V2GPenaltyReward,
     "CostMinimizationReward": CostMinimizationReward,
     "CostHardConstraintReward": CostHardConstraintReward,

@@ -113,6 +113,9 @@ EV_GATE_FALLBACK_KPIS = (
 from utils.pipeline_utils import summarise_pipeline_algorithms
 
 
+from utils.pipeline_utils import summarise_pipeline_algorithms
+
+
 def _safe_float(value: Any) -> Optional[float]:
     try:
         return float(value)

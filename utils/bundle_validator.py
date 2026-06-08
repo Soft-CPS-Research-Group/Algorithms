@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from loguru import logger
 
-SUPPORTED_ARTIFACT_FORMATS = {"onnx", "rule_based"}
+SUPPORTED_ARTIFACT_FORMATS = {"onnx", "rule_based", "pipeline", "ensemble"}
 
 
 class BundleValidationError(ValueError):
@@ -111,6 +111,23 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
         raise BundleValidationError(
             f"agent.format must be one of {sorted(SUPPORTED_ARTIFACT_FORMATS)}, got {top_level_format!r}"
         )
+
+    # Pipeline/ensemble formats use nested stages/agents instead of a flat artifacts list.
+    # Validate recursively and skip flat-artifact checks.
+    if top_level_format == "pipeline":
+        stages = agent.get("stages", [])
+        for stage in stages:
+            if isinstance(stage, dict) and stage.get("format") not in (None, "pipeline", "ensemble"):
+                _validate_agent(stage, root, num_agents=None)
+        logger.debug("Pipeline bundle format validated ({} stage(s))", len(stages))
+        return
+    if top_level_format == "ensemble":
+        members = agent.get("agents", [])
+        for member in members:
+            if isinstance(member, dict) and member.get("format") not in (None, "pipeline", "ensemble"):
+                _validate_agent(member, root, num_agents=None)
+        logger.debug("Ensemble bundle format validated ({} member(s))", len(members))
+        return
 
     artifacts = agent.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
