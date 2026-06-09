@@ -388,6 +388,8 @@ class Ensemble(ExecutionUnit):
         for index, agent in enumerate(self.agents):
             agent_dir = root / f"agent_{index}"
             agent_dir.mkdir(parents=True, exist_ok=True)
-            metadata = agent.export_artifacts(str(agent_dir), context)
+            member_context = dict(context or {})
+            member_context["agent_index_offset"] = index
+            metadata = agent.export_artifacts(str(agent_dir), member_context)
             members_metadata.append({"agent_index": index, **(metadata or {})})
         return {"format": "ensemble", "agents": members_metadata}

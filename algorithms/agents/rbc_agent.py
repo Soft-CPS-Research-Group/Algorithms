@@ -286,6 +286,7 @@ class RuleBasedPolicy(BaseAgent):
         export_root = Path(output_dir)
         export_root.mkdir(parents=True, exist_ok=True)
         agent_action_labels = self._action_labels or [[]]
+        agent_index_offset = int(context.get("agent_index_offset", 0) or 0)
 
         metadata: Dict[str, Any] = {
             "format": "rule_based",
@@ -294,11 +295,12 @@ class RuleBasedPolicy(BaseAgent):
         }
 
         for agent_index, action_names in enumerate(agent_action_labels):
+            global_agent_index = agent_index + agent_index_offset
             default_actions = {str(name): 0.0 for name in action_names}
             policy = {
                 "policy_type": self._policy_type(),
                 "version": 1,
-                "agent_index": agent_index,
+                "agent_index": global_agent_index,
                 "dataset_schema": str(self._dataset_path) if self._dataset_path else None,
                 "action_names": [str(name) for name in action_names],
                 "default_actions": default_actions,
@@ -307,19 +309,22 @@ class RuleBasedPolicy(BaseAgent):
                 "charger_mapping": self._serialise_charger_mapping(),
             }
 
-            output_path = export_root / f"policy_agent_{agent_index}.json"
+            output_path = export_root / f"policy_agent_{global_agent_index}.json"
             with output_path.open("w", encoding="utf-8") as handle:
                 json.dump(policy, handle, indent=2)
             if mlflow.active_run():
                 mlflow.log_artifact(str(output_path), artifact_path="model")
 
             raw_agent_override = (
-                per_agent_artifact_config.get(str(agent_index))
-                if str(agent_index) in per_agent_artifact_config
-                else per_agent_artifact_config.get(agent_index)
+                per_agent_artifact_config.get(str(global_agent_index))
+                if str(global_agent_index) in per_agent_artifact_config
+                else per_agent_artifact_config.get(global_agent_index)
             )
             agent_override = raw_agent_override if isinstance(raw_agent_override, dict) else {}
-            auto_artifact_config = build_auto_artifact_config(context=context, agent_index=agent_index)
+            auto_artifact_config = build_auto_artifact_config(
+                context=context,
+                agent_index=global_agent_index,
+            )
             artifact_config = {"use_preprocessor": False}
             artifact_config.update(auto_artifact_config)
             artifact_config.update(global_artifact_config)
@@ -329,7 +334,7 @@ class RuleBasedPolicy(BaseAgent):
 
             metadata["artifacts"].append(
                 {
-                    "agent_index": agent_index,
+                    "agent_index": global_agent_index,
                     "path": str(output_path.relative_to(export_root)),
                     "format": "rule_based",
                     "config": artifact_config,

@@ -313,6 +313,17 @@ class TestEnsembleLifecycle:
         assert Ensemble([ready, ready]).is_initial_exploration_done(0) is True
         assert Ensemble([ready, warming]).is_initial_exploration_done(0) is False
 
+    def test_export_passes_global_agent_index_offset_to_members(self, tmp_path: Path) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+
+        Ensemble([a, b]).export_artifacts(str(tmp_path), context={"config": {"bundle": {}}})
+
+        assert a.export_calls[0]["context"]["agent_index_offset"] == 0
+        assert b.export_calls[0]["context"]["agent_index_offset"] == 1
+        assert a.export_calls[0]["context"]["config"] == {"bundle": {}}
+        assert b.export_calls[0]["context"]["config"] == {"bundle": {}}
+
 
 class TestEnsembleConstruction:
     def test_empty_agents_rejected(self) -> None:

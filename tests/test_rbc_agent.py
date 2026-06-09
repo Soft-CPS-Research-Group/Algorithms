@@ -502,3 +502,22 @@ def test_rbc_export_artifacts_uses_rule_based_contract(tmp_path):
         payload = json.loads(exported_path.read_text(encoding="utf-8"))
         assert isinstance(payload.get("default_actions"), dict)
         assert isinstance(payload.get("rules"), list)
+
+
+def test_rbc_export_artifacts_respects_agent_index_offset(tmp_path):
+    agent = make_agent()
+    agent._action_labels = [["electric_vehicle_storage"]]
+
+    metadata = agent.export_artifacts(
+        output_dir=str(tmp_path),
+        context={"agent_index_offset": 4, "config": {"bundle": {}}},
+    )
+
+    artifact = metadata["artifacts"][0]
+    assert artifact["agent_index"] == 4
+    assert artifact["path"] == "policy_agent_4.json"
+
+    exported_path = tmp_path / artifact["path"]
+    assert exported_path.exists()
+    payload = json.loads(exported_path.read_text(encoding="utf-8"))
+    assert payload["agent_index"] == 4
