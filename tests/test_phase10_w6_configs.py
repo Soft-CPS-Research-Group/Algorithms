@@ -234,6 +234,74 @@ def test_w6_remote_smoke_can_generate_w7_dense_conservative_and_headed_variants(
     assert headed_exploration["actor_storage_smoothness_l2_penalty"] == 0.010
 
 
+def test_w6_remote_smoke_can_generate_w7_min_service_context_variant(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6b-remote-smoke",
+        seeds=[123],
+        recipes=["w7_residual_comm_min_service_ctx"],
+        algorithms=["MATD3"],
+        include_baselines=False,
+    )
+
+    assert len(rows) == 1
+    config = _load(Path(rows[0]["config_path"]))
+    validate_config(config)
+
+    assert config["simulator"]["reward_function"] == "CostServiceCommunityDenseEVResidualRewardV54"
+    kwargs = config["simulator"]["reward_function_kwargs"]
+    assert kwargs["community_settlement_cost_weight"] == 1.26
+    assert kwargs["ev_departure_missed_penalty"] == 5200.0
+    assert kwargs["ev_over_service_tolerance"] == 0.05
+    assert kwargs["ev_over_service_penalty"] == 620.0
+
+    algorithm = _alg(config)
+    assert algorithm["networks"]["actor"]["class"] == "Actor"
+    exploration = algorithm["exploration"]["params"]
+    assert exploration["warm_start_policy"] == "RBCCommunityPolicy"
+    assert exploration["residual_policy_enabled"] is True
+    assert exploration["residual_action_final_scale"] == 0.36
+    assert exploration["residual_ev_action_scale_multiplier"] == 0.52
+    assert exploration["n_step_returns"] == 12
+    assert exploration["actor_community_context_enabled"] is True
+    assert exploration["actor_frame_stack_steps"] == 2
+    assert exploration["actor_auxiliary_loss_weight"] == 0.010
+    assert exploration["actor_storage_smoothness_l2_penalty"] == 0.0
+
+
+def test_w6_remote_smoke_can_generate_w7_heads_clone_diagnostic(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6b-remote-smoke",
+        seeds=[123],
+        recipes=["w7_heads_clone_diagnostic"],
+        algorithms=["MATD3"],
+        include_baselines=False,
+    )
+
+    assert len(rows) == 1
+    config = _load(Path(rows[0]["config_path"]))
+    validate_config(config)
+
+    algorithm = _alg(config)
+    assert algorithm["networks"]["actor"]["class"] == "SemanticMultiHeadActor"
+    assert algorithm["networks"]["actor"]["head_layers"] == [64]
+    assert config["tracking"]["tags"]["actor_class"] == "SemanticMultiHeadActor"
+    assert config["tracking"]["tags"]["residual_policy"] is False
+
+    exploration = algorithm["exploration"]["params"]
+    assert exploration["warm_start_policy"] == "RBCCommunityPolicy"
+    assert exploration["residual_policy_enabled"] is False
+    assert exploration["actor_policy_loss_weight"] == 0.0
+    assert exploration["actor_behavior_cloning_weight"] == 0.650
+    assert exploration["actor_behavior_cloning_min_weight"] == 0.500
+    assert exploration["actor_storage_behavior_cloning_multiplier"] == 1.0
+    assert exploration["actor_community_context_enabled"] is True
+    assert exploration["actor_frame_stack_steps"] == 3
+    assert exploration["actor_auxiliary_loss_weight"] == 0.020
+    assert exploration["n_step_returns"] == 1
+
+
 def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
     rows = generate_w6_configs(
         output_dir=tmp_path,
