@@ -144,7 +144,8 @@ def _last_episode_duration(job_dir: Path) -> tuple[float | None, float | None]:
 
 def _job_identity(job_dir: Path, config: Mapping[str, Any]) -> dict[str, Any]:
     job_id = job_dir.name
-    algorithm = str(config.get("algorithm", {}).get("name") or "")
+    pipeline = config.get("pipeline") if isinstance(config.get("pipeline"), list) else []
+    algorithm = str(pipeline[0].get("algorithm") if pipeline and isinstance(pipeline[0], Mapping) else "")
     if not algorithm:
         if "rbcsmartpolicy" in job_id:
             algorithm = "RBCSmartPolicy"

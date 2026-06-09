@@ -7,10 +7,17 @@ import csv
 import json
 import math
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.pipeline_utils import summarise_pipeline_algorithms
 
 
 def _float(value: Any, default: float = float("nan")) -> float:
@@ -56,8 +63,7 @@ def _recipe_from_config(config: dict[str, Any], job_id: str) -> str:
         if recipe_start >= 0:
             return head[recipe_start:]
 
-    algorithm = config.get("algorithm") if isinstance(config.get("algorithm"), dict) else {}
-    name = algorithm.get("name")
+    name = summarise_pipeline_algorithms(config, default=None)
     if name:
         return str(name).lower()
     return job_id

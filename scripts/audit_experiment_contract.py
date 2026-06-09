@@ -17,9 +17,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from run_experiment import _resolve_agent_observation_dimensions
+from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
 from scripts.audit_action_rollout import _build_wrapper_and_agent, _describe_actions
 from utils.artifact_manifest import build_manifest, write_manifest
 from utils.bundle_validator import validate_bundle_contract
+from utils.pipeline_utils import pipeline_algorithm_names, summarise_pipeline_algorithms
 
 
 def _parse_args() -> argparse.Namespace:
@@ -283,8 +285,16 @@ def run_contract_audit(
         ],
     )
 
-    algorithm_name = str((config.get("algorithm") or {}).get("name", ""))
-    config.setdefault("topology", {})["observation_dimensions"] = _resolve_agent_observation_dimensions(wrapper, algorithm_name)
+    algorithm_names = pipeline_algorithm_names(config)
+    dimension_algorithm_name = next(
+        (name for name in algorithm_names if name in ENCODED_OBSERVATION_ALGORITHMS),
+        algorithm_names[0] if algorithm_names else None,
+    )
+    algorithm_name = summarise_pipeline_algorithms(config, default="") or ""
+    config.setdefault("topology", {})["observation_dimensions"] = _resolve_agent_observation_dimensions(
+        wrapper,
+        dimension_algorithm_name,
+    )
     config["topology"]["action_dimensions"] = list(wrapper.action_dimension)
     config["topology"]["num_agents"] = len(wrapper.action_space)
 

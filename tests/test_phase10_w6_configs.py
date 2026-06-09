@@ -214,8 +214,8 @@ def test_w6_remote_smoke_can_generate_w7_dense_conservative_and_headed_variants(
     validate_config(conservative_config)
     assert conservative_config["simulator"]["reward_function"] == "CostServiceCommunityDenseEVResidualRewardV54"
     assert conservative_config["simulator"]["reward_function_kwargs"]["ev_schedule_deficit_penalty"] == 1650.0
-    assert conservative_config["algorithm"]["networks"]["actor"]["class"] == "Actor"
-    conservative_exploration = conservative_config["algorithm"]["exploration"]["params"]
+    assert _alg(conservative_config)["networks"]["actor"]["class"] == "Actor"
+    conservative_exploration = _alg(conservative_config)["exploration"]["params"]
     assert conservative_exploration["residual_action_final_scale"] == 0.20
     assert conservative_exploration["residual_ev_action_scale_multiplier"] == 0.32
     assert conservative_exploration["actor_residual_delta_l2_penalty"] == 0.06
@@ -224,10 +224,10 @@ def test_w6_remote_smoke_can_generate_w7_dense_conservative_and_headed_variants(
     headed = next(row for row in rows if row["recipe"] == "w7_residual_comm_ev_dense_heads")
     headed_config = _load(Path(headed["config_path"]))
     validate_config(headed_config)
-    assert headed_config["algorithm"]["networks"]["actor"]["class"] == "SemanticMultiHeadActor"
-    assert headed_config["algorithm"]["networks"]["actor"]["head_layers"] == [64]
+    assert _alg(headed_config)["networks"]["actor"]["class"] == "SemanticMultiHeadActor"
+    assert _alg(headed_config)["networks"]["actor"]["head_layers"] == [64]
     assert headed_config["tracking"]["tags"]["actor_class"] == "SemanticMultiHeadActor"
-    headed_exploration = headed_config["algorithm"]["exploration"]["params"]
+    headed_exploration = _alg(headed_config)["exploration"]["params"]
     assert headed_exploration["actor_community_context_enabled"] is True
     assert headed_exploration["actor_frame_stack_steps"] == 3
     assert headed_exploration["actor_auxiliary_loss_weight"] == 0.020
