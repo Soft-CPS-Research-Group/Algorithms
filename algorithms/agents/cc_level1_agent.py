@@ -426,10 +426,11 @@ class CCLevel1Agent(BaseAgent):
             "format": "onnx",
             "artifacts": [
                 {
-                    "agent_index": 0,
+                    "agent_index": i,
                     "path": str(export_path.relative_to(export_root)),
                     "format": "onnx",
                 }
+                for i in range(len(self._action_dims))
             ],
         }
 

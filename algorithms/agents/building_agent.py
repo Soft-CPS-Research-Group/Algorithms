@@ -17,6 +17,7 @@ Building Agent (BA) — per-building PPO worker in the HIRO architecture.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -27,7 +28,19 @@ from torch.optim import Adam
 
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.community_coordinator_agent import RunningMeanStd
+from algorithms.constants import DEFAULT_ONNX_OPSET
 from algorithms.utils.ppo import PPOActorCritic, RolloutBuffer
+
+
+class _BuildingActorExport(nn.Module):
+    """Deterministic deployment wrapper for a BuildingAgent PPO actor."""
+
+    def __init__(self, actor_mean: nn.Module) -> None:
+        super().__init__()
+        self.actor_mean = actor_mean
+
+    def forward(self, observation_with_context: torch.Tensor) -> torch.Tensor:
+        return torch.tanh(self.actor_mean(observation_with_context))
 
 
 class BuildingAgent(BaseAgent):
@@ -363,8 +376,45 @@ class BuildingAgent(BaseAgent):
         output_dir: str,
         context: Optional[Any] = None,
     ) -> dict:
-        """Return minimal artifact metadata (no ONNX export implemented yet)."""
-        return {"format": "none", "artifacts": []}
+        """Export deterministic actor policy for this building."""
+        if not self._network_initialized or self.actor_critic is None:
+            return {"format": "onnx", "artifacts": []}
+
+        export_root = Path(output_dir)
+        onnx_dir = export_root / "onnx_models"
+        onnx_dir.mkdir(parents=True, exist_ok=True)
+        export_path = onnx_dir / "building_agent.onnx"
+
+        export_model = _BuildingActorExport(self.actor_critic.actor_mean)
+        export_model.eval()
+        dummy_input = torch.randn(1, self._obs_dim + 1)
+        torch.onnx.export(
+            export_model,
+            dummy_input,
+            str(export_path),
+            export_params=True,
+            opset_version=DEFAULT_ONNX_OPSET,
+            do_constant_folding=True,
+            input_names=["observation_with_context"],
+            output_names=["building_action"],
+            dynamic_axes={
+                "observation_with_context": {0: "batch_size"},
+                "building_action": {0: "batch_size"},
+            },
+        )
+
+        return {
+            "format": "onnx",
+            "artifacts": [
+                {
+                    "agent_index": 0,
+                    "path": str(export_path.relative_to(export_root)),
+                    "format": "onnx",
+                    "observation_dimension": self._obs_dim + 1,
+                    "action_dimension": self._action_dim,
+                }
+            ],
+        }
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
         raise NotImplementedError("BuildingAgent does not implement checkpointing.")

@@ -123,11 +123,13 @@ def _flatten_pipeline_metadata(pipeline_meta: Dict[str, Any]) -> Dict[str, Any]:
     if not stages:
         return {"format": "none", "artifacts": [], "stages": []}
 
-    leaf = stages[-1]
+    leaf = _flatten_composite_metadata(stages[-1], path_prefix=f"stage_{len(stages) - 1}")
     top_format = leaf.get("format") or "onnx"
     artifacts: list = []
-    for stage in stages:
-        for artifact in stage.get("artifacts") or []:
+    for fallback_index, stage in enumerate(stages):
+        stage_index = stage.get("stage_index", fallback_index)
+        flattened = _flatten_composite_metadata(stage, path_prefix=f"stage_{stage_index}")
+        for artifact in flattened.get("artifacts") or []:
             artifacts.append(dict(artifact))
 
     result = {k: v for k, v in pipeline_meta.items() if k not in ("format", "artifacts")}
@@ -136,7 +138,11 @@ def _flatten_pipeline_metadata(pipeline_meta: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _flatten_ensemble_metadata(ensemble_meta: Dict[str, Any]) -> Dict[str, Any]:
+def _flatten_ensemble_metadata(
+    ensemble_meta: Dict[str, Any],
+    *,
+    path_prefix: str = "",
+) -> Dict[str, Any]:
     """Flatten an ensemble's per-member artifacts into a top-level artifact list.
 
     Each ensemble member is responsible for one agent slot. The member's local
@@ -151,15 +157,52 @@ def _flatten_ensemble_metadata(ensemble_meta: Dict[str, Any]) -> Dict[str, Any]:
     artifacts: list = []
     for member in members:
         global_index = member.get("agent_index", len(artifacts))
+        member_prefix = f"agent_{global_index}"
+        if path_prefix:
+            member_prefix = f"{path_prefix}/{member_prefix}"
         for artifact in member.get("artifacts") or []:
             flat = dict(artifact)
             flat["agent_index"] = global_index
+            _prefix_artifact_path(flat, member_prefix)
             artifacts.append(flat)
 
     result = {k: v for k, v in ensemble_meta.items() if k not in ("format", "artifacts")}
     result["format"] = top_format
     result["artifacts"] = artifacts
     return result
+
+
+def _flatten_composite_metadata(metadata: Dict[str, Any], *, path_prefix: str = "") -> Dict[str, Any]:
+    """Flatten pipeline/ensemble metadata and make artifact paths bundle-relative."""
+    raw_format = metadata.get("format") or "onnx"
+    if raw_format == "pipeline":
+        flattened = _flatten_pipeline_metadata(metadata)
+    elif raw_format == "ensemble":
+        flattened = _flatten_ensemble_metadata(metadata, path_prefix=path_prefix)
+    else:
+        flattened = dict(metadata)
+        artifacts = []
+        for artifact in flattened.get("artifacts") or []:
+            flat = dict(artifact)
+            _prefix_artifact_path(flat, path_prefix)
+            artifacts.append(flat)
+        flattened["artifacts"] = artifacts
+    return flattened
+
+
+def _prefix_artifact_path(artifact: Dict[str, Any], prefix: str) -> None:
+    if not prefix:
+        return
+
+    raw_path = artifact.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return
+
+    path = Path(raw_path)
+    if path.is_absolute():
+        return
+
+    artifact["path"] = str(Path(prefix) / path)
 
 
 def _json_default(obj: Any) -> Any:
