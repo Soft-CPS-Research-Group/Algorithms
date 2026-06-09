@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-RBCSMART_TARGET = {
+DEFAULT_RBCSMART_TARGET = {
     "cost_eur": 17884.270294900056,
     "ev_min_acceptable_feasible_rate": 1.0,
-    "ev_within_tolerance_rate": 0.437,
+    "ev_within_tolerance_feasible_rate": 0.437,
     "electrical_violation_kwh": 0.0,
     "community_import_kwh": 159157.97769125472,
     "community_export_kwh": 52349.811849715574,
@@ -22,7 +22,7 @@ RBCSMART_TARGET = {
     "v2g_export_kwh": 1.0,
 }
 
-SUCCESS_COST_EUR = 17884.3
+SUCCESS_COST_EUR = DEFAULT_RBCSMART_TARGET["cost_eur"]
 SUCCESS_EV_MIN = 0.99
 SUCCESS_EV_TOLERANCE = 0.40
 PREFERRED_BATTERY_THROUGHPUT_KWH = 49000.0
@@ -112,27 +112,69 @@ def _parse_recipe(text: str) -> str:
     return ""
 
 
-def _community_delta_bad(row: Mapping[str, Any], cost: float | None) -> bool:
-    if cost is not None and cost <= RBCSMART_TARGET["cost_eur"] * (1.0 - COMMUNITY_TOLERANCE):
+def _target_from_baseline_csv(path: Path, match: str) -> dict[str, float]:
+    match_lower = match.lower()
+    candidates = []
+    for row in _read_csv(path):
+        label = _identity(row).lower()
+        if match_lower in label:
+            candidates.append(row)
+    if not candidates:
+        raise ValueError(f"No baseline row matching {match!r} in {path}")
+
+    row = candidates[0]
+    target = dict(DEFAULT_RBCSMART_TARGET)
+    mappings = {
+        "cost_eur": ("community_cost_eur", "total_cost", "cost"),
+        "ev_min_acceptable_feasible_rate": ("ev_min_acceptable_feasible_rate",),
+        "ev_within_tolerance_feasible_rate": (
+            "ev_within_tolerance_feasible_rate",
+            "ev_within_tolerance_rate",
+        ),
+        "electrical_violation_kwh": ("electrical_violation_kwh",),
+        "community_import_kwh": ("community_import_kwh",),
+        "community_export_kwh": ("community_export_kwh",),
+        "community_solar_self_consumption_rate": (
+            "community_solar_self_consumption_rate",
+            "self_consumption_rate",
+        ),
+        "battery_throughput_kwh": ("battery_throughput_kwh", "battery_total_throughput_kwh"),
+        "v2g_export_kwh": ("v2g_export_kwh", "ev_v2g_discharge_kwh"),
+    }
+    for target_key, row_keys in mappings.items():
+        value = _to_float(row, *row_keys)
+        if value is not None:
+            target[target_key] = value
+    return target
+
+
+def _community_delta_bad(row: Mapping[str, Any], cost: float | None, target: Mapping[str, float]) -> bool:
+    if cost is not None and cost <= target["cost_eur"] * (1.0 - COMMUNITY_TOLERANCE):
         return False
 
     import_kwh = _to_float(row, "community_import_kwh")
     export_kwh = _to_float(row, "community_export_kwh")
     self_consumption = _to_float(row, "community_solar_self_consumption_rate", "self_consumption_rate")
 
-    if import_kwh is not None and import_kwh > RBCSMART_TARGET["community_import_kwh"] * (1.0 + COMMUNITY_TOLERANCE):
+    if import_kwh is not None and import_kwh > target["community_import_kwh"] * (1.0 + COMMUNITY_TOLERANCE):
         return True
-    if export_kwh is not None and export_kwh > RBCSMART_TARGET["community_export_kwh"] * (1.0 + COMMUNITY_TOLERANCE):
+    if export_kwh is not None and export_kwh > target["community_export_kwh"] * (1.0 + COMMUNITY_TOLERANCE):
         return True
     if (
         self_consumption is not None
-        and self_consumption < RBCSMART_TARGET["community_solar_self_consumption_rate"] * (1.0 - COMMUNITY_TOLERANCE)
+        and self_consumption < target["community_solar_self_consumption_rate"] * (1.0 - COMMUNITY_TOLERANCE)
     ):
         return True
     return False
 
 
-def _verdict(row: Mapping[str, Any], cost: float | None) -> tuple[str, str]:
+def _verdict(
+    row: Mapping[str, Any],
+    cost: float | None,
+    *,
+    target: Mapping[str, float],
+    success_cost_eur: float,
+) -> tuple[str, str]:
     status = str(row.get("status") or "").strip().lower()
     exit_code = str(row.get("exit_code") or "").strip()
     if status and status not in {"finished", "success", "completed"}:
@@ -141,7 +183,7 @@ def _verdict(row: Mapping[str, Any], cost: float | None) -> tuple[str, str]:
         return "FAIL_RUNTIME", f"exit_code={exit_code}"
 
     ev_min = _to_float(row, "ev_min_acceptable_feasible_rate")
-    ev_tol = _to_float(row, "ev_within_tolerance_rate", "ev_within_tolerance_feasible_rate")
+    ev_tol = _to_float(row, "ev_within_tolerance_feasible_rate", "ev_within_tolerance_rate")
     violation = _to_float(row, "electrical_violation_kwh")
 
     if ev_min is None or ev_min < SUCCESS_EV_MIN:
@@ -150,18 +192,24 @@ def _verdict(row: Mapping[str, Any], cost: float | None) -> tuple[str, str]:
         return "FAIL_ELECTRICAL", f"electrical_violation_kwh={_fmt_float(violation)}"
     if ev_tol is None or ev_tol < SUCCESS_EV_TOLERANCE:
         return "FAIL_EV_TOL", f"ev_tol={_fmt_float(ev_tol)} < {SUCCESS_EV_TOLERANCE}"
-    if cost is None or cost > SUCCESS_COST_EUR:
-        return "FAIL_COST", f"cost={_fmt_float(cost, 1)} > {SUCCESS_COST_EUR}"
-    if _community_delta_bad(row, cost):
+    if cost is None or cost > success_cost_eur:
+        return "FAIL_COST", f"cost={_fmt_float(cost, 1)} > {success_cost_eur:.1f}"
+    if _community_delta_bad(row, cost, target):
         return "FAIL_COMMUNITY", "community metric worse than RBCSmart tolerance"
     return "PASS", "passes W6 RBCSmart gates"
 
 
-def _normalise_row(row: Mapping[str, Any], source: Path) -> dict[str, Any]:
+def _normalise_row(
+    row: Mapping[str, Any],
+    source: Path,
+    *,
+    target: Mapping[str, float],
+    success_cost_eur: float,
+) -> dict[str, Any]:
     label = _identity(row)
     cost = _to_float(row, "community_cost_eur", "total_cost", "cost")
     ev_min = _to_float(row, "ev_min_acceptable_feasible_rate")
-    ev_tol = _to_float(row, "ev_within_tolerance_rate", "ev_within_tolerance_feasible_rate")
+    ev_tol = _to_float(row, "ev_within_tolerance_feasible_rate", "ev_within_tolerance_rate")
     violation = _to_float(row, "electrical_violation_kwh")
     battery = _to_float(row, "battery_throughput_kwh", "battery_total_throughput_kwh")
     v2g = _to_float(row, "v2g_export_kwh", "ev_v2g_discharge_kwh")
@@ -169,11 +217,11 @@ def _normalise_row(row: Mapping[str, Any], source: Path) -> dict[str, Any]:
     community_export = _to_float(row, "community_export_kwh")
     self_consumption = _to_float(row, "community_solar_self_consumption_rate", "self_consumption_rate")
     runtime = _to_float(row, "run_duration_seconds", "runtime_seconds")
-    verdict, reason = _verdict(row, cost)
+    verdict, reason = _verdict(row, cost, target=target, success_cost_eur=success_cost_eur)
 
-    cost_delta = None if cost is None else cost - RBCSMART_TARGET["cost_eur"]
-    battery_ratio = None if battery is None else battery / RBCSMART_TARGET["battery_throughput_kwh"]
-    v2g_delta = None if v2g is None else v2g - RBCSMART_TARGET["v2g_export_kwh"]
+    cost_delta = None if cost is None else cost - target["cost_eur"]
+    battery_ratio = None if battery is None else battery / target["battery_throughput_kwh"]
+    v2g_delta = None if v2g is None else v2g - target["v2g_export_kwh"]
     cost_ratio_bau = str(row.get("cost_ratio_to_bau") or "").strip()
 
     return {
@@ -190,7 +238,7 @@ def _normalise_row(row: Mapping[str, Any], source: Path) -> dict[str, Any]:
         "verdict_reason": reason,
         "cost_eur": cost,
         "cost_delta_vs_rbc_smart": cost_delta,
-        "cost_ratio_vs_rbc_smart": None if cost is None else cost / RBCSMART_TARGET["cost_eur"],
+        "cost_ratio_vs_rbc_smart": None if cost is None else cost / target["cost_eur"],
         "cost_ratio_to_bau_status": cost_ratio_bau if cost_ratio_bau else "unavailable_bau_disabled",
         "ev_min_acceptable_feasible_rate": ev_min,
         "ev_within_tolerance_rate": ev_tol,
@@ -202,15 +250,15 @@ def _normalise_row(row: Mapping[str, Any], source: Path) -> dict[str, Any]:
         "v2g_delta_vs_rbc_smart": v2g_delta,
         "community_import_kwh": community_import,
         "community_import_delta_vs_rbc_smart": (
-            None if community_import is None else community_import - RBCSMART_TARGET["community_import_kwh"]
+            None if community_import is None else community_import - target["community_import_kwh"]
         ),
         "community_export_kwh": community_export,
         "community_export_delta_vs_rbc_smart": (
-            None if community_export is None else community_export - RBCSMART_TARGET["community_export_kwh"]
+            None if community_export is None else community_export - target["community_export_kwh"]
         ),
         "community_solar_self_consumption_rate": self_consumption,
         "self_consumption_delta_vs_rbc_smart": (
-            None if self_consumption is None else self_consumption - RBCSMART_TARGET["community_solar_self_consumption_rate"]
+            None if self_consumption is None else self_consumption - target["community_solar_self_consumption_rate"]
         ),
         "peak_daily_ratio_to_bau": _to_float(row, "peak_daily_ratio_to_bau"),
         "peak_all_time_ratio_to_bau": _to_float(row, "peak_all_time_ratio_to_bau"),
@@ -223,11 +271,17 @@ def _normalise_row(row: Mapping[str, Any], source: Path) -> dict[str, Any]:
     }
 
 
-def build_scorecard(summary_csvs: Sequence[Path]) -> list[dict[str, Any]]:
+def build_scorecard(
+    summary_csvs: Sequence[Path],
+    *,
+    target: Mapping[str, float] = DEFAULT_RBCSMART_TARGET,
+    success_cost_eur: float | None = None,
+) -> list[dict[str, Any]]:
+    success_cost_eur = target["cost_eur"] if success_cost_eur is None else success_cost_eur
     rows: list[dict[str, Any]] = []
     for path in summary_csvs:
         for row in _read_csv(path):
-            rows.append(_normalise_row(row, path))
+            rows.append(_normalise_row(row, path, target=target, success_cost_eur=success_cost_eur))
 
     rows.sort(
         key=lambda row: (
@@ -268,7 +322,13 @@ def _markdown_table(rows: Sequence[Mapping[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _markdown_summary(rows: Sequence[Mapping[str, Any]]) -> str:
+def _markdown_summary(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    target: Mapping[str, float],
+    success_cost_eur: float,
+    target_label: str,
+) -> str:
     verdict_counts: dict[str, int] = {}
     for row in rows:
         verdict = str(row.get("verdict") or "")
@@ -276,7 +336,7 @@ def _markdown_summary(rows: Sequence[Mapping[str, Any]]) -> str:
     counts = "\n".join(f"- {verdict}: {count}" for verdict, count in sorted(verdict_counts.items()))
     return f"""# Phase 10 Candidate Scorecard
 
-Target: RBCSmart (`cost <= {SUCCESS_COST_EUR}`, `ev_min >= {SUCCESS_EV_MIN}`,
+Target: {target_label} (`cost <= {success_cost_eur:.3f}`, `ev_min >= {SUCCESS_EV_MIN}`,
 `ev_within_tolerance >= {SUCCESS_EV_TOLERANCE}`, no electrical violations).
 
 BAU ratios are marked unavailable when BAU export was intentionally disabled.
@@ -292,6 +352,22 @@ Verdict counts:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build Phase 10 scorecard rows against RBCSmart gates.")
     parser.add_argument("--summary-csv", action="append", type=Path, required=True)
+    parser.add_argument(
+        "--baseline-csv",
+        type=Path,
+        help="Optional baseline summary CSV used to derive the current RBCSmart target dynamically.",
+    )
+    parser.add_argument(
+        "--baseline-match",
+        default="rbc-smart",
+        help="Case-insensitive text used to select the baseline row from --baseline-csv.",
+    )
+    parser.add_argument(
+        "--success-cost-eur",
+        type=float,
+        default=None,
+        help="Override the cost gate. Defaults to the selected baseline cost.",
+    )
     parser.add_argument("--output-csv", type=Path)
     parser.add_argument("--output-md", type=Path)
     parser.add_argument("--output-json", type=Path)
@@ -300,7 +376,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    rows = build_scorecard(args.summary_csv)
+    target = (
+        _target_from_baseline_csv(args.baseline_csv, args.baseline_match)
+        if args.baseline_csv
+        else DEFAULT_RBCSMART_TARGET
+    )
+    success_cost_eur = target["cost_eur"] if args.success_cost_eur is None else args.success_cost_eur
+    rows = build_scorecard(args.summary_csv, target=target, success_cost_eur=success_cost_eur)
     fieldnames = [
         "source_file",
         "job_id",
@@ -344,7 +426,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         _write_csv(args.output_csv, rows, fieldnames)
     if args.output_md:
         args.output_md.parent.mkdir(parents=True, exist_ok=True)
-        args.output_md.write_text(_markdown_summary(rows), encoding="utf-8")
+        args.output_md.write_text(
+            _markdown_summary(
+                rows,
+                target=target,
+                success_cost_eur=success_cost_eur,
+                target_label=args.baseline_match if args.baseline_csv else "RBCSmart built-in fallback",
+            ),
+            encoding="utf-8",
+        )
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
