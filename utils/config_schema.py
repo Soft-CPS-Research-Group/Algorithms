@@ -501,9 +501,11 @@ class CommunityCoordinatorHyperparameters(ExperimentalPPOHyperparameters):
 
 
 class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
+    output_mode: Literal["actions", "signal"] = "actions"
     c_dim: int = Field(default=18, gt=0)
     cc_action_interval: int = Field(default=1, gt=0)
     ma_window: int = Field(default=96, gt=0)
+    shaping_weight: float = Field(default=1.0, ge=0)
 
 
 class BuildingAgentHyperparameters(BaseModel):
@@ -575,6 +577,7 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "RBCBasicPolicy",
         "RBCCommunityPolicy",
         "RBCSmartPolicy",
+        "SignalAwareRBC",
     ]
     count: int = Field(default=1, ge=1)
     frozen: bool = False
@@ -600,8 +603,8 @@ class SingleAgentRLStageConfig(BaseModel):
         raise ValueError(
             "Algorithm 'SingleAgentRL' is a schema placeholder and has no runtime "
             "implementation yet. Use one of: MADDPG, MATD3, MASAC, IPPO, MAPPO, HAPPO, "
-            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartPolicy, RandomPolicy, "
-            "NormalPolicy, NormalNoBatteryPolicy."
+            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartPolicy, SignalAwareRBC, "
+            "RandomPolicy, NormalPolicy, NormalNoBatteryPolicy."
         )
         return self  # unreachable; satisfies type checker
 

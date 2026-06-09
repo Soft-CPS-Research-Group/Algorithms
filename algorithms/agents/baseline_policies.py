@@ -2175,3 +2175,51 @@ class RBCCommunityPolicy(RBCSmartPolicy):
         if price_charge_allowed:
             return self._clip_storage_action(self.price_charge_rate, obs, obs_map, bounds)
         return float(np.clip(0.0, low, high))
+
+
+class SignalAwareRBC(RBCSmartPolicy):
+    """RBCSmartPolicy variant that follows a high-level battery signal.
+
+    This policy is intended as the leaf stage in a ``CCLevel1 -> SignalAwareRBC``
+    pipeline. A positive context value forces storage charging, a negative
+    value forces storage discharging, and zero or missing context falls back to
+    the standard RBCSmartPolicy storage heuristic. EV and deferrable-load
+    decisions stay delegated to RBCSmartPolicy.
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        self._cc_signal: float = 0.0
+
+    def _policy_type(self) -> str:
+        return "signal_aware_rbc"
+
+    def predict(
+        self,
+        observations: List[np.ndarray],
+        deterministic: bool | None = None,
+        *,
+        context: Any = None,
+    ) -> List[List[float]]:
+        if context is not None:
+            try:
+                self._cc_signal = float(context)
+            except (TypeError, ValueError):
+                self._cc_signal = 0.0
+        else:
+            self._cc_signal = 0.0
+        return super().predict(observations, deterministic)
+
+    def _compute_storage_action(
+        self,
+        agent_idx: int,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        action_name: str,
+        bounds: Sequence[float],
+    ) -> float:
+        if self._cc_signal > 0.0:
+            return self._clip_storage_action(1.0, obs, obs_map, bounds)
+        if self._cc_signal < 0.0:
+            return self._clip_storage_action(-1.0, obs, obs_map, bounds)
+        return super()._compute_storage_action(agent_idx, obs, obs_map, action_name, bounds)

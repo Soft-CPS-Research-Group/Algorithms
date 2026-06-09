@@ -306,6 +306,22 @@ def test_validate_config_accepts_rule_based_with_entity_dynamic(base_config):
     validate_config(config)
 
 
+def test_validate_config_accepts_signal_aware_rbc_stage(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"] = [
+        {
+            "algorithm": "SignalAwareRBC",
+            "count": 17,
+            "hyperparameters": {},
+            "networks": None,
+            "replay_buffer": None,
+            "exploration": None,
+        }
+    ]
+
+    validate_config(config)
+
+
 def test_validate_config_rejects_invalid_mlflow_artifacts_profile(base_config):
     config = copy.deepcopy(base_config)
     config["tracking"]["mlflow_artifacts_profile"] = "all"

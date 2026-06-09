@@ -9,6 +9,7 @@ from algorithms.registry import (
     build_unsupported_algorithm_message,
     is_algorithm_supported,
 )
+from algorithms.pipeline import Ensemble, Pipeline
 
 
 def test_registry_marks_single_agent_placeholder_as_unsupported():
@@ -56,9 +57,29 @@ def test_registered_agents_accept_predict_context_keyword():
 
 
 def test_hierarchical_agents_are_registered_as_raw_observation_agents():
-    for name in ("BuildingAgent", "CCLevel1", "CommunityCoordinator"):
+    for name in ("BuildingAgent", "CCLevel1", "CommunityCoordinator", "SignalAwareRBC"):
         assert is_algorithm_supported(name)
         assert ALGORITHM_REGISTRY[name]._use_raw_observations is True
+
+
+def test_build_execution_unit_supports_cc_level1_signal_aware_rbc_pipeline():
+    config = {
+        "pipeline": [
+            {
+                "algorithm": "CCLevel1",
+                "count": 1,
+                "hyperparameters": {"output_mode": "signal"},
+            },
+            {"algorithm": "SignalAwareRBC", "count": 2},
+        ],
+    }
+
+    unit = build_execution_unit(config)
+
+    assert isinstance(unit, Pipeline)
+    assert unit.stages[0].__class__.__name__ == "CCLevel1Agent"
+    assert isinstance(unit.stages[1], Ensemble)
+    assert len(unit.stages[1].agents) == 2
 
 
 # ----------------------------------------------------------------------

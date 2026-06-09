@@ -28,7 +28,7 @@ Low-level rule:
 Reward:
     Comes from CCRewardLevel1 (community cost + peak penalty + export penalty).
     CC sums per-building rewards as its scalar training signal.
-    NO internal reward: this level is trained purely on community outcomes.
+    Optional internal price-direction shaping is controlled by shaping_weight.
 
 KPIs logged per episode:
     - distribution of reduce/neutral/increase decisions (%)
@@ -264,7 +264,9 @@ class CCLevel1Agent(BaseAgent):
 
         # Temporal abstraction: CC decides every K env steps
         self._cc_action_interval = int(hyper.get("cc_action_interval", 1))
+        self._output_mode = str(hyper.get("output_mode", "actions"))
         self._step_in_interval   = 0
+        self._shaping_weight = float(hyper.get("shaping_weight", 1.0))
 
         # Moving-average window for import/export (obs features 16,17)
         ma_window = int(hyper.get("ma_window", 96))   # default 24h at 15-min
@@ -320,6 +322,9 @@ class CCLevel1Agent(BaseAgent):
         if self._step_in_interval == 0:
             self._sample_new_decision(observations)
 
+        if self._output_mode == "signal":
+            return float(_ACTION_TO_BATTERY[self._cached_action])
+
         battery_cmd = _ACTION_TO_BATTERY[self._cached_action]
 
         actions = []
@@ -368,8 +373,9 @@ class CCLevel1Agent(BaseAgent):
         """
         done = terminated or truncated
 
-        # CC reward = sum of per-building env rewards (all from CCRewardLevel1)
-        self._accumulated_reward += float(sum(rewards))
+        env_reward = float(sum(rewards))
+        shaping = self._compute_signal_quality() * self._shaping_weight
+        self._accumulated_reward += env_reward + shaping
         self._step_in_interval   += 1
 
         interval_complete = (self._step_in_interval >= self._cc_action_interval) or done
@@ -504,6 +510,17 @@ class CCLevel1Agent(BaseAgent):
         self._cached_value     = float(value.item())
 
         self._log_decision(raw_comm)
+
+    def _compute_signal_quality(self) -> float:
+        """Immediate price-direction shaping for the cached community signal."""
+        if self._cached_raw_comm is None:
+            return 0.0
+        c = self._cached_raw_comm
+        price = float(c[0])
+        ref_price = float((c[0] + c[1] + c[2] + c[3]) / 4.0)
+        price_delta = price - ref_price
+        signal = float(_ACTION_TO_BATTERY[self._cached_action])
+        return -signal * price_delta
 
     def _build_community_context(self, observations: List[np.ndarray]) -> np.ndarray:
         """
