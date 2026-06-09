@@ -55,6 +55,12 @@ def test_registered_agents_accept_predict_context_keyword():
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
+def test_hierarchical_agents_are_registered_as_raw_observation_agents():
+    for name in ("BuildingAgent", "CCLevel1", "CommunityCoordinator"):
+        assert is_algorithm_supported(name)
+        assert ALGORITHM_REGISTRY[name]._use_raw_observations is True
+
+
 # ----------------------------------------------------------------------
 # _stage_to_agent_view
 # ----------------------------------------------------------------------

@@ -1,0 +1,121 @@
+# Community Coordinator Level 1 — local development template.
+#
+# Level 1: Global Community Signal
+# CC observes community aggregates only. Emits one global discrete signal:
+#   -1 (reduce) / 0 (neutral) / +1 (increase)
+# Low-level rule maps signal to battery charge/discharge for every building.
+# No per-building features, no EV/SoC/headroom observations.
+
+metadata:
+  experiment_name: "cc_level1"
+  run_name: "CC-L1 Global Signal"
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 50
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "latest_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 57600
+
+bundle:
+  bundle_version: null
+  description: null
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+
+simulator:
+  dataset_name: citylearn_three_phase_electrical_service_demo_15s_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    clip: true
+  reward_function: CCRewardLevel1
+  episodes: 33               # 33 × 1-week episodes ≈ 5h wall (~9.1 min/ep incl. 7 PPO updates)
+  episode_time_steps: 40320  # 1 WEEK at 15s timesteps (7 × 5760 = 40320 steps)
+  simulation_start_time_step: 0
+  simulation_end_time_step: 322560  # 8 unique weeks (8 × 40320)
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    session_name: null
+
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 2
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+# Algorithm — Level-1 CC (global discrete signal, community-only obs)
+pipeline:
+  - algorithm: "CCLevel1"
+    count: 1
+    hyperparameters:
+      # Community-context width (must match _build_community_context index layout)
+      # 0-3: price + 3 forecasts  |  4-8: time (sin/cos/weekend)
+      # 9-10: month (sin/cos)     |  11-15: community power
+      # 16: import_ma             |  17: peak_import_ref
+      c_dim: 18
+      hidden_dims: [128, 128]
+
+      # Temporal abstraction: CC decides every 60 × 15s = 15 min
+      # Week episode = 40320/60 = 672 CC decisions → buffer of 96 fills 7×/ep
+      cc_action_interval: 60
+
+      # Moving-average window for import features (96 steps = 24 h)
+      ma_window: 96
+
+      # Rollout buffer — 7 PPO updates per week-episode
+      num_steps: 96
+
+      # Optimiser
+      lr: 1.0e-4
+
+      # Discount & GAE
+      gamma: 0.99
+      gae_lambda: 0.95
+
+      # PPO update
+      num_epochs: 10
+      mini_batch_size: 64
+      clip_coef: 0.2
+      vf_coef: 0.5
+      ent_coef: 0.01         # discrete action — entropy bonus prevents collapse to one action
+      max_grad_norm: 0.5
+      target_kl: 0.1
+
+execution: null

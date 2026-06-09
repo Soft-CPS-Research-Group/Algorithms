@@ -70,6 +70,18 @@ def test_validate_config_accepts_late_fusion_critic_layers(base_config):
     validate_config(config)
 
 
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        Path("configs/templates/cc_local.yaml"),
+        Path("configs/templates/hiro_local.yaml"),
+    ],
+)
+def test_validate_config_accepts_hierarchical_templates(config_path):
+    with config_path.open("r", encoding="utf-8") as handle:
+        validate_config(yaml.safe_load(handle))
+
+
 def test_to_dict_removes_none_network_optional_layers_from_pipeline(base_config):
     config = copy.deepcopy(base_config)
     config["pipeline"][0]["networks"]["critic"] = {

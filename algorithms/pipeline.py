@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+import numpy as np
 from loguru import logger
 
 from algorithms.execution_unit import ExecutionUnit
@@ -79,6 +80,8 @@ class Pipeline(ExecutionUnit):
         initial_exploration_done: bool,
     ) -> None:
         for stage in self.stages:
+            if getattr(stage, "frozen", False):
+                continue
             stage.update(
                 observations,
                 actions,
@@ -133,7 +136,25 @@ class Pipeline(ExecutionUnit):
         for index, stage in enumerate(self.stages):
             stage_dir = root / f"stage_{index}"
             if not stage_dir.exists():
-                continue
+                # Flat fallback: standalone checkpoint (no stage subdirs).
+                # A model trained solo saves directly to the root dir.
+                # Allow stage 0 to load from root if root contains checkpoint
+                # files — covers the CC-trained-alone → HIRO-loaded scenario.
+                if index == 0 and any(root.iterdir()):
+                    logger.debug(
+                        "Pipeline stage 0: no stage_0/ subdir found; "
+                        "falling back to root '{}' (flat checkpoint format).",
+                        root,
+                    )
+                    stage_dir = root
+                else:
+                    logger.debug(
+                        "Pipeline stage {} ({}): checkpoint dir '{}' not found; skipping.",
+                        index,
+                        type(stage).__name__,
+                        root / f"stage_{index}",
+                    )
+                    continue
             try:
                 stage.load_checkpoint(str(stage_dir))
                 loaded_count += 1
@@ -196,6 +217,16 @@ class Ensemble(ExecutionUnit):
         *,
         context: Any = None,
     ) -> List[Any]:
+        # Per-member context distribution. A hierarchical manager (e.g. the CC)
+        # emits ONE signal per member as an array of length == ensemble size.
+        # In that case member i receives its own element context[i]. A scalar
+        # (or any non-matching context) is broadcast unchanged to every member.
+        try:
+            context_len = len(context) if isinstance(context, (list, tuple, np.ndarray)) else None
+        except TypeError:
+            context_len = None
+        ctx_is_per_member = context_len == len(self.agents)
+
         results: List[Any] = []
         for index, agent in enumerate(self.agents):
             if index >= len(observations):
@@ -211,7 +242,8 @@ class Ensemble(ExecutionUnit):
             else:
                 obs_slice = [observations[index]]
 
-            output = agent.predict(obs_slice, deterministic, context=context)
+            member_context = context[index] if ctx_is_per_member else context
+            output = agent.predict(obs_slice, deterministic, context=member_context)
 
             # Contract: each member receives one obs slice and must return
             # exactly one row (the action vector for that member). Anything

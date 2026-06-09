@@ -15,6 +15,9 @@ from algorithms.agents.baseline_policies import (
     RandomPolicy,
 )
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.agents.building_agent import BuildingAgent
+from algorithms.agents.cc_level1_agent import CCLevel1Agent
+from algorithms.agents.community_coordinator_agent import CommunityCoordinatorAgent
 from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.agents.masac_agent import MASAC
 from algorithms.agents.matd3_agent import MATD3
@@ -24,6 +27,9 @@ from algorithms.execution_unit import ExecutionUnit
 from algorithms.pipeline import Ensemble, Pipeline
 
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
+    "BuildingAgent": BuildingAgent,
+    "CCLevel1": CCLevel1Agent,
+    "CommunityCoordinator": CommunityCoordinatorAgent,
     "HAPPO": HAPPO,
     "IPPO": IPPO,
     "MADDPG": MADDPG,
@@ -152,12 +158,17 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
                 f"Stage '{algorithm_name}' has count={count}; must be >= 1."
             )
 
+        frozen = bool(stage_cfg.get("frozen", False))
+
         if count == 1:
-            stages.append(agent_cls(config=agent_view))
+            unit = agent_cls(config=agent_view)
+            unit.frozen = frozen
+            stages.append(unit)
         else:
-            stages.append(
-                Ensemble([agent_cls(config=agent_view) for _ in range(count)])
-            )
+            members = [agent_cls(config=agent_view) for _ in range(count)]
+            ensemble = Ensemble(members)
+            ensemble.frozen = frozen
+            stages.append(ensemble)
 
     if len(stages) == 1:
         return stages[0]
