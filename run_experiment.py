@@ -7,16 +7,37 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Optional
+
+
+_STARTUP_TRACE_ENABLED = (
+    os.environ.get("OPEVA_STARTUP_TRACE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    and os.path.basename(sys.argv[0]) == "run_experiment.py"
+)
+_STARTUP_TRACE_T0 = time.monotonic()
+
+
+def _startup_trace(message: str) -> None:
+    if not _STARTUP_TRACE_ENABLED:
+        return
+    elapsed = time.monotonic() - _STARTUP_TRACE_T0
+    print(f"[opeva-startup +{elapsed:.3f}s] {message}", file=sys.stderr, flush=True)
+
+
+_startup_trace("module import started")
 
 import mlflow
 import numpy as np
 import yaml
 from loguru import logger
 from pydantic import ValidationError
+
+_startup_trace("third-party imports loaded")
 
 from citylearn.citylearn import CityLearnEnv
 from reward_function.registry import (
@@ -37,6 +58,8 @@ from utils.wrapper_citylearn import Wrapper_CityLearn as Wrapper
 from utils.artifact_manifest import build_manifest, write_manifest
 from utils.bundle_validator import validate_bundle_contract
 from utils.config_schema import validate_config
+
+_startup_trace("project imports loaded")
 
 DEFAULT_LOCAL_BASE = Path(os.environ.get("OPEVA_BASE_DIR", "./runs"))
 
@@ -63,6 +86,7 @@ def cli_main(default_base: Optional[str] = None) -> None:
     args = parser.parse_args()
 
     base_dir = Path(args.base_dir or default_base or DEFAULT_LOCAL_BASE).resolve()
+    _startup_trace(f"cli parsed config={args.config} base_dir={base_dir}")
     run_experiment(config_path=args.config, job_id=args.job_id, base_dir=base_dir)
 
 
@@ -486,10 +510,13 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     """Execute training with outputs written under ``base_dir``/jobs/<job_id>."""
     job_id = _derive_job_id(job_id)
     base_dir = base_dir.resolve()
+    _startup_trace(f"run_experiment entered job_id={job_id} base_dir={base_dir}")
     path_info = _prepare_paths(base_dir, job_id)
+    _startup_trace(f"paths prepared job_dir={path_info['job_dir']}")
 
     with open(config_path, "r", encoding="utf-8") as config_file:
         raw_config = yaml.safe_load(config_file) or {}
+    _startup_trace("config yaml loaded")
 
     try:
         config_model = validate_config(raw_config)
@@ -500,6 +527,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         )
         logger.error("Configuration validation failed:\n{}", messages)
         raise SystemExit(1) from exc
+    _startup_trace("config validated")
 
     config = config_model.to_dict()
     pipeline_cfg = config.get("pipeline") or []
@@ -536,6 +564,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     # removing default sinks avoids duplicate lines in the same file.
     logger.remove()
     file_sink_id = logger.add(str(active_log_file), level=log_level)
+    _startup_trace(f"loguru file sink configured log_file={active_log_file}")
     logger.info("Logging bootstrap to {}", active_log_file)
 
     config_hash = _compute_config_hash(config)
