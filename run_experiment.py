@@ -23,6 +23,7 @@ from reward_function.registry import (
     REWARD_FUNCTION_MAP,
     get_available_reward_function_names,
 )
+from algorithms.agents.base_agent import BaseAgent
 from algorithms.execution_unit import ExecutionUnit
 from algorithms.registry import (
     ENCODED_OBSERVATION_ALGORITHMS,
@@ -350,7 +351,10 @@ def _agent_supports_checkpoint_loading(agent: ExecutionUnit) -> bool:
     load_checkpoint = getattr(type(agent), "load_checkpoint", None)
     if load_checkpoint is None:
         return False
-    return load_checkpoint is not ExecutionUnit.load_checkpoint
+    return load_checkpoint not in {
+        ExecutionUnit.load_checkpoint,
+        BaseAgent.load_checkpoint,
+    }
 
 
 def _resolve_best_checkpoint_run_id(

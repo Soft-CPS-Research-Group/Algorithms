@@ -2276,7 +2276,14 @@ class MADDPG(BaseAgent):
             for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
                 target_param.data.lerp_(local_param.data, tau)
 
-    def predict(self, observations, deterministic: bool = False) -> List[List[float]]:
+    def predict(
+        self,
+        observations,
+        deterministic: bool = False,
+        *,
+        context: Any = None,
+    ) -> List[List[float]]:
+        _ = context
         logger.debug("Predicting actions with deterministic={}.", deterministic)
         actor_observations = self._prepare_policy_actor_observations(observations)
         if deterministic:

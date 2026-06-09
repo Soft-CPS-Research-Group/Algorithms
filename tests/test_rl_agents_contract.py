@@ -169,15 +169,15 @@ def test_centralized_critic_respects_configured_late_fusion_class(agent_cls):
 @pytest.mark.parametrize("agent_cls", [MADDPG, MATD3])
 def test_maddpg_family_respects_configured_multi_head_actor(agent_cls):
     config = _base_rl_config(agent_cls.__name__)
-    config["algorithm"]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
-    config["algorithm"]["networks"]["actor"].update(
+    config["pipeline"][0]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
+    config["pipeline"][0]["networks"]["actor"].update(
         {
             "class": "MultiHeadActor",
             "head_layers": [8],
         }
     )
 
-    agent = agent_cls(config)
+    agent = agent_cls(_agent_view(config))
 
     assert isinstance(agent.actors[0], MultiHeadActor)
 
@@ -185,15 +185,15 @@ def test_maddpg_family_respects_configured_multi_head_actor(agent_cls):
 @pytest.mark.parametrize("agent_cls", [MADDPG, MATD3])
 def test_maddpg_family_rebuilds_semantic_actor_after_environment_attach(agent_cls):
     config = _base_rl_config(agent_cls.__name__)
-    config["algorithm"]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
-    config["algorithm"]["networks"]["actor"].update(
+    config["pipeline"][0]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
+    config["pipeline"][0]["networks"]["actor"].update(
         {
             "class": "SemanticMultiHeadActor",
             "head_layers": [8],
         }
     )
 
-    agent = agent_cls(config)
+    agent = agent_cls(_agent_view(config))
     _attach_bounds(agent)
 
     assert isinstance(agent.actors[0], SemanticMultiHeadActor)

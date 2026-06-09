@@ -24,7 +24,10 @@ class RandomPolicy(RuleBasedPolicy):
         self,
         observations: List[np.ndarray],
         deterministic: bool | None = None,
+        *,
+        context: Any = None,
     ) -> List[List[float]]:
+        _ = context
         actions: List[List[float]] = []
 
         for agent_idx, action_names in enumerate(self._action_labels):
@@ -189,6 +192,8 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         self,
         observations: List[np.ndarray],
         deterministic: bool | None = None,
+        *,
+        context: Any = None,
     ) -> List[List[float]]:
         """Predict with a lightweight per-agent dispatch budget.
 
@@ -199,7 +204,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         actions still preserve the original action order.
         """
 
-        del deterministic
+        del deterministic, context
         actions: List[List[float]] = []
         self._dispatch_budgets = {}
 

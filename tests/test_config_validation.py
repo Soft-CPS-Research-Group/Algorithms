@@ -70,6 +70,28 @@ def test_validate_config_accepts_late_fusion_critic_layers(base_config):
     validate_config(config)
 
 
+def test_to_dict_removes_none_network_optional_layers_from_pipeline(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"][0]["networks"]["critic"] = {
+        "class": "LateFusionCritic",
+        "layers": [64, 32],
+        "state_layers": None,
+        "action_layers": None,
+        "joint_layers": None,
+        "lr": 1.0e-3,
+    }
+    config["pipeline"][0]["networks"]["actor"]["head_layers"] = None
+
+    resolved = validate_config(config).to_dict()
+
+    critic = resolved["pipeline"][0]["networks"]["critic"]
+    actor = resolved["pipeline"][0]["networks"]["actor"]
+    assert "state_layers" not in critic
+    assert "action_layers" not in critic
+    assert "joint_layers" not in critic
+    assert "head_layers" not in actor
+
+
 def test_validate_config_accepts_deucalion_execution(base_config):
     config = copy.deepcopy(base_config)
     config["execution"] = {

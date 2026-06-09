@@ -7,6 +7,8 @@ import pytest
 import yaml
 
 import run_experiment as runner
+from algorithms.agents.base_agent import BaseAgent
+from algorithms.pipeline import Pipeline
 from utils.local_metrics import LocalMetricsLogger
 
 
@@ -182,6 +184,44 @@ class _DummyAgent:
         }
 
 
+class _BaseDefaultCheckpointAgent(BaseAgent):
+    def predict(self, observations, deterministic=None, *, context=None):
+        _ = deterministic, context
+        return observations
+
+    def update(
+        self,
+        observations,
+        actions,
+        rewards,
+        next_observations,
+        terminated,
+        truncated,
+        *,
+        update_target_step,
+        global_learning_step,
+        update_step,
+        initial_exploration_done,
+    ):
+        _ = (
+            observations,
+            actions,
+            rewards,
+            next_observations,
+            terminated,
+            truncated,
+            update_target_step,
+            global_learning_step,
+            update_step,
+            initial_exploration_done,
+        )
+        return None
+
+    def export_artifacts(self, output_dir: str, context: dict | None = None):
+        _ = output_dir, context
+        return {"format": "none", "artifacts": []}
+
+
 class _DummyDynamicAgent(_DummyAgent):
     def export_artifacts(self, output_dir: str, context: dict | None = None):
         _ = context
@@ -304,6 +344,14 @@ def _build_enabled_config(*, artifact_profile: str) -> dict:
             }
         ],
     }
+
+
+def test_checkpoint_support_detection_rejects_baseagent_default_load_checkpoint():
+    assert runner._agent_supports_checkpoint_loading(_BaseDefaultCheckpointAgent()) is False
+
+
+def test_checkpoint_support_detection_accepts_pipeline_load_checkpoint_override():
+    assert runner._agent_supports_checkpoint_loading(Pipeline([_BaseDefaultCheckpointAgent()])) is True
 
 
 def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_path):

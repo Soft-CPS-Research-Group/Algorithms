@@ -135,7 +135,10 @@ class RuleBasedPolicy(BaseAgent):
         self,
         observations: List[np.ndarray],
         deterministic: bool | None = None,
+        *,
+        context: Any = None,
     ) -> List[List[float]]:
+        _ = context
         actions: List[List[float]] = []
 
         for agent_idx, obs in enumerate(observations):

@@ -107,7 +107,14 @@ class MASAC(MADDPG):
         ]
         return actor_optimizers, critic_optimizers
 
-    def predict(self, observations, deterministic: bool = False) -> List[List[float]]:
+    def predict(
+        self,
+        observations,
+        deterministic: bool = False,
+        *,
+        context: Any = None,
+    ) -> List[List[float]]:
+        _ = context
         self.exploration_step += 1
         if not deterministic and self.exploration_step <= self.random_exploration_steps:
             initial_strategy = getattr(self, "initial_exploration_strategy", "uniform_full_range")

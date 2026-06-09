@@ -1,6 +1,9 @@
+import inspect
+
 import pytest
 
 from algorithms.registry import (
+    ALGORITHM_REGISTRY,
     _stage_to_agent_view,
     build_execution_unit,
     build_unsupported_algorithm_message,
@@ -41,6 +44,15 @@ def test_build_execution_unit_error_for_null_algorithm_in_stage():
 def test_build_unsupported_algorithm_message_for_missing_name():
     message = build_unsupported_algorithm_message(None)
     assert "Algorithm name is required" in message
+
+
+def test_registered_agents_accept_predict_context_keyword():
+    for name, agent_cls in ALGORITHM_REGISTRY.items():
+        signature = inspect.signature(agent_cls.predict)
+        parameter = signature.parameters.get("context")
+
+        assert parameter is not None, f"{name}.predict must accept context"
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
 # ----------------------------------------------------------------------

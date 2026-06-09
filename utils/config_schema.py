@@ -643,12 +643,16 @@ class ProjectConfig(BaseModel):
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain dictionary using original key names (aliases)."""
         payload = self.model_dump(by_alias=True)
-        networks = payload.get("algorithm", {}).get("networks")
-        if isinstance(networks, dict):
+        for stage in payload.get("pipeline", []) or []:
+            if not isinstance(stage, dict):
+                continue
+            networks = stage.get("networks")
+            if not isinstance(networks, dict):
+                continue
             for network in networks.values():
                 if not isinstance(network, dict):
                     continue
-                for key in ("state_layers", "action_layers", "joint_layers"):
+                for key in ("state_layers", "action_layers", "joint_layers", "head_layers"):
                     if network.get(key) is None:
                         network.pop(key, None)
         return payload
