@@ -222,7 +222,7 @@ def _entity_config() -> Dict[str, Any]:
         "training": {"steps_between_training_updates": 1, "target_update_interval": 0},
         "checkpointing": {"checkpoint_interval": None, "require_update_step": True, "require_initial_exploration_done": True},
         "tracking": {"mlflow_enabled": False},
-        "algorithm": {"name": "RuleBasedPolicy"},
+        "pipeline": [{"algorithm": "RuleBasedPolicy", "count": 1, "hyperparameters": {}}],
         "simulator": {
             "interface": "entity",
             "topology_mode": "dynamic",
