@@ -1495,6 +1495,8 @@ class MADDPG(BaseAgent):
         actor_behavior_cloning_loss_values: List[float] = []
         actor_behavior_cloning_ev_loss_values: List[float] = []
         actor_behavior_cloning_storage_loss_values: List[float] = []
+        actor_behavior_cloning_deferrable_loss_values: List[float] = []
+        actor_behavior_cloning_other_loss_values: List[float] = []
         actor_behavior_cloning_regularization_values: List[float] = []
         actor_behavior_cloning_extra_loss_values: List[float] = []
         actor_behavior_cloning_extra_grad_norm_values: List[float] = []
@@ -1586,7 +1588,12 @@ class MADDPG(BaseAgent):
                         predicted_action,
                         behavior_actions_all[agent_num],
                     )
-                    behavior_cloning_ev_loss, behavior_cloning_storage_loss = (
+                    (
+                        behavior_cloning_ev_loss,
+                        behavior_cloning_storage_loss,
+                        behavior_cloning_deferrable_loss,
+                        behavior_cloning_other_loss,
+                    ) = (
                         self._actor_behavior_cloning_type_losses(
                             agent_num,
                             predicted_action,
@@ -1642,6 +1649,12 @@ class MADDPG(BaseAgent):
                 actor_behavior_cloning_storage_loss_values.append(
                     float(behavior_cloning_storage_loss.detach().item())
                 )
+                actor_behavior_cloning_deferrable_loss_values.append(
+                    float(behavior_cloning_deferrable_loss.detach().item())
+                )
+                actor_behavior_cloning_other_loss_values.append(
+                    float(behavior_cloning_other_loss.detach().item())
+                )
                 actor_behavior_cloning_regularization_values.append(
                     float(behavior_cloning_regularization.detach().item())
                 )
@@ -1670,6 +1683,8 @@ class MADDPG(BaseAgent):
             actor_behavior_cloning_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_ev_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_storage_loss_values = [0.0 for _ in range(self.num_agents)]
+            actor_behavior_cloning_deferrable_loss_values = [0.0 for _ in range(self.num_agents)]
+            actor_behavior_cloning_other_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_regularization_values = [0.0 for _ in range(self.num_agents)]
             actor_behavior_cloning_extra_loss_values = [0.0]
             actor_behavior_cloning_extra_grad_norm_values = [0.0]
@@ -1725,6 +1740,12 @@ class MADDPG(BaseAgent):
                 ),
                 "MADDPG/actor_behavior_cloning_storage_loss_mean": float(
                     np.mean(actor_behavior_cloning_storage_loss_values)
+                ),
+                "MADDPG/actor_behavior_cloning_deferrable_loss_mean": float(
+                    np.mean(actor_behavior_cloning_deferrable_loss_values)
+                ),
+                "MADDPG/actor_behavior_cloning_other_loss_mean": float(
+                    np.mean(actor_behavior_cloning_other_loss_values)
                 ),
                 "MADDPG/actor_behavior_cloning_regularization_mean": float(
                     np.mean(actor_behavior_cloning_regularization_values)
@@ -1828,6 +1849,12 @@ class MADDPG(BaseAgent):
                     )
                     training_metrics[f"MADDPG/actor_behavior_cloning_storage_loss_agent_{agent_num}"] = (
                         actor_behavior_cloning_storage_loss_values[agent_num]
+                    )
+                    training_metrics[f"MADDPG/actor_behavior_cloning_deferrable_loss_agent_{agent_num}"] = (
+                        actor_behavior_cloning_deferrable_loss_values[agent_num]
+                    )
+                    training_metrics[f"MADDPG/actor_behavior_cloning_other_loss_agent_{agent_num}"] = (
+                        actor_behavior_cloning_other_loss_values[agent_num]
                     )
                     training_metrics[f"MADDPG/actor_behavior_cloning_regularization_agent_{agent_num}"] = (
                         actor_behavior_cloning_regularization_values[agent_num]
@@ -3723,7 +3750,7 @@ class MADDPG(BaseAgent):
         agent_idx: int,
         predicted_action: torch.Tensor,
         replay_action: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         predicted_normalized = self._normalize_scaled_action_tensor(agent_idx, predicted_action)
         replay_normalized = self._normalize_scaled_action_tensor(agent_idx, replay_action.detach())
         squared_error = (predicted_normalized - replay_normalized).pow(2)
@@ -3741,9 +3768,24 @@ class MADDPG(BaseAgent):
             dtype=squared_error.dtype,
             device=squared_error.device,
         )
+        deferrable_mask = self._action_type_mask_tensor(
+            agent_idx,
+            action_dim=squared_error.shape[1],
+            predicate=self._is_deferrable_action_name,
+            dtype=squared_error.dtype,
+            device=squared_error.device,
+        )
+        other_mask = self._other_action_type_mask_tensor(
+            agent_idx,
+            action_dim=squared_error.shape[1],
+            dtype=squared_error.dtype,
+            device=squared_error.device,
+        )
         return (
             self._masked_mean(squared_error, ev_mask),
             self._masked_mean(squared_error, storage_mask),
+            self._masked_mean(squared_error, deferrable_mask),
+            self._masked_mean(squared_error, other_mask),
         )
 
     @staticmethod
@@ -3766,6 +3808,26 @@ class MADDPG(BaseAgent):
             1.0 if action_idx < len(names) and predicate(names[action_idx]) else 0.0
             for action_idx in range(int(action_dim))
         ]
+        return torch.as_tensor(values, dtype=dtype, device=device)
+
+    def _other_action_type_mask_tensor(
+        self,
+        agent_idx: int,
+        *,
+        action_dim: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        names = self._action_names_for_agent(agent_idx)
+        values = []
+        for action_idx in range(int(action_dim)):
+            action_name = names[action_idx] if action_idx < len(names) else ""
+            is_known = (
+                self._is_ev_action_name(action_name)
+                or self._is_storage_action_name(action_name)
+                or self._is_deferrable_action_name(action_name)
+            )
+            values.append(0.0 if is_known else 1.0)
         return torch.as_tensor(values, dtype=dtype, device=device)
 
     def _actor_behavior_cloning_action_weights(

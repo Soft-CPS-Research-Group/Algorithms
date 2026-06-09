@@ -249,6 +249,10 @@ class MATD3(MADDPG):
         actor_policy_q_abs_mean_values: List[float] = []
         actor_grad_norm_values: List[float] = []
         actor_bc_values: List[float] = []
+        actor_bc_ev_values: List[float] = []
+        actor_bc_storage_values: List[float] = []
+        actor_bc_deferrable_values: List[float] = []
+        actor_bc_other_values: List[float] = []
         actor_reg_values: List[float] = []
         actor_residual_delta_l2_values: List[float] = []
         actor_storage_smoothness_values: List[float] = []
@@ -316,6 +320,16 @@ class MATD3(MADDPG):
                         predicted_action,
                         behavior_actions_all[agent_idx],
                     )
+                    (
+                        behavior_cloning_ev_loss,
+                        behavior_cloning_storage_loss,
+                        behavior_cloning_deferrable_loss,
+                        behavior_cloning_other_loss,
+                    ) = self._actor_behavior_cloning_type_losses(
+                        agent_idx,
+                        predicted_action,
+                        behavior_actions_all[agent_idx],
+                    )
                     residual_delta_l2 = self._residual_delta_l2(
                         agent_idx,
                         predicted_action,
@@ -357,6 +371,10 @@ class MATD3(MADDPG):
                 actor_policy_q_abs_mean_values.append(float(actor_policy_q_abs_mean.detach().item()))
                 actor_reg_values.append(float(actor_regularization.detach().item()))
                 actor_bc_values.append(float(behavior_cloning_loss.detach().item()))
+                actor_bc_ev_values.append(float(behavior_cloning_ev_loss.detach().item()))
+                actor_bc_storage_values.append(float(behavior_cloning_storage_loss.detach().item()))
+                actor_bc_deferrable_values.append(float(behavior_cloning_deferrable_loss.detach().item()))
+                actor_bc_other_values.append(float(behavior_cloning_other_loss.detach().item()))
                 actor_residual_delta_l2_values.append(float(residual_delta_l2.detach().item()))
                 actor_storage_smoothness_values.append(float(storage_smoothness_l2.detach().item()))
                 actor_auxiliary_loss_values.append(float(actor_auxiliary_loss.detach().item()))
@@ -374,6 +392,10 @@ class MATD3(MADDPG):
             actor_policy_q_abs_mean_values = [0.0 for _ in range(self.num_agents)]
             actor_reg_values = [0.0 for _ in range(self.num_agents)]
             actor_bc_values = [0.0 for _ in range(self.num_agents)]
+            actor_bc_ev_values = [0.0 for _ in range(self.num_agents)]
+            actor_bc_storage_values = [0.0 for _ in range(self.num_agents)]
+            actor_bc_deferrable_values = [0.0 for _ in range(self.num_agents)]
+            actor_bc_other_values = [0.0 for _ in range(self.num_agents)]
             actor_residual_delta_l2_values = [0.0 for _ in range(self.num_agents)]
             actor_storage_smoothness_values = [0.0 for _ in range(self.num_agents)]
             actor_auxiliary_loss_values = [0.0 for _ in range(self.num_agents)]
@@ -415,6 +437,14 @@ class MATD3(MADDPG):
                 "MATD3/actor_storage_smoothness_l2_mean": float(np.mean(actor_storage_smoothness_values)),
                 "MATD3/actor_auxiliary_loss_mean": float(np.mean(actor_auxiliary_loss_values)),
                 "MATD3/actor_behavior_cloning_loss_mean": float(np.mean(actor_bc_values)),
+                "MATD3/actor_behavior_cloning_ev_loss_mean": float(np.mean(actor_bc_ev_values)),
+                "MATD3/actor_behavior_cloning_storage_loss_mean": float(
+                    np.mean(actor_bc_storage_values)
+                ),
+                "MATD3/actor_behavior_cloning_deferrable_loss_mean": float(
+                    np.mean(actor_bc_deferrable_values)
+                ),
+                "MATD3/actor_behavior_cloning_other_loss_mean": float(np.mean(actor_bc_other_values)),
                 "MATD3/actor_behavior_cloning_effective_weight": float(
                     actor_behavior_cloning_effective_weight
                 ),
@@ -454,6 +484,21 @@ class MATD3(MADDPG):
                     metrics[f"MATD3/critic_2_loss_agent_{agent_idx}"] = critic_2_loss_values[agent_idx]
                     metrics[f"MATD3/critic_gap_abs_agent_{agent_idx}"] = critic_gap_values[agent_idx]
                     metrics[f"MATD3/actor_loss_agent_{agent_idx}"] = actor_loss_values[agent_idx]
+                    metrics[f"MATD3/actor_behavior_cloning_loss_agent_{agent_idx}"] = actor_bc_values[
+                        agent_idx
+                    ]
+                    metrics[f"MATD3/actor_behavior_cloning_ev_loss_agent_{agent_idx}"] = (
+                        actor_bc_ev_values[agent_idx]
+                    )
+                    metrics[f"MATD3/actor_behavior_cloning_storage_loss_agent_{agent_idx}"] = (
+                        actor_bc_storage_values[agent_idx]
+                    )
+                    metrics[f"MATD3/actor_behavior_cloning_deferrable_loss_agent_{agent_idx}"] = (
+                        actor_bc_deferrable_values[agent_idx]
+                    )
+                    metrics[f"MATD3/actor_behavior_cloning_other_loss_agent_{agent_idx}"] = (
+                        actor_bc_other_values[agent_idx]
+                    )
             metrics.update(policy_deviation_metrics)
             metrics.update(replay_deviation_metrics)
             self._record_training_metrics(metrics, global_learning_step)

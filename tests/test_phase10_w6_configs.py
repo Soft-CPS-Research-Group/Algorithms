@@ -202,12 +202,13 @@ def test_w6_remote_smoke_can_generate_w7_dense_conservative_and_headed_variants(
         recipes=[
             "w7_residual_comm_ev_dense_conservative",
             "w7_residual_comm_ev_dense_heads",
+            "w7_residual_comm_ev_dense_heads_ev_pretrain",
         ],
         algorithms=["MATD3"],
         include_baselines=False,
     )
 
-    assert len(rows) == 2
+    assert len(rows) == 3
 
     conservative = next(row for row in rows if row["recipe"] == "w7_residual_comm_ev_dense_conservative")
     conservative_config = _load(Path(conservative["config_path"]))
@@ -232,6 +233,21 @@ def test_w6_remote_smoke_can_generate_w7_dense_conservative_and_headed_variants(
     assert headed_exploration["actor_frame_stack_steps"] == 3
     assert headed_exploration["actor_auxiliary_loss_weight"] == 0.020
     assert headed_exploration["actor_storage_smoothness_l2_penalty"] == 0.010
+
+    ev_pretrain = next(
+        row for row in rows if row["recipe"] == "w7_residual_comm_ev_dense_heads_ev_pretrain"
+    )
+    ev_pretrain_config = _load(Path(ev_pretrain["config_path"]))
+    validate_config(ev_pretrain_config)
+    assert _alg(ev_pretrain_config)["networks"]["actor"]["class"] == "SemanticMultiHeadActor"
+    assert _alg(ev_pretrain_config)["networks"]["actor"]["head_layers"] == [128, 64]
+    ev_pretrain_exploration = _alg(ev_pretrain_config)["exploration"]["params"]
+    assert ev_pretrain_exploration["actor_offline_bc_pretrain_steps"] == 256
+    assert ev_pretrain_exploration["actor_ev_behavior_cloning_multiplier"] == 32.0
+    assert ev_pretrain_exploration["actor_ev_behavior_cloning_zero_target_weight"] == 2.0
+    assert ev_pretrain_exploration["actor_behavior_cloning_extra_updates"] == 6
+    assert ev_pretrain_exploration["actor_policy_loss_weight"] == 0.045
+    assert ev_pretrain_exploration["actor_storage_smoothness_l2_penalty"] == 0.006
 
 
 def test_w6_remote_smoke_can_generate_w7_min_service_context_variant(tmp_path):
@@ -300,6 +316,37 @@ def test_w6_remote_smoke_can_generate_w7_heads_clone_diagnostic(tmp_path):
     assert exploration["actor_frame_stack_steps"] == 3
     assert exploration["actor_auxiliary_loss_weight"] == 0.020
     assert exploration["n_step_returns"] == 1
+
+
+def test_w6_local_can_generate_w7_strict_semantic_head_clone(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6a-local",
+        seeds=[123],
+        recipes=["w7_heads_clone_ev_strict"],
+        algorithms=["MATD3"],
+        include_baselines=False,
+    )
+
+    assert len(rows) == 4
+    config = _load(Path(rows[0]["config_path"]))
+    validate_config(config)
+
+    algorithm = _alg(config)
+    assert algorithm["networks"]["actor"]["class"] == "SemanticMultiHeadActor"
+    assert algorithm["networks"]["actor"]["head_layers"] == [128, 64]
+
+    exploration = algorithm["exploration"]["params"]
+    assert exploration["warm_start_policy"] == "RBCCommunityPolicy"
+    assert exploration["residual_policy_enabled"] is False
+    assert exploration["actor_policy_loss_weight"] == 0.0
+    assert exploration["actor_behavior_cloning_weight"] == 1.0
+    assert exploration["actor_behavior_cloning_min_weight"] == 1.0
+    assert exploration["actor_ev_behavior_cloning_multiplier"] == 36.0
+    assert exploration["actor_ev_behavior_cloning_zero_target_weight"] == 0.5
+    assert exploration["actor_offline_bc_pretrain_steps"] == 256
+    assert exploration["actor_frame_stack_steps"] == 3
+    assert exploration["actor_auxiliary_loss_weight"] == 0.020
 
 
 def test_w6a_local_can_generate_reward_regularized_variants(tmp_path):
