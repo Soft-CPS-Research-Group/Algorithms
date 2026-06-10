@@ -2,10 +2,33 @@
 
 from __future__ import annotations
 
+import os
+import sys
+import time
 from typing import Any, Dict, List, Type
 
-from loguru import logger
 
+_REGISTRY_TRACE_ENABLED = (
+    os.environ.get("OPEVA_STARTUP_TRACE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    and os.path.basename(sys.argv[0]) == "run_experiment.py"
+)
+_REGISTRY_TRACE_T0 = time.monotonic()
+
+
+def _registry_trace(message: str) -> None:
+    if not _REGISTRY_TRACE_ENABLED:
+        return
+    elapsed = time.monotonic() - _REGISTRY_TRACE_T0
+    print(f"[opeva-registry +{elapsed:.3f}s] {message}", file=sys.stderr, flush=True)
+
+
+_registry_trace("module import started")
+
+_registry_trace("before loguru import")
+from loguru import logger
+_registry_trace("after loguru import")
+
+_registry_trace("before baseline policies import")
 from algorithms.agents.baseline_policies import (
     NormalNoBatteryPolicy,
     NormalPolicy,
@@ -15,17 +38,40 @@ from algorithms.agents.baseline_policies import (
     RandomPolicy,
     SignalAwareRBC,
 )
+_registry_trace("after baseline policies import")
+_registry_trace("before base agent import")
 from algorithms.agents.base_agent import BaseAgent
+_registry_trace("after base agent import")
+_registry_trace("before building agent import")
 from algorithms.agents.building_agent import BuildingAgent
+_registry_trace("after building agent import")
+_registry_trace("before cc level1 import")
 from algorithms.agents.cc_level1_agent import CCLevel1Agent
+_registry_trace("after cc level1 import")
+_registry_trace("before community coordinator import")
 from algorithms.agents.community_coordinator_agent import CommunityCoordinatorAgent
+_registry_trace("after community coordinator import")
+_registry_trace("before MADDPG import")
 from algorithms.agents.maddpg_agent import MADDPG
+_registry_trace("after MADDPG import")
+_registry_trace("before MASAC import")
 from algorithms.agents.masac_agent import MASAC
+_registry_trace("after MASAC import")
+_registry_trace("before MATD3 import")
 from algorithms.agents.matd3_agent import MATD3
+_registry_trace("after MATD3 import")
+_registry_trace("before PPO agents import")
 from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO
+_registry_trace("after PPO agents import")
+_registry_trace("before RuleBasedPolicy import")
 from algorithms.agents.rbc_agent import RuleBasedPolicy
+_registry_trace("after RuleBasedPolicy import")
+_registry_trace("before execution unit import")
 from algorithms.execution_unit import ExecutionUnit
+_registry_trace("after execution unit import")
+_registry_trace("before pipeline import")
 from algorithms.pipeline import Ensemble, Pipeline
+_registry_trace("after pipeline import")
 
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "BuildingAgent": BuildingAgent,
@@ -57,6 +103,7 @@ ENCODED_OBSERVATION_ALGORITHMS: frozenset[str] = frozenset(
     name for name, cls in ALGORITHM_REGISTRY.items()
     if not cls._use_raw_observations
 )
+_registry_trace("registry built")
 
 
 def supported_algorithms() -> List[str]:

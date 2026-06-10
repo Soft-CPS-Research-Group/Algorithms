@@ -39,25 +39,41 @@ from pydantic import ValidationError
 
 _startup_trace("third-party imports loaded")
 
+_startup_trace("before CityLearnEnv import")
 from citylearn.citylearn import CityLearnEnv
+_startup_trace("after CityLearnEnv import")
+_startup_trace("before reward registry import")
 from reward_function.registry import (
     REWARD_FUNCTION_MAP,
     get_available_reward_function_names,
 )
+_startup_trace("after reward registry import")
+_startup_trace("before base agent import")
 from algorithms.agents.base_agent import BaseAgent
+_startup_trace("after base agent import")
+_startup_trace("before execution unit import")
 from algorithms.execution_unit import ExecutionUnit
+_startup_trace("after execution unit import")
+_startup_trace("before algorithms registry import")
 from algorithms.registry import (
     ENCODED_OBSERVATION_ALGORITHMS,
     build_execution_unit,
     build_unsupported_algorithm_message,
 )
+_startup_trace("after algorithms registry import")
+_startup_trace("before helper imports")
 from utils.helpers import set_default_config
 from utils.mlflow_helper import end_mlflow_run, start_mlflow_run
 from utils.pipeline_utils import summarise_pipeline_algorithms
+_startup_trace("after helper imports")
+_startup_trace("before wrapper import")
 from utils.wrapper_citylearn import Wrapper_CityLearn as Wrapper
+_startup_trace("after wrapper import")
+_startup_trace("before artifact imports")
 from utils.artifact_manifest import build_manifest, write_manifest
 from utils.bundle_validator import validate_bundle_contract
 from utils.config_schema import validate_config
+_startup_trace("after artifact imports")
 
 _startup_trace("project imports loaded")
 
