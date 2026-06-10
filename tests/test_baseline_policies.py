@@ -28,6 +28,16 @@ def _attach(agent, observation_names, action_names):
     )
 
 
+def _attach_with_step_seconds(agent, observation_names, action_names, seconds_per_time_step):
+    agent.attach_environment(
+        observation_names=[observation_names],
+        action_names=[action_names],
+        action_space=[DummySpace([-1.0, -1.0, 0.0], [1.0, 1.0, 1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": seconds_per_time_step},
+    )
+
+
 def _base_observation_names():
     return [
         "district__electricity_pricing",
@@ -274,7 +284,13 @@ def test_normal_policy_clips_storage_to_three_phase_headroom():
     agent = NormalPolicy(
         {
             "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
-            "algorithm": {"name": "NormalPolicy", "hyperparameters": {}},
+            "algorithm": {
+                "name": "NormalPolicy",
+                "hyperparameters": {
+                    "electrical_service_headroom_safety_margin_kw": 0.0,
+                    "use_current_base_service_headroom": False,
+                },
+            },
         }
     )
     observation_names = [
@@ -929,6 +945,112 @@ def test_rbc_smart_policy_respects_simulator_ev_charge_capacity():
     assert actions[0][1] == pytest.approx(0.0)
 
 
+def test_rbc_smart_policy_subhour_urgent_ev_respects_zero_available_charge():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {
+                    "flex_trickle_charge": 0.0,
+                    "ev_service_floor_rate": 0.25,
+                    "ev_service_margin_rate": 0.05,
+                    "ev_service_lookahead_hours": 4.0,
+                    "ev_deadline_buffer_hours": 0.25,
+                },
+            }
+        }
+    )
+    names = _base_observation_names() + [
+        "charger::Building_1/charger_1_1::can_charge",
+        "charger::Building_1/charger_1_1::available_charge_action_normalized",
+    ]
+    _attach_with_step_seconds(agent, names, _action_names(), 900)
+    obs = np.array(
+        [
+            0.10,
+            0.40,
+            0.50,
+            0.60,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.5,
+            1.0,
+            0.20,
+            0.80,
+            60.0,
+            2.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] == 0.0
+
+
+def test_rbc_smart_policy_subhour_urgent_ev_respects_cannot_charge():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {
+                    "flex_trickle_charge": 0.0,
+                    "ev_service_floor_rate": 0.25,
+                    "ev_service_margin_rate": 0.05,
+                    "ev_service_lookahead_hours": 4.0,
+                    "ev_deadline_buffer_hours": 0.25,
+                },
+            }
+        }
+    )
+    names = _base_observation_names() + [
+        "charger::Building_1/charger_1_1::can_charge",
+        "charger::Building_1/charger_1_1::available_charge_action_normalized",
+    ]
+    _attach_with_step_seconds(agent, names, _action_names(), 900)
+    obs = np.array(
+        [
+            0.10,
+            0.40,
+            0.50,
+            0.60,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.5,
+            1.0,
+            0.20,
+            0.80,
+            60.0,
+            2.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] == 0.0
+
+
 def test_rbc_smart_policy_respects_simulator_ev_discharge_capacity():
     agent = RBCSmartPolicy(
         {
@@ -1437,6 +1559,63 @@ def test_rbc_smart_policy_waits_for_solar_when_ev_departure_is_feasible():
     actions = agent.predict([obs])
 
     assert actions[0][1] == pytest.approx(0.0)
+
+
+def test_rbc_smart_policy_subhour_treats_near_tight_ev_service_as_urgent():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {
+                    "flex_trickle_charge": 0.0,
+                    "ev_service_floor_rate": 0.25,
+                    "ev_service_margin_rate": 0.05,
+                    "ev_service_lookahead_hours": 4.0,
+                    "ev_deadline_buffer_hours": 0.25,
+                },
+            }
+        }
+    )
+    names = _base_observation_names() + [
+        "charger::Building_1/charger_1_1::min_required_action_normalized",
+        "charger::Building_1/charger_1_1::departure_feasibility_ratio",
+        "charger::Building_1/charger_1_1::departure_energy_margin_kwh",
+        "district__direct_solar_irradiance_predicted_2",
+    ]
+    _attach_with_step_seconds(agent, names, _action_names(), 900)
+    obs = np.array(
+        [
+            0.20,
+            np.nan,
+            np.nan,
+            np.nan,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.5,
+            1.0,
+            0.50,
+            0.80,
+            60.0,
+            5.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.05,
+            0.91,
+            2.5,
+            815.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] > 0.0
 
 
 def test_rbc_smart_policy_price_charge_ceiling_is_not_capped_by_storage_target():
@@ -1971,6 +2150,47 @@ def test_rbc_smart_policy_blocks_v2g_near_departure_even_when_enabled():
             0.5,
             60.0,
             1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+        dtype=float,
+    )
+
+    actions = agent.predict([obs])
+
+    assert actions[0][1] >= 0.0
+
+
+def test_rbc_smart_policy_blocks_v2g_inside_subhour_guard_window():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {"allow_v2g": True, "ev_v2g_discharge_rate": 0.25},
+            }
+        }
+    )
+    _attach_with_step_seconds(agent, _base_observation_names(), _action_names(), 900)
+    obs = np.array(
+        [
+            0.60,
+            0.10,
+            0.20,
+            0.30,
+            0.0,
+            2.0,
+            8.0,
+            1.0,
+            0.5,
+            1.0,
+            0.9,
+            0.5,
+            60.0,
+            1.5,
             0.0,
             0.0,
             0.0,

@@ -128,16 +128,17 @@ def test_rbc_reads_entity_charger_specific_ev_observations():
             "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
             "algorithm": {
                 "name": "RuleBasedPolicy",
-                "hyperparameters": {
-                    "pv_charge_threshold": 2.0,
-                    "flexibility_hours": 3.0,
-                    "emergency_hours": 1.0,
-                    "flex_trickle_charge": 0.0,
-                    "emergency_charge_rate": 1.0,
+                    "hyperparameters": {
+                        "pv_charge_threshold": 2.0,
+                        "flexibility_hours": 3.0,
+                        "emergency_hours": 1.0,
+                        "flex_trickle_charge": 0.0,
+                        "emergency_charge_rate": 1.0,
+                        "electrical_service_headroom_safety_margin_kw": 0.0,
+                    },
                 },
-            },
-        }
-    )
+            }
+        )
     observation_names = [
         [
             "solar_generation",
@@ -213,6 +214,8 @@ def test_rbc_clips_ev_charge_to_phase_headroom():
                     "emergency_hours": 1.0,
                     "flex_trickle_charge": 0.0,
                     "emergency_charge_rate": 1.0,
+                    "electrical_service_headroom_safety_margin_kw": 0.0,
+                    "use_current_base_service_headroom": False,
                 },
             },
         }
@@ -257,6 +260,7 @@ def test_rbc_ev_headroom_clip_allows_existing_charger_power():
                     "emergency_hours": 1.0,
                     "flex_trickle_charge": 0.0,
                     "emergency_charge_rate": 1.0,
+                    "use_current_base_service_headroom": False,
                 },
             },
         }
@@ -282,6 +286,151 @@ def test_rbc_ev_headroom_clip_allows_existing_charger_power():
         action_space=[DummySpace([-1.0], [1.0])],
         observation_space=[None],
         metadata={"building_names": ["Building_15"], "seconds_per_time_step": 3600},
+    )
+
+    observations = [np.array([0.0, 0.0, 0.0, 10.0, 10.0, 1.0, 0.0, 1.0, 60.0, 0.5, 7.0], dtype=float)]
+    actions = agent.predict(observations)
+
+    assert actions[0][0] == pytest.approx(7.0 / 7.4, abs=1e-6)
+
+
+def test_rbc_current_base_headroom_limits_ev_setpoint_not_delta():
+    agent = RuleBasedPolicy(
+        {
+            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "algorithm": {
+                "name": "RuleBasedPolicy",
+                "hyperparameters": {
+                    "pv_charge_threshold": 2.0,
+                    "flexibility_hours": 3.0,
+                    "emergency_hours": 1.0,
+                    "flex_trickle_charge": 0.0,
+                    "emergency_charge_rate": 1.0,
+                },
+            },
+        }
+    )
+    observation_names = [
+        [
+            "load_power_kw",
+            "pv_power_kw",
+            "ev_charging_power_kw",
+            "charging_building_headroom_kw",
+            "charging_phase_L1_headroom_kw",
+            "charger::Building_15/charger_15_1::connected_state",
+            "charger::Building_15/charger_15_1::connected_ev_soc",
+            "charger::Building_15/charger_15_1::connected_ev_required_soc_departure",
+            "charger::Building_15/charger_15_1::connected_ev_battery_capacity_kwh",
+            "charger::Building_15/charger_15_1::hours_until_departure",
+            "charger::Building_15/charger_15_1::applied_power_kw",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[["electric_vehicle_storage_charger_15_1"]],
+        action_space=[DummySpace([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_15"], "seconds_per_time_step": 900},
+    )
+
+    observations = [np.array([7.0, 0.0, 7.0, 10.0, 10.0, 1.0, 0.0, 1.0, 60.0, 0.5, 7.0], dtype=float)]
+    actions = agent.predict(observations)
+
+    assert actions[0][0] == pytest.approx((7.0 - 0.05) / 7.4, abs=1e-6)
+
+
+def test_rbc_current_base_prefers_non_shiftable_step_energy_over_ev_loaded_power():
+    agent = RuleBasedPolicy(
+        {
+            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "algorithm": {
+                "name": "RuleBasedPolicy",
+                "hyperparameters": {
+                    "pv_charge_threshold": 2.0,
+                    "flexibility_hours": 3.0,
+                    "emergency_hours": 1.0,
+                    "flex_trickle_charge": 0.0,
+                    "emergency_charge_rate": 1.0,
+                },
+            },
+        }
+    )
+    observation_names = [
+        [
+            "non_shiftable_load",
+            "load_power_kw",
+            "pv_power_kw",
+            "ev_charging_power_kw",
+            "charging_building_headroom_kw",
+            "charging_phase_L1_headroom_kw",
+            "charger::Building_15/charger_15_1::connected_state",
+            "charger::Building_15/charger_15_1::connected_ev_soc",
+            "charger::Building_15/charger_15_1::connected_ev_required_soc_departure",
+            "charger::Building_15/charger_15_1::connected_ev_battery_capacity_kwh",
+            "charger::Building_15/charger_15_1::hours_until_departure",
+            "charger::Building_15/charger_15_1::applied_power_kw",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[["electric_vehicle_storage_charger_15_1"]],
+        action_space=[DummySpace([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_15"], "seconds_per_time_step": 900},
+    )
+
+    observations = [np.array([0.125, 7.0, 0.0, 7.0, 10.0, 10.0, 1.0, 0.0, 1.0, 60.0, 0.5, 7.0], dtype=float)]
+    actions = agent.predict(observations)
+
+    expected_phase_limit_kw = 7.0 - (0.125 / 0.25 / 3.0) - 0.05
+    assert actions[0][0] == pytest.approx(expected_phase_limit_kw / 7.4, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    "power_feature",
+    [
+        "last_applied_power_kw",
+        "applied_power_mean_prev_15m_kw",
+    ],
+)
+def test_rbc_ev_headroom_clip_allows_v3_existing_charger_power_features(power_feature):
+    agent = RuleBasedPolicy(
+        {
+            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "algorithm": {
+                "name": "RuleBasedPolicy",
+                "hyperparameters": {
+                    "pv_charge_threshold": 2.0,
+                    "flexibility_hours": 3.0,
+                    "emergency_hours": 1.0,
+                    "flex_trickle_charge": 0.0,
+                    "emergency_charge_rate": 1.0,
+                    "use_current_base_service_headroom": False,
+                },
+            },
+        }
+    )
+    observation_names = [
+        [
+            "solar_generation",
+            "charging_building_headroom_kw",
+            "charging_phase_L1_headroom_kw",
+            "charging_phase_L2_headroom_kw",
+            "charging_phase_L3_headroom_kw",
+            "charger::Building_15/charger_15_1::connected_state",
+            "charger::Building_15/charger_15_1::connected_ev_soc",
+            "charger::Building_15/charger_15_1::connected_ev_required_soc_departure",
+            "charger::Building_15/charger_15_1::connected_ev_battery_capacity_kwh",
+            "charger::Building_15/charger_15_1::hours_until_departure",
+            f"charger::Building_15/charger_15_1::{power_feature}",
+        ]
+    ]
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=[["electric_vehicle_storage_charger_15_1"]],
+        action_space=[DummySpace([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_15"], "seconds_per_time_step": 900},
     )
 
     observations = [np.array([0.0, 0.0, 0.0, 10.0, 10.0, 1.0, 0.0, 1.0, 60.0, 0.5, 7.0], dtype=float)]

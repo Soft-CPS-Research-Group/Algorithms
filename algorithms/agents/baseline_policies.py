@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -147,6 +147,29 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         self.ev_v2g_min_departure_hours: float = max(0.0, float(hyper.get("ev_v2g_min_departure_hours", 2.0)))
         self.ev_v2g_service_margin_soc: float = max(0.0, float(hyper.get("ev_v2g_service_margin_soc", 0.05)))
         self.ev_v2g_buffer_soc: float = max(0.0, float(hyper.get("ev_v2g_buffer_soc", 0.0)))
+        self.ev_subhour_service_guard_steps: float = max(
+            0.0,
+            float(hyper.get("ev_subhour_service_guard_steps", 8.0)),
+        )
+        self.ev_subhour_v2g_guard_steps: float = max(
+            0.0,
+            float(hyper.get("ev_subhour_v2g_guard_steps", 8.0)),
+        )
+        self.ev_subhour_deadline_buffer_steps: float = max(
+            0.0,
+            float(hyper.get("ev_subhour_deadline_buffer_steps", 2.0)),
+        )
+        self.ev_subhour_tight_feasibility_ratio: float = float(
+            np.clip(float(hyper.get("ev_subhour_tight_feasibility_ratio", 0.90)), 0.0, 1.0)
+        )
+        self.ev_subhour_min_service_margin_rate: float = max(
+            0.0,
+            float(hyper.get("ev_subhour_min_service_margin_rate", 0.10)),
+        )
+        self.ev_subhour_v2g_reserve_soc: float = max(
+            0.0,
+            float(hyper.get("ev_subhour_v2g_reserve_soc", 0.05)),
+        )
         self.ev_service_soc_tolerance: float = max(
             0.0,
             float(hyper.get("ev_service_soc_tolerance", 0.04)),
@@ -214,6 +237,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
                 obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
                 action_names = self._action_labels[agent_idx] if agent_idx < len(self._action_labels) else []
                 agent_actions: List[float] = [0.0 for _ in action_names]
+                residual_headroom: Dict[Tuple[int, str, bool], float] = {}
                 self._init_dispatch_budget(agent_idx, obs, obs_map)
 
                 def priority(position_and_name: tuple[int, str]) -> tuple[int, int]:
@@ -237,6 +261,8 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
                             obs_map,
                             self._get_storage_info(agent_idx),
                             bounds,
+                            agent_idx,
+                            residual_headroom,
                         )
                         value = self._apply_storage_soc_limit(value, obs, obs_map, bounds)
                         self._record_storage_dispatch(agent_idx, value)
@@ -258,6 +284,8 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
                             obs_map,
                             charger_info,
                             bounds,
+                            agent_idx,
+                            residual_headroom,
                         )
                     elif self.control_deferrables and self._is_deferrable_action_name(str(action_name), obs_map):
                         value = self._compute_deferrable_action(agent_idx, obs, obs_map, str(action_name), bounds)
@@ -1087,6 +1115,42 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         target_soc = max(float(ctx["required_soc"]), self.ev_service_target_soc)
         return max(target_soc - float(ctx["soc"]), 0.0)
 
+    def _uses_subhour_control_step(self) -> bool:
+        return 0.0 < self.step_hours < 1.0 - self.energy_epsilon
+
+    def _subhour_steps_to_hours(self, steps: float) -> float:
+        if not self._uses_subhour_control_step():
+            return 0.0
+        return max(0.0, float(steps)) * max(self.step_hours, 1.0e-6)
+
+    def _effective_ev_deadline_buffer_hours(self) -> float:
+        return max(
+            self.ev_deadline_buffer_hours,
+            self._subhour_steps_to_hours(self.ev_subhour_deadline_buffer_steps),
+        )
+
+    def _effective_ev_service_lookahead_hours(self) -> float:
+        return max(
+            self.ev_service_lookahead_hours,
+            self._subhour_steps_to_hours(self.ev_subhour_service_guard_steps),
+        )
+
+    def _effective_ev_v2g_min_departure_hours(self) -> float:
+        return max(
+            self.ev_v2g_min_departure_hours,
+            self._subhour_steps_to_hours(self.ev_subhour_v2g_guard_steps),
+        )
+
+    def _effective_ev_service_margin_rate(self) -> float:
+        if not self._uses_subhour_control_step():
+            return self.ev_service_margin_rate
+        return max(self.ev_service_margin_rate, self.ev_subhour_min_service_margin_rate)
+
+    def _effective_ev_v2g_reserve_soc(self) -> float:
+        if not self._uses_subhour_control_step():
+            return self.ev_v2g_reserve_soc
+        return max(self.ev_v2g_reserve_soc, self.ev_subhour_v2g_reserve_soc)
+
     @staticmethod
     def _ctx_float(ctx: Mapping[str, float | bool | None], key: str) -> float:
         value = ctx.get(key)
@@ -1107,7 +1171,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         if service_gap <= self.energy_epsilon and (math.isnan(simulator_required) or simulator_required <= 0.0):
             return 0.0
 
-        hours = max(float(ctx["hours_to_departure"]) - self.ev_deadline_buffer_hours, self.step_hours)
+        hours = max(float(ctx["hours_to_departure"]) - self._effective_ev_deadline_buffer_hours(), self.step_hours)
         required_rate = service_gap * float(ctx["capacity"]) / (hours * float(ctx["max_power"]))
         if not math.isnan(simulator_required):
             required_rate = max(required_rate, simulator_required)
@@ -1128,7 +1192,10 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             return True
 
         departure_feasibility = self._ctx_float(ctx, "departure_feasibility")
-        if not math.isnan(departure_feasibility) and departure_feasibility >= 0.95:
+        tight_ratio = 0.95
+        if self._uses_subhour_control_step():
+            tight_ratio = min(tight_ratio, self.ev_subhour_tight_feasibility_ratio)
+        if not math.isnan(departure_feasibility) and departure_feasibility >= tight_ratio:
             return True
 
         departure_margin = self._ctx_float(ctx, "departure_margin")
@@ -1142,7 +1209,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
     ) -> bool:
         if self._ev_departure_is_infeasible(ctx):
             return False
-        if float(ctx["hours_to_departure"]) <= max(self.emergency_hours, self.ev_service_lookahead_hours):
+        if float(ctx["hours_to_departure"]) <= max(self.emergency_hours, self._effective_ev_service_lookahead_hours()):
             return False
         if self._ev_departure_is_tight(ctx):
             return False
@@ -1182,14 +1249,16 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         if (
             self.allow_v2g
             and self.ev_v2g_buffer_soc > self.energy_epsilon
-            and float(ctx["hours_to_departure"]) > self.ev_v2g_min_departure_hours + self.ev_deadline_buffer_hours
+            and float(ctx["hours_to_departure"]) > (
+                self._effective_ev_v2g_min_departure_hours() + self._effective_ev_deadline_buffer_hours()
+            )
         ):
             target_soc = max(float(ctx["required_soc"]), self.ev_service_target_soc)
             buffered["required_soc"] = min(1.0, target_soc + self.ev_v2g_buffer_soc)
         return buffered
 
     def _minimum_ev_service_charge_rate(self, ctx: Mapping[str, float | bool | None]) -> float:
-        required_rate = self._required_ev_charge_rate(ctx, margin_rate=self.ev_service_margin_rate)
+        required_rate = self._required_ev_charge_rate(ctx, margin_rate=self._effective_ev_service_margin_rate())
         if required_rate <= self.energy_epsilon:
             return 0.0
 
@@ -1200,7 +1269,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             return max(required_rate, self.ev_service_floor_rate)
         if hours <= self.emergency_hours or required_rate >= 0.80:
             return max(required_rate, self.emergency_charge_rate)
-        if hours <= self.ev_service_lookahead_hours:
+        if hours <= self._effective_ev_service_lookahead_hours():
             return max(required_rate, self.ev_service_floor_rate)
         return max(required_rate, self.flex_trickle_charge)
 
@@ -1216,7 +1285,7 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             return True
 
         hours = float(ctx["hours_to_departure"])
-        if hours <= self.ev_service_lookahead_hours:
+        if hours <= self._effective_ev_service_lookahead_hours():
             return True
 
         required_rate = self._required_ev_charge_rate(ctx, margin_rate=0.0)
@@ -1235,11 +1304,13 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             return 0.0
 
         hours = float(ctx["hours_to_departure"])
-        if hours <= self.ev_v2g_min_departure_hours:
+        if hours <= self._effective_ev_v2g_min_departure_hours():
+            return 0.0
+        if self._ev_departure_is_tight(ctx):
             return 0.0
 
         target_soc = max(float(ctx["required_soc"]), self.ev_service_target_soc)
-        reserve_floor = target_soc + self.ev_v2g_reserve_soc + self.ev_v2g_service_margin_soc
+        reserve_floor = target_soc + self._effective_ev_v2g_reserve_soc() + self.ev_v2g_service_margin_soc
         available_soc = float(ctx["soc"]) - reserve_floor
         if available_soc <= self.energy_epsilon:
             return 0.0

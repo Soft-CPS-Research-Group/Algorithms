@@ -36,6 +36,21 @@ class StorageInfo:
     phase_connection: Optional[str] = None
 
 
+@dataclass(slots=True)
+class ElectricalServiceInfo:
+    total_import_kw: float = float("nan")
+    total_export_kw: float = float("nan")
+    phase_import_kw: Dict[str, float] = None
+    phase_export_kw: Dict[str, float] = None
+    default_split: str = "balanced"
+
+    def __post_init__(self) -> None:
+        if self.phase_import_kw is None:
+            self.phase_import_kw = {}
+        if self.phase_export_kw is None:
+            self.phase_export_kw = {}
+
+
 class RuleBasedPolicy(BaseAgent):
     """Simple heuristic controller that prioritises PV utilisation while respecting EV requirements."""
 
@@ -55,6 +70,11 @@ class RuleBasedPolicy(BaseAgent):
         self.min_charge_rate: float = float(hyper.get("min_charge_rate", 0.0))
         self.emergency_charge_rate: float = float(hyper.get("emergency_charge_rate", 1.0))
         self.energy_epsilon: float = float(hyper.get("energy_epsilon", 1e-3))
+        self.electrical_service_headroom_safety_margin_kw: float = max(
+            0.0,
+            float(hyper.get("electrical_service_headroom_safety_margin_kw", 0.05)),
+        )
+        self.use_current_base_service_headroom: bool = bool(hyper.get("use_current_base_service_headroom", True))
         self.non_flexible_chargers: set[str] = set(hyper.get("non_flexible_chargers", []) or [])
         self.default_capacity: float = float(hyper.get("default_capacity_kwh", 60.0))
         self.control_storage: bool = bool(hyper.get("control_storage", True))
@@ -146,6 +166,7 @@ class RuleBasedPolicy(BaseAgent):
             obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
             action_names = self._action_labels[agent_idx] if agent_idx < len(self._action_labels) else []
             agent_actions: List[float] = []
+            residual_headroom: Dict[Tuple[int, str, bool], float] = {}
 
             for action_position, action_name in enumerate(action_names):
                 bounds = self._get_action_bounds(agent_idx, action_position)
@@ -158,6 +179,8 @@ class RuleBasedPolicy(BaseAgent):
                         obs_map,
                         self._get_storage_info(agent_idx),
                         bounds,
+                        agent_idx,
+                        residual_headroom,
                     )
                     value = self._apply_storage_soc_limit(value, obs, obs_map, bounds)
                 elif "electric_vehicle" in action_name and self.control_evs:
@@ -178,6 +201,8 @@ class RuleBasedPolicy(BaseAgent):
                         obs_map,
                         charger_info,
                         bounds,
+                        agent_idx,
+                        residual_headroom,
                     )
                 elif self.control_deferrables and self._is_deferrable_action_name(action_name, obs_map):
                     value = self._compute_deferrable_action(obs, obs_map, action_name, bounds)
@@ -258,6 +283,8 @@ class RuleBasedPolicy(BaseAgent):
             "storage_price_discharge_soc_floor",
             "storage_peak_discharge_soc_floor",
             "normal_storage_discharge_import_threshold_kw",
+            "electrical_service_headroom_safety_margin_kw",
+            "use_current_base_service_headroom",
             "ev_normal_charge_rate",
             "ev_normal_target_soc",
             "ev_price_charge_rate",
@@ -276,6 +303,12 @@ class RuleBasedPolicy(BaseAgent):
             "ev_v2g_min_departure_hours",
             "ev_v2g_service_margin_soc",
             "ev_v2g_buffer_soc",
+            "ev_subhour_service_guard_steps",
+            "ev_subhour_v2g_guard_steps",
+            "ev_subhour_deadline_buffer_steps",
+            "ev_subhour_tight_feasibility_ratio",
+            "ev_subhour_min_service_margin_rate",
+            "ev_subhour_v2g_reserve_soc",
             "deferrable_safety_margin_steps",
             "deferrable_import_block_threshold_kw",
             "deferrable_community_import_block_threshold_kw",
@@ -378,6 +411,8 @@ class RuleBasedPolicy(BaseAgent):
         obs_map: Dict[str, int],
         charger_info: Optional[ChargerInfo],
         bounds: Sequence[float],
+        agent_idx: Optional[int] = None,
+        residual_headroom: Optional[Dict[Tuple[int, str, bool], float]] = None,
     ) -> float:
         if charger_info is None or not charger_info.phase_connection or value == 0.0:
             return value
@@ -388,23 +423,55 @@ class RuleBasedPolicy(BaseAgent):
             obs_map,
             charger_info.phase_connection,
             export=export,
+            agent_idx=agent_idx,
+            residual_headroom=residual_headroom,
         )
         if available_kw is None or not math.isfinite(available_kw):
             return value
 
         available_kw = max(0.0, available_kw)
-        current_power_kw = self._current_charger_power_kw(obs, obs_map, charger_info)
+        current_base_headroom = self._uses_current_base_service_headroom(
+            agent_idx,
+            obs,
+            obs_map,
+            export=export,
+        )
+        current_power_kw = 0.0 if current_base_headroom else self._current_charger_power_kw(obs, obs_map, charger_info)
         low, high = bounds
         if value > 0.0:
-            available_kw += max(0.0, current_power_kw)
+            available_kw = max(0.0, available_kw + current_power_kw)
             power_scale = max(charger_info.max_power or 0.0, 1.0e-6)
             limit = available_kw / power_scale if abs(high) <= 1.0 else available_kw
-            return min(value, max(0.0, limit))
+            limited = min(value, max(0.0, limit))
+            target_power_kw = limited * power_scale if abs(high) <= 1.0 else limited
+            delta_kw = max(0.0, target_power_kw - current_power_kw)
+            self._reserve_dynamic_headroom_kw(
+                residual_headroom,
+                agent_idx,
+                obs,
+                obs_map,
+                charger_info.phase_connection,
+                export=False,
+                used_kw=delta_kw,
+            )
+            return limited
 
-        available_kw += max(0.0, -current_power_kw)
+        available_kw = max(0.0, available_kw - current_power_kw)
         power_scale = max(charger_info.max_discharge_power or charger_info.max_power or 0.0, 1.0e-6)
         limit = available_kw / power_scale if abs(low) <= 1.0 else available_kw
-        return max(value, -max(0.0, limit))
+        limited = max(value, -max(0.0, limit))
+        target_power_kw = abs(limited) * power_scale if abs(low) <= 1.0 else abs(limited)
+        delta_kw = max(0.0, target_power_kw + current_power_kw)
+        self._reserve_dynamic_headroom_kw(
+            residual_headroom,
+            agent_idx,
+            obs,
+            obs_map,
+            charger_info.phase_connection,
+            export=True,
+            used_kw=delta_kw,
+        )
+        return limited
 
     def _apply_storage_dynamic_headroom_limit(
         self,
@@ -413,6 +480,8 @@ class RuleBasedPolicy(BaseAgent):
         obs_map: Dict[str, int],
         storage_info: Optional[StorageInfo],
         bounds: Sequence[float],
+        agent_idx: Optional[int] = None,
+        residual_headroom: Optional[Dict[Tuple[int, str, bool], float]] = None,
     ) -> float:
         if storage_info is None or not storage_info.phase_connection or value == 0.0:
             return value
@@ -423,21 +492,56 @@ class RuleBasedPolicy(BaseAgent):
             obs_map,
             storage_info.phase_connection,
             export=export,
+            agent_idx=agent_idx,
+            residual_headroom=residual_headroom,
         )
         if available_kw is None or not math.isfinite(available_kw):
             return value
 
         available_kw = max(0.0, available_kw)
+        current_base_headroom = self._uses_current_base_service_headroom(
+            agent_idx,
+            obs,
+            obs_map,
+            export=export,
+        )
+        current_power_kw = 0.0 if current_base_headroom else self._current_storage_power_kw(obs, obs_map)
         low, high = bounds
         power_scale = max(storage_info.nominal_power, 1.0e-6)
         if value > 0.0:
+            available_kw = max(0.0, available_kw + current_power_kw)
             if available_kw <= self.energy_epsilon:
                 available_kw = self._local_pv_surplus_kw(obs, obs_map)
             limit = available_kw / power_scale if abs(high) <= 1.0 else available_kw
-            return min(value, max(0.0, limit))
+            limited = min(value, max(0.0, limit))
+            target_power_kw = limited * power_scale if abs(high) <= 1.0 else limited
+            delta_kw = max(0.0, target_power_kw - current_power_kw)
+            self._reserve_dynamic_headroom_kw(
+                residual_headroom,
+                agent_idx,
+                obs,
+                obs_map,
+                storage_info.phase_connection,
+                export=False,
+                used_kw=delta_kw,
+            )
+            return limited
 
+        available_kw = max(0.0, available_kw - current_power_kw)
         limit = available_kw / power_scale if abs(low) <= 1.0 else available_kw
-        return max(value, -max(0.0, limit))
+        limited = max(value, -max(0.0, limit))
+        target_power_kw = abs(limited) * power_scale if abs(low) <= 1.0 else abs(limited)
+        delta_kw = max(0.0, target_power_kw + current_power_kw)
+        self._reserve_dynamic_headroom_kw(
+            residual_headroom,
+            agent_idx,
+            obs,
+            obs_map,
+            storage_info.phase_connection,
+            export=True,
+            used_kw=delta_kw,
+        )
+        return limited
 
     def _apply_storage_soc_limit(
         self,
@@ -569,10 +673,20 @@ class RuleBasedPolicy(BaseAgent):
         phase_connection: Optional[str],
         *,
         export: bool,
+        agent_idx: Optional[int] = None,
+        residual_headroom: Optional[Dict[Tuple[int, str, bool], float]] = None,
     ) -> Optional[float]:
         candidates: List[float] = []
         building_name = "charging_building_export_headroom_kw" if export else "charging_building_headroom_kw"
-        building_headroom = self._get_value(obs, obs_map, building_name, default=float("nan"))
+        building_headroom = self._residual_headroom_value(
+            residual_headroom,
+            agent_idx,
+            "building",
+            export,
+            obs,
+            obs_map,
+            building_name,
+        )
         if not math.isnan(building_headroom) and building_headroom >= 0.0:
             candidates.append(building_headroom)
 
@@ -580,11 +694,14 @@ class RuleBasedPolicy(BaseAgent):
         phase_values: List[float] = []
         suffix = "export_headroom_kw" if export else "headroom_kw"
         for phase in phases:
-            phase_value = self._get_value(
+            phase_value = self._residual_headroom_value(
+                residual_headroom,
+                agent_idx,
+                f"phase:{phase}",
+                export,
                 obs,
                 obs_map,
                 f"charging_phase_{phase}_{suffix}",
-                default=float("nan"),
             )
             if not math.isnan(phase_value) and phase_value >= 0.0:
                 phase_values.append(phase_value)
@@ -597,6 +714,216 @@ class RuleBasedPolicy(BaseAgent):
             return None
         return min(candidates)
 
+    def _residual_headroom_value(
+        self,
+        residual_headroom: Optional[Dict[Tuple[int, str, bool], float]],
+        agent_idx: Optional[int],
+        scope: str,
+        export: bool,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        observation_name: str,
+    ) -> float:
+        value = self._get_value(obs, obs_map, observation_name, default=float("nan"))
+        computed_value = self._computed_current_service_headroom_kw(
+            agent_idx,
+            obs,
+            obs_map,
+            scope,
+            export,
+        )
+        if math.isfinite(computed_value):
+            value = computed_value
+
+        if residual_headroom is None or agent_idx is None:
+            return self._apply_headroom_safety_margin(value)
+
+        key = (agent_idx, scope, export)
+        if key not in residual_headroom:
+            residual_headroom[key] = self._apply_headroom_safety_margin(value)
+        return residual_headroom[key]
+
+    def _apply_headroom_safety_margin(self, value: float) -> float:
+        if not math.isfinite(value):
+            return float("nan")
+        return max(0.0, float(value) - self.electrical_service_headroom_safety_margin_kw)
+
+    def _computed_current_service_headroom_kw(
+        self,
+        agent_idx: Optional[int],
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        scope: str,
+        export: bool,
+    ) -> float:
+        if not self.use_current_base_service_headroom:
+            return float("nan")
+        if agent_idx is None or not self._dataset_info:
+            return float("nan")
+
+        building = self._agent_buildings.get(agent_idx)
+        service_info = self._dataset_info.get("electrical_service_info", {}).get(building)
+        if service_info is None:
+            return float("nan")
+
+        base_total_kw = self._current_base_power_kw(obs, obs_map)
+        if not math.isfinite(base_total_kw):
+            return float("nan")
+
+        if scope == "building":
+            limit = service_info.total_export_kw if export else service_info.total_import_kw
+            if not math.isfinite(limit):
+                return float("nan")
+            return max(0.0, limit + base_total_kw if export else limit - base_total_kw)
+
+        if not scope.startswith("phase:"):
+            return float("nan")
+
+        phase = scope.split(":", 1)[1]
+        base_phase_kw = self._split_unassigned_base_power_kw(base_total_kw, service_info).get(phase, 0.0)
+        limit = service_info.phase_export_kw.get(phase) if export else service_info.phase_import_kw.get(phase)
+        if limit is None or not math.isfinite(float(limit)):
+            return float("nan")
+        return max(0.0, float(limit) + base_phase_kw if export else float(limit) - base_phase_kw)
+
+    def _uses_current_base_service_headroom(
+        self,
+        agent_idx: Optional[int],
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        *,
+        export: bool,
+    ) -> bool:
+        return math.isfinite(
+            self._computed_current_service_headroom_kw(
+                agent_idx,
+                obs,
+                obs_map,
+                "building",
+                export,
+            )
+        )
+
+    def _current_base_power_kw(self, obs: np.ndarray, obs_map: Dict[str, int]) -> float:
+        load_power = self._non_controllable_load_power_kw(obs, obs_map)
+        pv_power = self._pv_generation_power_kw(obs, obs_map)
+        if math.isfinite(load_power):
+            return float(load_power - pv_power)
+
+        # Fallback for older observation layouts that do not expose the
+        # non-shiftable step energy. In recent entity layouts, load_power_kw can
+        # include already-applied EV power, so this path is intentionally last.
+        load_power = self._first_available_observation_value(
+            obs,
+            obs_map,
+            ("load_power_kw",),
+            default=float("nan"),
+        )
+        if not math.isfinite(load_power):
+            return float("nan")
+        ev_power = self._first_available_observation_value(
+            obs,
+            obs_map,
+            ("ev_charging_power_kw",),
+            default=0.0,
+        )
+        controllable_power = max(0.0, ev_power if math.isfinite(ev_power) else 0.0)
+        base_load_power = max(0.0, float(load_power) - controllable_power)
+        return float(base_load_power - pv_power)
+
+    def _non_controllable_load_power_kw(self, obs: np.ndarray, obs_map: Dict[str, int]) -> float:
+        load_power = self._get_value(obs, obs_map, "non_shiftable_load_power_kw", default=float("nan"))
+        if math.isfinite(load_power):
+            return float(load_power)
+
+        load_energy = self._get_value(obs, obs_map, "non_shiftable_load", default=float("nan"))
+        if math.isfinite(load_energy):
+            return float(load_energy) / max(float(self.step_hours), 1.0e-6)
+
+        load_energy = self._get_value(obs, obs_map, "load_energy_kwh_step", default=float("nan"))
+        if math.isfinite(load_energy):
+            return float(load_energy) / max(float(self.step_hours), 1.0e-6)
+
+        return float("nan")
+
+    def _pv_generation_power_kw(self, obs: np.ndarray, obs_map: Dict[str, int]) -> float:
+        pv_energy = self._get_value(obs, obs_map, "solar_generation", default=float("nan"))
+        if math.isfinite(pv_energy):
+            return max(0.0, float(pv_energy) / max(float(self.step_hours), 1.0e-6))
+
+        pv_power = self._first_available_observation_value(
+            obs,
+            obs_map,
+            ("pv_power_kw",),
+            suffixes=("::generation_power_kw",),
+            default=float("nan"),
+        )
+        if math.isfinite(pv_power):
+            return max(0.0, float(pv_power))
+
+        return 0.0
+
+    @staticmethod
+    def _split_unassigned_base_power_kw(
+        base_total_kw: float,
+        service_info: ElectricalServiceInfo,
+    ) -> Dict[str, float]:
+        phases = tuple(service_info.phase_import_kw.keys() or service_info.phase_export_kw.keys() or ("L1", "L2", "L3"))
+        split = str(service_info.default_split or "balanced").strip().upper()
+        if split in {"L1", "L2", "L3"}:
+            return {phase: float(base_total_kw if phase == split else 0.0) for phase in phases}
+        denominator = max(float(len(phases)), 1.0)
+        return {phase: float(base_total_kw) / denominator for phase in phases}
+
+    def _reserve_dynamic_headroom_kw(
+        self,
+        residual_headroom: Optional[Dict[Tuple[int, str, bool], float]],
+        agent_idx: int,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        phase_connection: Optional[str],
+        *,
+        export: bool,
+        used_kw: float,
+    ) -> None:
+        if residual_headroom is None or used_kw <= self.energy_epsilon:
+            return
+
+        suffix = "export_headroom_kw" if export else "headroom_kw"
+        building_name = "charging_building_export_headroom_kw" if export else "charging_building_headroom_kw"
+        building_key = (agent_idx, "building", export)
+        building_value = self._residual_headroom_value(
+            residual_headroom,
+            agent_idx,
+            "building",
+            export,
+            obs,
+            obs_map,
+            building_name,
+        )
+        if math.isfinite(building_value):
+            residual_headroom[building_key] = max(0.0, building_value - used_kw)
+
+        phases = self._phase_connection_to_phases(phase_connection)
+        if not phases:
+            return
+
+        per_phase_kw = used_kw / max(float(len(phases)), 1.0)
+        for phase in phases:
+            scope = f"phase:{phase}"
+            phase_key = (agent_idx, scope, export)
+            phase_value = self._residual_headroom_value(
+                residual_headroom,
+                agent_idx,
+                scope,
+                export,
+                obs,
+                obs_map,
+                f"charging_phase_{phase}_{suffix}",
+            )
+            if math.isfinite(phase_value):
+                residual_headroom[phase_key] = max(0.0, phase_value - per_phase_kw)
+
     def _current_charger_power_kw(
         self,
         obs: np.ndarray,
@@ -608,12 +935,47 @@ class RuleBasedPolicy(BaseAgent):
             return 0.0
 
         charger_id = str(charger_info.charger_id)
-        feature_order = ("applied_power_kw", "commanded_power_kw")
+        feature_order = (
+            "applied_power_kw",
+            "last_applied_power_kw",
+            "applied_power_mean_prev_15m_kw",
+            "commanded_power_kw",
+            "last_limited_power_kw",
+            "last_requested_power_kw",
+        )
         for feature in feature_order:
             suffixes = (
                 f"/{charger_id}::{feature}",
                 f"{charger_id}::{feature}",
                 f"{charger_id}_{feature}",
+            )
+            for name in obs_map:
+                raw_name = str(name)
+                if any(raw_name.endswith(suffix) for suffix in suffixes):
+                    return self._get_value(obs, obs_map, raw_name, default=0.0)
+
+        return 0.0
+
+    def _current_storage_power_kw(
+        self,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+    ) -> float:
+        """Return currently applied storage power from raw observations, when available."""
+
+        feature_order = (
+            "applied_power_kw",
+            "last_applied_power_kw",
+            "applied_power_mean_prev_15m_kw",
+            "commanded_power_kw",
+            "last_limited_power_kw",
+            "last_requested_power_kw",
+        )
+        for feature in feature_order:
+            suffixes = (
+                f"/electrical_storage::{feature}",
+                f"electrical_storage::{feature}",
+                f"electrical_storage_{feature}",
             )
             for name in obs_map:
                 raw_name = str(name)
@@ -1143,9 +1505,33 @@ class RuleBasedPolicy(BaseAgent):
             name: [] for name in building_order
         }
         storage_info: Dict[str, StorageInfo] = {}
+        electrical_service_info: Dict[str, ElectricalServiceInfo] = {}
         charger_to_building: Dict[str, str] = {}
 
         for building_name, data in schema.get("buildings", {}).items():
+            electrical_service = data.get("electrical_service") or {}
+            if isinstance(electrical_service, dict):
+                limits = electrical_service.get("limits", {}) or {}
+                total_limits = limits.get("total", {}) or {}
+                phase_limits = limits.get("per_phase", {}) or {}
+                phase_import_kw: Dict[str, float] = {}
+                phase_export_kw: Dict[str, float] = {}
+
+                for phase_name, phase_data in phase_limits.items():
+                    if not isinstance(phase_data, dict):
+                        continue
+                    phase_key = str(phase_name).upper()
+                    phase_import_kw[phase_key] = float(phase_data.get("import_kw", float("nan")))
+                    phase_export_kw[phase_key] = float(phase_data.get("export_kw", float("nan")))
+
+                electrical_service_info[building_name] = ElectricalServiceInfo(
+                    total_import_kw=float(total_limits.get("import_kw", float("nan"))),
+                    total_export_kw=float(total_limits.get("export_kw", float("nan"))),
+                    phase_import_kw=phase_import_kw,
+                    phase_export_kw=phase_export_kw,
+                    default_split=str(electrical_service.get("default_split", "balanced")),
+                )
+
             storage_data = data.get("electrical_storage") or {}
             storage_attrs = storage_data.get("attributes", {}) if isinstance(storage_data, dict) else {}
             if storage_attrs:
@@ -1202,4 +1588,5 @@ class RuleBasedPolicy(BaseAgent):
             "building_order": building_order,
             "charger_info": charger_info,
             "storage_info": storage_info,
+            "electrical_service_info": electrical_service_info,
         }
