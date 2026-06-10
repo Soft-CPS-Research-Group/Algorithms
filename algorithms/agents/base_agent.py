@@ -1,11 +1,38 @@
 from abc import abstractmethod
+import os
+import sys
+import time
 from typing import Any, Dict, List, Optional
 
-import numpy as np
-import numpy.typing as npt
-from torch.nn import Module
+_BASE_AGENT_TRACE_ENABLED = (
+    os.environ.get("OPEVA_STARTUP_TRACE", "1").strip().lower()
+    not in {"0", "false", "no", "off"}
+    and os.path.basename(sys.argv[0]) == "run_experiment.py"
+)
+_BASE_AGENT_TRACE_T0 = time.monotonic()
 
+
+def _base_agent_trace(message: str) -> None:
+    if not _BASE_AGENT_TRACE_ENABLED:
+        return
+    elapsed = time.monotonic() - _BASE_AGENT_TRACE_T0
+    print(f"[opeva-base-agent +{elapsed:.3f}s] {message}", file=sys.stderr, flush=True)
+
+
+_base_agent_trace("module import started")
+_base_agent_trace("before numpy import")
+import numpy as np
+_base_agent_trace("after numpy import")
+_base_agent_trace("before numpy.typing import")
+import numpy.typing as npt
+_base_agent_trace("after numpy.typing import")
+_base_agent_trace("before torch.nn Module import")
+from torch.nn import Module
+_base_agent_trace("after torch.nn Module import")
+
+_base_agent_trace("before execution unit import")
 from algorithms.execution_unit import ExecutionUnit
+_base_agent_trace("after execution unit import")
 
 
 class BaseAgent(Module, ExecutionUnit):
@@ -95,3 +122,6 @@ class BaseAgent(Module, ExecutionUnit):
         """Return whether the agent considers warm-up/exploration complete."""
         _ = global_learning_step
         return True
+
+
+_base_agent_trace("class definitions loaded")
