@@ -245,6 +245,7 @@ class EntityEncodingConfig(BaseModel):
         "maddpg_v2_compact",
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
+        "cc_level1",
     ] = "minmax_space"
     clip: bool = True
 
@@ -501,11 +502,11 @@ class CommunityCoordinatorHyperparameters(ExperimentalPPOHyperparameters):
 
 
 class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
-    output_mode: Literal["actions", "signal"] = "actions"
-    c_dim: int = Field(default=18, gt=0)
-    cc_action_interval: int = Field(default=1, gt=0)
-    ma_window: int = Field(default=96, gt=0)
-    shaping_weight: float = Field(default=1.0, ge=0)
+    # Phase-1 market maker: emits a global price multiplier.
+    c_dim: int = Field(default=16, gt=0)                # cc_level1 encoding width
+    cc_action_interval: int = Field(default=4, gt=0)    # 4 × 15min = hourly
+    price_min: float = Field(default=0.5, gt=0)         # min price multiplier
+    price_max: float = Field(default=1.5, gt=0)         # max price multiplier
 
 
 class BuildingAgentHyperparameters(BaseModel):

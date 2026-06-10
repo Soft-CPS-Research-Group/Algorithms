@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk -F, '$1==0 {print $5\"  | sample=\"$11\"  | scale_issue=\"$14\"  | flags=\"$15}' observation_features.csv)",
+      "Bash(awk -F, '$1==0 && \\($5 ~ /community_net_power_kw|community_import_power_kw|community_pv_power_kw|electricity_pricing$|carbon_intensity/\\) {print $5\"  low=\"$12\"  high=\"$13\"  sample=\"$11}' observation_features.csv)",
+      "Bash(python3 -c ' *)",
+      "Bash(sort -t'p' -k2 -n)",
+      "Bash(awk 'NR==1||NR%100==0||NR==NF')",
+      "Bash(/Users/pedro.monteiro/Desktop/Masters/Algorithms/.venv/bin/python -c \"from algorithms.agents.cc_level1_agent import CCLevel1Agent; print\\('OK'\\)\")",
+      "Bash(awk -F'[|]' '{print $3}')",
+      "Bash(awk 'NR==1||NR==2||NR==5||NR==10||NR==50||NR==100||NR==200||NR==500||NR==1000||NR==1500||NR==1800')"
+    ]
+  }
+}
