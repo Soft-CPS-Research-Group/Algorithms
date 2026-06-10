@@ -38,12 +38,14 @@ class EntityContractAdapter:
         "maddpg_v2_compact",
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
+        "cc_level1",
     }
     _MADDPG_STYLE_PROFILES = {
         "maddpg_v1",
         "maddpg_v2_compact",
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
+        "cc_level1",
     }
 
     _LEGACY_CHARGER_ALIASES = {
@@ -1714,6 +1716,8 @@ class EntityContractAdapter:
             return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=True)
         if profile == "maddpg_v3_realtime":
             return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=False)
+        if profile == "cc_level1":
+            return cls._is_cc_level1_feature(name)
         return True
 
     @classmethod
@@ -1972,6 +1976,70 @@ class EntityContractAdapter:
             "clip_reason_too_late",
             "clip_reason_infeasible",
         }
+
+    @classmethod
+    def _is_cc_level1_feature(cls, name: str) -> bool:
+        """Keep features relevant for community coordinator level 1.
+
+        CC Level 1 focuses on minimal community-level aggregations and
+        coordination signals: time, pricing, carbon, and community power/energy.
+        """
+        feature = cls._feature_tail_from_encoded_name(name)
+
+        # Filter out legacy EV aliases
+        if name.startswith("electric_vehicle_"):
+            return False
+
+        # Only keep specific district-level features
+        if name.startswith("district__"):
+            return cls._is_cc_level1_district_feature(feature)
+
+        # Filter out all other features (building-level, entity-specific, etc.)
+        return False
+
+    @classmethod
+    def _is_cc_level1_district_feature(cls, feature: str) -> bool:
+        """District-level features for community coordinator level 1.
+        
+        Minimal set: encoded time (cyclic), pricing, carbon, community power aggregations.
+        Pre-encodes temporal features so agent receives cyclic transformations.
+        """
+        # Keep encoded temporal features (NOT raw month/day_type/hour)
+        if feature in {
+            "month_sin",
+            "month_cos",
+            "day_type_sin",
+            "day_type_cos",
+            "is_weekend",
+            "time_of_day_sin",
+            "time_of_day_cos",
+        }:
+            return True
+
+        # Keep pricing signals
+        if feature in {
+            "electricity_pricing",
+            "electricity_pricing_predicted_1",
+            "electricity_pricing_predicted_2",
+            "electricity_pricing_predicted_3",
+        }:
+            return True
+
+        # Keep carbon intensity
+        if feature == "carbon_intensity":
+            return True
+
+        # Keep specific community power aggregations (NOT energy _kwh_step)
+        if feature in {
+            "community_net_power_kw",
+            "community_import_power_kw",
+            "community_export_power_kw",
+            "community_pv_power_kw",
+        }:
+            return True
+
+        # Filter out everything else (including _energy_kwh_step variants)
+        return False
 
     @staticmethod
     def _feature_tail_from_encoded_name(name: str) -> str:
