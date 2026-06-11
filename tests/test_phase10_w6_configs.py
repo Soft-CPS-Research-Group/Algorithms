@@ -320,6 +320,51 @@ def test_w6_remote_smoke_can_generate_w7_min_service_context_variant(tmp_path):
     assert exploration["actor_storage_smoothness_l2_penalty"] == 0.0
 
 
+def test_w6_remote_smoke_can_generate_w8_ev_safe_variants(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6b-remote-smoke",
+        seeds=[123],
+        recipes=["w8_ev_safe_storage_free", "w8_ev_safe_cost_push"],
+        algorithms=["MATD3"],
+        include_baselines=False,
+    )
+
+    assert len(rows) == 2
+
+    storage_free = next(row for row in rows if row["recipe"] == "w8_ev_safe_storage_free")
+    storage_free_config = _load(Path(storage_free["config_path"]))
+    validate_config(storage_free_config)
+    storage_free_kwargs = storage_free_config["simulator"]["reward_function_kwargs"]
+    assert storage_free_config["simulator"]["reward_function"] == "CostServiceCommunityDenseEVResidualRewardV54"
+    assert storage_free_kwargs["ev_schedule_deficit_penalty"] == 1600.0
+    assert storage_free_kwargs["ev_departure_missed_penalty"] == 5600.0
+    storage_free_exploration = _alg(storage_free_config)["exploration"]["params"]
+    assert storage_free_exploration["residual_policy_enabled"] is True
+    assert storage_free_exploration["warm_start_policy"] == "RBCCommunityPolicy"
+    assert storage_free_exploration["residual_ev_action_scale_multiplier"] == 0.38
+    assert storage_free_exploration["residual_storage_action_scale_multiplier"] == 1.05
+    assert storage_free_exploration["residual_deferrable_action_scale_multiplier"] == 1.05
+    assert storage_free_exploration["actor_ev_behavior_cloning_multiplier"] == 20.0
+    assert storage_free_exploration["warm_start_policy_phaseout_steps"] == 6144
+    assert storage_free_exploration["actor_community_context_enabled"] is True
+    assert storage_free_exploration["actor_frame_stack_steps"] == 2
+
+    cost_push = next(row for row in rows if row["recipe"] == "w8_ev_safe_cost_push")
+    cost_push_config = _load(Path(cost_push["config_path"]))
+    validate_config(cost_push_config)
+    cost_push_kwargs = cost_push_config["simulator"]["reward_function_kwargs"]
+    assert cost_push_kwargs["community_settlement_cost_weight"] == 1.32
+    assert cost_push_kwargs["ev_departure_missed_penalty"] == 5600.0
+    cost_push_exploration = _alg(cost_push_config)["exploration"]["params"]
+    assert cost_push_exploration["residual_action_final_scale"] == 0.42
+    assert cost_push_exploration["residual_ev_action_scale_multiplier"] == 0.42
+    assert cost_push_exploration["residual_storage_action_scale_multiplier"] == 1.15
+    assert cost_push_exploration["residual_deferrable_action_scale_multiplier"] == 1.10
+    assert cost_push_exploration["actor_policy_loss_weight"] == 0.175
+    assert cost_push_exploration["n_step_returns"] == 12
+
+
 def test_w6_remote_smoke_can_generate_w7_heads_clone_diagnostic(tmp_path):
     rows = generate_w6_configs(
         output_dir=tmp_path,
