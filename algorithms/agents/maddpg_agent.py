@@ -2262,6 +2262,7 @@ class MADDPG(BaseAgent):
                 getattr(self, "_last_observation_event_priority_boost", 0.0)
             ),
         }
+        metrics.update(self._actor_architecture_diagnostic_metrics())
         replay_buffer = getattr(self, "replay_buffer", None)
         if replay_buffer is not None and hasattr(replay_buffer, "priority_fraction"):
             metrics.update(
@@ -2285,6 +2286,82 @@ class MADDPG(BaseAgent):
             )
         metrics.update(getattr(self, "_last_policy_action_diagnostics", {}) or {})
         return metrics
+
+    def _actor_architecture_diagnostic_metrics(self) -> Dict[str, float]:
+        actors = list(getattr(self, "actors", []) or [])
+        if not actors:
+            return {
+                "MADDPG/actor_count": 0.0,
+                "MADDPG/actor_parameter_count_mean": 0.0,
+                "MADDPG/actor_multi_head_enabled_ratio": 0.0,
+                "MADDPG/actor_semantic_heads_enabled_ratio": 0.0,
+                "MADDPG/actor_semantic_layout_attached": float(
+                    getattr(self, "_semantic_actor_layout_attached", False)
+                ),
+                "MADDPG/actor_semantic_group_count_mean": 0.0,
+                "MADDPG/actor_semantic_ev_action_count": 0.0,
+                "MADDPG/actor_semantic_storage_action_count": 0.0,
+                "MADDPG/actor_semantic_deferrable_action_count": 0.0,
+                "MADDPG/actor_semantic_other_action_count": 0.0,
+                "MADDPG/actor_auxiliary_head_enabled_ratio": 0.0,
+                "MADDPG/actor_auxiliary_head_parameter_count_mean": 0.0,
+            }
+
+        parameter_counts: List[float] = []
+        semantic_enabled = 0
+        multi_head_enabled = 0
+        semantic_group_counts: List[float] = []
+        semantic_action_counts = {"ev": 0.0, "storage": 0.0, "deferrable": 0.0, "other": 0.0}
+
+        for actor in actors:
+            parameter_counts.append(float(sum(parameter.numel() for parameter in actor.parameters())))
+            class_name = actor.__class__.__name__
+            if class_name in {"MultiHeadActor", "SemanticMultiHeadActor"}:
+                multi_head_enabled += 1
+            group_names = list(getattr(actor, "group_names", []) or [])
+            group_indices = list(getattr(actor, "group_indices", []) or [])
+            if class_name == "SemanticMultiHeadActor" or group_names:
+                semantic_enabled += 1
+                semantic_group_counts.append(float(len(group_names)))
+                for group_name, indices in zip(group_names, group_indices):
+                    key = str(group_name or "other").strip().lower()
+                    if key not in semantic_action_counts:
+                        key = "other"
+                    semantic_action_counts[key] += float(len(indices))
+
+        aux_heads = list(getattr(self, "actor_aux_heads", []) or [])
+        aux_enabled = 0
+        aux_parameter_counts: List[float] = []
+        for aux_head in aux_heads:
+            parameter_count = float(sum(parameter.numel() for parameter in aux_head.parameters()))
+            aux_parameter_counts.append(parameter_count)
+            if not isinstance(aux_head, torch.nn.Identity) and parameter_count > 0.0:
+                aux_enabled += 1
+
+        actor_count = float(len(actors))
+        aux_count = float(len(aux_heads)) if aux_heads else actor_count
+        return {
+            "MADDPG/actor_count": actor_count,
+            "MADDPG/actor_parameter_count_mean": float(np.mean(parameter_counts)) if parameter_counts else 0.0,
+            "MADDPG/actor_multi_head_enabled_ratio": float(multi_head_enabled) / actor_count,
+            "MADDPG/actor_semantic_heads_enabled_ratio": float(semantic_enabled) / actor_count,
+            "MADDPG/actor_semantic_layout_attached": float(
+                getattr(self, "_semantic_actor_layout_attached", False)
+            ),
+            "MADDPG/actor_semantic_group_count_mean": (
+                float(np.mean(semantic_group_counts)) if semantic_group_counts else 0.0
+            ),
+            "MADDPG/actor_semantic_ev_action_count": semantic_action_counts["ev"],
+            "MADDPG/actor_semantic_storage_action_count": semantic_action_counts["storage"],
+            "MADDPG/actor_semantic_deferrable_action_count": semantic_action_counts["deferrable"],
+            "MADDPG/actor_semantic_other_action_count": semantic_action_counts["other"],
+            "MADDPG/actor_auxiliary_head_enabled_ratio": (
+                float(aux_enabled) / aux_count if aux_count > 0.0 else 0.0
+            ),
+            "MADDPG/actor_auxiliary_head_parameter_count_mean": (
+                float(np.mean(aux_parameter_counts)) if aux_parameter_counts else 0.0
+            ),
+        }
 
     def consume_latest_training_metrics(self) -> Dict[str, float]:
         metrics = dict(getattr(self, "_latest_training_metrics", {}))

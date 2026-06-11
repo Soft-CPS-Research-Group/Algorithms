@@ -201,6 +201,34 @@ def test_maddpg_family_rebuilds_semantic_actor_after_environment_attach(agent_cl
     assert agent.actors[1].group_indices == [[0], [1]]
 
 
+@pytest.mark.parametrize("agent_cls", [MADDPG, MATD3])
+def test_maddpg_family_reports_actor_architecture_diagnostics(agent_cls):
+    config = _base_rl_config(agent_cls.__name__)
+    config["pipeline"][0]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
+    config["pipeline"][0]["networks"]["actor"].update(
+        {
+            "class": "SemanticMultiHeadActor",
+            "head_layers": [8],
+        }
+    )
+
+    agent = agent_cls(_agent_view(config))
+    _attach_bounds(agent)
+
+    metrics = agent.get_diagnostic_metrics()
+
+    assert metrics["MADDPG/actor_count"] == 2.0
+    assert metrics["MADDPG/actor_multi_head_enabled_ratio"] == 1.0
+    assert metrics["MADDPG/actor_semantic_heads_enabled_ratio"] == 1.0
+    assert metrics["MADDPG/actor_semantic_layout_attached"] == 1.0
+    assert metrics["MADDPG/actor_semantic_group_count_mean"] == pytest.approx(1.5)
+    assert metrics["MADDPG/actor_semantic_ev_action_count"] == 1.0
+    assert metrics["MADDPG/actor_semantic_storage_action_count"] == 1.0
+    assert metrics["MADDPG/actor_semantic_deferrable_action_count"] == 1.0
+    assert metrics["MADDPG/actor_semantic_other_action_count"] == 0.0
+    assert metrics["MADDPG/actor_parameter_count_mean"] > 0.0
+
+
 @pytest.mark.parametrize("algorithm_name", ["MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"])
 def test_config_schema_accepts_new_rl_templates(algorithm_name):
     config_path = {

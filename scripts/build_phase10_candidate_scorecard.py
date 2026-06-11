@@ -59,6 +59,15 @@ def _to_int(row: Mapping[str, Any], *keys: str) -> int | None:
     return int(value) if value is not None else None
 
 
+def _float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _fmt_float(value: float | None, digits: int = 3) -> str:
     if value is None:
         return ""
@@ -148,6 +157,111 @@ def _target_from_baseline_csv(path: Path, match: str) -> dict[str, float]:
     return target
 
 
+def _resolve_exported_kpis_path(row: Mapping[str, Any], source: Path) -> Path | None:
+    kpi_file = str(row.get("kpi_file") or "").strip()
+    job_id = str(row.get("job_id") or "").strip()
+    candidates: list[Path] = []
+
+    if kpi_file:
+        direct = Path(kpi_file)
+        if direct.is_absolute():
+            candidates.append(direct)
+        else:
+            candidates.append(source.parent / direct)
+            if job_id:
+                candidates.append(source.parent / "jobs" / job_id / direct.name)
+                candidates.append(source.parent / "jobs" / job_id / kpi_file)
+    if job_id:
+        candidates.append(source.parent / "jobs" / job_id / "exported_kpis.csv")
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    search_name = Path(kpi_file).name if kpi_file else "exported_kpis.csv"
+    if search_name and source.parent.exists():
+        for candidate in source.parent.rglob(search_name):
+            if not job_id or job_id in str(candidate):
+                return candidate
+    return None
+
+
+def _read_kpi_table(path: Path) -> dict[str, dict[str, str]]:
+    table: dict[str, dict[str, str]] = {}
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            name = str(row.get("KPI") or "").strip()
+            if name:
+                table[name] = row
+    return table
+
+
+def _building_values(kpi_row: Mapping[str, Any] | None) -> list[float]:
+    if not kpi_row:
+        return []
+    values: list[float] = []
+    for key, value in kpi_row.items():
+        if not str(key).startswith("Building_"):
+            continue
+        parsed = _float_or_none(value)
+        if parsed is not None:
+            values.append(parsed)
+    return values
+
+
+def _jain_index(values: Sequence[float]) -> float | None:
+    usable = [max(0.0, float(value)) for value in values]
+    if not usable:
+        return None
+    total = sum(usable)
+    squared_sum = sum(value * value for value in usable)
+    if total <= 0.0 or squared_sum <= 0.0:
+        return None
+    return (total * total) / (len(usable) * squared_sum)
+
+
+def _building_fairness_metrics(row: Mapping[str, Any], source: Path) -> dict[str, Any]:
+    path = _resolve_exported_kpis_path(row, source)
+    if path is None:
+        return {
+            "building_cost_vs_bau_better_count": None,
+            "building_cost_vs_bau_worse_count": None,
+            "building_cost_vs_bau_neutral_count": None,
+            "building_cost_vs_bau_worst_delta_eur": None,
+            "building_cost_vs_bau_best_delta_eur": None,
+            "building_cost_vs_bau_total_delta_eur": None,
+            "building_cost_savings_min_eur": None,
+            "building_cost_savings_jain_index": None,
+        }
+
+    table = _read_kpi_table(path)
+    deltas = _building_values(table.get("building_cost_total_delta_to_business_as_usual_eur"))
+    if not deltas:
+        return {
+            "building_cost_vs_bau_better_count": None,
+            "building_cost_vs_bau_worse_count": None,
+            "building_cost_vs_bau_neutral_count": None,
+            "building_cost_vs_bau_worst_delta_eur": None,
+            "building_cost_vs_bau_best_delta_eur": None,
+            "building_cost_vs_bau_total_delta_eur": None,
+            "building_cost_savings_min_eur": None,
+            "building_cost_savings_jain_index": None,
+        }
+
+    epsilon = 1.0e-6
+    savings = [-value for value in deltas]
+    return {
+        "building_cost_vs_bau_better_count": sum(1 for value in deltas if value < -epsilon),
+        "building_cost_vs_bau_worse_count": sum(1 for value in deltas if value > epsilon),
+        "building_cost_vs_bau_neutral_count": sum(1 for value in deltas if abs(value) <= epsilon),
+        "building_cost_vs_bau_worst_delta_eur": max(deltas),
+        "building_cost_vs_bau_best_delta_eur": min(deltas),
+        "building_cost_vs_bau_total_delta_eur": sum(deltas),
+        "building_cost_savings_min_eur": min(savings),
+        "building_cost_savings_jain_index": _jain_index([max(value, 0.0) for value in savings]),
+    }
+
+
 def _community_delta_bad(row: Mapping[str, Any], cost: float | None, target: Mapping[str, float]) -> bool:
     if cost is not None and cost <= target["cost_eur"] * (1.0 - COMMUNITY_TOLERANCE):
         return False
@@ -218,6 +332,7 @@ def _normalise_row(
     self_consumption = _to_float(row, "community_solar_self_consumption_rate", "self_consumption_rate")
     runtime = _to_float(row, "run_duration_seconds", "runtime_seconds")
     verdict, reason = _verdict(row, cost, target=target, success_cost_eur=success_cost_eur)
+    fairness = _building_fairness_metrics(row, source)
 
     cost_delta = None if cost is None else cost - target["cost_eur"]
     battery_ratio = None if battery is None else battery / target["battery_throughput_kwh"]
@@ -262,6 +377,7 @@ def _normalise_row(
         ),
         "peak_daily_ratio_to_bau": _to_float(row, "peak_daily_ratio_to_bau"),
         "peak_all_time_ratio_to_bau": _to_float(row, "peak_all_time_ratio_to_bau"),
+        **fairness,
         "runtime_seconds": runtime,
         "deucalion_time": row.get("deucalion_time", ""),
         "deucalion_mem_gb": row.get("deucalion_mem_gb", ""),
@@ -306,6 +422,9 @@ def _markdown_table(rows: Sequence[Mapping[str, Any]]) -> str:
         "ev_within_tolerance_rate",
         "battery_throughput_kwh",
         "v2g_export_kwh",
+        "building_cost_vs_bau_worse_count",
+        "building_cost_vs_bau_worst_delta_eur",
+        "building_cost_savings_jain_index",
         "runtime_seconds",
     ]
     header = "| " + " | ".join(columns) + " |"
@@ -415,6 +534,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "self_consumption_delta_vs_rbc_smart",
         "peak_daily_ratio_to_bau",
         "peak_all_time_ratio_to_bau",
+        "building_cost_vs_bau_better_count",
+        "building_cost_vs_bau_worse_count",
+        "building_cost_vs_bau_neutral_count",
+        "building_cost_vs_bau_worst_delta_eur",
+        "building_cost_vs_bau_best_delta_eur",
+        "building_cost_vs_bau_total_delta_eur",
+        "building_cost_savings_min_eur",
+        "building_cost_savings_jain_index",
         "runtime_seconds",
         "deucalion_time",
         "deucalion_mem_gb",

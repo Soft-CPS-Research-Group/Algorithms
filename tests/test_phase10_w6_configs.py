@@ -104,6 +104,41 @@ def test_w6a_local_matrix_generates_guided_window_configs(tmp_path):
     assert config["tracking"]["tags"]["actor_policy_loss_normalization"] is True
 
 
+def test_w6a_local_allows_custom_opportunity_windows(tmp_path):
+    rows = generate_w6_configs(
+        output_dir=tmp_path,
+        stage="w6a-local",
+        recipes=["w7_residual_comm_min_service_ctx"],
+        seeds=[123],
+        algorithms=["MATD3"],
+        windows=[("opp01_4864_5376", 4864, 512)],
+    )
+
+    assert len(rows) == 3
+    assert {row["window"] for row in rows} == {"opp01_4864_5376"}
+    rl_row = next(row for row in rows if row["algorithm"] == "MATD3")
+    config = _load(Path(rl_row["config_path"]))
+    validate_config(config)
+
+    assert config["simulator"]["simulation_start_time_step"] == 4864
+    assert config["simulator"]["simulation_end_time_step"] == 5375
+    assert config["simulator"]["episode_time_steps"] == 512
+    assert config["tracking"]["tags"]["window"] == "opp01_4864_5376"
+
+
+def test_w6a_local_rejects_invalid_custom_windows(tmp_path):
+    try:
+        generate_w6_configs(
+            output_dir=tmp_path,
+            stage="w6a-local",
+            windows=[("bad", 0, 0)],
+        )
+    except ValueError as exc:
+        assert "episode steps must be positive" in str(exc)
+    else:
+        raise AssertionError("invalid custom window should fail")
+
+
 def test_w6a_local_can_generate_clone_improvement_variants(tmp_path):
     rows = generate_w6_configs(
         output_dir=tmp_path,

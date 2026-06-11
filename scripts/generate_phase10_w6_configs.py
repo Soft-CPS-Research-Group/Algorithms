@@ -51,6 +51,7 @@ LOCAL_WINDOWS = (
     ("win2_4096_6144", 4096, 2048),
     ("win3_6144_8192", 6144, 2048),
 )
+WindowSpec = tuple[str, int, int]
 
 
 @dataclass(frozen=True)
@@ -1282,7 +1283,7 @@ def _stage_names(stage: str) -> tuple[str, ...]:
     return (stage,)
 
 
-def _stage_windows(stage: str) -> tuple[tuple[str, int, int], ...]:
+def _stage_windows(stage: str) -> tuple[WindowSpec, ...]:
     if stage == "w6-smoke-local":
         return (("local_smoke_0000_0256", 0, 256),)
     if stage == "w6a-local":
@@ -1292,6 +1293,53 @@ def _stage_windows(stage: str) -> tuple[tuple[str, int, int], ...]:
     if stage == "w6c-full-year":
         return (("full_year_0000_8760", 0, 8760),)
     raise ValueError(f"Unsupported W6 stage: {stage}")
+
+
+def _normalise_windows(windows: Sequence[WindowSpec] | None) -> tuple[WindowSpec, ...] | None:
+    if windows is None:
+        return None
+    normalised: list[WindowSpec] = []
+    for window_name, start, steps in windows:
+        name = _slug(str(window_name))
+        if not name:
+            raise ValueError("window name must not be empty")
+        start_step = int(start)
+        step_count = int(steps)
+        if start_step < 0:
+            raise ValueError(f"window {name} start_step must be non-negative")
+        if step_count <= 0:
+            raise ValueError(f"window {name} episode steps must be positive")
+        normalised.append((name, start_step, step_count))
+    if not normalised:
+        raise ValueError("at least one custom window must be provided")
+    return tuple(normalised)
+
+
+def _parse_window_spec(value: str) -> WindowSpec:
+    parts = [part.strip() for part in value.split(":")]
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError("custom windows must use NAME:START_STEP:STEPS")
+    name, start, steps = parts
+    try:
+        return name, int(start), int(steps)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("START_STEP and STEPS must be integers") from exc
+
+
+def _windows_from_opportunity_csv(path: Path, *, limit: int | None = None) -> tuple[WindowSpec, ...]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    selected = rows[: max(0, int(limit))] if limit is not None else rows
+    windows: list[WindowSpec] = []
+    for rank, row in enumerate(selected, start=1):
+        start = int(float(row["start_step"]))
+        end = int(float(row["end_step"]))
+        if end <= start:
+            raise ValueError(f"opportunity row {rank} has invalid window: {start}-{end}")
+        window_type = _slug(str(row.get("opportunity_type") or "opp"))
+        name = f"opp{rank:02d}_{start}_{end}_{window_type}"[:80]
+        windows.append((name, start, end - start))
+    return tuple(windows)
 
 
 def _stage_recipes(stage: str, requested: Sequence[str] | None) -> tuple[str, ...]:
@@ -1915,15 +1963,17 @@ def generate_w6_configs(
     recipes: Sequence[str] | None = None,
     seeds: Sequence[int] | None = None,
     algorithms: Sequence[str] | None = None,
+    windows: Sequence[WindowSpec] | None = None,
     include_baselines: bool = True,
     validate_only: bool = False,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     selected_seeds = tuple(int(seed) for seed in (seeds or DEFAULT_SEEDS))
+    custom_windows = _normalise_windows(windows)
 
     for stage_name in _stage_names(stage):
         runtime = _stage_runtime(stage_name)
-        windows = _stage_windows(stage_name)
+        stage_windows = custom_windows or _stage_windows(stage_name)
         stage_dir = output_dir / stage_name
 
         if include_baselines and stage_name == "w6a-local":
@@ -1931,7 +1981,7 @@ def generate_w6_configs(
                 ("RBCSmartPolicy", RBC_SMART_2022_TEMPLATE),
                 ("RBCCommunityPolicy", RBC_COMMUNITY_2022_TEMPLATE),
             ):
-                for window_name, start, steps in windows:
+                for window_name, start, steps in stage_windows:
                     run_id, config = _build_baseline_config(
                         policy_name=policy_name,
                         template_path=template,
@@ -1965,7 +2015,7 @@ def generate_w6_configs(
             for recipe_name in _stage_recipes(stage_name, recipes):
                 recipe = RECIPES[recipe_name]
                 for seed in selected_seeds:
-                    for window_name, start, steps in windows:
+                    for window_name, start, steps in stage_windows:
                         run_id, config = _build_rl_config(
                             stage=stage_name,
                             algorithm_name=algorithm_name,
@@ -2057,6 +2107,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recipe", action="append", dest="recipes", help="Recipe name; can be repeated.")
     parser.add_argument("--seed", action="append", type=int, dest="seeds", help="Seed; can be repeated.")
     parser.add_argument("--algorithm", action="append", dest="algorithms", help="MADDPG or MATD3.")
+    parser.add_argument(
+        "--window",
+        action="append",
+        type=_parse_window_spec,
+        dest="windows",
+        help="Custom training window as NAME:START_STEP:STEPS; can be repeated.",
+    )
+    parser.add_argument(
+        "--windows-csv",
+        type=Path,
+        help=(
+            "CSV produced by build_phase10_opportunity_windows.py. Uses start_step/end_step "
+            "to replace the default stage windows."
+        ),
+    )
+    parser.add_argument(
+        "--windows-limit",
+        type=int,
+        default=None,
+        help="Limit the number of rows used from --windows-csv.",
+    )
     parser.add_argument("--no-baselines", action="store_true", help="Skip W6A RBCSmart/RBCCommunity configs.")
     parser.add_argument("--validate-only", action="store_true", help="Validate generated configs without writing files.")
     return parser
@@ -2064,12 +2135,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    selected_windows: list[WindowSpec] = []
+    if args.windows_csv:
+        selected_windows.extend(_windows_from_opportunity_csv(args.windows_csv, limit=args.windows_limit))
+    if args.windows:
+        selected_windows.extend(args.windows)
     rows = generate_w6_configs(
         output_dir=args.output_dir,
         stage=args.stage,
         recipes=args.recipes,
         seeds=args.seeds,
         algorithms=args.algorithms,
+        windows=selected_windows or None,
         include_baselines=not args.no_baselines,
         validate_only=args.validate_only,
     )
