@@ -1,38 +1,38 @@
 """CC Level-1 community reward function.
 
-Objective: teach the global community signal to reduce import cost and
-peak import, while penalising unnecessary export (wasted PV surplus).
+Implements the supervisor's reward design (Phase 1):
 
-Only uses community-aggregated variables — exactly the information the
-Level-1 CC observes. No per-building terms, no battery/EV specifics.
+    reward_t = - w_cost   * cost_norm
+               - w_peak   * peak_import_norm
+               - w_export * export_norm
 
-Formula (per step)
-------------------
-    import_kwh  = max(community_net, 0)
-    export_kwh  = max(-community_net, 0)
+Where:
+    import_t           = max(community_net, 0)
+    community_cost_t   = import_t * grid_price_t
+    peak_penalty_t     = max(0, import_t - target_import) ** 2
+    export_t           = max(-community_net, 0)
 
-    community_cost     = import_kwh × price
-    peak_penalty       = max(import_kwh − peak_reference, 0)
-    export_penalty     = export_kwh
+    cost_norm          = community_cost_t  / reference_cost
+    peak_import_norm   = peak_penalty_t    / reference_peak_penalty
+    export_norm        = export_t          / reference_export
 
-    reward = −cost_weight   × community_cost
-             −peak_weight   × peak_penalty
-             −export_weight × export_penalty
+Reference values derived from the 15-min dataset (17 buildings):
+    target_import      = 4.14  kWh  (p75 community import)
+    reference_cost     = 1.045      (p90 community cost)
+    reference_peak     = 2.72       (p90 excess squared)
+    reference_export   = 7.52  kWh  (p90 community export)
 
-The ``peak_reference`` is the rolling mean of community import over the
-last ``peak_window`` steps (default 96 = 24 h at 15-min resolution).
-This makes the penalty dynamic: it fires when the current step's import
-exceeds the *recent average*, rewarding reduction of unusual peaks.
+Factor penalty (factor_t - 1.0)^2 and smoothness penalty are applied
+inside the agent's update() because the reward function has no access
+to the CC's action.
 
 Return value
 ------------
-Returns the same scalar split equally across buildings so that the CC's
-``sum(rewards)`` accumulates the full community signal.
+Same scalar split equally across buildings so CC.sum(rewards) = scalar.
 """
 
 from __future__ import annotations
 
-from collections import deque
 from typing import Any, List, Mapping, Union
 
 from citylearn.reward_function import RewardFunction
@@ -45,17 +45,25 @@ class CCRewardLevel1(RewardFunction):
         self,
         env_metadata: Mapping[str, Any],
         *,
-        cost_weight:   float = 1.0,
-        peak_weight:   float = 0.5,
-        export_weight: float = 0.1,
-        peak_window:   int   = 96,    # steps — default 24 h at 15 min
+        w_cost:   float = 1.0,
+        w_peak:   float = 0.3,
+        w_export: float = 0.1,
+        # Reference values from dataset (15-min, 17 buildings)
+        target_import:       float = 4.14,   # kWh — p75 community import
+        reference_cost:      float = 1.045,  # p90 community cost
+        reference_peak:      float = 2.72,   # p90 peak excess squared
+        reference_export:    float = 7.52,   # kWh — p90 community export
         **kwargs,
     ) -> None:
         super().__init__(env_metadata, **kwargs)
-        self._cost_weight   = float(cost_weight)
-        self._peak_weight   = float(peak_weight)
-        self._export_weight = float(export_weight)
-        self._import_buf    = deque(maxlen=int(peak_window))
+        self._w_cost   = float(w_cost)
+        self._w_peak   = float(w_peak)
+        self._w_export = float(w_export)
+
+        self._target_import    = float(target_import)
+        self._ref_cost         = max(float(reference_cost),   1e-8)
+        self._ref_peak         = max(float(reference_peak),   1e-8)
+        self._ref_export       = max(float(reference_export), 1e-8)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -77,39 +85,33 @@ class CCRewardLevel1(RewardFunction):
         if not observations:
             return []
 
-        # ── Aggregate community metrics from per-building building_ops obs ──
-        # Each building contributes its own net electricity consumption.
-        # Summing across buildings gives the community total.
+        # ── Community aggregates ─────────────────────────────────────────────
         community_net = sum(
             self._safe(obs.get("net_electricity_consumption")) for obs in observations
         )
-        community_import = max(community_net, 0.0)   # kWh drawn from grid this step
-        community_export = max(-community_net, 0.0)  # kWh pushed to grid this step
+        import_t = max(community_net, 0.0)
+        export_t = max(-community_net, 0.0)
 
         price = max(self._safe(observations[0].get("electricity_pricing")), 0.0)
 
-        # ── Community cost: import × price ──────────────────────────────────
-        community_cost = community_import * price
+        # ── Cost term ────────────────────────────────────────────────────────
+        community_cost = import_t * price
+        cost_norm = community_cost / self._ref_cost
 
-        # ── Peak penalty: excess above rolling mean import ───────────────────
-        # Fires only when this step's import exceeds recent average.
-        # Trains the agent to flatten the import curve, not just reduce it.
-        self._import_buf.append(community_import)
-        peak_ref   = float(sum(self._import_buf) / len(self._import_buf))
-        peak_extra = max(community_import - peak_ref, 0.0)
+        # ── Peak penalty (squared excess above target) ───────────────────────
+        peak_excess   = max(import_t - self._target_import, 0.0)
+        peak_penalty  = peak_excess ** 2
+        peak_norm     = peak_penalty / self._ref_peak
 
-        # ── Export penalty: wasted generation ────────────────────────────────
-        # Small weight — exporting is not as bad as peak import, but the
-        # agent should prefer self-consumption over sending surplus to grid.
-        export_penalty = community_export
+        # ── Export penalty ───────────────────────────────────────────────────
+        export_norm = export_t / self._ref_export
 
-        # ── Combined scalar reward ───────────────────────────────────────────
+        # ── Combined scalar ──────────────────────────────────────────────────
         scalar = (
-            -self._cost_weight   * community_cost
-            - self._peak_weight  * peak_extra
-            - self._export_weight * export_penalty
+            - self._w_cost   * cost_norm
+            - self._w_peak   * peak_norm
+            - self._w_export * export_norm
         )
 
-        # Split equally so CC.sum(rewards) = scalar
         per_building = scalar / len(observations)
         return [per_building] * len(observations)
