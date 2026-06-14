@@ -39,6 +39,7 @@ class EntityContractAdapter:
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
         "cc_level1",
+        "cc_level2",
     }
     _MADDPG_STYLE_PROFILES = {
         "maddpg_v1",
@@ -46,6 +47,7 @@ class EntityContractAdapter:
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
         "cc_level1",
+        "cc_level2",
     }
 
     _LEGACY_CHARGER_ALIASES = {
@@ -1718,6 +1720,8 @@ class EntityContractAdapter:
             return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=False)
         if profile == "cc_level1":
             return cls._is_cc_level1_feature(name)
+        if profile == "cc_level2":
+            return cls._is_cc_level2_feature(name)
         return True
 
     @classmethod
@@ -2039,6 +2043,48 @@ class EntityContractAdapter:
             return True
 
         # Filter out everything else (including _energy_kwh_step variants)
+        return False
+
+    @classmethod
+    def _is_cc_level2_feature(cls, name: str) -> bool:
+        """Features for community coordinator level 2 (per-building price signals).
+
+        6 per-building features:
+          - storage::soc                           battery SoC [0, 1]
+          - pv::generation_power_kw                local PV output [0, 1]
+          - net_power_kw                           net consumption [-1, 1] (signed)
+          - charger::*::connected_state            EV connected {0, 1}
+          - charger::*::connected_ev_soc_deficit   max(required-soc, 0) [0, 1]
+          - charger::*::connected_ev_departure_urgency_24h  1-hours/24 [0, 1]
+
+        District features (16) are unchanged from cc_level1.
+        Buildings without chargers receive 0.0 for EV features.
+        """
+        feature = cls._feature_tail_from_encoded_name(name)
+
+        # Exclude legacy RBC charger aliases (electric_vehicle_* prefix).
+        if name.startswith("electric_vehicle_"):
+            return False
+
+        if name.startswith("district__"):
+            return cls._is_cc_level1_district_feature(feature)
+
+        if name.startswith("storage::"):
+            return feature == "soc"
+
+        if name.startswith("pv::"):
+            return feature == "generation_power_kw"
+
+        if feature == "net_power_kw":
+            return True
+
+        if name.startswith("charger::"):
+            return feature in {
+                "connected_state",
+                "connected_ev_soc_deficit",
+                "connected_ev_departure_urgency_24h",
+            }
+
         return False
 
     @staticmethod
