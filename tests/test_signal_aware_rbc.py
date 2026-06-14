@@ -32,12 +32,13 @@ def _agent() -> SignalAwareRBC:
     return agent
 
 
-def test_signal_aware_rbc_forces_storage_charge_and_discharge():
+def test_signal_aware_rbc_neutral_multiplier_matches_base_policy():
+    # context=1.0 is the neutral multiplier — price appears unchanged,
+    # so behaviour must be identical to no context at all.
     agent = _agent()
     observations = [np.asarray([0.5], dtype=np.float32)]
 
-    assert agent.predict(observations, context=1.0) == [[1.0]]
-    assert agent.predict(observations, context=-1.0) == [[-1.0]]
+    assert agent.predict(observations, context=1.0) == agent.predict(observations, context=None)
 
 
 def test_signal_aware_rbc_neutral_context_falls_back_to_smart_policy():

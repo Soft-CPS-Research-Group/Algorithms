@@ -57,9 +57,13 @@ def test_registered_agents_accept_predict_context_keyword():
 
 
 def test_hierarchical_agents_are_registered_as_raw_observation_agents():
-    for name in ("BuildingAgent", "CCLevel1", "CommunityCoordinator", "SignalAwareRBC"):
+    for name in ("BuildingAgent", "CommunityCoordinator", "SignalAwareRBC"):
         assert is_algorithm_supported(name)
         assert ALGORITHM_REGISTRY[name]._use_raw_observations is True
+    # CCLevel1 uses the cc_level1 entity-encoding profile — must consume the
+    # pre-encoded vector, NOT raw observations.
+    assert is_algorithm_supported("CCLevel1")
+    assert ALGORITHM_REGISTRY["CCLevel1"]._use_raw_observations is False
 
 
 def test_build_execution_unit_supports_cc_level1_signal_aware_rbc_pipeline():

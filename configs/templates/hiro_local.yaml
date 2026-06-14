@@ -96,7 +96,8 @@ pipeline:
       mini_batch_size: 64
       clip_coef: 0.2
       vf_coef: 0.5
-      ent_coef: 0.005
+      ent_coef: 0.02
+      w_factor: 1.0
       max_grad_norm: 0.5
       target_kl: 0.1
 

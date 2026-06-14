@@ -18,6 +18,7 @@ from algorithms.agents.baseline_policies import (
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.building_agent import BuildingAgent
 from algorithms.agents.cc_level1_agent import CCLevel1Agent
+from algorithms.agents.cc_level2_agent import CCLevel2Agent
 from algorithms.agents.community_coordinator_agent import CommunityCoordinatorAgent
 from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.agents.masac_agent import MASAC
@@ -30,6 +31,7 @@ from algorithms.pipeline import Ensemble, Pipeline
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "BuildingAgent": BuildingAgent,
     "CCLevel1": CCLevel1Agent,
+    "CCLevel2": CCLevel2Agent,
     "CommunityCoordinator": CommunityCoordinatorAgent,
     "HAPPO": HAPPO,
     "IPPO": IPPO,
