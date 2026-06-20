@@ -189,8 +189,11 @@ class EVDataCollectionRBC(BaseAgent):
         self,
         observations: List[npt.NDArray[np.float64]],
         deterministic: bool | None = None,
+        *,
+        context: Any = None,
     ) -> List[List[float]]:
         """Return hour-mapped actions for all agents."""
+        del context  # data-collection agent ignores pipeline context
         all_actions: List[List[float]] = []
 
         for agent_idx, obs in enumerate(observations):

@@ -10,6 +10,15 @@ simulator:
   central_agent: false
   interface: entity
   topology_mode: static
+  community_market:
+    enabled: true
+    local_price_ratio_to_grid_import: 0.8
+    intra_community_sell_ratio: 0.8
+    grid_export_price: 0.0
+    import_member_weights: {}
+    kpis:
+      community_local_traded_enabled: true
+      community_self_consumption_enabled: true
   entity_encoding:
     enabled: true
     normalization: minmax_space
@@ -47,8 +56,8 @@ simulator:
     mode: end
     export_kpis_on_episode_end: true
     final_episode_only: true
-    include_business_as_usual: false
-    export_business_as_usual_timeseries: false
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: true
     kpi_round_decimals: null
     session_name: "rbc-smart-2022-all-plus-evs-local"
 
@@ -56,27 +65,28 @@ training:
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
-
-algorithm:
-  name: "RBCSmartPolicy"
+pipeline:
+- algorithm: RBCSmartPolicy
+  count: 1
   hyperparameters:
     allow_v2g: true
     flexibility_hours: 3.0
     emergency_hours: 1.0
     flex_trickle_charge: 0.0
     emergency_charge_rate: 1.0
-    ev_price_charge_rate: 0.70
+    ev_price_charge_rate: 0.7
     ev_pv_charge_rate: 0.85
-    ev_v2g_discharge_rate: 0.10
-    ev_v2g_reserve_soc: 0.25
+    ev_v2g_discharge_rate: 0.18
+    ev_v2g_reserve_soc: 0.0
     ev_service_margin_rate: 0.05
     ev_service_floor_rate: 0.25
     ev_service_lookahead_hours: 4.0
     ev_service_target_soc: 0.0
     ev_deadline_buffer_hours: 0.25
-    ev_v2g_min_departure_hours: 2.0
-    ev_v2g_service_margin_soc: 0.10
-    price_charge_rate: 0.15
+    ev_v2g_min_departure_hours: 1.0
+    ev_v2g_service_margin_soc: 0.02
+    ev_v2g_buffer_soc: 0.12
+    price_charge_rate: 0.0
     price_discharge_rate: 0.15
     pv_charge_rate: 0.45
     peak_discharge_rate: 0.25
@@ -84,8 +94,8 @@ algorithm:
     storage_max_soc: 0.75
     storage_target_soc: 0.60
     storage_price_charge_soc_ceiling: 0.60
-    storage_price_discharge_soc_floor: 0.60
-    storage_peak_discharge_soc_floor: 0.60
+    storage_price_discharge_soc_floor: 0.45
+    storage_peak_discharge_soc_floor: 0.45
     storage_discharge_import_threshold_kw: 0.50
     community_local_price_ratio: 0.8
     community_grid_export_price: 0.0
@@ -93,6 +103,7 @@ algorithm:
     import_peak_threshold_kw: 10.0
     low_headroom_threshold_kw: 1.0
     deferrable_start_action: 1.0
-    deferrable_urgency_threshold: 0.60
-    deferrable_slack_threshold: 0.40
+    deferrable_urgency_threshold: 0.6
+    deferrable_slack_threshold: 0.4
     deferrable_safety_margin_steps: 1.0
+    deferrable_import_block_threshold_kw: 2.0

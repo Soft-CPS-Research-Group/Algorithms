@@ -13,7 +13,7 @@ from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.maddpg_agent import MADDPG
-from algorithms.utils.networks import Critic, GaussianActor
+from algorithms.utils.networks import GaussianActor, build_critic_network
 
 
 class MASAC(MADDPG):
@@ -24,7 +24,6 @@ class MASAC(MADDPG):
         actor_cfg = self.config["algorithm"]["networks"]["actor"]
         critic_cfg = self.config["algorithm"]["networks"]["critic"]
         actor_fc_units = actor_cfg["layers"]
-        critic_fc_units = critic_cfg["layers"]
         exploration_cfg = self.config["algorithm"]["exploration"]["params"]
 
         self.initial_log_std = float(exploration_cfg.get("initial_log_std", -0.5))
@@ -63,11 +62,15 @@ class MASAC(MADDPG):
                     max_log_std=self.max_log_std,
                 ).to(self.device)
             )
-            critics.append(Critic(global_state_size, global_action_size, self.seed, critic_fc_units).to(self.device))
-            critic_targets.append(Critic(global_state_size, global_action_size, self.seed, critic_fc_units).to(self.device))
-            self.critics_2.append(Critic(global_state_size, global_action_size, self.seed + 7919, critic_fc_units).to(self.device))
+            critics.append(build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device))
+            critic_targets.append(
+                build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device)
+            )
+            self.critics_2.append(
+                build_critic_network(global_state_size, global_action_size, self.seed + 7919, critic_cfg).to(self.device)
+            )
             self.critic_targets_2.append(
-                Critic(global_state_size, global_action_size, self.seed + 7919, critic_fc_units).to(self.device)
+                build_critic_network(global_state_size, global_action_size, self.seed + 7919, critic_cfg).to(self.device)
             )
             configured_target = exploration_cfg.get("target_entropy")
             self.target_entropy.append(
@@ -104,7 +107,14 @@ class MASAC(MADDPG):
         ]
         return actor_optimizers, critic_optimizers
 
-    def predict(self, observations, deterministic: bool = False) -> List[List[float]]:
+    def predict(
+        self,
+        observations,
+        deterministic: bool = False,
+        *,
+        context: Any = None,
+    ) -> List[List[float]]:
+        _ = context
         self.exploration_step += 1
         if not deterministic and self.exploration_step <= self.random_exploration_steps:
             initial_strategy = getattr(self, "initial_exploration_strategy", "uniform_full_range")
@@ -145,16 +155,19 @@ class MASAC(MADDPG):
         done = bool(terminated or truncated)
         self._update_reward_normalizer(rewards)
         behavior_actions = self._transition_behavior_actions(actions)
+        next_behavior_actions = self._transition_next_behavior_actions(behavior_actions)
         priority_boost = self._transition_observation_event_priority_boost()
-        self._push_replay_transition(
+        self._store_replay_transition(
             observations=observations,
             actions=actions,
             rewards=rewards,
             next_observations=next_observations,
             done=done,
             behavior_actions=behavior_actions,
+            next_behavior_actions=next_behavior_actions,
             priority_boost=priority_boost,
         )
+        self._maybe_run_actor_offline_bc_pretraining(global_learning_step)
 
         if len(self.replay_buffer) < self.batch_size:
             return
@@ -201,7 +214,10 @@ class MASAC(MADDPG):
                 min_q_next = torch.minimum(q1_next, q2_next)
                 alpha = self._alpha(agent_idx).detach()
                 soft_value = min_q_next - alpha * next_log_probs[agent_idx]
-                target = rewards_all[agent_idx] + self.gamma * soft_value * (1 - dones_all[agent_idx])
+                bootstrap_gamma = float(getattr(self, "n_step_gamma", getattr(self, "gamma", 0.99))) ** int(
+                    getattr(self, "n_step_returns", 1) or 1
+                )
+                target = rewards_all[agent_idx] + bootstrap_gamma * soft_value * (1 - dones_all[agent_idx])
                 if self.critic_target_clip_abs > 0.0:
                     target = torch.clamp(target, -self.critic_target_clip_abs, self.critic_target_clip_abs)
                 q_targets.append(target)
@@ -284,7 +300,9 @@ class MASAC(MADDPG):
                         _action_l2,
                         _action_saturation,
                         _storage_action_l2,
+                        _storage_smoothness_l2,
                         _ev_v2g_action_l2,
+                        _ev_v2g_action_mass,
                         actor_regularization,
                     ) = self._actor_action_regularization_terms(agent_idx, scaled_action)
                     behavior_cloning_loss = self._actor_behavior_cloning_loss(

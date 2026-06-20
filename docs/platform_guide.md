@@ -13,7 +13,8 @@ This document explains how the fixed part of the project is structured, what res
                                         ┌───────▼─────────────────────┐
                                         │ run_experiment.py           │
                                         │ - MLflow, logging, job dirs │
-                                        │ - create_agent via registry │
+                                        │ - build_execution_unit      │
+                                        │   via registry              │
                                         └───────┬─────────────────────┘
                                                 │ BaseAgent instance
                                  ┌──────────────▼─────────────┐
@@ -59,7 +60,7 @@ Sections:
   `episode_time_steps`), and export controls under `simulator.export`.
 - `training`: global update cadence knobs.
 - `topology`: **derived** environment dimensions (num agents, observation/action shapes). These remain null in version-controlled configs and are filled by the wrapper.
-- `algorithm`: algorithm name and its parameters. Runtime-supported algorithms are `MADDPG`, `RuleBasedPolicy`, `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy` and `RBCSmartPolicy`; `SingleAgentRL` is a schema placeholder that intentionally fails fast at runtime until implemented.
+- `algorithm`: algorithm name and its parameters. Runtime-supported algorithms include `MADDPG`, `MATD3`, `MASAC`, `IPPO`, `MAPPO`, `HAPPO`, `RuleBasedPolicy`, `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `RBCSmartPolicy` and `RBCCommunityPolicy`. Neural fixed-layout algorithms are intentionally rejected for `entity + dynamic` topology; use rule-based policies there until a dynamic-ready neural agent exists.
 - `bundle`: manifest/export options shared by all algorithms (`bundle_version`, `description`, alias map hint, artifact config defaults).
 
 ### Validation
@@ -75,7 +76,7 @@ This prevents students from launching malformed runs.
 
 1. **Configuration** – Student clones `configs/config.yaml` or a template under `configs/templates/` and sets algorithm-specific values.
 2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. It also writes `jobs/<job_id>/config.resolved.yaml` with runtime-injected fields (for example `runtime.job_id`, `runtime.run_id`) plus derived topology. If enabled, simulator CSV exports are written under `jobs/<job_id>/results/simulation_data/`. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
-3. **Agent instantiation** – `create_agent(config)` looks up `algorithm.name` in `algorithms/registry.py`; the registry maps names to classes.
+3. **Agent instantiation** – `build_execution_unit(config)` reads `config['pipeline']` and looks up each stage's `algorithm` in `algorithms/registry.py`; the registry maps names to classes.
 4. **Wrapper** – handles the CityLearn loop, invoking `BaseAgent.predict`/`update`. It logs metrics and checkpoints using helper classes. Observation encoders are built from `configs/encoders/default.json` so training and serving stay aligned; update the JSON when the simulator exposes new features.
 5. **Artifacts** – After training, `agent.export_artifacts` writes ONNX models under `jobs/<job_id>/onnx_models/` (or `policy_agent_<index>.json` for rule-based baselines), and `build_manifest` drops `jobs/<job_id>/artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. The training runner validates the bundle contract (`utils/bundle_validator.py`) before finalizing output. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.
 

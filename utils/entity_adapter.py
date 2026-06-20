@@ -992,15 +992,49 @@ class EntityContractAdapter:
                 append(name, ("soc_fraction", index))
                 if name.endswith("connected_ev_required_soc_departure"):
                     soc_name = self._replace_last_feature(name, "connected_ev_soc")
+                    capacity_name = self._replace_last_feature(name, "connected_ev_battery_capacity_kwh")
+                    energy_to_required_name = self._replace_last_feature(name, "energy_to_required_soc_kwh")
+                    charge_power_name = self._replace_last_feature(name, "available_charge_power_kw")
+                    if charge_power_name not in value_name_to_index:
+                        charge_power_name = self._replace_last_feature(name, "max_charging_power_kw")
+                    efficiency_name = self._replace_last_feature(name, "charger_efficiency_ratio")
                     append(
                         self._replace_last_feature(name, "connected_ev_soc_deficit"),
                         ("soc_deficit", index, value_name_to_index.get(soc_name)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "connected_ev_soc_surplus"),
+                        ("soc_surplus", index, value_name_to_index.get(soc_name)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "connected_ev_soc_error_signed"),
+                        ("soc_error_signed", index, value_name_to_index.get(soc_name)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "max_charge_to_required_soc_action_normalized"),
+                        (
+                            "ev_charge_to_required_action",
+                            index,
+                            value_name_to_index.get(soc_name),
+                            value_name_to_index.get(capacity_name),
+                            value_name_to_index.get(energy_to_required_name),
+                            value_name_to_index.get(charge_power_name),
+                            value_name_to_index.get(efficiency_name),
+                        ),
                     )
                 if name.endswith("incoming_ev_required_soc_departure"):
                     soc_name = self._replace_last_feature(name, "incoming_ev_estimated_soc_arrival")
                     append(
                         self._replace_last_feature(name, "incoming_ev_soc_deficit"),
                         ("soc_deficit", index, value_name_to_index.get(soc_name)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "incoming_ev_soc_surplus"),
+                        ("soc_surplus", index, value_name_to_index.get(soc_name)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "incoming_ev_soc_error_signed"),
+                        ("soc_error_signed", index, value_name_to_index.get(soc_name)),
                     )
                 continue
 
@@ -1215,6 +1249,23 @@ class EntityContractAdapter:
                 required = self._soc_fraction(value_at(op[1]))
                 soc = self._soc_fraction(value_at(op[2], value_at(op[1])))
                 encoded[output_index] = max(required - soc, 0.0)
+            elif kind == "soc_surplus":
+                required = self._soc_fraction(value_at(op[1]))
+                soc = self._soc_fraction(value_at(op[2], value_at(op[1])))
+                encoded[output_index] = max(soc - required, 0.0)
+            elif kind == "soc_error_signed":
+                required = self._soc_fraction(value_at(op[1]))
+                soc = self._soc_fraction(value_at(op[2], value_at(op[1])))
+                encoded[output_index] = float(np.clip(required - soc, -1.0, 1.0))
+            elif kind == "ev_charge_to_required_action":
+                encoded[output_index] = self._ev_charge_to_required_action(
+                    required_soc=value_at(op[1]),
+                    current_soc=value_at(op[2], value_at(op[1])),
+                    capacity_kwh=value_at(op[3]),
+                    energy_to_required_kwh=value_at(op[4]),
+                    charge_power_kw=value_at(op[5]),
+                    efficiency=value_at(op[6], 1.0),
+                )
             elif kind == "cyclic_sin":
                 encoded[output_index] = cyclic(value_at(op[1]), period=op[2], offset=op[3])[0]
             elif kind == "cyclic_cos":
@@ -1382,12 +1433,39 @@ class EntityContractAdapter:
                     soc_name = self._replace_last_feature(name, "connected_ev_soc")
                     soc = self._soc_fraction(values_by_name.get(soc_name, value))
                     required = self._soc_fraction(value)
+                    capacity_name = self._replace_last_feature(name, "connected_ev_battery_capacity_kwh")
+                    energy_to_required_name = self._replace_last_feature(name, "energy_to_required_soc_kwh")
+                    charge_power_name = self._replace_last_feature(name, "available_charge_power_kw")
+                    if charge_power_name not in values_by_name:
+                        charge_power_name = self._replace_last_feature(name, "max_charging_power_kw")
+                    efficiency_name = self._replace_last_feature(name, "charger_efficiency_ratio")
                     append(self._replace_last_feature(name, "connected_ev_soc_deficit"), max(required - soc, 0.0))
+                    append(self._replace_last_feature(name, "connected_ev_soc_surplus"), max(soc - required, 0.0))
+                    append(
+                        self._replace_last_feature(name, "connected_ev_soc_error_signed"),
+                        float(np.clip(required - soc, -1.0, 1.0)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "max_charge_to_required_soc_action_normalized"),
+                        self._ev_charge_to_required_action(
+                            required_soc=value,
+                            current_soc=values_by_name.get(soc_name, value),
+                            capacity_kwh=values_by_name.get(capacity_name, 0.0),
+                            energy_to_required_kwh=values_by_name.get(energy_to_required_name, 0.0),
+                            charge_power_kw=values_by_name.get(charge_power_name, 0.0),
+                            efficiency=values_by_name.get(efficiency_name, 1.0),
+                        ),
+                    )
                 if name.endswith("incoming_ev_required_soc_departure"):
                     soc_name = self._replace_last_feature(name, "incoming_ev_estimated_soc_arrival")
                     soc = self._soc_fraction(values_by_name.get(soc_name, value))
                     required = self._soc_fraction(value)
                     append(self._replace_last_feature(name, "incoming_ev_soc_deficit"), max(required - soc, 0.0))
+                    append(self._replace_last_feature(name, "incoming_ev_soc_surplus"), max(soc - required, 0.0))
+                    append(
+                        self._replace_last_feature(name, "incoming_ev_soc_error_signed"),
+                        float(np.clip(required - soc, -1.0, 1.0)),
+                    )
                 continue
 
             if name.endswith("connected_ev_departure_time_step"):
@@ -1578,8 +1656,13 @@ class EntityContractAdapter:
                 append(name)
                 if name.endswith("connected_ev_required_soc_departure"):
                     append(self._replace_last_feature(name, "connected_ev_soc_deficit"))
+                    append(self._replace_last_feature(name, "connected_ev_soc_surplus"))
+                    append(self._replace_last_feature(name, "connected_ev_soc_error_signed"))
+                    append(self._replace_last_feature(name, "max_charge_to_required_soc_action_normalized"))
                 if name.endswith("incoming_ev_required_soc_departure"):
                     append(self._replace_last_feature(name, "incoming_ev_soc_deficit"))
+                    append(self._replace_last_feature(name, "incoming_ev_soc_surplus"))
+                    append(self._replace_last_feature(name, "incoming_ev_soc_error_signed"))
                 continue
 
             if name.endswith("connected_ev_departure_time_step"):
@@ -1711,9 +1794,9 @@ class EntityContractAdapter:
         *,
         include_forecast_features: bool,
     ) -> bool:
-        """Keep a compact 1.0.0 operational observation set.
+        """Keep a compact operational observation set.
 
-        v3 keeps the v2 core plus the simulator 1.0.0 features that reduce
+        v3 keeps the v2 core plus simulator entity features that reduce
         guesswork for controllers: feasible action capacity, EV/deferrable
         deadline pressure, and last-action feedback. The realtime variant
         drops simulator-derived perfect forecasts while preserving current
@@ -1790,14 +1873,24 @@ class EntityContractAdapter:
             "usable_soc_ratio",
             "last_requested_action_normalized",
             "last_limited_action_normalized",
+            "last_requested_power_kw",
+            "last_limited_power_kw",
             "last_applied_power_kw",
             "last_projection_error_kw",
+            "applied_energy_prev_15m_kwh",
             "applied_power_mean_prev_15m_kw",
+            "time_since_last_nonzero_action_hours",
             "time_since_last_nonzero_action_hours_24h",
+            "clip_reason_availability",
             "clip_reason_soc_min",
             "clip_reason_soc_max",
+            "clip_reason_soc_limit",
             "clip_reason_power_limit",
             "clip_reason_headroom",
+            "clip_reason_building_headroom",
+            "clip_reason_phase_headroom",
+            "clip_reason_export_headroom",
+            "clip_reason_outage",
             "clip_reason_offline",
         }
 
@@ -1809,6 +1902,11 @@ class EntityContractAdapter:
         return feature in {
             "hours_until_departure_24h",
             "time_until_departure_ratio",
+            "connected_ev_soc_surplus",
+            "connected_ev_soc_error_signed",
+            "max_charge_to_required_soc_action_normalized",
+            "incoming_ev_soc_surplus",
+            "incoming_ev_soc_error_signed",
             "can_charge",
             "can_discharge",
             "available_charge_power_kw",
@@ -1821,15 +1919,26 @@ class EntityContractAdapter:
             "min_required_action_normalized",
             "last_requested_action_normalized",
             "last_limited_action_normalized",
+            "last_requested_power_kw",
+            "last_limited_power_kw",
             "last_applied_power_kw",
             "last_projection_error_kw",
+            "applied_energy_prev_15m_kwh",
             "applied_power_mean_prev_15m_kw",
+            "time_since_last_nonzero_action_hours",
             "time_since_last_nonzero_action_hours_24h",
+            "clip_reason_availability",
             "clip_reason_no_ev",
             "clip_reason_soc_min",
             "clip_reason_soc_max",
+            "clip_reason_soc_limit",
             "clip_reason_power_limit",
             "clip_reason_headroom",
+            "clip_reason_building_headroom",
+            "clip_reason_phase_headroom",
+            "clip_reason_export_headroom",
+            "clip_reason_outage",
+            "clip_reason_deferrable_window",
             "clip_reason_not_v2g",
         }
 
@@ -1849,6 +1958,14 @@ class EntityContractAdapter:
             "last_start_requested",
             "last_start_applied",
             "start_blocked",
+            "clip_reason_availability",
+            "clip_reason_power_limit",
+            "clip_reason_soc_limit",
+            "clip_reason_building_headroom",
+            "clip_reason_phase_headroom",
+            "clip_reason_export_headroom",
+            "clip_reason_outage",
+            "clip_reason_deferrable_window",
             "clip_reason_not_pending",
             "clip_reason_already_running",
             "clip_reason_too_early",
@@ -2311,6 +2428,39 @@ class EntityContractAdapter:
                 return float(np.clip(value / capacity, 0.0, 1.0))
 
         return self._positive_by_high(value, high, fallback=100.0)
+
+    def _ev_charge_to_required_action(
+        self,
+        *,
+        required_soc: float,
+        current_soc: float,
+        capacity_kwh: float,
+        energy_to_required_kwh: float,
+        charge_power_kw: float,
+        efficiency: float,
+    ) -> float:
+        required = self._soc_fraction(required_soc)
+        current = self._soc_fraction(current_soc)
+        deficit_fraction = max(required - current, 0.0)
+        if deficit_fraction <= 0.0:
+            return 0.0
+
+        capacity = self._safe_scalar(capacity_kwh, 0.0)
+        energy = self._safe_scalar(energy_to_required_kwh, 0.0)
+        if energy <= 0.0 and capacity > 0.0:
+            energy = deficit_fraction * capacity
+        if energy <= 0.0:
+            return float(np.clip(deficit_fraction, 0.0, 1.0))
+
+        power = self._safe_scalar(charge_power_kw, 0.0)
+        eff = self._safe_scalar(efficiency, 1.0)
+        if eff <= 0.0:
+            eff = 1.0
+        deliverable_this_step = power * eff * self.seconds_per_time_step / 3600.0
+        if deliverable_this_step <= 1.0e-6:
+            return float(np.clip(deficit_fraction, 0.0, 1.0))
+
+        return float(np.clip(energy / deliverable_this_step, 0.0, 1.0))
 
     @staticmethod
     def _signed_by_bounds(value: float, low: float, high: float) -> float:

@@ -215,8 +215,11 @@ class DistrictDataCollectionRBC(BaseAgent):
         self,
         observations: List[npt.NDArray[np.float64]],
         deterministic: bool | None = None,
+        *,
+        context: Any = None,
     ) -> List[List[float]]:
         """Return executed actions; stash the clean reference for update()."""
+        del context  # data-collection agent ignores pipeline context
         clean_actions = self._rbc.predict(observations, deterministic=deterministic)
         # Defensive deep-copy as plain Python floats so post-clip mutations
         # downstream don't mutate our stash.

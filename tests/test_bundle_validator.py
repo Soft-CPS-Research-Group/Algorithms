@@ -15,7 +15,9 @@ def _base_manifest() -> dict:
         "simulator": {},
         "training": {},
         "topology": {"num_agents": 1},
-        "algorithm": {"name": "MADDPG", "hyperparameters": {}},
+        "pipeline": [
+            {"stage_index": 0, "algorithm": "MADDPG", "count": 1, "hyperparameters": {}}
+        ],
         "environment": {
             "observation_names": [["feat"]],
             "encoders": [[{"type": "NoNormalization", "params": {}}]],

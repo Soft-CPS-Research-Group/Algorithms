@@ -70,6 +70,7 @@ class CostHardConstraintReward(RewardFunction):
         ev_departure_window_penalty_mode: str = "shortfall",
         ev_departure_window_shortfall_cap_soc: Optional[float] = None,
         ev_v2g_service_penalty: float = 0.0,
+        ev_v2g_discharge_penalty: float = 0.0,
         ev_departure_deficit_penalty: float = 120.0,
         ev_departure_missed_penalty: float = 250.0,
         ev_default_charging_power_kw: float = 7.4,
@@ -112,6 +113,7 @@ class CostHardConstraintReward(RewardFunction):
             ev_departure_window_shortfall_cap_soc
         )
         self.ev_v2g_service_penalty = float(ev_v2g_service_penalty)
+        self.ev_v2g_discharge_penalty = float(ev_v2g_discharge_penalty)
         self.ev_departure_deficit_penalty = float(ev_departure_deficit_penalty)
         self.ev_departure_missed_penalty = float(ev_departure_missed_penalty)
         self.ev_default_charging_power_kw = max(float(ev_default_charging_power_kw), 1.0e-6)
@@ -597,6 +599,7 @@ class CostHardConstraintReward(RewardFunction):
                 "ev_schedule_penalty_deficit_sum": 0.0,
                 "ev_schedule_deficit_penalty": 0.0,
                 "ev_v2g_discharge_kwh_sum": 0.0,
+                "ev_v2g_discharge_penalty_amount": 0.0,
                 "ev_v2g_service_risk_sum": 0.0,
                 "ev_v2g_service_abuse_penalty": 0.0,
                 "ev_departure_window_count": 0.0,
@@ -653,6 +656,7 @@ class CostHardConstraintReward(RewardFunction):
             * self.state_penalty_scale
         )
         discharge_kwh = max(-self._safe_float(charged_energy_kwh, default=0.0), 0.0)
+        v2g_discharge_penalty = discharge_kwh * self.ev_v2g_discharge_penalty * priority_weight
         v2g_service_risk = service_shortfall + schedule_deficit
         v2g_penalty = self._ev_v2g_service_penalty(
             discharge_kwh=discharge_kwh,
@@ -705,6 +709,7 @@ class CostHardConstraintReward(RewardFunction):
             "ev_schedule_penalty_deficit_sum": schedule_penalty_deficit,
             "ev_schedule_deficit_penalty": schedule_penalty,
             "ev_v2g_discharge_kwh_sum": discharge_kwh,
+            "ev_v2g_discharge_penalty_amount": v2g_discharge_penalty,
             "ev_v2g_service_risk_sum": v2g_service_risk,
             "ev_v2g_service_abuse_penalty": v2g_penalty,
             "ev_departure_window_count": departure_window_count,
@@ -716,6 +721,7 @@ class CostHardConstraintReward(RewardFunction):
             "ev_service_penalty": (
                 dense_penalty
                 + schedule_penalty
+                + v2g_discharge_penalty
                 + v2g_penalty
                 + window_penalty
                 + missed_penalty
@@ -2019,6 +2025,91 @@ class CostServiceCommunityPeakDeadlineRewardV52(CostHardConstraintReward):
         "battery_soc_min": 0.0,
         "battery_soc_max": 1.0,
         "use_observed_storage_soc_limits": True,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)
+
+
+class CostServiceCommunityResidualConstraintRewardV53(CostHardConstraintReward):
+    """Phase 10 residual-policy reward: protect EV service while valuing community shape.
+
+    V53 is meant for residual training over RBCCommunity/RBCSmart teachers. It
+    keeps EV deadlines strict enough to preserve the service gate, removes any
+    local export-credit ambiguity, and raises community import/export/peak terms
+    so small residual actions have a clear reason to improve self-consumption
+    and grid shape beyond the teacher policy.
+    """
+
+    DEFAULT_KWARGS = {
+        **CostServiceCommunityPeakDeadlineRewardV52.DEFAULT_KWARGS,
+        "local_cost_weight": 0.0,
+        "export_credit_ratio": 0.0,
+        "community_settlement_cost_weight": 1.22,
+        "community_peak_import_penalty": 0.0020,
+        "community_export_penalty": 0.00055,
+        "ev_departure_window_hours": 6.0,
+        "ev_connected_deficit_penalty": 105.0,
+        "ev_connected_deficit_exponent": 2.0,
+        "ev_schedule_deficit_penalty": 980.0,
+        "ev_schedule_deficit_exponent": 1.45,
+        "ev_schedule_deficit_cap_soc": 0.08,
+        "ev_departure_window_shortfall_cap_soc": 0.08,
+        "ev_departure_deficit_penalty": 1250.0,
+        "ev_departure_missed_penalty": 3600.0,
+        "ev_over_service_tolerance": 0.04,
+        "ev_over_service_penalty": 900.0,
+        "ev_v2g_service_penalty": 1150.0,
+        "ev_v2g_discharge_penalty": 0.10,
+        "battery_throughput_penalty": 0.0025,
+        "battery_soc_min": 0.0,
+        "battery_soc_max": 1.0,
+        "use_observed_storage_soc_limits": True,
+        "community_penalty_divide_by_agents": True,
+        "scale_state_penalties_by_time_step": True,
+        "state_penalty_reference_seconds": 3600.0,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)
+
+
+class CostServiceCommunityDenseEVResidualRewardV54(CostHardConstraintReward):
+    """Phase 10 W7 profile: dense EV schedule signal for conservative residual RL.
+
+    Departure failures are sparse one-step events, so a residual policy can
+    learn thousands of apparently good steps and only discover the EV mistake at
+    departure. V54 keeps V53's community objective but makes the recoverable EV
+    schedule deficit visible throughout the connected period. This is intended
+    for small residual corrections over RBCCommunity, not for unconstrained
+    free-form policies.
+    """
+
+    DEFAULT_KWARGS = {
+        **CostServiceCommunityResidualConstraintRewardV53.DEFAULT_KWARGS,
+        "community_settlement_cost_weight": 1.18,
+        "community_peak_import_penalty": 0.0018,
+        "community_export_penalty": 0.00050,
+        "ev_departure_window_hours": 8.0,
+        "ev_connected_deficit_penalty": 155.0,
+        "ev_connected_deficit_exponent": 1.6,
+        "ev_schedule_deficit_penalty": 1500.0,
+        "ev_schedule_deficit_exponent": 1.20,
+        "ev_schedule_deficit_cap_soc": 0.12,
+        "ev_departure_window_shortfall_cap_soc": 0.10,
+        "ev_departure_deficit_penalty": 1600.0,
+        "ev_departure_missed_penalty": 4800.0,
+        "ev_over_service_tolerance": 0.04,
+        "ev_over_service_penalty": 1150.0,
+        "ev_v2g_service_penalty": 1850.0,
+        "ev_v2g_discharge_penalty": 0.12,
+        "battery_throughput_penalty": 0.004,
+        "scale_state_penalties_by_time_step": True,
+        "state_penalty_reference_seconds": 3600.0,
     }
 
     def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:

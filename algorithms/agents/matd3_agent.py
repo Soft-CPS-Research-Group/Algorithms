@@ -13,7 +13,7 @@ from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.maddpg_agent import MADDPG
-from algorithms.utils.networks import Actor, Critic
+from algorithms.utils.networks import build_actor_network, build_critic_network
 
 
 class MATD3(MADDPG):
@@ -27,25 +27,31 @@ class MATD3(MADDPG):
 
     def _initialize_networks(self):
         logger.debug("Initializing MATD3 actor and twin critic networks.")
-        actor_fc_units = self.config["algorithm"]["networks"]["actor"]["layers"]
-        critic_fc_units = self.config["algorithm"]["networks"]["critic"]["layers"]
+        critic_cfg = self.config["algorithm"]["networks"]["critic"]
 
         actors, critics, actor_targets, critic_targets = [], [], [], []
         self.critics_2, self.critic_targets_2 = [], []
+        self.actor_aux_heads = []
         global_state_size = sum(self.observation_dimension)
-        global_action_size = sum(self.action_dimension)
+        global_action_size = self._critic_global_action_feature_size()
         for agent_idx in range(self.num_agents):
             state_size = self.observation_dimension[agent_idx]
             action_size = self.action_dimension[agent_idx]
+            actor_cfg = self._actor_network_config_for_agent(agent_idx)
 
-            actors.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
-            actor_targets.append(Actor(state_size, action_size, self.seed, actor_fc_units).to(self.device))
+            actors.append(build_actor_network(state_size, action_size, self.seed, actor_cfg).to(self.device))
+            actor_targets.append(build_actor_network(state_size, action_size, self.seed, actor_cfg).to(self.device))
+            self.actor_aux_heads.append(self._build_actor_auxiliary_head(actors[-1]).to(self.device))
 
-            critics.append(Critic(global_state_size, global_action_size, self.seed, critic_fc_units).to(self.device))
-            critic_targets.append(Critic(global_state_size, global_action_size, self.seed, critic_fc_units).to(self.device))
-            self.critics_2.append(Critic(global_state_size, global_action_size, self.seed + 7919, critic_fc_units).to(self.device))
+            critics.append(build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device))
+            critic_targets.append(
+                build_critic_network(global_state_size, global_action_size, self.seed, critic_cfg).to(self.device)
+            )
+            self.critics_2.append(
+                build_critic_network(global_state_size, global_action_size, self.seed + 7919, critic_cfg).to(self.device)
+            )
             self.critic_targets_2.append(
-                Critic(global_state_size, global_action_size, self.seed + 7919, critic_fc_units).to(self.device)
+                build_critic_network(global_state_size, global_action_size, self.seed + 7919, critic_cfg).to(self.device)
             )
 
         for actor, actor_target in zip(actors, actor_targets):
@@ -67,7 +73,7 @@ class MATD3(MADDPG):
         return actors, critics, actor_targets, critic_targets
 
     def _initialize_optimizers(self):
-        actor_optimizers = [torch.optim.Adam(actor.parameters(), lr=self.lr_actor) for actor in self.actors]
+        actor_optimizers = self._initialize_actor_optimizers()
         critic_optimizers = [torch.optim.Adam(critic.parameters(), lr=self.lr_critic) for critic in self.critics]
         self.critic_optimizers_2 = [
             torch.optim.Adam(critic.parameters(), lr=self.lr_critic) for critic in self.critics_2
@@ -89,20 +95,28 @@ class MATD3(MADDPG):
         initial_exploration_done: bool,
     ) -> None:
         update_start_time = time.time()
+        observations, next_observations = self._prepare_transition_actor_observations(
+            observations,
+            next_observations,
+            done=bool(terminated or truncated),
+        )
 
         done = bool(terminated or truncated)
         self._update_reward_normalizer(rewards)
         behavior_actions = self._transition_behavior_actions(actions)
+        next_behavior_actions = self._transition_next_behavior_actions(behavior_actions)
         priority_boost = self._transition_observation_event_priority_boost()
-        self._push_replay_transition(
+        self._store_replay_transition(
             observations=observations,
             actions=actions,
             rewards=rewards,
             next_observations=next_observations,
             done=done,
             behavior_actions=behavior_actions,
+            next_behavior_actions=next_behavior_actions,
             priority_boost=priority_boost,
         )
+        self._maybe_run_actor_offline_bc_pretraining(global_learning_step)
 
         if len(self.replay_buffer) < self.batch_size:
             return
@@ -111,13 +125,19 @@ class MATD3(MADDPG):
         if not update_step:
             return
 
-        if hasattr(self.replay_buffer, "sample_with_behavior_actions"):
+        if hasattr(self.replay_buffer, "sample_with_policy_context_actions"):
+            states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all, next_behavior_actions_all = (
+                self.replay_buffer.sample_with_policy_context_actions()
+            )
+        elif hasattr(self.replay_buffer, "sample_with_behavior_actions"):
             states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all = (
                 self.replay_buffer.sample_with_behavior_actions()
             )
+            next_behavior_actions_all = behavior_actions_all
         else:
             states, actions_all, rewards_all, next_states, dones_all = self.replay_buffer.sample()
             behavior_actions_all = actions_all
+            next_behavior_actions_all = actions_all
 
         raw_rewards_all = torch.stack(rewards_all).to(self.device, dtype=torch.float32, non_blocking=True)
         rewards_all = self._normalize_reward_tensor(raw_rewards_all)
@@ -125,26 +145,41 @@ class MATD3(MADDPG):
         states = [state.to(self.device, non_blocking=True) for state in states]
         actions_all = [action.to(self.device, non_blocking=True) for action in actions_all]
         behavior_actions_all = [action.to(self.device, non_blocking=True) for action in behavior_actions_all]
+        next_behavior_actions_all = [action.to(self.device, non_blocking=True) for action in next_behavior_actions_all]
         next_states = [state.to(self.device, non_blocking=True) for state in next_states]
 
         global_state = torch.cat(states, dim=1)
         global_next_state = torch.cat(next_states, dim=1)
-        global_actions = torch.cat(actions_all, dim=1)
+        global_actions = self._critic_action_features(
+            actions_all,
+            behavior_actions_all,
+        )
 
         with torch.no_grad():
             next_policy_actions = []
             for agent_idx in range(self.num_agents):
-                next_action = self._scale_action_tensor(agent_idx, self.actor_targets[agent_idx](next_states[agent_idx]))
+                next_action = self._policy_action_from_actor_output(
+                    agent_idx,
+                    self.actor_targets[agent_idx](next_states[agent_idx]),
+                    base_action=next_behavior_actions_all[agent_idx],
+                    global_learning_step=global_learning_step,
+                )
                 next_action = self._add_target_policy_smoothing(agent_idx, next_action)
                 next_policy_actions.append(next_action)
-            global_next_actions = torch.cat(next_policy_actions, dim=1)
+            global_next_actions = self._critic_action_features(
+                next_policy_actions,
+                next_behavior_actions_all,
+            )
 
             q_targets = []
             for agent_idx in range(self.num_agents):
                 q1_next = self.critic_targets[agent_idx](global_next_state, global_next_actions)
                 q2_next = self.critic_targets_2[agent_idx](global_next_state, global_next_actions)
                 q_next = torch.minimum(q1_next, q2_next)
-                target = rewards_all[agent_idx] + self.gamma * q_next * (1 - dones_all[agent_idx])
+                bootstrap_gamma = float(getattr(self, "n_step_gamma", getattr(self, "gamma", 0.99))) ** int(
+                    getattr(self, "n_step_returns", 1) or 1
+                )
+                target = rewards_all[agent_idx] + bootstrap_gamma * q_next * (1 - dones_all[agent_idx])
                 if self.critic_target_clip_abs > 0.0:
                     target = torch.clamp(target, -self.critic_target_clip_abs, self.critic_target_clip_abs)
                 q_targets.append(target)
@@ -196,7 +231,12 @@ class MATD3(MADDPG):
 
         with torch.no_grad():
             detached_policy_actions = [
-                self._scale_action_tensor(agent_idx, actor(state)).detach()
+                self._policy_action_from_actor_output(
+                    agent_idx,
+                    actor(state),
+                    base_action=behavior_actions_all[agent_idx],
+                    global_learning_step=global_learning_step,
+                ).detach()
                 for agent_idx, (actor, state) in enumerate(zip(self.actors, states))
             ]
 
@@ -204,9 +244,19 @@ class MATD3(MADDPG):
         total_actor_loss = 0.0
         actor_loss_values: List[float] = []
         actor_policy_loss_values: List[float] = []
+        actor_policy_loss_weighted_values: List[float] = []
+        actor_policy_loss_scale_values: List[float] = []
+        actor_policy_q_abs_mean_values: List[float] = []
         actor_grad_norm_values: List[float] = []
         actor_bc_values: List[float] = []
+        actor_bc_ev_values: List[float] = []
+        actor_bc_storage_values: List[float] = []
+        actor_bc_deferrable_values: List[float] = []
+        actor_bc_other_values: List[float] = []
         actor_reg_values: List[float] = []
+        actor_residual_delta_l2_values: List[float] = []
+        actor_storage_smoothness_values: List[float] = []
+        actor_auxiliary_loss_values: List[float] = []
         actor_behavior_cloning_effective_weight = self._actor_behavior_cloning_effective_weight(
             global_learning_step
         )
@@ -218,22 +268,69 @@ class MATD3(MADDPG):
             for agent_idx, (actor, critic, optimizer) in enumerate(
                 zip(self.actors, self.critics, self.actor_optimizers)
             ):
-                predicted_action = self._scale_action_tensor(agent_idx, actor(states[agent_idx]))
+                predicted_action = self._policy_action_from_actor_output(
+                    agent_idx,
+                    actor(states[agent_idx]),
+                    base_action=behavior_actions_all[agent_idx],
+                    global_learning_step=global_learning_step,
+                )
                 joint_policy_actions = list(detached_policy_actions)
                 joint_policy_actions[agent_idx] = predicted_action
-                global_predicted_actions = torch.cat(joint_policy_actions, dim=1)
+                global_predicted_actions = self._critic_action_features(
+                    joint_policy_actions,
+                    behavior_actions_all,
+                )
 
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
-                    actor_policy_loss = -critic(global_state, global_predicted_actions).mean()
-                    weighted_actor_policy_loss = actor_policy_loss_effective_weight * actor_policy_loss
+                    (
+                        actor_policy_loss,
+                        actor_policy_loss_for_optimization,
+                        actor_policy_loss_scale,
+                        actor_policy_q_abs_mean,
+                    ) = self._actor_policy_loss_from_critic(
+                        critic,
+                        global_state,
+                        global_predicted_actions,
+                    )
+                    weighted_actor_policy_loss = (
+                        actor_policy_loss_effective_weight * actor_policy_loss_for_optimization
+                    )
                     (
                         _action_l2,
                         _action_saturation,
                         _storage_action_l2,
+                        storage_smoothness_l2,
                         _ev_v2g_action_l2,
+                        _ev_v2g_action_mass,
                         actor_regularization,
-                    ) = self._actor_action_regularization_terms(agent_idx, predicted_action)
+                    ) = self._actor_action_regularization_terms(
+                        agent_idx,
+                        predicted_action,
+                        base_action=behavior_actions_all[agent_idx],
+                        state=states[agent_idx],
+                    )
+                    actor_auxiliary_loss = self._actor_auxiliary_prediction_loss(
+                        agent_idx,
+                        actor,
+                        states[agent_idx],
+                        next_states[agent_idx],
+                    )
                     behavior_cloning_loss = self._actor_behavior_cloning_loss(
+                        agent_idx,
+                        predicted_action,
+                        behavior_actions_all[agent_idx],
+                    )
+                    (
+                        behavior_cloning_ev_loss,
+                        behavior_cloning_storage_loss,
+                        behavior_cloning_deferrable_loss,
+                        behavior_cloning_other_loss,
+                    ) = self._actor_behavior_cloning_type_losses(
+                        agent_idx,
+                        predicted_action,
+                        behavior_actions_all[agent_idx],
+                    )
+                    residual_delta_l2 = self._residual_delta_l2(
                         agent_idx,
                         predicted_action,
                         behavior_actions_all[agent_idx],
@@ -241,10 +338,14 @@ class MATD3(MADDPG):
                     behavior_cloning_regularization = (
                         actor_behavior_cloning_effective_weight * behavior_cloning_loss
                     )
+                    auxiliary_regularization = (
+                        float(getattr(self, "actor_auxiliary_loss_weight", 0.0)) * actor_auxiliary_loss
+                    )
                     actor_loss = (
                         weighted_actor_policy_loss
                         + actor_regularization
                         + behavior_cloning_regularization
+                        + auxiliary_regularization
                     )
 
                 optimizer.zero_grad(set_to_none=True)
@@ -255,16 +356,28 @@ class MATD3(MADDPG):
                 self.scaler.update()
 
                 with torch.no_grad():
-                    detached_policy_actions[agent_idx] = self._scale_action_tensor(
+                    detached_policy_actions[agent_idx] = self._policy_action_from_actor_output(
                         agent_idx,
                         actor(states[agent_idx]),
+                        base_action=behavior_actions_all[agent_idx],
+                        global_learning_step=global_learning_step,
                     ).detach()
 
                 total_actor_loss += float(actor_loss.detach().item())
                 actor_loss_values.append(float(actor_loss.detach().item()))
                 actor_policy_loss_values.append(float(actor_policy_loss.detach().item()))
+                actor_policy_loss_weighted_values.append(float(weighted_actor_policy_loss.detach().item()))
+                actor_policy_loss_scale_values.append(float(actor_policy_loss_scale.detach().item()))
+                actor_policy_q_abs_mean_values.append(float(actor_policy_q_abs_mean.detach().item()))
                 actor_reg_values.append(float(actor_regularization.detach().item()))
                 actor_bc_values.append(float(behavior_cloning_loss.detach().item()))
+                actor_bc_ev_values.append(float(behavior_cloning_ev_loss.detach().item()))
+                actor_bc_storage_values.append(float(behavior_cloning_storage_loss.detach().item()))
+                actor_bc_deferrable_values.append(float(behavior_cloning_deferrable_loss.detach().item()))
+                actor_bc_other_values.append(float(behavior_cloning_other_loss.detach().item()))
+                actor_residual_delta_l2_values.append(float(residual_delta_l2.detach().item()))
+                actor_storage_smoothness_values.append(float(storage_smoothness_l2.detach().item()))
+                actor_auxiliary_loss_values.append(float(actor_auxiliary_loss.detach().item()))
                 actor_grad_norm_values.append(float(actor_grad_norm))
 
                 if update_target_step:
@@ -274,14 +387,34 @@ class MATD3(MADDPG):
         else:
             actor_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_policy_loss_values = [0.0 for _ in range(self.num_agents)]
+            actor_policy_loss_weighted_values = [0.0 for _ in range(self.num_agents)]
+            actor_policy_loss_scale_values = [1.0 for _ in range(self.num_agents)]
+            actor_policy_q_abs_mean_values = [0.0 for _ in range(self.num_agents)]
             actor_reg_values = [0.0 for _ in range(self.num_agents)]
             actor_bc_values = [0.0 for _ in range(self.num_agents)]
+            actor_bc_ev_values = [0.0 for _ in range(self.num_agents)]
+            actor_bc_storage_values = [0.0 for _ in range(self.num_agents)]
+            actor_bc_deferrable_values = [0.0 for _ in range(self.num_agents)]
+            actor_bc_other_values = [0.0 for _ in range(self.num_agents)]
+            actor_residual_delta_l2_values = [0.0 for _ in range(self.num_agents)]
+            actor_storage_smoothness_values = [0.0 for _ in range(self.num_agents)]
+            actor_auxiliary_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_grad_norm_values = [0.0 for _ in range(self.num_agents)]
 
         if should_log_step_metrics and self.training_diagnostics_enabled:
             q1_flat = torch.cat([tensor.reshape(-1) for tensor in q1_expected_tensors])
             q2_flat = torch.cat([tensor.reshape(-1) for tensor in q2_expected_tensors])
             q_target_flat = torch.cat([target.reshape(-1) for target in q_targets])
+            policy_deviation_metrics = self._tensor_action_deviation_metrics(
+                detached_policy_actions,
+                behavior_actions_all,
+                prefix="MATD3/policy_vs_teacher",
+            )
+            replay_deviation_metrics = self._tensor_action_deviation_metrics(
+                actions_all,
+                behavior_actions_all,
+                prefix="MATD3/replay_vs_teacher",
+            )
             metrics: Dict[str, float] = {
                 "MATD3/critic_1_loss_mean": float(np.mean(critic_loss_values)),
                 "MATD3/critic_2_loss_mean": float(np.mean(critic_2_loss_values)),
@@ -292,10 +425,41 @@ class MATD3(MADDPG):
                 "MATD3/actor_update_performed": float(actor_update_due),
                 "MATD3/actor_loss_mean": float(np.mean(actor_loss_values)),
                 "MATD3/actor_policy_loss_mean": float(np.mean(actor_policy_loss_values)),
+                "MATD3/actor_policy_loss_weighted_mean": float(np.mean(actor_policy_loss_weighted_values)),
+                "MATD3/actor_policy_loss_effective_weight": float(actor_policy_loss_effective_weight),
+                "MATD3/actor_policy_loss_normalization_enabled": float(
+                    getattr(self, "actor_policy_loss_normalization", False)
+                ),
+                "MATD3/actor_policy_loss_scale_mean": float(np.mean(actor_policy_loss_scale_values)),
+                "MATD3/actor_policy_q_abs_mean": float(np.mean(actor_policy_q_abs_mean_values)),
                 "MATD3/actor_regularization_loss_mean": float(np.mean(actor_reg_values)),
+                "MATD3/actor_residual_delta_l2_mean": float(np.mean(actor_residual_delta_l2_values)),
+                "MATD3/actor_storage_smoothness_l2_mean": float(np.mean(actor_storage_smoothness_values)),
+                "MATD3/actor_auxiliary_loss_mean": float(np.mean(actor_auxiliary_loss_values)),
                 "MATD3/actor_behavior_cloning_loss_mean": float(np.mean(actor_bc_values)),
+                "MATD3/actor_behavior_cloning_ev_loss_mean": float(np.mean(actor_bc_ev_values)),
+                "MATD3/actor_behavior_cloning_storage_loss_mean": float(
+                    np.mean(actor_bc_storage_values)
+                ),
+                "MATD3/actor_behavior_cloning_deferrable_loss_mean": float(
+                    np.mean(actor_bc_deferrable_values)
+                ),
+                "MATD3/actor_behavior_cloning_other_loss_mean": float(np.mean(actor_bc_other_values)),
                 "MATD3/actor_behavior_cloning_effective_weight": float(
                     actor_behavior_cloning_effective_weight
+                ),
+                "MATD3/critic_action_input_mode_final_base_delta": float(
+                    getattr(self, "critic_action_input_mode", "final")
+                    in {"final_base_delta", "final_base_delta_normalized"}
+                ),
+                "MATD3/critic_action_input_mode_delta_normalized": float(
+                    getattr(self, "critic_action_input_mode", "final") == "final_base_delta_normalized"
+                ),
+                "MATD3/residual_policy_enabled": float(
+                    getattr(self, "residual_policy_enabled", False)
+                ),
+                "MATD3/residual_action_scale_effective": float(
+                    getattr(self, "_last_residual_action_scale", 0.0)
                 ),
                 "MATD3/actor_grad_norm_mean": float(np.mean(actor_grad_norm_values)),
                 "MATD3/q1_expected_mean": float(q1_flat.mean().item()),
@@ -305,6 +469,9 @@ class MATD3(MADDPG):
                 "MATD3/reward_raw_mean": float(raw_rewards_all.mean().item()),
                 "MATD3/reward_train_mean": float(rewards_all.mean().item()),
                 "MATD3/replay_buffer_size": float(len(self.replay_buffer)),
+                "MATD3/replay_push_count": float(getattr(self, "_replay_push_count", 0)),
+                "MATD3/n_step_returns": float(getattr(self, "n_step_returns", 1)),
+                "MATD3/n_step_queue_size": float(getattr(self, "_last_n_step_queue_size", 0)),
                 "MATD3/target_policy_smoothing": float(getattr(self, "target_policy_smoothing", False)),
                 "MATD3/target_policy_noise": float(getattr(self, "target_policy_noise", 0.0)),
                 "MATD3/target_policy_noise_clip": float(getattr(self, "target_policy_noise_clip", 0.0)),
@@ -317,6 +484,23 @@ class MATD3(MADDPG):
                     metrics[f"MATD3/critic_2_loss_agent_{agent_idx}"] = critic_2_loss_values[agent_idx]
                     metrics[f"MATD3/critic_gap_abs_agent_{agent_idx}"] = critic_gap_values[agent_idx]
                     metrics[f"MATD3/actor_loss_agent_{agent_idx}"] = actor_loss_values[agent_idx]
+                    metrics[f"MATD3/actor_behavior_cloning_loss_agent_{agent_idx}"] = actor_bc_values[
+                        agent_idx
+                    ]
+                    metrics[f"MATD3/actor_behavior_cloning_ev_loss_agent_{agent_idx}"] = (
+                        actor_bc_ev_values[agent_idx]
+                    )
+                    metrics[f"MATD3/actor_behavior_cloning_storage_loss_agent_{agent_idx}"] = (
+                        actor_bc_storage_values[agent_idx]
+                    )
+                    metrics[f"MATD3/actor_behavior_cloning_deferrable_loss_agent_{agent_idx}"] = (
+                        actor_bc_deferrable_values[agent_idx]
+                    )
+                    metrics[f"MATD3/actor_behavior_cloning_other_loss_agent_{agent_idx}"] = (
+                        actor_bc_other_values[agent_idx]
+                    )
+            metrics.update(policy_deviation_metrics)
+            metrics.update(replay_deviation_metrics)
             self._record_training_metrics(metrics, global_learning_step)
 
     def get_diagnostic_metrics(self) -> Dict[str, float]:
@@ -339,6 +523,8 @@ class MATD3(MADDPG):
             checkpoint[f"actor_target_state_dict_{agent_idx}"] = self.actor_targets[agent_idx].state_dict()
             checkpoint[f"critic_target_state_dict_{agent_idx}"] = self.critic_targets[agent_idx].state_dict()
             checkpoint[f"critic_target_2_state_dict_{agent_idx}"] = self.critic_targets_2[agent_idx].state_dict()
+            if agent_idx < len(getattr(self, "actor_aux_heads", [])):
+                checkpoint[f"actor_aux_head_state_dict_{agent_idx}"] = self.actor_aux_heads[agent_idx].state_dict()
             checkpoint[f"actor_optimizer_state_dict_{agent_idx}"] = self.actor_optimizers[agent_idx].state_dict()
             checkpoint[f"critic_optimizer_state_dict_{agent_idx}"] = self.critic_optimizers[agent_idx].state_dict()
             checkpoint[f"critic_optimizer_2_state_dict_{agent_idx}"] = self.critic_optimizers_2[agent_idx].state_dict()
@@ -390,6 +576,9 @@ class MATD3(MADDPG):
                     checkpoint[f"critic_2_state_dict_{agent_idx}"],
                 )
             )
+            aux_state = checkpoint.get(f"actor_aux_head_state_dict_{agent_idx}")
+            if aux_state is not None and agent_idx < len(getattr(self, "actor_aux_heads", [])):
+                self.actor_aux_heads[agent_idx].load_state_dict(aux_state)
             if not self.fine_tune:
                 self.actor_optimizers[agent_idx].load_state_dict(
                     checkpoint[f"actor_optimizer_state_dict_{agent_idx}"]

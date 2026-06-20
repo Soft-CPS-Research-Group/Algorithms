@@ -18,9 +18,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from algorithms.registry import create_agent
+from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS, build_execution_unit
 from run_experiment import _resolve_agent_observation_dimensions
 from scripts.audit_entity_observations import _agent_building_name, _build_environment, _load_config
+from utils.pipeline_utils import pipeline_algorithm_names
 from utils.wrapper_citylearn import Wrapper_CityLearn
 
 
@@ -85,7 +86,11 @@ def _charger_schema_by_action(config: Mapping[str, Any]) -> dict[str, dict[str, 
 
 
 def _set_topology_from_wrapper(config: dict[str, Any], wrapper: Wrapper_CityLearn) -> None:
-    algorithm_name = (config.get("algorithm", {}) or {}).get("name")
+    algorithm_names = pipeline_algorithm_names(config)
+    algorithm_name = next(
+        (name for name in algorithm_names if name in ENCODED_OBSERVATION_ALGORITHMS),
+        algorithm_names[0] if algorithm_names else None,
+    )
     topology = config.setdefault("topology", {})
     topology["observation_dimensions"] = _resolve_agent_observation_dimensions(wrapper, algorithm_name)
     topology["action_dimensions"] = list(wrapper.action_dimension)
@@ -111,7 +116,7 @@ def _build_wrapper_and_agent(config_path: str, output_dir: Path, job_id: str) ->
         progress_path=str(output_dir / "progress.json"),
     )
     _set_topology_from_wrapper(config, wrapper)
-    agent = create_agent(config=config)
+    agent = build_execution_unit(config=config)
     wrapper.set_model(agent)
     return config, wrapper
 

@@ -45,6 +45,14 @@ tracking:
   training_diagnostics_detail: summary
   reward_diagnostics_enabled: true
   reward_diagnostics_detail: summary
+  # Stall watchdog is disabled by default. Enable on remote diagnostic runs to
+  # dump Python thread stacks if a wrapper phase blocks longer than the timeout.
+  stall_watchdog_enabled: false
+  stall_watchdog_timeout_seconds: null
+  stall_watchdog_exit_on_timeout: true
+  stall_watchdog_repeat: false
+  stall_watchdog_traceback_file: null
+  stall_watchdog_context_interval_steps: 1
 
 # Checkpoint behavior for saving and optional resume/fine-tuning workflows.
 checkpointing:
@@ -121,8 +129,8 @@ simulator:
     mode: end
     export_kpis_on_episode_end: true
     final_episode_only: true
-    include_business_as_usual: false
-    export_business_as_usual_timeseries: false
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: true
     kpi_round_decimals: null
     session_name: null
   # Wrapper-only reward shaping profile (simulator remains untouched).
@@ -147,68 +155,69 @@ topology:
   action_space: null
 
 # Algorithm family and hyperparameters.
-algorithm:
-  name: "MADDPG"
-  hyperparameters:
-    gamma: 0.99
-  networks:
-    actor:
-      class: "Actor"
-      layers: [1024, 512, 256]
-      lr: 1.0e-4
-    critic:
-      class: "Critic"
-      layers: [1024, 512, 256]
-      lr: 1.0e-3
-  replay_buffer:
-    class: "MultiAgentReplayBuffer"
-    capacity: 200000
-    batch_size: 256
-    behavior_action_priority_scope: all
-    observation_event_priority_weight: 0.0
-    observation_event_priority_mode: ev_departure_service
-  exploration:
-    strategy: "GaussianNoise"
-    params:
-      bias: 0.0
-      sigma: 0.15
-      decay: 0.9995
-      min_sigma: 0.03
-      noise_clip: 0.3
-      storage_exploration_noise_multiplier: 1.0
-      ev_negative_exploration_noise_multiplier: 1.0
+pipeline:
+  - algorithm: "MADDPG"
+    count: 1
+    hyperparameters:
       gamma: 0.99
-      tau: 0.001
-      use_amp: true
-      critic_loss: mse
-      critic_huber_beta: 1.0
-      critic_target_clip_abs: 0.0
-      end_initial_exploration_time_step: 960
-      random_exploration_steps: 960
-      warm_start_policy_phaseout_steps: 0
-      warm_start_policy_phaseout_mode: probability
-      train_during_initial_exploration: false
-      initial_exploration_training_start_step: 0
-      actor_update_interval: 1
-      target_policy_smoothing: false
-      target_policy_noise: 0.05
-      target_policy_noise_clip: 0.10
-      actor_action_l2_penalty: 0.0
-      actor_action_saturation_penalty: 0.0
-      actor_storage_action_l2_penalty: 0.0
-      actor_ev_v2g_action_l2_penalty: 0.0
-      actor_action_saturation_threshold: 0.85
-      actor_behavior_cloning_weight: 0.0
-      actor_ev_behavior_cloning_multiplier: 1.0
-      actor_ev_behavior_cloning_positive_target_weight: 0.0
-      actor_ev_behavior_cloning_positive_target_power: 1.0
-      actor_ev_behavior_cloning_zero_target_weight: 0.0
-      actor_ev_behavior_cloning_zero_target_threshold: 0.05
-      actor_storage_behavior_cloning_multiplier: 1.0
-      actor_behavior_cloning_min_weight: 0.0
-      actor_behavior_cloning_decay_start_step: 0
-      actor_behavior_cloning_decay_steps: 0
-      actor_behavior_cloning_source: replay_action
+    networks:
+      actor:
+        class: "Actor"
+        layers: [1024, 512, 256]
+        lr: 1.0e-4
+      critic:
+        class: "Critic"
+        layers: [1024, 512, 256]
+        lr: 1.0e-3
+    replay_buffer:
+      class: "MultiAgentReplayBuffer"
+      capacity: 200000
+      batch_size: 256
+      behavior_action_priority_scope: all
+      observation_event_priority_weight: 0.0
+      observation_event_priority_mode: ev_departure_service
+    exploration:
+      strategy: "GaussianNoise"
+      params:
+        bias: 0.0
+        sigma: 0.15
+        decay: 0.9995
+        min_sigma: 0.03
+        noise_clip: 0.3
+        storage_exploration_noise_multiplier: 1.0
+        ev_negative_exploration_noise_multiplier: 1.0
+        gamma: 0.99
+        tau: 0.001
+        use_amp: true
+        critic_loss: mse
+        critic_huber_beta: 1.0
+        critic_target_clip_abs: 0.0
+        end_initial_exploration_time_step: 960
+        random_exploration_steps: 960
+        warm_start_policy_phaseout_steps: 0
+        warm_start_policy_phaseout_mode: probability
+        train_during_initial_exploration: false
+        initial_exploration_training_start_step: 0
+        actor_update_interval: 1
+        target_policy_smoothing: false
+        target_policy_noise: 0.05
+        target_policy_noise_clip: 0.10
+        actor_action_l2_penalty: 0.0
+        actor_action_saturation_penalty: 0.0
+        actor_storage_action_l2_penalty: 0.0
+        actor_ev_v2g_action_l2_penalty: 0.0
+        actor_action_saturation_threshold: 0.85
+        actor_behavior_cloning_weight: 0.0
+        actor_ev_behavior_cloning_multiplier: 1.0
+        actor_ev_behavior_cloning_positive_target_weight: 0.0
+        actor_ev_behavior_cloning_positive_target_power: 1.0
+        actor_ev_behavior_cloning_zero_target_weight: 0.0
+        actor_ev_behavior_cloning_zero_target_threshold: 0.05
+        actor_storage_behavior_cloning_multiplier: 1.0
+        actor_behavior_cloning_min_weight: 0.0
+        actor_behavior_cloning_decay_start_step: 0
+        actor_behavior_cloning_decay_steps: 0
+        actor_behavior_cloning_source: replay_action
 
 # Optional worker-specific overrides (e.g., Deucalion). Keep null for local runs.
 execution: null

@@ -117,8 +117,8 @@ simulator:
     mode: end
     export_kpis_on_episode_end: true
     final_episode_only: true
-    include_business_as_usual: false
-    export_business_as_usual_timeseries: false
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: true
     kpi_round_decimals: null
     session_name: null
   wrapper_reward:
@@ -140,27 +140,33 @@ topology:
   observation_dimensions: null
   action_dimensions: null
   action_space: null
-
-# Algorithm family and hyperparameters.
-algorithm:
-  name: "IPPO"
+execution: null
+pipeline:
+- algorithm: IPPO
+  count: 1
   hyperparameters:
     gamma: 0.995
   networks:
     actor:
-      class: "Actor"
-      layers: [1024, 512, 256]
-      lr: 5.0e-5
+      class: Actor
+      layers:
+      - 1024
+      - 512
+      - 256
+      lr: 5.0e-05
     critic:
-      class: "Critic"
-      layers: [1024, 512, 256]
-      lr: 5.0e-4
+      class: Critic
+      layers:
+      - 1024
+      - 512
+      - 256
+      lr: 0.0005
   replay_buffer:
-    class: "OnPolicyRolloutBuffer"
+    class: OnPolicyRolloutBuffer
     capacity: 512
     batch_size: 128
   exploration:
-    strategy: "PPO"
+    strategy: PPO
     params:
       bias: 0.0
       sigma: 0.15
@@ -191,7 +197,7 @@ algorithm:
       actor_update_interval: 1
       target_policy_smoothing: false
       target_policy_noise: 0.05
-      target_policy_noise_clip: 0.10
+      target_policy_noise_clip: 0.1
       actor_action_l2_penalty: 0.0
       actor_action_saturation_penalty: 0.0
       actor_storage_action_l2_penalty: 0.0
@@ -208,19 +214,16 @@ algorithm:
       actor_behavior_cloning_extra_update_end_step: 0
       reward_normalization: true
       reward_normalization_clip: 10.0
-      reward_normalization_epsilon: 1.0e-8
+      reward_normalization_epsilon: 1.0e-08
       rollout_length: 512
       minibatch_size: 128
       ppo_epochs: 4
       gae_lambda: 0.95
-      clip_ratio: 0.20
+      clip_ratio: 0.2
       entropy_coef: 0.01
-      value_loss_coef: 0.50
-      max_grad_norm: 0.50
+      value_loss_coef: 0.5
+      max_grad_norm: 0.5
       initial_log_std: -0.5
       min_log_std: -5.0
       max_log_std: 1.0
       target_kl: 0.03
-
-# Optional worker-specific overrides; omitted for local execution.
-execution: null

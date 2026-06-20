@@ -1,11 +1,34 @@
-"""Algorithm registry for training entrypoint."""
+"""Algorithm registry and execution-unit builder for the training entrypoint."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Type
+import os
+import sys
+import time
+from typing import Any, Dict, List, Type
 
+
+_REGISTRY_TRACE_ENABLED = (
+    os.environ.get("OPEVA_STARTUP_TRACE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    and os.path.basename(sys.argv[0]) == "run_experiment.py"
+)
+_REGISTRY_TRACE_T0 = time.monotonic()
+
+
+def _registry_trace(message: str) -> None:
+    if not _REGISTRY_TRACE_ENABLED:
+        return
+    elapsed = time.monotonic() - _REGISTRY_TRACE_T0
+    print(f"[opeva-registry +{elapsed:.3f}s] {message}", file=sys.stderr, flush=True)
+
+
+_registry_trace("module import started")
+
+_registry_trace("before loguru import")
 from loguru import logger
+_registry_trace("after loguru import")
 
+_registry_trace("before baseline policies import")
 from algorithms.agents.baseline_policies import (
     NormalNoBatteryPolicy,
     NormalPolicy,
@@ -13,23 +36,65 @@ from algorithms.agents.baseline_policies import (
     RBCCommunityPolicy,
     RBCSmartPolicy,
     RandomPolicy,
+    SignalAwareRBC,
 )
+_registry_trace("after baseline policies import")
+_registry_trace("before base agent import")
 from algorithms.agents.base_agent import BaseAgent
+_registry_trace("after base agent import")
+_registry_trace("before building agent import")
+from algorithms.agents.building_agent import BuildingAgent
+_registry_trace("after building agent import")
+_registry_trace("before cc level1 import")
+from algorithms.agents.cc_level1_agent import CCLevel1Agent
+_registry_trace("after cc level1 import")
+_registry_trace("before community coordinator import")
+from algorithms.agents.community_coordinator_agent import CommunityCoordinatorAgent
+_registry_trace("after community coordinator import")
+_registry_trace("before district data collection import")
 from algorithms.agents.district_data_collection_agent import DistrictDataCollectionRBC
+_registry_trace("after district data collection import")
+_registry_trace("before ev data collection import")
 from algorithms.agents.ev_data_collection_agent import EVDataCollectionRBC
+_registry_trace("after ev data collection import")
+_registry_trace("before MADDPG import")
 from algorithms.agents.maddpg_agent import MADDPG
+_registry_trace("after MADDPG import")
+_registry_trace("before MASAC import")
 from algorithms.agents.masac_agent import MASAC
+_registry_trace("after MASAC import")
+_registry_trace("before MATD3 import")
 from algorithms.agents.matd3_agent import MATD3
+_registry_trace("after MATD3 import")
+_registry_trace("before PPO agents import")
 from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO
+_registry_trace("after PPO agents import")
+_registry_trace("before RuleBasedPolicy import")
 from algorithms.agents.rbc_agent import RuleBasedPolicy
+_registry_trace("after RuleBasedPolicy import")
+_registry_trace("before CQL entity agent import")
 from algorithms.offline_rl.cql_entity_agent import CQLEntityAgent
+_registry_trace("after CQL entity agent import")
+_registry_trace("before IQL entity agent import")
 from algorithms.offline_rl.iql_entity_agent import IQLEntityAgent
+_registry_trace("after IQL entity agent import")
+_registry_trace("before execution unit import")
+from algorithms.execution_unit import ExecutionUnit
+_registry_trace("after execution unit import")
+_registry_trace("before pipeline import")
+from algorithms.pipeline import Ensemble, Pipeline
+_registry_trace("after pipeline import")
 
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
+    "BuildingAgent": BuildingAgent,
+    "CCLevel1": CCLevel1Agent,
     "CQLEntityAgent": CQLEntityAgent,
-    "IQLEntityAgent": IQLEntityAgent,
+    "CommunityCoordinator": CommunityCoordinatorAgent,
+    "DistrictDataCollectionRBC": DistrictDataCollectionRBC,
+    "EVDataCollectionRBC": EVDataCollectionRBC,
     "HAPPO": HAPPO,
     "IPPO": IPPO,
+    "IQLEntityAgent": IQLEntityAgent,
     "MADDPG": MADDPG,
     "MAPPO": MAPPO,
     "MASAC": MASAC,
@@ -41,13 +106,20 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "RBCSmartPolicy": RBCSmartPolicy,
     "RandomPolicy": RandomPolicy,
     "RuleBasedPolicy": RuleBasedPolicy,
-    "EVDataCollectionRBC": EVDataCollectionRBC,
-    "DistrictDataCollectionRBC": DistrictDataCollectionRBC,
+    "SignalAwareRBC": SignalAwareRBC,
 }
 
 PLACEHOLDER_ALGORITHMS = {
     "SingleAgentRL",
 }
+
+# Derived from the registry: algorithms whose class sets _use_raw_observations=False
+# (i.e. neural agents that need the wrapper's observation encoding).
+ENCODED_OBSERVATION_ALGORITHMS: frozenset[str] = frozenset(
+    name for name, cls in ALGORITHM_REGISTRY.items()
+    if not cls._use_raw_observations
+)
+_registry_trace("registry built")
 
 
 def supported_algorithms() -> List[str]:
@@ -91,21 +163,78 @@ def build_unsupported_algorithm_message(name: str | None) -> str:
     )
 
 
-def create_agent(config: dict) -> BaseAgent:
-    """Instantiate an agent based on the configuration."""
-    algorithm_cfg = config.get("algorithm", {})
-    name = algorithm_cfg.get("name")
-    if not is_algorithm_supported(name):
-        message = build_unsupported_algorithm_message(name)
+def _stage_to_agent_view(global_config: Dict[str, Any], stage_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Synthesise an agent-facing config view for a single pipeline stage.
+
+    Existing agent constructors read ``self.config["algorithm"][...]`` as
+    historical convention. Rather than rewriting every agent in this
+    branch, the builder copies the global config and substitutes a stage
+    slice under ``algorithm`` so each agent sees the same shape it has
+    always seen. The migration to per-stage config objects can happen
+    independently in a follow-up, without changing this builder.
+    """
+    agent_view = dict(global_config)
+    algorithm_block: Dict[str, Any] = {
+        "name": stage_cfg["algorithm"],
+        "hyperparameters": stage_cfg.get("hyperparameters", {}) or {},
+    }
+    for optional_key in ("networks", "replay_buffer", "exploration", "policy"):
+        if optional_key in stage_cfg and stage_cfg[optional_key] is not None:
+            algorithm_block[optional_key] = stage_cfg[optional_key]
+    agent_view["algorithm"] = algorithm_block
+    return agent_view
+
+
+def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
+    """Instantiate the model the wrapper drives.
+
+    Reads ``config['pipeline']`` (an ordered list of stage descriptions)
+    and produces:
+
+    * a single :class:`BaseAgent` when the pipeline has exactly one
+      stage with ``count == 1`` (current default — backwards compatible
+      with the historical single-agent flow),
+    * an :class:`Ensemble` for a single stage with ``count > 1``,
+    * a :class:`Pipeline` of stages otherwise (each entry being either
+      a single agent or an :class:`Ensemble` when ``count > 1``).
+
+    Adding a new hierarchy level is purely a configuration change — no
+    code change here, in the wrapper, or in any agent class.
+    """
+    pipeline_cfg = config.get("pipeline") or []
+    if not pipeline_cfg:
+        message = build_unsupported_algorithm_message(None)
         logger.error(message)
         raise ValueError(message)
 
-    try:
-        agent_cls = ALGORITHM_REGISTRY[name]
-    except KeyError as exc:
-        # Defensive guard in case registry is mutated between checks.
-        message = build_unsupported_algorithm_message(name)
-        logger.error(message)
-        raise ValueError(message) from exc
+    stages: List[ExecutionUnit] = []
+    for stage_cfg in pipeline_cfg:
+        algorithm_name = stage_cfg.get("algorithm")
+        if not is_algorithm_supported(algorithm_name):
+            message = build_unsupported_algorithm_message(algorithm_name)
+            logger.error(message)
+            raise ValueError(message)
 
-    return agent_cls(config=config)
+        agent_cls = ALGORITHM_REGISTRY[algorithm_name]
+        agent_view = _stage_to_agent_view(config, stage_cfg)
+        count = int(stage_cfg.get("count", 1) or 1)
+        if count < 1:
+            raise ValueError(
+                f"Stage '{algorithm_name}' has count={count}; must be >= 1."
+            )
+
+        frozen = bool(stage_cfg.get("frozen", False))
+
+        if count == 1:
+            unit = agent_cls(config=agent_view)
+            unit.frozen = frozen
+            stages.append(unit)
+        else:
+            members = [agent_cls(config=agent_view) for _ in range(count)]
+            ensemble = Ensemble(members)
+            ensemble.frozen = frozen
+            stages.append(ensemble)
+
+    if len(stages) == 1:
+        return stages[0]
+    return Pipeline(stages)

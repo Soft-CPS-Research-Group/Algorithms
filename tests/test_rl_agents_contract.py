@@ -8,11 +8,18 @@ import pytest
 import torch
 import yaml
 
+from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.agents.matd3_agent import MATD3
 from algorithms.agents.masac_agent import MASAC
 from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO
-from algorithms.registry import create_agent, is_algorithm_supported
+from algorithms.utils.networks import LateFusionCritic, MultiHeadActor, SemanticMultiHeadActor
+from algorithms.registry import build_execution_unit, is_algorithm_supported, _stage_to_agent_view
 from utils.config_schema import validate_config
+
+
+def _agent_view(config: dict) -> dict:
+    """Convert pipeline-format config to the agent-facing view expected by agent constructors."""
+    return _stage_to_agent_view(config, config["pipeline"][0])
 
 
 class _Box:
@@ -43,65 +50,68 @@ def _base_rl_config(name: str) -> dict:
             "observation_dimensions": [3, 2],
             "action_dimensions": [1, 2],
         },
-        "algorithm": {
-            "name": name,
-            "hyperparameters": {
-                "gamma": 0.95,
-                "require_cuda": False,
-            },
-            "networks": {
-                "actor": {
-                    "class": "Actor",
-                    "layers": [16],
-                    "lr": 1.0e-3,
-                },
-                "critic": {
-                    "class": "Critic",
-                    "layers": [16],
-                    "lr": 1.0e-3,
-                },
-            },
-            "replay_buffer": {
-                "class": "MultiAgentReplayBuffer" if name in {"MATD3", "MASAC"} else "OnPolicyRolloutBuffer",
-                "capacity": 8,
-                "batch_size": 2,
-            },
-            "exploration": {
-                "strategy": "SAC" if name == "MASAC" else ("GaussianNoise" if name == "MATD3" else "PPO"),
-                "params": {
+        "pipeline": [
+            {
+                "algorithm": name,
+                "count": 1,
+                "hyperparameters": {
                     "gamma": 0.95,
-                    "tau": 0.01,
-                    "sigma": 0.1,
-                    "decay": 1.0,
-                    "min_sigma": 0.0,
-                    "bias": 0.0,
-                    "use_amp": False,
-                    "end_initial_exploration_time_step": 0,
-                    "random_exploration_steps": 0,
-                    "initial_exploration_strategy": "uniform_full_range",
-                    "train_during_initial_exploration": False,
-                    "critic_update_mode": "per_agent",
-                    "actor_update_interval": 2 if name == "MATD3" else 1,
-                    "target_policy_smoothing": name == "MATD3",
-                    "target_policy_noise": 0.01,
-                    "target_policy_noise_clip": 0.05,
-                    "reward_normalization": False,
-                    "rollout_length": 2,
-                    "minibatch_size": 2,
-                    "ppo_epochs": 1,
-                    "gae_lambda": 0.95,
-                    "clip_ratio": 0.2,
-                    "entropy_coef": 0.01,
-                    "value_loss_coef": 0.5,
-                    "max_grad_norm": 0.5,
-                    "initial_log_std": -0.5,
-                    "entropy_alpha": 0.2,
-                    "automatic_entropy_tuning": name == "MASAC",
-                    "alpha_lr": 1.0e-3,
-                    "agent_update_order": "random" if name == "HAPPO" else "fixed",
+                    "require_cuda": False,
+                },
+                "networks": {
+                    "actor": {
+                        "class": "Actor",
+                        "layers": [16],
+                        "lr": 1.0e-3,
+                    },
+                    "critic": {
+                        "class": "Critic",
+                        "layers": [16],
+                        "lr": 1.0e-3,
+                    },
+                },
+                "replay_buffer": {
+                    "class": "MultiAgentReplayBuffer" if name in {"MATD3", "MASAC"} else "OnPolicyRolloutBuffer",
+                    "capacity": 8,
+                    "batch_size": 2,
+                },
+                "exploration": {
+                    "strategy": "SAC" if name == "MASAC" else ("GaussianNoise" if name == "MATD3" else "PPO"),
+                    "params": {
+                        "gamma": 0.95,
+                        "tau": 0.01,
+                        "sigma": 0.1,
+                        "decay": 1.0,
+                        "min_sigma": 0.0,
+                        "bias": 0.0,
+                        "use_amp": False,
+                        "end_initial_exploration_time_step": 0,
+                        "random_exploration_steps": 0,
+                        "initial_exploration_strategy": "uniform_full_range",
+                        "train_during_initial_exploration": False,
+                        "critic_update_mode": "per_agent",
+                        "actor_update_interval": 2 if name == "MATD3" else 1,
+                        "target_policy_smoothing": name == "MATD3",
+                        "target_policy_noise": 0.01,
+                        "target_policy_noise_clip": 0.05,
+                        "reward_normalization": False,
+                        "rollout_length": 2,
+                        "minibatch_size": 2,
+                        "ppo_epochs": 1,
+                        "gae_lambda": 0.95,
+                        "clip_ratio": 0.2,
+                        "entropy_coef": 0.01,
+                        "value_loss_coef": 0.5,
+                        "max_grad_norm": 0.5,
+                        "initial_log_std": -0.5,
+                        "entropy_alpha": 0.2,
+                        "automatic_entropy_tuning": name == "MASAC",
+                        "alpha_lr": 1.0e-3,
+                        "agent_update_order": "random" if name == "HAPPO" else "fixed",
+                    },
                 },
             },
-        },
+        ],
     }
 
 
@@ -134,8 +144,89 @@ def _transition(step: int):
 @pytest.mark.parametrize("algorithm_name", ["MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"])
 def test_registry_supports_new_rl_agents(algorithm_name):
     assert is_algorithm_supported(algorithm_name)
-    agent = create_agent(_base_rl_config(algorithm_name))
+    agent = build_execution_unit(_base_rl_config(algorithm_name))
     assert agent.__class__.__name__ == algorithm_name
+
+
+@pytest.mark.parametrize("agent_cls", [MADDPG, MATD3, MASAC])
+def test_centralized_critic_respects_configured_late_fusion_class(agent_cls):
+    config = _base_rl_config(agent_cls.__name__)
+    config["pipeline"][0]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
+    config["pipeline"][0]["networks"]["critic"].update(
+        {
+            "class": "LateFusionCritic",
+            "state_layers": [16],
+            "action_layers": [8],
+            "joint_layers": [16],
+        }
+    )
+
+    agent = agent_cls(_agent_view(config))
+
+    assert isinstance(agent.critics[0], LateFusionCritic)
+
+
+@pytest.mark.parametrize("agent_cls", [MADDPG, MATD3])
+def test_maddpg_family_respects_configured_multi_head_actor(agent_cls):
+    config = _base_rl_config(agent_cls.__name__)
+    config["pipeline"][0]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
+    config["pipeline"][0]["networks"]["actor"].update(
+        {
+            "class": "MultiHeadActor",
+            "head_layers": [8],
+        }
+    )
+
+    agent = agent_cls(_agent_view(config))
+
+    assert isinstance(agent.actors[0], MultiHeadActor)
+
+
+@pytest.mark.parametrize("agent_cls", [MADDPG, MATD3])
+def test_maddpg_family_rebuilds_semantic_actor_after_environment_attach(agent_cls):
+    config = _base_rl_config(agent_cls.__name__)
+    config["pipeline"][0]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
+    config["pipeline"][0]["networks"]["actor"].update(
+        {
+            "class": "SemanticMultiHeadActor",
+            "head_layers": [8],
+        }
+    )
+
+    agent = agent_cls(_agent_view(config))
+    _attach_bounds(agent)
+
+    assert isinstance(agent.actors[0], SemanticMultiHeadActor)
+    assert agent.actors[0].group_indices == [[0]]
+    assert agent.actors[1].group_indices == [[0], [1]]
+
+
+@pytest.mark.parametrize("agent_cls", [MADDPG, MATD3])
+def test_maddpg_family_reports_actor_architecture_diagnostics(agent_cls):
+    config = _base_rl_config(agent_cls.__name__)
+    config["pipeline"][0]["replay_buffer"]["class"] = "MultiAgentReplayBuffer"
+    config["pipeline"][0]["networks"]["actor"].update(
+        {
+            "class": "SemanticMultiHeadActor",
+            "head_layers": [8],
+        }
+    )
+
+    agent = agent_cls(_agent_view(config))
+    _attach_bounds(agent)
+
+    metrics = agent.get_diagnostic_metrics()
+
+    assert metrics["MADDPG/actor_count"] == 2.0
+    assert metrics["MADDPG/actor_multi_head_enabled_ratio"] == 1.0
+    assert metrics["MADDPG/actor_semantic_heads_enabled_ratio"] == 1.0
+    assert metrics["MADDPG/actor_semantic_layout_attached"] == 1.0
+    assert metrics["MADDPG/actor_semantic_group_count_mean"] == pytest.approx(1.5)
+    assert metrics["MADDPG/actor_semantic_ev_action_count"] == 1.0
+    assert metrics["MADDPG/actor_semantic_storage_action_count"] == 1.0
+    assert metrics["MADDPG/actor_semantic_deferrable_action_count"] == 1.0
+    assert metrics["MADDPG/actor_semantic_other_action_count"] == 0.0
+    assert metrics["MADDPG/actor_parameter_count_mean"] > 0.0
 
 
 @pytest.mark.parametrize("algorithm_name", ["MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"])
@@ -153,7 +244,7 @@ def test_config_schema_accepts_new_rl_templates(algorithm_name):
 
 @pytest.mark.parametrize("agent_cls", [MATD3, MASAC, IPPO, MAPPO, HAPPO])
 def test_rl_agent_predict_update_and_checkpoint_contract(agent_cls, tmp_path):
-    agent = agent_cls(_base_rl_config(agent_cls.__name__))
+    agent = agent_cls(_agent_view(_base_rl_config(agent_cls.__name__)))
     _attach_bounds(agent)
 
     for step in range(2):
@@ -185,7 +276,7 @@ def test_rl_agent_predict_update_and_checkpoint_contract(agent_cls, tmp_path):
 
 @pytest.mark.parametrize("agent_cls", [MASAC, IPPO, MAPPO, HAPPO])
 def test_ppo_agents_export_onnx_contract(agent_cls, tmp_path):
-    agent = agent_cls(_base_rl_config(agent_cls.__name__))
+    agent = agent_cls(_agent_view(_base_rl_config(agent_cls.__name__)))
     _attach_bounds(agent)
 
     metadata = agent.export_artifacts(
@@ -210,7 +301,7 @@ def test_ppo_agents_export_onnx_contract(agent_cls, tmp_path):
 
 def test_ppo_warm_start_policy_and_behavior_cloning_contract():
     config = _base_rl_config("MAPPO")
-    params = config["algorithm"]["exploration"]["params"]
+    params = config["pipeline"][0]["exploration"]["params"]
     params.update(
         {
             "initial_exploration_strategy": "policy",
@@ -224,7 +315,7 @@ def test_ppo_warm_start_policy_and_behavior_cloning_contract():
             "actor_behavior_cloning_extra_updates": 1,
         }
     )
-    agent = MAPPO(config)
+    agent = MAPPO(_agent_view(config))
     _attach_bounds(agent)
 
     for step in range(2):
@@ -256,7 +347,7 @@ def test_ppo_warm_start_policy_and_behavior_cloning_contract():
 
 def test_masac_behavior_cloning_and_action_regularization_metrics():
     config = _base_rl_config("MASAC")
-    params = config["algorithm"]["exploration"]["params"]
+    params = config["pipeline"][0]["exploration"]["params"]
     params.update(
         {
             "automatic_entropy_tuning": False,
@@ -265,7 +356,7 @@ def test_masac_behavior_cloning_and_action_regularization_metrics():
             "actor_storage_action_l2_penalty": 0.1,
         }
     )
-    agent = MASAC(config)
+    agent = MASAC(_agent_view(config))
     _attach_bounds(agent)
 
     for step in range(2):

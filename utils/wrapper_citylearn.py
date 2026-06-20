@@ -1,5 +1,8 @@
+import inspect
 import json
+import faulthandler
 import re
+import sys
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -14,7 +17,8 @@ from citylearn.agents.rlc import RLC
 from citylearn.citylearn import CityLearnEnv
 from loguru import logger
 
-from algorithms.agents.base_agent import BaseAgent
+from algorithms.execution_unit import ExecutionUnit
+from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
 from utils.entity_adapter import EntityContractAdapter
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
@@ -129,21 +133,21 @@ class Wrapper_CityLearn(RLC):
     def __init__(
         self,
         env: CityLearnEnv,
-        model: BaseAgent = None,
+        model: Optional[ExecutionUnit] = None,
         config=None,
         job_id=None,
         progress_path=None,
         **kwargs,
     ):
-        """
-        Wrapper for CityLearn RLC that delegates custom behavior to a BaseAgent model.
+        """Wrapper for CityLearn RLC that delegates predict/update to a model.
 
-        Parameters:
-        - env: CityLearnEnv instance for the simulation environment.
-        - model: BaseAgent instance implementing custom predict and update logic.
-        - **kwargs: Additional arguments passed to the RLC constructor.
+        The ``model`` is any :class:`ExecutionUnit` — a single agent, a
+        :class:`~algorithms.pipeline.Pipeline`, or an
+        :class:`~algorithms.pipeline.Ensemble`. The wrapper interacts with
+        the same surface regardless of the underlying architecture.
         """
         config = config or {}
+        self.config = config
         simulator_cfg = config.get("simulator", {})
         interface_mode = str(simulator_cfg.get("interface", getattr(env, "interface", "flat"))).strip().lower() or "flat"
         self._entity_interface_mode = interface_mode == "entity"
@@ -151,7 +155,14 @@ class Wrapper_CityLearn(RLC):
             simulator_cfg.get("topology_mode", getattr(env, "topology_mode", "static"))
         ).strip().lower() or "static"
         self._entity_dynamic_mode = self._entity_interface_mode and self._entity_topology_mode == "dynamic"
-        self._algorithm_name = str((config.get("algorithm", {}) or {}).get("name", "")).strip()
+        # Names of every algorithm that appears anywhere in the pipeline.
+        # Used to gate behaviour (e.g. MADDPG cannot run with dynamic
+        # entity topology) without depending on a single-algorithm model.
+        self._algorithm_names: set[str] = {
+            str(stage.get("algorithm", "")).strip()
+            for stage in (config.get("pipeline") or [])
+            if isinstance(stage, dict) and stage.get("algorithm")
+        }
         self._entity_topology_version: Optional[int] = None
         self._entity_adapter: Optional[EntityContractAdapter] = None
         self.model = model
@@ -287,6 +298,29 @@ class Wrapper_CityLearn(RLC):
         self.max_step_seconds = self._coerce_positive_float(
             tracking_cfg.get("max_step_seconds")
         )
+        self.stall_watchdog_enabled = bool(tracking_cfg.get("stall_watchdog_enabled", False))
+        self.stall_watchdog_timeout_seconds = self._coerce_positive_float(
+            tracking_cfg.get("stall_watchdog_timeout_seconds")
+        )
+        if self.stall_watchdog_enabled and self.stall_watchdog_timeout_seconds is None:
+            self.stall_watchdog_timeout_seconds = 900.0
+        self.stall_watchdog_exit_on_timeout = bool(
+            tracking_cfg.get("stall_watchdog_exit_on_timeout", True)
+        )
+        self.stall_watchdog_repeat = bool(tracking_cfg.get("stall_watchdog_repeat", False))
+        self.stall_watchdog_traceback_file = self._optional_string(
+            tracking_cfg.get("stall_watchdog_traceback_file")
+        )
+        self.stall_watchdog_context_interval_steps = self._coerce_positive_int(
+            tracking_cfg.get("stall_watchdog_context_interval_steps", 1)
+        )
+        if self.stall_watchdog_context_interval_steps is None:
+            self.stall_watchdog_context_interval_steps = 1
+        self._stall_watchdog_traceback_path: Optional[Path] = None
+        self._stall_watchdog_context_path: Optional[Path] = None
+        self._stall_watchdog_file_handle = None
+        self._stall_watchdog_armed_phase: Optional[str] = None
+        self._stall_watchdog_last_context_global_step: Optional[int] = None
         self.resource_guard_enabled = bool(tracking_cfg.get("resource_guard_enabled", False))
         self.max_process_rss_mb = self._coerce_positive_float(
             tracking_cfg.get("max_process_rss_mb")
@@ -450,15 +484,15 @@ class Wrapper_CityLearn(RLC):
                 self.action_names = self.action_names[: len(self.action_space)]
             self.encoders = self.set_encoders()
             self._action_bounds_cache = None
-        fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
+        conflicting = self._algorithm_names & ENCODED_OBSERVATION_ALGORITHMS
         if (
             topology_changed
             and self._entity_dynamic_mode
-            and self._algorithm_name in fixed_topology_algorithms
+            and conflicting
             and previous_version is not None
         ):
             raise ValueError(
-                f"{self._algorithm_name} supports entity interface only with topology_mode='static'. "
+                f"{sorted(conflicting)} support entity interface only with topology_mode='static'. "
                 "Detected topology change during runtime."
             )
 
@@ -589,6 +623,13 @@ class Wrapper_CityLearn(RLC):
             return None
         return parsed
 
+    @staticmethod
+    def _optional_string(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        parsed = str(value).strip()
+        return parsed or None
+
     def _resolve_progress_totals(self, episodes: int) -> tuple[Optional[int], Optional[int]]:
         step_total = self._coerce_positive_int(self.episode_time_steps)
         if step_total is None:
@@ -659,6 +700,17 @@ class Wrapper_CityLearn(RLC):
         force: bool = False,
         extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        self._update_stall_watchdog_for_phase(
+            phase=phase,
+            episode=episode,
+            step=step,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            status=status,
+            rewards=rewards,
+        )
+
         if not force and not self._progress_phase_in_window():
             return
 
@@ -684,6 +736,182 @@ class Wrapper_CityLearn(RLC):
             status=status,
             extra=payload_extra,
         )
+
+    def _update_stall_watchdog_for_phase(
+        self,
+        *,
+        phase: str,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+        status: str,
+        rewards: Optional[List[float]],
+    ) -> None:
+        if not self.stall_watchdog_enabled:
+            return
+
+        if phase == "step_start" or phase.endswith("_start"):
+            self._arm_stall_watchdog(
+                phase=phase,
+                episode=episode,
+                step=step,
+                episode_total=episode_total,
+                step_total=step_total,
+                global_step_total=global_step_total,
+                status=status,
+                rewards=rewards,
+            )
+            return
+
+        if phase == "step_end" or phase.endswith("_end") or phase in {"model_update_skipped", "episode_end"}:
+            self._cancel_stall_watchdog()
+
+    def _stall_watchdog_paths(self) -> tuple[Optional[Path], Optional[Path]]:
+        if self._stall_watchdog_traceback_path is not None or self._stall_watchdog_context_path is not None:
+            return self._stall_watchdog_traceback_path, self._stall_watchdog_context_path
+
+        raw_path = self.stall_watchdog_traceback_file
+        base_dir: Optional[Path] = None
+        if self.log_dir:
+            base_dir = Path(self.log_dir)
+        elif self.progress_tracker.progress_path is not None:
+            base_dir = self.progress_tracker.progress_path.parent
+        else:
+            runtime_job_dir = self.config.get("runtime", {}).get("job_dir") if isinstance(self.config, dict) else None
+            if runtime_job_dir:
+                base_dir = Path(runtime_job_dir) / "logs"
+
+        if raw_path:
+            traceback_path = Path(raw_path)
+            if not traceback_path.is_absolute():
+                root = base_dir or Path.cwd()
+                traceback_path = root / traceback_path
+        elif base_dir is not None:
+            safe_job_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(self.job_id or "job")).strip("_") or "job"
+            traceback_path = base_dir / f"{safe_job_id}_stall_watchdog.log"
+        else:
+            traceback_path = None
+
+        context_path = None
+        if traceback_path is not None:
+            suffix = traceback_path.suffix
+            context_path = traceback_path.with_suffix(f"{suffix}.context.json" if suffix else ".context.json")
+
+        self._stall_watchdog_traceback_path = traceback_path
+        self._stall_watchdog_context_path = context_path
+        return traceback_path, context_path
+
+    def _stall_watchdog_output_file(self):
+        traceback_path, _ = self._stall_watchdog_paths()
+        if traceback_path is None:
+            return sys.stderr
+
+        if self._stall_watchdog_file_handle is None or self._stall_watchdog_file_handle.closed:
+            try:
+                traceback_path.parent.mkdir(parents=True, exist_ok=True)
+                self._stall_watchdog_file_handle = traceback_path.open("a", encoding="utf-8", buffering=1)
+            except Exception as exc:
+                logger.warning("Failed to open stall watchdog log {}: {}", traceback_path, exc)
+                return sys.stderr
+
+        return self._stall_watchdog_file_handle
+
+    def _write_stall_watchdog_context(self, context: Mapping[str, Any], *, force: bool = False) -> None:
+        _, context_path = self._stall_watchdog_paths()
+        if context_path is None:
+            return
+
+        if not force:
+            interval = max(int(self.stall_watchdog_context_interval_steps or 1), 1)
+            global_step = self._coerce_non_negative_int(context.get("global_step")) or 0
+            last_global_step = self._stall_watchdog_last_context_global_step
+            if last_global_step is not None and (global_step - last_global_step) < interval:
+                return
+            self._stall_watchdog_last_context_global_step = global_step
+
+        try:
+            context_path.parent.mkdir(parents=True, exist_ok=True)
+            context_path.write_text(json.dumps(dict(context), indent=2, default=str), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Failed to write stall watchdog context {}: {}", context_path, exc)
+
+    def _arm_stall_watchdog(
+        self,
+        *,
+        phase: str,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+        status: str,
+        rewards: Optional[List[float]],
+    ) -> None:
+        timeout = self.stall_watchdog_timeout_seconds
+        if timeout is None or timeout <= 0:
+            return
+
+        context: Dict[str, Any] = {
+            "job_id": self.job_id,
+            "phase": phase,
+            "status": status,
+            "episode": episode,
+            "episode_current": max(0, episode) + 1,
+            "step": step,
+            "step_current": max(0, step) + 1,
+            "global_step": self.global_step,
+            "episode_total": episode_total,
+            "step_total": step_total,
+            "global_step_total": global_step_total,
+            "timeout_seconds": float(timeout),
+            "exit_on_timeout": self.stall_watchdog_exit_on_timeout,
+            "repeat": self.stall_watchdog_repeat,
+            "entity_topology_version": self._entity_topology_version,
+            "entity_model_observations_direct": bool(
+                getattr(self, "_entity_model_observations_direct", False)
+            ),
+            **self._runtime_resource_snapshot(),
+        }
+        if rewards is not None:
+            context["rewards"] = list(rewards)
+        self._write_stall_watchdog_context(context, force=phase != "step_start")
+
+        try:
+            faulthandler.cancel_dump_traceback_later()
+            faulthandler.dump_traceback_later(
+                float(timeout),
+                repeat=self.stall_watchdog_repeat,
+                file=self._stall_watchdog_output_file(),
+                exit=self.stall_watchdog_exit_on_timeout,
+            )
+            self._stall_watchdog_armed_phase = phase
+        except Exception as exc:
+            logger.warning("Failed to arm stall watchdog for phase {}: {}", phase, exc)
+
+    def _cancel_stall_watchdog(self) -> None:
+        if not self.stall_watchdog_enabled:
+            return
+
+        try:
+            faulthandler.cancel_dump_traceback_later()
+        except Exception as exc:
+            logger.warning("Failed to cancel stall watchdog: {}", exc)
+        self._stall_watchdog_armed_phase = None
+
+    def _close_stall_watchdog_file(self) -> None:
+        handle = self._stall_watchdog_file_handle
+        if handle is None or handle is sys.stderr:
+            return
+
+        try:
+            if not handle.closed:
+                handle.close()
+        except Exception as exc:
+            logger.warning("Failed to close stall watchdog log handle: {}", exc)
+        finally:
+            self._stall_watchdog_file_handle = None
 
     def _enforce_resource_guards(
         self,
@@ -733,6 +961,7 @@ class Wrapper_CityLearn(RLC):
                 **snapshot,
             },
         )
+        self._cancel_stall_watchdog()
         raise MemoryError(message)
 
     def _enforce_step_duration_guard(
@@ -770,6 +999,7 @@ class Wrapper_CityLearn(RLC):
                 "max_step_seconds": round(float(self.max_step_seconds), 6),
             },
         )
+        self._cancel_stall_watchdog()
         raise TimeoutError(message)
 
     def _configure_episode_exports(self, episode: int, episodes: int) -> bool:
@@ -809,26 +1039,31 @@ class Wrapper_CityLearn(RLC):
         if self._export_timeseries_final_episode_only:
             export_business_as_usual_timeseries = export_business_as_usual_timeseries and is_final_episode
 
-        kwargs = {
+        candidate_kwargs: Dict[str, Any] = {
             "include_business_as_usual": self._export_include_business_as_usual,
             "export_business_as_usual_timeseries": export_business_as_usual_timeseries,
             "kpi_round_decimals": self._export_kpi_round_decimals,
         }
         if not self._export_kpis_final_episode_only and episode is not None:
-            kwargs["filepath"] = f"exported_kpis_ep{episode}.csv"
+            candidate_kwargs["filepath"] = f"exported_kpis_ep{episode}.csv"
 
+        sig = inspect.signature(self.env.export_final_kpis)
+        has_var_keyword = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+        if has_var_keyword:
+            kwargs = candidate_kwargs
+        else:
+            kwargs = {k: v for k, v in candidate_kwargs.items() if k in sig.parameters}
         self.env.export_final_kpis(**kwargs)
         if not self._export_kpis_final_episode_only and is_final_episode and episode is not None:
-            final_kwargs = dict(kwargs)
-            final_kwargs.pop("filepath", None)
+            final_kwargs = {k: v for k, v in kwargs.items() if k != "filepath"}
             self.env.export_final_kpis(**final_kwargs)
 
         self._manual_kpi_exported_episodes.add(episode)
 
-    def set_model(self, model: BaseAgent):
-        """
-        Set the model after initialization.
-        """
+    def set_model(self, model: ExecutionUnit):
+        """Set the model (any :class:`ExecutionUnit`) after initialization."""
         self.model = model
         self._attach_model_environment_metadata()
 
@@ -852,6 +1087,14 @@ class Wrapper_CityLearn(RLC):
             deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
             export_this_episode = self._configure_episode_exports(episode, episodes)
             self._entity_model_observations_direct = self._can_use_direct_entity_model_observations()
+            self._write_phase_progress(
+                phase="episode_reset_start",
+                episode=episode,
+                step=0,
+                episode_total=episodes,
+                step_total=None,
+                global_step_total=None,
+            )
             raw_observations, _ = self.env.reset()
             if self._entity_interface_mode:
                 observations = self._apply_entity_layout(
@@ -863,6 +1106,14 @@ class Wrapper_CityLearn(RLC):
                 observations = raw_observations
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
+            self._write_phase_progress(
+                phase="episode_reset_end",
+                episode=episode,
+                step=0,
+                episode_total=episodes,
+                step_total=episode_step_total,
+                global_step_total=global_step_total,
+            )
             terminated = False
             truncated = False
             time_step = 0
@@ -1237,10 +1488,29 @@ class Wrapper_CityLearn(RLC):
 
                 time_step += 1
 
+            last_rewards = rewards_list[-1] if rewards_list else None
+            self._write_phase_progress(
+                phase="episode_export_start",
+                episode=episode,
+                step=max(time_step - 1, 0),
+                episode_total=episodes,
+                step_total=episode_step_total,
+                global_step_total=global_step_total,
+                rewards=last_rewards,
+            )
             self._export_episode_kpis_if_needed(
                 export_this_episode,
                 episode=episode,
                 is_final_episode=episode + 1 >= episodes,
+            )
+            self._write_phase_progress(
+                phase="episode_export_end",
+                episode=episode,
+                step=max(time_step - 1, 0),
+                episode_total=episodes,
+                step_total=episode_step_total,
+                global_step_total=global_step_total,
+                rewards=last_rewards,
             )
 
             if self.progress_updates_enabled and time_step > 0:
@@ -1387,6 +1657,8 @@ class Wrapper_CityLearn(RLC):
         elif self.local_metrics_logger:
             # Use -1 to denote aggregate metrics when logging locally.
             self.local_metrics_logger.log(overall_metrics, -1)
+        self._cancel_stall_watchdog()
+        self._close_stall_watchdog_file()
 
     def predict(self, observations, deterministic=None):
         """
@@ -2018,6 +2290,19 @@ class Wrapper_CityLearn(RLC):
             encoded_observations = self._encode_observations_for_model(observations)
             encoded_next_observations = self._encode_observations_for_model(next_observations)
             self._last_model_observation_encoding_seconds = time.perf_counter() - phase_start_time
+
+        transition_context_hook = getattr(self.model, "set_transition_context", None)
+        if callable(transition_context_hook):
+            transition_context_hook(
+                raw_observations=None
+                if direct_entity_model_observations
+                else observations,
+                raw_next_observations=None
+                if direct_entity_model_observations
+                else next_observations,
+                encoded_observations=encoded_observations,
+                encoded_next_observations=encoded_next_observations,
+            )
 
         # Pass updated parameters to model.update()
         phase_start_time = time.perf_counter()

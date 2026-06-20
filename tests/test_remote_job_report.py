@@ -67,11 +67,15 @@ def test_build_remote_job_report_extracts_runtime_and_config_flags(tmp_path: Pat
                     },
                 },
                 "training": {"seed": 123, "steps_between_training_updates": 8, "target_update_interval": 8},
-                "algorithm": {
-                    "name": "MADDPG",
-                    "replay_buffer": {"batch_size": 512, "capacity": 200000},
-                    "exploration": {"params": {"use_amp": True}},
-                },
+                "pipeline": [
+                    {
+                        "algorithm": "MADDPG",
+                        "count": 1,
+                        "hyperparameters": {"seed": 123},
+                        "replay_buffer": {"batch_size": 512, "capacity": 200000},
+                        "exploration": {"params": {"use_amp": True}},
+                    }
+                ],
             },
             sort_keys=False,
         ),
@@ -98,6 +102,7 @@ def test_build_remote_job_report_extracts_runtime_and_config_flags(tmp_path: Pat
     row = rows[0]
 
     assert row["configured_env_steps"] == 8760
+    assert row["algorithm"] == "MADDPG"
     assert row["full_year_check"] == "ok"
     assert row["seconds_per_env_step"] == 0.1
     assert row["batch_size"] == 512

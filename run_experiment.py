@@ -7,10 +7,29 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
+
+
+_STARTUP_TRACE_ENABLED = (
+    os.environ.get("OPEVA_STARTUP_TRACE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    and os.path.basename(sys.argv[0]) == "run_experiment.py"
+)
+_STARTUP_TRACE_T0 = time.monotonic()
+
+
+def _startup_trace(message: str) -> None:
+    if not _STARTUP_TRACE_ENABLED:
+        return
+    elapsed = time.monotonic() - _STARTUP_TRACE_T0
+    print(f"[opeva-startup +{elapsed:.3f}s] {message}", file=sys.stderr, flush=True)
+
+
+_startup_trace("module import started")
 
 import mlflow
 import numpy as np
@@ -18,23 +37,45 @@ import yaml
 from loguru import logger
 from pydantic import ValidationError
 
+_startup_trace("third-party imports loaded")
+
+_startup_trace("before CityLearnEnv import")
 from citylearn.citylearn import CityLearnEnv
+_startup_trace("after CityLearnEnv import")
+_startup_trace("before reward registry import")
 from reward_function.registry import (
     REWARD_FUNCTION_MAP,
     get_available_reward_function_names,
 )
+_startup_trace("after reward registry import")
+_startup_trace("before base agent import")
 from algorithms.agents.base_agent import BaseAgent
+_startup_trace("after base agent import")
+_startup_trace("before execution unit import")
+from algorithms.execution_unit import ExecutionUnit
+_startup_trace("after execution unit import")
+_startup_trace("before algorithms registry import")
 from algorithms.registry import (
+    ENCODED_OBSERVATION_ALGORITHMS,
+    build_execution_unit,
     build_unsupported_algorithm_message,
-    create_agent,
-    is_algorithm_supported,
 )
+_startup_trace("after algorithms registry import")
+_startup_trace("before helper imports")
 from utils.helpers import set_default_config
 from utils.mlflow_helper import end_mlflow_run, start_mlflow_run
+from utils.pipeline_utils import summarise_pipeline_algorithms
+_startup_trace("after helper imports")
+_startup_trace("before wrapper import")
 from utils.wrapper_citylearn import Wrapper_CityLearn as Wrapper
+_startup_trace("after wrapper import")
+_startup_trace("before artifact imports")
 from utils.artifact_manifest import build_manifest, write_manifest
 from utils.bundle_validator import validate_bundle_contract
 from utils.config_schema import validate_config
+_startup_trace("after artifact imports")
+
+_startup_trace("project imports loaded")
 
 DEFAULT_LOCAL_BASE = Path(os.environ.get("OPEVA_BASE_DIR", "./runs"))
 
@@ -61,6 +102,7 @@ def cli_main(default_base: Optional[str] = None) -> None:
     args = parser.parse_args()
 
     base_dir = Path(args.base_dir or default_base or DEFAULT_LOCAL_BASE).resolve()
+    _startup_trace(f"cli parsed config={args.config} base_dir={base_dir}")
     run_experiment(config_path=args.config, job_id=args.job_id, base_dir=base_dir)
 
 
@@ -140,7 +182,23 @@ def _mark_failed_outputs(path_info: dict[str, Path], exc: Exception) -> None:
         json.dump(progress_payload, progress_file, indent=2)
 
 
-def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
+def _community_market_overlay(simulator_cfg: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(simulator_cfg, Mapping):
+        return None
+    community_market = simulator_cfg.get("community_market")
+    if not isinstance(community_market, Mapping):
+        return None
+
+    overlay = dict(community_market)
+    if overlay.get("intra_community_sell_ratio") is None:
+        overlay["intra_community_sell_ratio"] = overlay.get("local_price_ratio_to_grid_import", 0.8)
+    return overlay
+
+
+def _resolve_citylearn_schema_input(
+    dataset_path_value: Any,
+    simulator_cfg: Mapping[str, Any] | None = None,
+) -> Any:
     """Prefer local schema payloads to avoid remote dataset-index lookups.
 
     CityLearn may query remote dataset registries when receiving a string schema
@@ -165,6 +223,9 @@ def _resolve_citylearn_schema_input(dataset_path_value: Any) -> Any:
         # directory. Copied datasets can carry a root_directory from another
         # repository, so local paths intentionally take precedence here.
         payload["root_directory"] = str(candidate.resolve().parent)
+        community_market = _community_market_overlay(simulator_cfg)
+        if community_market is not None:
+            payload["community_market"] = community_market
         return payload
 
     return dataset_path_value
@@ -179,8 +240,7 @@ def _resolve_agent_observation_dimensions(wrapper: Any, algorithm_name: Optional
     wrapper behavior.
     """
     fallback = list(getattr(wrapper, "observation_dimension", []) or [])
-    encoded_observation_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
-    if str(algorithm_name or "").strip() not in encoded_observation_algorithms:
+    if str(algorithm_name or "").strip() not in ENCODED_OBSERVATION_ALGORITHMS:
         return fallback
 
     get_encoded = getattr(wrapper, "get_encoded_observations", None)
@@ -286,7 +346,7 @@ def _build_mlflow_run_url(base_url: Optional[str], experiment_id: Optional[str],
 def _build_mlflow_tags(config: dict[str, Any], *, job_id: str, run_name: str, config_hash: str, git_sha: Optional[str]) -> dict[str, str]:
     simulator_cfg = config.get("simulator", {})
     dataset_name = simulator_cfg.get("dataset_name") or simulator_cfg.get("dataset_path") or "unknown_dataset"
-    algorithm_name = (config.get("algorithm", {}) or {}).get("name", "unknown_algorithm")
+    algorithm_name = summarise_pipeline_algorithms(config) or "unknown_algorithm"
     tags: dict[str, str] = {
         "opeva.job_id": str(job_id),
         "opeva.algorithm": str(algorithm_name),
@@ -326,16 +386,19 @@ def _build_checkpoint_artifact_candidates(checkpoint_artifact: str) -> list[str]
     return deduplicated
 
 
-def _agent_supports_checkpoint_loading(agent: BaseAgent) -> bool:
-    """Return whether the agent overrides ``BaseAgent.load_checkpoint``."""
+def _agent_supports_checkpoint_loading(agent: ExecutionUnit) -> bool:
+    """Return whether the unit overrides the default ``load_checkpoint``."""
     load_checkpoint = getattr(type(agent), "load_checkpoint", None)
     if load_checkpoint is None:
         return False
-    return load_checkpoint is not BaseAgent.load_checkpoint
+    return load_checkpoint not in {
+        ExecutionUnit.load_checkpoint,
+        BaseAgent.load_checkpoint,
+    }
 
 
 def _resolve_best_checkpoint_run_id(
-    agent: BaseAgent,
+    agent: ExecutionUnit,
     *,
     experiment_name: Optional[str],
 ) -> Optional[str]:
@@ -416,7 +479,7 @@ def _resolve_local_checkpoint_path(
 
 def _resume_agent_from_checkpoint(
     *,
-    agent: BaseAgent,
+    agent: ExecutionUnit,
     config: dict[str, Any],
     tracking_uri: str,
     checkpoints_dir: Path,
@@ -463,10 +526,13 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     """Execute training with outputs written under ``base_dir``/jobs/<job_id>."""
     job_id = _derive_job_id(job_id)
     base_dir = base_dir.resolve()
+    _startup_trace(f"run_experiment entered job_id={job_id} base_dir={base_dir}")
     path_info = _prepare_paths(base_dir, job_id)
+    _startup_trace(f"paths prepared job_dir={path_info['job_dir']}")
 
     with open(config_path, "r", encoding="utf-8") as config_file:
         raw_config = yaml.safe_load(config_file) or {}
+    _startup_trace("config yaml loaded")
 
     try:
         config_model = validate_config(raw_config)
@@ -477,13 +543,24 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         )
         logger.error("Configuration validation failed:\n{}", messages)
         raise SystemExit(1) from exc
+    _startup_trace("config validated")
 
     config = config_model.to_dict()
-    algorithm_name = (config.get("algorithm", {}) or {}).get("name")
-    if not is_algorithm_supported(algorithm_name):
-        message = build_unsupported_algorithm_message(algorithm_name)
+    pipeline_cfg = config.get("pipeline") or []
+    if not pipeline_cfg:
+        message = build_unsupported_algorithm_message(None)
         logger.error(message)
         raise ValueError(message)
+    # Derive the algorithm name used for observation-dimension resolution.
+    # Prefer the first neural stage (needs encoded obs); fall back to first stage.
+    algorithm_name: Optional[str] = next(
+        (
+            stage.get("algorithm")
+            for stage in pipeline_cfg
+            if isinstance(stage, dict) and stage.get("algorithm") in ENCODED_OBSERVATION_ALGORITHMS
+        ),
+        pipeline_cfg[0].get("algorithm") if pipeline_cfg and isinstance(pipeline_cfg[0], dict) else None,
+    )
 
     metadata = config.get("metadata", {})
     if not isinstance(metadata, dict):
@@ -503,6 +580,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     # removing default sinks avoids duplicate lines in the same file.
     logger.remove()
     file_sink_id = logger.add(str(active_log_file), level=log_level)
+    _startup_trace(f"loguru file sink configured log_file={active_log_file}")
     logger.info("Logging bootstrap to {}", active_log_file)
 
     config_hash = _compute_config_hash(config)
@@ -623,7 +701,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
 
         simulator_cfg = config["simulator"]
         export_cfg = simulator_cfg.get("export", {})
-        schema_input = _resolve_citylearn_schema_input(simulator_cfg["dataset_path"])
+        schema_input = _resolve_citylearn_schema_input(simulator_cfg["dataset_path"], simulator_cfg)
         interface_mode = str(simulator_cfg.get("interface", "flat")).strip().lower() or "flat"
         topology_mode = str(simulator_cfg.get("topology_mode", "static")).strip().lower() or "static"
         _validate_dynamic_entity_schema_input(
@@ -640,6 +718,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "offline": True,
             "render_mode": export_cfg.get("mode", "none"),
             "export_kpis_on_episode_end": export_cfg.get("export_kpis_on_episode_end", False),
+            "export_only_final_episode": export_cfg.get("final_episode_only", True),
             "render_directory": str(path_info["simulation_data_dir"]),
         }
         reward_function_kwargs = simulator_cfg.get("reward_function_kwargs")
@@ -705,7 +784,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         _write_resolved_config(config, resolved_config_path)
         logger.info("Resolved runtime config written to {}", resolved_config_path)
 
-        agent = create_agent(config=config)
+        agent = build_execution_unit(config=config)
         wrapper.set_model(agent)
         _resume_agent_from_checkpoint(
             agent=agent,

@@ -9,12 +9,19 @@ import json
 import math
 import re
 import statistics
+import sys
 import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.pipeline_utils import summarise_pipeline_algorithms
 
 
 OUTPUT_COLUMNS = [
@@ -167,6 +174,14 @@ def _bool_str(value: Any) -> str:
     return str(value).lower()
 
 
+def _first_pipeline_stage(config: dict[str, Any]) -> dict[str, Any]:
+    pipeline = config.get("pipeline")
+    if not isinstance(pipeline, list) or not pipeline:
+        return {}
+    stage = pipeline[0]
+    return stage if isinstance(stage, dict) else {}
+
+
 def _build_row(results_dir: Path, summary_row: dict[str, Any]) -> dict[str, Any]:
     job_id = str(summary_row.get("job_id") or "").strip()
     directory = _job_dir(results_dir, job_id)
@@ -180,7 +195,7 @@ def _build_row(results_dir: Path, summary_row: dict[str, Any]) -> dict[str, Any]
     training = config.get("training", {}) if isinstance(config.get("training"), dict) else {}
     tracking = config.get("tracking", {}) if isinstance(config.get("tracking"), dict) else {}
     checkpointing = config.get("checkpointing", {}) if isinstance(config.get("checkpointing"), dict) else {}
-    algorithm = config.get("algorithm", {}) if isinstance(config.get("algorithm"), dict) else {}
+    algorithm = _first_pipeline_stage(config)
     replay_buffer = algorithm.get("replay_buffer", {}) if isinstance(algorithm.get("replay_buffer"), dict) else {}
     exploration = algorithm.get("exploration", {}) if isinstance(algorithm.get("exploration"), dict) else {}
     exploration_params = exploration.get("params", {}) if isinstance(exploration.get("params"), dict) else {}
@@ -235,7 +250,7 @@ def _build_row(results_dir: Path, summary_row: dict[str, Any]) -> dict[str, Any]
     row["job_name"] = summary_row.get("job_name") or job_info.get("job_name") or ""
     row["target_host"] = summary_row.get("target_host") or job_info.get("target_host") or ""
     row["image_tag"] = summary_row.get("image_tag") or job_info.get("image_tag") or ""
-    row["algorithm"] = algorithm.get("name") or ""
+    row["algorithm"] = summarise_pipeline_algorithms(config, default="") or ""
     row["seed"] = training.get("seed") or _nested(algorithm, "hyperparameters", "seed", default="")
     row["dataset_name"] = dataset_name
     row["episodes"] = episodes

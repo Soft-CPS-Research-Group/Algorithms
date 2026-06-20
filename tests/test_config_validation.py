@@ -25,18 +25,83 @@ def test_validate_config_accepts_metadata_community_name(base_config):
     validate_config(config)
 
 
-def test_validate_config_missing_algorithm(base_config):
+def test_validate_config_rejects_legacy_algorithm_key(base_config):
     config = copy.deepcopy(base_config)
-    config["algorithm"] = None
+    config.pop("pipeline", None)
+    config["algorithm"] = {
+        "name": "RuleBasedPolicy",
+        "hyperparameters": {},
+    }
+    with pytest.raises(ValueError, match="deprecated top-level 'algorithm'"):
+        validate_config(config)
+
+
+def test_validate_config_missing_pipeline(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"] = None
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
+def test_validate_config_empty_pipeline(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"] = []
     with pytest.raises(Exception):
         validate_config(config)
 
 
 def test_validate_config_invalid_network_layers(base_config):
     config = copy.deepcopy(base_config)
-    config["algorithm"]["networks"]["actor"]["layers"] = []
+    config["pipeline"][0]["networks"]["actor"]["layers"] = []
     with pytest.raises(Exception):
         validate_config(config)
+
+
+def test_validate_config_accepts_late_fusion_critic_layers(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"][0]["networks"]["critic"] = {
+        "class": "LateFusionCritic",
+        "layers": [64, 32],
+        "state_layers": [64],
+        "action_layers": [32],
+        "joint_layers": [64, 32],
+        "lr": 1.0e-3,
+    }
+    validate_config(config)
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        Path("configs/templates/cc_local.yaml"),
+        Path("configs/templates/hiro_local.yaml"),
+    ],
+)
+def test_validate_config_accepts_hierarchical_templates(config_path):
+    with config_path.open("r", encoding="utf-8") as handle:
+        validate_config(yaml.safe_load(handle))
+
+
+def test_to_dict_removes_none_network_optional_layers_from_pipeline(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"][0]["networks"]["critic"] = {
+        "class": "LateFusionCritic",
+        "layers": [64, 32],
+        "state_layers": None,
+        "action_layers": None,
+        "joint_layers": None,
+        "lr": 1.0e-3,
+    }
+    config["pipeline"][0]["networks"]["actor"]["head_layers"] = None
+
+    resolved = validate_config(config).to_dict()
+
+    critic = resolved["pipeline"][0]["networks"]["critic"]
+    actor = resolved["pipeline"][0]["networks"]["actor"]
+    assert "state_layers" not in critic
+    assert "action_layers" not in critic
+    assert "joint_layers" not in critic
+    assert "head_layers" not in actor
 
 
 def test_validate_config_accepts_deucalion_execution(base_config):
@@ -116,6 +181,12 @@ def test_validate_config_accepts_runtime_safety_guards(base_config):
     config["tracking"]["progress_phase_start_step"] = 4500
     config["tracking"]["progress_phase_end_step"] = 5700
     config["tracking"]["max_step_seconds"] = 15.0
+    config["tracking"]["stall_watchdog_enabled"] = True
+    config["tracking"]["stall_watchdog_timeout_seconds"] = 900.0
+    config["tracking"]["stall_watchdog_exit_on_timeout"] = True
+    config["tracking"]["stall_watchdog_repeat"] = False
+    config["tracking"]["stall_watchdog_traceback_file"] = "logs/stall_watchdog.log"
+    config["tracking"]["stall_watchdog_context_interval_steps"] = 64
     config["tracking"]["resource_guard_enabled"] = True
     config["tracking"]["max_process_rss_mb"] = 12000.0
     config["tracking"]["min_available_ram_mb"] = 1024.0
@@ -131,6 +202,16 @@ def test_validate_config_rejects_invalid_runtime_safety_guards(base_config):
 
     config = copy.deepcopy(base_config)
     config["tracking"]["max_step_seconds"] = 0
+    with pytest.raises(Exception):
+        validate_config(config)
+
+    config = copy.deepcopy(base_config)
+    config["tracking"]["stall_watchdog_timeout_seconds"] = 0
+    with pytest.raises(Exception):
+        validate_config(config)
+
+    config = copy.deepcopy(base_config)
+    config["tracking"]["stall_watchdog_context_interval_steps"] = 0
     with pytest.raises(Exception):
         validate_config(config)
 
@@ -201,24 +282,43 @@ def test_validate_config_accepts_rule_based_with_entity_dynamic(base_config):
     config["simulator"]["topology_mode"] = "dynamic"
     config["simulator"]["dataset_name"] = "citylearn_three_phase_dynamic_topology_demo_v1"
     config["simulator"]["dataset_path"] = "./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json"
-    config["algorithm"] = {
-        "name": "RuleBasedPolicy",
-        "hyperparameters": {
-            "pv_charge_threshold": 0.0,
-            "flexibility_hours": 3.0,
-            "emergency_hours": 1.0,
-            "pv_preferred_charge_rate": 0.6,
-            "flex_trickle_charge": 0.0,
-            "min_charge_rate": 0.0,
-            "emergency_charge_rate": 1.0,
-            "energy_epsilon": 1e-3,
-            "default_capacity_kwh": 60.0,
-            "non_flexible_chargers": [],
-        },
-        "networks": None,
-        "replay_buffer": None,
-        "exploration": None,
-    }
+    config["pipeline"] = [
+        {
+            "algorithm": "RuleBasedPolicy",
+            "count": 1,
+            "hyperparameters": {
+                "pv_charge_threshold": 0.0,
+                "flexibility_hours": 3.0,
+                "emergency_hours": 1.0,
+                "pv_preferred_charge_rate": 0.6,
+                "flex_trickle_charge": 0.0,
+                "min_charge_rate": 0.0,
+                "emergency_charge_rate": 1.0,
+                "energy_epsilon": 1e-3,
+                "default_capacity_kwh": 60.0,
+                "non_flexible_chargers": [],
+            },
+            "networks": None,
+            "replay_buffer": None,
+            "exploration": None,
+        }
+    ]
+    validate_config(config)
+
+
+def test_validate_config_accepts_signal_aware_rbc_stage(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"] = [
+        {
+            "algorithm": "SignalAwareRBC",
+            "count": 17,
+            "hyperparameters": {},
+            "networks": None,
+            "replay_buffer": None,
+            "exploration": None,
+        }
+    ]
+
     validate_config(config)
 
 
@@ -242,7 +342,13 @@ def test_validate_config_rejects_invalid_tracking_intervals(base_config):
 
 
 def test_validate_all_templates():
-    template_paths = sorted(Path("configs/templates").rglob("*.yaml"))
+    # Experimental templates intentionally use placeholder algorithms (e.g.
+    # SingleAgentRL) that are not yet runtime-backed.  Exclude them here.
+    template_paths = sorted(
+        p
+        for p in Path("configs/templates").rglob("*.yaml")
+        if "experimental" not in p.parts
+    )
     assert template_paths, "No template files found under configs/templates"
 
     for template_path in template_paths:
@@ -261,7 +367,7 @@ def test_rbc_community_templates_use_community_settlement_objective():
         with template_path.open("r", encoding="utf-8") as handle:
             config = yaml.safe_load(handle)
         kwargs = config["simulator"]["reward_function_kwargs"]
-        hyper = config["algorithm"]["hyperparameters"]
+        hyper = config["pipeline"][0]["hyperparameters"]
 
         assert kwargs["local_cost_weight"] == pytest.approx(0.0)
         assert kwargs["community_settlement_cost_weight"] == pytest.approx(1.0)

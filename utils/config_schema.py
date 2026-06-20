@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Literal
 
+# Imported here to avoid circular imports — registry imports from agents,
+# agents do not import from config_schema.
+from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
+
 
 class MetadataConfig(BaseModel):
     experiment_name: str = Field(..., min_length=1, description="Name registered in MLflow")
@@ -39,6 +43,10 @@ class RuntimeConfig(BaseModel):
 
 class TrackingConfig(BaseModel):
     mlflow_enabled: bool = Field(default=True, description="If false, skips MLflow tracking")
+    tags: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional run labels preserved in resolved configs and artifacts.",
+    )
     log_level: str = Field(default="INFO", description="Loguru log level")
     log_frequency: int = Field(default=1, ge=1, description="Log metrics every N environment steps")
     mlflow_step_sample_interval: int = Field(
@@ -134,6 +142,32 @@ class TrackingConfig(BaseModel):
         gt=0,
         description="Abort training if a completed environment step exceeds this duration",
     )
+    stall_watchdog_enabled: bool = Field(
+        default=False,
+        description="Arm a faulthandler watchdog around wrapper phases to diagnose stalled jobs",
+    )
+    stall_watchdog_timeout_seconds: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Seconds without completing the current phase before dumping thread stacks",
+    )
+    stall_watchdog_exit_on_timeout: bool = Field(
+        default=True,
+        description="Exit the process after dumping stacks when the stall watchdog fires",
+    )
+    stall_watchdog_repeat: bool = Field(
+        default=False,
+        description="Repeat watchdog stack dumps when exit_on_timeout is false",
+    )
+    stall_watchdog_traceback_file: Optional[str] = Field(
+        default=None,
+        description="Optional path for stall watchdog stack dumps; defaults to the run log directory",
+    )
+    stall_watchdog_context_interval_steps: int = Field(
+        default=1,
+        ge=1,
+        description="Write stall watchdog context every N step_start phases to reduce remote I/O",
+    )
     resource_guard_enabled: bool = Field(
         default=False,
         description="Abort training when configured process/system memory limits are crossed",
@@ -215,6 +249,26 @@ class EntityEncodingConfig(BaseModel):
     clip: bool = True
 
 
+class CommunityMarketKpisConfig(BaseModel):
+    community_local_traded_enabled: bool = True
+    community_self_consumption_enabled: bool = True
+
+
+class CommunityMarketConfig(BaseModel):
+    enabled: bool = True
+    local_price_ratio_to_grid_import: float = Field(default=0.8, ge=0.0, le=1.0)
+    intra_community_sell_ratio: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    grid_export_price: float = Field(default=0.0, ge=0.0)
+    import_member_weights: Dict[str, float] = Field(default_factory=dict)
+    kpis: CommunityMarketKpisConfig = CommunityMarketKpisConfig()
+
+    @model_validator(mode="after")
+    def default_sell_ratio(self) -> "CommunityMarketConfig":
+        if self.intra_community_sell_ratio is None:
+            self.intra_community_sell_ratio = self.local_price_ratio_to_grid_import
+        return self
+
+
 class SimulatorConfig(BaseModel):
     dataset_name: str
     dataset_path: str
@@ -231,6 +285,7 @@ class SimulatorConfig(BaseModel):
     export: SimulatorExportConfig = SimulatorExportConfig()
     wrapper_reward: WrapperRewardConfig = WrapperRewardConfig()
     entity_encoding: EntityEncodingConfig = EntityEncodingConfig()
+    community_market: Optional[CommunityMarketConfig] = None
 
     @field_validator("episode_time_steps")
     @classmethod
@@ -281,6 +336,10 @@ class NetworkConfig(BaseModel):
     class_name: str = Field(alias="class")
     layers: List[int]
     lr: float = Field(gt=0)
+    state_layers: Optional[List[int]] = None
+    action_layers: Optional[List[int]] = None
+    joint_layers: Optional[List[int]] = None
+    head_layers: Optional[List[int]] = None
 
     @field_validator("layers")
     @classmethod
@@ -289,6 +348,15 @@ class NetworkConfig(BaseModel):
             raise ValueError("layers must contain at least one hidden dimension")
         if any(layer <= 0 for layer in value):
             raise ValueError("layers must be positive integers")
+        return value
+
+    @field_validator("state_layers", "action_layers", "joint_layers", "head_layers")
+    @classmethod
+    def validate_optional_layers(cls, value: Optional[List[int]]) -> Optional[List[int]]:
+        if value is None:
+            return value
+        if any(layer <= 0 for layer in value):
+            raise ValueError("network tower layers must be positive integers")
         return value
 
 
@@ -312,7 +380,9 @@ class ReplayBufferConfig(BaseModel):
     behavior_action_priority_mode: Optional[Literal["positive", "abs"]] = None
     behavior_action_priority_scope: Optional[Literal["all", "ev"]] = None
     observation_event_priority_weight: Optional[float] = Field(default=None, ge=0.0)
-    observation_event_priority_mode: Optional[Literal["ev_departure_service"]] = None
+    observation_event_priority_mode: Optional[
+        Literal["ev_departure_service", "ev_pv_price_peak", "combined"]
+    ] = None
 
 
 class ExplorationParams(BaseModel):
@@ -395,7 +465,9 @@ class EVDataCollectionRBCHyperparameters(BaseModel):
 
 
 class EVDataCollectionRBCAlgorithmConfig(BaseModel):
-    name: Literal["EVDataCollectionRBC"]
+    algorithm: Literal["EVDataCollectionRBC"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
     hyperparameters: EVDataCollectionRBCHyperparameters = EVDataCollectionRBCHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
@@ -423,47 +495,9 @@ class DistrictDataCollectionRBCHyperparameters(BaseModel):
 
 
 class DistrictDataCollectionRBCAlgorithmConfig(BaseModel):
-    name: Literal["DistrictDataCollectionRBC"]
-    hyperparameters: DistrictDataCollectionRBCHyperparameters = DistrictDataCollectionRBCHyperparameters()
-    networks: Optional[AlgorithmNetworks] = None
-    replay_buffer: Optional[ReplayBufferConfig] = None
-    exploration: Optional[ExplorationParams] = None
-
-
-class EVDataCollectionRBCHyperparameters(BaseModel):
-    target_building_index: int = Field(default=4, ge=0, description="0-based agent index of the building to collect transitions for")
-
-
-class EVDataCollectionRBCAlgorithmConfig(BaseModel):
-    name: Literal["EVDataCollectionRBC"]
-    hyperparameters: EVDataCollectionRBCHyperparameters = EVDataCollectionRBCHyperparameters()
-    networks: Optional[AlgorithmNetworks] = None
-    replay_buffer: Optional[ReplayBufferConfig] = None
-    exploration: Optional[ExplorationParams] = None
-
-
-class DistrictDataCollectionRBCHyperparameters(BaseModel):
-    noise_sigma: float = Field(
-        default=0.1,
-        ge=0.0,
-        description="Std-dev of Gaussian action noise on noisy episodes (clipped to [-1, 1]).",
-    )
-    noisy_episode_indices: List[int] = Field(
-        default_factory=lambda: [7, 8, 9],
-        description="0-based episode indices that should use noisy actions; others run clean RBC.",
-    )
-    seed: int = Field(
-        default=22,
-        description="Base seed; per-episode RNG uses seed + episode_index for reproducibility.",
-    )
-    rbc_hyperparameters: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Optional overrides forwarded to the inner RuleBasedPolicy.",
-    )
-
-
-class DistrictDataCollectionRBCAlgorithmConfig(BaseModel):
-    name: Literal["DistrictDataCollectionRBC"]
+    algorithm: Literal["DistrictDataCollectionRBC"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
     hyperparameters: DistrictDataCollectionRBCHyperparameters = DistrictDataCollectionRBCHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
@@ -477,8 +511,101 @@ class TopologyConfig(BaseModel):
     action_space: Optional[Any] = None
 
 
+class ExperimentalPPOHyperparameters(BaseModel):
+    """Shared schema for experimental hierarchical PPO agents.
+
+    These agents are still evolving, so unknown hyperparameters are preserved
+    instead of rejected. Core numeric fields are still checked to catch obvious
+    template errors.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    num_steps: int = Field(default=2048, gt=0)
+    lr: float = Field(default=3.0e-4, gt=0)
+    gamma: float = Field(default=0.99, ge=0, le=1)
+    gae_lambda: float = Field(default=0.95, ge=0, le=1)
+    num_epochs: int = Field(default=10, ge=1)
+    mini_batch_size: int = Field(default=64, ge=1)
+    clip_coef: float = Field(default=0.2, gt=0)
+    vf_coef: float = Field(default=0.5, ge=0)
+    ent_coef: float = Field(default=0.01, ge=0)
+    max_grad_norm: float = Field(default=0.5, gt=0)
+    target_kl: Optional[float] = Field(default=0.02, gt=0)
+    hidden_dims: List[int] = Field(default_factory=lambda: [128, 128])
+
+
+class CommunityCoordinatorHyperparameters(ExperimentalPPOHyperparameters):
+    output_mode: Literal["actions", "signal"] = "actions"
+    c_dim: int = Field(default=12, gt=0)
+    b_dim: int = Field(default=7, gt=0)
+    num_buildings: int = Field(default=17, gt=0)
+    cc_action_interval: int = Field(default=1, gt=0)
+    net_weight: float = Field(default=0.01, ge=0)
+
+
+class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
+    output_mode: Literal["actions", "signal"] = "actions"
+    c_dim: int = Field(default=18, gt=0)
+    cc_action_interval: int = Field(default=1, gt=0)
+    ma_window: int = Field(default=96, gt=0)
+    shaping_weight: float = Field(default=1.0, ge=0)
+
+
+class BuildingAgentHyperparameters(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    gamma:                    float = Field(default=0.99,  ge=0, le=1)
+    gae_lambda:               float = Field(default=0.95,  ge=0, le=1)
+    num_epochs:               int   = Field(default=10,    ge=1)
+    mini_batch_size:          int   = Field(default=64,    ge=1)
+    clip_coef:                float = Field(default=0.2,   gt=0)
+    vf_coef:                  float = Field(default=0.5,   ge=0)
+    ent_coef:                 float = Field(default=0.01,  ge=0)
+    max_grad_norm:            float = Field(default=0.5,   gt=0)
+    target_kl:                Optional[float] = Field(default=0.02, gt=0)
+    lr:                       float = Field(default=3e-4,  gt=0)
+    obs_dim:                  int   = Field(default=0,     ge=0)   # 0 = auto from env
+    action_dim:               int   = Field(default=0,     ge=0)   # 0 = auto from env
+    num_steps:                int   = Field(default=2048,  ge=1)
+    hidden_dims:              List[int] = Field(default_factory=lambda: [64, 64])
+    building_cost_weight:     float = Field(default=1.0,   ge=0)
+    community_import_weight:  float = Field(default=0.3,   ge=0)
+    constraint_penalty_weight: float = Field(default=0.5,  ge=0)
+
+
+class CommunityCoordinatorAlgorithmConfig(BaseModel):
+    algorithm: Literal["CommunityCoordinator"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    frozen: bool = False
+    hyperparameters: CommunityCoordinatorHyperparameters = Field(
+        default_factory=CommunityCoordinatorHyperparameters
+    )
+
+
+class CCLevel1AlgorithmConfig(BaseModel):
+    algorithm: Literal["CCLevel1"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    frozen: bool = False
+    hyperparameters: CCLevel1Hyperparameters = Field(default_factory=CCLevel1Hyperparameters)
+
+
+class BuildingAgentStageConfig(BaseModel):
+    """Pipeline stage describing a BuildingAgent (per-building PPO worker)."""
+
+    algorithm: Literal["BuildingAgent"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
+    hyperparameters: BuildingAgentHyperparameters = Field(default_factory=BuildingAgentHyperparameters)
+    networks: Optional[Any] = None
+    replay_buffer: Optional[Any] = None
+    exploration: Optional[Any] = None
+
+
 class ActorCriticAlgorithmConfig(BaseModel):
-    name: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
+    algorithm: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    frozen: bool = False
     hyperparameters: AlgorithmHyperparameters
     networks: AlgorithmNetworks
     replay_buffer: ReplayBufferConfig
@@ -486,7 +613,7 @@ class ActorCriticAlgorithmConfig(BaseModel):
 
 
 class RuleBasedAlgorithmConfig(BaseModel):
-    name: Literal[
+    algorithm: Literal[
         "RuleBasedPolicy",
         "RandomPolicy",
         "NormalPolicy",
@@ -494,20 +621,48 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "RBCBasicPolicy",
         "RBCCommunityPolicy",
         "RBCSmartPolicy",
+        "SignalAwareRBC",
     ]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
     hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
 
 
-class SingleAgentRLAlgorithmConfig(BaseModel):
-    name: Literal["SingleAgentRL"]
+class SingleAgentRLStageConfig(BaseModel):
+    """Pipeline stage placeholder for SingleAgentRL (no runtime impl yet)."""
+
+    algorithm: Literal["SingleAgentRL"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
     hyperparameters: AlgorithmHyperparameters
     policy: Optional[str] = Field(default=None, description="Identifier for the policy architecture")
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
 
+    @model_validator(mode="after")
+    def reject_placeholder(self) -> "SingleAgentRLStageConfig":
+        raise ValueError(
+            "Algorithm 'SingleAgentRL' is a schema placeholder and has no runtime "
+            "implementation yet. Use one of: MADDPG, MATD3, MASAC, IPPO, MAPPO, HAPPO, "
+            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartPolicy, SignalAwareRBC, "
+            "RandomPolicy, NormalPolicy, NormalNoBatteryPolicy."
+        )
+        return self  # unreachable; satisfies type checker
+
+
+PipelineStageConfig = Union[
+    BuildingAgentStageConfig,
+    CCLevel1AlgorithmConfig,
+    CommunityCoordinatorAlgorithmConfig,
+    ActorCriticAlgorithmConfig,
+    RuleBasedAlgorithmConfig,
+    SingleAgentRLStageConfig,
+    EVDataCollectionRBCAlgorithmConfig,
+    DistrictDataCollectionRBCAlgorithmConfig,
+]
 
 class DeucalionExecutionConfig(BaseModel):
     partition: Optional[str] = None
@@ -598,7 +753,15 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[ActorCriticAlgorithmConfig, RuleBasedAlgorithmConfig, SingleAgentRLAlgorithmConfig, EVDataCollectionRBCAlgorithmConfig, DistrictDataCollectionRBCAlgorithmConfig]
+    pipeline: List[PipelineStageConfig] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Ordered list of execution stages. A single-element list represents "
+            "a single agent (current default). Multi-element lists describe a "
+            "vertical hierarchy (top stage feeds context to the next)."
+        ),
+    )
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
@@ -606,14 +769,15 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
-        fixed_topology_algorithms = {"MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"}
+        stage_names = {stage.algorithm for stage in self.pipeline}
+        conflicting = stage_names & ENCODED_OBSERVATION_ALGORITHMS
         if (
-            self.algorithm.name in fixed_topology_algorithms
+            conflicting
             and self.simulator.interface == "entity"
             and self.simulator.topology_mode == "dynamic"
         ):
             raise ValueError(
-                f"algorithm.name='{self.algorithm.name}' does not support simulator.interface='entity' "
+                f"Pipeline stages {sorted(conflicting)} do not support simulator.interface='entity' "
                 "with simulator.topology_mode='dynamic'."
             )
 
@@ -621,9 +785,34 @@ class ProjectConfig(BaseModel):
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain dictionary using original key names (aliases)."""
-        return self.model_dump(by_alias=True)
+        payload = self.model_dump(by_alias=True)
+        for stage in payload.get("pipeline", []) or []:
+            if not isinstance(stage, dict):
+                continue
+            networks = stage.get("networks")
+            if not isinstance(networks, dict):
+                continue
+            for network in networks.values():
+                if not isinstance(network, dict):
+                    continue
+                for key in ("state_layers", "action_layers", "joint_layers", "head_layers"):
+                    if network.get(key) is None:
+                        network.pop(key, None)
+        return payload
 
 
 def validate_config(raw_config: Dict[str, Any]) -> ProjectConfig:
     """Validate a raw configuration dictionary and return the structured model."""
+    if isinstance(raw_config, dict) and "algorithm" in raw_config and "pipeline" not in raw_config:
+        raise ValueError(
+            "Configuration uses the deprecated top-level 'algorithm' key. "
+            "Migrate to a 'pipeline' list, e.g.:\n\n"
+            "  pipeline:\n"
+            "    - algorithm: \"<name>\"\n"
+            "      count: 1\n"
+            "      hyperparameters: { ... }\n"
+            "      networks: { ... }   # if applicable\n"
+            "      replay_buffer: { ... }   # if applicable\n"
+            "      exploration: { ... }   # if applicable\n"
+        )
     return ProjectConfig.model_validate(raw_config)

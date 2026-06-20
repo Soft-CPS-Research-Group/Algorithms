@@ -196,8 +196,11 @@ class IQLEntityAgent(BaseAgent):
         self,
         observations: List[npt.NDArray[np.float64]],
         deterministic: Optional[bool] = None,
+        *,
+        context: Any = None,
     ) -> List[List[float]]:
         """Return deterministic IQL actions for all agents."""
+        del context  # offline inference agent ignores pipeline context
         actions: List[List[float]] = []
         for i, obs_i in enumerate(observations):
             obs_arr = np.asarray(obs_i, dtype=np.float32).reshape(-1)

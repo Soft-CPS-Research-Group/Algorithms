@@ -7,6 +7,8 @@ import pytest
 import yaml
 
 import run_experiment as runner
+from algorithms.agents.base_agent import BaseAgent
+from algorithms.pipeline import Pipeline
 from utils.local_metrics import LocalMetricsLogger
 
 
@@ -182,6 +184,44 @@ class _DummyAgent:
         }
 
 
+class _BaseDefaultCheckpointAgent(BaseAgent):
+    def predict(self, observations, deterministic=None, *, context=None):
+        _ = deterministic, context
+        return observations
+
+    def update(
+        self,
+        observations,
+        actions,
+        rewards,
+        next_observations,
+        terminated,
+        truncated,
+        *,
+        update_target_step,
+        global_learning_step,
+        update_step,
+        initial_exploration_done,
+    ):
+        _ = (
+            observations,
+            actions,
+            rewards,
+            next_observations,
+            terminated,
+            truncated,
+            update_target_step,
+            global_learning_step,
+            update_step,
+            initial_exploration_done,
+        )
+        return None
+
+    def export_artifacts(self, output_dir: str, context: dict | None = None):
+        _ = output_dir, context
+        return {"format": "none", "artifacts": []}
+
+
 class _DummyDynamicAgent(_DummyAgent):
     def export_artifacts(self, output_dir: str, context: dict | None = None):
         _ = context
@@ -277,30 +317,41 @@ def _build_enabled_config(*, artifact_profile: str) -> dict:
             "action_dimensions": None,
             "action_space": None,
         },
-        "algorithm": {
-            "name": "MADDPG",
-            "hyperparameters": {"gamma": 0.99},
-            "networks": {
-                "actor": {"class": "Actor", "layers": [8], "lr": 1e-4},
-                "critic": {"class": "Critic", "layers": [8], "lr": 1e-3},
-            },
-            "replay_buffer": {
-                "class": "MultiAgentReplayBuffer",
-                "capacity": 8,
-                "batch_size": 2,
-            },
-            "exploration": {
-                "strategy": "GaussianNoise",
-                "params": {
-                    "bias": 0.0,
-                    "sigma": 0.1,
-                    "decay": 0.99,
-                    "gamma": 0.99,
-                    "tau": 0.001,
+        "pipeline": [
+            {
+                "algorithm": "MADDPG",
+                "count": 1,
+                "hyperparameters": {"gamma": 0.99},
+                "networks": {
+                    "actor": {"class": "Actor", "layers": [8], "lr": 1e-4},
+                    "critic": {"class": "Critic", "layers": [8], "lr": 1e-3},
                 },
-            },
-        },
+                "replay_buffer": {
+                    "class": "MultiAgentReplayBuffer",
+                    "capacity": 8,
+                    "batch_size": 2,
+                },
+                "exploration": {
+                    "strategy": "GaussianNoise",
+                    "params": {
+                        "bias": 0.0,
+                        "sigma": 0.1,
+                        "decay": 0.99,
+                        "gamma": 0.99,
+                        "tau": 0.001,
+                    },
+                },
+            }
+        ],
     }
+
+
+def test_checkpoint_support_detection_rejects_baseagent_default_load_checkpoint():
+    assert runner._agent_supports_checkpoint_loading(_BaseDefaultCheckpointAgent()) is False
+
+
+def test_checkpoint_support_detection_accepts_pipeline_load_checkpoint_override():
+    assert runner._agent_supports_checkpoint_loading(Pipeline([_BaseDefaultCheckpointAgent()])) is True
 
 
 def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_path):
@@ -340,16 +391,19 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
             "target_update_interval": 0,
         },
         "topology": {"num_agents": None, "observation_dimensions": None, "action_dimensions": None, "action_space": None},
-        "algorithm": {
-            "name": "MADDPG",
-            "hyperparameters": {"gamma": 0.99},
-            "networks": {
-                "actor": {"class": "Actor", "layers": [8], "lr": 1e-4},
-                "critic": {"class": "Critic", "layers": [8], "lr": 1e-3},
-            },
-            "replay_buffer": {"class": "MultiAgentReplayBuffer", "capacity": 8, "batch_size": 2},
-            "exploration": {"strategy": "GaussianNoise", "params": {"bias": 0.0, "sigma": 0.1, "decay": 0.99, "gamma": 0.99, "tau": 0.001}},
-        },
+        "pipeline": [
+            {
+                "algorithm": "MADDPG",
+                "count": 1,
+                "hyperparameters": {"gamma": 0.99},
+                "networks": {
+                    "actor": {"class": "Actor", "layers": [8], "lr": 1e-4},
+                    "critic": {"class": "Critic", "layers": [8], "lr": 1e-3},
+                },
+                "replay_buffer": {"class": "MultiAgentReplayBuffer", "capacity": 8, "batch_size": 2},
+                "exploration": {"strategy": "GaussianNoise", "params": {"bias": 0.0, "sigma": 0.1, "decay": 0.99, "gamma": 0.99, "tau": 0.001}},
+            }
+        ],
     }
 
     config_path = tmp_path / "config.yaml"
@@ -367,7 +421,7 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
 
     monkeypatch.setattr(runner, "CityLearnEnv", _dummy_citylearn_env)
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     runner.run_experiment(str(config_path), "job-mlflow-off", tmp_path)
     assert _DummyWrapper.last_instance is not None
@@ -427,6 +481,7 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert captured_env_kwargs["topology_mode"] == "static"
     assert captured_env_kwargs["render_mode"] == "end"
     assert captured_env_kwargs["export_kpis_on_episode_end"] is True
+    assert captured_env_kwargs["export_only_final_episode"] is True
     assert captured_env_kwargs["render_session_name"] == "job-session"
     assert captured_env_kwargs["simulation_start_time_step"] == 12
     assert captured_env_kwargs["simulation_end_time_step"] == 48
@@ -452,7 +507,7 @@ def test_run_experiment_uses_encoded_observation_dimensions_for_neural_agents(
 ):
     config = _build_enabled_config(artifact_profile="minimal")
     config["tracking"]["mlflow_enabled"] = False
-    config["algorithm"]["name"] = algorithm_name
+    config["pipeline"][0]["algorithm"] = algorithm_name
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
@@ -463,7 +518,7 @@ def test_run_experiment_uses_encoded_observation_dimensions_for_neural_agents(
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyEncodedWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     job_id = f"job-encoded-dims-{algorithm_name.lower()}"
     runner.run_experiment(str(config_path), job_id, tmp_path)
@@ -492,6 +547,31 @@ def test_resolve_citylearn_schema_input_prefers_local_schema_directory(tmp_path)
     assert schema_input["root_directory"] == str(dataset_dir.resolve())
 
 
+def test_resolve_citylearn_schema_input_applies_community_market_overlay(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    schema_path = dataset_dir / "schema.json"
+    schema_path.write_text(
+        json.dumps({"root_directory": "data/datasets/from-other-repo", "buildings": {}}),
+        encoding="utf-8",
+    )
+
+    schema_input = runner._resolve_citylearn_schema_input(
+        str(schema_path),
+        {
+            "community_market": {
+                "enabled": True,
+                "local_price_ratio_to_grid_import": 0.7,
+                "grid_export_price": 0.0,
+            }
+        },
+    )
+
+    assert schema_input["community_market"]["enabled"] is True
+    assert schema_input["community_market"]["local_price_ratio_to_grid_import"] == 0.7
+    assert schema_input["community_market"]["intra_community_sell_ratio"] == 0.7
+
+
 def test_run_experiment_refreshes_topology_after_dynamic_changes(monkeypatch, tmp_path):
     config = _build_enabled_config(artifact_profile="minimal")
     config["tracking"]["mlflow_enabled"] = False
@@ -504,7 +584,7 @@ def test_run_experiment_refreshes_topology_after_dynamic_changes(monkeypatch, tm
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyDynamicWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyDynamicAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyDynamicAgent())
 
     runner.run_experiment(str(config_path), "job-dynamic-topology", tmp_path)
 
@@ -528,7 +608,7 @@ def test_run_experiment_mlflow_disabled_keeps_local_metrics_fallback(monkeypatch
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapperWithLocalMetrics)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     runner.run_experiment(str(config_path), "job-local-metrics", tmp_path)
 
@@ -551,7 +631,7 @@ def test_run_experiment_writes_not_collected_kpi_result_when_export_toggle_off(m
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     runner.run_experiment(str(config_path), "job-kpi-disabled", tmp_path)
     assert _DummyWrapper.last_instance is not None
@@ -594,7 +674,7 @@ def test_run_experiment_uses_env_tracking_uri_adds_mlflow_identity_and_curated_a
     )
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     runner.run_experiment(str(config_path), "job-mlflow-on", tmp_path)
 
@@ -647,7 +727,7 @@ def test_run_experiment_minimal_profile_skips_curated_artifacts(monkeypatch, tmp
     )
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     runner.run_experiment(str(config_path), "job-mlflow-minimal", tmp_path)
 
@@ -725,7 +805,7 @@ def test_run_experiment_resume_uses_mlflow_download_artifacts_and_load(monkeypat
     monkeypatch.setattr(runner.mlflow.artifacts, "download_artifacts", _download_artifacts)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: resume_agent)
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: resume_agent)
 
     runner.run_experiment(str(config_path), "job-resume", tmp_path)
 
@@ -746,7 +826,7 @@ def test_run_experiment_resume_fails_if_agent_does_not_implement_load(monkeypatc
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _DummyWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     with pytest.raises(RuntimeError, match="does not implement load_checkpoint"):
         runner.run_experiment(str(config_path), "job-resume-fail", tmp_path)
@@ -764,7 +844,7 @@ def test_run_experiment_marks_outputs_failed_when_training_raises(monkeypatch, t
     monkeypatch.setattr(runner.mlflow, "active_run", lambda: None)
     monkeypatch.setattr(runner, "CityLearnEnv", lambda **_kwargs: _DummyEnv())
     monkeypatch.setattr(runner, "Wrapper", _FailingWrapper)
-    monkeypatch.setattr(runner, "create_agent", lambda config: _DummyAgent())
+    monkeypatch.setattr(runner, "build_execution_unit", lambda config: _DummyAgent())
 
     with pytest.raises(RuntimeError, match="training exploded"):
         runner.run_experiment(str(config_path), "job-train-fail", tmp_path)
@@ -780,13 +860,14 @@ def test_run_experiment_marks_outputs_failed_when_training_raises(monkeypatch, t
     assert progress_payload["error_type"] == "RuntimeError"
 
 
-def test_run_experiment_fails_fast_for_placeholder_algorithm(monkeypatch, tmp_path):
+def test_run_experiment_fails_fast_for_placeholder_algorithm(tmp_path):
     config = _build_enabled_config(artifact_profile="minimal")
-    config["algorithm"]["name"] = "SingleAgentRL"
+    config["pipeline"][0]["algorithm"] = "SingleAgentRL"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
-    monkeypatch.setattr(runner, "validate_config", lambda raw: _DummyConfigModel(raw))
-
-    with pytest.raises(ValueError, match="placeholder"):
+    # SingleAgentRL is rejected by pydantic at config-parse time, which
+    # causes run_experiment to call SystemExit(1).
+    with pytest.raises(SystemExit) as exc_info:
         runner.run_experiment(str(config_path), "job-placeholder", tmp_path)
+    assert exc_info.value.code == 1

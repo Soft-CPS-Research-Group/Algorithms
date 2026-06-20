@@ -81,8 +81,9 @@ topology:
   action_space: null
 
 # Algorithm family and hyperparameters.
-algorithm:
-  name: "EVDataCollectionRBC"
+pipeline:
+- algorithm: EVDataCollectionRBC
+  count: 1
   hyperparameters:
     target_building_index: 4
   networks: null

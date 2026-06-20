@@ -380,7 +380,14 @@ class _PPOBase(BaseAgent):
             global_learning_step >= self.initial_exploration_training_start_step
         )
 
-    def predict(self, observations, deterministic: bool | None = False) -> List[List[float]]:
+    def predict(
+        self,
+        observations,
+        deterministic: bool | None = False,
+        *,
+        context: Any = None,
+    ) -> List[List[float]]:
+        _ = context
         deterministic = bool(deterministic)
         self.exploration_step += 1
         self._last_warm_start_policy_actions = None

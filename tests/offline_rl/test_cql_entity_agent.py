@@ -90,14 +90,17 @@ def test_cql_agent_registry() -> None:
 
 
 def test_cql_agent_instantiate_via_config(tmp_path: Path) -> None:
-    """create_agent instantiates CQLEntityAgent from config dict."""
-    from algorithms.registry import create_agent
+    """build_execution_unit instantiates CQLEntityAgent from pipeline config."""
+    from algorithms.registry import build_execution_unit
     seed_dir = _make_seed_dir(tmp_path, obs_dim=8, action_dim=1)
     config = {
-        "algorithm": {
-            "name": "CQLEntityAgent",
-            "hyperparameters": {"model_dir": str(seed_dir), "device": "cpu"},
-        }
+        "pipeline": [
+            {
+                "algorithm": "CQLEntityAgent",
+                "count": 1,
+                "hyperparameters": {"model_dir": str(seed_dir), "device": "cpu"},
+            }
+        ]
     }
-    agent = create_agent(config)
+    agent = build_execution_unit(config)
     assert isinstance(agent, CQLEntityAgent)

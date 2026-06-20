@@ -11,6 +11,7 @@ from reward_function.cost_hard_constraint_reward import (
     CostServiceCommunityFeasiblePrecisionRewardV46,
     CostServiceCommunityFeasiblePrecisionRewardV47,
     CostServiceCommunityDeadlineValueRewardV50,
+    CostServiceCommunityDenseEVResidualRewardV54,
     CostServiceCommunityPeakDeadlineRewardV52,
     CostServiceCommunityPrecisionValueRewardV51,
     CostServiceCommunityServiceBandRewardV42,
@@ -36,6 +37,75 @@ def test_cost_minimization_reward_matches_import_export_cost_math():
     assert rewards[1] == pytest.approx(0.4)
 
 
+def test_cost_reward_prefers_storing_pv_export_to_avoid_later_import():
+    reward = CostHardConstraintReward(
+        env_metadata={"central_agent": False},
+        local_cost_weight=1.0,
+        export_credit_ratio=0.0,
+        community_settlement_cost_weight=0.0,
+    )
+
+    export_then_import = reward.calculate(
+        [{"net_electricity_consumption": -1.0, "electricity_pricing": 0.10}]
+    )[0] + reward.calculate(
+        [{"net_electricity_consumption": 1.0, "electricity_pricing": 0.50}]
+    )[0]
+    store_then_avoid_import = reward.calculate(
+        [{"net_electricity_consumption": 0.0, "electricity_pricing": 0.10}]
+    )[0] + reward.calculate(
+        [{"net_electricity_consumption": 0.0, "electricity_pricing": 0.50}]
+    )[0]
+
+    assert store_then_avoid_import > export_then_import
+    assert export_then_import == pytest.approx(-0.50)
+    assert store_then_avoid_import == pytest.approx(0.0)
+
+
+def test_community_settlement_prefers_local_self_consumption_to_grid_import():
+    reward = CostHardConstraintReward(
+        env_metadata={"central_agent": False},
+        local_cost_weight=0.0,
+        community_settlement_cost_weight=1.0,
+        community_local_price_ratio=0.8,
+        community_grid_export_price=0.0,
+    )
+
+    export_then_grid_import = sum(
+        reward.calculate(
+            [
+                {"net_electricity_consumption": -1.0, "electricity_pricing": 0.10},
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.10},
+            ]
+        )
+    ) + sum(
+        reward.calculate(
+            [
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.50},
+                {"net_electricity_consumption": 1.0, "electricity_pricing": 0.50},
+            ]
+        )
+    )
+    local_self_consumption = sum(
+        reward.calculate(
+            [
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.10},
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.10},
+            ]
+        )
+    ) + sum(
+        reward.calculate(
+            [
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.50},
+                {"net_electricity_consumption": 0.0, "electricity_pricing": 0.50},
+            ]
+        )
+    )
+
+    assert local_self_consumption > export_then_grid_import
+    assert export_then_grid_import == pytest.approx(-0.50)
+    assert local_self_consumption == pytest.approx(0.0)
+
+
 def test_named_cost_service_reward_profiles_set_default_weights():
     guard = CostServiceGuardRewardV2(env_metadata={"central_agent": False})
     balanced = CostServiceCostBalancedRewardV3(env_metadata={"central_agent": False})
@@ -51,6 +121,7 @@ def test_named_cost_service_reward_profiles_set_default_weights():
     deadline_value = CostServiceCommunityDeadlineValueRewardV50(env_metadata={"central_agent": False})
     precision_value = CostServiceCommunityPrecisionValueRewardV51(env_metadata={"central_agent": False})
     peak_deadline = CostServiceCommunityPeakDeadlineRewardV52(env_metadata={"central_agent": False})
+    dense_ev_residual = CostServiceCommunityDenseEVResidualRewardV54(env_metadata={"central_agent": False})
 
     assert guard.ev_departure_window_hours == pytest.approx(4.0)
     assert guard.ev_v2g_service_penalty == pytest.approx(200.0)
@@ -109,6 +180,11 @@ def test_named_cost_service_reward_profiles_set_default_weights():
     assert peak_deadline.ev_over_service_tolerance == pytest.approx(0.035)
     assert peak_deadline.ev_over_service_penalty == pytest.approx(720.0)
     assert peak_deadline.battery_throughput_penalty == pytest.approx(0.0035)
+    assert dense_ev_residual.ev_departure_window_hours == pytest.approx(8.0)
+    assert dense_ev_residual.ev_connected_deficit_penalty == pytest.approx(155.0)
+    assert dense_ev_residual.ev_schedule_deficit_penalty == pytest.approx(1500.0)
+    assert dense_ev_residual.ev_departure_missed_penalty == pytest.approx(4800.0)
+    assert dense_ev_residual.community_settlement_cost_weight == pytest.approx(1.18)
 
 
 def test_cost_hard_constraint_reward_declares_minimal_observation_payload():
@@ -843,6 +919,42 @@ def test_cost_hard_constraint_reward_penalizes_v2g_when_ev_is_below_service_targ
     assert components["ev_v2g_service_risk_sum"] == pytest.approx(0.3026666667)
     assert components["ev_v2g_service_abuse_penalty"] == pytest.approx(39.08)
     assert components["ev_service_penalty"] == pytest.approx(39.08)
+
+
+def test_cost_hard_constraint_reward_can_penalize_any_ev_v2g_discharge():
+    reward = CostHardConstraintReward(
+        env_metadata={"central_agent": False},
+        ev_departure_service_tolerance=0.05,
+        ev_departure_window_hours=4.0,
+        ev_v2g_service_penalty=200.0,
+        ev_v2g_discharge_penalty=1.5,
+    )
+
+    rewards = reward.calculate(
+        [
+            {
+                "net_electricity_consumption": 0.0,
+                "electricity_pricing": 0.0,
+                "electric_vehicles_chargers_dict": {
+                    "charger_a": {
+                        "connected": True,
+                        "battery_soc": 0.90,
+                        "required_soc": 0.80,
+                        "hours_until_departure": 4.0,
+                        "last_charged_kwh": -2.0,
+                    }
+                },
+            }
+        ]
+    )
+
+    assert rewards[0] == pytest.approx(-3.0)
+    components = reward.get_last_components()["per_agent"][0]
+    assert components["ev_v2g_discharge_kwh_sum"] == pytest.approx(2.0)
+    assert components["ev_v2g_service_risk_sum"] == pytest.approx(0.0)
+    assert components["ev_v2g_service_abuse_penalty"] == pytest.approx(0.0)
+    assert components["ev_v2g_discharge_penalty_amount"] == pytest.approx(3.0)
+    assert components["ev_service_penalty"] == pytest.approx(3.0)
 
 
 def test_cost_hard_constraint_reward_penalizes_ev_over_service_above_target_band():

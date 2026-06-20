@@ -24,7 +24,7 @@ def test_training_contract_matrix_generates_profile_variants(monkeypatch, tmp_pa
         return {
             "config_path": config_path,
             "dataset_name": cfg["simulator"]["dataset_name"],
-            "algorithm_name": cfg["algorithm"]["name"],
+            "algorithm_name": cfg["pipeline"][0]["algorithm"],
             "interface": "entity",
             "topology_mode": "static",
             "seconds_per_time_step": 15,

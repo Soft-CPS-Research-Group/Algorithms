@@ -27,6 +27,7 @@ IMPORTANT_KPIS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
         (
             "community_cost_eur",
             (
+                "district_cost_community_market_settled_total_eur",
                 "district_community_settled_cost_total_eur",
                 "district_cost_total_control_eur",
             ),
@@ -240,6 +241,24 @@ def _first_kpi_value(matrix: dict[str, dict[str, float | None]], candidates: tup
     return None
 
 
+def _community_cost_value(matrix: dict[str, dict[str, float | None]]) -> float | None:
+    """Prefer simulator-settled community-market cost when it is enabled.
+
+    Older or non-community-market datasets may still export the settled-cost KPI
+    as 0.0. In that case, the usable official simulator cost is the regular
+    control cost.
+    """
+    for key in (
+        "district_cost_community_market_settled_total_eur",
+        "district_community_settled_cost_total_eur",
+    ):
+        value = _district_value(matrix, key)
+        if value is not None and abs(value) > 1e-12:
+            return value
+
+    return _district_value(matrix, "district_cost_total_control_eur")
+
+
 def _extract_device(log_text: str) -> str:
     matches = re.findall(r"Device selected:\s*([A-Za-z0-9_:.-]+)", log_text)
     if matches:
@@ -259,6 +278,17 @@ def _extract_simulation_data_defaults(result: dict[str, Any]) -> tuple[str | Non
     if not isinstance(session, str):
         session = None
     return simulation_dir, session
+
+
+def _latest_matching_file(files: list[str], pattern: str) -> str | None:
+    matches: list[tuple[int, str]] = []
+    for item in files:
+        match = re.search(pattern, item)
+        if match:
+            matches.append((int(match.group(1)), item))
+    if not matches:
+        return None
+    return sorted(matches)[-1][1]
 
 
 def _read_jobs_file(path: Path) -> list[str]:
@@ -364,6 +394,7 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
         _write_json(job_dir / "simulation_data_index.json", index_dict)
         files = [str(item) for item in index_dict.get("files", []) if isinstance(item, str)]
         kpi_file = next((item for item in files if item.endswith("exported_kpis.csv")), None)
+        session = index_dict.get("session") or session_default or "latest"
         if kpi_file:
             kpi_content = _request_text(
                 base_url,
@@ -371,7 +402,7 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
                 method="POST",
                 payload={
                     "job_id": job_id,
-                    "session": index_dict.get("session") or session_default or "latest",
+                    "session": session,
                     "relative_path": kpi_file,
                 },
                 timeout=timeout,
@@ -380,6 +411,27 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
             kpi_matrix = _parse_kpi_matrix(kpi_content)
             row["simulation_data_session"] = index_dict.get("session") or ""
             row["kpi_file"] = kpi_file
+
+        community_file = _latest_matching_file(files, r"exported_data_community_ep(\d+)\.csv$")
+        if community_file:
+            community_content = _request_text(
+                base_url,
+                "/simulation-data/file",
+                method="POST",
+                payload={"job_id": job_id, "session": session, "relative_path": community_file},
+                timeout=timeout,
+            )
+            _write_text(job_dir / "exported_data_community.csv", community_content)
+            pricing_file = _latest_matching_file(files, r"exported_data_pricing_ep(\d+)\.csv$")
+            if pricing_file:
+                pricing_content = _request_text(
+                    base_url,
+                    "/simulation-data/file",
+                    method="POST",
+                    payload={"job_id": job_id, "session": session, "relative_path": pricing_file},
+                    timeout=timeout,
+                )
+                _write_text(job_dir / "exported_data_pricing.csv", pricing_content)
     except HTTPError as exc:
         errors.append(f"simulation_data: HTTP {exc.code}")
     except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
@@ -422,7 +474,11 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
     )
 
     for output_key, candidates in IMPORTANT_KPIS.items():
-        row[output_key] = _first_kpi_value(kpi_matrix, candidates)
+        row[output_key] = (
+            _community_cost_value(kpi_matrix)
+            if output_key == "community_cost_eur"
+            else _first_kpi_value(kpi_matrix, candidates)
+        )
 
     return row
 

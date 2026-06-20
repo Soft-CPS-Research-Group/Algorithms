@@ -1,9 +1,9 @@
 metadata:
-  experiment_name: "normal_no_battery_local_template"
-  run_name: "NormalNoBatteryPolicy 15s"
-  community_name: "citylearn_15s"
-  description: "Normal-day baseline without home battery control: immediate EV charge and earliest deferrable start"
-
+  experiment_name: normal_no_battery_local_template
+  run_name: NormalNoBatteryPolicy 15s
+  community_name: citylearn_15s
+  description: 'Normal-day baseline without home battery control: immediate EV charge
+    and earliest deferrable start'
 simulator:
   dataset_name: citylearn_three_phase_electrical_service_demo_15s_parquet
   dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json
@@ -44,18 +44,17 @@ simulator:
     mode: end
     export_kpis_on_episode_end: true
     final_episode_only: true
-    include_business_as_usual: false
-    export_business_as_usual_timeseries: false
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: true
     kpi_round_decimals: null
-    session_name: "normal-no-battery-15s-local"
-
+    session_name: normal-no-battery-15s-local
 training:
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
-
-algorithm:
-  name: "NormalNoBatteryPolicy"
+pipeline:
+- algorithm: NormalNoBatteryPolicy
+  count: 1
   hyperparameters:
     control_storage: false
     ev_normal_charge_rate: 1.0
