@@ -76,8 +76,37 @@ DEFAULT_SEEDS: List[int] = [22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
 DEFAULT_EPISODES: int = 10
 EPISODE_STEPS: int = 5760          # 1 day at 15 s resolution
 SMOKE_STEPS: int = 200             # fast sanity check
-SAFETY_MAX_STEPS: int = 6000       # guard against runaway loops
+SAFETY_MAX_STEPS: int = 6000       # minimum safety floor (historical 15-s daily margin)
+SAFETY_BUFFER_STEPS: int = 100     # margin above episode_steps when episode_steps > floor
 BATCH_FLUSH_STEPS: int = 200       # env steps between parquet row-group flushes
+
+
+def _compute_safety_limit(episode_steps: int) -> int:
+    """Return the runaway-loop safety threshold for a rollout.
+
+    The collector's main loop trusts the env's ``truncated`` flag to end an
+    episode at ``episode_steps``. The safety threshold is a *backstop* for
+    pathological cases where the env never reports truncation.
+
+    Behavior:
+
+    * Floor: never goes below ``SAFETY_MAX_STEPS`` so that short rollouts
+      retain a defensive margin (e.g. a smoke episode of 200 steps still
+      gets a 6000-step backstop).
+    * Scaling: when ``episode_steps`` is large (e.g. 15-min annual = 35 040),
+      the limit becomes ``episode_steps + SAFETY_BUFFER_STEPS`` so the
+      backstop is triggered only by genuine runaway behavior, not by a
+      legitimate long rollout.
+
+    Regression guard: before this helper existed, the loop tested against a
+    hard-coded ``SAFETY_MAX_STEPS = 6000`` constant, which aborted 15-min
+    full-year rollouts (episode_steps = 35 040) at step 6000.
+    """
+    try:
+        n = int(episode_steps)
+    except (TypeError, ValueError):
+        n = 0
+    return max(SAFETY_MAX_STEPS, n + SAFETY_BUFFER_STEPS)
 
 # Parquet column prefixes
 OBS_PREFIX = "obs__"
@@ -254,10 +283,29 @@ def collect_episode(
     env = _make_env(start_step=start_step, episode_steps=episode_steps, schema_path=schema_path, offline=offline)
     adapter = _make_adapter(env)
 
+    # Backstop against runaway loops if the env never reports
+    # ``terminated``/``truncated``. Scales with ``episode_steps`` so that
+    # legitimate long rollouts (e.g. 15-min full-year = 35040 steps) aren't
+    # aborted by a static guard. See ``_compute_safety_limit`` docstring.
+    safety_limit = _compute_safety_limit(episode_steps)
+
     obs_payload, _ = env.reset()
-    obs_list, obs_names, obs_spaces = adapter.to_agent_encoded_observations(obs_payload)
+    # RBCSmartPolicy sets ``_use_raw_observations = True`` and indexes obs by
+    # name expecting raw kW values (see algorithms/agents/baseline_policies.py).
+    # Feeding it encoded (minmax-normalised) observations causes the encoder
+    # to collapse all kW features to the 0.5 midpoint and ``_pv_surplus_kw``
+    # to return 0, which silently disables every storage charge branch.
+    # We therefore keep two parallel views of every observation:
+    #
+    #   * ``raw_obs_list``  - fed to ``rbc.predict()`` (raw kW values).
+    #   * ``enc_obs_list``  - stored in the parquet ``obs__/next_obs__``
+    #                         columns so downstream IQL/CQL trains on the
+    #                         same minmax-encoded features the wrapper would
+    #                         hand to a learned policy.
+    raw_obs_list, obs_names, obs_spaces = adapter.to_agent_observations(obs_payload)
+    enc_obs_list, _, _ = adapter.to_agent_encoded_observations(obs_payload)
     action_names = [list(names) for names in env.action_names]
-    n_agents = len(obs_list)
+    n_agents = len(raw_obs_list)
 
     rbc = _make_rbc(obs_names, action_names, env)
 
@@ -267,14 +315,15 @@ def collect_episode(
     step = 0
 
     while not (terminated or truncated):
-        actions = rbc.predict(obs_list, deterministic=True)
+        actions = rbc.predict(raw_obs_list, deterministic=True)
         env_actions = adapter.to_entity_actions(actions, action_names)
         next_obs_payload, rewards, terminated, truncated, _ = env.step(env_actions)
-        next_obs_list, _, _ = adapter.to_agent_encoded_observations(next_obs_payload)
+        next_raw_obs_list, _, _ = adapter.to_agent_observations(next_obs_payload)
+        next_enc_obs_list, _, _ = adapter.to_agent_encoded_observations(next_obs_payload)
 
         for agent_idx in range(n_agents):
-            obs_agent = obs_list[agent_idx]
-            next_obs_agent = next_obs_list[agent_idx]
+            obs_agent = enc_obs_list[agent_idx]
+            next_obs_agent = next_enc_obs_list[agent_idx]
             act_agent = actions[agent_idx]
             a_names = action_names[agent_idx]
             o_names = obs_names[agent_idx]
@@ -298,11 +347,13 @@ def collect_episode(
                 row[_next_obs_col(name)] = float(val)
             rows.append(row)
 
-        obs_list = next_obs_list
+        raw_obs_list = next_raw_obs_list
+        enc_obs_list = next_enc_obs_list
         step += 1
-        if step >= SAFETY_MAX_STEPS:
+        if step >= safety_limit:
             raise RuntimeError(
-                f"Rollout exceeded {SAFETY_MAX_STEPS} steps — env did not terminate. "
+                f"Rollout exceeded {safety_limit} steps "
+                f"(episode_steps={episode_steps}) — env did not terminate. "
                 f"seed={seed} episode={episode_idx}"
             )
         if step % 1000 == 0:
@@ -333,7 +384,7 @@ def collect_episode(
         "n_steps": step,
         "district_kpis": district_kpis,
         "building_kpis": building_kpis_list,
-        "obs_dims": [len(o) for o in obs_list],
+        "obs_dims": [len(o) for o in enc_obs_list],
         "action_dims": [len(a) for a in actions],
         "obs_names": obs_names,
         "action_names": action_names,
@@ -467,6 +518,8 @@ def _git_sha() -> str:
 def write_manifest(
     out_dir: Path,
     *,
+    schema_path: str,
+    episode_steps: int,
     seeds: Sequence[int],
     episodes_per_seed: int,
     seed_files: Dict[int, Path],
@@ -479,13 +532,13 @@ def write_manifest(
         "behaviour_policy_class": "algorithms.agents.baseline_policies.RBCSmartPolicy",
         "reward_function": "CostServiceCommunityFeasiblePrecisionRewardV46",
         "reward_captured": "live",
-        "dataset_path": SCHEMA_PATH,
+        "dataset_path": str(schema_path),
         "interface": "entity",
         "topology_mode": "static",
         "entity_encoding": "minmax_space",
         "seeds": [int(s) for s in seeds],
         "episodes_per_seed": int(episodes_per_seed),
-        "episode_time_steps": EPISODE_STEPS,
+        "episode_time_steps": int(episode_steps),
         "n_agents": 17,
         "agent_groups": agent_groups,
         "n_rows_total": int(n_rows_total),
@@ -560,6 +613,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Single seed, 1 episode, 200 steps — fast sanity check.",
     )
+    p.add_argument(
+        "--skip-existing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "If True (default), skip seeds whose seed_*.parquet already exists "
+            "AND short-circuit the whole stage when .collect.done is present. "
+            "Use --no-skip-existing to force re-collection."
+        ),
+    )
     return p
 
 
@@ -586,6 +649,18 @@ def main(argv: List[str] | None = None) -> int:
     out_dir: Path = args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Per-stage idempotency: short-circuit if .collect.done is present and
+    # the caller has not explicitly opted in to a fresh re-collection via
+    # --no-skip-existing.  --smoke always re-runs to validate the pipeline.
+    collect_done_path = out_dir / ".collect.done"
+    if args.skip_existing and collect_done_path.exists() and not args.smoke:
+        print(
+            f"[collect] .collect.done present at {out_dir} — skipping "
+            f"(use --no-skip-existing to force re-collection).",
+            flush=True,
+        )
+        return 0
+
     print(f"[collect] schema:            {args.schema}")
     print(f"[collect] output_dir: {out_dir}")
     print(f"[collect] seeds: {seeds}")
@@ -604,7 +679,7 @@ def main(argv: List[str] | None = None) -> int:
 
     for seed in seeds:
         seed_path = out_dir / f"seed_{seed}.parquet"
-        if seed_path.exists() and not args.smoke:
+        if seed_path.exists() and args.skip_existing and not args.smoke:
             print(f"[collect] skipping existing {seed_path.name}")
             seed_files[seed] = seed_path
             n_rows_total += pq.read_metadata(str(seed_path)).num_rows
@@ -668,6 +743,8 @@ def main(argv: List[str] | None = None) -> int:
 
     manifest_path = write_manifest(
         out_dir,
+        schema_path=args.schema,
+        episode_steps=episode_steps,
         seeds=seeds,
         episodes_per_seed=episodes_per_seed,
         seed_files=seed_files,
@@ -681,7 +758,26 @@ def main(argv: List[str] | None = None) -> int:
     if first_seed_path is not None:
         write_sample_csv(out_dir, first_seed_path)
 
+    # Per-stage success sentinel.  Written last so that any earlier failure
+    # leaves the directory in an "incomplete" state and a re-run will resume
+    # the work instead of short-circuiting.
+    collect_done_path.write_text(
+        json.dumps(
+            {
+                "completed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "n_seeds": len(seed_files),
+                "n_rows_total": int(n_rows_total),
+                "schema_path": str(args.schema),
+                "schema_hash": schema_hash,
+                "episode_time_steps": int(episode_steps),
+                "code_git_sha": _git_sha(),
+            },
+            indent=2,
+        )
+    )
+
     print(f"\n[collect] manifest: {manifest_path}")
+    print(f"[collect] sentinel: {collect_done_path}")
     print(f"[collect] total rows: {n_rows_total:,}")
     return 0
 
