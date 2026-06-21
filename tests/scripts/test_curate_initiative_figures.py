@@ -38,3 +38,56 @@ def test_curate_run_dir_is_required():
 def test_curate_showcase_group_override():
     args = _parse(["--run-dir", "runs/foo", "--showcase-group", "obs163_act1"])
     assert args.showcase_group == "obs163_act1"
+
+
+# -----------------------------------------------------------------------------
+# Task 2: _copy_feature_analysis_figures
+# -----------------------------------------------------------------------------
+
+import pytest
+
+SMOKE_DIR = REPO_ROOT / "runs" / "smoke_pipeline_phase9"
+
+
+@pytest.fixture
+def output_dir(tmp_path):
+    d = tmp_path / "curated"
+    d.mkdir()
+    return d
+
+
+@pytest.fixture
+def smoke_available():
+    if not SMOKE_DIR.exists():
+        pytest.skip(f"smoke fixture not present at {SMOKE_DIR}")
+    if not (SMOKE_DIR / "feature_analysis" / "figures").exists():
+        pytest.skip("smoke feature_analysis/figures not present")
+
+
+def test_copy_feature_analysis_figures_produces_five_renamed_pngs(smoke_available, output_dir):
+    import scripts.curate_initiative_figures as m
+    produced = m._copy_feature_analysis_figures(
+        run_dir=SMOKE_DIR,
+        showcase_group="obs163_act1",  # smoke uses hourly group keys
+        output_dir=output_dir,
+    )
+    assert sorted(p.name for p in produced) == [
+        "02_dataset_stats.png",
+        "03_action_coverage_group_a.png",
+        "04_reward_by_regime.png",
+        "05_correlations_group_a.png",
+        "06_temporal_patterns.png",
+    ]
+    for p in produced:
+        assert p.exists()
+        assert p.stat().st_size > 5_000  # non-empty plot
+
+
+def test_copy_feature_analysis_figures_missing_dir_returns_empty(tmp_path, output_dir):
+    import scripts.curate_initiative_figures as m
+    produced = m._copy_feature_analysis_figures(
+        run_dir=tmp_path,           # empty dir, no feature_analysis
+        showcase_group="obs627_act1",
+        output_dir=output_dir,
+    )
+    assert produced == []

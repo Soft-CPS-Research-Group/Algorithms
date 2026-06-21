@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 from pathlib import Path
 from typing import List
 
@@ -32,6 +33,49 @@ DEFAULT_SHOWCASE_GROUP = "obs627_act1"
 DEFAULT_GROUPS = ["obs627_act1", "obs706_act2", "obs749_act3", "obs785_act3"]
 
 logger = logging.getLogger("curate_initiative_figures")
+
+# (source filename template, destination filename) — `{group}` is replaced with showcase group.
+FEATURE_ANALYSIS_COPY_MAP = [
+    ("01_dataset_stats_table.png",     "02_dataset_stats.png"),
+    ("03_action_coverage_{group}.png", "03_action_coverage_group_a.png"),
+    ("04_reward_by_regime.png",        "04_reward_by_regime.png"),
+    ("05_correlations_{group}.png",    "05_correlations_group_a.png"),
+    ("07_temporal_patterns.png",       "06_temporal_patterns.png"),
+]
+
+
+def _copy_feature_analysis_figures(
+    *,
+    run_dir: Path,
+    showcase_group: str,
+    output_dir: Path,
+) -> List[Path]:
+    """Copy 5 figures from <run_dir>/feature_analysis/figures/ with renames.
+
+    Returns the list of destination paths that were successfully created.
+    Missing sources are logged as warnings and skipped.
+    """
+    src_dir = run_dir / "feature_analysis" / "figures"
+    if not src_dir.exists():
+        logger.warning(
+            "[curate] feature_analysis/figures not found at %s -- skipping figs 02-06",
+            src_dir,
+        )
+        return []
+
+    produced: List[Path] = []
+    for src_template, dst_name in FEATURE_ANALYSIS_COPY_MAP:
+        src_name = src_template.format(group=showcase_group)
+        src = src_dir / src_name
+        if not src.exists():
+            logger.warning("[curate] source figure missing: %s -- skipping", src)
+            continue
+        dst = output_dir / dst_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        produced.append(dst)
+        logger.info("[curate] copied %s -> %s", src.name, dst.name)
+    return produced
 
 
 def _build_parser() -> argparse.ArgumentParser:
