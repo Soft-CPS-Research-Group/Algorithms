@@ -168,3 +168,30 @@ def test_render_benchmark_kpi_bars_missing_file_returns_none(tmp_path, output_di
         output_dir=output_dir,
     )
     assert produced is None
+
+
+# -----------------------------------------------------------------------------
+# Task 6: _render_iql_vs_cql_scatter
+# -----------------------------------------------------------------------------
+
+
+def test_render_iql_vs_cql_scatter_produces_png_with_n_equals_one(smoke_results_json, output_dir):
+    """Smoke has only one eval seed; the scatter must still render with n=1 annotation."""
+    import scripts.curate_initiative_figures as m
+    produced = m._render_iql_vs_cql_scatter(
+        results_json=smoke_results_json,
+        output_dir=output_dir,
+    )
+    assert produced is not None
+    assert produced.name == "11_iql_vs_cql_scatter.png"
+    assert produced.exists()
+    assert produced.stat().st_size > 5_000
+
+
+def test_render_iql_vs_cql_scatter_missing_file_returns_none(tmp_path, output_dir):
+    import scripts.curate_initiative_figures as m
+    produced = m._render_iql_vs_cql_scatter(
+        results_json=tmp_path / "nope.json",
+        output_dir=output_dir,
+    )
+    assert produced is None

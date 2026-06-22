@@ -281,6 +281,86 @@ def _render_benchmark_kpi_bars(*, results_json: Path, output_dir: Path) -> Path 
     return dst
 
 
+def _render_iql_vs_cql_scatter(*, results_json: Path, output_dir: Path) -> Path | None:
+    """Render per-eval-seed scatter of IQL ``cost_total`` vs CQL ``cost_total``.
+
+    Pairs runs by ``env_seed``. Adds a y=x reference line and, when n>=2 seeds,
+    annotates the paired Wilcoxon p-value (else ``n=1, p=N/A``).
+
+    Returns the destination path or None.
+    """
+    if not results_json.exists():
+        logger.warning(
+            "[curate] benchmark results.json not found at %s -- skipping fig 11",
+            results_json,
+        )
+        return None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with results_json.open() as f:
+        data = json.load(f)
+
+    def _by_seed(algo: str) -> dict:
+        return {
+            r["env_seed"]: r["district"]["cost_total"]
+            for r in data.get(algo, {}).get("runs", [])
+            if isinstance(r, dict) and "env_seed" in r and "district" in r
+            and "cost_total" in r["district"]
+        }
+
+    iql_runs = _by_seed("IQL")
+    cql_runs = _by_seed("CQL")
+    seeds = sorted(set(iql_runs) & set(cql_runs))
+    if not seeds:
+        logger.warning(
+            "[curate] no paired IQL/CQL eval seeds in %s -- skipping fig 11",
+            results_json,
+        )
+        return None
+
+    iql_costs = [iql_runs[s] for s in seeds]
+    cql_costs = [cql_runs[s] for s in seeds]
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.scatter(iql_costs, cql_costs, s=60, alpha=0.75,
+               edgecolor="black", linewidth=0.6, color="#673AB7")
+
+    # y=x reference line
+    lo = min(min(iql_costs), min(cql_costs))
+    hi = max(max(iql_costs), max(cql_costs))
+    margin = (hi - lo) * 0.05 if hi > lo else 0.1
+    ax.plot([lo - margin, hi + margin], [lo - margin, hi + margin],
+            "k--", linewidth=1, alpha=0.5, label="y = x")
+
+    # Annotation
+    if len(seeds) >= 2:
+        try:
+            from scipy.stats import wilcoxon
+            _stat, pval = wilcoxon(iql_costs, cql_costs)
+            annotation = f"n={len(seeds)}, Wilcoxon p={pval:.3f}"
+        except Exception as exc:  # pragma: no cover - defensive
+            annotation = f"n={len(seeds)}, p=N/A ({exc})"
+    else:
+        annotation = f"n={len(seeds)}, p=N/A"
+    ax.text(0.05, 0.95, annotation, transform=ax.transAxes,
+            verticalalignment="top", fontsize=10,
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.85))
+
+    ax.set_xlabel("IQL cost_total")
+    ax.set_ylabel("CQL cost_total")
+    ax.set_title("Per-seed cost comparison -- IQL vs CQL")
+    ax.grid(alpha=0.3)
+    ax.legend(loc="lower right")
+
+    fig.tight_layout()
+    dst = output_dir / "11_iql_vs_cql_scatter.png"
+    fig.savefig(dst, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("[curate] rendered %s", dst.name)
+    return dst
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__,
