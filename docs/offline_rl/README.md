@@ -107,3 +107,7 @@ Current numbers and the full trail are in `pipeline_status.md`.
 The next stage is IQL on the same dataset and reward; the design is
 frozen in `specs/iql_design.md` and the implementation plan goes
 under `plans/`.
+
+The current stage extends offline RL to all 17 buildings with IQL + CQL
+on the 15-min schema. See [`iql_cql_initiative.md`](iql_cql_initiative.md)
+for that initiative.
