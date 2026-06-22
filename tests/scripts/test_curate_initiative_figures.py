@@ -1,8 +1,10 @@
 """Tests for scripts.curate_initiative_figures."""
 from __future__ import annotations
 
-from pathlib import Path
+import json
+import shutil
 import sys
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -195,3 +197,44 @@ def test_render_iql_vs_cql_scatter_missing_file_returns_none(tmp_path, output_di
         output_dir=output_dir,
     )
     assert produced is None
+
+
+# -----------------------------------------------------------------------------
+# Task 7: _write_sentinel + main() end-to-end
+# -----------------------------------------------------------------------------
+
+
+def test_write_sentinel_atomic_json(output_dir):
+    import scripts.curate_initiative_figures as m
+    sentinel = m._write_sentinel(
+        output_dir=output_dir,
+        run_dir=Path("runs/foo"),
+        produced=[output_dir / "fake.png"],
+    )
+    assert sentinel.name == ".curation.done"
+    assert sentinel.exists()
+    payload = json.loads(sentinel.read_text())
+    assert payload["n_figures"] == 1
+    assert payload["run_dir"] == "runs/foo"
+    assert payload["output_dir"] == str(output_dir)
+    assert payload["figures"] == ["fake.png"]
+    assert "generated_at" in payload
+
+
+def test_main_end_to_end_smoke(smoke_available, smoke_has_metrics, smoke_results_json, tmp_path):
+    """End-to-end: run main() against smoke artifacts; expect 11 PNGs + sentinel."""
+    import scripts.curate_initiative_figures as m
+    out = tmp_path / "curated"
+    rc = m.main([
+        "--run-dir", str(SMOKE_DIR),
+        "--output-dir", str(out),
+        "--showcase-group", "obs163_act1",
+        "--groups", "obs163_act1", "obs225_act2", "obs257_act3", "obs287_act3",
+    ])
+    assert rc == 0
+    pngs = sorted(p.name for p in out.glob("*.png"))
+    assert len(pngs) == 11, f"expected 11 PNGs, got {len(pngs)}: {pngs}"
+    sentinel = out / ".curation.done"
+    assert sentinel.exists()
+    payload = json.loads(sentinel.read_text())
+    assert payload["n_figures"] == 11

@@ -24,7 +24,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -361,6 +363,23 @@ def _render_iql_vs_cql_scatter(*, results_json: Path, output_dir: Path) -> Path 
     return dst
 
 
+def _write_sentinel(*, output_dir: Path, run_dir: Path, produced: List[Path]) -> Path:
+    """Atomically write ``.curation.done`` JSON sentinel describing this run."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    sentinel = output_dir / ".curation.done"
+    tmp = sentinel.with_suffix(".done.tmp")
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "run_dir": str(run_dir),
+        "output_dir": str(output_dir),
+        "n_figures": len(produced),
+        "figures": sorted(p.name for p in produced),
+    }
+    tmp.write_text(json.dumps(payload, indent=2))
+    os.replace(tmp, sentinel)
+    return sentinel
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -400,6 +419,48 @@ def main(argv=None) -> int:
     logger.info("[curate] output_dir=%s", args.output_dir)
     logger.info("[curate] showcase_group=%s", args.showcase_group)
     logger.info("[curate] groups=%s", args.groups)
+
+    produced: List[Path] = []
+
+    # fig 01 -- pipeline diagram (no run-dir dependency)
+    pipeline = _render_pipeline_diagram(output_dir=args.output_dir)
+    if pipeline:
+        produced.append(pipeline)
+
+    # figs 02-06 -- feature-analysis copies
+    produced.extend(_copy_feature_analysis_figures(
+        run_dir=args.run_dir,
+        showcase_group=args.showcase_group,
+        output_dir=args.output_dir,
+    ))
+
+    # figs 07-09 -- training curves
+    produced.extend(_render_training_curves(
+        run_dir=args.run_dir,
+        showcase_group=args.showcase_group,
+        groups=args.groups,
+        output_dir=args.output_dir,
+    ))
+
+    # figs 10-11 -- benchmark
+    bench_json = args.run_dir / "benchmark" / "results.json"
+    bars = _render_benchmark_kpi_bars(results_json=bench_json, output_dir=args.output_dir)
+    if bars:
+        produced.append(bars)
+    scatter = _render_iql_vs_cql_scatter(results_json=bench_json, output_dir=args.output_dir)
+    if scatter:
+        produced.append(scatter)
+
+    if not produced:
+        logger.error("[curate] no figures produced -- aborting without sentinel")
+        return 1
+
+    sentinel = _write_sentinel(
+        output_dir=args.output_dir,
+        run_dir=args.run_dir,
+        produced=produced,
+    )
+    logger.info("[curate] wrote sentinel %s (n_figures=%d)", sentinel, len(produced))
     return 0
 
 
