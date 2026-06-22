@@ -233,7 +233,104 @@ Each trainer additionally writes a *per-seed* `status.json` inside its own outpu
 
 ## 5. Engineering — the CityLearn OOM
 
-<!-- task 6 writes this section -->
+### 5.1 The crash
+
+Production launched 2026-06-21 at 10:50 UTC and was dead by 13:01 UTC. The orchestrator's own log captured the symptom in one line:
+
+```text
+  [seed=22 ep=0] step 16000
+[pipeline] ERROR: command exited with code -9
+```
+
+That is signal 9 — `SIGKILL` from the macOS kernel out-of-memory killer, which gives no traceback and no opportunity for the process to flush. 7906 seconds of wall-clock had produced a partial `seed_22.parquet` of 307 MB (about half a year of 15-min transitions); the orchestrator flipped `collect` to `failed` in `status.json` and stopped. The smoke runs that exercised the 15-sec schema at 5760 steps had never reached this regime — the bug needed a full 15-min year (35040 steps) to make itself visible.
+
+### 5.2 Probing memory
+
+Three probes were written and run outside the production loop (all scripted under `/tmp/`):
+
+- **Probe v1 (RSS sampler).** Built env + RBC + adapter once, ran `env.step()` in a tight loop, sampled `psutil.Process().memory_info().rss` every 200 steps. Result: steady growth of roughly 8 MB per step from step 200 onward; RSS at step 2000 reached ~16 GB. The growth rate was high enough that 16 GB was simply the budget Probe v1 had to work with.
+- **Probe v2 (`tracemalloc` snapshot diff).** Snapshots at step 0 and step 200 then diffed. The top culprit was `citylearn/energy_model.py:119` — a property that returns `self.__electricity_consumption * self.time_step_ratio` and so allocates a fresh ndarray on every call. Roughly 465 MB of allocations across 200 steps came from that single line.
+- **Probe v3 (reset effectiveness).** Looped `env.reset()` between short rollouts to see whether reset releases RSS. Per-cycle growth dropped from 4.4 to 0.3 MB/step but RSS never returned to baseline. Conclusion: the leak is class-level, not episode-local, and `reset()` alone cannot recover it.
+
+Reference paths: `probe_oom_memory.py`, `probe_oom_tracemalloc.py`, `probe_oom_reset.py` (all under `/var/folders/.../opencode/`).
+
+### 5.3 Root cause
+
+The culprit is `CityLearnEntityInterfaceService._action_feedback_series_summary` in `.venv/lib/python3.10/site-packages/citylearn/internal/entity_interface.py:1716`, which memoises a per-step feedback summary in `self._action_feedback_series_cache` (initialised at line 352 and cleared in both `reset()` and `invalidate()`).
+
+The cache is keyed by `id(values)` for each source array. Probe v2 showed that the upstream `electricity_consumption` property allocates a fresh ndarray every call — so `id(values)` never matches a prior entry, and the cache grows by roughly 85 entries per step (17 buildings × ~5 source arrays). Each entry pins the ndarrays it summarises plus internal `sum_prefix`, `last_nonzero`, and `value_snapshot` lists that themselves grow per step. The result is memory growth that is **roughly quadratic in episode length**: linear from the new dict entries, multiplied by the lists' own per-step growth.
+
+`env.reset()` does call `self._action_feedback_series_cache.clear()`, but at full-year length we reach the OOM-killer well inside the first episode, long before reset is reached. The cache simply has to be bounded mid-rollout.
+
+### 5.4 Decision matrix
+
+Three options were considered:
+
+| Option | Invasiveness | Data-continuity risk | Performance cost | Complexity |
+|--------|--------------|----------------------|------------------|-----------|
+| (a) Subprocess chunking — split collect into N short jobs, reset RSS via process boundary | Medium (refactor orchestrator + collector to stitch chunks) | High (chunk-boundary state-loss between rollouts; resume must reconstruct env state) | Higher (process spawn + JSON serialisation cost per chunk) | High |
+| (b) Monkey-patch CityLearn cache — wrap `_action_feedback_series_summary` to FIFO-evict at 128 entries | Low (~90-line new module) | None (worst case is a cache miss + rebuild of one entry) | Negligible (~1 µs per step for the eviction loop) | Low |
+| (c) Hybrid — patch + chunking belt-and-braces | High (both costs) | Same as (a) | Same as (a) | High |
+
+We chose **(b)**. The patch is small, idempotent, and modifies exactly one method on a downstream library; options (a) and (c) restructure the orchestrator for what is a defect in a dependency we do not own.
+
+### 5.5 The fix
+
+[`utils/citylearn_patches.py`](../../utils/citylearn_patches.py) wraps the original `_action_feedback_series_summary` so that, after every successful computation, the cache is bounded to `ACTION_FEEDBACK_CACHE_MAX = 128` entries via FIFO eviction (Python dict insertion order, guaranteed in 3.7+). The core of the module:
+
+```python
+ACTION_FEEDBACK_CACHE_MAX: int = 128
+_PATCHED: bool = False
+
+
+def _bound_dict_size(d: Dict[Any, Any], maxsize: int) -> None:
+    """Evict oldest entries from d until len(d) <= maxsize (FIFO)."""
+    while len(d) > maxsize:
+        oldest_key = next(iter(d))
+        d.pop(oldest_key)
+
+
+def apply_citylearn_patches() -> None:
+    """Idempotent. Safe to call once per process (module import time)."""
+    global _PATCHED
+    if _PATCHED:
+        return
+    _patch_action_feedback_series_cache()
+    _PATCHED = True
+
+
+def _patch_action_feedback_series_cache() -> None:
+    from citylearn.internal.entity_interface import CityLearnEntityInterfaceService
+    original = CityLearnEntityInterfaceService._action_feedback_series_summary
+
+    def patched_summary(self, values, index):
+        result = original(self, values, index)
+        _bound_dict_size(self._action_feedback_series_cache, ACTION_FEEDBACK_CACHE_MAX)
+        return result
+
+    CityLearnEntityInterfaceService._action_feedback_series_summary = patched_summary
+# from utils/citylearn_patches.py (condensed)
+```
+
+The wrapper is installed at module-import time by both `scripts/collect_rbcsmart_dataset.py` (commit `98f7944`) and `scripts/benchmark_entity_agents.py` (commit `f5238be`), each calling `apply_citylearn_patches()` before importing `CityLearnEnv`. Idempotency is guarded by the module-level `_PATCHED` flag. Test coverage lives in [`tests/test_citylearn_patches.py`](../../tests/test_citylearn_patches.py) — 8 tests covering `_bound_dict_size` semantics, idempotency, and an end-to-end stub of the patched method.
+
+### 5.6 Validation
+
+Probe v1 was rerun under the patch; growth dropped from ~8 MB/step to ~0.1 MB/step (an 80× reduction). Side-by-side RSS at sampled steps:
+
+| Step  | Pre-patch RSS | Post-patch RSS | Ratio |
+|------:|--------------:|---------------:|------:|
+| 200   | 1286 MB       | 804 MB         | 1.6×  |
+| 600   | 3017 MB       | 827 MB         | 3.6×  |
+| 2000  | ~16336 MB     | 959 MB         | 17×   |
+| 4000  | (OOM imminent) | 1148 MB        | —     |
+| 35040 (projected, linear) | (OOM long since) | ~4269 MB | — |
+
+The production rerun (PID 93540, 2026-06-22 14:14 launch) confirmed the projection empirically: collector RSS reached 4.0 GB at step 34000 of seed 22 — within 7% of the linear extrapolation, and well inside the 32 GB Mac envelope. The cache resets cleanly between seeds; RSS dropped back to 2.6 GB on transition into seed 23.
+
+### 5.7 Lesson
+
+Downstream library invariants matter. Memoisation tables that look harmless at the temporal granularity their authors tested can OOM at finer granularities, especially when keyed on object identity (which never collides for short-lived ndarrays). The patch is small — about ninety lines — because we only had to bound one dict. The diagnostic effort, three probes over a few hours, was the real work. When a library you depend on caches without bounds, expect to discover it under exactly the workload the library was not tested against.
 
 ---
 
