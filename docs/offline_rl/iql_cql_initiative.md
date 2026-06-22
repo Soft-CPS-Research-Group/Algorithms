@@ -392,7 +392,16 @@ Every `(group, algorithm, train seed)` triple is evaluated on env seeds 200..209
 
 ## 8. Feature analysis highlights
 
-<!-- task 9 writes this section -->
+§2 introduced the dataset shape; this section pulls out the three findings from the full EDA that most directly motivate the algorithm choices in §3. The complete analysis lives in [`feature_analysis/feature_analysis.md`](feature_analysis/feature_analysis.md); we summarise the load-bearing parts here rather than reproduce them.
+
+**Insight 1 — Action concentration.** RBCSmart's action distribution is tightly concentrated: mostly idle, with a narrow EV-charge band when PV-bonus or emergency conditions trip. Translated to offline RL, this means the dataset only covers a small slice of `(s, a)` space; learned Q-values would be over-confident on the unsampled regions if we used vanilla Q-learning. This is the textbook motivation for CQL's penalty on OOD actions. Figure 03 in §2 visualises the coverage for the `obs627_act1` cohort. IQL addresses the same risk from a different angle — its expectile-V never queries OOD actions in the first place.
+
+**Insight 2 — Feature × reward correlations.** A handful of features dominate predictive power for reward: net electricity consumption, carbon intensity, and non-shiftable load. The pattern is consistent across all four agent groups, and it matches what the Building-5 iteration found on its 35-feature single-building dataset. The figure below shows the correlation matrix for the showcase group; the brightest off-diagonal cluster is the price/temperature forecast triplets, which carry redundant information and are a future feature-engineering target. For the per-group breakdown see the *What actually matters* section of [`feature_analysis/feature_analysis.md`](feature_analysis/feature_analysis.md).
+
+**Insight 3 — Temporal structure.** Reward and EV-action distributions cycle visibly on hour-of-day (figure 06 in §2). Reward dips during evening grid peaks and rebounds overnight as EV charging dominates the action signal. The trainer never sees a raw timestamp; the proxy features (hour-of-day, day-of-week one-hots, time-to-next-EV-departure) encode the cycle adequately for the policy to learn the daily structure without explicit temporal embeddings.
+
+<!-- TBD: production -->
+![Feature–reward correlation matrix for the `obs627_act1` showcase group. The brightest off-diagonal cluster is the price/temperature forecast triplets — a redundancy worth flagging for future feature engineering.](iql_cql_figures/05_correlations_group_a.png)
 
 ---
 
