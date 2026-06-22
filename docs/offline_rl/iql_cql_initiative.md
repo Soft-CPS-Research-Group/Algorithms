@@ -162,7 +162,72 @@ class CQLTrainingConfig(IQLTrainingConfig):
 
 ## 4. Resume & status visibility
 
-<!-- task 5 writes this section -->
+A multi-day pipeline running unattended on a single workstation cannot rely on never crashing. Phase 2 of the initiative built three nested idempotency layers so a kill at any point resumes deterministically: per-stage sentinels (`.{stage}.done` written when the stage finishes cleanly), per-seed sentinels inside training (`seed.done` written when a seed completes its full gradient budget), and per-checkpoint atomic saves of every network, every optimiser, and every RNG state every `checkpoint_every_n_steps`. Crash recovery is the same command you used to launch the run; there is no separate resume mode.
+
+**Atomic save invariant.** [`atomic_save`](../../algorithms/offline_rl/checkpoint_utils.py) writes to a sibling `.tmp` file (`path.with_suffix(path.suffix + ".tmp")`) and then calls `os.replace(tmp, path)`, which is POSIX-atomic. A kill mid-write either leaves the old `path` intact or commits the new one — never a half-written file. The kill-mid-write contract is locked under [`tests/offline_rl/test_atomic_save.py`](../../tests/offline_rl/test_atomic_save.py).
+
+**`checkpoint_latest.pt` schema.** Every checkpoint write captures the full trainer state needed for bit-exact resume (from `iql_entity_trainer.py:243-265`):
+
+```python
+payload = {
+    "step": int(step),
+    "policy_state": policy.state_dict(),
+    "qf1_state": q1.state_dict(),
+    "qf2_state": q2.state_dict(),
+    "qf1_target_state": q1_target.state_dict(),
+    "qf2_target_state": q2_target.state_dict(),
+    "vf_state": value_net.state_dict(),
+    "policy_opt_state": pi_opt.state_dict(),
+    "qf_opt_state": q_opt.state_dict(),
+    "vf_opt_state": v_opt.state_dict(),
+    "rng_state_torch": torch.get_rng_state(),
+    "rng_state_numpy": np.random.get_state(),
+    "rng_state_gen": rng_gen.get_state(),
+    "best_val_mse": float(best_val_mse),
+    "best_step": int(best_step),
+    "best_policy_state": ...,         # None or a cpu-cloned state dict
+    "wall_clock_seconds": float(wall_clock),
+}
+atomic_save(payload, checkpoint_path)
+# from algorithms/offline_rl/iql_entity_trainer.py:243-266
+```
+
+The CQL trainer writes the same payload shape; the only addition under conservative training is whatever extra Q-statistics the checkpoint cadence captures alongside `val_mse`.
+
+**`status.json` — orchestrator level.** The root file at `runs/<output>/status.json` is owned by the orchestrator (`scripts.run_entity_pipeline`) and gets atomically merged on every stage transition via [`write_status`](../../algorithms/offline_rl/checkpoint_utils.py). The full schema is:
+
+```json
+{
+  "stages": {
+    "collect":          {"status": "done",    "started_at": "...", "duration_seconds": 17500.0},
+    "train-iql":        {"status": "running", "group": "obs627_act1", "seed": 24, "step": 67000, "best_val_mse": 0.000158, "eta_seconds": 14400},
+    "train-cql":        {"status": "pending"},
+    "benchmark":        {"status": "pending"},
+    "feature-analysis": {"status": "pending"}
+  }
+}
+```
+
+Each trainer additionally writes a *per-seed* `status.json` inside its own output directory (`runs/.../models-{iql,cql}/<group>/seed_<N>/status.json`) that tracks the current step, validation MSE, and wall-clock — same atomic-write primitive, different file, finer granularity.
+
+**[`show_pipeline_status.py`](../../scripts/show_pipeline_status.py).** Read-only viewer. Reads `runs/<output>/status.json` if present, otherwise falls back to scanning `.{stage}.done` sentinels and per-seed checkpoint files. Sample output:
+
+```text
+[pipeline status] runs/offline_iql_cql_initiative_15min
+[source] status.json
+┌──────────────────┬──────────┬──────────┬───────────────────────────┐
+│ Stage            │ Status   │ Duration │ Last update               │
+├──────────────────┼──────────┼──────────┼───────────────────────────┤
+│ collect          │ ✓ done   │   2m 14s │ 2025-06-20T11:32:14+00:00 │
+│ train-iql        │ ▶ running│   1h 25m │ started 2025-06-20T13:00… │
+│ train-cql        │ ○ pending│        — │ —                         │
+│ benchmark        │ ○ pending│        — │ —                         │
+│ feature-analysis │ ○ pending│        — │ —                         │
+└──────────────────┴──────────┴──────────┴───────────────────────────┘
+# .venv/bin/python -m scripts.show_pipeline_status runs/offline_iql_cql_initiative_15min
+```
+
+**Resume semantics.** Re-running the same launch command is the recovery procedure. Each stage checks its `.{stage}.done` sentinel and skips if present; the trainer loads `checkpoint_latest.pt` and resumes from `step + 1` with RNG state restored, so the next sampled minibatch is the one that would have come next in an uninterrupted run. The `--force STAGE[,STAGE...]` flag bypasses sentinels and forces a clean re-run of named stages.
 
 ---
 
