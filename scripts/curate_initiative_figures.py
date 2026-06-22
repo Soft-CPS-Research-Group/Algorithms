@@ -116,6 +116,91 @@ def _render_pipeline_diagram(*, output_dir: Path) -> Path | None:
     return dst
 
 
+def _render_training_curves(
+    *,
+    run_dir: Path,
+    showcase_group: str,
+    groups: List[str],
+    output_dir: Path,
+) -> List[Path]:
+    """Render training-curve figures using generate_training_figures helpers.
+
+    Produces:
+    * 07_training_loss_group_a.png   -- IQL vs CQL loss curves for showcase group.
+    * 08_training_valmse_all.png     -- val MSE for IQL vs CQL across all groups.
+    * 09_training_cql_penalty.png    -- CQL conservative penalty curve.
+
+    Returns the list of destination paths that were successfully produced.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    iql_root = run_dir / "models-iql"
+    cql_root = run_dir / "models-cql"
+    iql_arg = iql_root if iql_root.exists() else None
+    cql_arg = cql_root if cql_root.exists() else None
+
+    if iql_arg is None and cql_arg is None:
+        logger.warning(
+            "[curate] no models-iql or models-cql under %s -- skipping figs 07-09",
+            run_dir,
+        )
+        return []
+
+    try:
+        from scripts.generate_training_figures import (
+            _plot_cql_penalty,
+            _plot_loss_curves,
+            _plot_val_mse,
+        )
+    except ImportError as exc:
+        logger.warning("[curate] could not import training-curve helpers: %s", exc)
+        return []
+
+    import tempfile
+
+    produced: List[Path] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        # fig 07 -- loss curves for showcase group
+        try:
+            loss = _plot_loss_curves(iql_arg, cql_arg, showcase_group, tmp_path)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[curate] _plot_loss_curves raised %s -- skipping fig 07", exc)
+            loss = None
+        if loss and Path(loss).exists():
+            dst = output_dir / "07_training_loss_group_a.png"
+            shutil.copy2(loss, dst)
+            produced.append(dst)
+            logger.info("[curate] rendered %s", dst.name)
+
+        # fig 08 -- val MSE all groups
+        try:
+            val = _plot_val_mse(iql_arg, cql_arg, groups, tmp_path)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[curate] _plot_val_mse raised %s -- skipping fig 08", exc)
+            val = None
+        if val and Path(val).exists():
+            dst = output_dir / "08_training_valmse_all.png"
+            shutil.copy2(val, dst)
+            produced.append(dst)
+            logger.info("[curate] rendered %s", dst.name)
+
+        # fig 09 -- CQL penalty
+        try:
+            pen = _plot_cql_penalty(cql_arg, groups, tmp_path)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[curate] _plot_cql_penalty raised %s -- skipping fig 09", exc)
+            pen = None
+        if pen and Path(pen).exists():
+            dst = output_dir / "09_training_cql_penalty.png"
+            shutil.copy2(pen, dst)
+            produced.append(dst)
+            logger.info("[curate] rendered %s", dst.name)
+
+    return produced
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__,

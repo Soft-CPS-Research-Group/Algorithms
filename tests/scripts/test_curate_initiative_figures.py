@@ -105,3 +105,32 @@ def test_render_pipeline_diagram_produces_png(output_dir):
     assert produced.name == "01_pipeline_overview.png"
     assert produced.exists()
     assert produced.stat().st_size > 5_000
+
+
+# -----------------------------------------------------------------------------
+# Task 4: _render_training_curves
+# -----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def smoke_has_metrics():
+    iql = SMOKE_DIR / "models-iql"
+    cql = SMOKE_DIR / "models-cql"
+    if not iql.exists() or not cql.exists():
+        pytest.skip("smoke models-iql/models-cql not present")
+
+
+def test_render_training_curves_produces_three_pngs(smoke_available, smoke_has_metrics, output_dir):
+    import scripts.curate_initiative_figures as m
+    produced = m._render_training_curves(
+        run_dir=SMOKE_DIR,
+        showcase_group="obs163_act1",
+        groups=["obs163_act1", "obs225_act2", "obs257_act3", "obs287_act3"],
+        output_dir=output_dir,
+    )
+    names = sorted(p.name for p in produced)
+    assert "07_training_loss_group_a.png" in names
+    assert "08_training_valmse_all.png" in names
+    assert "09_training_cql_penalty.png" in names
+    for p in produced:
+        assert p.stat().st_size > 5_000
