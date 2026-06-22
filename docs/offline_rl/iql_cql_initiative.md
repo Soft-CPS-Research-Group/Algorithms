@@ -52,7 +52,36 @@ The rest of this note walks the pipeline from data to results.
 
 ## 2. Dataset
 
-<!-- task 3 writes this section -->
+The corpus is a single RBCSmart rollout per seed, ten seeds (22-31), 35040 steps each — one full year of 15-min control. Every per-step row carries all 17 buildings' observations, the actions issued by RBCSmart to each charger and battery, and a per-agent reward computed live (rather than reconstructed after the fact). Across the ten seeds that is roughly 350k transitions, written to `runs/offline_iql_cql_initiative_15min/data/seed_<N>.parquet`. The collection run is the longest single stage in the pipeline; everything downstream reads parquet only.
+
+**Schema and provenance.** The simulation schema is `datasets/citylearn_three_phase_electrical_service_demo_15min_parquet/schema.json`; the column layout (observation names, action keys, per-building groupings, reward column) is documented in [`dataset_schema.md`](dataset_schema.md). Each seed parquet is stamped with a `schema_hash` field that pins the data to the exact schema it was generated from, so a downstream training run that loads a parquet with a mismatched hash fails fast. When the collect stage finishes a seed it appends an entry to `manifest.json` (per-seed row counts, mean and tail KPIs, schema hash, RBCSmart variant) and updates `kpi_summary.csv`; when all ten seeds complete, it writes a `.collect.done` sentinel that the orchestrator uses to skip the stage on resume.
+
+**Entity interface and agent groups.** CityLearn's *entity interface* returns per-building observations as a dict-of-arrays keyed by building, replacing the legacy flat-vector layout where every building's features were concatenated. This matters because the 17 production buildings do not share a common observation shape: they have different EV configurations, different battery setups, and different metering, which collapses into four unique `(obs_dim, action_dim)` cohorts.
+
+| Group key       | Buildings | obs_dim | action_dim | Notes                                  |
+|-----------------|----------:|--------:|-----------:|----------------------------------------|
+| `obs627_act1`   | 10        | 627     | 1          | 10-building cohort, headline cohort     |
+| `obs706_act2`   | 5         | 706     | 2          | 5-building cohort                       |
+| `obs749_act3`   | 1         | 749     | 3          | singleton                               |
+| `obs785_act3`   | 1         | 785     | 3          | singleton                               |
+
+Each group is trained as its own model. This matches CityLearn's per-building agent contract and avoids the alternative — zero-padding heterogeneous shapes into a single wide tensor — which would let the network learn around padded slots in ways that do not transfer at deployment.
+
+**Reward.** The per-agent reward column stores `CostServiceCommunityFeasiblePrecisionRewardV46` captured **live** during collection, not synthesised from KPIs after the rollout. This preserves the exact reward signal that any subsequent online comparison would see and removes a class of reconstruction bugs. The term-by-term breakdown, the design rationale, and the calibration history (the Building-5 iteration's NNLS fit plus the hybrid-floor rule that handles collinear KPI terms) are recorded in [`reward_design.md`](reward_design.md); both still apply unchanged for the multi-building data, with no per-building re-tuning.
+
+<!-- TBD: production -->
+![Dataset stats: per-seed row counts, total transitions, disk size, schema hash.](iql_cql_figures/02_dataset_stats.png)
+
+<!-- TBD: production -->
+![Action coverage for the 10-building `obs627_act1` cohort: the RBCSmart policy concentrates on a narrow action regime, motivating CQL's pessimism penalty on OOD actions.](iql_cql_figures/03_action_coverage_group_a.png)
+
+<!-- TBD: production -->
+![Reward distribution segmented by RBCSmart action regime (charge / idle / discharge × peak / off-peak).](iql_cql_figures/04_reward_by_regime.png)
+
+<!-- TBD: production -->
+![Temporal patterns: mean reward and action by hour-of-day, day-of-week.](iql_cql_figures/06_temporal_patterns.png)
+
+For the full exploratory analysis see [`feature_analysis/feature_analysis.md`](feature_analysis/feature_analysis.md); §8 of this note summarises the three insights from that EDA that matter for IQL and CQL training.
 
 ---
 
