@@ -238,3 +238,76 @@ def test_main_end_to_end_smoke(smoke_available, smoke_has_metrics, smoke_results
     assert sentinel.exists()
     payload = json.loads(sentinel.read_text())
     assert payload["n_figures"] == 11
+
+
+# -----------------------------------------------------------------------------
+# Task 8: error-handling regressions
+# -----------------------------------------------------------------------------
+
+
+def test_main_missing_benchmark_still_produces_nine_figures(smoke_available, smoke_has_metrics, tmp_path):
+    """When benchmark/results.json is missing, figs 10-11 are skipped but
+    the other 9 figures are still produced."""
+    import scripts.curate_initiative_figures as m
+    out = tmp_path / "curated"
+
+    # Stage a smoke copy without benchmark/
+    staged = tmp_path / "staged_run"
+    shutil.copytree(SMOKE_DIR, staged, ignore=shutil.ignore_patterns("benchmark"))
+
+    rc = m.main([
+        "--run-dir", str(staged),
+        "--output-dir", str(out),
+        "--showcase-group", "obs163_act1",
+        "--groups", "obs163_act1", "obs225_act2", "obs257_act3", "obs287_act3",
+    ])
+    assert rc == 0
+    pngs = sorted(p.name for p in out.glob("*.png"))
+    assert len(pngs) == 9, f"expected 9 PNGs without benchmark, got {len(pngs)}: {pngs}"
+    payload = json.loads((out / ".curation.done").read_text())
+    assert payload["n_figures"] == 9
+
+
+def test_main_missing_feature_analysis_still_produces_six_figures(
+    smoke_available, smoke_has_metrics, smoke_results_json, tmp_path
+):
+    """When feature_analysis/figures/ is missing, figs 02-06 are skipped
+    but figs 01 + 07-11 are still produced (=6 figures)."""
+    import scripts.curate_initiative_figures as m
+    out = tmp_path / "curated"
+
+    staged = tmp_path / "staged_run"
+    shutil.copytree(SMOKE_DIR, staged, ignore=shutil.ignore_patterns("feature_analysis"))
+
+    rc = m.main([
+        "--run-dir", str(staged),
+        "--output-dir", str(out),
+        "--showcase-group", "obs163_act1",
+        "--groups", "obs163_act1", "obs225_act2", "obs257_act3", "obs287_act3",
+    ])
+    assert rc == 0
+    pngs = sorted(p.name for p in out.glob("*.png"))
+    assert len(pngs) == 6, f"expected 6 PNGs without feature_analysis, got {len(pngs)}: {pngs}"
+    payload = json.loads((out / ".curation.done").read_text())
+    assert payload["n_figures"] == 6
+
+
+def test_main_empty_run_dir_produces_only_pipeline_diagram(tmp_path):
+    """With an empty run-dir, only fig 01 (pipeline diagram, no run-dir
+    dependency) is produced and the sentinel records n_figures==1."""
+    import scripts.curate_initiative_figures as m
+    empty = tmp_path / "empty_run"
+    empty.mkdir()
+    out = tmp_path / "curated"
+
+    rc = m.main([
+        "--run-dir", str(empty),
+        "--output-dir", str(out),
+        "--showcase-group", "obs627_act1",
+    ])
+    # Pipeline diagram has no run-dir dependency, so exactly 1 PNG produced.
+    assert rc == 0
+    pngs = sorted(p.name for p in out.glob("*.png"))
+    assert pngs == ["01_pipeline_overview.png"]
+    payload = json.loads((out / ".curation.done").read_text())
+    assert payload["n_figures"] == 1
