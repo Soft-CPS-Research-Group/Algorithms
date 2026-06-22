@@ -87,7 +87,76 @@ For the full exploratory analysis see [`feature_analysis/feature_analysis.md`](f
 
 ## 3. Algorithms (IQL + CQL)
 
-<!-- task 4 writes this section -->
+**IQL recap.** Implicit Q-Learning splits the offline value problem across three networks. A value function `V(s)` is trained with an asymmetric expectile loss at `τ=0.7`, which biases `V` toward the higher-return actions actually present in the data — without ever asking the network to score an action it has not seen. A twin Q is trained against `V(s')` as its bootstrap target, so the standard `max_a Q(s', a)` step (the classic source of OOD over-estimation in offline RL) never executes. The policy is then extracted by advantage-weighted regression with temperature `β=3.0` and an advantage clip of 100, upweighting transitions where the dataset action did better than `V`. For the full derivation see [`iql_reference.md`](iql_reference.md).
+
+**CQL recap.** Conservative Q-Learning keeps a standard actor-critic loop and adds a regulariser — `α · ( E_{s∼D, a∼OOD}[Q(s, a)] − E_{(s,a)∼D}[Q(s, a)] )` — that pushes Q down on OOD actions and up on dataset actions. The penalty weight `α=0.2` is the same value the Building-5 iteration settled on; small enough to avoid over-pessimism (which would collapse the policy onto a narrow band of high-conviction actions and undo CQL's purpose) but large enough to noticeably re-shape Q on the OOD side.
+
+| Parameter | IQL | CQL | Source |
+|-----------|----:|----:|--------|
+| Hidden layers | [256, 256] | [256, 256] | `--hidden-layers 256,256` |
+| Dropout | 0.1 | 0.1 | trainer default |
+| Activation | ReLU | ReLU | trainer default (hardcoded in `iql_networks.py`) |
+| Optimiser | Adam | Adam | trainer default (`torch.optim.Adam`) |
+| Learning rate | 3e-4 | 3e-4 | trainer default |
+| Batch size | 256 | 256 | trainer default |
+| γ (discount) | 0.99 | 0.99 | trainer default |
+| Target soft-update τ | 0.005 | 0.005 | trainer default |
+| Gradient clip | 1.0 | 1.0 | trainer default |
+| Expectile τ (V loss) | 0.7 | — | IQL only |
+| β (AWR temp) | 3.0 | — | IQL only |
+| Advantage clip | 100 | — | IQL only |
+| CQL α | — | 0.2 | `--cql-alpha 0.2` |
+| CQL random actions / state | — | 10 | trainer default (`cql_n_random_actions`) |
+| Gradient steps | 150,000 | 150,000 | `--gradient-steps 150000` |
+| Checkpoint every | 5,000 | 5,000 | `--checkpoint-every 5000` |
+
+The IQL config dataclass:
+
+```python
+@dataclasses.dataclass
+class IQLTrainingConfig:
+    # Architecture
+    hidden_layers: List[int] = dataclasses.field(default_factory=lambda: [256, 256])
+    dropout: float = 0.1
+    log_std_init: float = math.log(0.1)
+    # IQL hyperparameters
+    tau_expectile: float = 0.7
+    beta_advantage: float = 3.0
+    advantage_clip: float = 100.0
+    gamma: float = 0.99
+    tau_target: float = 0.005
+    # Optimisation
+    learning_rate: float = 3e-4
+    weight_decay: float = 1e-5
+    gradient_clip_norm: float = 1.0
+    batch_size: int = 256
+    gradient_steps: int = 150_000
+    eval_every_n_steps: int = 2_500
+    checkpoint_every_n_steps: int = 5_000
+    val_fraction: float = 0.1
+    device: str = "cpu"
+# from algorithms/offline_rl/iql_trainer.py:81-103
+```
+
+CQL extends the IQL config, inheriting all fields and adding the conservative penalty knobs:
+
+```python
+@dataclasses.dataclass
+class CQLTrainingConfig(IQLTrainingConfig):
+    """Inherits all IQL fields; adds conservative Q-learning params."""
+    cql_alpha: float = 0.2
+    """Weight of the conservative Q penalty."""
+    cql_n_random_actions: int = 10
+    """Random actions sampled per state for the logsumexp approximation."""
+    cql_min_q_weight: float = 0.0
+    """Optional action-gap target; 0.0 disables (standard CQL)."""
+# from algorithms/offline_rl/cql_entity_trainer.py:66-82
+```
+
+**No online fine-tuning.** This initiative stays purely offline by design: the constraint set forbids live env interaction during training, and any online refinement is a separate downstream stage outside the scope of this note.
+
+<!-- TBD: production -->
+![CQL penalty trace over training, all four agent groups: the penalty rises as Q estimates drift OOD and is bounded by `α=0.2`.](iql_cql_figures/09_training_cql_penalty.png)
 
 ---
 
