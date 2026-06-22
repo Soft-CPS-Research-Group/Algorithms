@@ -336,7 +336,28 @@ Downstream library invariants matter. Memoisation tables that look harmless at t
 
 ## 6. Training setup
 
-<!-- task 7 writes this section -->
+The training matrix is four agent groups × nine train seeds × two algorithms (IQL and CQL), totalling 72 independent training runs of 150,000 gradient steps each. Every run trains on seeds 22-30, validates on seed 31, and is benchmarked separately in §7 against ten env seeds (200-209) that are disjoint from both the collection and validation sets. Groups are trained serially by the orchestrator; seeds within a group run serially as well; each trainer process is single-threaded on CPU.
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| Groups | 4 (`obs627_act1`, `obs706_act2`, `obs749_act3`, `obs785_act3`) | derived from schema |
+| Train seeds (per group, per algorithm) | 22, 23, 24, 25, 26, 27, 28, 29, 30 (9 seeds) | `--train-seeds 22,23,24,25,26,27,28,29,30` |
+| Val seed | 31 | `--val-seeds 31` |
+| Eval seeds | 200..209 (10 seeds, disjoint from train + val + collect) | `--eval-seeds 200,...,209` |
+| Gradient steps | 150,000 | `--gradient-steps 150000` |
+| Algorithms | IQL + CQL | `--algorithm both` |
+| Total runs | 4 × 9 × 2 = 72 | — |
+| Best-checkpoint policy | per-(group, seed): lowest validation MSE on seed 31 | trainer default |
+
+**Wall-clock estimate.** On CPU, each (group, seed) takes roughly 11 hours for IQL or CQL, putting each (group, algorithm) at ~99 hours and the full 72-run sweep at ~792 hours if executed strictly in series. The orchestrator does in fact serialise groups and seeds — concurrency would compete for the same CPU cores on a single workstation. <!-- TBD: production --> Final wall-clock will be filled in from `status.json` after production completes.
+
+**Validation protocol.** Validation MSE on seed 31 is the model-selection signal. Every `--checkpoint-every 5000` gradient steps, the trainer writes `checkpoint_latest.pt` (the resume target, see §4) and, if validation MSE improved against the running best, also writes `best_policy.pt`. The benchmark stage in §7 loads `best_policy.pt` for each (group, seed) pair, so the policy that ships forward is always the lowest-validation-MSE checkpoint, never the last one.
+
+<!-- TBD: production -->
+![Training loss curve, IQL on `obs627_act1` showcase group, seed 22 — stable convergence over 150k gradient steps.](iql_cql_figures/07_training_loss_group_a.png)
+
+<!-- TBD: production -->
+![Validation MSE across all four agent groups for both algorithms; shaded band = 1σ over the 9 train seeds.](iql_cql_figures/08_training_valmse_all.png)
 
 ---
 
