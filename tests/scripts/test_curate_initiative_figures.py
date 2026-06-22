@@ -91,3 +91,17 @@ def test_copy_feature_analysis_figures_missing_dir_returns_empty(tmp_path, outpu
         output_dir=output_dir,
     )
     assert produced == []
+
+
+# -----------------------------------------------------------------------------
+# Task 3: _render_pipeline_diagram
+# -----------------------------------------------------------------------------
+
+
+def test_render_pipeline_diagram_produces_png(output_dir):
+    import scripts.curate_initiative_figures as m
+    produced = m._render_pipeline_diagram(output_dir=output_dir)
+    assert produced is not None
+    assert produced.name == "01_pipeline_overview.png"
+    assert produced.exists()
+    assert produced.stat().st_size > 5_000

@@ -78,6 +78,44 @@ def _copy_feature_analysis_figures(
     return produced
 
 
+def _render_pipeline_diagram(*, output_dir: Path) -> Path | None:
+    """Render the pipeline architecture diagram.
+
+    Imports ``fig_pipeline`` from ``scripts.generate_architecture_figures``
+    (renders to ``fig_arch_pipeline.png`` in a tmp dir) and copies the result
+    to ``01_pipeline_overview.png`` in ``output_dir``.
+
+    Returns the destination path, or ``None`` if the import or render fails.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dst = output_dir / "01_pipeline_overview.png"
+
+    try:
+        from scripts.generate_architecture_figures import fig_pipeline
+    except ImportError as exc:
+        logger.warning(
+            "[curate] could not import fig_pipeline from generate_architecture_figures: %s",
+            exc,
+        )
+        return None
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        try:
+            produced = fig_pipeline(tmp_path)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[curate] fig_pipeline raised %s -- skipping fig 01", exc)
+            return None
+        if produced is None or not Path(produced).exists():
+            logger.warning("[curate] fig_pipeline produced no PNG -- skipping fig 01")
+            return None
+        shutil.copy2(produced, dst)
+
+    logger.info("[curate] rendered %s", dst.name)
+    return dst
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__,
