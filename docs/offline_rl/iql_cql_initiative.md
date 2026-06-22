@@ -407,16 +407,81 @@ Every `(group, algorithm, train seed)` triple is evaluated on env seeds 200..209
 
 ## 9. Reproducing
 
-<!-- task 10 writes this section -->
+One command runs the full pipeline; the same command resumes after a crash.
+
+**Launch (full pipeline).** `--episode-steps 35040` is required for the 15-min full-year horizon; without it the collector defaults to one day (96 steps for the 15-min schema).
+
+```bash
+nohup .venv/bin/python -m scripts.run_entity_pipeline \
+    --episode-steps 35040 \
+    > runs/offline_iql_cql_initiative_15min/pipeline.log 2>&1 &
+echo $! > runs/offline_iql_cql_initiative_15min/pipeline.pid
+```
+
+**Monitor.** Read-only viewer; see §4 for the table format.
+
+```bash
+.venv/bin/python -m scripts.show_pipeline_status \
+    runs/offline_iql_cql_initiative_15min/
+```
+
+**Resume after kill or crash.** Identical to the launch command — per-stage sentinels (`.{stage}.done`) and per-checkpoint `checkpoint_latest.pt` files (see §4) do all the work; the orchestrator skips finished stages and the trainer picks up from the last checkpoint with RNG state restored.
+
+```bash
+nohup .venv/bin/python -m scripts.run_entity_pipeline \
+    --episode-steps 35040 \
+    > runs/offline_iql_cql_initiative_15min/pipeline.log 2>&1 &
+```
+
+**Expected output tree.** After a successful end-to-end run:
+
+```text
+runs/offline_iql_cql_initiative_15min/
+├── data/                              # seed_22.parquet … seed_31.parquet
+├── models-iql/<group>/seed_<N>/       # best_policy.pt, checkpoint_latest.pt, metrics.jsonl
+├── models-cql/<group>/seed_<N>/       # same shape
+├── benchmark/results.json
+├── feature_analysis/                  # summary.md + figures/
+├── pipeline.log
+├── status.json
+├── .collect.done
+├── .train-iql.done
+├── .train-cql.done
+├── .benchmark.done
+└── .feature-analysis.done
+```
 
 ---
 
 ## 10. Limitations
 
-<!-- task 10 writes this section -->
+- **Single schema (15-min).** Results do not generalise to the 15-sec or hourly schemas without retraining. Schema choice constrains EV-charging dynamics resolution; 15-min is adequate for the control loop but not finer-grained behaviours.
+- **No online fine-tuning.** The initiative is pure offline by mandate. A safety-critical real-world deployment would benefit from a careful online refinement phase against the live dispatcher; that is a separate downstream stage and out of scope here.
+- **CityLearn cache patch is a workaround, not an upstream fix.** We carry [`utils/citylearn_patches.py`](../../utils/citylearn_patches.py) until upstream addresses the unbounded `_action_feedback_series_cache` documented in §5. The patch is idempotent and well-tested, but it is technical debt that should retire when CityLearn cuts a release that bounds the cache natively.
+- **CPU-only training.** GPU acceleration is straightforward (`--device cuda`) but is not the default, and the wall-clock estimates in §6 assume CPU. A single-GPU run would compress the 792-hour serial estimate by roughly an order of magnitude, but introduces a separate set of determinism considerations for resume.
+- **Stale Building-5 docs.** [`docs/offline_rl/README.md`](README.md) and [`thesis_notes.md`](thesis_notes.md) predate this initiative and still frame the work as Building-5-only. Rewriting them is out of scope; they are left as historical record. This note is the up-to-date reference and supersedes them where the two disagree.
+- **No hyperparameter sweep.** Hyperparameters are carried over from the Building-5 iteration (see §3). A future iteration on the larger multi-building data should sweep `cql_alpha`, `tau_expectile`, and `beta_advantage` — the larger dataset means more statistical power per sweep point and may reveal regimes where the Building-5 defaults are suboptimal.
 
 ---
 
 ## 11. References
 
-<!-- task 10 writes this section -->
+**Internal docs.**
+
+- [`iql_cql_initiative_plan.md`](iql_cql_initiative_plan.md) — parent plan; phase definitions.
+- [`phase10_curation_design.md`](phase10_curation_design.md) — figure curation spec.
+- [`phase11_consolidated_doc_design.md`](phase11_consolidated_doc_design.md) — this doc's design spec.
+- [`dataset_schema.md`](dataset_schema.md) — column-level dataset contract.
+- [`kpi_reference.md`](kpi_reference.md) — KPI definitions and reward-term mapping.
+- [`reward_design.md`](reward_design.md) — reward function structure and calibration history.
+- [`iql_reference.md`](iql_reference.md) — IQL derivation and ablations.
+- [`feature_analysis/feature_analysis.md`](feature_analysis/feature_analysis.md) — full EDA.
+- [`thesis_notes.md`](thesis_notes.md) — Building-5 iteration narrative.
+
+**External.**
+
+- Kostrikov, I., Nair, A., & Levine, S. (2021). "Offline Reinforcement Learning with Implicit Q-Learning." ICLR 2022.
+- Kumar, A., Zhou, A., Tucker, G., & Levine, S. (2020). "Conservative Q-Learning for Offline Reinforcement Learning." NeurIPS 2020.
+- Vázquez-Canteli, J. R., Dey, S., Henze, G., & Nagy, Z. (2020). "CityLearn: standardizing research in multi-agent reinforcement learning for demand response and urban energy management."
+
+**Thesis cross-reference.** The academic treatment lives in the thesis chapters at `/Users/guilherme.desousa/MEIA/Thesis/Project/meia-thesis-1211073/thesis/` (Ch4 Methodology, Ch5 Experiments, Ch6 Results).
