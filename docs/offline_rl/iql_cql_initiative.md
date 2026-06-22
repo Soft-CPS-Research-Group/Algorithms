@@ -363,7 +363,30 @@ The training matrix is four agent groups × nine train seeds × two algorithms (
 
 ## 7. Benchmark results
 
-<!-- task 8 writes this section -->
+Every `(group, algorithm, train seed)` triple is evaluated on env seeds 200..209 — ten seeds disjoint from the collection set (22-31) and the validation seed (31). KPIs are CityLearn's normalised values where 1.0 is the no-control baseline and lower is better. The headline KPIs are `cost_total`, `carbon_emissions_total`, `electricity_consumption_peak`, and `ramping`; `unserved_energy` is tracked separately as a hard constraint that any acceptable policy must satisfy.
+
+<!-- TBD: production -->
+
+| KPI                              | RBCSmart      | IQL           | CQL           | Δ (best − RBC) |
+|----------------------------------|--------------:|--------------:|--------------:|---------------:|
+| `cost_total` (district)          | TBD ± TBD     | TBD ± TBD     | TBD ± TBD     | TBD            |
+| `carbon_emissions_total`         | TBD ± TBD     | TBD ± TBD     | TBD ± TBD     | TBD            |
+| `electricity_consumption_peak`   | TBD ± TBD     | TBD ± TBD     | TBD ± TBD     | TBD            |
+| `ramping`                        | TBD ± TBD     | TBD ± TBD     | TBD ± TBD     | TBD            |
+| `unserved_energy`                | TBD           | TBD           | TBD           | TBD            |
+
+**Per-group breakdown.** The same KPIs are aggregated per agent group (`obs627_act1`, `obs706_act2`, `obs749_act3`, `obs785_act3`) to expose whether the headline district numbers are dominated by the 10-building `obs627_act1` cohort or whether the smaller groups move the needle. The source of truth is `runs/offline_iql_cql_initiative_15min/benchmark/results.json`, which the benchmark stage writes once all (group, seed) policies finish.
+
+**Statistical test.** For each (group, KPI) pair we report a paired-Wilcoxon signed-rank p-value comparing IQL and CQL on the same ten eval seeds (paired by seed index). With n=10 the test is interpretable but underpowered for small effect sizes; we read p < 0.05 as suggestive rather than conclusive when the absolute KPI delta is below ~1%. <!-- TBD: production --> The four group-level p-values are tabulated in §7's per-group breakdown once production completes.
+
+<!-- TBD: production -->
+> _On the headline cost KPI, [IQL/CQL] reduces district cost by **TBD%** relative to RBCSmart (paired-Wilcoxon p = **TBD**). Carbon follows the same direction. Peak demand and ramping show **TBD** — expected given the reward weights (peak:cost ≈ 2:1 in standardised space). Unserved energy stays at zero across all 50 (= 5 train × 10 eval) rollouts, matching the Building-5 iteration's safety result._
+
+<!-- TBD: production -->
+![Benchmark KPI bar chart — cost, carbon, peak, ramping for RBCSmart vs IQL vs CQL at district level. Error bars = ±1σ over the 10 eval seeds.](iql_cql_figures/10_benchmark_kpi_bars.png)
+
+<!-- TBD: production -->
+![IQL vs CQL per-eval-seed cost scatter (district). y = x reference line. Points below the line: CQL beats IQL on that seed.](iql_cql_figures/11_iql_vs_cql_scatter.png)
 
 ---
 
