@@ -134,3 +134,37 @@ def test_render_training_curves_produces_three_pngs(smoke_available, smoke_has_m
     assert "09_training_cql_penalty.png" in names
     for p in produced:
         assert p.stat().st_size > 5_000
+
+
+# -----------------------------------------------------------------------------
+# Task 5: _render_benchmark_kpi_bars
+# -----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def smoke_results_json():
+    p = SMOKE_DIR / "benchmark" / "results.json"
+    if not p.exists():
+        pytest.skip(f"smoke benchmark results.json not present at {p}")
+    return p
+
+
+def test_render_benchmark_kpi_bars_produces_png(smoke_results_json, output_dir):
+    import scripts.curate_initiative_figures as m
+    produced = m._render_benchmark_kpi_bars(
+        results_json=smoke_results_json,
+        output_dir=output_dir,
+    )
+    assert produced is not None
+    assert produced.name == "10_benchmark_kpi_bars.png"
+    assert produced.exists()
+    assert produced.stat().st_size > 5_000
+
+
+def test_render_benchmark_kpi_bars_missing_file_returns_none(tmp_path, output_dir):
+    import scripts.curate_initiative_figures as m
+    produced = m._render_benchmark_kpi_bars(
+        results_json=tmp_path / "nope.json",
+        output_dir=output_dir,
+    )
+    assert produced is None

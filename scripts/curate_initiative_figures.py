@@ -22,10 +22,15 @@ Writes a ``.curation.done`` sentinel on success.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 from pathlib import Path
 from typing import List
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402  (must follow matplotlib.use)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "docs" / "offline_rl" / "iql_cql_figures"
@@ -34,7 +39,7 @@ DEFAULT_GROUPS = ["obs627_act1", "obs706_act2", "obs749_act3", "obs785_act3"]
 
 logger = logging.getLogger("curate_initiative_figures")
 
-# (source filename template, destination filename) — `{group}` is replaced with showcase group.
+# (source filename template, destination filename) -- `{group}` is replaced with showcase group.
 FEATURE_ANALYSIS_COPY_MAP = [
     ("01_dataset_stats_table.png",     "02_dataset_stats.png"),
     ("03_action_coverage_{group}.png", "03_action_coverage_group_a.png"),
@@ -42,6 +47,17 @@ FEATURE_ANALYSIS_COPY_MAP = [
     ("05_correlations_{group}.png",    "05_correlations_group_a.png"),
     ("07_temporal_patterns.png",       "06_temporal_patterns.png"),
 ]
+
+# Benchmark fig 10 -- KPI bar layout.
+BENCHMARK_KPIS = [
+    # (key, panel title)
+    ("cost_total",             "Total cost"),
+    ("carbon_emissions_total", "Carbon emissions"),
+    ("daily_peak_average",     "Daily peak avg"),
+    ("ramping_average",        "Ramping avg"),
+]
+BENCHMARK_ALGORITHMS = ["RBCSmart", "IQL", "CQL"]
+ALGO_COLORS = {"RBCSmart": "#9E9E9E", "IQL": "#2196F3", "CQL": "#F44336"}
 
 
 def _copy_feature_analysis_figures(
@@ -199,6 +215,70 @@ def _render_training_curves(
             logger.info("[curate] rendered %s", dst.name)
 
     return produced
+
+
+def _render_benchmark_kpi_bars(*, results_json: Path, output_dir: Path) -> Path | None:
+    """Render 2x2 bar chart of KPIs comparing RBCSmart vs IQL vs CQL.
+
+    Reads ``results_json`` with the canonical benchmark schema (each algo has an
+    ``aggregate`` map of ``{kpi: {mean, std, n}}``). Returns the path to the
+    produced PNG, or None on missing input or no KPIs at all.
+    """
+    if not results_json.exists():
+        logger.warning(
+            "[curate] benchmark results.json not found at %s -- skipping fig 10",
+            results_json,
+        )
+        return None
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with results_json.open() as f:
+        data = json.load(f)
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8))
+    fig.suptitle("Benchmark KPIs -- RBCSmart vs IQL vs CQL", fontsize=13)
+
+    any_drawn = False
+    for ax, (key, title) in zip(axes.flat, BENCHMARK_KPIS):
+        means: List[float] = []
+        stds: List[float] = []
+        labels: List[str] = []
+        colors: List[str] = []
+        for algo in BENCHMARK_ALGORITHMS:
+            agg = data.get(algo, {}).get("aggregate", {}).get(key)
+            if agg is None:
+                continue
+            means.append(float(agg["mean"]))
+            stds.append(float(agg.get("std", 0.0) or 0.0))
+            labels.append(algo)
+            colors.append(ALGO_COLORS.get(algo, "#666666"))
+        if not means:
+            ax.set_visible(False)
+            continue
+        any_drawn = True
+        x = list(range(len(means)))
+        ax.bar(x, means, yerr=stds, color=colors, capsize=4,
+               edgecolor="black", linewidth=0.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.set_title(title, fontsize=10)
+        ax.grid(axis="y", alpha=0.3)
+
+    if not any_drawn:
+        plt.close(fig)
+        logger.warning(
+            "[curate] no benchmark KPIs found in %s -- skipping fig 10",
+            results_json,
+        )
+        return None
+
+    fig.tight_layout()
+    dst = output_dir / "10_benchmark_kpi_bars.png"
+    fig.savefig(dst, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("[curate] rendered %s", dst.name)
+    return dst
 
 
 def _build_parser() -> argparse.ArgumentParser:
