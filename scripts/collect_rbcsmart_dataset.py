@@ -59,6 +59,13 @@ from loguru import logger as _loguru_logger  # noqa: E402
 _loguru_logger.remove()
 _loguru_logger.add(sys.stderr, level="WARNING")
 
+# IMPORTANT: apply CityLearn runtime patches BEFORE constructing any CityLearnEnv.
+# Without this, the 35040-step 15-min full-year collect OOMs at ~step 16000 due
+# to unbounded `_action_feedback_series_cache` growth (Bug 7).
+from utils.citylearn_patches import apply_citylearn_patches  # noqa: E402
+
+apply_citylearn_patches()
+
 from citylearn.citylearn import CityLearnEnv  # noqa: E402
 from reward_function import CostServiceCommunityFeasiblePrecisionRewardV46  # noqa: E402
 from utils.entity_adapter import EntityContractAdapter  # noqa: E402
