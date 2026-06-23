@@ -48,6 +48,9 @@ _registry_trace("after building agent import")
 _registry_trace("before cc level1 import")
 from algorithms.agents.cc_level1_agent import CCLevel1Agent
 _registry_trace("after cc level1 import")
+_registry_trace("before cc level2 import")
+from algorithms.agents.cc_level2_agent import CCLevel2Agent
+_registry_trace("after cc level2 import")
 _registry_trace("before community coordinator import")
 from algorithms.agents.community_coordinator_agent import CommunityCoordinatorAgent
 _registry_trace("after community coordinator import")
@@ -76,6 +79,7 @@ _registry_trace("after pipeline import")
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "BuildingAgent": BuildingAgent,
     "CCLevel1": CCLevel1Agent,
+    "CCLevel2": CCLevel2Agent,
     "CommunityCoordinator": CommunityCoordinatorAgent,
     "HAPPO": HAPPO,
     "IPPO": IPPO,

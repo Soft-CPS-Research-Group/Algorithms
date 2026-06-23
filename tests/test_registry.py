@@ -62,9 +62,10 @@ def test_hierarchical_raw_observation_agents_are_registered():
         assert ALGORITHM_REGISTRY[name]._use_raw_observations is True
 
 
-def test_cc_level1_uses_encoded_observations():
-    assert is_algorithm_supported("CCLevel1")
-    assert ALGORITHM_REGISTRY["CCLevel1"]._use_raw_observations is False
+def test_hierarchical_manager_agents_use_encoded_observations():
+    for name in ("CCLevel1", "CCLevel2"):
+        assert is_algorithm_supported(name)
+        assert ALGORITHM_REGISTRY[name]._use_raw_observations is False
 
 
 def test_build_execution_unit_supports_cc_level1_signal_aware_rbc_pipeline():
@@ -83,6 +84,26 @@ def test_build_execution_unit_supports_cc_level1_signal_aware_rbc_pipeline():
 
     assert isinstance(unit, Pipeline)
     assert unit.stages[0].__class__.__name__ == "CCLevel1Agent"
+    assert isinstance(unit.stages[1], Ensemble)
+    assert len(unit.stages[1].agents) == 2
+
+
+def test_build_execution_unit_supports_cc_level2_signal_aware_rbc_pipeline():
+    config = {
+        "pipeline": [
+            {
+                "algorithm": "CCLevel2",
+                "count": 1,
+                "hyperparameters": {"num_buildings": 2},
+            },
+            {"algorithm": "SignalAwareRBC", "count": 2},
+        ],
+    }
+
+    unit = build_execution_unit(config)
+
+    assert isinstance(unit, Pipeline)
+    assert unit.stages[0].__class__.__name__ == "CCLevel2Agent"
     assert isinstance(unit.stages[1], Ensemble)
     assert len(unit.stages[1].agents) == 2
 

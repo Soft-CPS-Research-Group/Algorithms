@@ -90,12 +90,13 @@ pipeline:
   - algorithm: "CCLevel1"
     count: 1
     hyperparameters:
-      # 16 community features from cc_level1 encoding profile:
+      # 17 community features from cc_level1 encoding profile:
       # [0-6]  temporal cyclic (time_of_day sin/cos, day_type sin/cos, is_weekend, month sin/cos)
       # [7-10] pricing (current + 3 forecasts)
       # [11]   carbon_intensity
       # [12-15] community power (net, import, export, pv) kW
-      c_dim: 16
+      # [16]   community_building_headroom_kw (grid capacity margin)
+      c_dim: 17
       hidden_dims: [128, 128]
 
       # Price multiplier action range.
@@ -124,7 +125,7 @@ pipeline:
 
       # Auxiliary reward weights (supervisor Phase 1 design)
       w_factor: 0.3
-      w_smoothness: 0.02
+      w_smoothness: 0.1
       max_grad_norm: 0.5
       target_kl: 0.1
 
@@ -139,17 +140,35 @@ pipeline:
       bc_price_p80: 0.21
       # Multi-signal teacher weights (mirror CCRewardLevel1).
       bc_w_cost: 1.0               # relative price signal weight
-      bc_w_peak: 0.3               # peak import signal weight
-      bc_w_export: 0.1             # excess export signal weight
-      # CCRewardLevel1 reference values — features are raw kW, converted to kWh
-      # using bc_dt_hours (15-min steps → 0.25 h).
-      bc_dt_hours: 0.25
-      bc_target_import: 4.14       # kWh p75 community import (from CCRewardLevel1)
-      bc_reference_peak: 2.72      # kWh² p90 excess² (from CCRewardLevel1)
-      bc_reference_export: 7.52    # kWh p90 community export (from CCRewardLevel1)
+      bc_w_peak: 0.6               # peak import signal weight (was 0.3)
+      bc_w_ramp: 0.4               # ramping signal weight (NEW)
+      bc_w_export: 0.05            # excess export signal weight (was 0.1)
+      bc_w_violation: 2.0          # electrical violation signal weight (NEW)
+      # Community oversight — the CC watches the shared three-phase service limit
+      # and raises the multiplier as headroom shrinks, so workers back off BEFORE
+      # a violation. This is the CC's job, not the per-building Smart RBC's.
+      bc_w_headroom: 1.0           # community headroom-stress signal weight (NEW)
+      bc_reference_headroom: 2.0   # kW margin below which the CC starts conserving
+      bc_reference_ramping: 1.878  # p90 step-to-step import change (kWh)
+      # Reference values for the BC teacher.
+      # By default these are auto-calibrated from episode-0 data (p75/p90 of the
+      # observed import/export distribution) so the teacher adapts to any community.
+      # Uncomment and set explicit values only to override auto-calibration.
+      bc_dt_hours: 0.25            # timestep size for kW → kWh conversion
+      # bc_target_import: 4.14    # kWh p75 — override auto p75 of episode-0 import
+      # bc_reference_peak: 2.72   # kWh² p90 — override auto p90 of excess²
+      # bc_reference_export: 7.52 # kWh p90 — override auto p90 of episode-0 export
+      # bc_reference_price: 0.15  # €/kWh p50 — override auto p50 of episode-0 price
       bc_mult_scale: 1.0           # scale raw signal before ±0.8 clip
 
   - algorithm: SignalAwareRBC
     count: 17
+    hyperparameters:
+      allow_v2g: true
+      ev_v2g_discharge_rate: 0.18
+      ev_v2g_reserve_soc: 0.0
+      ev_v2g_min_departure_hours: 2.0
+      ev_v2g_service_margin_soc: 0.02
+      ev_v2g_buffer_soc: 0.12
 
 execution: null

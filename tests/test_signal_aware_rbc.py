@@ -62,6 +62,14 @@ def test_signal_aware_rbc_scales_price_context():
     assert cheap["cheap"] is True
 
 
+def test_signal_aware_rbc_neutral_multiplier_matches_base_policy():
+    # context=1.0 is the neutral multiplier: price appears unchanged.
+    agent = _agent()
+    observations = [np.asarray([0.5, 0.10, 0.10, 0.10, 0.10, 8.0], dtype=np.float32)]
+
+    assert agent.predict(observations, context=1.0) == agent.predict(observations, context=None)
+
+
 def test_signal_aware_rbc_neutral_context_falls_back_to_smart_policy():
     agent = _agent()
     observations = [np.asarray([0.5, 0.10, 0.08, 0.10, 0.12, 0.0], dtype=np.float32)]

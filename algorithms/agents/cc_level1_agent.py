@@ -79,6 +79,7 @@ _CC_LEVEL1_FEATURES = (
     "district__community_import_power_kw",
     "district__community_export_power_kw",
     "district__community_pv_power_kw",
+    "district__community_building_headroom_kw",  # [16] grid headroom — helps avoid violations
 )
 _PRICE_FEATURE = "district__electricity_pricing"
 
@@ -96,6 +97,10 @@ class RunningMeanStd:
         delta = x - self._mean
         self._mean += delta / self._n
         self._M2 += delta * (x - self._mean)
+
+    @property
+    def mean(self) -> float:
+        return self._mean
 
     @property
     def std(self) -> float:
@@ -134,11 +139,14 @@ class CommunityMarketMakerNet(nn.Module):
         h     = self.encoder(community)
         mean  = self.mean_head(h).squeeze(-1)
         value = self.critic_head(h).squeeze(-1)
-        std   = torch.exp(self.log_std).expand_as(mean)
-        dist  = torch.distributions.Normal(mean, std)
+        # Clamp log_std to [-3, 1] to prevent runaway variance.
+        std  = torch.exp(self.log_std.clamp(-3.0, 1.0)).expand_as(mean)
+        dist = torch.distributions.Normal(mean, std)
         if action is None:
-            action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), value
+            action = dist.sample()  # pre-tanh raw value; stored in rollout buffer
+        # Tanh correction: log π(a|s) = log N(raw|μ,σ) − log(1 − tanh²(raw))
+        log_prob = dist.log_prob(action) - torch.log(1.0 - torch.tanh(action) ** 2 + 1e-6)
+        return action, log_prob, dist.entropy(), value
 
 
 class RolloutBuffer:
@@ -217,8 +225,8 @@ class CCLevel1Agent(BaseAgent):
         self._num_epochs      = int(hyper.get("num_epochs",      10))
         self._mini_batch_size = int(hyper.get("mini_batch_size", 64))
         self._clip_coef       = float(hyper.get("clip_coef",     0.2))
-        self._vf_coef         = float(hyper.get("vf_coef",       0.5))
-        self._ent_coef        = float(hyper.get("ent_coef",      0.01))
+        self._vf_coef         = float(hyper.get("vf_coef",       1.0))
+        self._ent_coef        = float(hyper.get("ent_coef",      0.05))
         self._max_grad_norm   = float(hyper.get("max_grad_norm", 0.5))
         self._target_kl       = hyper.get("target_kl",           0.1)
 
@@ -237,9 +245,11 @@ class CCLevel1Agent(BaseAgent):
         self.policy = CommunityMarketMakerNet(self._c_dim, hidden_dims)
         self.ppo_optim = Adam(self.policy.parameters(), lr=float(hyper.get("lr", 1e-4)))
 
-        # Reward scaling (no obs normalisation — encoding layer handles obs)
-        self._ret_rms = RunningMeanStd()
-        self._return_running = 0.0
+        # Reward normalisation: track mean + std of RAW step rewards (not returns).
+        # Centering around zero ensures the value function sees both positive and
+        # negative targets instead of a constant negative signal, preventing it
+        # from collapsing to a trivial solution (v_loss → 0).
+        self._reward_rms = RunningMeanStd()
 
         # Rollout buffer
         self.rollout_buffer = RolloutBuffer(int(hyper.get("num_steps", 96)), self._c_dim)
@@ -266,27 +276,45 @@ class CCLevel1Agent(BaseAgent):
         self._bc_lr            = float(hyper.get("bc_lr",           1e-3))
         self._bc_pretrain_done: bool = not self._bc_enabled  # skip if disabled
         self._bc_contexts: List[np.ndarray] = []
+        # Sample buffers for auto-calibration of reference values.
+        # Populated during BC collection; cleared after pretraining.
+        self._bc_import_samples: List[float] = []
+        self._bc_export_samples: List[float] = []
+        self._bc_price_samples:  List[float] = []
         # Fixed thresholds (kept for backward-compat / logging; no longer drive teacher).
         self._bc_price_p20 = float(hyper.get("bc_price_p20", 0.10))
         self._bc_price_p80 = float(hyper.get("bc_price_p80", 0.21))
         # Multi-signal teacher parameters — mirror CCRewardLevel1 term weights.
         self._bc_w_cost          = float(hyper.get("bc_w_cost",          1.0))
-        self._bc_w_peak          = float(hyper.get("bc_w_peak",          0.3))
-        self._bc_w_export        = float(hyper.get("bc_w_export",        0.1))
+        self._bc_w_peak          = float(hyper.get("bc_w_peak",          0.6))
+        self._bc_w_export        = float(hyper.get("bc_w_export",        0.05))
+        self._bc_w_ramp          = float(hyper.get("bc_w_ramp",          0.4))
+        self._bc_w_violation     = float(hyper.get("bc_w_violation",     2.0))
+        # Community oversight: proactively raise the multiplier as the shared
+        # electrical-service headroom shrinks, so workers conserve BEFORE the
+        # community trips its three-phase limit. This is the CC analogue of
+        # RBCCommunityPolicy's community-stress backoff — the per-building Smart
+        # RBC stays selfish, the CC watches the community as a whole.
+        self._bc_w_headroom      = float(hyper.get("bc_w_headroom",      1.0))
+        # kW margin below which the CC starts pushing prices up (mirrors the
+        # RBC's low_headroom_threshold_kw). Stress ramps 0→1 as headroom falls
+        # from this threshold to 0, and exceeds 1 once headroom goes negative.
+        self._bc_reference_headroom = float(hyper.get("bc_reference_headroom", 2.0))
         # Reference values for the BC teacher (peak/export thresholds).
-        # Defaults match CCRewardLevel1 (15-min dataset, 17 buildings).
-        # Auto-calibrated from collected data in _run_bc_pretraining() if left at default.
-        self._bc_dt_hours         = float(hyper.get("bc_dt_hours",        0.25))
-        self._bc_target_import    = hyper.get("bc_target_import",    None)  # kWh p75, auto if None
-        self._bc_reference_peak   = hyper.get("bc_reference_peak",   None)  # kWh² p90, auto if None
-        self._bc_reference_export = hyper.get("bc_reference_export", None)  # kWh p90, auto if None
-        # Fallback values used by teacher during collection (before auto-calibration fires).
-        self._bc_target_import_fallback    = float(hyper.get("bc_target_import",    4.14))
-        self._bc_reference_peak_fallback   = float(hyper.get("bc_reference_peak",   2.72))
-        self._bc_reference_export_fallback = float(hyper.get("bc_reference_export", 7.52))
+        # None = auto-calibrate from episode-0 data (p75/p90 of observed distribution).
+        # Set explicitly in config only to force fixed community-specific values.
+        self._bc_dt_hours            = float(hyper.get("bc_dt_hours", 0.25))
+        self._bc_target_import       = hyper.get("bc_target_import",    None)  # kWh p75, auto if None
+        self._bc_reference_peak      = hyper.get("bc_reference_peak",   None)  # kWh² p90, auto if None
+        self._bc_reference_export    = hyper.get("bc_reference_export", None)  # kWh p90, auto if None
+        self._bc_reference_ramping   = float(hyper.get("bc_reference_ramping", 1.878))  # p90 step-to-step Δimport
+        self._bc_reference_price     = hyper.get("bc_reference_price",  None)  # €/kWh p50, auto if None
         # Scaling factor applied to the combined raw signal before clipping to ±0.8.
-        # With properly normalised signals (typical raw ≈ 0–1) a scale of 1.0 works.
         self._bc_mult_scale      = float(hyper.get("bc_mult_scale",      1.0))
+        # State for ramp/violation tracking during BC collection.
+        self._bc_prev_import_kwh: float = 0.0
+        self._bc_ramp_samples: List[float] = []
+        self._bc_violation_samples: List[float] = []
 
         # Diagnostics
         self._episode_count = 0
@@ -321,9 +349,27 @@ class CCLevel1Agent(BaseAgent):
                 # BC collection phase: store context, act with teacher.
                 ctx = self._build_context(observations)
                 self._bc_contexts.append(ctx.copy())
-                # Compute teacher multiplier using full context (3-term logic).
+                # Accumulate import/export samples for auto-calibration of reference values.
+                _idx = _CC_LEVEL1_FEATURES.index
+                imp_kwh = float(ctx[_idx("district__community_import_power_kw")]) * self._bc_dt_hours
+                self._bc_import_samples.append(imp_kwh)
+                self._bc_export_samples.append(
+                    float(ctx[_idx("district__community_export_power_kw")]) * self._bc_dt_hours
+                )
+                self._bc_price_samples.append(
+                    float(ctx[_idx("district__electricity_pricing")])
+                )
+                # Ramp: step-to-step change in community import.
+                ramp_kwh = abs(imp_kwh - self._bc_prev_import_kwh)
+                self._bc_ramp_samples.append(ramp_kwh)
+                self._bc_prev_import_kwh = imp_kwh
+                # Violation: sum charging_constraint_violation_kwh across buildings.
+                viol_idx = self._obs_index.get("charging_constraint_violation_kwh")
+                total_viol = sum(float(obs[viol_idx]) for obs in observations) if viol_idx is not None else 0.0
+                self._bc_violation_samples.append(total_viol)
+                # Compute teacher multiplier using full context (5-term logic).
                 price_feat = float(ctx[_CC_LEVEL1_FEATURES.index(_PRICE_FEATURE)])  # kept for diagnostics
-                self._cached_multiplier = self._bc_teacher_multiplier(ctx)
+                self._cached_multiplier = self._bc_teacher_multiplier(ctx, ramp_kwh=ramp_kwh, violation_kwh=total_viol)
                 self._cached_community  = ctx
                 self._cached_price      = price_feat
                 # Dummy PPO fields — not used in rollout buffer during BC.
@@ -368,7 +414,6 @@ class CCLevel1Agent(BaseAgent):
             self._step_in_interval = 0
             self._accumulated_reward = 0.0
             if done:
-                self._return_running = 0.0
                 self._prev_multiplier = 1.0
                 self._flush_decision_trace()
             return
@@ -384,9 +429,11 @@ class CCLevel1Agent(BaseAgent):
         self._prev_multiplier = self._cached_multiplier
 
         raw = self._accumulated_reward + aux
-        self._return_running = self._gamma * self._return_running + raw
-        self._ret_rms.update(self._return_running)
-        scaled = float(raw / max(self._ret_rms.std, 1e-8))
+        # Centre and scale by running mean/std of raw rewards so the value
+        # function sees targets distributed around zero (some positive, some
+        # negative) rather than a uniformly negative constant signal.
+        self._reward_rms.update(raw)
+        scaled = float((raw - self._reward_rms.mean) / max(self._reward_rms.std, 1e-8))
 
         self.rollout_buffer.add(
             community=self._cached_community,
@@ -400,7 +447,6 @@ class CCLevel1Agent(BaseAgent):
         self._step_in_interval = 0
         self._accumulated_reward = 0.0
         if done:
-            self._return_running = 0.0
             self._prev_multiplier = 1.0
             self._flush_decision_trace()
 
@@ -409,19 +455,28 @@ class CCLevel1Agent(BaseAgent):
 
     # ──────────────────────── BC warm-start ──────────────────────────────────
 
-    def _bc_teacher_multiplier(self, ctx: np.ndarray) -> float:
-        """Multi-signal teacher mirroring CCRewardLevel1 (cost + peak + export).
+    def _bc_teacher_multiplier(self, ctx: np.ndarray, *, ramp_kwh: float = 0.0, violation_kwh: float = 0.0) -> float:
+        """Multi-signal teacher mirroring CCRewardLevel1 (cost + peak + ramp + export + violation).
 
         Features arrive as raw kW (NOT normalised to [0,1]).
         Convert to kWh per step via bc_dt_hours, then apply the same
         formulas as CCRewardLevel1 so BC and RL targets are consistent.
 
-          cost_signal   = (price - ref_price) / ref_price   # relative ∈ [-1, +1]
-          peak_signal   = max(0, imp_kWh - target)² / ref_peak   # ≈ [0, 3]
-          export_signal = -(exp_kWh / ref_export)               # ≈ [-1, 0]
+          cost_signal      = (price - ref_price) / ref_price   # relative ∈ [-1, +1]
+          peak_signal      = max(0, imp_kWh - target)² / ref_peak
+          ramp_signal      = ramp_kwh / ref_ramping            # ≈ [0, 3]
+          export_signal    = -(exp_kWh / ref_export)           # ≈ [-1, 0]
+          violation_signal = violation_kwh / 1.0               # kWh of violations
+          headroom_signal  = max(0, (ref_headroom - headroom_kw) / ref_headroom)  # ≥ 0
 
-          raw  = w_cost * cost + w_peak * peak + w_export * export
+          raw  = w_cost*cost + w_peak*peak + w_ramp*ramp + w_export*export
+                 + w_violation*violation + w_headroom*headroom
           mult = clip(1.0 + raw * scale, price_min, price_max)
+
+        The headroom_signal is the CC's community-oversight reflex: as the shared
+        electrical-service margin shrinks, the multiplier rises so workers
+        conserve BEFORE a violation occurs (proactive), while violation_signal
+        reacts once a limit is already breached.
         """
         _idx = _CC_LEVEL1_FEATURES.index
         price    = float(ctx[_idx("district__electricity_pricing")])
@@ -430,36 +485,63 @@ class CCLevel1Agent(BaseAgent):
         price_p3 = float(ctx[_idx("district__electricity_pricing_predicted_3")])
         imp_kw   = float(ctx[_idx("district__community_import_power_kw")])
         exp_kw   = float(ctx[_idx("district__community_export_power_kw")])
+        headroom_kw = float(ctx[_idx("district__community_building_headroom_kw")])
 
         # Convert power (kW) → energy (kWh) for this timestep
         dt      = self._bc_dt_hours
         imp_kwh = imp_kw * dt
         exp_kwh = exp_kw * dt
 
-        # Relative price vs near-future mean
-        ref_price   = (price_p1 + price_p2 + price_p3) / 3.0
+        # Price vs fixed p50 reference — same percentile approach as every other signal.
+        # Using a rolling 3-step average whitens the signal to near-zero (prices vary slowly).
+        # A fixed annual median gives real variance: above median = expensive, below = cheap.
+        ref_price   = self._bc_reference_price if self._bc_reference_price is not None else (price_p1 + price_p2 + price_p3) / 3.0
         cost_signal = (price - ref_price) / max(ref_price, 1e-8)
 
-        # Peak import — identical formula to CCRewardLevel1
-        target_import    = self._bc_target_import    if self._bc_target_import    is not None else self._bc_target_import_fallback
-        reference_peak   = self._bc_reference_peak   if self._bc_reference_peak   is not None else self._bc_reference_peak_fallback
-        reference_export = self._bc_reference_export if self._bc_reference_export is not None else self._bc_reference_export_fallback
-        peak_excess  = max(0.0, imp_kwh - target_import)
-        peak_signal  = peak_excess ** 2 / reference_peak
+        # Peak import — identical formula to CCRewardLevel1.
+        # During the collection phase the reference values are still None
+        # (auto-calibration runs at the end of collection). Until then the
+        # peak/export terms are skipped and the teacher uses the cost signal
+        # only — this avoids hardcoded community thresholds while still
+        # collecting a representative trajectory.
+        if self._bc_target_import is not None and self._bc_reference_peak is not None:
+            peak_excess  = max(0.0, imp_kwh - self._bc_target_import)
+            peak_signal  = peak_excess ** 2 / self._bc_reference_peak
+        else:
+            peak_signal = 0.0
 
         # Export — identical formula to CCRewardLevel1
-        export_signal = -(exp_kwh / reference_export)
+        if self._bc_reference_export is not None:
+            export_signal = -(exp_kwh / self._bc_reference_export)
+        else:
+            export_signal = 0.0
 
-        raw = (self._bc_w_cost   * cost_signal
-               + self._bc_w_peak   * peak_signal
-               + self._bc_w_export * export_signal)
+        # Ramping — positive when import just jumped, signals "price expensive"
+        ramp_signal = ramp_kwh / max(self._bc_reference_ramping, 1e-8)
+
+        # Violation — strong positive signal when grid limits breached
+        violation_signal = violation_kwh  # reference is 1.0 kWh (same as CCRewardLevel1)
+
+        # Community headroom — proactive oversight. Stress ramps 0→1 as the
+        # shared electrical-service margin falls from ref_headroom to 0, and
+        # exceeds 1 once headroom is negative (already over the limit). Positive
+        # stress pushes the multiplier UP so workers conserve before a violation.
+        ref_headroom = max(self._bc_reference_headroom, 1e-8)
+        headroom_signal = max(0.0, (ref_headroom - headroom_kw) / ref_headroom)
+
+        raw = (self._bc_w_cost      * cost_signal
+               + self._bc_w_peak      * peak_signal
+               + self._bc_w_ramp      * ramp_signal
+               + self._bc_w_export    * export_signal
+               + self._bc_w_violation * violation_signal
+               + self._bc_w_headroom  * headroom_signal)
 
         mult = 1.0 + float(np.clip(raw * self._bc_mult_scale, -0.8, 0.8))
         logger.debug(
-            "BC teacher | price={:.3f} ref={:.3f} imp_kWh={:.3f} exp_kWh={:.3f} "
-            "cost={:.3f} peak={:.3f} exp_sig={:.3f} raw={:.3f} mult={:.3f}",
-            price, ref_price, imp_kwh, exp_kwh,
-            cost_signal, peak_signal, export_signal, raw,
+            "BC teacher | price={:.3f} ref={:.3f} imp_kWh={:.3f} exp_kWh={:.3f} headroom_kW={:.3f} "
+            "cost={:.3f} peak={:.3f} ramp={:.3f} exp_sig={:.3f} viol={:.3f} headroom_sig={:.3f} raw={:.3f} mult={:.3f}",
+            price, ref_price, imp_kwh, exp_kwh, headroom_kw,
+            cost_signal, peak_signal, ramp_signal, export_signal, violation_signal, headroom_signal, raw,
             float(np.clip(mult, self._price_min, self._price_max)),
         )
         return float(np.clip(mult, self._price_min, self._price_max))
@@ -474,18 +556,50 @@ class CCLevel1Agent(BaseAgent):
         price_idx = _CC_LEVEL1_FEATURES.index(_PRICE_FEATURE)
         prices = X[:, price_idx]                               # kept for corr diagnostic
 
+        # Auto-calibrate reference values from the collected distribution.
+        # This makes the teacher community-agnostic: thresholds are derived from
+        # what was actually observed rather than hardcoded community statistics.
+        imp_arr   = np.array(self._bc_import_samples, dtype=np.float64)
+        exp_arr   = np.array(self._bc_export_samples, dtype=np.float64)
+        price_arr = np.array(self._bc_price_samples,  dtype=np.float64)
+
+        if self._bc_target_import is None:
+            self._bc_target_import = float(np.percentile(imp_arr, 75))
+
+        if self._bc_reference_peak is None:
+            excess_sq = np.maximum(0.0, imp_arr - self._bc_target_import) ** 2
+            self._bc_reference_peak = max(float(np.percentile(excess_sq, 90)), 1e-6)
+
+        if self._bc_reference_export is None:
+            self._bc_reference_export = max(float(np.percentile(exp_arr, 90)), 1e-6)
+
+        if self._bc_reference_price is None:
+            # p50 so ~half the year price is above (expensive) and half below (cheap).
+            self._bc_reference_price = max(float(np.percentile(price_arr, 50)), 1e-6)
+
         logger.info(
-            "BC | collected {} contexts | thresh={:.3f} w_cost={:.2f} w_peak={:.2f} w_export={:.2f}",
-            len(X), self._bc_target_import,
-            self._bc_w_cost, self._bc_w_peak, self._bc_w_export,
+            "BC | collected {} contexts | "
+            "target_import={:.3f} ref_peak={:.4f} ref_export={:.3f} ref_ramping={:.3f} ref_price={:.4f} ref_headroom={:.3f} | "
+            "w_cost={:.2f} w_peak={:.2f} w_ramp={:.2f} w_export={:.2f} w_violation={:.2f} w_headroom={:.2f}",
+            len(X),
+            self._bc_target_import, self._bc_reference_peak, self._bc_reference_export,
+            self._bc_reference_ramping, self._bc_reference_price, self._bc_reference_headroom,
+            self._bc_w_cost, self._bc_w_peak, self._bc_w_ramp, self._bc_w_export, self._bc_w_violation,
+            self._bc_w_headroom,
         )
 
-        # Teacher targets via multi-signal teacher (mirrors CCRewardLevel1 weights).
-        # raw = target_mult - 1.0  (same parameterisation as the policy output)
-        def _teacher_raw(ctx_row: np.ndarray) -> float:
-            return self._bc_teacher_multiplier(ctx_row) - 1.0
+        # Teacher targets: invert the tanh squash so BC trains in pre-tanh space.
+        #   multiplier = price_min + (price_max - price_min) * (tanh(raw) + 1) / 2
+        #   → raw = atanh(clamp((mult - price_min) / (price_max - price_min) * 2 - 1))
+        # Clamp to ±0.999 to avoid atanh(±1) = ±inf at the hard boundaries.
+        def _teacher_raw(ctx_row: np.ndarray, i: int) -> float:
+            ramp_kwh    = self._bc_ramp_samples[i]      if i < len(self._bc_ramp_samples)      else 0.0
+            viol_kwh    = self._bc_violation_samples[i] if i < len(self._bc_violation_samples) else 0.0
+            mult = self._bc_teacher_multiplier(ctx_row, ramp_kwh=ramp_kwh, violation_kwh=viol_kwh)
+            t = (mult - self._price_min) / (self._price_max - self._price_min) * 2.0 - 1.0
+            return float(np.arctanh(np.clip(t, -0.999, 0.999)))
 
-        targets = np.array([_teacher_raw(X[i]) for i in range(len(X))], dtype=np.float32)
+        targets = np.array([_teacher_raw(X[i], i) for i in range(len(X))], dtype=np.float32)
 
         X_t = torch.tensor(X,       dtype=torch.float32)
         T_t = torch.tensor(targets, dtype=torch.float32)
@@ -510,7 +624,7 @@ class CCLevel1Agent(BaseAgent):
         with torch.no_grad():
             h    = self.policy.encoder(X_t)
             pred = self.policy.mean_head(h).squeeze(-1).numpy()
-        pred_mults = np.clip(1.0 + pred, self._price_min, self._price_max)
+        pred_mults = self._price_min + (self._price_max - self._price_min) * (np.tanh(pred) + 1.0) / 2.0
         corr = (
             float(np.corrcoef(prices, pred_mults)[0, 1])
             if prices.std() > 1e-6 and pred_mults.std() > 1e-6
@@ -524,12 +638,22 @@ class CCLevel1Agent(BaseAgent):
         )
         if mlflow.active_run():
             metrics: dict = {
-                "CC/bc_pretrain_loss":              mean_loss,
-                "CC/bc_pretrain_collect_n":         float(N),
-                "CC/bc_pretrain_target_import_norm": self._bc_target_import,
-                "CC/bc_pretrain_w_cost":            self._bc_w_cost,
-                "CC/bc_pretrain_w_peak":            self._bc_w_peak,
-                "CC/bc_pretrain_w_export":          self._bc_w_export,
+                "CC/bc_pretrain_loss":             mean_loss,
+                "CC/bc_pretrain_collect_n":        float(N),
+                # Calibrated reference values — these reflect the actual community,
+                # not hardcoded constants, so they vary across deployments.
+                "CC/bc_pretrain_target_import":    self._bc_target_import,
+                "CC/bc_pretrain_reference_peak":   self._bc_reference_peak,
+                "CC/bc_pretrain_reference_export": self._bc_reference_export,
+                "CC/bc_pretrain_w_cost":           self._bc_w_cost,
+                "CC/bc_pretrain_w_peak":           self._bc_w_peak,
+                "CC/bc_pretrain_w_ramp":           self._bc_w_ramp,
+                "CC/bc_pretrain_w_export":         self._bc_w_export,
+                "CC/bc_pretrain_w_violation":      self._bc_w_violation,
+                "CC/bc_pretrain_w_headroom":       self._bc_w_headroom,
+                "CC/bc_pretrain_reference_ramping": self._bc_reference_ramping,
+                "CC/bc_pretrain_reference_price":   self._bc_reference_price,
+                "CC/bc_pretrain_reference_headroom": self._bc_reference_headroom,
             }
             if not np.isnan(corr):
                 metrics["CC/bc_pretrain_corr_price_mult"] = corr
@@ -537,6 +661,12 @@ class CCLevel1Agent(BaseAgent):
 
         # Free collected data.
         self._bc_contexts.clear()
+        self._bc_import_samples.clear()
+        self._bc_export_samples.clear()
+        self._bc_ramp_samples.clear()
+        self._bc_violation_samples.clear()
+        self._bc_price_samples.clear()
+        self._bc_prev_import_kwh = 0.0
 
     # ───────────────────────── Internal: decision ────────────────────────────
 
@@ -557,15 +687,20 @@ class CCLevel1Agent(BaseAgent):
             if deterministic:
                 h = self.policy.encoder(ctx_t)
                 raw = self.policy.mean_head(h).squeeze(-1)
-                std = torch.exp(self.policy.log_std).expand_as(raw)
-                logprob = torch.distributions.Normal(raw, std).log_prob(raw)
-                _, _, _, value = self.policy.get_action_and_value(ctx_t, raw)
+                # Delegate to get_action_and_value so the tanh correction is included.
+                _, logprob, _, value = self.policy.get_action_and_value(ctx_t, raw)
             else:
                 raw, logprob, _, value = self.policy.get_action_and_value(ctx_t)
 
         raw_f = float(raw.item())
-        self._cached_action     = raw_f
-        self._cached_multiplier = float(np.clip(1.0 + raw_f, self._price_min, self._price_max))
+        # Map pre-tanh raw → [price_min, price_max] without a hard clip.
+        # tanh(raw) ∈ (-1, 1), so bounds are approached asymptotically and
+        # the gradient is always non-zero — preventing the one-way drift.
+        squashed = float(np.tanh(raw_f))
+        self._cached_action     = raw_f   # store pre-tanh for PPO re-evaluation
+        self._cached_multiplier = float(
+            self._price_min + (self._price_max - self._price_min) * (squashed + 1.0) / 2.0
+        )
         self._cached_community  = ctx
         self._cached_price      = float(ctx[_CC_LEVEL1_FEATURES.index(_PRICE_FEATURE)])
         self._cached_logprob    = float(logprob.item())
@@ -644,10 +779,13 @@ class CCLevel1Agent(BaseAgent):
         if mlflow.active_run():
             mlflow.log_metrics(
                 {
-                    "PPO_pg_loss": pg_loss.item(),
-                    "PPO_v_loss":  v_loss.item(),
-                    "PPO_entropy": ent_loss.item(),
-                    "PPO_kl_stop": float(kl_stop),
+                    "PPO_pg_loss":      pg_loss.item(),
+                    "PPO_v_loss":       v_loss.item(),
+                    "PPO_entropy":      ent_loss.item(),
+                    "PPO_kl_stop":      float(kl_stop),
+                    # Reward distribution — should be centred near 0 with std ≈ 1
+                    "PPO_reward_mean":  float(self._reward_rms.mean),
+                    "PPO_reward_std":   float(self._reward_rms.std),
                 },
                 step=self._ppo_update_count,
             )
@@ -655,13 +793,19 @@ class CCLevel1Agent(BaseAgent):
     # ──────────────────────── Internal: logging ──────────────────────────────
 
     def _log_decision(self) -> None:
+        ctx = self._cached_community
+        _idx = _CC_LEVEL1_FEATURES.index
         self._decision_trace.append(
             {
                 "timestep":    self._global_cc_step,
-                "cc_step":    self._global_cc_step,
-                "price":      self._cached_price,
-                "multiplier": self._cached_multiplier,
-                "value_est":  self._cached_value,
+                "cc_step":     self._global_cc_step,
+                "price":       self._cached_price,
+                "multiplier":  self._cached_multiplier,
+                "value_est":   self._cached_value,
+                # Community power (normalised by encoding layer — used for relative KPIs only)
+                "import_norm": float(ctx[_idx("district__community_import_power_kw")]),
+                "pv_norm":     float(ctx[_idx("district__community_pv_power_kw")]),
+                "carbon_norm": float(ctx[_idx("district__carbon_intensity")]),
             }
         )
         self._global_cc_step += 1
@@ -681,29 +825,32 @@ class CCLevel1Agent(BaseAgent):
             w.writeheader()
             w.writerows(self._decision_trace)
 
-        prices = np.array([r["price"] for r in self._decision_trace])
-        mults  = np.array([r["multiplier"] for r in self._decision_trace])
+        imports = np.array([r["import_norm"] for r in self._decision_trace], dtype=np.float64)
+        pvs     = np.array([r["pv_norm"]     for r in self._decision_trace], dtype=np.float64)
+        carbons = np.array([r["carbon_norm"] for r in self._decision_trace], dtype=np.float64)
 
-        # Does the CC raise the price when energy is expensive? → positive corr.
-        if prices.std() > 1e-6 and mults.std() > 1e-6:
-            corr = float(np.corrcoef(prices, mults)[0, 1])
-        else:
-            corr = float("nan")
+        # Load factor: ratio within the same (normalised) variable — scale cancels out.
+        load_factor = float(imports.mean() / imports.max()) if imports.max() > 1e-6 else float("nan")
+        # Carbon-weighted import: relative index (both normalised; directionally valid).
+        carbon_import = float(np.mean(imports * carbons))
+        # Self-sufficiency: import/(import+pv) — valid only when both share comparable scale.
+        denom = float(imports.sum() + pvs.sum())
+        self_sufficiency = 1.0 - float(imports.sum()) / denom if denom > 1e-6 else float("nan")
+        peak_import = float(imports.max())
 
         logger.info(
-            "CC ep{} | {} decisions | mean_mult={:.3f} std={:.3f} corr(price,mult)={:+.3f}",
-            ep, len(mults), float(mults.mean()), float(mults.std()), corr,
+            "CC ep{} | {} decisions | self_suff={:.3f} load_factor={:.3f} "
+            "carbon_import={:.4f} peak_import={:.3f}",
+            ep, len(imports), self_sufficiency, load_factor, carbon_import, peak_import,
         )
         if mlflow.active_run():
             mlflow.log_artifact(tmp_path, artifact_path="decision_traces")
             metrics = {
-                "CC_mean_multiplier": float(mults.mean()),
-                "CC_std_multiplier":  float(mults.std()),
-                "CC_pct_raise":       float(np.mean(mults > 1.0)) * 100,
-                "CC_pct_lower":       float(np.mean(mults < 1.0)) * 100,
+                "CC_self_sufficiency": self_sufficiency if not np.isnan(self_sufficiency) else 0.0,
+                "CC_load_factor":      load_factor if not np.isnan(load_factor) else 0.0,
+                "CC_carbon_import":    carbon_import,
+                "CC_peak_import":      peak_import,
             }
-            if not np.isnan(corr):
-                metrics["CC_corr_price_multiplier"] = corr
             mlflow.log_metrics(metrics, step=ep)
 
         self._decision_trace = []
@@ -741,10 +888,9 @@ class CCLevel1Agent(BaseAgent):
                 "step":               step,
                 "policy":             self.policy.state_dict(),
                 "optimizer":          self.ppo_optim.state_dict(),
-                "ret_rms_n":          self._ret_rms._n,
-                "ret_rms_mean":       self._ret_rms._mean,
-                "ret_rms_M2":         self._ret_rms._M2,
-                "return_running":     self._return_running,
+                "reward_rms_n":       self._reward_rms._n,
+                "reward_rms_mean":    self._reward_rms._mean,
+                "reward_rms_M2":      self._reward_rms._M2,
                 "ppo_update_count":   self._ppo_update_count,
                 "global_cc_step":     self._global_cc_step,
                 "bc_pretrain_done":   self._bc_pretrain_done,
@@ -766,10 +912,9 @@ class CCLevel1Agent(BaseAgent):
         ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
         self.policy.load_state_dict(ckpt["policy"])
         self.ppo_optim.load_state_dict(ckpt["optimizer"])
-        self._ret_rms._n      = ckpt["ret_rms_n"]
-        self._ret_rms._mean   = ckpt["ret_rms_mean"]
-        self._ret_rms._M2     = ckpt["ret_rms_M2"]
-        self._return_running  = float(ckpt["return_running"])
+        self._reward_rms._n    = ckpt.get("reward_rms_n",    0)
+        self._reward_rms._mean = ckpt.get("reward_rms_mean", 0.0)
+        self._reward_rms._M2   = ckpt.get("reward_rms_M2",  0.0)
         self._ppo_update_count  = int(ckpt.get("ppo_update_count", 0))
         self._global_cc_step    = int(ckpt.get("global_cc_step", 0))
         # On resume: if BC was completed before checkpoint, don't re-run it.

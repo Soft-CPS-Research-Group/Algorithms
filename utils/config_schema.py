@@ -246,6 +246,7 @@ class EntityEncodingConfig(BaseModel):
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
         "cc_level1",
+        "cc_level2",
     ] = "minmax_space"
     clip: bool = True
 
@@ -547,6 +548,13 @@ class CCLevel1AlgorithmConfig(BaseModel):
     hyperparameters: CCLevel1Hyperparameters = Field(default_factory=CCLevel1Hyperparameters)
 
 
+class CCLevel2AlgorithmConfig(BaseModel):
+    algorithm: Literal["CCLevel2"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    frozen: bool = False
+    hyperparameters: Any = Field(default_factory=dict)
+
+
 class BuildingAgentStageConfig(BaseModel):
     """Pipeline stage describing a BuildingAgent (per-building PPO worker)."""
 
@@ -613,6 +621,7 @@ class SingleAgentRLStageConfig(BaseModel):
 PipelineStageConfig = Union[
     BuildingAgentStageConfig,
     CCLevel1AlgorithmConfig,
+    CCLevel2AlgorithmConfig,
     CommunityCoordinatorAlgorithmConfig,
     ActorCriticAlgorithmConfig,
     RuleBasedAlgorithmConfig,
