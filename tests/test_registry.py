@@ -56,10 +56,15 @@ def test_registered_agents_accept_predict_context_keyword():
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
-def test_hierarchical_agents_are_registered_as_raw_observation_agents():
-    for name in ("BuildingAgent", "CCLevel1", "CommunityCoordinator", "SignalAwareRBC"):
+def test_hierarchical_raw_observation_agents_are_registered():
+    for name in ("BuildingAgent", "CommunityCoordinator", "SignalAwareRBC"):
         assert is_algorithm_supported(name)
         assert ALGORITHM_REGISTRY[name]._use_raw_observations is True
+
+
+def test_cc_level1_uses_encoded_observations():
+    assert is_algorithm_supported("CCLevel1")
+    assert ALGORITHM_REGISTRY["CCLevel1"]._use_raw_observations is False
 
 
 def test_build_execution_unit_supports_cc_level1_signal_aware_rbc_pipeline():

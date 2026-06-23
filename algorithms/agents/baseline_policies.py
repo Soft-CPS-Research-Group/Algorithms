@@ -2249,18 +2249,22 @@ class RBCCommunityPolicy(RBCSmartPolicy):
 
 
 class SignalAwareRBC(RBCSmartPolicy):
-    """RBCSmartPolicy variant that follows a high-level battery signal.
+    """RBCSmartPolicy variant that reacts to a CC price multiplier.
 
-    This policy is intended as the leaf stage in a ``CCLevel1 -> SignalAwareRBC``
-    pipeline. A positive context value forces storage charging, a negative
-    value forces storage discharging, and zero or missing context falls back to
-    the standard RBCSmartPolicy storage heuristic. EV and deferrable-load
-    decisions stay delegated to RBCSmartPolicy.
+    Intended as the leaf stage in a ``CCLevel1 -> SignalAwareRBC`` pipeline.
+    The CC emits a continuous price multiplier (e.g. [0.5, 1.5]) as context.
+    This class scales the perceived electricity price by that multiplier before
+    all cheap/expensive/peak decisions, so the full RBCSmartPolicy heuristic
+    runs against the CC-adjusted price rather than the raw market price.
+
+    multiplier > 1.0  →  price appears higher  →  RBC conserves / discharges
+    multiplier = 1.0  →  neutral (identical to plain RBCSmartPolicy)
+    multiplier < 1.0  →  price appears lower   →  RBC consumes / charges
     """
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
-        self._cc_signal: float = 0.0
+        self._price_multiplier: float = 1.0
 
     def _policy_type(self) -> str:
         return "signal_aware_rbc"
@@ -2274,23 +2278,40 @@ class SignalAwareRBC(RBCSmartPolicy):
     ) -> List[List[float]]:
         if context is not None:
             try:
-                self._cc_signal = float(context)
+                self._price_multiplier = float(context)
             except (TypeError, ValueError):
-                self._cc_signal = 0.0
+                self._price_multiplier = 1.0
         else:
-            self._cc_signal = 0.0
+            self._price_multiplier = 1.0
         return super().predict(observations, deterministic)
 
-    def _compute_storage_action(
+    def _get_price_context(
         self,
-        agent_idx: int,
         obs: np.ndarray,
-        obs_map: Dict[str, int],
-        action_name: str,
-        bounds: Sequence[float],
-    ) -> float:
-        if self._cc_signal > 0.0:
-            return self._clip_storage_action(1.0, obs, obs_map, bounds)
-        if self._cc_signal < 0.0:
-            return self._clip_storage_action(-1.0, obs, obs_map, bounds)
-        return super()._compute_storage_action(agent_idx, obs, obs_map, action_name, bounds)
+        obs_map: Mapping[str, int],
+    ) -> Dict[str, float | bool]:
+        ctx = super()._get_price_context(obs, obs_map)
+        if self._price_multiplier == 1.0:
+            return ctx
+        effective_price = ctx["price"] * self._price_multiplier
+        forecasts = [
+            self._get_first_value(
+                obs, obs_map,
+                [f"electricity_pricing_predicted_{i}", f"district__electricity_pricing_predicted_{i}"],
+                default=float("nan"),
+            )
+            for i in (1, 2, 3)
+        ]
+        valid = [v for v in forecasts if not math.isnan(v)]
+        if not valid:
+            return {**ctx, "price": effective_price}
+        forecast_mean = float(np.mean(valid))
+        forecast_min  = float(np.min(valid))
+        forecast_max  = float(np.max(valid))
+        spread = max(forecast_max - forecast_min, abs(forecast_mean) * 0.05, 1e-9)
+        return {
+            "price":             effective_price,
+            "cheap":             effective_price <= forecast_mean - 0.20 * spread or effective_price <= forecast_min + 0.10 * spread,
+            "expensive":         effective_price >= forecast_mean + 0.20 * spread or effective_price >= forecast_max - 0.10 * spread,
+            "near_forecast_peak": effective_price >= forecast_max - max(0.10 * spread, 0.005),
+        }

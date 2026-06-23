@@ -43,10 +43,72 @@ class Pipeline(ExecutionUnit):
         if not stages:
             raise ValueError("Pipeline requires at least one stage.")
         self.stages: List[ExecutionUnit] = list(stages)
+        self._raw_observations: Optional[Any] = None
+        self._encoded_observations: Optional[Any] = None
+        self._raw_next_observations: Optional[Any] = None
+        self._encoded_next_observations: Optional[Any] = None
 
     @property
     def use_raw_observations(self) -> bool:
+        return all(stage.use_raw_observations for stage in self.stages)
+
+    @property
+    def requires_raw_observation_context(self) -> bool:
         return any(stage.use_raw_observations for stage in self.stages)
+
+    def _observations_for_stage(self, stage: ExecutionUnit, fallback: Any) -> Any:
+        if stage.use_raw_observations and self._raw_observations is not None:
+            return self._raw_observations
+        if not stage.use_raw_observations and self._encoded_observations is not None:
+            return self._encoded_observations
+        return fallback
+
+    def _next_observations_for_stage(self, stage: ExecutionUnit, fallback: Any) -> Any:
+        if stage.use_raw_observations and self._raw_next_observations is not None:
+            return self._raw_next_observations
+        if not stage.use_raw_observations and self._encoded_next_observations is not None:
+            return self._encoded_next_observations
+        return fallback
+
+    def set_observation_context(
+        self,
+        *,
+        raw_observations: Any = None,
+        encoded_observations: Any = None,
+    ) -> None:
+        self._raw_observations = raw_observations
+        self._encoded_observations = encoded_observations
+
+        for stage in self.stages:
+            hook = getattr(stage, "set_observation_context", None)
+            if callable(hook):
+                hook(
+                    raw_observations=raw_observations,
+                    encoded_observations=encoded_observations,
+                )
+
+    def set_transition_context(
+        self,
+        *,
+        raw_observations: Any = None,
+        raw_next_observations: Any = None,
+        encoded_observations: Any = None,
+        encoded_next_observations: Any = None,
+    ) -> None:
+        self._raw_observations = raw_observations
+        self._raw_next_observations = raw_next_observations
+        self._encoded_observations = encoded_observations
+        self._encoded_next_observations = encoded_next_observations
+
+        for stage in self.stages:
+            hook = getattr(stage, "set_transition_context", None)
+            if callable(hook):
+                hook(
+                    raw_observations=raw_observations,
+                    raw_next_observations=raw_next_observations,
+                    encoded_observations=encoded_observations,
+                    encoded_next_observations=encoded_next_observations,
+                )
 
     # ------------------------------------------------------------------
     # Core loop
@@ -61,7 +123,8 @@ class Pipeline(ExecutionUnit):
         ctx = context
         result: Any = None
         for stage in self.stages:
-            result = stage.predict(observations, deterministic, context=ctx)
+            stage_observations = self._observations_for_stage(stage, observations)
+            result = stage.predict(stage_observations, deterministic, context=ctx)
             ctx = result
         return result
 
@@ -82,11 +145,16 @@ class Pipeline(ExecutionUnit):
         for stage in self.stages:
             if getattr(stage, "frozen", False):
                 continue
+            stage_observations = self._observations_for_stage(stage, observations)
+            stage_next_observations = self._next_observations_for_stage(
+                stage,
+                next_observations,
+            )
             stage.update(
-                observations,
+                stage_observations,
                 actions,
                 rewards,
-                next_observations,
+                stage_next_observations,
                 terminated,
                 truncated,
                 update_target_step=update_target_step,
@@ -105,8 +173,17 @@ class Pipeline(ExecutionUnit):
         )
 
     def attach_environment(self, **kwargs) -> None:
+        metadata = kwargs.get("metadata") or {}
+        raw_observation_names = metadata.get("raw_observation_names")
+        encoded_observation_names = metadata.get("encoded_observation_names")
+
         for stage in self.stages:
-            stage.attach_environment(**kwargs)
+            stage_kwargs = dict(kwargs)
+            if stage.use_raw_observations and raw_observation_names is not None:
+                stage_kwargs["observation_names"] = raw_observation_names
+            elif not stage.use_raw_observations and encoded_observation_names is not None:
+                stage_kwargs["observation_names"] = encoded_observation_names
+            stage.attach_environment(**stage_kwargs)
 
     # ------------------------------------------------------------------
     # Persistence

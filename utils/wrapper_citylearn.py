@@ -529,12 +529,23 @@ class Wrapper_CityLearn(RLC):
             return
 
         building_names = self._resolve_building_names()
+        raw_observation_names = [
+            [str(name) for name in observation_group]
+            for observation_group in getattr(self, "observation_names", [])
+        ]
+        encoded_observation_names = (
+            self._entity_adapter.encoded_observation_names(raw_observation_names)
+            if self._entity_interface_mode and self._entity_adapter is not None
+            else raw_observation_names
+        )
         metadata = {
             "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "building_names": building_names,
             "interface": getattr(self.env, "interface", None),
             "topology_mode": getattr(self.env, "topology_mode", None),
             "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
+            "raw_observation_names": raw_observation_names,
+            "encoded_observation_names": encoded_observation_names,
         }
 
         try:

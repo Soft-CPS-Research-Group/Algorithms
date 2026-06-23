@@ -129,6 +129,24 @@ class TestPipelinePredict:
         assert first.predict_calls[0]["observations"] is observations
         assert second.predict_calls[0]["observations"] is observations
 
+    def test_routes_raw_and_encoded_observations_per_stage(self) -> None:
+        manager = RecordingUnit("manager", predict_output="price", use_raw_observations=False)
+        leaf = RecordingUnit("leaf", predict_output=[[0.2]], use_raw_observations=True)
+        pipeline = Pipeline([manager, leaf])
+        raw_observations = [["raw"]]
+        encoded_observations = [["encoded"]]
+
+        pipeline.set_observation_context(
+            raw_observations=raw_observations,
+            encoded_observations=encoded_observations,
+        )
+        result = pipeline.predict(encoded_observations)
+
+        assert result == [[0.2]]
+        assert manager.predict_calls[0]["observations"] is encoded_observations
+        assert leaf.predict_calls[0]["observations"] is raw_observations
+        assert leaf.predict_calls[0]["context"] == "price"
+
 
 class TestPipelineUpdate:
     def test_delegates_to_every_stage(self) -> None:
@@ -153,6 +171,39 @@ class TestPipelineUpdate:
         assert len(b.update_calls) == 1
         assert a.update_calls[0]["global_learning_step"] == 42
         assert b.update_calls[0]["global_learning_step"] == 42
+
+    def test_routes_raw_and_encoded_transitions_per_stage(self) -> None:
+        manager = RecordingUnit("manager", use_raw_observations=False)
+        leaf = RecordingUnit("leaf", use_raw_observations=True)
+        pipeline = Pipeline([manager, leaf])
+        raw_observations = [["raw"]]
+        raw_next_observations = [["raw_next"]]
+        encoded_observations = [["encoded"]]
+        encoded_next_observations = [["encoded_next"]]
+
+        pipeline.set_transition_context(
+            raw_observations=raw_observations,
+            raw_next_observations=raw_next_observations,
+            encoded_observations=encoded_observations,
+            encoded_next_observations=encoded_next_observations,
+        )
+        pipeline.update(
+            encoded_observations,
+            [[0.5]],
+            [0.1],
+            encoded_next_observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=True,
+            global_learning_step=42,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+        assert manager.update_calls[0]["observations"] is encoded_observations
+        assert manager.update_calls[0]["next_observations"] is encoded_next_observations
+        assert leaf.update_calls[0]["observations"] is raw_observations
+        assert leaf.update_calls[0]["next_observations"] is raw_next_observations
 
 
 class TestPipelineLifecycle:
@@ -179,7 +230,29 @@ class TestPipelineLifecycle:
         none_raw = RecordingUnit("a", use_raw_observations=False)
         raw = RecordingUnit("b", use_raw_observations=True)
         assert Pipeline([none_raw]).use_raw_observations is False
-        assert Pipeline([none_raw, raw]).use_raw_observations is True
+        assert Pipeline([raw, raw]).use_raw_observations is True
+        assert Pipeline([none_raw, raw]).use_raw_observations is False
+        assert Pipeline([none_raw, raw]).requires_raw_observation_context is True
+
+    def test_attach_environment_routes_raw_and_encoded_names_per_stage(self) -> None:
+        manager = RecordingUnit("manager", use_raw_observations=False)
+        leaf = RecordingUnit("leaf", use_raw_observations=True)
+        raw_names = [["raw_a"], ["raw_b"]]
+        encoded_names = [["encoded_a"], ["encoded_b"]]
+
+        Pipeline([manager, leaf]).attach_environment(
+            observation_names=raw_names,
+            action_names=[["act_a"], ["act_b"]],
+            action_space=["space_a", "space_b"],
+            observation_space=["obs_space_a", "obs_space_b"],
+            metadata={
+                "raw_observation_names": raw_names,
+                "encoded_observation_names": encoded_names,
+            },
+        )
+
+        assert manager.attach_calls[0]["observation_names"] == encoded_names
+        assert leaf.attach_calls[0]["observation_names"] == raw_names
 
 
 class TestPipelinePersistence:
