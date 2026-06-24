@@ -65,8 +65,8 @@ bundle:
 
 # Simulator wiring: local dataset path.
 simulator:
-  dataset_name: citylearn_three_phase_electrical_service_demo_15s_parquet
-  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json
+  dataset_name: citylearn_three_phase_electrical_service_demo_15min_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15min_parquet/schema.json
   central_agent: false
   interface: entity
   topology_mode: static
@@ -106,12 +106,12 @@ simulator:
     community_grid_export_price: 0.0
     scale_state_penalties_by_time_step: true
     state_penalty_reference_seconds: 3600.0
-  episodes: 1
+  episodes: 15
   deterministic_finish: false
   # Optional simulation window overrides (null = dataset schema defaults).
-  simulation_start_time_step: 0
-  simulation_end_time_step: 5759
-  episode_time_steps: 5760
+  simulation_start_time_step: null
+  simulation_end_time_step: null
+  episode_time_steps: 34944     # full year per ep (dataset total = 34944 steps)
   # Export controls for simulator CSV/KPI outputs.
   export:
     mode: end

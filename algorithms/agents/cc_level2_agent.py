@@ -16,13 +16,13 @@ DESIGN
 Observations:
     Uses the `cc_level2` entity-encoding profile.  Each building's encoded
     vector contains:
-        • 16 district features (same as cc_level1: time, price, carbon,
-          community power)
-        • 3 per-building features: storage::soc, pv::generation_power_kw,
-          net_power_kw
+        • 17 district features (same as cc_level1: time, price, carbon,
+          community power, community building headroom)
+        • 6 per-building features: storage::soc, pv::generation_power_kw,
+          net_power_kw, ev connected_state, ev soc_deficit, ev urgency
 
     The CC assembles a single context vector of shape
-        (16 + 3 * num_buildings,)
+        (17 + 6 * num_buildings,)
     taking district features from observations[0] (identical across all
     buildings) and per-building features from observations[i] for each i.
 
@@ -89,8 +89,9 @@ _CC_LEVEL2_DISTRICT_FEATURES = (
     "district__community_import_power_kw",
     "district__community_export_power_kw",
     "district__community_pv_power_kw",
+    "district__community_building_headroom_kw",  # [16] grid headroom — helps avoid violations
 )
-_N_DISTRICT = len(_CC_LEVEL2_DISTRICT_FEATURES)  # 16
+_N_DISTRICT = len(_CC_LEVEL2_DISTRICT_FEATURES)  # 17
 _PRICE_FEATURE = "district__electricity_pricing"
 
 # ── Per-building features (6 per building) ────────────────────────────────────
@@ -159,33 +160,102 @@ class RunningMeanStd:
 # ── Policy network ────────────────────────────────────────────────────────────
 
 class CommunityMarketMakerNetV2(nn.Module):
-    """Shared encoder → N Gaussian means (one per building) + scalar value.
+    """Permutation-equivariant per-building actor + community critic.
 
-    All N means share the same encoder trunk, differing only in the final
-    linear layer.  A single shared log_std parameter (per building) controls
-    exploration independently of the input.
+    Actor:
+        district_encoder maps the shared district block → a district embedding
+        (computed once). A SINGLE shared building_head then maps
+            [district_embedding, building_i_features] → building i's pre-tanh mean
+        with the SAME weights for every building. This guarantees that two
+        buildings in the same state receive the same multiplier, and forces all
+        per-building differentiation to come from each building's own features —
+        there are no independent per-building output rows or biases, so the
+        policy cannot encode arbitrary frozen per-building tiers.
+
+    Critic:
+        a separate monolithic MLP over the full context → one community value.
+        Equivariance is unnecessary for a single scalar value, so the critic
+        stays expressive over the whole context.
+
+    A single shared log_std (buildings are symmetric) controls exploration.
     """
 
-    def __init__(self, c_dim: int, num_buildings: int, hidden_dims: List[int]) -> None:
+    def __init__(
+        self,
+        c_dim: int,
+        num_buildings: int,
+        hidden_dims: List[int],
+        *,
+        n_district: int,
+        n_building_feats: int,
+        building_hidden_dims: Optional[List[int]] = None,
+        per_building_credit: bool = False,
+    ) -> None:
         super().__init__()
         self.num_buildings = num_buildings
+        self.n_district = n_district
+        self.n_building_feats = n_building_feats
+        # When True the critic emits one value per building and log-prob/entropy
+        # are kept per building (factored PPO) so each building's action is
+        # credited by its own advantage. When False the head behaves exactly as
+        # before: single community value, joint (summed) log-prob.
+        self.per_building_credit = bool(per_building_credit)
+
+        # ── District encoder (shared, applied once) ──────────────────────────
         layers: List[nn.Module] = []
-        in_d = c_dim
+        in_d = n_district
         for h in hidden_dims:
             layers += [nn.Linear(in_d, h), nn.Tanh()]
             in_d = h
-        self.encoder     = nn.Sequential(*layers)
-        self.mean_head   = nn.Linear(in_d, num_buildings)
-        self.critic_head = nn.Linear(in_d, 1)
-        # One learnable log_std per building, state-independent.
-        self.log_std = nn.Parameter(torch.zeros(num_buildings))
+        self.district_encoder = nn.Sequential(*layers)
+        self._district_emb_dim = in_d
+
+        # ── Shared per-building head: [district_emb, building_feats] → 1 ──────
+        bdims = list(building_hidden_dims) if building_hidden_dims else list(hidden_dims)
+        layers = []
+        in_b = self._district_emb_dim + n_building_feats
+        for h in bdims:
+            layers += [nn.Linear(in_b, h), nn.Tanh()]
+            in_b = h
+        layers += [nn.Linear(in_b, 1)]
+        self.building_head = nn.Sequential(*layers)
+
+        # ── Critic: monolithic MLP over the full context → value(s) ─────────
+        # One value per building when per_building_credit (each building's value
+        # predicts its own return), otherwise a single community value.
+        critic_out = num_buildings if self.per_building_credit else 1
+        layers = []
+        in_c = c_dim
+        for h in hidden_dims:
+            layers += [nn.Linear(in_c, h), nn.Tanh()]
+            in_c = h
+        layers += [nn.Linear(in_c, critic_out)]
+        self.critic = nn.Sequential(*layers)
+
+        # Single shared log_std (buildings are symmetric, state-independent).
+        self.log_std = nn.Parameter(torch.zeros(1))
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 nn.init.zeros_(m.bias)
-        nn.init.orthogonal_(self.mean_head.weight,   gain=0.01)
-        nn.init.orthogonal_(self.critic_head.weight, gain=1.0)
+        # Final building-head layer near-zero so the policy starts near neutral
+        # (mean ≈ 0 → tanh ≈ 0 → multiplier ≈ 1.0).
+        last_building = [m for m in self.building_head if isinstance(m, nn.Linear)][-1]
+        nn.init.orthogonal_(last_building.weight, gain=0.01)
+        last_critic = [m for m in self.critic if isinstance(m, nn.Linear)][-1]
+        nn.init.orthogonal_(last_critic.weight, gain=1.0)
+
+    def action_means(self, community: torch.Tensor) -> torch.Tensor:
+        """Return (batch, N) pre-tanh per-building means via the shared head."""
+        district  = community[:, : self.n_district]
+        buildings = community[:, self.n_district :].reshape(
+            -1, self.num_buildings, self.n_building_feats
+        )
+        d = self.district_encoder(district)                       # (batch, emb)
+        d_rep = d.unsqueeze(1).expand(-1, self.num_buildings, -1)  # (batch, N, emb)
+        x = torch.cat([d_rep, buildings], dim=-1)                 # (batch, N, emb+feats)
+        return self.building_head(x).squeeze(-1)                  # (batch, N)
 
     def get_action_and_value(
         self,
@@ -204,18 +274,26 @@ class CommunityMarketMakerNetV2(nn.Module):
             entropy:   (batch,)   joint entropy summed over N buildings
             value:     (batch,)   state value estimate
         """
-        h     = self.encoder(community)                          # (batch, hidden)
-        means = self.mean_head(h)                                # (batch, N)
-        value = self.critic_head(h).squeeze(-1)                  # (batch,)
+        means = self.action_means(community)                     # (batch, N)
+        # critic → (batch, N) when per-building, else (batch, 1) → squeeze (batch,).
+        value = self.critic(community).squeeze(-1)
         # Clamp log_std to [-3, 1] to prevent runaway variance.
-        stds  = torch.exp(self.log_std.clamp(-3.0, 1.0)).unsqueeze(0).expand_as(means)
+        stds  = torch.exp(self.log_std.clamp(-3.0, 1.0)).expand_as(means)
         dist  = torch.distributions.Normal(means, stds)
         if action is None:
             action = dist.sample()                               # (batch, N)
-        # Tanh correction; sum over building dimension for joint log-prob.
+        # Tanh correction (per building).
         tanh_correction = torch.log(1.0 - torch.tanh(action) ** 2 + 1e-6)
-        log_prob = (dist.log_prob(action) - tanh_correction).sum(dim=-1)  # (batch,)
-        entropy  = dist.entropy().sum(dim=-1)                    # (batch,)
+        per_building_log_prob = dist.log_prob(action) - tanh_correction   # (batch, N)
+        per_building_entropy  = dist.entropy()                            # (batch, N)
+        if self.per_building_credit:
+            # Factored PPO: keep per-building so each action gets its own advantage.
+            log_prob = per_building_log_prob                     # (batch, N)
+            entropy  = per_building_entropy                      # (batch, N)
+        else:
+            # Joint action: sum over the building dimension (original behaviour).
+            log_prob = per_building_log_prob.sum(dim=-1)         # (batch,)
+            entropy  = per_building_entropy.sum(dim=-1)          # (batch,)
         return action, log_prob, entropy, value
 
 
@@ -224,19 +302,26 @@ class CommunityMarketMakerNetV2(nn.Module):
 class RolloutBufferV2:
     """Fixed-size rollout buffer for continuous N-dimensional PPO."""
 
-    def __init__(self, num_steps: int, c_dim: int, num_buildings: int) -> None:
+    def __init__(
+        self, num_steps: int, c_dim: int, num_buildings: int, *, per_building: bool = False
+    ) -> None:
         self.num_steps    = num_steps
         self.num_buildings = num_buildings
+        self.per_building = bool(per_building)
         self._ptr  = 0
         self.full  = False
+        # Reward / value / advantage are per-building (T, N) in factored-PPO mode,
+        # otherwise scalar per step (T,). GAE below is written with broadcasting so
+        # the same code handles both. `dones` is always episode-level (T,).
+        vec_shape = (num_steps, num_buildings) if self.per_building else (num_steps,)
         self.communities = np.zeros((num_steps, c_dim),           dtype=np.float32)
         self.actions     = np.zeros((num_steps, num_buildings),   dtype=np.float32)
-        self.logprobs    = np.zeros(num_steps,                    dtype=np.float32)
-        self.rewards     = np.zeros(num_steps,                    dtype=np.float32)
+        self.logprobs    = np.zeros(vec_shape,                    dtype=np.float32)
+        self.rewards     = np.zeros(vec_shape,                    dtype=np.float32)
         self.dones       = np.zeros(num_steps,                    dtype=np.float32)
-        self.values      = np.zeros(num_steps,                    dtype=np.float32)
-        self.returns     = np.zeros(num_steps,                    dtype=np.float32)
-        self.advantages  = np.zeros(num_steps,                    dtype=np.float32)
+        self.values      = np.zeros(vec_shape,                    dtype=np.float32)
+        self.returns     = np.zeros(vec_shape,                    dtype=np.float32)
+        self.advantages  = np.zeros(vec_shape,                    dtype=np.float32)
 
     def add(self, community, action, logprob, reward, done, value) -> None:
         self.communities[self._ptr] = community
@@ -310,10 +395,17 @@ class CCLevel2Agent(BaseAgent):
         self._w_smoothness = float(hyper.get("w_smoothness", 0.02))
         self._prev_multipliers: Optional[np.ndarray] = None  # (N,), init at first step
 
+        # Factored per-building credit assignment. When True the critic, GAE,
+        # advantage and log-prob are all kept per building so PPO can push each
+        # building's multiplier independently — the fix for L2 collapsing to L1.
+        # Pair with reward_function CCRewardLevel2(reward_mode="per_building").
+        # When False the agent behaves exactly as before (joint community scalar).
+        self._per_building_credit = bool(hyper.get("per_building_credit", False))
+
         # Community size — must be set before rollout buffer is created.
         self._num_buildings = int(hyper.get("num_buildings", 17))
 
-        # Context dimension: 16 district + 6 per-building × N = 118 for N=17
+        # Context dimension: 17 district + 6 per-building × N = 119 for N=17
         self._n_district = _N_DISTRICT
         self._n_building_feats = _N_BUILDING_FEATS
         default_c_dim = _N_DISTRICT + _N_BUILDING_FEATS * self._num_buildings
@@ -324,16 +416,22 @@ class CCLevel2Agent(BaseAgent):
         self._building_feat_positions: List[List[int]] = []
 
         self._hidden_dims = list(hyper.get("hidden_dims", [256, 256]))
+        # Optional separate sizing for the shared per-building head; defaults to hidden_dims.
+        self._building_hidden_dims = list(hyper.get("building_hidden_dims", self._hidden_dims))
         self._lr = float(hyper.get("lr", 1e-4))
         self.policy = CommunityMarketMakerNetV2(
-            self._c_dim, self._num_buildings, self._hidden_dims
+            self._c_dim, self._num_buildings, self._hidden_dims,
+            n_district=self._n_district, n_building_feats=self._n_building_feats,
+            building_hidden_dims=self._building_hidden_dims,
+            per_building_credit=self._per_building_credit,
         )
         self.ppo_optim = Adam(self.policy.parameters(), lr=self._lr)
 
         self._reward_rms = RunningMeanStd()
 
         self.rollout_buffer = RolloutBufferV2(
-            int(hyper.get("num_steps", 96)), self._c_dim, self._num_buildings
+            int(hyper.get("num_steps", 96)), self._c_dim, self._num_buildings,
+            per_building=self._per_building_credit,
         )
         self._ppo_update_count = 0
 
@@ -345,9 +443,13 @@ class CCLevel2Agent(BaseAgent):
         self._cached_multipliers: np.ndarray = np.ones(self._num_buildings, dtype=np.float32)
         self._cached_action:      np.ndarray = np.zeros(self._num_buildings, dtype=np.float32)
         self._cached_community:   Optional[np.ndarray] = None
-        self._cached_logprob:     float = 0.0
-        self._cached_value:       float = 0.0
-        self._accumulated_reward: float = 0.0
+        # logprob/value are scalars in joint mode, (N,) arrays in per-building mode.
+        self._cached_logprob:     Any = 0.0
+        self._cached_value:       Any = 0.0
+        # Reward accumulators over the decision interval: scalar (joint) and
+        # per-building vector (factored). Only one is used, per _per_building_credit.
+        self._accumulated_reward:  float = 0.0
+        self._accumulated_rewards: np.ndarray = np.zeros(self._num_buildings, dtype=np.float32)
 
         # BC warm-start
         self._bc_enabled       = bool(hyper.get("bc_pretrain_enabled", False))
@@ -363,16 +465,25 @@ class CCLevel2Agent(BaseAgent):
         self._bc_target_import    = hyper.get("bc_target_import",    None)
         self._bc_reference_peak   = hyper.get("bc_reference_peak",   None)
         self._bc_reference_export = hyper.get("bc_reference_export", None)
+        self._bc_reference_price  = hyper.get("bc_reference_price",  None)  # €/kWh p50, auto if None
+        self._bc_reference_ramping = float(hyper.get("bc_reference_ramping", 1.878))  # p90 step-to-step Δimport
+        self._bc_reference_headroom = float(hyper.get("bc_reference_headroom", 2.0))  # kW low-headroom threshold
         self._bc_import_samples: List[float] = []
         self._bc_export_samples: List[float] = []
-        # Weights mirroring CCRewardLevel1
-        self._bc_w_cost   = float(hyper.get("bc_w_cost",   1.0))
-        self._bc_w_peak   = float(hyper.get("bc_w_peak",   0.3))
-        self._bc_w_export = float(hyper.get("bc_w_export", 0.1))
-        self._bc_mult_scale = float(hyper.get("bc_mult_scale", 1.0))
-        # Per-building modulation weights for BC teacher (mirror CCRewardLevel2)
-        self._bc_w_soc    = float(hyper.get("bc_w_soc",  0.2))   # legacy; TODO: remove after EV redesign
-        self._bc_w_net    = float(hyper.get("bc_w_net",  0.1))   # legacy; TODO: remove after EV redesign
+        self._bc_price_samples:  List[float] = []
+        # Ramp/violation tracking during BC collection (mirror CCLevel1Agent).
+        self._bc_prev_import_kwh: float = 0.0
+        self._bc_ramp_samples: List[float] = []
+        self._bc_violation_samples: List[float] = []
+        # Community weights mirroring CCRewardLevel1 (all 5 terms).
+        self._bc_w_cost      = float(hyper.get("bc_w_cost",      1.0))
+        self._bc_w_peak      = float(hyper.get("bc_w_peak",      0.6))
+        self._bc_w_ramp      = float(hyper.get("bc_w_ramp",      0.4))
+        self._bc_w_export    = float(hyper.get("bc_w_export",    0.05))
+        self._bc_w_violation = float(hyper.get("bc_w_violation", 2.0))
+        self._bc_w_headroom  = float(hyper.get("bc_w_headroom",  1.0))
+        self._bc_mult_scale  = float(hyper.get("bc_mult_scale",  1.0))
+        # Per-building EV modulation weight (mirrors CCRewardLevel2 w_ev).
         self._bc_w_ev     = float(hyper.get("bc_w_ev",   0.5))   # mirrors CCRewardLevel2 w_ev
         # Must match CCRewardLevel2.urgency_horizon so BC and reward use the same urgency scale.
         # The encoded obs feature connected_ev_departure_urgency_24h uses a fixed 24h horizon;
@@ -448,18 +559,24 @@ class CCLevel2Agent(BaseAgent):
 
     def _rebuild_for_num_buildings(self) -> None:
         """Reconstruct policy and buffer when num_buildings changes at env attach."""
-        self._c_dim = _N_DISTRICT + _N_BUILDING_FEATS * self._num_buildings  # 16 + 6×N
+        self._c_dim = _N_DISTRICT + _N_BUILDING_FEATS * self._num_buildings  # 17 + 6×N
         self.policy = CommunityMarketMakerNetV2(
             self._c_dim,
             self._num_buildings,
             self._hidden_dims,
+            n_district=self._n_district,
+            n_building_feats=self._n_building_feats,
+            building_hidden_dims=self._building_hidden_dims,
+            per_building_credit=self._per_building_credit,
         )
         self.ppo_optim = Adam(self.policy.parameters(), lr=self._lr)
         self.rollout_buffer = RolloutBufferV2(
-            self.rollout_buffer.num_steps, self._c_dim, self._num_buildings
+            self.rollout_buffer.num_steps, self._c_dim, self._num_buildings,
+            per_building=self._per_building_credit,
         )
         self._cached_multipliers = np.ones(self._num_buildings, dtype=np.float32)
         self._cached_action      = np.zeros(self._num_buildings, dtype=np.float32)
+        self._accumulated_rewards = np.zeros(self._num_buildings, dtype=np.float32)
 
     # ───────────────────────── Per-step interaction ──────────────────────────
 
@@ -475,8 +592,32 @@ class CCLevel2Agent(BaseAgent):
             if not self._bc_pretrain_done:
                 ctx = self._build_context(observations)
                 self._bc_contexts.append(ctx.copy())
-                # Compute teacher targets per building.
-                teacher_targets = self._bc_teacher_multipliers_per_building(ctx, observations)
+                # Accumulate community import/export/price for BC calibration.
+                _idx = _CC_LEVEL2_DISTRICT_FEATURES.index
+                dt = self._bc_dt_hours
+                imp_kwh = float(ctx[_idx("district__community_import_power_kw")]) * dt
+                self._bc_import_samples.append(imp_kwh)
+                self._bc_export_samples.append(
+                    float(ctx[_idx("district__community_export_power_kw")]) * dt
+                )
+                self._bc_price_samples.append(
+                    float(ctx[_idx("district__electricity_pricing")])
+                )
+                # Ramp: step-to-step change in community import (kWh).
+                ramp_kwh = abs(imp_kwh - self._bc_prev_import_kwh)
+                self._bc_ramp_samples.append(ramp_kwh)
+                self._bc_prev_import_kwh = imp_kwh
+                # Violation: sum charging_constraint_violation_kwh across buildings.
+                viol_idx = self._obs_index.get("charging_constraint_violation_kwh")
+                total_viol = (
+                    sum(float(obs[viol_idx]) for obs in observations)
+                    if viol_idx is not None else 0.0
+                )
+                self._bc_violation_samples.append(total_viol)
+                # Compute teacher targets per building (5-term community signal + EV mod).
+                teacher_targets = self._bc_teacher_multipliers_per_building(
+                    ctx, observations, ramp_kwh=ramp_kwh, violation_kwh=total_viol
+                )
                 self._bc_targets.append(teacher_targets.copy())
                 # Use per-building teacher as cached output.
                 self._cached_multipliers = teacher_targets.copy()
@@ -484,15 +625,6 @@ class CCLevel2Agent(BaseAgent):
                 self._cached_action      = teacher_targets - 1.0
                 self._cached_logprob     = 0.0
                 self._cached_value       = 0.0
-                # Accumulate community import/export for BC calibration.
-                _idx = _CC_LEVEL2_DISTRICT_FEATURES.index
-                dt = self._bc_dt_hours
-                self._bc_import_samples.append(
-                    float(ctx[_idx("district__community_import_power_kw")]) * dt
-                )
-                self._bc_export_samples.append(
-                    float(ctx[_idx("district__community_export_power_kw")]) * dt
-                )
                 if len(self._bc_contexts) >= self._bc_collect_steps:
                     self._run_bc_pretraining()
                     self._bc_pretrain_done = True
@@ -515,7 +647,16 @@ class CCLevel2Agent(BaseAgent):
         initial_exploration_done: bool,
     ) -> None:
         done = terminated or truncated
-        self._accumulated_reward += float(sum(rewards))
+        # Accumulate the interval reward: per-building vector (factored credit)
+        # or a single community scalar (joint).
+        if self._per_building_credit:
+            step_rewards = np.asarray(rewards, dtype=np.float32)
+            if step_rewards.shape[0] == self._num_buildings:
+                self._accumulated_rewards += step_rewards
+            else:  # defensive: unexpected length → fall back to broadcast mean
+                self._accumulated_rewards += float(np.sum(step_rewards)) / self._num_buildings
+        else:
+            self._accumulated_reward += float(sum(rewards))
         self._step_in_interval   += 1
 
         if not ((self._step_in_interval >= self._cc_action_interval) or done):
@@ -524,8 +665,9 @@ class CCLevel2Agent(BaseAgent):
         assert self._cached_community is not None, "predict() must run before update()"
 
         if not self._bc_pretrain_done:
-            self._step_in_interval   = 0
-            self._accumulated_reward = 0.0
+            self._step_in_interval    = 0
+            self._accumulated_reward  = 0.0
+            self._accumulated_rewards = np.zeros(self._num_buildings, dtype=np.float32)
             if done:
                 self._prev_multipliers = None
                 self._flush_decision_trace()
@@ -534,18 +676,27 @@ class CCLevel2Agent(BaseAgent):
         if self._prev_multipliers is None:
             self._prev_multipliers = np.ones(self._num_buildings, dtype=np.float32)
 
-        # Factor and smoothness penalties averaged over buildings.
-        factor_penalty     = float(np.mean((self._cached_multipliers - 1.0) ** 2))
-        smoothness_penalty = float(np.mean((self._cached_multipliers - self._prev_multipliers) ** 2))
-        aux = (
-            - self._w_factor     * factor_penalty
-            - self._w_smoothness * smoothness_penalty
-        )
-        self._prev_multipliers = self._cached_multipliers.copy()
+        if self._per_building_credit:
+            # Per-building factor + smoothness penalties (each building pays for
+            # its own deviation / jitter) → aux is a length-N vector.
+            factor_pen     = (self._cached_multipliers - 1.0) ** 2
+            smoothness_pen = (self._cached_multipliers - self._prev_multipliers) ** 2
+            aux = -self._w_factor * factor_pen - self._w_smoothness * smoothness_pen
+            raw = self._accumulated_rewards + aux                      # (N,)
+            # Shared scale: centre by the running mean of the community-average
+            # reward and divide by its std, so per-building differences survive.
+            self._reward_rms.update(float(np.mean(raw)))
+            scaled = ((raw - self._reward_rms.mean) / max(self._reward_rms.std, 1e-8)).astype(np.float32)
+        else:
+            # Factor and smoothness penalties averaged over buildings (scalar).
+            factor_penalty     = float(np.mean((self._cached_multipliers - 1.0) ** 2))
+            smoothness_penalty = float(np.mean((self._cached_multipliers - self._prev_multipliers) ** 2))
+            aux = -self._w_factor * factor_penalty - self._w_smoothness * smoothness_penalty
+            raw = self._accumulated_reward + aux
+            self._reward_rms.update(raw)
+            scaled = float((raw - self._reward_rms.mean) / max(self._reward_rms.std, 1e-8))
 
-        raw = self._accumulated_reward + aux
-        self._reward_rms.update(raw)
-        scaled = float((raw - self._reward_rms.mean) / max(self._reward_rms.std, 1e-8))
+        self._prev_multipliers = self._cached_multipliers.copy()
 
         self.rollout_buffer.add(
             community=self._cached_community,
@@ -556,8 +707,9 @@ class CCLevel2Agent(BaseAgent):
             value=self._cached_value,
         )
 
-        self._step_in_interval   = 0
-        self._accumulated_reward = 0.0
+        self._step_in_interval    = 0
+        self._accumulated_reward  = 0.0
+        self._accumulated_rewards = np.zeros(self._num_buildings, dtype=np.float32)
         if done:
             self._prev_multipliers = None
             self._flush_decision_trace()
@@ -567,8 +719,18 @@ class CCLevel2Agent(BaseAgent):
 
     # ──────────────────────── BC warm-start ──────────────────────────────────
 
-    def _community_signal(self, ctx: np.ndarray) -> float:
-        """Community-level raw signal (mirrors CCLevel1 BC teacher)."""
+    def _community_signal(
+        self, ctx: np.ndarray, *, ramp_kwh: float = 0.0, violation_kwh: float = 0.0
+    ) -> float:
+        """Community-level raw signal — mirrors CCLevel1Agent's 5-term BC teacher.
+
+          cost_signal      = (price - ref_price) / ref_price   (fixed p50 reference)
+          peak_signal      = max(0, imp_kWh - target)² / ref_peak
+          ramp_signal      = ramp_kwh / ref_ramping
+          export_signal    = -(exp_kWh / ref_export)
+          violation_signal = violation_kwh
+          headroom_signal  = max(0, (ref_headroom - headroom_kw) / ref_headroom)
+        """
         _idx = _CC_LEVEL2_DISTRICT_FEATURES.index
         price    = float(ctx[_idx("district__electricity_pricing")])
         price_p1 = float(ctx[_idx("district__electricity_pricing_predicted_1")])
@@ -576,57 +738,78 @@ class CCLevel2Agent(BaseAgent):
         price_p3 = float(ctx[_idx("district__electricity_pricing_predicted_3")])
         imp_kw   = float(ctx[_idx("district__community_import_power_kw")])
         exp_kw   = float(ctx[_idx("district__community_export_power_kw")])
+        headroom_kw = float(ctx[_idx("district__community_building_headroom_kw")])
         dt       = self._bc_dt_hours
         imp_kwh  = imp_kw * dt
         exp_kwh  = exp_kw * dt
 
-        ref_price   = (price_p1 + price_p2 + price_p3) / 3.0
+        # Price vs fixed p50 reference (avoids the rolling-average whitening bug).
+        # Until calibration runs (end of collection) fall back to the forecast mean.
+        ref_price   = (
+            self._bc_reference_price if self._bc_reference_price is not None
+            else (price_p1 + price_p2 + price_p3) / 3.0
+        )
         cost_signal = (price - ref_price) / max(ref_price, 1e-8)
 
-        peak_excess  = max(0.0, imp_kwh - self._bc_target_import)
-        peak_signal  = peak_excess ** 2 / self._bc_reference_peak
+        # Peak/export skipped until reference values are calibrated (kept None
+        # during collection so we never bake in hardcoded community thresholds).
+        if self._bc_target_import is not None and self._bc_reference_peak is not None:
+            peak_excess = max(0.0, imp_kwh - self._bc_target_import)
+            peak_signal = peak_excess ** 2 / self._bc_reference_peak
+        else:
+            peak_signal = 0.0
 
-        export_signal = -(exp_kwh / self._bc_reference_export)
+        if self._bc_reference_export is not None:
+            export_signal = -(exp_kwh / self._bc_reference_export)
+        else:
+            export_signal = 0.0
 
-        return (self._bc_w_cost * cost_signal
-                + self._bc_w_peak  * peak_signal
-                + self._bc_w_export * export_signal)
+        ramp_signal      = ramp_kwh / max(self._bc_reference_ramping, 1e-8)
+        violation_signal = violation_kwh
+        ref_headroom     = max(self._bc_reference_headroom, 1e-8)
+        headroom_signal  = max(0.0, (ref_headroom - headroom_kw) / ref_headroom)
+
+        return (self._bc_w_cost      * cost_signal
+                + self._bc_w_peak      * peak_signal
+                + self._bc_w_ramp      * ramp_signal
+                + self._bc_w_export    * export_signal
+                + self._bc_w_violation * violation_signal
+                + self._bc_w_headroom  * headroom_signal)
 
     def _bc_teacher_multipliers_per_building(
         self,
         ctx: np.ndarray,
         observations: List[np.ndarray],
+        *,
+        ramp_kwh: float = 0.0,
+        violation_kwh: float = 0.0,
     ) -> np.ndarray:
         """Compute per-building BC teacher multipliers.
 
         Mirrors CCRewardLevel2 term structure:
-            base       = community signal (cost + peak + export)
+            base       = community signal (cost + peak + ramp + export
+                         + violation + headroom — same 5 terms as CCRewardLevel1)
             ev_mod[i]  = -w_ev * urgency[i] * gap[i]
                          (high urgency + large deficit → lower mult to allow charging)
 
         Building block positions (resolved at attach_environment()):
-            [0] storage::soc                       → legacy soc_mod (kept for stability)
-            [2] net_power_kw                       → legacy net_mod (kept for stability)
             [3] connected_state (EV)
             [4] connected_ev_soc_deficit           = max(req - soc, 0) ∈ [0, 1]
             [5] connected_ev_departure_urgency_24h = 1 - hours/24 ∈ [0, 1]
         """
-        if self._bc_target_import is None or self._bc_reference_peak is None:
-            return np.ones(self._num_buildings, dtype=np.float32)
-
-        base = self._community_signal(ctx)
+        # During collection (before calibration) the community signal still
+        # yields the cost/ramp/violation/headroom terms; peak/export stay 0.
+        base = self._community_signal(ctx, ramp_kwh=ramp_kwh, violation_kwh=violation_kwh)
         mults = np.empty(self._num_buildings, dtype=np.float32)
         for i in range(self._num_buildings):
             obs_i = observations[i] if i < len(observations) else None
             if obs_i is not None and i < len(self._building_feat_positions):
                 positions = self._building_feat_positions[i]
-                soc          = float(obs_i[positions[0]]) if positions[0] >= 0 else 0.5
-                net          = float(obs_i[positions[2]]) if positions[2] >= 0 else 0.0
                 ev_conn      = float(obs_i[positions[3]]) if positions[3] >= 0 else 0.0
                 soc_def      = float(obs_i[positions[4]]) if positions[4] >= 0 else 0.0
                 urgency_24h  = float(obs_i[positions[5]]) if positions[5] >= 0 else 0.0
             else:
-                soc, net, ev_conn, soc_def, urgency_24h = 0.5, 0.0, 0.0, 0.0, 0.0
+                ev_conn, soc_def, urgency_24h = 0.0, 0.0, 0.0
 
             # The encoded feature connected_ev_departure_urgency_24h = 1 - hours/24.
             # Invert to recover actual hours, then re-apply the same horizon as
@@ -635,14 +818,11 @@ class CCLevel2Agent(BaseAgent):
             actual_hours = (1.0 - urgency_24h) * 24.0
             urgency = max(1.0 - actual_hours / self._bc_urgency_horizon, 0.0)
 
-            # Legacy modulation (small weight, gradually superseded by EV term).
-            soc_mod = -(soc - 0.5) * self._bc_w_soc
-            net_mod =  net         * self._bc_w_net
             # EV modulation: mirrors -w_ev * urgency * gap in CCRewardLevel2.
             # Negative sign: high harm → lower multiplier → cheaper price → EV charges.
-            ev_mod  = -self._bc_w_ev * urgency * soc_def * ev_conn
+            ev_mod = -self._bc_w_ev * urgency * soc_def * ev_conn
 
-            raw = float(np.clip((base + soc_mod + net_mod + ev_mod) * self._bc_mult_scale, -0.8, 0.8))
+            raw = float(np.clip((base + ev_mod) * self._bc_mult_scale, -0.8, 0.8))
             mults[i] = float(np.clip(1.0 + raw, self._price_min, self._price_max))
         return mults
 
@@ -651,9 +831,10 @@ class CCLevel2Agent(BaseAgent):
         X = np.stack(self._bc_contexts)          # (N_steps, c_dim)
         T = np.stack(self._bc_targets)            # (N_steps, num_buildings)
 
-        # Auto-calibrate reference values from community import/export distribution.
-        imp_arr = np.array(self._bc_import_samples, dtype=np.float64)
-        exp_arr = np.array(self._bc_export_samples, dtype=np.float64)
+        # Auto-calibrate reference values from community import/export/price distribution.
+        imp_arr   = np.array(self._bc_import_samples, dtype=np.float64)
+        exp_arr   = np.array(self._bc_export_samples, dtype=np.float64)
+        price_arr = np.array(self._bc_price_samples,  dtype=np.float64)
 
         if self._bc_target_import is None:
             self._bc_target_import = float(np.percentile(imp_arr, 75))
@@ -662,23 +843,32 @@ class CCLevel2Agent(BaseAgent):
             self._bc_reference_peak = max(float(np.percentile(excess_sq, 90)), 1e-6)
         if self._bc_reference_export is None:
             self._bc_reference_export = max(float(np.percentile(exp_arr, 90)), 1e-6)
+        if self._bc_reference_price is None:
+            # p50 so ~half the year price is above (expensive) and half below (cheap).
+            self._bc_reference_price = max(float(np.percentile(price_arr, 50)), 1e-6)
 
         logger.info(
             "CC-L2 BC | collected {} contexts | "
-            "target_import={:.3f} ref_peak={:.4f} ref_export={:.3f}",
+            "target_import={:.3f} ref_peak={:.4f} ref_export={:.3f} ref_price={:.4f} "
+            "ref_ramping={:.3f} ref_headroom={:.3f} | "
+            "w_cost={:.2f} w_peak={:.2f} w_ramp={:.2f} w_export={:.2f} w_violation={:.2f} "
+            "w_headroom={:.2f} w_ev={:.2f}",
             len(X),
             self._bc_target_import, self._bc_reference_peak, self._bc_reference_export,
+            self._bc_reference_price, self._bc_reference_ramping, self._bc_reference_headroom,
+            self._bc_w_cost, self._bc_w_peak, self._bc_w_ramp, self._bc_w_export,
+            self._bc_w_violation, self._bc_w_headroom, self._bc_w_ev,
         )
 
         # Re-compute targets now that reference values are calibrated.
         # Per-building block: [soc, pv, net, ev_conn, soc_deficit, urgency_24h]
         for j in range(len(X)):
-            base = self._community_signal(X[j])
+            ramp_kwh = self._bc_ramp_samples[j]      if j < len(self._bc_ramp_samples)      else 0.0
+            viol_kwh = self._bc_violation_samples[j] if j < len(self._bc_violation_samples) else 0.0
+            base = self._community_signal(X[j], ramp_kwh=ramp_kwh, violation_kwh=viol_kwh)
             d_start = _N_DISTRICT
             for i in range(self._num_buildings):
                 feat_start = d_start + i * _N_BUILDING_FEATS
-                soc         = float(X[j][feat_start + 0])  # storage::soc [0,1]
-                net         = float(X[j][feat_start + 2])  # net_power_kw [-1,1]
                 ev_conn     = float(X[j][feat_start + 3])  # connected_state {0,1}
                 soc_def     = float(X[j][feat_start + 4])  # soc_deficit [0,1]
                 urgency_24h = float(X[j][feat_start + 5])  # departure_urgency_24h [0,1]
@@ -686,10 +876,8 @@ class CCLevel2Agent(BaseAgent):
                 # then re-apply bc_urgency_horizon (same as CCRewardLevel2).
                 actual_hours = (1.0 - urgency_24h) * 24.0
                 urgency = max(1.0 - actual_hours / self._bc_urgency_horizon, 0.0)
-                soc_mod = -(soc - 0.5) * self._bc_w_soc
-                net_mod =  net         * self._bc_w_net
                 ev_mod  = -self._bc_w_ev * urgency * soc_def * ev_conn
-                raw = float(np.clip((base + soc_mod + net_mod + ev_mod) * self._bc_mult_scale, -0.8, 0.8))
+                raw = float(np.clip((base + ev_mod) * self._bc_mult_scale, -0.8, 0.8))
                 T[j, i] = float(np.clip(1.0 + raw, self._price_min, self._price_max))
 
         # Convert multiplier targets to pre-tanh space (atanh).
@@ -702,16 +890,17 @@ class CCLevel2Agent(BaseAgent):
         X_t   = torch.tensor(X,     dtype=torch.float32)
         T_t   = torch.tensor(T_raw, dtype=torch.float32)
 
-        bc_params = (list(self.policy.encoder.parameters())
-                     + list(self.policy.mean_head.parameters()))
+        # Train the actor (district encoder + shared building head) against the
+        # per-building teacher targets.
+        bc_params = (list(self.policy.district_encoder.parameters())
+                     + list(self.policy.building_head.parameters()))
         bc_opt    = Adam(bc_params, lr=self._bc_lr)
         N         = len(X_t)
         losses: List[float] = []
 
         for step in range(self._bc_train_steps):
             idx_mb = np.random.randint(0, N, size=min(64, N))
-            h      = self.policy.encoder(X_t[idx_mb])
-            pred   = self.policy.mean_head(h)             # (batch, num_buildings)
+            pred   = self.policy.action_means(X_t[idx_mb])  # (batch, num_buildings)
             loss   = (pred - T_t[idx_mb]).pow(2).mean()
             bc_opt.zero_grad()
             loss.backward()
@@ -727,11 +916,21 @@ class CCLevel2Agent(BaseAgent):
         if mlflow.active_run():
             mlflow.log_metrics(
                 {
-                    "CC2/bc_pretrain_loss":          mean_loss,
-                    "CC2/bc_pretrain_collect_n":     float(N),
-                    "CC2/bc_pretrain_target_import": self._bc_target_import,
-                    "CC2/bc_pretrain_ref_peak":      self._bc_reference_peak,
-                    "CC2/bc_pretrain_ref_export":    self._bc_reference_export,
+                    "CC2/bc_pretrain_loss":              mean_loss,
+                    "CC2/bc_pretrain_collect_n":         float(N),
+                    "CC2/bc_pretrain_target_import":     self._bc_target_import,
+                    "CC2/bc_pretrain_ref_peak":          self._bc_reference_peak,
+                    "CC2/bc_pretrain_ref_export":        self._bc_reference_export,
+                    "CC2/bc_pretrain_ref_price":         self._bc_reference_price,
+                    "CC2/bc_pretrain_ref_ramping":       self._bc_reference_ramping,
+                    "CC2/bc_pretrain_ref_headroom":      self._bc_reference_headroom,
+                    "CC2/bc_pretrain_w_cost":            self._bc_w_cost,
+                    "CC2/bc_pretrain_w_peak":            self._bc_w_peak,
+                    "CC2/bc_pretrain_w_ramp":            self._bc_w_ramp,
+                    "CC2/bc_pretrain_w_export":          self._bc_w_export,
+                    "CC2/bc_pretrain_w_violation":       self._bc_w_violation,
+                    "CC2/bc_pretrain_w_headroom":        self._bc_w_headroom,
+                    "CC2/bc_pretrain_w_ev":              self._bc_w_ev,
                 },
                 step=0,
             )
@@ -740,15 +939,19 @@ class CCLevel2Agent(BaseAgent):
         self._bc_targets.clear()
         self._bc_import_samples.clear()
         self._bc_export_samples.clear()
+        self._bc_price_samples.clear()
+        self._bc_ramp_samples.clear()
+        self._bc_violation_samples.clear()
+        self._bc_prev_import_kwh = 0.0
 
     # ───────────────────────── Internal: decision ────────────────────────────
 
     def _build_context(self, observations: List[np.ndarray]) -> np.ndarray:
-        """Build (16 + 6*N,) context vector from all buildings' encoded observations.
+        """Build (17 + 6*N,) context vector from all buildings' encoded observations.
 
         Layout:
-            [0:16]         district features (from obs[0])
-            [16 : 16+6*N]  per-building features (obs[i] for i in range(N))
+            [0:17]          district features (from obs[0])
+            [17 : 17+6*N]   per-building features (obs[i] for i in range(N))
 
         Within each building block of 6:
             [0] storage::soc                       [0, 1]
@@ -792,8 +995,7 @@ class CCLevel2Agent(BaseAgent):
 
         with torch.no_grad():
             if deterministic:
-                h    = self.policy.encoder(ctx_t)
-                raw  = self.policy.mean_head(h)           # (1, N)
+                raw  = self.policy.action_means(ctx_t)    # (1, N)
                 _, logprob, _, value = self.policy.get_action_and_value(ctx_t, raw)
             else:
                 raw, logprob, _, value = self.policy.get_action_and_value(ctx_t)
@@ -805,8 +1007,13 @@ class CCLevel2Agent(BaseAgent):
         self._cached_action      = raw_np.astype(np.float32)
         self._cached_multipliers = mults.astype(np.float32)
         self._cached_community   = ctx
-        self._cached_logprob     = float(logprob.item())
-        self._cached_value       = float(value.item())
+        if self._per_building_credit:
+            # Per-building log-prob/value (shape (N,)); stored as-is in the buffer.
+            self._cached_logprob = logprob.squeeze(0).numpy().astype(np.float32)
+            self._cached_value   = value.squeeze(0).numpy().astype(np.float32)
+        else:
+            self._cached_logprob = float(logprob.item())
+            self._cached_value   = float(value.item())
 
         self._log_decision()
 
@@ -818,8 +1025,12 @@ class CCLevel2Agent(BaseAgent):
         ).unsqueeze(0)
         with torch.no_grad():
             _, _, _, last_value = self.policy.get_action_and_value(ctx)
+        bootstrap = (
+            last_value.squeeze(0).numpy() if self._per_building_credit
+            else float(last_value.item())
+        )
         self.rollout_buffer.compute_gae(
-            float(last_value.item()), done, self._gamma, self._gae_lambda
+            bootstrap, done, self._gamma, self._gae_lambda
         )
         self._run_ppo_update()
         self.rollout_buffer.reset()
@@ -828,11 +1039,16 @@ class CCLevel2Agent(BaseAgent):
         data = self.rollout_buffer.get()
         community    = data["community"]   # (T, c_dim)
         actions      = data["actions"]     # (T, N)
-        old_logprobs = data["logprobs"]    # (T,)
-        returns      = data["returns"]     # (T,)
-        advantages   = data["advantages"]  # (T,)
+        # logprobs/returns/advantages are (T,) in joint mode, (T, N) when the
+        # credit is factored per building. All ops below are elementwise + mean,
+        # so the same code trains both — a per-building advantage then pushes
+        # each building's multiplier independently.
+        old_logprobs = data["logprobs"]
+        returns      = data["returns"]
+        advantages   = data["advantages"]
         old_values   = torch.tensor(self.rollout_buffer.values, dtype=torch.float32)
 
+        # Normalise advantages over all elements (time and, if present, buildings).
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         num_steps = self.rollout_buffer.num_steps
@@ -849,7 +1065,8 @@ class CCLevel2Agent(BaseAgent):
                 _, new_logprobs, entropy, new_values = self.policy.get_action_and_value(
                     community[mb], actions[mb]
                 )
-                new_values = new_values.squeeze()
+                # Align value shape with the targets (mb,) joint / (mb, N) factored.
+                new_values = new_values.reshape(returns[mb].shape)
 
                 log_ratio  = new_logprobs - old_logprobs[mb]
                 ratio      = torch.exp(log_ratio)
@@ -895,6 +1112,7 @@ class CCLevel2Agent(BaseAgent):
                     "CC2/PPO_log_std":    log_std_mean,
                     "CC2/reward_mean":    float(self._reward_rms.mean),
                     "CC2/reward_std":     float(self._reward_rms.std),
+                    "CC2/per_building_credit": float(self._per_building_credit),
                 },
                 step=self._ppo_update_count,
             )
@@ -935,7 +1153,7 @@ class CCLevel2Agent(BaseAgent):
             "mult_std":        float(mults.std()),
             "mult_min":        float(mults.min()),
             "mult_max":        float(mults.max()),
-            "value_est":       self._cached_value,
+            "value_est":       float(np.mean(self._cached_value)),
             "import_norm":     float(ctx[_idx("district__community_import_power_kw")]),
             "pv_norm":         float(ctx[_idx("district__community_pv_power_kw")]),
             "carbon_norm":     float(ctx[_idx("district__carbon_intensity")]),
@@ -1038,16 +1256,28 @@ class CCLevel2Agent(BaseAgent):
         onnx_dir = export_root / "onnx_models"
         onnx_dir.mkdir(parents=True, exist_ok=True)
         export_path = onnx_dir / "cc2_market_maker.onnx"
+
+        # Export the actor: full community context → per-building pre-tanh means.
+        # (The old export only saved the encoder, which no longer exists and was
+        # insufficient for inference anyway.)
+        class _ActorWrapper(nn.Module):
+            def __init__(self, policy: nn.Module) -> None:
+                super().__init__()
+                self.policy = policy
+
+            def forward(self, community: torch.Tensor) -> torch.Tensor:
+                return self.policy.action_means(community)
+
         torch.onnx.export(
-            self.policy.encoder,
+            _ActorWrapper(self.policy),
             torch.randn(1, self._c_dim),
             str(export_path),
             export_params=True,
             opset_version=DEFAULT_ONNX_OPSET,
             do_constant_folding=True,
             input_names=["community_context"],
-            output_names=["hidden"],
-            dynamic_axes={"community_context": {0: "batch"}, "hidden": {0: "batch"}},
+            output_names=["per_building_means"],
+            dynamic_axes={"community_context": {0: "batch"}, "per_building_means": {0: "batch"}},
         )
         return {
             "format": "onnx",
@@ -1072,6 +1302,7 @@ class CCLevel2Agent(BaseAgent):
                 "bc_target_import":   self._bc_target_import,
                 "bc_reference_peak":  self._bc_reference_peak,
                 "bc_reference_export": self._bc_reference_export,
+                "bc_reference_price": self._bc_reference_price,
             },
             path,
         )
@@ -1097,7 +1328,8 @@ class CCLevel2Agent(BaseAgent):
         self._global_cc_step    = int(ckpt.get("global_cc_step", 0))
         if "bc_pretrain_done" in ckpt:
             self._bc_pretrain_done = bool(ckpt["bc_pretrain_done"])
-        for key in ("bc_target_import", "bc_reference_peak", "bc_reference_export"):
+        for key in ("bc_target_import", "bc_reference_peak", "bc_reference_export",
+                    "bc_reference_price"):
             if key in ckpt and ckpt[key] is not None:
                 setattr(self, f"_{key}", float(ckpt[key]))
         logger.info("CC-L2 checkpoint loaded ← {}", path)

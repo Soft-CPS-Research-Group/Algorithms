@@ -110,14 +110,17 @@ class CCRewardLevel1(RewardFunction):
                 return max(cls._safe(obs[key]), 0.0)
         return 0.0
 
-    # ── main interface ────────────────────────────────────────────────────────
+    # ── community scalar (reusable by subclasses) ──────────────────────────────
 
-    def calculate(
+    def _community_scalar(
         self, observations: List[Mapping[str, Union[int, float]]]
-    ) -> List[float]:
-        if not observations:
-            return []
+    ) -> float:
+        """Compute the community reward scalar (the 5 community terms).
 
+        Subclasses (e.g. CCRewardLevel2) reuse this so the community reward can
+        never drift from the Level-1 definition. Advances ``_prev_import`` as a
+        side effect, so it must be called exactly once per timestep.
+        """
         # ── Community aggregates ─────────────────────────────────────────────
         community_net = sum(
             self._safe(obs.get("net_electricity_consumption")) for obs in observations
@@ -148,7 +151,7 @@ class CCRewardLevel1(RewardFunction):
         violation_norm  = total_violation / self._ref_violation
 
         # ── Combined scalar ──────────────────────────────────────────────────
-        scalar = (
+        return (
             - self._w_cost      * cost_norm
             - self._w_peak      * peak_norm
             - self._w_ramp      * ramp_norm
@@ -156,5 +159,14 @@ class CCRewardLevel1(RewardFunction):
             - self._w_violation * violation_norm
         )
 
+    # ── main interface ────────────────────────────────────────────────────────
+
+    def calculate(
+        self, observations: List[Mapping[str, Union[int, float]]]
+    ) -> List[float]:
+        if not observations:
+            return []
+
+        scalar = self._community_scalar(observations)
         per_building = scalar / len(observations)
         return [per_building] * len(observations)

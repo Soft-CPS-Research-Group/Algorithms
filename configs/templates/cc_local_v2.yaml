@@ -12,7 +12,7 @@
 
 metadata:
   experiment_name: "cc_level1"
-  run_name: "CC-L1 Price Multiplier"
+  run_name: "CC-L1 2x Peak Weight"
 
 runtime:
   log_dir: null
@@ -142,7 +142,7 @@ pipeline:
       bc_price_p80: 0.21
       # Multi-signal teacher weights (mirror CCRewardLevel1).
       bc_w_cost: 1.0               # relative price signal weight
-      bc_w_peak: 0.6               # peak import signal weight (was 0.3)
+      bc_w_peak: 2               # peak import signal weight (was 0.3)
       bc_w_ramp: 0.4               # ramping signal weight (NEW)
       bc_w_export: 0.05            # excess export signal weight (was 0.1)
       bc_w_violation: 2.0          # electrical violation signal weight (NEW)
