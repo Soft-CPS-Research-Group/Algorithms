@@ -1,14 +1,15 @@
-# Community Coordinator Level 1 — local development template.
+# Community Coordinator Level 1 — V2 reward variant (NO violation penalty).
 #
-# Phase 1: Global Price Multiplier (Market Maker)
-# CC observes community aggregates only. Emits one continuous price multiplier:
-#   multiplier ∈ [price_min, price_max]
-#   > 1.0 → "energy more expensive" → RBC reduces consumption / discharges batteries
-#   = 1.0 → neutral
-#   < 1.0 → "energy cheaper"       → RBC increases consumption / charges batteries
+# Identical to cc_local.yaml except the reward function is CCRewardLevel1V2,
+# which drops the electrical-violation penalty term (those violations were a
+# code bug, not a genuine grid breach). The BC teacher is synced to match:
+# bc_w_violation is set to 0.0 so it does not push prices up on violations the
+# reward no longer penalises.
 #
-# Low-level: SignalAwareRBC scales price perception from this context.
-# No per-building features, no EV/SoC/headroom observations at CC level.
+# The proactive community-headroom oversight (bc_w_headroom) is ALSO deactivated
+# here (set to 0.0) — this variant drops the whole electrical-service signalling.
+# Note: headroom is still observed by the CC (feature [16], c_dim 17); only the
+# teacher's steering on it is switched off.
 
 metadata:
   experiment_name: "cc_level1"
@@ -64,7 +65,7 @@ simulator:
     normalization: minmax_space
     profile: cc_level1
     clip: true
-  reward_function: CCRewardLevel1
+  reward_function: CCRewardLevel1V2     # V2: no electrical-violation penalty
   episodes: 10
   simulation_start_time_step: null
   simulation_end_time_step: null
@@ -85,7 +86,7 @@ topology:
   action_dimensions: null
   action_space: null
 
-# Two-stage pipeline: CCLevel1 manager → RBCCommunityPolicy workers.
+# Two-stage pipeline: CCLevel1 manager → SignalAwareRBC workers.
 pipeline:
   - algorithm: "CCLevel1"
     count: 1
@@ -101,7 +102,7 @@ pipeline:
 
       # Price multiplier action range.
       price_min: 0.5
-      price_max: 1.3
+      price_max: 1.5
 
       # Temporal abstraction: CC decides every hour over 15-minute steps.
       cc_action_interval: 4
@@ -132,7 +133,7 @@ pipeline:
       target_kl: 0.1
 
       # Behaviour-cloning warm-start (runs once before any RL).
-      # Teacher mirrors CCRewardLevel1: cost + peak-import + export signals.
+      # Teacher mirrors CCRewardLevel1V2: cost + peak-import + ramp + export.
       bc_pretrain_enabled: true
       bc_collect_steps: 8736       # full year (34944 env steps / cc_action_interval=4)
       bc_train_steps: 2000
@@ -140,16 +141,15 @@ pipeline:
       # Legacy price thresholds — kept for backward-compat, no longer drive teacher.
       bc_price_p20: 0.10
       bc_price_p80: 0.21
-      # Multi-signal teacher weights (mirror CCRewardLevel1).
+      # Multi-signal teacher weights (mirror CCRewardLevel1V2).
       bc_w_cost: 1.0               # relative price signal weight
-      bc_w_peak: 0.6               # peak import signal weight (was 0.3)
-      bc_w_ramp: 0.4               # ramping signal weight (NEW)
-      bc_w_export: 0.05            # excess export signal weight (was 0.1)
-      bc_w_violation: 2.0          # electrical violation signal weight (NEW)
-      # Community oversight — the CC watches the shared three-phase service limit
-      # and raises the multiplier as headroom shrinks, so workers back off BEFORE
-      # a violation. This is the CC's job, not the per-building Smart RBC's.
-      bc_w_headroom: 1.0           # community headroom-stress signal weight (NEW)
+      bc_w_peak: 0.6               # peak import signal weight
+      bc_w_ramp: 0.4               # ramping signal weight
+      bc_w_export: 0.05            # excess export signal weight
+      bc_w_violation: 0.0          # V2: violation penalty removed → teacher synced to 0
+      # Community oversight — proactive headroom-stress signal. Deactivated in this
+      # variant (0.0): the teacher no longer steers on community headroom.
+      bc_w_headroom: 0.0           # community headroom-stress signal weight (OFF)
       bc_reference_headroom: 2.0   # kW margin below which the CC starts conserving
       bc_reference_ramping: 1.878  # p90 step-to-step import change (kWh)
       # Reference values for the BC teacher.

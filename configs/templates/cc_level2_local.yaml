@@ -8,7 +8,8 @@
 #   = 1.0 → neutral
 #   < 1.0 → "energy cheaper"        → building i increases consumption
 #
-# Observation: 16 district features + 6 per-building features × 17 = 118 total.
+# Observation: 17 district features + 6 per-building features × 17 = 119 total.
+#   District [16]: community_building_headroom_kw (grid capacity margin).
 #   Per-building: storage::soc, pv::generation_power_kw, net_power_kw,
 #                 ev_connected, ev_soc_deficit, ev_departure_urgency
 # Action:      List[float] of length 17, one multiplier per building.
@@ -95,18 +96,25 @@ pipeline:
   - algorithm: "CCLevel2"
     count: 1
     hyperparameters:
-      # 118-dimensional context:
-      #   [0-15]   district features (time, pricing, carbon, community power)
-      #   [16-117] per-building features × 17:
+      # 119-dimensional context:
+      #   [0-16]   district features (time, pricing, carbon, community power,
+      #            community_building_headroom_kw [16])
+      #   [17-118] per-building features × 17:
       #              [0] storage::soc          [0,1]
       #              [1] pv::generation_power_kw [0,1]
       #              [2] net_power_kw           [-1,1] (signed)
       #              [3] ev connected_state     {0,1}
       #              [4] ev soc_deficit         [0,1]
       #              [5] ev departure_urgency   [0,1]
-      c_dim: 118
+      c_dim: 119
       num_buildings: 17
+      # Permutation-equivariant actor: a shared district encoder (hidden_dims)
+      # feeds a SINGLE shared per-building head applied to [district_emb,
+      # building_i_features] for every building. Guarantees identical building
+      # state → identical multiplier, and forces differentiation through state
+      # (no per-building output rows/biases → no arbitrary frozen price tiers).
       hidden_dims: [256, 256]
+      # building_hidden_dims: [256, 256]   # optional; defaults to hidden_dims
 
       # Price multiplier action range.
       price_min: 0.5
@@ -130,11 +138,11 @@ pipeline:
       mini_batch_size: 64
       clip_coef: 0.2
       vf_coef: 1.0
-      ent_coef: 0.05
+      ent_coef: 0.005           # matches tuned CC Phase 1 (was 0.05)
 
       # Auxiliary reward weights (factor + smoothness penalty, averaged over buildings)
       w_factor: 0.3
-      w_smoothness: 0.02
+      w_smoothness: 0.1         # matches tuned CC Phase 1 (was 0.02)
       max_grad_norm: 0.5
       target_kl: 0.1
 
@@ -146,13 +154,16 @@ pipeline:
       bc_train_steps: 2000
       bc_lr: 1.0e-3
       bc_dt_hours: 0.25            # timestep size for kW → kWh conversion
-      # Community weights — must match CCRewardLevel2
+      # Community weights — must match CCRewardLevel1 (inherited by CCRewardLevel2).
       bc_w_cost: 1.0
-      bc_w_peak: 0.3
-      bc_w_export: 0.1
+      bc_w_peak: 0.6              # was 0.3 — aligned with CC Phase 1
+      bc_w_ramp: 0.4             # ramping signal (NEW — ported from Phase 1)
+      bc_w_export: 0.05          # was 0.1 — aligned with CC Phase 1
+      bc_w_violation: 2.0        # electrical violation signal (NEW — ported from Phase 1)
+      bc_w_headroom: 1.0         # proactive community-oversight signal (NEW — ported from Phase 1)
+      bc_reference_ramping: 1.878  # p90 step-to-step import change (kWh)
+      bc_reference_headroom: 2.0   # kW margin below which the CC raises prices
       # Per-building EV modulation — mirrors CCRewardLevel2 w_ev
-      bc_w_soc: 0.2               # legacy SoC modulation (pre-EV-redesign; TODO: remove)
-      bc_w_net: 0.1               # legacy net modulation  (pre-EV-redesign; TODO: remove)
       bc_w_ev: 0.5                # EV urgency → lower mult when gap·urgency is high
       # Must match CCRewardLevel2.urgency_horizon exactly.
       # The encoded obs feature uses a 24h horizon; we invert it to recover actual
@@ -164,8 +175,16 @@ pipeline:
       # bc_target_import: 4.14
       # bc_reference_peak: 2.72
       # bc_reference_export: 7.52
+      # bc_reference_price: 0.15   # €/kWh p50 — override auto p50 of episode-0 price
 
   - algorithm: SignalAwareRBC
     count: 17
+    hyperparameters:
+      allow_v2g: true
+      ev_v2g_discharge_rate: 0.18
+      ev_v2g_reserve_soc: 0.0
+      ev_v2g_min_departure_hours: 2.0
+      ev_v2g_service_margin_soc: 0.02
+      ev_v2g_buffer_soc: 0.12
 
 execution: null
