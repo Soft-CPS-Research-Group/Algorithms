@@ -380,6 +380,32 @@ class TestEnsembleLifecycle:
         assert b.attach_calls[0]["action_space"] == ["s1"]
         assert a.attach_calls[0]["metadata"] == {"shared": True}
 
+    def test_attach_environment_slices_member_metadata(self) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+
+        Ensemble([a, b]).attach_environment(
+            observation_names=[["raw_a"], ["raw_b"]],
+            action_names=[["act_a"], ["act_b"]],
+            action_space=["space_a", "space_b"],
+            observation_space=["obs_space_a", "obs_space_b"],
+            metadata={
+                "building_names": ["Building_1", "Building_2"],
+                "raw_observation_names": [["raw_a"], ["raw_b"]],
+                "encoded_observation_names": [["encoded_a"], ["encoded_b"]],
+                "shared": "kept",
+            },
+        )
+
+        assert a.attach_calls[0]["metadata"]["building_names"] == ["Building_1"]
+        assert b.attach_calls[0]["metadata"]["building_names"] == ["Building_2"]
+        assert a.attach_calls[0]["metadata"]["raw_observation_names"] == [["raw_a"]]
+        assert b.attach_calls[0]["metadata"]["raw_observation_names"] == [["raw_b"]]
+        assert a.attach_calls[0]["metadata"]["encoded_observation_names"] == [["encoded_a"]]
+        assert b.attach_calls[0]["metadata"]["encoded_observation_names"] == [["encoded_b"]]
+        assert a.attach_calls[0]["metadata"]["shared"] == "kept"
+        assert b.attach_calls[0]["metadata"]["shared"] == "kept"
+
     def test_initial_exploration_requires_all_members(self) -> None:
         ready = RecordingUnit("ready", initial_exploration_done=True)
         warming = RecordingUnit("warming", initial_exploration_done=False)

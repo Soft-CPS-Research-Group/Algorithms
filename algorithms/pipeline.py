@@ -400,6 +400,15 @@ class Ensemble(ExecutionUnit):
                 f"Adjust 'count' in the pipeline config to match the environment."
             )
         for index, agent in enumerate(self.agents):
+            member_metadata = dict(metadata or {})
+            for key in (
+                "building_names",
+                "raw_observation_names",
+                "encoded_observation_names",
+            ):
+                value = member_metadata.get(key)
+                if isinstance(value, (list, tuple)) and index < len(value):
+                    member_metadata[key] = [value[index]]
             agent.attach_environment(
                 observation_names=(
                     [observation_names[index]] if index < len(observation_names) else []
@@ -413,7 +422,7 @@ class Ensemble(ExecutionUnit):
                 observation_space=(
                     [observation_space[index]] if index < len(observation_space) else []
                 ),
-                metadata=metadata,
+                metadata=member_metadata,
             )
 
     # ------------------------------------------------------------------
