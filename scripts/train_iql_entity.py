@@ -85,7 +85,7 @@ def _parse_groups(raw: str) -> List[Tuple[int, int]]:
     return result
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     default_data = REPO_ROOT / "datasets" / "offline_rl" / "rbcsmart_entity"
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -127,12 +127,32 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--gradient-steps", type=int, default=150_000)
     p.add_argument("--eval-every", type=int, default=2_500)
+    p.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=5_000,
+        help=(
+            "Persist a within-seed checkpoint every N gradient steps. "
+            "Forwarded to IQLTrainingConfig.checkpoint_every_n_steps. "
+            "Default: 5000."
+        ),
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Ignore each seed's seed.done / checkpoint_latest.pt sentinels "
+            "and retrain from scratch. Forwarded to "
+            "train_all_groups / train_entity_multi_seed."
+        ),
+    )
     p.add_argument("--device", default="cpu")
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: Optional[List[str]] = None) -> int:
+    args = parse_args(argv)
 
     seeds: List[int] = [int(s) for s in args.seeds.split(",") if s.strip()]
     if not seeds:
@@ -167,6 +187,7 @@ def main() -> int:
         batch_size=args.batch_size,
         gradient_steps=args.gradient_steps,
         eval_every_n_steps=args.eval_every,
+        checkpoint_every_n_steps=args.checkpoint_every,
         device=args.device,
     )
 
@@ -195,6 +216,7 @@ def main() -> int:
             val_seeds=val_seeds,
             config=config,
             groups=groups,
+            force=args.force,
         )
     else:
         # Subset of groups: run each independently
@@ -211,6 +233,7 @@ def main() -> int:
                 seeds=seeds,
                 val_seeds=val_seeds,
                 config=config,
+                force=args.force,
             )
             results[group_key] = agg
 

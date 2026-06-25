@@ -44,6 +44,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from algorithms.offline_rl.checkpoint_utils import atomic_save, write_status
 from algorithms.offline_rl.entity_dataset import EntityOfflineDataset, load_entity_dataset
 from algorithms.offline_rl.entity_schema import AGENT_GROUPS, AgentGroupSpec
 from algorithms.offline_rl.iql_networks import GaussianPolicy, QNetwork, ValueNetwork
@@ -174,8 +175,19 @@ def train_cql_single_seed(
     seed: int,
     val_seeds: Optional[Sequence[int]] = None,
     config: CQLTrainingConfig,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Train one CQL seed for a given agent group.
+
+    Resume / idempotency
+    --------------------
+    Same contract as :func:`algorithms.offline_rl.iql_entity_trainer.train_entity_single_seed`:
+
+    * ``seed.done`` → early-return with persisted summary (unless ``force``).
+    * ``checkpoint_latest.pt`` → restore networks / optimisers / RNG and
+      continue from saved step (unless ``force``).
+    * Persists ``best_policy.pt`` on each val MSE improvement.
+    * Writes ``status.json`` after every checkpoint.
 
     Parameters
     ----------
@@ -191,9 +203,25 @@ def train_cql_single_seed(
         Dataset seeds to hold out for validation.  Default: last seed.
     config:
         CQL hyperparameters.
+    force:
+        If ``True``, ignore both ``seed.done`` and ``checkpoint_latest.pt``
+        and retrain from scratch.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Early-return if this seed already finished successfully.
+    seed_done_path = output_dir / "seed.done"
+    summary_path = output_dir / "seed_summary.json"
+    if seed_done_path.exists() and summary_path.exists() and not force:
+        print(
+            f"[cql_entity] seed.done present at {output_dir} — skipping (force=False)",
+            flush=True,
+        )
+        return json.loads(summary_path.read_text())
+
+    if force and seed_done_path.exists():
+        seed_done_path.unlink()
 
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
@@ -245,17 +273,91 @@ def train_cql_single_seed(
     )
 
     metrics_path = output_dir / "metrics.jsonl"
-    metrics_path.write_text("")
+    checkpoint_path = output_dir / "checkpoint_latest.pt"
 
     best_val_mse: float = float("inf")
     best_step: int = -1
     best_state: Optional[Dict[str, torch.Tensor]] = None
     last_metrics: Dict[str, Any] = {}
-    t0 = time.time()
     rng_gen = torch.Generator(device=device).manual_seed(int(seed))
     n_train = len(train_ds)
 
-    for step in range(int(config.gradient_steps)):
+    # Resume bookkeeping
+    start_step = 0
+    wall_clock_resumed = 0.0
+    resumed = False
+    if checkpoint_path.exists() and not force:
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        policy.load_state_dict(ckpt["policy_state"])
+        q1.load_state_dict(ckpt["qf1_state"])
+        q2.load_state_dict(ckpt["qf2_state"])
+        q1_target.load_state_dict(ckpt["qf1_target_state"])
+        q2_target.load_state_dict(ckpt["qf2_target_state"])
+        value_net.load_state_dict(ckpt["vf_state"])
+        pi_opt.load_state_dict(ckpt["policy_opt_state"])
+        q_opt.load_state_dict(ckpt["qf_opt_state"])
+        v_opt.load_state_dict(ckpt["vf_opt_state"])
+        torch.set_rng_state(ckpt["rng_state_torch"])
+        np.random.set_state(ckpt["rng_state_numpy"])
+        rng_gen.set_state(ckpt["rng_state_gen"].cpu())
+        best_val_mse = float(ckpt["best_val_mse"])
+        best_step = int(ckpt["best_step"])
+        if ckpt.get("best_policy_state") is not None:
+            best_state = {k: v.cpu().clone() for k, v in ckpt["best_policy_state"].items()}
+        start_step = int(ckpt["step"])
+        wall_clock_resumed = float(ckpt.get("wall_clock_seconds", 0.0))
+        resumed = True
+        print(
+            f"[cql_entity] resuming at step={start_step}, "
+            f"best_val_mse={best_val_mse:.6f} (best_step={best_step})",
+            flush=True,
+        )
+    else:
+        metrics_path.write_text("")
+
+    t0 = time.time()
+    checkpoint_every = max(1, int(config.checkpoint_every_n_steps))
+
+    def _snapshot_checkpoint(step: int, val_mse: Optional[float]) -> None:
+        wall_clock = wall_clock_resumed + (time.time() - t0)
+        payload = {
+            "step": int(step),
+            "policy_state": policy.state_dict(),
+            "qf1_state": q1.state_dict(),
+            "qf2_state": q2.state_dict(),
+            "qf1_target_state": q1_target.state_dict(),
+            "qf2_target_state": q2_target.state_dict(),
+            "vf_state": value_net.state_dict(),
+            "policy_opt_state": pi_opt.state_dict(),
+            "qf_opt_state": q_opt.state_dict(),
+            "vf_opt_state": v_opt.state_dict(),
+            "rng_state_torch": torch.get_rng_state(),
+            "rng_state_numpy": np.random.get_state(),
+            "rng_state_gen": rng_gen.get_state(),
+            "best_val_mse": float(best_val_mse),
+            "best_step": int(best_step),
+            "best_policy_state": (
+                {k: v.detach().cpu().clone() for k, v in best_state.items()}
+                if best_state is not None
+                else None
+            ),
+            "wall_clock_seconds": float(wall_clock),
+        }
+        atomic_save(payload, checkpoint_path)
+        write_status(
+            output_dir / "status.json",
+            {
+                "group_key": spec.group_key,
+                "seed": int(seed),
+                "step": int(step),
+                "val_mse": (float(val_mse) if val_mse is not None else None),
+                "best_val_mse": float(best_val_mse),
+                "best_step": int(best_step),
+                "wall_clock_seconds": float(wall_clock),
+            },
+        )
+
+    for step in range(start_step, int(config.gradient_steps)):
         # Sample minibatch
         idx = torch.randint(0, n_train, (config.batch_size,), generator=rng_gen, device=device)
         s = train_ds._obs[idx]
@@ -324,12 +426,14 @@ def train_cql_single_seed(
         _soft_update(q2_target, q2, config.tau_target)
 
         # --- Eval / log ---
-        eval_due = (step + 1) % max(int(config.eval_every_n_steps), 1) == 0
+        completed_step = step + 1
+        eval_due = completed_step % max(int(config.eval_every_n_steps), 1) == 0
         is_last = step == int(config.gradient_steps) - 1
+        val_mse: Optional[float] = None
         if eval_due or is_last:
             val_mse = _eval_policy_mse_entity(policy, val_ds, device=device)
             record = {
-                "step": int(step + 1),
+                "step": int(completed_step),
                 "v_loss": float(v_loss.item()),
                 "q_loss": float(q_loss.item()),
                 "bellman_mse": float(bellman_mse.item()),
@@ -345,19 +449,26 @@ def train_cql_single_seed(
             last_metrics = record
             if val_mse < best_val_mse:
                 best_val_mse = float(val_mse)
-                best_step = int(step + 1)
-                best_state = {k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
+                best_step = int(completed_step)
+                best_state = {
+                    k: v.detach().cpu().clone() for k, v in policy.state_dict().items()
+                }
+                atomic_save(best_state, output_dir / "best_policy.pt")
 
-    duration = time.time() - t0
+        # --- Checkpoint ---
+        if completed_step % checkpoint_every == 0 or is_last:
+            _snapshot_checkpoint(completed_step, val_mse)
+
+    duration = wall_clock_resumed + (time.time() - t0)
 
     # Persist artefacts
     if best_state is not None:
-        torch.save(best_state, output_dir / "policy.pt")
+        atomic_save(best_state, output_dir / "policy.pt")
     else:
-        torch.save(policy.state_dict(), output_dir / "policy.pt")
-    torch.save(q1.state_dict(), output_dir / "q1.pt")
-    torch.save(q2.state_dict(), output_dir / "q2.pt")
-    torch.save(value_net.state_dict(), output_dir / "value.pt")
+        atomic_save(policy.state_dict(), output_dir / "policy.pt")
+    atomic_save(q1.state_dict(), output_dir / "q1.pt")
+    atomic_save(q2.state_dict(), output_dir / "q2.pt")
+    atomic_save(value_net.state_dict(), output_dir / "value.pt")
     standardiser.save(output_dir / "obs_standardiser.npz")
 
     arch = policy.architecture_summary()
@@ -378,6 +489,7 @@ def train_cql_single_seed(
         "n_val": len(val_ds),
         "gradient_steps": int(config.gradient_steps),
         "duration_seconds": float(duration),
+        "resumed": bool(resumed),
         "best_step": int(best_step),
         "best_val_policy_mse": float(best_val_mse),
         "final_metrics": last_metrics,
@@ -386,6 +498,16 @@ def train_cql_single_seed(
         "obs_names": spec.obs_names,
     }
     (output_dir / "seed_summary.json").write_text(json.dumps(summary, indent=2))
+
+    seed_done_path.write_text(
+        json.dumps(
+            {
+                "seed": int(seed),
+                "group_key": spec.group_key,
+                "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+        )
+    )
     return summary
 
 
@@ -403,8 +525,17 @@ def train_cql_multi_seed(
     seeds: Sequence[int],
     val_seeds: Optional[Sequence[int]] = None,
     config: CQLTrainingConfig,
+    force: bool = False,
 ) -> Dict[str, Any]:
-    """Train multiple CQL seeds for one agent group."""
+    """Train multiple CQL seeds for one agent group.
+
+    Parameters
+    ----------
+    force:
+        If ``True``, ignore each seed's ``seed.done`` / ``checkpoint_latest.pt``
+        sentinels and retrain from scratch.  Forwarded to
+        :func:`train_cql_single_seed`.
+    """
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -424,6 +555,7 @@ def train_cql_multi_seed(
             seed=int(seed),
             val_seeds=val_seeds,
             config=config,
+            force=force,
         )
         seed_summaries.append(summary)
         seeds_index[str(int(seed))] = str(seed_dir)
@@ -470,6 +602,7 @@ def train_all_groups(
     val_seeds: Optional[Sequence[int]] = None,
     config: CQLTrainingConfig,
     groups: Optional[Sequence[Tuple[int, int]]] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Train CQL for all (or specified) agent groups.
 
@@ -477,6 +610,10 @@ def train_all_groups(
     ----------
     groups:
         List of ``(obs_dim, action_dim)`` pairs.  Defaults to all four groups.
+    force:
+        If ``True``, ignore ``seed.done`` / ``checkpoint_latest.pt`` sentinels
+        and retrain every (group, seed) from scratch.  Forwarded to
+        :func:`train_cql_multi_seed`.
     """
     if groups is None:
         groups = list(AGENT_GROUPS)
@@ -497,6 +634,7 @@ def train_all_groups(
             seeds=seeds,
             val_seeds=val_seeds,
             config=config,
+            force=force,
         )
         results[group_key] = agg
 

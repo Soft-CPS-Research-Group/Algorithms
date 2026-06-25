@@ -54,3 +54,37 @@ def test_agentgroupspec_has_buildings_field():
     # Backward compat: default empty
     g2 = AgentGroupSpec(obs_dim=10, action_dim=1)
     assert g2.buildings == []
+
+
+# ---------------------------------------------------------------------------
+# probe_agent_groups: end-to-end (instantiates CityLearn, unpacks env.reset)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not HOURLY_SCHEMA.exists(), reason="hourly dataset not present")
+def test_probe_agent_groups_returns_non_empty_specs():
+    """probe_agent_groups must instantiate CityLearn, reset, and return AgentGroupSpec list.
+
+    Regression guard for the bug where probe_agent_groups treated env.reset()'s
+    (payload, info) tuple as the payload directly, crashing with
+    ``AttributeError: 'tuple' object has no attribute 'get'`` inside
+    EntityContractAdapter.to_agent_observations.
+    """
+    from algorithms.offline_rl.entity_schema import probe_agent_groups
+
+    groups = probe_agent_groups(HOURLY_SCHEMA)
+    assert len(groups) > 0, "expected at least one agent group from hourly schema"
+    for g in groups:
+        assert g.obs_dim > 0, f"obs_dim must be positive: {g}"
+        assert g.action_dim > 0, f"action_dim must be positive: {g}"
+        assert len(g.buildings) > 0, f"each group must list buildings: {g}"
+
+
+@pytest.mark.skipif(not HOURLY_SCHEMA.exists(), reason="hourly dataset not present")
+def test_probe_agent_groups_group_keys_unique():
+    """No two AgentGroupSpec objects share the same (obs_dim, action_dim)."""
+    from algorithms.offline_rl.entity_schema import probe_agent_groups
+
+    groups = probe_agent_groups(HOURLY_SCHEMA)
+    keys = [(g.obs_dim, g.action_dim) for g in groups]
+    assert len(keys) == len(set(keys)), f"duplicate group keys: {keys}"

@@ -174,14 +174,20 @@ def probe_agent_groups(schema_path: _Union[str, _Path]) -> List["AgentGroupSpec"
         episode_time_steps=1,  # minimal episode to make reset() cheap; we only need obs/action dims
     )
     try:
-        payload = env.reset()
+        # CityLearn (gymnasium-style) returns (payload, info) — we only need the payload.
+        payload, _info = env.reset()
         adapter = _Adapter(env, normalization_enabled=False, clip=False)
-        obs_list = adapter.to_agent_encoded_observations(payload)
+        # to_agent_encoded_observations returns (obs_arrays, obs_names, obs_spaces).
+        obs_arrays, _, _ = adapter.to_agent_encoded_observations(payload)
+        # env.action_names is a per-building list-of-lists (one inner list per agent).
+        # In the entity interface env.action_space is a nested Dict over tables/entities,
+        # NOT a per-building sequence; iterating it yields keys (strings), which previously
+        # caused `AttributeError: 'str' object has no attribute 'low'`.
+        action_names_per_building = list(env.action_names)
         building_names = [b.name for b in env.buildings]
-        action_space = env.action_space
         groups: dict = _dd(list)
-        for i, (obs, space) in enumerate(zip(obs_list, action_space)):
-            key = (len(obs), len(space.low.flatten()))
+        for i, (obs, anames) in enumerate(zip(obs_arrays, action_names_per_building)):
+            key = (len(obs), len(anames))
             groups[key].append(building_names[i])
     finally:
         env.close()

@@ -97,6 +97,8 @@ class IQLTrainingConfig:
     batch_size: int = 256
     gradient_steps: int = 150_000
     eval_every_n_steps: int = 2_500
+    checkpoint_every_n_steps: int = 5_000
+    """Persist ``checkpoint_latest.pt`` every N gradient steps (Phase 2 resume)."""
     val_fraction: float = 0.1
     device: str = "cpu"
 

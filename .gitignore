@@ -19,3 +19,9 @@ configs/local_ui_test_static.yaml
 
 # Git worktrees
 .worktrees/
+
+# OS, editor state, large binary artifacts
+.DS_Store
+.opencode/
+thesis.pdf
+*.pt

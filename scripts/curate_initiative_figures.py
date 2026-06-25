@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
@@ -35,6 +36,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (must follow matplotlib.use)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Ensure ``scripts.*`` imports resolve when this file is executed directly
+# (e.g. ``python scripts/curate_initiative_figures.py``).  Without this guard
+# the script silently drops figs 01/07/08/09 because the helper imports raise
+# ModuleNotFoundError, which the script swallows as warnings.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "docs" / "offline_rl" / "iql_cql_figures"
 DEFAULT_SHOWCASE_GROUP = "obs627_act1"
 DEFAULT_GROUPS = ["obs627_act1", "obs706_act2", "obs749_act3", "obs785_act3"]
