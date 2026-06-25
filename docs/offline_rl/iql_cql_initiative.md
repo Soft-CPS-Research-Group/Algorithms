@@ -1,11 +1,12 @@
 # IQL + CQL 15-min Initiative — Engineering Note
 
-> **Status:** Implementation note (production in flight; numbers marked
-> `<!-- TBD: production -->` will be filled in during Phase 12).
+> **Status:** Implementation note (production complete 2026-06-25; numbers
+> previously marked `<!-- TBD: production -->` were filled in during Phase 12
+> against `runs/offline_iql_cql_initiative_15min/`).
 > **Branch:** `feature/offline-agents-implementation`.
 > **Parent plan:** [`iql_cql_initiative_plan.md`](iql_cql_initiative_plan.md).
 > **Spec:** [`phase11_consolidated_doc_design.md`](phase11_consolidated_doc_design.md).
-> **Date drafted:** 2026-06-22.
+> **Date drafted:** 2026-06-22. **Production filled:** 2026-06-25.
 
 This document is a self-contained engineering note for the offline-RL
 initiative that takes the Building-5-only iteration (recorded in
@@ -21,7 +22,7 @@ It is the repo deliverable; the thesis treatment lives in Ch4-Ch6.
 2. [Dataset](#2-dataset)
 3. [Algorithms (IQL + CQL)](#3-algorithms-iql--cql)
 4. [Resume & status visibility](#4-resume--status-visibility)
-5. [Engineering — the CityLearn OOM](#5-engineering--the-citylearn-oom)
+5. [Engineering — two OOMs](#5-engineering--two-ooms)
 6. [Training setup](#6-training-setup)
 7. [Benchmark results](#7-benchmark-results)
 8. [Feature analysis highlights](#8-feature-analysis-highlights)
@@ -43,7 +44,6 @@ The Building-5-only iteration recorded in [`thesis_notes.md`](thesis_notes.md) w
 
 **Why this initiative now.** The full multi-building run only became feasible after Phases 1-8 of the parent plan landed: per-stage sentinels, atomic checkpoints, `status.json` progress reporting, and a single resumable orchestrator that survives crashes mid-collection or mid-training. Without that scaffolding, a 10-seed × 17-building run would be one fragile process away from restarting from scratch.
 
-<!-- TBD: production -->
 ![End-to-end pipeline: collect (RBCSmart, 10 seeds × 35040 steps) → train-iql + train-cql (150k steps, 4 groups × 9 seeds) → benchmark (10 eval seeds) → feature-analysis → curated figures.](iql_cql_figures/01_pipeline_overview.png)
 
 The rest of this note walks the pipeline from data to results.
@@ -69,16 +69,12 @@ Each group is trained as its own model. This matches CityLearn's per-building ag
 
 **Reward.** The per-agent reward column stores `CostServiceCommunityFeasiblePrecisionRewardV46` captured **live** during collection, not synthesised from KPIs after the rollout. This preserves the exact reward signal that any subsequent online comparison would see and removes a class of reconstruction bugs. The term-by-term breakdown, the design rationale, and the calibration history (the Building-5 iteration's NNLS fit plus the hybrid-floor rule that handles collinear KPI terms) are recorded in [`reward_design.md`](reward_design.md); both still apply unchanged for the multi-building data, with no per-building re-tuning.
 
-<!-- TBD: production -->
 ![Dataset stats: per-seed row counts, total transitions, disk size, schema hash.](iql_cql_figures/02_dataset_stats.png)
 
-<!-- TBD: production -->
 ![Action coverage for the 10-building `obs627_act1` cohort: the RBCSmart policy concentrates on a narrow action regime, motivating CQL's pessimism penalty on OOD actions.](iql_cql_figures/03_action_coverage_group_a.png)
 
-<!-- TBD: production -->
 ![Reward distribution segmented by RBCSmart action regime (charge / idle / discharge × peak / off-peak).](iql_cql_figures/04_reward_by_regime.png)
 
-<!-- TBD: production -->
 ![Temporal patterns: mean reward and action by hour-of-day, day-of-week.](iql_cql_figures/06_temporal_patterns.png)
 
 For the full exploratory analysis see [`feature_analysis/feature_analysis.md`](feature_analysis/feature_analysis.md); §8 of this note summarises the three insights from that EDA that matter for IQL and CQL training.
@@ -155,7 +151,6 @@ class CQLTrainingConfig(IQLTrainingConfig):
 
 **No online fine-tuning.** This initiative stays purely offline by design: the constraint set forbids live env interaction during training, and any online refinement is a separate downstream stage outside the scope of this note.
 
-<!-- TBD: production -->
 ![CQL penalty trace over training, all four agent groups: the penalty rises as Q estimates drift OOD and is bounded by `α=0.2`.](iql_cql_figures/09_training_cql_penalty.png)
 
 ---
@@ -231,7 +226,9 @@ Each trainer additionally writes a *per-seed* `status.json` inside its own outpu
 
 ---
 
-## 5. Engineering — the CityLearn OOM
+## 5. Engineering — two OOMs
+
+The full multi-building, full-year, full-feature pipeline tripped two distinct out-of-memory bugs. §5.1-§5.7 cover the first (in CityLearn, killed the collector at step 16000 of seed 22); §5.8 covers the second (in our analysis script, killed feature-analysis after benchmark had already finished). Both turned out to be unbounded data structures discovered only at production scale.
 
 ### 5.1 The crash
 
@@ -332,6 +329,37 @@ The production rerun (PID 93540, 2026-06-22 14:14 launch) confirmed the projecti
 
 Downstream library invariants matter. Memoisation tables that look harmless at the temporal granularity their authors tested can OOM at finer granularities, especially when keyed on object identity (which never collides for short-lived ndarrays). The patch is small — about ninety lines — because we only had to bound one dict. The diagnostic effort, three probes over a few hours, was the real work. When a library you depend on caches without bounds, expect to discover it under exactly the workload the library was not tested against.
 
+### 5.8 The second OOM (feature-analysis), Bug 8
+
+Production completed cleanly through benchmark and immediately fell over in the next stage. At 2026-06-25 00:08:13 UTC, with `.benchmark.done` already on disk and the orchestrator entering `feature-analysis`, the analysis subprocess died with SIGKILL after roughly five minutes of memory-pressured swapping. Pipeline log:
+
+```text
+[pipeline] feature-analysis: scripts.analyze_entity_dataset
+[load_seeds] reading seed_22.parquet (1.8 GB)
+[load_seeds] reading seed_23.parquet (1.8 GB)
+...
+[load_seeds] concatenating 10 frames
+Killed: 9
+```
+
+Same signal, different culprit. This time the bug was in our own code, not CityLearn.
+
+**Root cause.** `scripts/analyze_entity_dataset.py:load_seeds()` read all ten seed parquets and concatenated them into a single pandas DataFrame. At full multi-building scale that frame is roughly 5.96M rows × ~5800 columns (the entity layout is sparse-wide: every group's features get a column, NaN-padded where a group lacks that feature). At float64 that materialises to ~205 GB — well past the 48 GB physical RAM and beyond what macOS swap could absorb. The function was originally written for the Building-5 iteration, where the dataset was 35 columns and 5800 rows; the concat-everything pattern fit comfortably then. It didn't scale.
+
+**The fix.** Three changes to `scripts/analyze_entity_dataset.py`, modelled on the column-selective loader pattern already present in [`algorithms/offline_rl/entity_dataset.py:176-219`](../../algorithms/offline_rl/entity_dataset.py):
+
+1. `_load_group(group_key, max_rows_per_seed)` reads only the columns belonging to one agent group, iterating seeds one at a time and optionally sampling rows. Sampling uses `df.sample(random_state=42).sort_index()` so the choice is deterministic across runs and preserves temporal order.
+2. `_load_columns_narrow(NARROW_DATASET_COLS)` reads only ~10 metadata columns (`agent_id`, `reward`, `timestamp`, etc.) across all seeds for the dataset-wide sections (§1 stats, §4 reward distribution, §7 temporal patterns).
+3. `_compute_per_agent_rows_for_group(...)` pre-computes per-agent row counts from parquet metadata without loading data, used by the §6 per-building table.
+
+The CLI gained `--max-rows-per-seed` (default 200000, `0` disables capping). `figure_01_dataset_stats` was refactored to read true totals from parquet footers (it must not lie about dataset size even when downstream sections sample). The old `load_seeds` was deleted outright to prevent the foot-gun returning.
+
+**Validation.** The re-run completed in 8m 7s on production data with `--max-rows-per-seed 200000`. Actual per-group loads: narrow=2M × 10 cols; `obs627_act1`=2M × 1264 cols (capped from 3.5M); `obs706_act2`=1.75M × 1423; `obs749_act3`=350K × 1510; `obs785_act3`=350K × 1582. Peak RSS stayed well under the 48 GB envelope. Output: 16 per-section PNGs in `runs/.../feature_analysis/figures/` plus `summary.md` (5343 bytes) with rich per-group Spearman rankings — the multi-building EDA that the Building-5 era never had. Sentinel `.feature_analysis.done` written.
+
+**Test coverage.** [`tests/scripts/test_analyze_entity_dataset.py`](../../tests/scripts/test_analyze_entity_dataset.py) gained a `_make_multi_group_seed_parquet` helper + `multi_group_data_dir` fixture and four new tests (now 17 total) that lock the column-selective behaviour: `test_load_group_returns_only_obs4_group_cols`, `test_load_group_returns_only_obs6_group_cols`, `test_load_group_max_rows_per_seed_caps_loaded_rows`, and the end-to-end regression `test_analyzer_handles_multi_group_wide_sparse_e2e`. Full repo pytest passes (783 tests).
+
+**Lesson.** Same family as Bug 7 — an unbounded data structure surfacing only at production scale — but the blame this time was ours, not a dependency. The fix pattern (column-selective loading + row capping) was already in the codebase one level up; we just needed to clone it into the analysis path. The broader lesson: validate at the scale you will actually run, not at smoke-test scale. The Building-5 → all-17-buildings jump is not 17× the data — it is 17× the rows and roughly 165× the columns once sparse-wide encoding is in play.
+
 ---
 
 ## 6. Training setup
@@ -349,43 +377,40 @@ The training matrix is four agent groups × nine train seeds × two algorithms (
 | Total runs | 4 × 9 × 2 = 72 | — |
 | Best-checkpoint policy | per-(group, seed): lowest validation MSE on seed 31 | trainer default |
 
-**Wall-clock estimate.** On CPU, each (group, seed) takes roughly 11 hours for IQL or CQL, putting each (group, algorithm) at ~99 hours and the full 72-run sweep at ~792 hours if executed strictly in series. The orchestrator does in fact serialise groups and seeds — concurrency would compete for the same CPU cores on a single workstation. <!-- TBD: production --> Final wall-clock will be filled in from `status.json` after production completes.
+**Wall-clock (production, 2026-06-22 13:14 → 2026-06-25 00:01 UTC).** The full sweep finished inside the overnight-budget envelope: collect 17h 54m, train-iql 13h 59m, train-cql 26h 54m. Per-group, IQL took 3.2-3.8 h to walk all 9 train seeds (≈25 min/seed); CQL took 6.4-7.0 h (≈45 min/seed). The ~2× CQL multiplier reflects the extra conservative-Q logsumexp pass each step plus the random-action sampling that pass requires. The orchestrator serialises groups and seeds end-to-end — concurrency would compete for the same CPU cores on a single 14-core workstation, and the single-thread torch path saturated one core comfortably without contention. End-to-end with downstream stages (benchmark 91 s, feature-analysis 8m 7s — the latter is the re-run after Bug 8, see §5.8) was 58h 50m. The original 11-hour-per-(group, seed) sizing estimate from pre-production was off by ~20× because it predated the Bug 7 patch; under unbounded CityLearn cache pressure each step was dominated by allocator churn.
 
 **Validation protocol.** Validation MSE on seed 31 is the model-selection signal. Every `--checkpoint-every 5000` gradient steps, the trainer writes `checkpoint_latest.pt` (the resume target, see §4) and, if validation MSE improved against the running best, also writes `best_policy.pt`. The benchmark stage in §7 loads `best_policy.pt` for each (group, seed) pair, so the policy that ships forward is always the lowest-validation-MSE checkpoint, never the last one.
 
-<!-- TBD: production -->
 ![Training loss curve, IQL on `obs627_act1` showcase group, seed 22 — stable convergence over 150k gradient steps.](iql_cql_figures/07_training_loss_group_a.png)
 
-<!-- TBD: production -->
 ![Validation MSE across all four agent groups for both algorithms; shaded band = 1σ over the 9 train seeds.](iql_cql_figures/08_training_valmse_all.png)
 
 ---
 
 ## 7. Benchmark results
 
-Every `(group, algorithm, train seed)` triple is evaluated on env seeds 200..209 — ten seeds disjoint from the collection set (22-31) and the validation seed (31). KPIs are CityLearn's normalised values where 1.0 is the no-control baseline and lower is better. The headline KPIs are `cost_total`, `carbon_emissions_total`, `electricity_consumption_peak`, and `ramping`; `unserved_energy` is tracked separately as a hard constraint that any acceptable policy must satisfy.
-
-<!-- TBD: production -->
+Every `(group, algorithm)` pair is evaluated on env seeds 200..209 — ten seeds disjoint from the collection set (22-31) and the validation seed (31). The benchmark uses the best-val-MSE policy per (group, algorithm) — one model per group, not all nine train seeds — combined across groups so the simulator drives the full 17-building district at evaluation time. KPIs are CityLearn's normalised values where 1.0 is the no-control baseline and lower is better. The headline KPIs are `cost_total`, `carbon_emissions_total`, `daily_peak_average`, and `ramping_average`; `annual_normalized_unserved_energy_total` is tracked separately as a hard constraint that any acceptable policy must satisfy.
 
 | KPI                              | RBCSmart      | IQL           | CQL           | Δ (best − RBC) |
 |----------------------------------|--------------:|--------------:|--------------:|---------------:|
-| `cost_total` (district)          | TBD ± TBD     | TBD ± TBD     | TBD ± TBD     | TBD            |
-| `carbon_emissions_total`         | TBD ± TBD     | TBD ± TBD     | TBD ± TBD     | TBD            |
-| `electricity_consumption_peak`   | TBD ± TBD     | TBD ± TBD     | TBD ± TBD     | TBD            |
-| `ramping`                        | TBD ± TBD     | TBD ± TBD     | TBD ± TBD     | TBD            |
-| `unserved_energy`                | TBD           | TBD           | TBD           | TBD            |
+| `cost_total` (district)          | 2.110 ± 0.396 | 1.128 ± 0.150 | 1.457 ± 0.624 | IQL −46.5% (p=0.002) |
+| `carbon_emissions_total`         | 2.094 ± 0.381 | 1.181 ± 0.107 | 1.478 ± 0.524 | IQL −43.6% (p=0.002) |
+| `daily_peak_average`             | 1.105 ± 0.035 | 1.059 ± 0.071 | 1.070 ± 0.019 | IQL −4.2% (p=0.084) |
+| `ramping_average`                | 1.750 ± 0.154 | 3.164 ± 0.388 | 5.409 ± 3.207 | RBC best (IQL +81%, CQL +209%) |
+| `annual_normalized_unserved_energy_total` | 0.000 ± 0.000 | 0.000 ± 0.000 | 0.000 ± 0.000 | tie at 0 |
 
-**Per-group breakdown.** The same KPIs are aggregated per agent group (`obs627_act1`, `obs706_act2`, `obs749_act3`, `obs785_act3`) to expose whether the headline district numbers are dominated by the 10-building `obs627_act1` cohort or whether the smaller groups move the needle. The source of truth is `runs/offline_iql_cql_initiative_15min/benchmark/results.json`, which the benchmark stage writes once all (group, seed) policies finish.
+> Aggregates are mean ± std across 10 disjoint eval seeds (200..209), district-level, n=10. Each eval rollout is 95 steps (~24 hours of 15-min control), not a full year — the variance is across ten independent day-windows. Source: `runs/offline_iql_cql_initiative_15min/benchmark/results.json`.
 
-**Statistical test.** For each (group, KPI) pair we report a paired-Wilcoxon signed-rank p-value comparing IQL and CQL on the same ten eval seeds (paired by seed index). With n=10 the test is interpretable but underpowered for small effect sizes; we read p < 0.05 as suggestive rather than conclusive when the absolute KPI delta is below ~1%. <!-- TBD: production --> The four group-level p-values are tabulated in §7's per-group breakdown once production completes.
+**On per-group breakdowns.** A per-group KPI table would be the natural next slice, but CityLearn computes its KPIs at the district level — the simulator aggregates per-building electricity flow into a single district cost / carbon / peak / ramping number at episode end, so the current `benchmark_entity_agents.py` does not produce per-group KPI rows. The per-group surrogate we *do* have is each group's best-checkpoint validation MSE on seed 31: `obs627_act1` 2.60e-4 ± 1.6e-5 (IQL) vs 2.59e-4 ± 9.5e-6 (CQL); `obs706_act2` 9.72e-4 ± 4.7e-5 vs 9.50e-4 ± 4.0e-5; `obs749_act3` 1.44e-4 ± 1.6e-5 vs 1.68e-4 ± 1.6e-5; `obs785_act3` 1.15e-4 ± 8.1e-6 vs 1.21e-4 ± 2.3e-6 (full table in `runs/.../models-{iql,cql}/all_groups_summary.json`). Validation MSE measures imitation fidelity against the held-out RBCSmart trajectories; it predicts but does not equal benchmark performance.
 
-<!-- TBD: production -->
-> _On the headline cost KPI, [IQL/CQL] reduces district cost by **TBD%** relative to RBCSmart (paired-Wilcoxon p = **TBD**). Carbon follows the same direction. Peak demand and ramping show **TBD** — expected given the reward weights (peak:cost ≈ 2:1 in standardised space). Unserved energy stays at zero across all 50 (= 5 train × 10 eval) rollouts, matching the Building-5 iteration's safety result._
+**Statistical test.** Each Δ-column p-value in the table above is a two-sided paired-Wilcoxon signed-rank test over the ten eval seeds (paired by seed index), comparing the best-performing learned algorithm against RBCSmart. With n=10 the test is interpretable but underpowered for small effect sizes; we read p < 0.05 as suggestive rather than conclusive when the absolute KPI delta is below ~5%. Head-to-head IQL vs CQL (also paired-Wilcoxon, two-sided, n=10): cost p=0.002, carbon p=0.002, daily-peak p=0.232 (not significant), ramping p=0.065 (borderline) — IQL wins cost and carbon decisively, the two algorithms are statistically indistinguishable on daily-peak, and the ramping difference is only weakly signalled.
 
-<!-- TBD: production -->
+> _On the headline cost KPI, IQL reduces district cost by **46.5%** relative to RBCSmart (paired-Wilcoxon p=0.002, n=10); CQL by **30.9%** (p=0.014). Carbon follows the same direction — IQL −43.6%, CQL −29.4% — and is significant at p≤0.006 for both. Daily-peak shows a smaller, borderline-significant IQL improvement (−4.2%, p=0.084) and a comparable CQL improvement (−3.2%, p=0.037). Ramping is the one KPI where RBC stays ahead: it rises sharply for both learned policies (IQL +81%, CQL +209%), which we read as a textbook offline-RL regression mode — the policies oscillate near the optimum because the dataset never punished oscillation, and CQL's pessimism penalty amplifies the effect by widening the action distribution. Unserved energy stays at exactly zero across all 30 rollouts (3 algorithms × 10 eval seeds), preserving the Building-5 iteration's hard-safety result. The honest regression worth flagging: `zero_net_energy` moves from RBC's −0.37 (close to self-balanced) to IQL's +1.02 and CQL's +1.30 — the learned policies achieve cheaper grid import overall but at the cost of self-consumption. This is the reward function (V46) doing exactly what it was told to do: cost and feasibility were weighted, ZNE was not._
+>
+> _Caveat on rollout length: each eval episode runs 95 steps (~24 hours of 15-min control), not a full year. The ten env seeds give us ten independent days rather than ten full-year traces, which means the bench has good across-day variance but says nothing about across-season generalisation; a follow-up sweep should evaluate the same checkpoints on full-year horizons before any deployment claim._
+
 ![Benchmark KPI bar chart — cost, carbon, peak, ramping for RBCSmart vs IQL vs CQL at district level. Error bars = ±1σ over the 10 eval seeds.](iql_cql_figures/10_benchmark_kpi_bars.png)
 
-<!-- TBD: production -->
 ![IQL vs CQL per-eval-seed cost scatter (district). y = x reference line. Points below the line: CQL beats IQL on that seed.](iql_cql_figures/11_iql_vs_cql_scatter.png)
 
 ---
@@ -396,11 +421,10 @@ Every `(group, algorithm, train seed)` triple is evaluated on env seeds 200..209
 
 **Insight 1 — Action concentration.** RBCSmart's action distribution is tightly concentrated: mostly idle, with a narrow EV-charge band when PV-bonus or emergency conditions trip. Translated to offline RL, this means the dataset only covers a small slice of `(s, a)` space; learned Q-values would be over-confident on the unsampled regions if we used vanilla Q-learning. This is the textbook motivation for CQL's penalty on OOD actions. Figure 03 in §2 visualises the coverage for the `obs627_act1` cohort. IQL addresses the same risk from a different angle — its expectile-V never queries OOD actions in the first place.
 
-**Insight 2 — Feature × reward correlations.** A handful of features dominate predictive power for reward: net electricity consumption, carbon intensity, and non-shiftable load. The pattern is consistent across all four agent groups, and it matches what the Building-5 iteration found on its 35-feature single-building dataset. The figure below shows the correlation matrix for the showcase group; the brightest off-diagonal cluster is the price/temperature forecast triplets, which carry redundant information and are a future feature-engineering target. For the per-group breakdown see the *What actually matters* section of [`feature_analysis/feature_analysis.md`](feature_analysis/feature_analysis.md).
+**Insight 2 — Feature × reward correlations differ sharply by group.** The storage-only `obs627_act1` cohort is reward-dominated by net-energy features (`net_energy_prev_1_kwh_step` ρ=−0.805, `import_energy_prev_1_kwh_step` ρ=−0.800), which matches what the Building-5 iteration found on its 35-feature single-building dataset. The three EV-bearing groups tell a different story: `flexible_energy_to_full_kwh` ranks first in all three, with ρ ranging from −0.69 in `obs785_act3` to −0.86 in `obs749_act3`; `obs749_act3` additionally surfaces solar generation at ρ=+0.75, reflecting that singleton cohort's PV-loaded configuration; `obs706_act2` adds EV-charger-state at ρ=−0.605 and an hour-of-day proxy at ρ=−0.587. This split tracks the physical configuration of each cohort and rules out the over-simple reading that one feature family explains reward everywhere. The price/temperature forecast triplets remain redundant across all groups and are a future feature-engineering target. The figure below shows the showcase `obs627_act1` correlation matrix; the full per-group Spearman tables live in `runs/offline_iql_cql_initiative_15min/feature_analysis/summary.md` after the feature-analysis stage runs.
 
 **Insight 3 — Temporal structure.** Reward and EV-action distributions cycle visibly on hour-of-day (figure 06 in §2). Reward dips during evening grid peaks and rebounds overnight as EV charging dominates the action signal. The trainer never sees a raw timestamp; the proxy features (hour-of-day, day-of-week one-hots, time-to-next-EV-departure) encode the cycle adequately for the policy to learn the daily structure without explicit temporal embeddings.
 
-<!-- TBD: production -->
 ![Feature–reward correlation matrix for the `obs627_act1` showcase group. The brightest off-diagonal cluster is the price/temperature forecast triplets — a redundancy worth flagging for future feature engineering.](iql_cql_figures/05_correlations_group_a.png)
 
 ---
