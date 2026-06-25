@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-06-25T08:36:22.294682+00:00",
+  "run_dir": "runs/offline_iql_cql_initiative_15min",
+  "output_dir": "/Users/guilherme.desousa/MEIA/Thesis/Project/repos/Algorithms/docs/offline_rl/iql_cql_figures",
+  "n_figures": 11,
+  "figures": [
+    "01_pipeline_overview.png",
+    "02_dataset_stats.png",
+    "03_action_coverage_group_a.png",
+    "04_reward_by_regime.png",
+    "05_correlations_group_a.png",
+    "06_temporal_patterns.png",
+    "07_training_loss_group_a.png",
+    "08_training_valmse_all.png",
+    "09_training_cql_penalty.png",
+    "10_benchmark_kpi_bars.png",
+    "11_iql_vs_cql_scatter.png"
+  ]
+}
