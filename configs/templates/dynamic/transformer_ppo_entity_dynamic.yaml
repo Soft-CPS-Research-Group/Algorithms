@@ -89,24 +89,25 @@ topology:
   action_dimensions: null
   action_space: null
 
-algorithm:
-  name: "AgentTransformerPPO"
-  tokenizer_config_path: "configs/tokenizers/entity_default.json"
-  transformer:
-    d_model: 64
-    nhead: 4
-    num_layers: 2
-    dim_feedforward: 128
-    dropout: 0.1
-  hyperparameters:
-    learning_rate: 2.0e-4
-    gamma: 0.99
-    gae_lambda: 0.95
-    clip_eps: 0.2
-    ppo_epochs: 4
-    minibatch_size: 64
-    entropy_coeff: 0.03
-    value_coeff: 0.5
-    max_grad_norm: 1.0
+pipeline:
+  - algorithm: "AgentTransformerPPO"
+    count: 1
+    tokenizer_config_path: "configs/tokenizers/entity_default.json"
+    transformer:
+      d_model: 64
+      nhead: 4
+      num_layers: 2
+      dim_feedforward: 128
+      dropout: 0.1
+    hyperparameters:
+      learning_rate: 2.0e-4
+      gamma: 0.99
+      gae_lambda: 0.95
+      clip_eps: 0.2
+      ppo_epochs: 4
+      minibatch_size: 64
+      entropy_coeff: 0.03
+      value_coeff: 0.5
+      max_grad_norm: 1.0
 
 execution: null

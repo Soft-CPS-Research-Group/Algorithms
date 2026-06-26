@@ -1,32 +1,66 @@
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar, Dict, List, Optional
+import os
+import sys
+import time
 
+_BASE_AGENT_TRACE_ENABLED = (
+    os.environ.get("OPEVA_STARTUP_TRACE", "1").strip().lower()
+    not in {"0", "false", "no", "off"}
+    and os.path.basename(sys.argv[0]) == "run_experiment.py"
+)
+_BASE_AGENT_TRACE_T0 = time.monotonic()
+
+
+def _base_agent_trace(message: str) -> None:
+    if not _BASE_AGENT_TRACE_ENABLED:
+        return
+    elapsed = time.monotonic() - _BASE_AGENT_TRACE_T0
+    print(f"[opeva-base-agent +{elapsed:.3f}s] {message}", file=sys.stderr, flush=True)
+
+
+_base_agent_trace("module import started")
+_base_agent_trace("before numpy import")
 import numpy as np
+_base_agent_trace("after numpy import")
+_base_agent_trace("before numpy.typing import")
 import numpy.typing as npt
+_base_agent_trace("after numpy.typing import")
+_base_agent_trace("before torch.nn Module import")
 from torch.nn import Module
+_base_agent_trace("after torch.nn Module import")
+
+_base_agent_trace("before execution unit import")
+from algorithms.execution_unit import ExecutionUnit
+_base_agent_trace("after execution unit import")
 
 
-class BaseAgent(Module, ABC):
-    """Common interface for all training and inference agents."""
+class BaseAgent(Module, ExecutionUnit):
+    """Common interface for all training and inference agents.
 
-    # Spec docs/specv2.md §12.4: per-agent capability flag for dynamic
-    # topology. Defaults to False so any new agent must opt in explicitly.
-    # Consulted by ``utils/config_schema.py:validate_config`` and by
-    # ``utils/wrapper_citylearn.py`` to decide whether to permit
-    # ``simulator.topology_mode='dynamic'``.
+    Inherits the wrapper-facing contract from :class:`ExecutionUnit` so that
+    single agents and composite execution units (pipelines, ensembles) are
+    interchangeable from the wrapper's perspective.
+    """
+
     supports_dynamic_topology: ClassVar[bool] = False
-
     def __init__(self) -> None:
         super().__init__()
-        self.use_raw_observations: bool = False
 
     @abstractmethod
     def predict(
         self,
         observations: List[npt.NDArray[np.float64]],
         deterministic: bool | None = None,
+        *,
+        context: Any = None,
     ) -> List[List[float]]:
-        """Return actions for the current time step."""
+        """Return actions for the current time step.
+
+        ``context`` is provided by the parent stage when this agent runs
+        inside a :class:`~algorithms.pipeline.Pipeline`. Single agents may
+        ignore it.
+        """
 
     @abstractmethod
     def update(
@@ -89,3 +123,6 @@ class BaseAgent(Module, ABC):
         """Return whether the agent considers warm-up/exploration complete."""
         _ = global_learning_step
         return True
+
+
+_base_agent_trace("class definitions loaded")

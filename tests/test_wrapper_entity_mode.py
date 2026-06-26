@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from gymnasium import spaces
 
+from algorithms.pipeline import Pipeline
 from utils.wrapper_citylearn import Wrapper_CityLearn
 
 
@@ -208,13 +209,52 @@ class _DummyModel:
         return True
 
 
+class _EncodedDummyModel(_DummyModel):
+    def __init__(self):
+        super().__init__()
+        self.use_raw_observations = False
+        self.last_raw_observations = object()
+        self.last_encoded_observations = None
+
+    def set_observation_context(self, *, raw_observations=None, encoded_observations=None):
+        self.last_raw_observations = raw_observations
+        self.last_encoded_observations = encoded_observations
+
+
+class _PipelineProbe:
+    def __init__(self, *, use_raw_observations: bool, output):
+        self.use_raw_observations = use_raw_observations
+        self.output = output
+        self.attach_calls = []
+        self.predict_calls = []
+
+    def attach_environment(self, **kwargs):
+        self.attach_calls.append(kwargs)
+
+    def predict(self, observations, deterministic=None, *, context=None):
+        self.predict_calls.append(
+            {
+                "observations": observations,
+                "deterministic": deterministic,
+                "context": context,
+            }
+        )
+        return self.output
+
+    def update(self, *args, **kwargs):
+        return None
+
+    def is_initial_exploration_done(self, _global_step):
+        return True
+
+
 def _entity_config() -> Dict[str, Any]:
     return {
         "runtime": {"log_dir": None},
         "training": {"steps_between_training_updates": 1, "target_update_interval": 0},
         "checkpointing": {"checkpoint_interval": None, "require_update_step": True, "require_initial_exploration_done": True},
         "tracking": {"mlflow_enabled": False},
-        "algorithm": {"name": "RuleBasedPolicy"},
+        "pipeline": [{"algorithm": "RuleBasedPolicy", "count": 1, "hyperparameters": {}}],
         "simulator": {
             "interface": "entity",
             "topology_mode": "dynamic",
@@ -316,3 +356,81 @@ def test_wrapper_entity_maddpg_profile_exports_serving_encoded_observations():
     assert "district__time_of_day_sin" in info["observation_names"][0]
     assert len(info["encoders"][0]) == len(info["observation_names"][0])
     assert all(spec["type"] == "NoNormalization" for spec in info["encoders"][0])
+
+
+def test_wrapper_entity_direct_model_observations_match_standard_encoding():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["pipeline"][0]["algorithm"] = "MADDPG"
+    config["simulator"]["topology_mode"] = "static"
+    config["simulator"]["entity_encoding"]["profile"] = "maddpg_v1"
+    config["tracking"]["action_diagnostics_enabled"] = False
+
+    wrapper = Wrapper_CityLearn(env=env, config=config, job_id="entity-direct-model-observations")
+    model = _EncodedDummyModel()
+    wrapper.set_model(model)
+
+    assert wrapper._can_use_direct_entity_model_observations()
+
+    payload, _ = env.reset()
+    raw_observations = wrapper._apply_entity_layout(
+        payload,
+        force_attach=True,
+        model_observations=False,
+    )
+    expected = wrapper.get_all_encoded_observations(raw_observations)
+    direct = wrapper._apply_entity_layout(
+        payload,
+        force_attach=True,
+        model_observations=True,
+    )
+
+    assert len(direct) == len(expected)
+    for direct_obs, expected_obs in zip(direct, expected):
+        np.testing.assert_allclose(direct_obs, expected_obs, atol=1e-9)
+
+    wrapper._entity_model_observations_direct = True
+    wrapper.predict(direct)
+
+    assert model.last_raw_observations is None
+    assert model.last_encoded_observations is not None
+
+
+def test_wrapper_entity_pipeline_routes_encoded_manager_and_raw_leaf():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["simulator"]["topology_mode"] = "static"
+    config["simulator"]["entity_encoding"]["profile"] = "cc_level1"
+    config["pipeline"] = [
+        {"algorithm": "CCLevel1", "count": 1, "hyperparameters": {}},
+        {"algorithm": "SignalAwareRBC", "count": 1, "hyperparameters": {}},
+    ]
+    config["tracking"]["action_diagnostics_enabled"] = False
+
+    wrapper = Wrapper_CityLearn(env=env, config=config, job_id="entity-mixed-pipeline")
+    manager = _PipelineProbe(use_raw_observations=False, output=1.1)
+    leaf = _PipelineProbe(use_raw_observations=True, output=[[0.0, 0.0, 0.0]])
+    model = Pipeline([manager, leaf])
+    wrapper.set_model(model)
+
+    assert wrapper._can_use_direct_entity_model_observations() is False
+    assert "district__time_of_day_sin" in manager.attach_calls[0]["observation_names"][0]
+    assert "district__hour" in leaf.attach_calls[0]["observation_names"][0]
+
+    payload, _ = env.reset()
+    raw_observations = wrapper._apply_entity_layout(
+        payload,
+        force_attach=True,
+        model_observations=False,
+    )
+    encoded_observations = wrapper.get_all_encoded_observations(raw_observations)
+
+    wrapper.predict(raw_observations)
+
+    manager_observations = manager.predict_calls[0]["observations"]
+    leaf_observations = leaf.predict_calls[0]["observations"]
+    for actual, expected in zip(manager_observations, encoded_observations):
+        np.testing.assert_allclose(actual, expected, atol=1e-9)
+    for actual, expected in zip(leaf_observations, raw_observations):
+        np.testing.assert_allclose(actual, expected, atol=1e-9)
+    assert leaf.predict_calls[0]["context"] == 1.1

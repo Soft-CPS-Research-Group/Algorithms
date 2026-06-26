@@ -27,6 +27,7 @@ IMPORTANT_KPIS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
         (
             "community_cost_eur",
             (
+                "district_cost_community_market_settled_total_eur",
                 "district_community_settled_cost_total_eur",
                 "district_cost_total_control_eur",
             ),
@@ -67,6 +68,30 @@ IMPORTANT_KPIS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
         (
             "peak_all_time_ratio_to_bau",
             ("district_energy_grid_shape_quality_peak_all_time_average_to_business_as_usual_ratio",),
+        ),
+        (
+            "community_import_kwh",
+            ("district_energy_grid_total_import_control_kwh",),
+        ),
+        (
+            "community_export_kwh",
+            ("district_energy_grid_total_export_control_kwh",),
+        ),
+        (
+            "community_solar_generation_kwh",
+            ("district_solar_self_consumption_total_generation_kwh",),
+        ),
+        (
+            "community_solar_export_kwh",
+            ("district_solar_self_consumption_total_export_kwh",),
+        ),
+        (
+            "community_solar_self_consumption_rate",
+            ("district_solar_self_consumption_ratio_self_consumption_ratio",),
+        ),
+        (
+            "community_market_import_share_rate",
+            ("district_solar_self_consumption_community_market_import_share_ratio",),
         ),
         (
             "battery_throughput_kwh",
@@ -216,6 +241,24 @@ def _first_kpi_value(matrix: dict[str, dict[str, float | None]], candidates: tup
     return None
 
 
+def _community_cost_value(matrix: dict[str, dict[str, float | None]]) -> float | None:
+    """Prefer simulator-settled community-market cost when it is enabled.
+
+    Older or non-community-market datasets may still export the settled-cost KPI
+    as 0.0. In that case, the usable official simulator cost is the regular
+    control cost.
+    """
+    for key in (
+        "district_cost_community_market_settled_total_eur",
+        "district_community_settled_cost_total_eur",
+    ):
+        value = _district_value(matrix, key)
+        if value is not None and abs(value) > 1e-12:
+            return value
+
+    return _district_value(matrix, "district_cost_total_control_eur")
+
+
 def _extract_device(log_text: str) -> str:
     matches = re.findall(r"Device selected:\s*([A-Za-z0-9_:.-]+)", log_text)
     if matches:
@@ -237,6 +280,17 @@ def _extract_simulation_data_defaults(result: dict[str, Any]) -> tuple[str | Non
     return simulation_dir, session
 
 
+def _latest_matching_file(files: list[str], pattern: str) -> str | None:
+    matches: list[tuple[int, str]] = []
+    for item in files:
+        match = re.search(pattern, item)
+        if match:
+            matches.append((int(match.group(1)), item))
+    if not matches:
+        return None
+    return sorted(matches)[-1][1]
+
+
 def _read_jobs_file(path: Path) -> list[str]:
     if not path.exists():
         raise FileNotFoundError(path)
@@ -244,10 +298,33 @@ def _read_jobs_file(path: Path) -> list[str]:
     if path.suffix.lower() == ".json":
         payload = json.loads(text)
         if isinstance(payload, list):
-            return [str(item) for item in payload]
+            job_ids: list[str] = []
+            for item in payload:
+                if isinstance(item, dict):
+                    job_id = item.get("job_id") or _extract_nested(item, "response", "job_id")
+                    if job_id:
+                        job_ids.append(str(job_id))
+                elif item:
+                    job_ids.append(str(item))
+            return job_ids
         if isinstance(payload, dict):
             values = payload.get("job_ids") or payload.get("jobs") or []
-            return [str(item) for item in values]
+            job_ids = []
+            for item in values:
+                if isinstance(item, dict):
+                    job_id = item.get("job_id") or _extract_nested(item, "response", "job_id")
+                    if job_id:
+                        job_ids.append(str(job_id))
+                elif item:
+                    job_ids.append(str(item))
+            submissions = payload.get("submissions") or []
+            for item in submissions:
+                if not isinstance(item, dict):
+                    continue
+                job_id = item.get("job_id") or _extract_nested(item, "response", "job_id")
+                if job_id:
+                    job_ids.append(str(job_id))
+            return job_ids
     if path.suffix.lower() == ".csv":
         reader = csv.DictReader(text.splitlines())
         if reader.fieldnames and "job_id" in reader.fieldnames:
@@ -317,6 +394,7 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
         _write_json(job_dir / "simulation_data_index.json", index_dict)
         files = [str(item) for item in index_dict.get("files", []) if isinstance(item, str)]
         kpi_file = next((item for item in files if item.endswith("exported_kpis.csv")), None)
+        session = index_dict.get("session") or session_default or "latest"
         if kpi_file:
             kpi_content = _request_text(
                 base_url,
@@ -324,7 +402,7 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
                 method="POST",
                 payload={
                     "job_id": job_id,
-                    "session": index_dict.get("session") or session_default or "latest",
+                    "session": session,
                     "relative_path": kpi_file,
                 },
                 timeout=timeout,
@@ -333,15 +411,38 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
             kpi_matrix = _parse_kpi_matrix(kpi_content)
             row["simulation_data_session"] = index_dict.get("session") or ""
             row["kpi_file"] = kpi_file
+
+        community_file = _latest_matching_file(files, r"exported_data_community_ep(\d+)\.csv$")
+        if community_file:
+            community_content = _request_text(
+                base_url,
+                "/simulation-data/file",
+                method="POST",
+                payload={"job_id": job_id, "session": session, "relative_path": community_file},
+                timeout=timeout,
+            )
+            _write_text(job_dir / "exported_data_community.csv", community_content)
+            pricing_file = _latest_matching_file(files, r"exported_data_pricing_ep(\d+)\.csv$")
+            if pricing_file:
+                pricing_content = _request_text(
+                    base_url,
+                    "/simulation-data/file",
+                    method="POST",
+                    payload={"job_id": job_id, "session": session, "relative_path": pricing_file},
+                    timeout=timeout,
+                )
+                _write_text(job_dir / "exported_data_pricing.csv", pricing_content)
     except HTTPError as exc:
         errors.append(f"simulation_data: HTTP {exc.code}")
     except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
         errors.append(f"simulation_data: {exc}")
 
     details = _as_dict(status.get("details"))
+    deucalion_options = _as_dict(info.get("deucalion_options"))
     row.update(
         {
             "status": status.get("status") or "",
+            "exit_code": status.get("exit_code"),
             "worker_id": status.get("worker_id") or "",
             "worker_version": status.get("worker_version") or "",
             "job_name": info.get("job_name") or "",
@@ -354,6 +455,17 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
             "slurm_reason": details.get("slurm_reason") or "",
             "slurm_start_time": details.get("slurm_start_time") or "",
             "slurm_queue_position": details.get("slurm_queue_position") or "",
+            "queued_at": info.get("queued_at") or "",
+            "started_at": info.get("started_at") or "",
+            "finished_at": info.get("finished_at") or "",
+            "queue_wait_seconds": info.get("queue_wait_seconds") or "",
+            "run_duration_seconds": info.get("run_duration_seconds") or "",
+            "total_duration_seconds": info.get("total_duration_seconds") or "",
+            "deucalion_partition": deucalion_options.get("partition") or "",
+            "deucalion_time": deucalion_options.get("time") or "",
+            "deucalion_cpus_per_task": deucalion_options.get("cpus_per_task") or "",
+            "deucalion_mem_gb": deucalion_options.get("mem_gb") or "",
+            "deucalion_gpus": deucalion_options.get("gpus") or "",
             "device_selected": _extract_device(logs),
             "simulation_data_available": result.get("simulation_data_available"),
             "kpi_source": result.get("kpi_source") or "",
@@ -362,7 +474,11 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
     )
 
     for output_key, candidates in IMPORTANT_KPIS.items():
-        row[output_key] = _first_kpi_value(kpi_matrix, candidates)
+        row[output_key] = (
+            _community_cost_value(kpi_matrix)
+            if output_key == "community_cost_eur"
+            else _first_kpi_value(kpi_matrix, candidates)
+        )
 
     return row
 
@@ -405,7 +521,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", default=os.environ.get("OPEVA_SERVER", DEFAULT_SERVER))
     parser.add_argument("--job-id", action="append", default=[], help="Remote orchestrator job id. Can be repeated.")
-    parser.add_argument("--jobs-file", type=Path, help="Text/CSV/JSON file with job ids.")
+    parser.add_argument(
+        "--jobs-file",
+        type=Path,
+        action="append",
+        default=[],
+        help="Text/CSV/JSON file with job ids. Can be repeated.",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -419,8 +541,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     job_ids = [str(item).strip() for item in args.job_id if str(item).strip()]
-    if args.jobs_file:
-        job_ids.extend(_read_jobs_file(args.jobs_file))
+    for jobs_file in args.jobs_file:
+        job_ids.extend(_read_jobs_file(jobs_file))
 
     seen: set[str] = set()
     unique_job_ids = [job_id for job_id in job_ids if not (job_id in seen or seen.add(job_id))]

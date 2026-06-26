@@ -388,28 +388,31 @@ def _make_minimal_transformer_ppo_cfg(
             "target_update_interval": 0,
         },
         "topology": {},
-        "algorithm": {
-            "name": "AgentTransformerPPO",
-            "tokenizer_config_path": tokenizer_path,
-            "transformer": {
-                "d_model": 64,
-                "nhead": 4,
-                "num_layers": 2,
-                "dim_feedforward": 128,
-                "dropout": 0.1,
-            },
-            "hyperparameters": {
-                "learning_rate": 3.0e-4,
-                "gamma": 0.99,
-                "gae_lambda": 0.95,
-                "clip_eps": 0.2,
-                "ppo_epochs": 4,
-                "minibatch_size": 64,
-                "entropy_coeff": 0.01,
-                "value_coeff": 0.5,
-                "max_grad_norm": 0.5,
-            },
-        },
+        "pipeline": [
+            {
+                "algorithm": "AgentTransformerPPO",
+                "count": 1,
+                "tokenizer_config_path": tokenizer_path,
+                "transformer": {
+                    "d_model": 64,
+                    "nhead": 4,
+                    "num_layers": 2,
+                    "dim_feedforward": 128,
+                    "dropout": 0.1,
+                },
+                "hyperparameters": {
+                    "learning_rate": 3.0e-4,
+                    "gamma": 0.99,
+                    "gae_lambda": 0.95,
+                    "clip_eps": 0.2,
+                    "ppo_epochs": 4,
+                    "minibatch_size": 64,
+                    "entropy_coeff": 0.01,
+                    "value_coeff": 0.5,
+                    "max_grad_norm": 0.5,
+                },
+            }
+        ],
         "execution": None,
     }
 

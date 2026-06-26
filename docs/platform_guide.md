@@ -59,7 +59,7 @@ Sections:
   `episode_time_steps`), and export controls under `simulator.export`.
 - `training`: global update cadence knobs.
 - `topology`: **derived** environment dimensions (num agents, observation/action shapes). These remain null in version-controlled configs and are filled by the wrapper.
-- `algorithm`: algorithm name and its parameters. Runtime-supported algorithms are `MADDPG`, `RuleBasedPolicy`, `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy` and `RBCSmartPolicy`; `SingleAgentRL` is a schema placeholder that intentionally fails fast at runtime until implemented.
+- `algorithm`: algorithm name and its parameters. Runtime-supported algorithms include `MADDPG`, `MATD3`, `MASAC`, `IPPO`, `MAPPO`, `HAPPO`, `RuleBasedPolicy`, `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `RBCSmartPolicy` and `RBCCommunityPolicy`. Neural fixed-layout algorithms are intentionally rejected for `entity + dynamic` topology; use rule-based policies there until a dynamic-ready neural agent exists.
 - `bundle`: manifest/export options shared by all algorithms (`bundle_version`, `description`, alias map hint, artifact config defaults).
 
 ### Validation

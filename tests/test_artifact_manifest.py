@@ -17,7 +17,9 @@ def test_manifest_contains_core_sections_and_normalized_artifacts():
         },
         "training": {"seed": 1},
         "topology": {"num_agents": 1},
-        "algorithm": {"name": "MADDPG", "hyperparameters": {"gamma": 0.99}},
+        "pipeline": [
+            {"algorithm": "MADDPG", "count": 1, "hyperparameters": {"gamma": 0.99}}
+        ],
     }
     env_meta = {
         "observation_names": [["feat"]],
@@ -47,7 +49,84 @@ def test_manifest_contains_core_sections_and_normalized_artifacts():
     assert manifest["metadata"]["bundle_version"] == "2026-03-10-v1"
     assert manifest["metadata"]["description"] == "Bundle emitted from unit test"
     assert manifest["metadata"]["alias_mapping_path"] == "aliases.json"
+    assert manifest["pipeline"] == [
+        {
+            "stage_index": 0,
+            "algorithm": "MADDPG",
+            "count": 1,
+            "hyperparameters": {"gamma": 0.99},
+        }
+    ]
     assert manifest["environment"] == env_meta
     assert manifest["agent"]["format"] == "onnx"
     assert manifest["agent"]["artifacts"][0]["format"] == "onnx"
     assert manifest["agent"]["artifacts"][0]["config"] == {}
+
+
+def test_manifest_flattens_pipeline_with_ensemble_paths():
+    config = {
+        "metadata": {"experiment_name": "test", "run_name": "run"},
+        "simulator": {},
+        "training": {},
+        "topology": {"num_agents": 2},
+        "pipeline": [
+            {"algorithm": "CommunityCoordinator", "count": 1, "hyperparameters": {}},
+            {"algorithm": "BuildingAgent", "count": 2, "hyperparameters": {}},
+        ],
+    }
+    env_meta = {
+        "observation_names": [["feat"], ["feat"]],
+        "encoders": [[{"type": "NoNormalization", "params": {}}]],
+        "action_bounds": [[{"low": [0.0], "high": [1.0]}]],
+        "action_names": ["a0"],
+        "action_names_by_agent": {"0": ["a0"], "1": ["a0"]},
+        "reward_function": {"name": "Reward", "params": {}},
+    }
+    agent_meta = {
+        "format": "pipeline",
+        "stages": [
+            {
+                "stage_index": 0,
+                "format": "onnx",
+                "artifacts": [
+                    {
+                        "agent_index": 0,
+                        "path": "onnx_models/community_coordinator.onnx",
+                        "format": "onnx",
+                    }
+                ],
+            },
+            {
+                "stage_index": 1,
+                "format": "ensemble",
+                "agents": [
+                    {
+                        "agent_index": 0,
+                        "format": "onnx",
+                        "artifacts": [
+                            {"agent_index": 0, "path": "onnx_models/agent.onnx", "format": "onnx"}
+                        ],
+                    },
+                    {
+                        "agent_index": 1,
+                        "format": "onnx",
+                        "artifacts": [
+                            {"agent_index": 0, "path": "onnx_models/agent.onnx", "format": "onnx"}
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+
+    manifest = build_manifest(config, env_meta, agent_meta)
+
+    assert manifest["agent"]["format"] == "onnx"
+    assert [
+        artifact["path"] for artifact in manifest["agent"]["artifacts"]
+    ] == [
+        "stage_0/onnx_models/community_coordinator.onnx",
+        "stage_1/agent_0/onnx_models/agent.onnx",
+        "stage_1/agent_1/onnx_models/agent.onnx",
+    ]
+    assert [artifact["agent_index"] for artifact in manifest["agent"]["artifacts"]] == [0, 0, 1]

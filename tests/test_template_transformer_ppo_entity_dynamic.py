@@ -28,7 +28,7 @@ def test_template_resolves_to_registered_agent() -> None:
     from algorithms.registry import ALGORITHM_REGISTRY
 
     cfg = _load_template()
-    assert cfg["algorithm"]["name"] == "AgentTransformerPPO"
+    assert cfg["pipeline"][0]["algorithm"] == "AgentTransformerPPO"
     assert ALGORITHM_REGISTRY["AgentTransformerPPO"] is AgentTransformerPPO
 
 
@@ -43,7 +43,7 @@ def test_template_tokenizer_path_validates_against_bundled_sample() -> None:
     )
 
     cfg = _load_template()
-    tok_path = REPO_ROOT / cfg["algorithm"]["tokenizer_config_path"]
+    tok_path = REPO_ROOT / cfg["pipeline"][0]["tokenizer_config_path"]
     assert tok_path.exists(), tok_path
 
     tok = load_entity_tokenizer_config(tok_path)

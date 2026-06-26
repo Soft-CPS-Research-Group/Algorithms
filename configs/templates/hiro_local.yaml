@@ -1,0 +1,126 @@
+# HIRO local template: CC (frozen) + 17 Building Agents
+# Phase 2 training: CC frozen, BAs learn to execute o1 signal
+
+metadata:
+  experiment_name: "hiro_local_template"
+  run_name: "HIRO Local — CC frozen + BA"
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 50
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "latest_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: null
+
+bundle:
+  bundle_version: null
+  description: null
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+
+simulator:
+  dataset_name: citylearn_three_phase_electrical_service_demo_15s_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    clip: true
+  reward_function: CostServiceCommunityFeasiblePrecisionRewardV46
+  reward_function_kwargs: {}  # Use V46 battle-tested defaults
+  episodes: 2
+  episode_time_steps: 11520 # 5760
+  simulation_start_time_step: 0
+  simulation_end_time_step: 2102399
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    session_name: null
+
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 0
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+pipeline:
+  - algorithm: "CommunityCoordinator"
+    frozen: true
+    count: 1
+    hyperparameters:
+      output_mode: "signal"
+      # Set-based CC: one signal per building, N-agnostic (shared actor head).
+      c_dim: 12          # community-context width  (_build_community_context)
+      b_dim: 7           # per-building feature width (_build_building_features)
+      num_buildings: 17  # training batch size; trained model runs on any N
+      hidden_dims: [128, 128]
+      cc_action_interval: 60
+      num_steps: 96
+      lr: 1.0e-4
+      gamma: 0.99
+      gae_lambda: 0.95
+      num_epochs: 10
+      mini_batch_size: 64
+      clip_coef: 0.2
+      vf_coef: 0.5
+      ent_coef: 0.02
+      w_factor: 1.0
+      max_grad_norm: 0.5
+      target_kl: 0.1
+
+  - algorithm: "BuildingAgent"
+    frozen: false
+    count: 17
+    hyperparameters:
+      obs_dim: 0       # auto-determined from env at attach_environment
+      action_dim: 0    # auto-determined from env at attach_environment
+      num_steps: 2048
+      lr: 1.0e-4
+      gamma: 0.99
+      gae_lambda: 0.95
+      num_epochs: 10
+      mini_batch_size: 64
+      clip_coef: 0.2
+      vf_coef: 0.5
+      ent_coef: 0.01
+      max_grad_norm: 0.5
+      target_kl: 0.1
+      hidden_dims: [128, 128]
+      building_cost_weight: 1.0
+      community_import_weight: 0.3
+      constraint_penalty_weight: 0.5
+
+execution: null

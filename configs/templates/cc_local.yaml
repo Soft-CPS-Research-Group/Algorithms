@@ -1,0 +1,174 @@
+# Community Coordinator Level 1 — local development template.
+#
+# Phase 1: Global Price Multiplier (Market Maker)
+# CC observes community aggregates only. Emits one continuous price multiplier:
+#   multiplier ∈ [price_min, price_max]
+#   > 1.0 → "energy more expensive" → RBC reduces consumption / discharges batteries
+#   = 1.0 → neutral
+#   < 1.0 → "energy cheaper"       → RBC increases consumption / charges batteries
+#
+# Low-level: SignalAwareRBC scales price perception from this context.
+# No per-building features, no EV/SoC/headroom observations at CC level.
+
+metadata:
+  experiment_name: "cc_level1"
+  run_name: "CC-L1 Price Multiplier"
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 50
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "latest_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 960
+
+bundle:
+  bundle_version: null
+  description: null
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+
+simulator:
+  dataset_name: citylearn_three_phase_electrical_service_demo_15min_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15min_parquet/schema.json
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    profile: cc_level1
+    clip: true
+  reward_function: CCRewardLevel1
+  episodes: 10
+  simulation_start_time_step: null
+  simulation_end_time_step: null
+  episode_time_steps: 34944     # full year per ep (dataset total = 34944 steps)
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    session_name: null
+
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 2
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+# Two-stage pipeline: CCLevel1 manager → RBCCommunityPolicy workers.
+pipeline:
+  - algorithm: "CCLevel1"
+    count: 1
+    hyperparameters:
+      # 17 community features from cc_level1 encoding profile:
+      # [0-6]  temporal cyclic (time_of_day sin/cos, day_type sin/cos, is_weekend, month sin/cos)
+      # [7-10] pricing (current + 3 forecasts)
+      # [11]   carbon_intensity
+      # [12-15] community power (net, import, export, pv) kW
+      # [16]   community_building_headroom_kw (grid capacity margin)
+      c_dim: 17
+      hidden_dims: [128, 128]
+
+      # Price multiplier action range.
+      price_min: 0.5
+      price_max: 1.5
+
+      # Temporal abstraction: CC decides every hour over 15-minute steps.
+      cc_action_interval: 4
+
+      # Rollout buffer.
+      num_steps: 96
+
+      # Optimiser
+      lr: 1.0e-4
+
+      # Discount & GAE
+      gamma: 0.99
+      gae_lambda: 0.95
+
+      # PPO update
+      num_epochs: 10
+      mini_batch_size: 64
+      clip_coef: 0.2
+      vf_coef: 0.5
+      ent_coef: 0.005
+
+      # Auxiliary reward weights (supervisor Phase 1 design)
+      w_factor: 0.3
+      w_smoothness: 0.1
+      max_grad_norm: 0.5
+      target_kl: 0.1
+
+      # Behaviour-cloning warm-start (runs once before any RL).
+      # Teacher mirrors CCRewardLevel1: cost + peak-import + export signals.
+      bc_pretrain_enabled: true
+      bc_collect_steps: 8736       # full year (34944 env steps / cc_action_interval=4)
+      bc_train_steps: 2000
+      bc_lr: 1.0e-3
+      # Legacy price thresholds — kept for backward-compat, no longer drive teacher.
+      bc_price_p20: 0.10
+      bc_price_p80: 0.21
+      # Multi-signal teacher weights (mirror CCRewardLevel1).
+      bc_w_cost: 1.0               # relative price signal weight
+      bc_w_peak: 0.6               # peak import signal weight (was 0.3)
+      bc_w_ramp: 0.4               # ramping signal weight (NEW)
+      bc_w_export: 0.05            # excess export signal weight (was 0.1)
+      bc_w_violation: 2.0          # electrical violation signal weight (NEW)
+      # Community oversight — the CC watches the shared three-phase service limit
+      # and raises the multiplier as headroom shrinks, so workers back off BEFORE
+      # a violation. This is the CC's job, not the per-building Smart RBC's.
+      bc_w_headroom: 1.0           # community headroom-stress signal weight (NEW)
+      bc_reference_headroom: 2.0   # kW margin below which the CC starts conserving
+      bc_reference_ramping: 1.878  # p90 step-to-step import change (kWh)
+      # Reference values for the BC teacher.
+      # By default these are auto-calibrated from episode-0 data (p75/p90 of the
+      # observed import/export distribution) so the teacher adapts to any community.
+      # Uncomment and set explicit values only to override auto-calibration.
+      bc_dt_hours: 0.25            # timestep size for kW → kWh conversion
+      # bc_target_import: 4.14    # kWh p75 — override auto p75 of episode-0 import
+      # bc_reference_peak: 2.72   # kWh² p90 — override auto p90 of excess²
+      # bc_reference_export: 7.52 # kWh p90 — override auto p90 of episode-0 export
+      # bc_reference_price: 0.15  # €/kWh p50 — override auto p50 of episode-0 price
+      bc_mult_scale: 1.0           # scale raw signal before ±0.8 clip
+
+  - algorithm: SignalAwareRBC
+    count: 17
+    hyperparameters:
+      allow_v2g: true
+      ev_v2g_discharge_rate: 0.18
+      ev_v2g_reserve_soc: 0.0
+      ev_v2g_min_departure_hours: 2.0
+      ev_v2g_service_margin_soc: 0.02
+      ev_v2g_buffer_soc: 0.12
+
+execution: null

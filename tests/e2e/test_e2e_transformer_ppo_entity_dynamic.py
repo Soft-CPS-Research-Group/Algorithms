@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO_ROOT / "configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml"
 DATASET = REPO_ROOT / "datasets/citylearn_three_phase_dynamic_assets_only_demo_15s_parquet/schema.json"
 
@@ -39,8 +39,7 @@ def smoke_run(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     work = tmp_path_factory.mktemp("wp06_e2e")
 
     cfg = yaml.safe_load(TEMPLATE.read_text())
-    # Topology events fire at steps {1300, 1500, ...}. 1400 steps guarantees
-    # exactly one observed mutation while keeping the smoke runtime bounded.
+    cfg["simulator"]["episodes"] = 1
     cfg["simulator"]["simulation_end_time_step"] = 1400
     cfg["simulator"]["episode_time_steps"] = 1401
     # Ensure ≥1 PPO update fires before the topology mutation by keeping

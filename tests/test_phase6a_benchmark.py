@@ -51,15 +51,15 @@ def test_phase6a_dry_run_generates_configs_and_summary(tmp_path):
 
     assert random_payload["simulator"]["export"]["mode"] == "none"
     assert random_payload["simulator"]["episode_time_steps"] == 16
-    assert maddpg_payload["algorithm"]["name"] == "MADDPG"
-    assert maddpg_payload["algorithm"]["replay_buffer"]["batch_size"] == 16
-    assert maddpg_payload["algorithm"]["networks"]["actor"]["layers"] == [32]
-    assert maddpg_payload["algorithm"]["networks"]["critic"]["layers"] == [64, 32]
+    assert maddpg_payload["pipeline"][0]["algorithm"] == "MADDPG"
+    assert maddpg_payload["pipeline"][0]["replay_buffer"]["batch_size"] == 16
+    assert maddpg_payload["pipeline"][0]["networks"]["actor"]["layers"] == [32]
+    assert maddpg_payload["pipeline"][0]["networks"]["critic"]["layers"] == [64, 32]
     assert (
-        maddpg_payload["algorithm"]["exploration"]["params"]["initial_exploration_strategy"]
+        maddpg_payload["pipeline"][0]["exploration"]["params"]["initial_exploration_strategy"]
         == "noop_centered"
     )
-    assert maddpg_payload["algorithm"]["exploration"]["params"]["random_exploration_steps"] == 4
+    assert maddpg_payload["pipeline"][0]["exploration"]["params"]["random_exploration_steps"] == 4
 
     summary = json.loads((output_dir / "benchmark_summary.json").read_text(encoding="utf-8"))
     assert summary["settings"]["dry_run"] is True
@@ -146,7 +146,7 @@ def test_phase6a_hyperparameter_override_is_written_to_generated_config(tmp_path
     config_path = output_dir / "generated_configs" / "phase6a_2022_rbc_smart_rbc_smart_seed123.yaml"
     config_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     summary = json.loads((output_dir / "benchmark_summary.json").read_text(encoding="utf-8"))
-    hyperparameters = config_payload["algorithm"]["hyperparameters"]
+    hyperparameters = config_payload["pipeline"][0]["hyperparameters"]
 
     assert hyperparameters["price_charge_rate"] == 0.15
     assert hyperparameters["allow_v2g"] is False
@@ -200,11 +200,11 @@ def test_phase6a_maddpg_override_groups_are_written_to_generated_config(tmp_path
     )
     config_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     summary = json.loads((output_dir / "benchmark_summary.json").read_text(encoding="utf-8"))
-    exploration = config_payload["algorithm"]["exploration"]["params"]
+    exploration = config_payload["pipeline"][0]["exploration"]["params"]
 
     assert exploration["actor_policy_loss_weight"] == 0.05
     assert exploration["warm_start_policy_hyperparameters"]["ev_service_floor_rate"] == 0.6
-    assert config_payload["algorithm"]["replay_buffer"]["priority_fraction"] == 0.1
+    assert config_payload["pipeline"][0]["replay_buffer"]["priority_fraction"] == 0.1
     assert config_payload["simulator"]["reward_function_kwargs"]["ev_over_service_penalty"] == 7.5
     assert payload["settings"]["exploration_overrides"] == args.exploration_override
     assert payload["settings"]["warm_start_hyperparameter_overrides"] == args.warm_start_hyperparameter_override
@@ -284,7 +284,7 @@ def test_phase6a_ev_priority_bc_variant_sets_reward_and_actor_regularization(tmp
         / "phase6a_15s_maddpg_ev_priority_bc_warm_rbc_basic_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
     reward_kwargs = payload["simulator"]["reward_function_kwargs"]
 
     assert exploration["initial_exploration_strategy"] == "policy"
@@ -328,7 +328,7 @@ def test_phase6a_ev_service_v2g_guard_variant_sets_service_discharge_penalty(tmp
         / "phase6a_15s_maddpg_ev_service_v2g_guard_warm_rbc_basic_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
     reward_kwargs = payload["simulator"]["reward_function_kwargs"]
 
     assert exploration["warm_start_policy"] == "RBCBasicPolicy"
@@ -371,7 +371,7 @@ def test_phase6a_ev_service_v2g_guard_prioritized_variant_sets_replay_buffer(tmp
         / "phase6a_15s_maddpg_ev_service_v2g_guard_prioritized_warm_rbc_basic_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
     reward_kwargs = payload["simulator"]["reward_function_kwargs"]
 
     assert replay_buffer["class"] == "RewardWeightedMultiAgentReplayBuffer"
@@ -416,8 +416,8 @@ def test_phase6a_service_guard_v2_variant_uses_named_reward_and_low_priority_rep
         / "phase6a_15s_maddpg_service_guard_v2_prioritized_low_bc_decay_warm_rbc_basic_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    replay_buffer = payload["algorithm"]["replay_buffer"]
-    exploration = payload["algorithm"]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceGuardRewardV2"
     assert payload["simulator"]["reward_function_kwargs"] == {}
@@ -463,7 +463,7 @@ def test_phase6a_cost_balanced_v3_variant_uses_named_reward(tmp_path):
         / "phase6a_15s_maddpg_cost_balanced_v3_prioritized_low_bc_decay_warm_rbc_basic_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCostBalancedRewardV3"
     assert payload["simulator"]["reward_function_kwargs"] == {}
@@ -505,8 +505,8 @@ def test_phase6a_community_band_v4_variant_uses_settlement_reward_and_tiny_prior
         / "phase6a_15s_maddpg_community_band_v4_prioritized_tiny_bc_decay_warm_rbc_basic_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    replay_buffer = payload["algorithm"]["replay_buffer"]
-    exploration = payload["algorithm"]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityBandRewardV4"
     assert payload["simulator"]["reward_function_kwargs"] == {}
@@ -553,8 +553,8 @@ def test_phase6a_community_storage_band_v41_variant_sets_storage_regularization(
         / "phase6a_15s_maddpg_community_storage_band_v41_prioritized_regularized_warm_rbc_basic_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    replay_buffer = payload["algorithm"]["replay_buffer"]
-    exploration = payload["algorithm"]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityStorageBandRewardV41"
     assert replay_buffer["class"] == "RewardWeightedMultiAgentReplayBuffer"
@@ -599,8 +599,8 @@ def test_phase6a_community_service_band_v42_smart_variant_sets_service_reward(tm
         / "phase6a_15s_maddpg_community_service_band_v42_prioritized_regularized_warm_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    replay_buffer = payload["algorithm"]["replay_buffer"]
-    exploration = payload["algorithm"]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityServiceBandRewardV42"
     assert replay_buffer["class"] == "RewardWeightedMultiAgentReplayBuffer"
@@ -646,7 +646,7 @@ def test_phase6a_community_service_band_v42_warmtrain_variant_trains_during_warm
         / "phase6a_15s_maddpg_community_service_band_v42_prioritized_warmtrain_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityServiceBandRewardV42"
     assert exploration["warm_start_policy"] == "RBCSmartPolicy"
@@ -693,7 +693,7 @@ def test_phase6a_community_service_band_v42_phaseout_variant_sets_warm_start_pha
         / "phase6a_15s_maddpg_community_service_band_v42_prioritized_warmtrain_phaseout_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
 
     assert exploration["warm_start_policy"] == "RBCSmartPolicy"
     assert exploration["train_during_initial_exploration"] is True
@@ -745,8 +745,8 @@ def test_phase6a_community_battery_value_v43_variant_sets_reward_and_storage_kno
         / "phase6a_15s_maddpg_community_battery_value_v43_prioritized_warmtrain_phaseout_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityBatteryValueRewardV43"
     assert payload["simulator"]["reward_function_kwargs"] == {}
@@ -797,14 +797,14 @@ def test_phase6a_community_smooth_service_v44_variant_sets_stability_knobs(tmp_p
         / "phase6a_15s_maddpg_community_smooth_service_v44_stable_teacher_bc_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(maddpg_config.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunitySmoothServiceRewardV44"
     assert replay_buffer["class"] == "RewardWeightedMultiAgentReplayBuffer"
     assert replay_buffer["priority_fraction"] == 0.25
     assert replay_buffer["priority_max"] == 40.0
-    assert payload["algorithm"]["networks"]["critic"]["lr"] == 1.0e-4
+    assert payload["pipeline"][0]["networks"]["critic"]["lr"] == 1.0e-4
     assert exploration["warm_start_policy"] == "RBCSmartPolicy"
     assert exploration["critic_loss"] == "huber"
     assert exploration["critic_target_clip_abs"] == 35.0
@@ -893,8 +893,8 @@ def test_phase6a_community_feasible_service_v45_variant_sets_reward_and_stabilit
         / "phase6a_15s_maddpg_community_feasible_service_v45_stable_teacher_bc_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasibleServiceRewardV45"
     assert replay_buffer["class"] == "RewardWeightedMultiAgentReplayBuffer"
@@ -944,7 +944,7 @@ def test_phase6a_community_feasible_service_v45_actor_pretrain_variant_ramps_pol
         / "phase6a_15s_maddpg_community_feasible_service_v45_actor_pretrain_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasibleServiceRewardV45"
     assert exploration["warm_start_policy"] == "RBCSmartPolicy"
@@ -995,7 +995,7 @@ def test_phase6a_community_feasible_service_v45_actor_pretrain_slow_variant_is_c
         / "phase6a_15s_maddpg_community_feasible_service_v45_actor_pretrain_slow_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasibleServiceRewardV45"
     assert exploration["warm_start_policy"] == "RBCSmartPolicy"
@@ -1047,8 +1047,8 @@ def test_phase6a_community_feasible_service_v45_teacher_clone_variant_disables_p
         / "phase6a_15s_maddpg_community_feasible_service_v45_teacher_clone_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasibleServiceRewardV45"
     assert replay_buffer["behavior_action_priority_weight"] == 2.0
@@ -1101,8 +1101,8 @@ def test_phase6a_community_feasible_service_v45_teacher_clone_ev_focus_variant_p
         / "phase6a_15s_maddpg_community_feasible_service_v45_teacher_clone_ev_focus_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
     teacher_hyperparameters = exploration["warm_start_policy_hyperparameters"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasibleServiceRewardV45"
@@ -1118,8 +1118,8 @@ def test_phase6a_community_feasible_service_v45_teacher_clone_ev_focus_variant_p
     assert exploration["actor_storage_action_l2_penalty"] == 0.30
     assert exploration["actor_ev_v2g_action_l2_penalty"] == 24.0
     assert teacher_hyperparameters["price_charge_rate"] == 0.0
-    assert teacher_hyperparameters["storage_price_discharge_soc_floor"] == 0.30
-    assert teacher_hyperparameters["storage_peak_discharge_soc_floor"] == 0.30
+    assert teacher_hyperparameters["storage_price_discharge_soc_floor"] == 0.45
+    assert teacher_hyperparameters["storage_peak_discharge_soc_floor"] == 0.45
 
 
 def test_phase6a_community_feasible_service_v45_learning_teacher_variant_uses_soft_teacher(
@@ -1160,8 +1160,8 @@ def test_phase6a_community_feasible_service_v45_learning_teacher_variant_uses_so
         / "phase6a_15s_maddpg_community_feasible_service_v45_teacher_clone_ev_learning_teacher_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
     teacher_hyperparameters = exploration["warm_start_policy_hyperparameters"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasibleServiceRewardV45"
@@ -1222,8 +1222,8 @@ def test_phase6a_community_feasible_service_v45_learning_teacher_event_variant_f
         / "phase6a_15s_maddpg_community_feasible_service_v45_teacher_clone_ev_learning_teacher_event_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
     teacher_hyperparameters = exploration["warm_start_policy_hyperparameters"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasibleServiceRewardV45"
@@ -1289,8 +1289,8 @@ def test_phase6a_community_feasible_precision_v46_learning_teacher_variant_caps_
         / "phase6a_15s_maddpg_community_feasible_precision_v46_teacher_clone_ev_learning_teacher_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV46"
     assert exploration["critic_target_clip_abs"] == 25.0
@@ -1343,8 +1343,8 @@ def test_phase6a_community_feasible_precision_v47_learning_teacher_variant_guard
         / "phase6a_15s_maddpg_community_feasible_precision_v47_teacher_clone_ev_learning_teacher_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV47"
     assert exploration["critic_target_clip_abs"] == 25.0
@@ -1402,8 +1402,8 @@ def test_phase6a_community_feasible_precision_v48_learning_teacher_variant_tight
         / "phase6a_15s_maddpg_community_feasible_precision_v48_zero_band_teacher_clone_ev_learning_teacher_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV46"
     assert exploration["critic_target_clip_abs"] == 25.0
@@ -1418,6 +1418,424 @@ def test_phase6a_community_feasible_precision_v48_learning_teacher_variant_tight
     assert replay_buffer["priority_max"] == 30.0
     assert replay_buffer["behavior_action_priority_weight"] == 3.5
     assert replay_buffer["behavior_action_priority_scope"] == "ev"
+
+
+def test_phase6a_community_storage_value_v49_variant_uses_storage_value_reward(tmp_path):
+    output_dir = tmp_path / "phase6a_community_storage_value_v49"
+    args = Namespace(
+        output_dir=str(output_dir),
+        dataset=["15s"],
+        agent=["maddpg"],
+        maddpg_variant=["community_storage_value_v49_teacher_clone_ev_balanced_rbc_smart"],
+        seed=[123],
+        episodes=1,
+        deterministic_finish=False,
+        steps=16,
+        steps_15s=None,
+        steps_2022=None,
+        start=0,
+        full_window=False,
+        no_kpi_export=True,
+        metric_interval=8,
+        batch_size=16,
+        buffer_capacity=1000,
+        actor_layers="32",
+        critic_layers="64,32",
+        random_exploration_steps=16,
+        warm_start_phaseout_steps=None,
+        sigma=0.1,
+        dry_run=True,
+        fail_fast=False,
+    )
+
+    phase6a.run_phase6a(args)
+
+    config_path = (
+        output_dir
+        / "generated_configs"
+        / "phase6a_15s_maddpg_community_storage_value_v49_teacher_clone_ev_balanced_rbc_smart_seed123.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+
+    assert payload["simulator"]["reward_function"] == "CostServiceCommunityStorageValueRewardV49"
+    assert exploration["critic_target_clip_abs"] == 25.0
+    assert exploration["actor_policy_loss_weight"] == 0.10
+    assert exploration["actor_behavior_cloning_weight"] == 0.550
+    assert exploration["actor_behavior_cloning_min_weight"] == 0.350
+    assert exploration["actor_storage_behavior_cloning_multiplier"] == 0.60
+    assert exploration["actor_storage_action_l2_penalty"] == 0.08
+    assert replay_buffer["priority_fraction"] == 0.25
+    assert replay_buffer["priority_max"] == 35.0
+    assert replay_buffer["behavior_action_priority_weight"] == 3.25
+    assert replay_buffer["behavior_action_priority_scope"] == "ev"
+
+
+def test_phase6a_community_deadline_value_v50_variant_uses_deadline_reward(tmp_path):
+    output_dir = tmp_path / "phase6a_community_deadline_value_v50"
+    args = Namespace(
+        output_dir=str(output_dir),
+        dataset=["15s"],
+        agent=["maddpg"],
+        maddpg_variant=["community_deadline_value_v50_teacher_clone_ev_balanced_rbc_smart"],
+        seed=[123],
+        episodes=1,
+        deterministic_finish=False,
+        steps=16,
+        steps_15s=None,
+        steps_2022=None,
+        start=0,
+        full_window=False,
+        no_kpi_export=True,
+        metric_interval=8,
+        batch_size=16,
+        buffer_capacity=1000,
+        actor_layers="32",
+        critic_layers="64,32",
+        random_exploration_steps=16,
+        warm_start_phaseout_steps=None,
+        sigma=0.1,
+        dry_run=True,
+        fail_fast=False,
+    )
+
+    phase6a.run_phase6a(args)
+
+    config_path = (
+        output_dir
+        / "generated_configs"
+        / "phase6a_15s_maddpg_community_deadline_value_v50_teacher_clone_ev_balanced_rbc_smart_seed123.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+
+    assert payload["simulator"]["reward_function"] == "CostServiceCommunityDeadlineValueRewardV50"
+    assert exploration["critic_target_clip_abs"] == 25.0
+    assert exploration["actor_policy_loss_weight"] == 0.04
+    assert exploration["actor_behavior_cloning_weight"] == 0.700
+    assert exploration["actor_behavior_cloning_min_weight"] == 0.600
+    assert exploration["actor_ev_behavior_cloning_multiplier"] == 48.0
+    assert exploration["actor_ev_behavior_cloning_positive_target_weight"] == 22.0
+    assert replay_buffer["priority_fraction"] == 0.30
+    assert replay_buffer["priority_max"] == 45.0
+    assert replay_buffer["behavior_action_priority_weight"] == 4.5
+    assert replay_buffer["observation_event_priority_mode"] == "ev_departure_service"
+
+
+def test_phase6a_community_precision_value_v51_variant_uses_precision_reward(tmp_path):
+    output_dir = tmp_path / "phase6a_community_precision_value_v51"
+    args = Namespace(
+        output_dir=str(output_dir),
+        dataset=["15s"],
+        agent=["maddpg"],
+        maddpg_variant=["community_precision_value_v51_teacher_clone_ev_precise_rbc_smart"],
+        seed=[123],
+        episodes=1,
+        deterministic_finish=False,
+        steps=16,
+        steps_15s=None,
+        steps_2022=None,
+        start=0,
+        full_window=False,
+        no_kpi_export=True,
+        metric_interval=8,
+        batch_size=16,
+        buffer_capacity=1000,
+        actor_layers="32",
+        critic_layers="64,32",
+        random_exploration_steps=16,
+        warm_start_phaseout_steps=None,
+        sigma=0.1,
+        dry_run=True,
+        fail_fast=False,
+    )
+
+    phase6a.run_phase6a(args)
+
+    config_path = (
+        output_dir
+        / "generated_configs"
+        / "phase6a_15s_maddpg_community_precision_value_v51_teacher_clone_ev_precise_rbc_smart_seed123.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+
+    assert payload["simulator"]["reward_function"] == "CostServiceCommunityPrecisionValueRewardV51"
+    assert exploration["critic_target_clip_abs"] == 25.0
+    assert exploration["actor_policy_loss_weight"] == 0.08
+    assert exploration["actor_behavior_cloning_weight"] == 0.620
+    assert exploration["actor_behavior_cloning_min_weight"] == 0.420
+    assert exploration["actor_ev_behavior_cloning_multiplier"] == 38.0
+    assert exploration["actor_ev_behavior_cloning_zero_target_weight"] == 14.0
+    assert replay_buffer["priority_fraction"] == 0.30
+    assert replay_buffer["priority_max"] == 42.0
+    assert replay_buffer["behavior_action_priority_weight"] == 3.5
+    assert replay_buffer["observation_event_priority_mode"] == "ev_departure_service"
+
+
+def test_phase6a_community_peak_deadline_v52_variant_uses_peak_deadline_reward(tmp_path):
+    output_dir = tmp_path / "phase6a_community_peak_deadline_v52"
+    args = Namespace(
+        output_dir=str(output_dir),
+        dataset=["15s"],
+        agent=["maddpg"],
+        maddpg_variant=["community_peak_deadline_v52_teacher_clone_ev_community_rbc_smart"],
+        seed=[123],
+        episodes=1,
+        deterministic_finish=False,
+        steps=16,
+        steps_15s=None,
+        steps_2022=None,
+        start=0,
+        full_window=False,
+        no_kpi_export=True,
+        metric_interval=8,
+        batch_size=16,
+        buffer_capacity=1000,
+        actor_layers="32",
+        critic_layers="64,32",
+        random_exploration_steps=16,
+        warm_start_phaseout_steps=None,
+        sigma=0.1,
+        dry_run=True,
+        fail_fast=False,
+    )
+
+    phase6a.run_phase6a(args)
+
+    config_path = (
+        output_dir
+        / "generated_configs"
+        / "phase6a_15s_maddpg_community_peak_deadline_v52_teacher_clone_ev_community_rbc_smart_seed123.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+
+    assert payload["simulator"]["reward_function"] == "CostServiceCommunityPeakDeadlineRewardV52"
+    assert exploration["critic_target_clip_abs"] == 25.0
+    assert exploration["actor_policy_loss_weight"] == 0.065
+    assert exploration["actor_behavior_cloning_weight"] == 0.680
+    assert exploration["actor_behavior_cloning_min_weight"] == 0.560
+    assert exploration["actor_ev_behavior_cloning_multiplier"] == 44.0
+    assert exploration["actor_storage_behavior_cloning_multiplier"] == 0.35
+    assert exploration["storage_exploration_noise_multiplier"] == 0.55
+    assert replay_buffer["priority_fraction"] == 0.30
+    assert replay_buffer["priority_max"] == 44.0
+    assert replay_buffer["behavior_action_priority_weight"] == 3.75
+    assert replay_buffer["observation_event_priority_mode"] == "ev_departure_service"
+
+
+def test_phase6a_community_deadline_zero_guard_v53_variant_uses_deadline_reward(tmp_path):
+    output_dir = tmp_path / "phase6a_community_deadline_zero_guard_v53"
+    args = Namespace(
+        output_dir=str(output_dir),
+        dataset=["15s"],
+        agent=["maddpg"],
+        maddpg_variant=["community_deadline_zero_guard_v53_teacher_clone_ev_rbc_smart"],
+        seed=[123],
+        episodes=1,
+        deterministic_finish=False,
+        steps=16,
+        steps_15s=None,
+        steps_2022=None,
+        start=0,
+        full_window=False,
+        no_kpi_export=True,
+        metric_interval=8,
+        batch_size=16,
+        buffer_capacity=1000,
+        actor_layers="32",
+        critic_layers="64,32",
+        random_exploration_steps=16,
+        warm_start_phaseout_steps=None,
+        sigma=0.1,
+        dry_run=True,
+        fail_fast=False,
+    )
+
+    phase6a.run_phase6a(args)
+
+    config_path = (
+        output_dir
+        / "generated_configs"
+        / "phase6a_15s_maddpg_community_deadline_zero_guard_v53_teacher_clone_ev_rbc_smart_seed123.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+
+    assert payload["simulator"]["reward_function"] == "CostServiceCommunityDeadlineValueRewardV50"
+    assert exploration["actor_policy_loss_weight"] == 0.035
+    assert exploration["actor_behavior_cloning_weight"] == 0.780
+    assert exploration["actor_behavior_cloning_min_weight"] == 0.700
+    assert exploration["actor_ev_behavior_cloning_multiplier"] == 58.0
+    assert exploration["actor_ev_behavior_cloning_zero_target_weight"] == 24.0
+    assert replay_buffer["priority_fraction"] == 0.35
+    assert replay_buffer["priority_max"] == 50.0
+    assert replay_buffer["behavior_action_priority_weight"] == 5.0
+    assert replay_buffer["observation_event_priority_weight"] == 8.0
+
+
+def test_phase6a_community_deadline_clone_v54_variant_anchors_to_teacher(tmp_path):
+    output_dir = tmp_path / "phase6a_community_deadline_clone_v54"
+    args = Namespace(
+        output_dir=str(output_dir),
+        dataset=["15s"],
+        agent=["maddpg"],
+        maddpg_variant=["community_deadline_clone_v54_teacher_clone_anchor_rbc_smart"],
+        seed=[123],
+        episodes=1,
+        deterministic_finish=False,
+        steps=16,
+        steps_15s=None,
+        steps_2022=None,
+        start=0,
+        full_window=False,
+        no_kpi_export=True,
+        metric_interval=8,
+        batch_size=16,
+        buffer_capacity=1000,
+        actor_layers="32",
+        critic_layers="64,32",
+        random_exploration_steps=16,
+        warm_start_phaseout_steps=None,
+        sigma=0.1,
+        dry_run=True,
+        fail_fast=False,
+    )
+
+    phase6a.run_phase6a(args)
+
+    config_path = (
+        output_dir
+        / "generated_configs"
+        / "phase6a_15s_maddpg_community_deadline_clone_v54_teacher_clone_anchor_rbc_smart_seed123.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+
+    assert payload["simulator"]["reward_function"] == "CostServiceCommunityDeadlineValueRewardV50"
+    assert exploration["actor_policy_loss_weight"] == 0.0
+    assert exploration["actor_behavior_cloning_weight"] == 1.200
+    assert exploration["actor_behavior_cloning_min_weight"] == 1.200
+    assert exploration["actor_behavior_cloning_decay_steps"] == 0
+    assert exploration["actor_ev_behavior_cloning_multiplier"] == 80.0
+    assert exploration["actor_ev_behavior_cloning_positive_target_weight"] == 32.0
+    assert exploration["actor_action_l2_penalty"] == 0.0
+    assert replay_buffer["priority_fraction"] == 0.40
+    assert replay_buffer["priority_max"] == 60.0
+    assert replay_buffer["behavior_action_priority_weight"] == 6.0
+
+
+def test_phase6a_community_peak_deadline_v55_variant_uses_bc_warmup(tmp_path):
+    output_dir = tmp_path / "phase6a_community_peak_deadline_v55"
+    args = Namespace(
+        output_dir=str(output_dir),
+        dataset=["15s"],
+        agent=["maddpg"],
+        maddpg_variant=["community_peak_deadline_v55_teacher_clone_bc_warmup_community_rbc_smart"],
+        seed=[123],
+        episodes=1,
+        deterministic_finish=False,
+        steps=16,
+        steps_15s=None,
+        steps_2022=None,
+        start=0,
+        full_window=False,
+        no_kpi_export=True,
+        metric_interval=8,
+        batch_size=16,
+        buffer_capacity=1000,
+        actor_layers="32",
+        critic_layers="64,32",
+        random_exploration_steps=16,
+        warm_start_phaseout_steps=None,
+        sigma=0.1,
+        dry_run=True,
+        fail_fast=False,
+    )
+
+    phase6a.run_phase6a(args)
+
+    config_path = (
+        output_dir
+        / "generated_configs"
+        / "phase6a_15s_maddpg_community_peak_deadline_v55_teacher_clone_bc_warmup_community_rbc_smart_seed123.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+
+    assert payload["simulator"]["reward_function"] == "CostServiceCommunityPeakDeadlineRewardV52"
+    assert exploration["actor_policy_loss_weight"] == 0.025
+    assert exploration["actor_behavior_cloning_weight"] == 1.000
+    assert exploration["actor_behavior_cloning_min_weight"] == 0.850
+    assert exploration["actor_behavior_cloning_extra_updates"] == 1
+    assert exploration["actor_behavior_cloning_extra_update_end_step"] == 16 * 48
+    assert exploration["actor_ev_behavior_cloning_multiplier"] == 72.0
+    assert exploration["actor_storage_behavior_cloning_multiplier"] == 0.35
+    assert replay_buffer["priority_fraction"] == 0.35
+    assert replay_buffer["priority_max"] == 55.0
+    assert replay_buffer["behavior_action_priority_weight"] == 5.5
+    assert replay_buffer["observation_event_priority_weight"] == 8.0
+
+
+def test_phase6a_community_feasible_precision_v56_variant_uses_policy_finetune(tmp_path):
+    output_dir = tmp_path / "phase6a_community_feasible_precision_v56"
+    args = Namespace(
+        output_dir=str(output_dir),
+        dataset=["15s"],
+        agent=["maddpg"],
+        maddpg_variant=["community_feasible_precision_v56_teacher_clone_policy_finetune_rbc_smart"],
+        seed=[123],
+        episodes=1,
+        deterministic_finish=False,
+        steps=16,
+        steps_15s=None,
+        steps_2022=None,
+        start=0,
+        full_window=False,
+        no_kpi_export=True,
+        metric_interval=8,
+        batch_size=16,
+        buffer_capacity=1000,
+        actor_layers="32",
+        critic_layers="64,32",
+        random_exploration_steps=16,
+        warm_start_phaseout_steps=None,
+        sigma=0.1,
+        dry_run=True,
+        fail_fast=False,
+    )
+
+    phase6a.run_phase6a(args)
+
+    config_path = (
+        output_dir
+        / "generated_configs"
+        / "phase6a_15s_maddpg_community_feasible_precision_v56_teacher_clone_policy_finetune_rbc_smart_seed123.yaml"
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
+
+    assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasiblePrecisionRewardV46"
+    assert exploration["actor_policy_loss_weight"] == 0.015
+    assert exploration["actor_behavior_cloning_weight"] == 0.800
+    assert exploration["actor_behavior_cloning_min_weight"] == 0.650
+    assert exploration["actor_behavior_cloning_extra_updates"] == 1
+    assert exploration["actor_behavior_cloning_extra_update_end_step"] == 16 * 40
+    assert exploration["actor_ev_behavior_cloning_multiplier"] == 48.0
+    assert exploration["actor_storage_action_l2_penalty"] == 0.20
+    assert replay_buffer["priority_fraction"] == 0.25
+    assert replay_buffer["priority_max"] == 35.0
+    assert replay_buffer["behavior_action_priority_weight"] == 4.0
+    assert replay_buffer["observation_event_priority_weight"] == 4.0
 
 
 def test_phase6a_rbc_smart_warm_start_uses_dataset_specific_teacher_hyperparameters(tmp_path):
@@ -1456,15 +1874,15 @@ def test_phase6a_rbc_smart_warm_start_uses_dataset_specific_teacher_hyperparamet
         / "phase6a_2022_maddpg_community_feasible_service_v45_teacher_clone_ev_focus_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    teacher_hyperparameters = payload["algorithm"]["exploration"]["params"][
+    teacher_hyperparameters = payload["pipeline"][0]["exploration"]["params"][
         "warm_start_policy_hyperparameters"
     ]
 
     assert teacher_hyperparameters["allow_v2g"] is True
-    assert teacher_hyperparameters["price_charge_rate"] == 0.15
-    assert teacher_hyperparameters["storage_price_charge_soc_ceiling"] == 0.85
-    assert teacher_hyperparameters["storage_price_discharge_soc_floor"] == 0.30
-    assert teacher_hyperparameters["storage_peak_discharge_soc_floor"] == 0.30
+    assert teacher_hyperparameters["price_charge_rate"] == 0.0
+    assert teacher_hyperparameters["storage_price_charge_soc_ceiling"] == 0.60
+    assert teacher_hyperparameters["storage_price_discharge_soc_floor"] == 0.45
+    assert teacher_hyperparameters["storage_peak_discharge_soc_floor"] == 0.45
 
 
 def test_phase6a_community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_variant_keeps_bc_gate(
@@ -1505,8 +1923,8 @@ def test_phase6a_community_feasible_service_v45_teacher_clone_ev_focus_slow_fine
         / "phase6a_15s_maddpg_community_feasible_service_v45_teacher_clone_ev_focus_slow_finetune_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasibleServiceRewardV45"
     assert replay_buffer["behavior_action_priority_weight"] == 3.0
@@ -1564,8 +1982,8 @@ def test_phase6a_community_feasible_service_v45_teacher_clone_ev_focus_event_var
         / "phase6a_15s_maddpg_community_feasible_service_v45_teacher_clone_ev_focus_event_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasibleServiceRewardV45"
     assert replay_buffer["priority_fraction"] == 0.35
@@ -1624,8 +2042,8 @@ def test_phase6a_community_feasible_service_v45_teacher_clone_ev_guarded_band_va
         / "phase6a_15s_maddpg_community_feasible_service_v45_teacher_clone_ev_guarded_band_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert replay_buffer["behavior_action_priority_weight"] == 3.0
     assert replay_buffer["behavior_action_priority_scope"] == "ev"
@@ -1675,8 +2093,8 @@ def test_phase6a_community_feasible_service_v45_teacher_clone_ev_band_variant_we
         / "phase6a_15s_maddpg_community_feasible_service_v45_teacher_clone_ev_band_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert payload["simulator"]["reward_function"] == "CostServiceCommunityFeasibleServiceRewardV45"
     assert replay_buffer["behavior_action_priority_weight"] == 2.5
@@ -1727,8 +2145,8 @@ def test_phase6a_community_feasible_service_v45_teacher_clone_ev_balanced_varian
         / "phase6a_15s_maddpg_community_feasible_service_v45_teacher_clone_ev_balanced_rbc_smart_seed123.yaml"
     )
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    exploration = payload["algorithm"]["exploration"]["params"]
-    replay_buffer = payload["algorithm"]["replay_buffer"]
+    exploration = payload["pipeline"][0]["exploration"]["params"]
+    replay_buffer = payload["pipeline"][0]["replay_buffer"]
 
     assert replay_buffer["behavior_action_priority_weight"] == 2.75
     assert replay_buffer["behavior_action_priority_scope"] == "ev"

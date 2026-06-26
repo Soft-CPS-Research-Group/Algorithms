@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Literal
 
+# Imported here to avoid circular imports — registry imports from agents,
+# agents do not import from config_schema.
+from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
+
 
 class MetadataConfig(BaseModel):
     experiment_name: str = Field(..., min_length=1, description="Name registered in MLflow")
@@ -39,6 +43,10 @@ class RuntimeConfig(BaseModel):
 
 class TrackingConfig(BaseModel):
     mlflow_enabled: bool = Field(default=True, description="If false, skips MLflow tracking")
+    tags: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional run labels preserved in resolved configs and artifacts.",
+    )
     log_level: str = Field(default="INFO", description="Loguru log level")
     log_frequency: int = Field(default=1, ge=1, description="Log metrics every N environment steps")
     mlflow_step_sample_interval: int = Field(
@@ -102,6 +110,90 @@ class TrackingConfig(BaseModel):
         default="summary",
         description="Reward component diagnostics detail level",
     )
+    runtime_profiling_enabled: bool = Field(
+        default=False,
+        description="Log coarse runtime timings for wrapper and agent phases",
+    )
+    runtime_profiling_interval: int = Field(
+        default=512,
+        ge=1,
+        description="Log runtime profiling metrics every N environment steps when enabled",
+    )
+    runtime_profiling_detail: Literal["summary", "detailed"] = Field(
+        default="summary",
+        description="Runtime profiling detail level",
+    )
+    progress_phase_updates_enabled: bool = Field(
+        default=False,
+        description="Write progress.json phase heartbeats around expensive wrapper phases",
+    )
+    progress_phase_start_step: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Optional first global step for detailed phase heartbeats",
+    )
+    progress_phase_end_step: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Optional last global step for detailed phase heartbeats",
+    )
+    max_step_seconds: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Abort training if a completed environment step exceeds this duration",
+    )
+    stall_watchdog_enabled: bool = Field(
+        default=False,
+        description="Arm a faulthandler watchdog around wrapper phases to diagnose stalled jobs",
+    )
+    stall_watchdog_timeout_seconds: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Seconds without completing the current phase before dumping thread stacks",
+    )
+    stall_watchdog_exit_on_timeout: bool = Field(
+        default=True,
+        description="Exit the process after dumping stacks when the stall watchdog fires",
+    )
+    stall_watchdog_repeat: bool = Field(
+        default=False,
+        description="Repeat watchdog stack dumps when exit_on_timeout is false",
+    )
+    stall_watchdog_traceback_file: Optional[str] = Field(
+        default=None,
+        description="Optional path for stall watchdog stack dumps; defaults to the run log directory",
+    )
+    stall_watchdog_context_interval_steps: int = Field(
+        default=1,
+        ge=1,
+        description="Write stall watchdog context every N step_start phases to reduce remote I/O",
+    )
+    resource_guard_enabled: bool = Field(
+        default=False,
+        description="Abort training when configured process/system memory limits are crossed",
+    )
+    max_process_rss_mb: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Abort when process resident memory exceeds this threshold",
+    )
+    min_available_ram_mb: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Abort when system available RAM falls below this threshold",
+    )
+
+    @model_validator(mode="after")
+    def validate_phase_window(self) -> "TrackingConfig":
+        if (
+            self.progress_phase_start_step is not None
+            and self.progress_phase_end_step is not None
+            and self.progress_phase_end_step < self.progress_phase_start_step
+        ):
+            raise ValueError(
+                "tracking.progress_phase_end_step must be >= tracking.progress_phase_start_step"
+            )
+        return self
 
 
 class CheckpointingConfig(BaseModel):
@@ -120,6 +212,12 @@ class CheckpointingConfig(BaseModel):
 class SimulatorExportConfig(BaseModel):
     mode: Literal["none", "during", "end"] = "none"
     export_kpis_on_episode_end: bool = False
+    final_episode_only: bool = False
+    kpis_final_episode_only: Optional[bool] = None
+    timeseries_final_episode_only: Optional[bool] = None
+    include_business_as_usual: bool = True
+    export_business_as_usual_timeseries: bool = True
+    kpi_round_decimals: Optional[int] = Field(default=None, ge=0)
     session_name: Optional[str] = None
 
 
@@ -141,8 +239,36 @@ class WrapperRewardConfig(BaseModel):
 class EntityEncodingConfig(BaseModel):
     enabled: Optional[bool] = None
     normalization: Literal["minmax_space"] = "minmax_space"
-    profile: Literal["minmax_space", "maddpg_v1", "maddpg_v2_compact"] = "minmax_space"
+    profile: Literal[
+        "minmax_space",
+        "maddpg_v1",
+        "maddpg_v2_compact",
+        "maddpg_v3_operational",
+        "maddpg_v3_realtime",
+        "cc_level1",
+        "cc_level2",
+    ] = "minmax_space"
     clip: bool = True
+
+
+class CommunityMarketKpisConfig(BaseModel):
+    community_local_traded_enabled: bool = True
+    community_self_consumption_enabled: bool = True
+
+
+class CommunityMarketConfig(BaseModel):
+    enabled: bool = True
+    local_price_ratio_to_grid_import: float = Field(default=0.8, ge=0.0, le=1.0)
+    intra_community_sell_ratio: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    grid_export_price: float = Field(default=0.0, ge=0.0)
+    import_member_weights: Dict[str, float] = Field(default_factory=dict)
+    kpis: CommunityMarketKpisConfig = CommunityMarketKpisConfig()
+
+    @model_validator(mode="after")
+    def default_sell_ratio(self) -> "CommunityMarketConfig":
+        if self.intra_community_sell_ratio is None:
+            self.intra_community_sell_ratio = self.local_price_ratio_to_grid_import
+        return self
 
 
 class SimulatorConfig(BaseModel):
@@ -161,6 +287,7 @@ class SimulatorConfig(BaseModel):
     export: SimulatorExportConfig = SimulatorExportConfig()
     wrapper_reward: WrapperRewardConfig = WrapperRewardConfig()
     entity_encoding: EntityEncodingConfig = EntityEncodingConfig()
+    community_market: Optional[CommunityMarketConfig] = None
 
     @field_validator("episode_time_steps")
     @classmethod
@@ -211,6 +338,10 @@ class NetworkConfig(BaseModel):
     class_name: str = Field(alias="class")
     layers: List[int]
     lr: float = Field(gt=0)
+    state_layers: Optional[List[int]] = None
+    action_layers: Optional[List[int]] = None
+    joint_layers: Optional[List[int]] = None
+    head_layers: Optional[List[int]] = None
 
     @field_validator("layers")
     @classmethod
@@ -219,6 +350,15 @@ class NetworkConfig(BaseModel):
             raise ValueError("layers must contain at least one hidden dimension")
         if any(layer <= 0 for layer in value):
             raise ValueError("layers must be positive integers")
+        return value
+
+    @field_validator("state_layers", "action_layers", "joint_layers", "head_layers")
+    @classmethod
+    def validate_optional_layers(cls, value: Optional[List[int]]) -> Optional[List[int]]:
+        if value is None:
+            return value
+        if any(layer <= 0 for layer in value):
+            raise ValueError("network tower layers must be positive integers")
         return value
 
 
@@ -242,7 +382,9 @@ class ReplayBufferConfig(BaseModel):
     behavior_action_priority_mode: Optional[Literal["positive", "abs"]] = None
     behavior_action_priority_scope: Optional[Literal["all", "ev"]] = None
     observation_event_priority_weight: Optional[float] = Field(default=None, ge=0.0)
-    observation_event_priority_mode: Optional[Literal["ev_departure_service"]] = None
+    observation_event_priority_mode: Optional[
+        Literal["ev_departure_service", "ev_pv_price_peak", "combined"]
+    ] = None
 
 
 class ExplorationParams(BaseModel):
@@ -291,11 +433,22 @@ class RuleBasedHyperparameters(BaseModel):
     storage_price_charge_soc_ceiling: float = Field(default=0.90, ge=0)
     storage_price_discharge_soc_floor: float = Field(default=0.20, ge=0)
     storage_peak_discharge_soc_floor: float = Field(default=0.20, ge=0)
+    normal_storage_discharge_import_threshold_kw: float = Field(default=0.25, ge=0)
+    storage_discharge_import_threshold_kw: float = Field(default=0.25, ge=0)
     ev_normal_charge_rate: float = Field(default=1.0, ge=0)
     ev_normal_target_soc: float = Field(default=1.0, ge=0)
     ev_price_charge_rate: float = Field(default=0.70, ge=0)
     ev_pv_charge_rate: float = Field(default=0.85, ge=0)
     ev_v2g_discharge_rate: float = Field(default=0.30, ge=0)
+    ev_community_charge_rate: float = Field(default=0.85, ge=0)
+    community_v2g_discharge_rate: float = Field(default=0.30, ge=0)
+    community_storage_charge_rate: float = Field(default=0.75, ge=0)
+    community_storage_discharge_rate: float = Field(default=0.65, ge=0)
+    community_surplus_charge_soc_ceiling: float = Field(default=0.90, ge=0)
+    community_surplus_threshold_kw: float = Field(default=0.25, ge=0)
+    community_import_threshold_kw: float = Field(default=7.0, ge=0)
+    community_local_price_ratio: float = Field(default=0.8, ge=0)
+    community_grid_export_price: float = Field(default=0.0, ge=0)
     pv_surplus_threshold_kw: float = Field(default=0.25, ge=0)
     import_peak_threshold_kw: float = Field(default=7.0, ge=0)
     low_headroom_threshold_kw: float = Field(default=2.0, ge=0)
@@ -316,8 +469,108 @@ class TopologyConfig(BaseModel):
     action_space: Optional[Any] = None
 
 
-class MADDPGAlgorithmConfig(BaseModel):
-    name: Literal["MADDPG"]
+class ExperimentalPPOHyperparameters(BaseModel):
+    """Shared schema for experimental hierarchical PPO agents.
+
+    These agents are still evolving, so unknown hyperparameters are preserved
+    instead of rejected. Core numeric fields are still checked to catch obvious
+    template errors.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    num_steps: int = Field(default=2048, gt=0)
+    lr: float = Field(default=3.0e-4, gt=0)
+    gamma: float = Field(default=0.99, ge=0, le=1)
+    gae_lambda: float = Field(default=0.95, ge=0, le=1)
+    num_epochs: int = Field(default=10, ge=1)
+    mini_batch_size: int = Field(default=64, ge=1)
+    clip_coef: float = Field(default=0.2, gt=0)
+    vf_coef: float = Field(default=0.5, ge=0)
+    ent_coef: float = Field(default=0.01, ge=0)
+    max_grad_norm: float = Field(default=0.5, gt=0)
+    target_kl: Optional[float] = Field(default=0.02, gt=0)
+    hidden_dims: List[int] = Field(default_factory=lambda: [128, 128])
+
+
+class CommunityCoordinatorHyperparameters(ExperimentalPPOHyperparameters):
+    output_mode: Literal["actions", "signal"] = "actions"
+    c_dim: int = Field(default=12, gt=0)
+    b_dim: int = Field(default=7, gt=0)
+    num_buildings: int = Field(default=17, gt=0)
+    cc_action_interval: int = Field(default=1, gt=0)
+    net_weight: float = Field(default=0.01, ge=0)
+
+
+class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
+    # Phase-1 market maker: emits a global price multiplier.
+    c_dim: int = Field(default=16, gt=0)                # cc_level1 encoding width
+    cc_action_interval: int = Field(default=4, gt=0)    # 4 × 15min = hourly
+    price_min: float = Field(default=0.5, gt=0)         # min price multiplier
+    price_max: float = Field(default=1.5, gt=0)         # max price multiplier
+
+
+class BuildingAgentHyperparameters(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    gamma:                    float = Field(default=0.99,  ge=0, le=1)
+    gae_lambda:               float = Field(default=0.95,  ge=0, le=1)
+    num_epochs:               int   = Field(default=10,    ge=1)
+    mini_batch_size:          int   = Field(default=64,    ge=1)
+    clip_coef:                float = Field(default=0.2,   gt=0)
+    vf_coef:                  float = Field(default=0.5,   ge=0)
+    ent_coef:                 float = Field(default=0.01,  ge=0)
+    max_grad_norm:            float = Field(default=0.5,   gt=0)
+    target_kl:                Optional[float] = Field(default=0.02, gt=0)
+    lr:                       float = Field(default=3e-4,  gt=0)
+    obs_dim:                  int   = Field(default=0,     ge=0)   # 0 = auto from env
+    action_dim:               int   = Field(default=0,     ge=0)   # 0 = auto from env
+    num_steps:                int   = Field(default=2048,  ge=1)
+    hidden_dims:              List[int] = Field(default_factory=lambda: [64, 64])
+    building_cost_weight:     float = Field(default=1.0,   ge=0)
+    community_import_weight:  float = Field(default=0.3,   ge=0)
+    constraint_penalty_weight: float = Field(default=0.5,  ge=0)
+
+
+class CommunityCoordinatorAlgorithmConfig(BaseModel):
+    algorithm: Literal["CommunityCoordinator"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    frozen: bool = False
+    hyperparameters: CommunityCoordinatorHyperparameters = Field(
+        default_factory=CommunityCoordinatorHyperparameters
+    )
+
+
+class CCLevel1AlgorithmConfig(BaseModel):
+    algorithm: Literal["CCLevel1"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    frozen: bool = False
+    hyperparameters: CCLevel1Hyperparameters = Field(default_factory=CCLevel1Hyperparameters)
+
+
+class CCLevel2AlgorithmConfig(BaseModel):
+    algorithm: Literal["CCLevel2"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    frozen: bool = False
+    hyperparameters: Any = Field(default_factory=dict)
+
+
+class BuildingAgentStageConfig(BaseModel):
+    """Pipeline stage describing a BuildingAgent (per-building PPO worker)."""
+
+    algorithm: Literal["BuildingAgent"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
+    hyperparameters: BuildingAgentHyperparameters = Field(default_factory=BuildingAgentHyperparameters)
+    networks: Optional[Any] = None
+    replay_buffer: Optional[Any] = None
+    exploration: Optional[Any] = None
+
+
+class ActorCriticAlgorithmConfig(BaseModel):
+    algorithm: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
+    count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
+    frozen: bool = False
     hyperparameters: AlgorithmHyperparameters
     networks: AlgorithmNetworks
     replay_buffer: ReplayBufferConfig
@@ -325,31 +578,47 @@ class MADDPGAlgorithmConfig(BaseModel):
 
 
 class RuleBasedAlgorithmConfig(BaseModel):
-    name: Literal[
+    algorithm: Literal[
         "RuleBasedPolicy",
         "RandomPolicy",
         "NormalPolicy",
         "NormalNoBatteryPolicy",
         "RBCBasicPolicy",
+        "RBCCommunityPolicy",
         "RBCSmartPolicy",
+        "SignalAwareRBC",
     ]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
     hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
 
 
-class SingleAgentRLAlgorithmConfig(BaseModel):
-    name: Literal["SingleAgentRL"]
+class SingleAgentRLStageConfig(BaseModel):
+    """Pipeline stage placeholder for SingleAgentRL (no runtime impl yet)."""
+
+    algorithm: Literal["SingleAgentRL"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
     hyperparameters: AlgorithmHyperparameters
     policy: Optional[str] = Field(default=None, description="Identifier for the policy architecture")
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
 
+    @model_validator(mode="after")
+    def reject_placeholder(self) -> "SingleAgentRLStageConfig":
+        raise ValueError(
+            "Algorithm 'SingleAgentRL' is a schema placeholder and has no runtime "
+            "implementation yet. Use one of: MADDPG, MATD3, MASAC, IPPO, MAPPO, HAPPO, "
+            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartPolicy, SignalAwareRBC, "
+            "RandomPolicy, NormalPolicy, NormalNoBatteryPolicy."
+        )
+        return self  # unreachable; satisfies type checker
+
 
 class TransformerPPOTransformerConfig(BaseModel):
-    """Backbone hyperparameters for AgentTransformerPPO (spec §15.2)."""
-
     d_model: int = Field(ge=1)
     nhead: int = Field(ge=1)
     num_layers: int = Field(ge=1)
@@ -358,8 +627,6 @@ class TransformerPPOTransformerConfig(BaseModel):
 
 
 class TransformerPPOHyperparameters(BaseModel):
-    """PPO hyperparameters (spec §15.2; ported from gj/plan-c)."""
-
     learning_rate: float = Field(gt=0)
     gamma: float = Field(gt=0, le=1.0)
     gae_lambda: float = Field(gt=0, le=1.0)
@@ -371,18 +638,25 @@ class TransformerPPOHyperparameters(BaseModel):
     max_grad_norm: float = Field(gt=0)
 
 
-class TransformerPPOAlgorithmConfig(BaseModel):
-    """Top-level ``algorithm`` block when ``name == "AgentTransformerPPO"``.
-
-    Tokenizer rule validation is dispatched from :func:`validate_config`
-    (spec §13.4 hard-fail rules, executed against the bundled entity sample
-    payload + per-building action_field declarations).
-    """
-
-    name: Literal["AgentTransformerPPO"]
+class TransformerPPOStageConfig(BaseModel):
+    algorithm: Literal["AgentTransformerPPO"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
     tokenizer_config_path: str = Field(min_length=1)
     transformer: TransformerPPOTransformerConfig
     hyperparameters: TransformerPPOHyperparameters
+
+
+PipelineStageConfig = Union[
+    BuildingAgentStageConfig,
+    CCLevel1AlgorithmConfig,
+    CCLevel2AlgorithmConfig,
+    CommunityCoordinatorAlgorithmConfig,
+    ActorCriticAlgorithmConfig,
+    RuleBasedAlgorithmConfig,
+    SingleAgentRLStageConfig,
+    TransformerPPOStageConfig,
+]
 
 
 class DeucalionExecutionConfig(BaseModel):
@@ -474,12 +748,15 @@ class ProjectConfig(BaseModel):
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
     topology: TopologyConfig = TopologyConfig()
-    algorithm: Union[
-        MADDPGAlgorithmConfig,
-        RuleBasedAlgorithmConfig,
-        SingleAgentRLAlgorithmConfig,
-        TransformerPPOAlgorithmConfig,
-    ]
+    pipeline: List[PipelineStageConfig] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Ordered list of execution stages. A single-element list represents "
+            "a single agent (current default). Multi-element lists describe a "
+            "vertical hierarchy (top stage feeds context to the next)."
+        ),
+    )
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
 
@@ -487,68 +764,71 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
-        # Spec §12.4: registry-driven dynamic-topology guardrail at config
-        # validation time. We preserve the historical MADDPG wording verbatim
-        # so any user-facing tests pinning that message keep passing.
         if self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
-            from algorithms.registry import ALGORITHM_REGISTRY  # local: avoid circular import at module load
-            agent_cls = ALGORITHM_REGISTRY.get(self.algorithm.name)
-            supports_dynamic = bool(
-                getattr(agent_cls, "supports_dynamic_topology", False)
-            ) if agent_cls is not None else None
-            # ``supports_dynamic`` is None when the algorithm name is registered
-            # in the schema but not in the runtime registry (e.g. placeholder).
-            # In that case we let the placeholder check elsewhere handle it.
-            if supports_dynamic is False:
-                if self.algorithm.name == "MADDPG":
+            from algorithms.registry import ALGORITHM_REGISTRY
+            for stage in self.pipeline:
+                agent_cls = ALGORITHM_REGISTRY.get(stage.algorithm)
+                if agent_cls is None:
+                    continue
+                if not bool(getattr(agent_cls, "supports_dynamic_topology", False)):
+                    if stage.algorithm == "MADDPG":
+                        raise ValueError(
+                            "algorithm.name='MADDPG' does not support simulator.interface='entity' "
+                            "with simulator.topology_mode='dynamic'."
+                        )
                     raise ValueError(
-                        "algorithm.name='MADDPG' does not support simulator.interface='entity' with simulator.topology_mode='dynamic'."
+                        f"algorithm={stage.algorithm!r} does not support "
+                        "simulator.topology_mode='dynamic' (supports_dynamic_topology=False)."
                     )
-                raise ValueError(
-                    f"algorithm.name={self.algorithm.name!r} does not support "
-                    "simulator.topology_mode='dynamic' (supports_dynamic_topology=False)."
-                )
 
         return self
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain dictionary using original key names (aliases)."""
-        return self.model_dump(by_alias=True)
+        payload = self.model_dump(by_alias=True)
+        for stage in payload.get("pipeline", []) or []:
+            if not isinstance(stage, dict):
+                continue
+            networks = stage.get("networks")
+            if not isinstance(networks, dict):
+                continue
+            for network in networks.values():
+                if not isinstance(network, dict):
+                    continue
+                for key in ("state_layers", "action_layers", "joint_layers", "head_layers"):
+                    if network.get(key) is None:
+                        network.pop(key, None)
+        return payload
 
 
 def validate_config(raw_config: Dict[str, Any]) -> ProjectConfig:
-    """Validate a raw configuration dictionary and return the structured model.
-
-    For ``algorithm.name == "AgentTransformerPPO"`` the tokenizer JSON pointed
-    to by ``algorithm.tokenizer_config_path`` is also loaded and checked
-    against the bundled entity payload sample using the 5 hard-fail rules
-    defined in ``docs/specv2.md`` §13.4.
-    """
+    """Validate a raw configuration dictionary and return the structured model."""
+    if isinstance(raw_config, dict) and "algorithm" in raw_config and "pipeline" not in raw_config:
+        raise ValueError(
+            "Configuration uses the deprecated top-level 'algorithm' key. "
+            "Migrate to a 'pipeline' list, e.g.:\n\n"
+            "  pipeline:\n"
+            "    - algorithm: \"<name>\"\n"
+            "      count: 1\n"
+            "      hyperparameters: { ... }\n"
+            "      networks: { ... }   # if applicable\n"
+            "      replay_buffer: { ... }   # if applicable\n"
+            "      exploration: { ... }   # if applicable\n"
+        )
     project = ProjectConfig.model_validate(raw_config)
 
-    if isinstance(project.algorithm, TransformerPPOAlgorithmConfig):
-        # Imported lazily so that environments without the entity sample (or
-        # without pydantic-validated tokenizer config) only pay the cost when
-        # the transformer agent is actually selected.
-        from utils.entity_tokenizer_schema import (
-            _load_default_sample,
-            load_entity_tokenizer_config,
-            validate_against_payload,
-        )
-
-        tokenizer_cfg = load_entity_tokenizer_config(
-            project.algorithm.tokenizer_config_path
-        )
-        sample = _load_default_sample()
-        # Default action_field surface for the demo dataset; the wrapper
-        # supplies the authoritative names at runtime. We only assert the
-        # baseline contract here so misconfigured tokenizer JSONs fail fast at
-        # config-load time.
-        action_names_per_building = [
-            [ca.action_field for ca in tokenizer_cfg.ca_types.values()]
-        ]
-        validate_against_payload(
-            tokenizer_cfg, sample, action_names_per_building
-        )
+    for stage in project.pipeline:
+        if isinstance(stage, TransformerPPOStageConfig):
+            from utils.entity_tokenizer_schema import (
+                _load_default_sample,
+                load_entity_tokenizer_config,
+                validate_against_payload,
+            )
+            tokenizer_cfg = load_entity_tokenizer_config(stage.tokenizer_config_path)
+            sample = _load_default_sample()
+            action_names_per_building = [
+                [ca.action_field for ca in tokenizer_cfg.ca_types.values()]
+            ]
+            validate_against_payload(tokenizer_cfg, sample, action_names_per_building)
 
     return project

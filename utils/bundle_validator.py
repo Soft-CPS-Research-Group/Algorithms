@@ -27,7 +27,7 @@ def validate_bundle_contract(manifest: Mapping[str, Any], artifacts_root: Path |
         "simulator",
         "training",
         "topology",
-        "algorithm",
+        "pipeline",
         "environment",
         "agent",
     ]
@@ -116,6 +116,7 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
     if not isinstance(artifacts, list) or not artifacts:
         raise BundleValidationError("agent.artifacts must be a non-empty list")
 
+    hierarchical_pipeline = bool(agent.get("stages"))
     seen_agent_indices: set[int] = set()
 
     for idx, raw_artifact in enumerate(artifacts):
@@ -124,7 +125,7 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
         if not isinstance(agent_index, int) or agent_index < 0:
             raise BundleValidationError(f"agent.artifacts[{idx}].agent_index must be a non-negative integer")
 
-        if agent_index in seen_agent_indices:
+        if not hierarchical_pipeline and agent_index in seen_agent_indices:
             raise BundleValidationError(f"Duplicate agent artifact for agent_index={agent_index}")
         seen_agent_indices.add(agent_index)
 
@@ -165,7 +166,7 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
                 f"agent.artifacts[{idx}].agent_index={agent_index} is outside topology.num_agents={num_agents}"
             )
 
-    if num_agents is not None and len(artifacts) != num_agents:
+    if num_agents is not None and not hierarchical_pipeline and len(artifacts) != num_agents:
         raise BundleValidationError(
             "Number of exported artifacts must match topology.num_agents "
             f"(artifacts={len(artifacts)}, num_agents={num_agents})"

@@ -122,6 +122,7 @@ def test_wrapper_action_diagnostics_include_categories_and_deferrable_delay():
         "deferrable_appliance_washing_machine_1",
     ]]
     wrapper.observation_names = [[
+        "charger::Building_1/charger_1_1::connected_state",
         "deferrable_appliance::Building_1/washing_machine_1::pending",
         "deferrable_appliance::Building_1/washing_machine_1::can_start",
     ]]
@@ -135,12 +136,14 @@ def test_wrapper_action_diagnostics_include_categories_and_deferrable_delay():
             },
         )()
     ]
-    observations = [np.array([1.0, 1.0], dtype=np.float64)]
+    observations = [np.array([1.0, 1.0, 1.0], dtype=np.float64)]
 
     first = wrapper._build_action_diagnostic_metrics([[0.0, -0.2, 0.1]], observations)
     second = wrapper._build_action_diagnostic_metrics([[0.0, -0.2, 0.6]], observations)
 
     assert first["Action/ev_negative_fraction"] == 1.0
+    assert first["Action/ev_connected_count"] == 1.0
+    assert first["Action/ev_connected_negative_fraction"] == 1.0
     assert first["Action/storage_idle_fraction"] == 1.0
     assert first["Action/deferrable_off_fraction"] == 1.0
     assert second["Action/deferrable_on_fraction"] == 1.0
@@ -170,6 +173,51 @@ def test_maddpg_diagnostic_metrics_are_consumable_without_mlflow():
     assert status["MADDPG/exploration_sigma"] == 0.12
     assert agent.consume_latest_training_metrics() == {"MADDPG/test_metric": 3.0}
     assert agent.consume_latest_training_metrics() == {}
+
+
+def test_maddpg_action_deviation_metrics_are_independent_from_penalty():
+    agent = MADDPG.__new__(MADDPG)
+    agent.device = torch.device("cpu")
+    agent.num_agents = 1
+    agent.action_dimension = [3]
+    agent.action_low = [np.asarray([-1.0, -2.0, 0.0], dtype=np.float32)]
+    agent.action_high = [np.asarray([1.0, 2.0, 4.0], dtype=np.float32)]
+    agent.action_names = [["electric_vehicle_charger", "electrical_storage", "deferrable_appliance_start"]]
+    agent.actor_residual_delta_l2_penalty = 0.0
+
+    final_action = torch.tensor([[0.5, -1.0, 3.0]], dtype=torch.float32)
+    teacher_action = torch.tensor([[0.0, -1.0, 1.0]], dtype=torch.float32)
+
+    metrics = agent._tensor_action_deviation_metrics(
+        [final_action],
+        [teacher_action],
+        prefix="MADDPG/test",
+    )
+    residual_delta = agent._residual_delta_l2(0, final_action, teacher_action)
+
+    assert metrics["MADDPG/test/base_available"] == 1.0
+    assert metrics["MADDPG/test/ev_action_count"] == 1.0
+    assert metrics["MADDPG/test/storage_action_count"] == 1.0
+    assert metrics["MADDPG/test/deferrable_action_count"] == 1.0
+    assert metrics["MADDPG/test/ev_delta_abs_mean"] == pytest.approx(0.25)
+    assert metrics["MADDPG/test/storage_delta_abs_mean"] == pytest.approx(0.0)
+    assert residual_delta.item() > 0.0
+
+
+def test_maddpg_ev_priority_uses_departure_feasibility_features():
+    agent = MADDPG.__new__(MADDPG)
+    agent.observation_names = [[
+        "charger::connected_ev_departure_available",
+        "charger::connected_ev_departure_feasibility_ratio",
+        "charger::connected_ev_departure_energy_margin_kwh",
+    ]]
+
+    score = agent._ev_departure_service_priority_score(
+        0,
+        np.asarray([1.0, 1.15, -4.0], dtype=np.float32),
+    )
+
+    assert score > 0.0
 
 
 def test_maddpg_reward_normalization_uses_running_stats():

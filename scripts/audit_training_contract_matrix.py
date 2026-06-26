@@ -20,13 +20,14 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.audit_experiment_contract import run_contract_audit
 from scripts.bechmark_agents import DEFAULT_KPIS, KPI_ALIASES
 from utils.config_schema import validate_config
+from utils.pipeline_utils import summarise_pipeline_algorithms
 
 
 DEFAULT_CONFIGS = (
     "configs/templates/maddpg/maddpg_local.yaml",
     "configs/templates/maddpg/maddpg_2022_all_plus_evs_local.yaml",
 )
-DEFAULT_PROFILES = ("maddpg_v1", "maddpg_v2_compact")
+DEFAULT_PROFILES = ("maddpg_v1", "maddpg_v2_compact", "maddpg_v3_operational", "maddpg_v3_realtime")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -51,7 +52,8 @@ def _parse_args() -> argparse.Namespace:
         default=[],
         help=(
             "Entity encoding profile variant to generate. Can be repeated. "
-            "Defaults to maddpg_v1 and maddpg_v2_compact."
+            "Defaults to maddpg_v1, maddpg_v2_compact, maddpg_v3_operational, "
+            "and maddpg_v3_realtime."
         ),
     )
     parser.add_argument(
@@ -125,7 +127,7 @@ def _build_variant_config(
 
     metadata = config.setdefault("metadata", {})
     dataset_name = str(simulator.get("dataset_name", "dataset"))
-    algorithm_name = str((config.get("algorithm") or {}).get("name", "algorithm"))
+    algorithm_name = str(summarise_pipeline_algorithms(config, default="algorithm") or "algorithm")
     variant_id = _slug(f"{dataset_name}__{algorithm_name}__{profile_name}")
     metadata["experiment_name"] = _slug(f"{matrix_name}_{variant_id}")
     metadata["run_name"] = f"{algorithm_name} {dataset_name} {profile_name}"

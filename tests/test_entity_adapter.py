@@ -166,6 +166,50 @@ def test_entity_adapter_stable_order_and_aliases():
     assert observation_spaces[0].shape[0] == observations[0].shape[0]
 
 
+def test_entity_adapter_cached_source_plan_matches_collected_layout():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)
+    payload = _sample_observation_payload()
+
+    collected, observation_names, observation_spaces = adapter.to_agent_observations(payload)
+    cached, cached_names, cached_spaces = adapter.to_agent_observations(payload)
+
+    assert cached_names == observation_names
+    assert [space.shape for space in cached_spaces] == [space.shape for space in observation_spaces]
+    assert len(cached) == len(collected)
+    for cached_obs, collected_obs in zip(cached, collected):
+        np.testing.assert_allclose(cached_obs, collected_obs, atol=1e-9)
+
+
+def test_entity_adapter_direct_encoded_observations_match_normalize_path():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(
+        env,
+        normalization_enabled=True,
+        clip=True,
+        encoding_profile="maddpg_v3_operational",
+    )
+    payload = _sample_observation_payload()
+
+    observations, observation_names, observation_spaces = adapter.to_agent_observations(payload)
+    expected = [
+        adapter.normalize_observation(
+            agent_index=idx,
+            observation=obs,
+            observation_names=observation_names[idx],
+            observation_space=observation_spaces[idx],
+        )
+        for idx, obs in enumerate(observations)
+    ]
+    direct, direct_names, direct_spaces = adapter.to_agent_encoded_observations(payload)
+
+    assert direct_names == observation_names
+    assert [space.shape for space in direct_spaces] == [space.shape for space in observation_spaces]
+    assert len(direct) == len(expected)
+    for direct_obs, expected_obs in zip(direct, expected):
+        np.testing.assert_allclose(direct_obs, expected_obs, atol=1e-9)
+
+
 def test_entity_adapter_minmax_normalization_with_invalid_bounds_passthrough():
     env = _DummyEntityEnv()
     adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)
@@ -211,8 +255,17 @@ def test_entity_adapter_maddpg_v1_profile_encodes_time_and_ev_features():
     assert "electric_vehicle_soc" not in encoded_names
 
     deficit_name = "charger::B1/C1::connected_ev_soc_deficit"
+    surplus_name = "charger::B1/C1::connected_ev_soc_surplus"
+    error_name = "charger::B1/C1::connected_ev_soc_error_signed"
+    charge_to_required_name = "charger::B1/C1::max_charge_to_required_soc_action_normalized"
     assert deficit_name in encoded_names
+    assert surplus_name in encoded_names
+    assert error_name in encoded_names
+    assert charge_to_required_name in encoded_names
     assert encoded[encoded_names.index(deficit_name)] == pytest.approx(0.35, abs=1e-6)
+    assert encoded[encoded_names.index(surplus_name)] == pytest.approx(0.0, abs=1e-6)
+    assert encoded[encoded_names.index(error_name)] == pytest.approx(0.35, abs=1e-6)
+    assert encoded[encoded_names.index(charge_to_required_name)] == pytest.approx(0.35, abs=1e-6)
 
     hours_name = "charger::B1/C1::connected_ev_hours_until_departure"
     assert hours_name in encoded_names
@@ -412,6 +465,223 @@ def test_entity_adapter_maddpg_v2_compact_profile_drops_redundant_features():
     incoming_deficit = "charger::B1/C1::incoming_ev_soc_deficit"
     assert encoded[encoded_names.index(connected_deficit)] == pytest.approx(0.35, abs=1e-6)
     assert encoded[encoded_names.index(incoming_deficit)] == pytest.approx(0.45, abs=1e-6)
+
+
+def test_entity_adapter_maddpg_v3_operational_keeps_simulator_110_features():
+    env = _DummyEntityEnv()
+    env.seconds_per_time_step = 15.0
+    adapter = EntityContractAdapter(
+        env,
+        normalization_enabled=True,
+        clip=True,
+        encoding_profile="maddpg_v3_operational",
+    )
+
+    observation_names = [
+        "district__hour",
+        "district__minutes",
+        "district__forecast_price_next_1h",
+        "district__forecast_community_net_next_1h_kw",
+        "district__community_flexible_charge_capacity_kw",
+        "forecast_load_next_1h_kw",
+        "forecast_net_next_1h_kw",
+        "storage::B1/electrical_storage::can_charge",
+        "storage::B1/electrical_storage::available_charge_action_normalized",
+        "storage::B1/electrical_storage::last_requested_power_kw",
+        "storage::B1/electrical_storage::last_projection_error_kw",
+        "storage::B1/electrical_storage::clip_reason_soc_limit",
+        "charger::B1/C1::connected_ev_soc",
+        "charger::B1/C1::connected_ev_required_soc_departure",
+        "charger::B1/C1::hours_until_departure",
+        "charger::B1/C1::can_charge",
+        "charger::B1/C1::available_charge_action_normalized",
+        "charger::B1/C1::departure_feasibility_ratio",
+        "charger::B1/C1::departure_energy_margin_kwh",
+        "charger::B1/C1::min_required_action_normalized",
+        "charger::B1/C1::last_requested_action_normalized",
+        "charger::B1/C1::clip_reason_building_headroom",
+        "deferrable_appliance::B1/deferrable_appliance_1::must_start_now",
+        "deferrable_appliance::B1/deferrable_appliance_1::remaining_duration_hours",
+        "deferrable_appliance::B1/deferrable_appliance_1::start_blocked",
+        "deferrable_appliance::B1/deferrable_appliance_1::clip_reason_deferrable_window",
+    ]
+    observation = np.array(
+        [
+            12.0,
+            30.0,
+            0.12,
+            8.0,
+            15.0,
+            4.0,
+            3.0,
+            1.0,
+            0.7,
+            3.0,
+            2.0,
+            1.0,
+            0.45,
+            0.80,
+            3.0,
+            1.0,
+            0.6,
+            0.75,
+            -2.0,
+            0.35,
+            0.4,
+            1.0,
+            1.0,
+            0.5,
+            1.0,
+            1.0,
+        ],
+        dtype=np.float32,
+    )
+    observation_space = spaces.Box(
+        low=np.array(
+            [
+                0.0,
+                0.0,
+                0.0,
+                -100.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -22.0,
+                -10.0,
+                0.0,
+                -0.1,
+                -0.1,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -100.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ],
+            dtype=np.float32,
+        ),
+        high=np.array(
+            [
+                23.0,
+                59.0,
+                1.0,
+                100.0,
+                100.0,
+                20.0,
+                20.0,
+                1.0,
+                1.0,
+                22.0,
+                10.0,
+                1.0,
+                1.0,
+                1.0,
+                24.0,
+                1.0,
+                1.0,
+                1.0,
+                100.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                24.0,
+                1.0,
+                1.0,
+            ],
+            dtype=np.float32,
+        ),
+        dtype=np.float32,
+    )
+
+    encoded = adapter.normalize_observation(
+        agent_index=0,
+        observation=observation,
+        observation_names=observation_names,
+        observation_space=observation_space,
+    )
+    encoded_names = adapter.encoded_observation_names([observation_names])[0]
+
+    assert len(encoded) == len(encoded_names)
+    assert "district__forecast_price_next_1h" in encoded_names
+    assert "district__forecast_community_net_next_1h_kw" in encoded_names
+    assert "district__community_flexible_charge_capacity_kw" in encoded_names
+    assert "forecast_load_next_1h_kw" in encoded_names
+    assert "forecast_net_next_1h_kw" in encoded_names
+    assert "storage::B1/electrical_storage::available_charge_action_normalized" in encoded_names
+    assert "storage::B1/electrical_storage::last_requested_power_kw" in encoded_names
+    assert "storage::B1/electrical_storage::last_projection_error_kw" in encoded_names
+    assert "storage::B1/electrical_storage::clip_reason_soc_limit" in encoded_names
+    assert "charger::B1/C1::hours_until_departure_24h" in encoded_names
+    assert "charger::B1/C1::available_charge_action_normalized" in encoded_names
+    assert "charger::B1/C1::departure_feasibility_ratio" in encoded_names
+    assert "charger::B1/C1::departure_energy_margin_kwh" in encoded_names
+    assert "charger::B1/C1::min_required_action_normalized" in encoded_names
+    assert "charger::B1/C1::connected_ev_soc_surplus" in encoded_names
+    assert "charger::B1/C1::connected_ev_soc_error_signed" in encoded_names
+    assert "charger::B1/C1::max_charge_to_required_soc_action_normalized" in encoded_names
+    assert "charger::B1/C1::last_requested_action_normalized" in encoded_names
+    assert "charger::B1/C1::clip_reason_building_headroom" in encoded_names
+    assert "deferrable_appliance::B1/deferrable_appliance_1::must_start_now" in encoded_names
+    assert "deferrable_appliance::B1/deferrable_appliance_1::remaining_duration_hours" in encoded_names
+    assert "deferrable_appliance::B1/deferrable_appliance_1::start_blocked" in encoded_names
+    assert "deferrable_appliance::B1/deferrable_appliance_1::clip_reason_deferrable_window" in encoded_names
+
+    required = "charger::B1/C1::min_required_action_normalized"
+    hours = "charger::B1/C1::hours_until_departure_24h"
+    surplus = "charger::B1/C1::connected_ev_soc_surplus"
+    error = "charger::B1/C1::connected_ev_soc_error_signed"
+    charge_to_required = "charger::B1/C1::max_charge_to_required_soc_action_normalized"
+    assert encoded[encoded_names.index(required)] == pytest.approx(0.35, abs=1e-6)
+    assert encoded[encoded_names.index(hours)] == pytest.approx(3.0 / 24.0, abs=1e-6)
+    assert encoded[encoded_names.index(surplus)] == pytest.approx(0.0, abs=1e-6)
+    assert encoded[encoded_names.index(error)] == pytest.approx(0.35, abs=1e-6)
+    assert encoded[encoded_names.index(charge_to_required)] == pytest.approx(0.35, abs=1e-6)
+
+
+def test_entity_adapter_maddpg_v3_realtime_drops_simulator_perfect_forecasts():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(
+        env,
+        normalization_enabled=True,
+        clip=True,
+        encoding_profile="maddpg_v3_realtime",
+    )
+
+    observation_names = [
+        "district__electricity_pricing",
+        "district__forecast_price_next_1h",
+        "forecast_load_next_1h_kw",
+        "charger::B1/C1::min_required_action_normalized",
+    ]
+    observation = np.array([0.2, 0.1, 4.0, 0.35], dtype=np.float32)
+    observation_space = spaces.Box(
+        low=np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        high=np.array([1.0, 1.0, 20.0, 1.0], dtype=np.float32),
+        dtype=np.float32,
+    )
+
+    encoded = adapter.normalize_observation(
+        agent_index=0,
+        observation=observation,
+        observation_names=observation_names,
+        observation_space=observation_space,
+    )
+    encoded_names = adapter.encoded_observation_names([observation_names])[0]
+
+    assert len(encoded) == len(encoded_names)
+    assert "district__electricity_pricing" in encoded_names
+    assert "charger::B1/C1::min_required_action_normalized" in encoded_names
+    assert "district__forecast_price_next_1h" not in encoded_names
+    assert "forecast_load_next_1h_kw" not in encoded_names
 
 
 def test_entity_adapter_observation_dimension_is_stable_when_ev_links_toggle():

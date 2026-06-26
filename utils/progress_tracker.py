@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from loguru import logger
 
@@ -28,6 +28,7 @@ class ProgressTracker:
         global_step_total: Optional[int] = None,
         status: Optional[str] = None,
         force_complete: bool = False,
+        extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
         if not self.progress_path:
             return
@@ -76,6 +77,9 @@ class ProgressTracker:
 
         if rewards is not None:
             payload["rewards"] = list(rewards)
+
+        if extra:
+            payload.update(dict(extra))
 
         try:
             self.progress_path.parent.mkdir(parents=True, exist_ok=True)

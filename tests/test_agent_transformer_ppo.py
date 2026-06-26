@@ -27,7 +27,7 @@ from algorithms.agents.agent_transformer_ppo import (
     AgentTransformerPPO,
     _synthetic_sample_from_obs_names,
 )
-from algorithms.registry import ALGORITHM_REGISTRY, create_agent
+from algorithms.registry import ALGORITHM_REGISTRY, build_execution_unit
 from tests._entity_sample_obs_names import (
     load_sample_observation_names_for_first_building,
 )
@@ -94,7 +94,12 @@ def test_registered_under_canonical_name() -> None:
 
 
 def test_create_agent_via_registry() -> None:
-    agent = create_agent(_base_config())
+    base = _base_config()
+    algo = base.pop("algorithm")
+    stage = {"algorithm": algo.pop("name")}
+    stage.update(algo)
+    base["pipeline"] = [stage]
+    agent = build_execution_unit(base)
     assert isinstance(agent, AgentTransformerPPO)
 
 

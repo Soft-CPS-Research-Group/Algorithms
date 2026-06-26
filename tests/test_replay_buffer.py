@@ -73,6 +73,49 @@ def test_multi_agent_replay_buffer_can_sample_behavior_action_targets() -> None:
     assert sample_with_behavior[1][0][0, 0].item() == pytest.approx(0.1)
 
 
+def test_multi_agent_replay_buffer_can_sample_next_behavior_action_targets() -> None:
+    buffer = MultiAgentReplayBuffer(capacity=4, num_agents=1, batch_size=1)
+    buffer.push(
+        states=[np.array([1.0], dtype=np.float32)],
+        actions=[np.array([0.1], dtype=np.float32)],
+        rewards=[1.0],
+        next_states=[np.array([2.0], dtype=np.float32)],
+        done=False,
+        behavior_actions=[np.array([0.9], dtype=np.float32)],
+        next_behavior_actions=[np.array([0.7], dtype=np.float32)],
+    )
+
+    sample = buffer.sample_with_policy_context_actions()
+
+    assert len(sample) == 7
+    behavior_actions = sample[-2]
+    next_behavior_actions = sample[-1]
+    assert behavior_actions[0][0, 0].item() == pytest.approx(0.9)
+    assert next_behavior_actions[0][0, 0].item() == pytest.approx(0.7)
+
+
+def test_multi_agent_replay_buffer_overwrites_oldest_entries() -> None:
+    buffer = MultiAgentReplayBuffer(capacity=3, num_agents=1, batch_size=3)
+
+    for step in range(5):
+        buffer.push(
+            states=[np.array([step], dtype=np.float32)],
+            actions=[np.array([step + 0.1], dtype=np.float32)],
+            rewards=[float(step)],
+            next_states=[np.array([step + 1], dtype=np.float32)],
+            done=False,
+        )
+
+    states, actions, rewards, next_states, terminated = buffer.sample()
+
+    assert len(buffer) == 3
+    assert set(states[0][:, 0].tolist()) == {2.0, 3.0, 4.0}
+    assert sorted(actions[0][:, 0].tolist()) == pytest.approx([2.1, 3.1, 4.1])
+    assert set(rewards[0][:, 0].tolist()) == {2.0, 3.0, 4.0}
+    assert set(next_states[0][:, 0].tolist()) == {3.0, 4.0, 5.0}
+    assert terminated.shape == (1, 3, 1)
+
+
 def test_reward_weighted_multi_agent_replay_buffer_biases_high_reward_transitions() -> None:
     buffer = RewardWeightedMultiAgentReplayBuffer(
         capacity=16,

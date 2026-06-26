@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+
 import numpy as np
 import pytest
 import torch
@@ -29,6 +31,9 @@ def _build_agent_for_exploration() -> MADDPG:
     agent.warm_start_policy_phaseout_steps = 0
     agent.warm_start_policy_phaseout_mode = "probability"
     agent.actor_behavior_cloning_source = "replay_action"
+    agent.actor_policy_loss_normalization = False
+    agent.actor_policy_loss_normalization_epsilon = 1.0e-3
+    agent.actor_policy_loss_normalization_max_scale = 100.0
     agent._warm_start_policy = None
     agent._latest_raw_observations = None
     agent._warned_missing_raw_context = False
@@ -137,15 +142,39 @@ def test_actor_action_regularization_uses_normalized_bounds():
     agent.actor_action_saturation_threshold = 0.80
 
     action = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
-    action_l2, saturation_excess, storage_l2, ev_v2g_l2, regularization = (
+    action_l2, saturation_excess, storage_l2, storage_smoothness_l2, ev_v2g_l2, ev_v2g_mass, regularization = (
         agent._actor_action_regularization_terms(0, action)
     )
 
     assert action_l2.item() == pytest.approx(0.5, abs=1e-6)
     assert saturation_excess.item() == pytest.approx(0.02, abs=1e-6)
     assert storage_l2.item() == pytest.approx(0.0, abs=1e-6)
+    assert storage_smoothness_l2.item() == pytest.approx(0.0, abs=1e-6)
     assert ev_v2g_l2.item() == pytest.approx(0.0, abs=1e-6)
+    assert ev_v2g_mass.item() == pytest.approx(0.0, abs=1e-6)
     assert regularization.item() == pytest.approx(0.054, abs=1e-6)
+
+
+def test_actor_action_regularization_can_penalize_residual_delta_from_teacher():
+    agent = _build_agent_for_exploration()
+    agent.action_low = [np.array([0.0, -2.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0, 2.0], dtype=np.float32)]
+    agent.actor_action_l2_penalty = 0.0
+    agent.actor_action_saturation_penalty = 0.0
+    agent.actor_storage_action_l2_penalty = 0.0
+    agent.actor_ev_v2g_action_l2_penalty = 0.0
+    agent.actor_ev_v2g_action_mass_penalty = 0.0
+    agent.actor_residual_delta_l2_penalty = 0.5
+
+    action = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+    teacher_action = torch.tensor([[0.5, 2.0]], dtype=torch.float32)
+    *_, regularization = agent._actor_action_regularization_terms(
+        0,
+        action,
+        base_action=teacher_action,
+    )
+
+    assert regularization.item() == pytest.approx(0.5, abs=1e-6)
 
 
 def test_actor_action_regularization_can_target_storage_and_ev_v2g_actions():
@@ -158,15 +187,20 @@ def test_actor_action_regularization_can_target_storage_and_ev_v2g_actions():
     agent.actor_action_saturation_penalty = 0.0
     agent.actor_storage_action_l2_penalty = 0.10
     agent.actor_ev_v2g_action_l2_penalty = 0.20
+    agent.actor_ev_v2g_action_mass_penalty = 0.30
     agent.actor_ev_behavior_cloning_multiplier = 1.0
     agent.actor_storage_behavior_cloning_multiplier = 1.0
 
     action = torch.tensor([[0.5, -0.5, 1.0], [-0.5, 0.0, 0.0]], dtype=torch.float32)
-    _, _, storage_l2, ev_v2g_l2, regularization = agent._actor_action_regularization_terms(0, action)
+    _, _, storage_l2, storage_smoothness_l2, ev_v2g_l2, ev_v2g_mass, regularization = agent._actor_action_regularization_terms(
+        0, action
+    )
 
     assert storage_l2.item() == pytest.approx(0.25, abs=1e-6)
+    assert storage_smoothness_l2.item() == pytest.approx(0.0, abs=1e-6)
     assert ev_v2g_l2.item() == pytest.approx(0.25, abs=1e-6)
-    assert regularization.item() == pytest.approx(0.075, abs=1e-6)
+    assert ev_v2g_mass.item() == pytest.approx(0.25, abs=1e-6)
+    assert regularization.item() == pytest.approx(0.150, abs=1e-6)
 
 
 def test_actor_behavior_cloning_loss_uses_normalized_bounds():
@@ -181,6 +215,36 @@ def test_actor_behavior_cloning_loss_uses_normalized_bounds():
     loss = agent._actor_behavior_cloning_loss(0, predicted, replay)
 
     assert loss.item() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_critic_action_features_can_include_teacher_and_normalized_delta():
+    agent = _build_agent_for_exploration()
+    agent.action_low = [
+        np.array([0.0, -2.0], dtype=np.float32),
+        np.array([0.0], dtype=np.float32),
+    ]
+    agent.action_high = [
+        np.array([1.0, 2.0], dtype=np.float32),
+        np.array([10.0], dtype=np.float32),
+    ]
+    agent.critic_action_input_mode = "final_base_delta_normalized"
+
+    actions = [
+        torch.tensor([[1.0, 0.0]], dtype=torch.float32),
+        torch.tensor([[8.0]], dtype=torch.float32),
+    ]
+    base_actions = [
+        torch.tensor([[0.5, 2.0]], dtype=torch.float32),
+        torch.tensor([[3.0]], dtype=torch.float32),
+    ]
+
+    features = agent._critic_action_features(actions, base_actions)
+
+    assert features.shape == (1, 9)
+    assert features.tolist()[0] == pytest.approx(
+        [1.0, 0.0, 0.5, 2.0, 0.5, -0.5, 8.0, 3.0, 0.5],
+        abs=1e-6,
+    )
 
 
 def test_actor_behavior_cloning_loss_can_weight_ev_actions_more_than_storage():
@@ -323,6 +387,55 @@ def test_actor_behavior_cloning_effective_weight_decays_after_start_step():
     assert agent._actor_behavior_cloning_effective_weight(40) == pytest.approx(0.01)
 
 
+def test_actor_behavior_cloning_extra_updates_respect_training_window():
+    agent = _build_agent_for_exploration()
+    agent.actor_behavior_cloning_extra_updates = 2
+    agent.actor_behavior_cloning_extra_update_start_step = 10
+    agent.actor_behavior_cloning_extra_update_end_step = 20
+
+    assert agent._actor_behavior_cloning_extra_updates_for_step(9, 1.0) == 0
+    assert agent._actor_behavior_cloning_extra_updates_for_step(10, 1.0) == 2
+    assert agent._actor_behavior_cloning_extra_updates_for_step(20, 1.0) == 2
+    assert agent._actor_behavior_cloning_extra_updates_for_step(21, 1.0) == 0
+    assert agent._actor_behavior_cloning_extra_updates_for_step(10, 0.0) == 0
+
+
+def test_actor_behavior_cloning_extra_updates_move_actor_toward_teacher_action():
+    agent = _build_agent_for_exploration()
+    agent.num_agents = 1
+    agent.device = torch.device("cpu")
+    agent.use_amp = False
+    agent.scaler = torch.amp.GradScaler(enabled=False)
+    agent.action_names = [["electric_vehicle_storage_charger_1"]]
+    agent.action_low = [np.array([-1.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0], dtype=np.float32)]
+    agent.actor_behavior_cloning_weight = 1.0
+    agent.actor_ev_behavior_cloning_multiplier = 1.0
+    agent.actor_storage_behavior_cloning_multiplier = 1.0
+    actor = torch.nn.Linear(1, 1)
+    torch.nn.init.zeros_(actor.weight)
+    torch.nn.init.zeros_(actor.bias)
+    optimizer = torch.optim.SGD(actor.parameters(), lr=0.20)
+    observations = torch.ones((4, 1), dtype=torch.float32)
+    behavior_actions = torch.ones((4, 1), dtype=torch.float32)
+
+    before = agent._scale_action_tensor(0, actor(observations)).mean().item()
+    losses, grad_norms = agent._run_actor_behavior_cloning_extra_updates(
+        agent_num=0,
+        actor=actor,
+        actor_optimizer=optimizer,
+        observations=observations,
+        behavior_actions=behavior_actions,
+        behavior_cloning_weight=1.0,
+        extra_updates=2,
+    )
+    after = agent._scale_action_tensor(0, actor(observations)).mean().item()
+
+    assert len(losses) == 2
+    assert len(grad_norms) == 2
+    assert after > before
+
+
 def test_actor_policy_loss_effective_weight_can_ramp_after_start_step():
     agent = _build_agent_for_exploration()
     agent.actor_policy_loss_weight = 1.0
@@ -333,6 +446,90 @@ def test_actor_policy_loss_effective_weight_can_ramp_after_start_step():
     assert agent._actor_policy_loss_effective_weight(5) == pytest.approx(0.05)
     assert agent._actor_policy_loss_effective_weight(20) == pytest.approx(0.525)
     assert agent._actor_policy_loss_effective_weight(40) == pytest.approx(1.0)
+
+
+def test_actor_policy_loss_can_be_normalized_by_q_scale():
+    class SumCritic(torch.nn.Module):
+        def forward(self, global_state, global_actions):
+            del global_state
+            return global_actions.sum(dim=1, keepdim=True) + 4.0
+
+    agent = _build_agent_for_exploration()
+    state = torch.zeros((3, 2), dtype=torch.float32)
+    actions = torch.zeros((3, 2), dtype=torch.float32)
+
+    raw_loss, optimized_loss, scale, q_abs_mean = agent._actor_policy_loss_from_critic(
+        SumCritic(),
+        state,
+        actions,
+    )
+    assert raw_loss.item() == pytest.approx(-4.0)
+    assert optimized_loss.item() == pytest.approx(-4.0)
+    assert scale.item() == pytest.approx(1.0)
+    assert q_abs_mean.item() == pytest.approx(4.0)
+
+    agent.actor_policy_loss_normalization = True
+    raw_loss, optimized_loss, scale, q_abs_mean = agent._actor_policy_loss_from_critic(
+        SumCritic(),
+        state,
+        actions,
+    )
+    assert raw_loss.item() == pytest.approx(-4.0)
+    assert optimized_loss.item() == pytest.approx(-1.0)
+    assert scale.item() == pytest.approx(0.25)
+    assert q_abs_mean.item() == pytest.approx(4.0)
+
+
+def test_n_step_replay_pushes_discounted_oldest_transition():
+    class FakeReplayBuffer:
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, *args, **kwargs):
+            self.pushes.append((args, kwargs))
+
+    agent = MADDPG.__new__(MADDPG)
+    agent.num_agents = 1
+    agent.replay_buffer = FakeReplayBuffer()
+    agent.n_step_returns = 3
+    agent.n_step_gamma = 0.5
+    agent.n_step_priority_aggregation = "max"
+    agent._n_step_queue = deque()
+    agent._last_n_step_queue_size = 0
+    agent._replay_push_count = 0
+
+    def transition(step: int):
+        value = float(step)
+        return {
+            "observations": [np.array([value], dtype=np.float32)],
+            "actions": [np.array([value + 0.1], dtype=np.float32)],
+            "rewards": [value],
+            "next_observations": [np.array([value + 10.0], dtype=np.float32)],
+            "behavior_actions": [np.array([value + 0.2], dtype=np.float32)],
+            "next_behavior_actions": [np.array([value + 0.3], dtype=np.float32)],
+        }
+
+    for step, boost in [(1, 1.0), (2, 3.0), (4, 2.0)]:
+        payload = transition(step)
+        agent._store_replay_transition(
+            **payload,
+            done=False,
+            priority_boost=boost,
+        )
+
+    assert len(agent.replay_buffer.pushes) == 1
+    args, kwargs = agent.replay_buffer.pushes[0]
+    states, actions, rewards, next_states, done = args
+    assert states[0].tolist() == pytest.approx([1.0])
+    assert actions[0].tolist() == pytest.approx([1.1])
+    assert rewards == pytest.approx([1.0 + 0.5 * 2.0 + 0.25 * 4.0])
+    assert next_states[0].tolist() == pytest.approx([14.0])
+    assert done is False
+    assert kwargs["behavior_actions"][0].tolist() == pytest.approx([1.2])
+    assert kwargs["next_behavior_actions"][0].tolist() == pytest.approx([4.3])
+    assert kwargs["priority_boost"] == pytest.approx(3.0)
+    assert agent._replay_push_count == 1
+    assert agent._last_n_step_queue_size == 2
 
 
 def test_train_during_initial_exploration_can_enable_warmup_updates():
@@ -532,6 +729,37 @@ def test_noop_actor_initialization_sets_initial_scaled_action_near_noop():
     scaled = agent._scale_action_tensor(0, raw).detach().numpy()[0]
     assert scaled[0] == pytest.approx(0.05, abs=1e-5)
     assert scaled[1] == pytest.approx(0.0, abs=1e-5)
+
+
+def test_residual_policy_action_adds_bounded_delta_to_base_action():
+    agent = MADDPG.__new__(MADDPG)
+    agent.action_dimension = [2]
+    agent.action_low = [np.array([-1.0, 0.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0, 2.0], dtype=np.float32)]
+    agent.action_names = [["electrical_storage::charge", "charger::charge"]]
+    agent.residual_policy_enabled = True
+    agent.residual_action_scale = 0.10
+    agent.residual_action_final_scale = 0.20
+    agent.residual_action_start_step = 0
+    agent.residual_action_growth_steps = 10
+    agent.residual_storage_action_scale_multiplier = 0.5
+    agent.residual_ev_action_scale_multiplier = 1.0
+    agent.residual_deferrable_action_scale_multiplier = 1.0
+    agent.exploration_step = 10
+
+    raw_action = torch.tensor([[1.0, -1.0]], dtype=torch.float32)
+    base_action = torch.tensor([[0.0, 1.0]], dtype=torch.float32)
+
+    action = agent._policy_action_from_actor_output(
+        0,
+        raw_action,
+        base_action=base_action,
+        global_learning_step=10,
+    )
+
+    assert action.detach().numpy()[0, 0] == pytest.approx(0.1, abs=1e-6)
+    assert action.detach().numpy()[0, 1] == pytest.approx(0.8, abs=1e-6)
+    assert agent._last_residual_action_scale == pytest.approx(0.2)
 
 
 def test_maddpg_rejects_single_agent_prioritized_replay_buffer():

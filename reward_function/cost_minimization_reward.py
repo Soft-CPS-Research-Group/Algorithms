@@ -10,6 +10,11 @@ from citylearn.reward_function import RewardFunction
 class CostMinimizationReward(RewardFunction):
     """Reward that directly optimizes electricity cost with export credit."""
 
+    required_observation_names = (
+        "net_electricity_consumption",
+        "electricity_pricing",
+    )
+
     def __init__(
         self,
         env_metadata: Mapping[str, Any],

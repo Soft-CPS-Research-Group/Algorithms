@@ -180,7 +180,7 @@ def test_non_dynamic_agent_in_entity_dynamic_still_rejected_on_topology_change()
 
     env = _DummyEntityEnvForPPO()
     cfg = _entity_config()
-    cfg["algorithm"] = {"name": "MADDPG"}
+    cfg["pipeline"] = [{"algorithm": "MADDPG", "count": 1, "hyperparameters": {}}]
     wrapper = Wrapper_CityLearn(env=env, config=cfg, job_id="ppo-entity-guard")
     wrapper.set_model(_NonDynamicModel())
 

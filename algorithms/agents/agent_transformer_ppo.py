@@ -209,6 +209,8 @@ class AgentTransformerPPO(BaseAgent):
         self,
         observations: List[npt.NDArray[np.float64]],
         deterministic: bool | None = None,
+        *,
+        context: Any = None,
     ) -> List[List[float]]:
         det = bool(deterministic) if deterministic is not None else False
         out: List[List[float]] = []

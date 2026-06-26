@@ -93,6 +93,10 @@ simulator:
   export:
     mode: end
     export_kpis_on_episode_end: true
+    final_episode_only: true
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: true
+    kpi_round_decimals: null
     session_name: null
   wrapper_reward:
     enabled: true
@@ -116,27 +120,28 @@ topology:
   action_space: null
 
 # Algorithm family and hyperparameters.
-algorithm:
-  name: "RuleBasedPolicy"
-  hyperparameters:
-    pv_charge_threshold: 2.0
-    flexibility_hours: 3.0
-    emergency_hours: 1.0
-    pv_preferred_charge_rate: 0.7
-    flex_trickle_charge: 0.0
-    min_charge_rate: 0.0
-    emergency_charge_rate: 1.0
-    default_capacity_kwh: 60.0
-    non_flexible_chargers: []
-    control_evs: true
-    control_deferrables: true
-    deferrable_start_action: 1.0
-    deferrable_urgency_threshold: 0.75
-    deferrable_slack_threshold: 0.25
-    deferrable_priority_threshold: 0.5
-  networks: null
-  replay_buffer: null
-  exploration: null
+pipeline:
+  - algorithm: "RuleBasedPolicy"
+    count: 1
+    hyperparameters:
+      pv_charge_threshold: 2.0
+      flexibility_hours: 3.0
+      emergency_hours: 1.0
+      pv_preferred_charge_rate: 0.7
+      flex_trickle_charge: 0.0
+      min_charge_rate: 0.0
+      emergency_charge_rate: 1.0
+      default_capacity_kwh: 60.0
+      non_flexible_chargers: []
+      control_evs: true
+      control_deferrables: true
+      deferrable_start_action: 1.0
+      deferrable_urgency_threshold: 0.75
+      deferrable_slack_threshold: 0.25
+      deferrable_priority_threshold: 0.5
+    networks: null
+    replay_buffer: null
+    exploration: null
 
 # Optional worker-specific overrides; omitted for local execution.
 execution: null

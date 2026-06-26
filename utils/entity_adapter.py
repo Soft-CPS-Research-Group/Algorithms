@@ -9,8 +9,46 @@ from loguru import logger
 import numpy as np
 
 
+class _ObservationValueLookup:
+    """Lazy name lookup over one observation vector for cached encoder layouts."""
+
+    def __init__(self, observation: np.ndarray, index_by_name: Mapping[str, int]):
+        self._observation = observation
+        self._index_by_name = index_by_name
+
+    def get(self, name: str, default: float = 0.0) -> float:
+        index = self._index_by_name.get(str(name))
+        if index is None or index >= len(self._observation):
+            return default
+        try:
+            value = float(self._observation[index])
+        except (TypeError, ValueError):
+            return 0.0
+        if np.isnan(value) or np.isinf(value):
+            return 0.0
+        return value
+
+
 class EntityContractAdapter:
     """Convert entity observations/actions to algorithm-friendly per-building structures."""
+
+    _SUPPORTED_ENCODING_PROFILES = {
+        "minmax_space",
+        "maddpg_v1",
+        "maddpg_v2_compact",
+        "maddpg_v3_operational",
+        "maddpg_v3_realtime",
+        "cc_level1",
+        "cc_level2",
+    }
+    _MADDPG_STYLE_PROFILES = {
+        "maddpg_v1",
+        "maddpg_v2_compact",
+        "maddpg_v3_operational",
+        "maddpg_v3_realtime",
+        "cc_level1",
+        "cc_level2",
+    }
 
     _LEGACY_CHARGER_ALIASES = {
         "electric_vehicle_charger_state": "connected_state",
@@ -31,7 +69,7 @@ class EntityContractAdapter:
         self.normalization_enabled = bool(normalization_enabled)
         self.clip = bool(clip)
         self.encoding_profile = str(encoding_profile or "minmax_space").strip().lower()
-        if self.encoding_profile not in {"minmax_space", "maddpg_v1", "maddpg_v2_compact"}:
+        if self.encoding_profile not in self._SUPPORTED_ENCODING_PROFILES:
             logger.warning(
                 "Unsupported entity encoding profile '{}'; falling back to 'minmax_space'.",
                 self.encoding_profile,
@@ -62,14 +100,32 @@ class EntityContractAdapter:
         self._building_action_features: List[str] = []
         self._charger_action_features: List[str] = []
         self._deferrable_action_features: List[str] = []
+        self._building_action_ids: List[str] = []
+        self._charger_action_ids: List[str] = []
+        self._deferrable_action_ids: List[str] = []
         self._building_action_col_by_name: Dict[str, int] = {}
         self._charger_action_col_by_name: Dict[str, int] = {}
         self._deferrable_action_col_by_name: Dict[str, int] = {}
         self._charger_row_by_id: Dict[str, int] = {}
         self._deferrable_row_by_id: Dict[str, int] = {}
+        self._charger_action_row_by_id: Dict[str, int] = {}
+        self._deferrable_action_row_by_id: Dict[str, int] = {}
+        self._table_lows: Dict[str, np.ndarray] = {}
+        self._table_highs: Dict[str, np.ndarray] = {}
+        self._building_asset_rows: Dict[str, List[List[int]]] = {}
+        self._charger_feature_col: Dict[str, int] = {}
+        self._entity_action_layout_cache_key: Optional[Tuple[Any, ...]] = None
+        self._entity_action_routes: List[List[Tuple[int, str, int, int]]] = []
 
         self._latest_observation_origins: List[List[Tuple[str, str]]] = []
         self._latest_encoded_observation_names: List[List[str]] = []
+        self._maddpg_encoded_layout_cache: Dict[int, Dict[str, Any]] = {}
+        self._cached_observation_names: List[List[str]] = []
+        self._cached_observation_spaces: List[spaces.Box] = []
+        self._cached_observation_origins: List[List[Tuple[str, str]]] = []
+        self._cached_alias_sources: List[List[Tuple[str, int]]] = []
+        self._cached_observation_sources: List[List[Tuple[Any, ...]]] = []
+        self._cached_observation_source_groups: List[Dict[str, Any]] = []
         self._warned_invalid_bounds: set[str] = set()
 
     @staticmethod
@@ -129,6 +185,151 @@ class EntityContractAdapter:
         return mapping
 
     @staticmethod
+    def _compile_observation_source_group(
+        sources: Sequence[Tuple[Any, ...]],
+        alias_sources: Sequence[Tuple[str, int]],
+    ) -> Dict[str, Any]:
+        table_acc: Dict[str, Dict[str, List[int]]] = {}
+        ev_acc: Dict[str, Dict[str, List[int]]] = {}
+        constant_positions: List[int] = []
+        constant_values: List[float] = []
+
+        for position, source in enumerate(sources):
+            kind = str(source[0])
+            if kind == "constant":
+                constant_positions.append(position)
+                constant_values.append(float(source[1]))
+            elif kind == "table":
+                _, table_name, row, col = source
+                group = table_acc.setdefault(
+                    str(table_name),
+                    {"positions": [], "rows": [], "cols": []},
+                )
+                group["positions"].append(position)
+                group["rows"].append(int(row))
+                group["cols"].append(int(col))
+            elif kind == "ev_context":
+                _, context_label, charger_row, col = source
+                group = ev_acc.setdefault(
+                    str(context_label),
+                    {"positions": [], "charger_rows": [], "cols": []},
+                )
+                group["positions"].append(position)
+                group["charger_rows"].append(int(charger_row))
+                group["cols"].append(int(col))
+
+        table_groups = {
+            table_name: {
+                "positions": np.asarray(group["positions"], dtype=np.int64),
+                "rows": np.asarray(group["rows"], dtype=np.int64),
+                "cols": np.asarray(group["cols"], dtype=np.int64),
+            }
+            for table_name, group in table_acc.items()
+        }
+        ev_groups = {
+            context_label: {
+                "positions": np.asarray(group["positions"], dtype=np.int64),
+                "charger_rows": np.asarray(group["charger_rows"], dtype=np.int64),
+                "cols": np.asarray(group["cols"], dtype=np.int64),
+            }
+            for context_label, group in ev_acc.items()
+        }
+
+        base_size = len(sources)
+        alias_positions = np.asarray(
+            [base_size + idx for idx in range(len(alias_sources))],
+            dtype=np.int64,
+        )
+        alias_source_indices = np.asarray(
+            [int(source_idx) for _alias_name, source_idx in alias_sources],
+            dtype=np.int64,
+        )
+
+        return {
+            "size": base_size + len(alias_sources),
+            "table_groups": table_groups,
+            "ev_groups": ev_groups,
+            "constant_positions": np.asarray(constant_positions, dtype=np.int64),
+            "constant_values": np.asarray(constant_values, dtype=np.float64),
+            "alias_positions": alias_positions,
+            "alias_source_indices": alias_source_indices,
+        }
+
+    @staticmethod
+    def _observation_values_from_source_group(
+        source_group: Mapping[str, Any],
+        *,
+        table_lookup: Mapping[str, np.ndarray],
+        charger_connected_ev: Mapping[int, int],
+        charger_incoming_ev: Mapping[int, int],
+    ) -> np.ndarray:
+        values = np.zeros(int(source_group.get("size", 0)), dtype=np.float64)
+
+        constant_positions = source_group.get("constant_positions")
+        constant_values = source_group.get("constant_values")
+        if constant_positions is not None and len(constant_positions):
+            values[constant_positions] = constant_values
+
+        for table_name, group in (source_group.get("table_groups") or {}).items():
+            table = table_lookup.get(str(table_name))
+            if table is None or table.ndim != 2 or table.size == 0:
+                continue
+
+            rows = group["rows"]
+            cols = group["cols"]
+            positions = group["positions"]
+            valid = (
+                (rows >= 0)
+                & (cols >= 0)
+                & (rows < table.shape[0])
+                & (cols < table.shape[1])
+            )
+            if np.any(valid):
+                raw_values = table[rows[valid], cols[valid]]
+                values[positions[valid]] = np.nan_to_num(
+                    raw_values,
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                )
+
+        ev_table = table_lookup.get("ev")
+        if ev_table is not None and ev_table.ndim == 2 and ev_table.size:
+            for context_label, group in (source_group.get("ev_groups") or {}).items():
+                ev_row_map = (
+                    charger_connected_ev
+                    if str(context_label) == "connected_ev"
+                    else charger_incoming_ev
+                )
+                for position, charger_row, col in zip(
+                    group["positions"],
+                    group["charger_rows"],
+                    group["cols"],
+                ):
+                    ev_row = ev_row_map.get(int(charger_row))
+                    if (
+                        ev_row is not None
+                        and 0 <= int(ev_row) < ev_table.shape[0]
+                        and 0 <= int(col) < ev_table.shape[1]
+                    ):
+                        value = ev_table[int(ev_row), int(col)]
+                        values[int(position)] = EntityContractAdapter._safe_scalar(value, 0.0)
+
+        alias_positions = source_group.get("alias_positions")
+        alias_source_indices = source_group.get("alias_source_indices")
+        if alias_positions is not None and len(alias_positions):
+            valid = (
+                (alias_source_indices >= 0)
+                & (alias_source_indices < values.shape[0])
+                & (alias_positions >= 0)
+                & (alias_positions < values.shape[0])
+            )
+            if np.any(valid):
+                values[alias_positions[valid]] = values[alias_source_indices[valid]]
+
+        return values
+
+    @staticmethod
     def _parse_topology_version(observation_payload: Mapping[str, Any]) -> int:
         meta = observation_payload.get("meta", {}) if isinstance(observation_payload, Mapping) else {}
         try:
@@ -160,10 +361,54 @@ class EntityContractAdapter:
         self._deferrable_ids = list(table_specs.get("deferrable_appliance", {}).get("ids", []))
         self._charger_row_by_id = {entity_id: row for row, entity_id in enumerate(self._charger_ids)}
         self._deferrable_row_by_id = {entity_id: row for row, entity_id in enumerate(self._deferrable_ids)}
+        self._charger_feature_col = {name: idx for idx, name in enumerate(self._charger_features)}
+
+        table_spaces = self._table_spaces_from_observation_space(self.env.observation_space)
+        self._table_lows = {}
+        self._table_highs = {}
+        for table_name in (
+            "district",
+            "building",
+            "charger",
+            "storage",
+            "pv",
+            "ev",
+            "deferrable_appliance",
+        ):
+            table_space = table_spaces.get(table_name)
+            low = getattr(table_space, "low", [])
+            high = getattr(table_space, "high", [])
+            self._table_lows[table_name] = self._as_2d(low)
+            self._table_highs[table_name] = self._as_2d(high)
+
+        edges = observation_payload.get("edges", {}) if isinstance(observation_payload, Mapping) else {}
+        self._building_asset_rows = {
+            "charger": [
+                self._edge_targets(edges.get("building_to_charger", []), building_index)
+                for building_index in range(len(self._building_ids))
+            ],
+            "storage": [
+                self._edge_targets(edges.get("building_to_storage", []), building_index)
+                for building_index in range(len(self._building_ids))
+            ],
+            "pv": [
+                self._edge_targets(edges.get("building_to_pv", []), building_index)
+                for building_index in range(len(self._building_ids))
+            ],
+            "deferrable_appliance": [
+                self._edge_targets(edges.get("building_to_deferrable_appliance", []), building_index)
+                for building_index in range(len(self._building_ids))
+            ],
+        }
 
         self._building_action_features = list(action_specs.get("building", {}).get("features", []))
         self._charger_action_features = list(action_specs.get("charger", {}).get("features", []))
         self._deferrable_action_features = list(action_specs.get("deferrable_appliance", {}).get("features", []))
+        self._building_action_ids = list(action_specs.get("building", {}).get("ids", self._building_ids))
+        self._charger_action_ids = list(action_specs.get("charger", {}).get("ids", self._charger_ids))
+        self._deferrable_action_ids = list(
+            action_specs.get("deferrable_appliance", {}).get("ids", self._deferrable_ids)
+        )
         self._building_action_col_by_name = {
             name: idx for idx, name in enumerate(self._building_action_features)
         }
@@ -173,8 +418,23 @@ class EntityContractAdapter:
         self._deferrable_action_col_by_name = {
             name: idx for idx, name in enumerate(self._deferrable_action_features)
         }
+        self._charger_action_row_by_id = {
+            entity_id: row for row, entity_id in enumerate(self._charger_action_ids)
+        }
+        self._deferrable_action_row_by_id = {
+            entity_id: row for row, entity_id in enumerate(self._deferrable_action_ids)
+        }
 
         self.topology_version = self._parse_topology_version(observation_payload)
+        self._maddpg_encoded_layout_cache = {}
+        self._cached_observation_names = []
+        self._cached_observation_spaces = []
+        self._cached_observation_origins = []
+        self._cached_alias_sources = []
+        self._cached_observation_sources = []
+        self._cached_observation_source_groups = []
+        self._entity_action_layout_cache_key = None
+        self._entity_action_routes = []
 
     def to_agent_observations(
         self,
@@ -185,8 +445,6 @@ class EntityContractAdapter:
 
         tables = observation_payload.get("tables", {})
         edges = observation_payload.get("edges", {})
-        table_spaces = self._table_spaces_from_observation_space(self.env.observation_space)
-
         district_table = self._as_2d(tables.get("district", []))
         building_table = self._as_2d(tables.get("building", []))
         charger_table = self._as_2d(tables.get("charger", []))
@@ -194,29 +452,6 @@ class EntityContractAdapter:
         pv_table = self._as_2d(tables.get("pv", []))
         ev_table = self._as_2d(tables.get("ev", []))
         deferrable_table = self._as_2d(tables.get("deferrable_appliance", []))
-
-        district_space = table_spaces.get("district")
-        building_space = table_spaces.get("building")
-        charger_space = table_spaces.get("charger")
-        storage_space = table_spaces.get("storage")
-        pv_space = table_spaces.get("pv")
-        ev_space = table_spaces.get("ev")
-        deferrable_space = table_spaces.get("deferrable_appliance")
-
-        district_low = self._as_2d(getattr(district_space, "low", np.zeros_like(district_table)))
-        district_high = self._as_2d(getattr(district_space, "high", np.zeros_like(district_table)))
-        building_low = self._as_2d(getattr(building_space, "low", np.zeros_like(building_table)))
-        building_high = self._as_2d(getattr(building_space, "high", np.zeros_like(building_table)))
-        charger_low = self._as_2d(getattr(charger_space, "low", np.zeros_like(charger_table)))
-        charger_high = self._as_2d(getattr(charger_space, "high", np.zeros_like(charger_table)))
-        storage_low = self._as_2d(getattr(storage_space, "low", np.zeros_like(storage_table)))
-        storage_high = self._as_2d(getattr(storage_space, "high", np.zeros_like(storage_table)))
-        pv_low = self._as_2d(getattr(pv_space, "low", np.zeros_like(pv_table)))
-        pv_high = self._as_2d(getattr(pv_space, "high", np.zeros_like(pv_table)))
-        ev_low = self._as_2d(getattr(ev_space, "low", np.zeros_like(ev_table)))
-        ev_high = self._as_2d(getattr(ev_space, "high", np.zeros_like(ev_table)))
-        deferrable_low = self._as_2d(getattr(deferrable_space, "low", np.zeros_like(deferrable_table)))
-        deferrable_high = self._as_2d(getattr(deferrable_space, "high", np.zeros_like(deferrable_table)))
 
         charger_connected_ev = self._charger_ev_row_map(
             edges.get("charger_to_ev_connected", []),
@@ -226,13 +461,40 @@ class EntityContractAdapter:
             edges.get("charger_to_ev_incoming", []),
             edges.get("charger_to_ev_incoming_mask", []),
         )
+        table_lookup = {
+            "district": district_table,
+            "building": building_table,
+            "charger": charger_table,
+            "storage": storage_table,
+            "pv": pv_table,
+            "ev": ev_table,
+            "deferrable_appliance": deferrable_table,
+        }
 
         observations: List[np.ndarray] = []
         observation_names: List[List[str]] = []
         observation_spaces: List[spaces.Box] = []
         observation_origins: List[List[Tuple[str, str]]] = []
-
-        charger_feature_col = {name: idx for idx, name in enumerate(self._charger_features)}
+        collect_layout = (
+            len(self._cached_observation_names) != len(self._building_ids)
+            or len(self._cached_observation_sources) != len(self._building_ids)
+            or len(self._cached_observation_source_groups) != len(self._building_ids)
+        )
+        if collect_layout:
+            district_low = self._table_lows.get("district", np.zeros_like(district_table))
+            district_high = self._table_highs.get("district", np.zeros_like(district_table))
+            building_low = self._table_lows.get("building", np.zeros_like(building_table))
+            building_high = self._table_highs.get("building", np.zeros_like(building_table))
+            charger_low = self._table_lows.get("charger", np.zeros_like(charger_table))
+            charger_high = self._table_highs.get("charger", np.zeros_like(charger_table))
+            storage_low = self._table_lows.get("storage", np.zeros_like(storage_table))
+            storage_high = self._table_highs.get("storage", np.zeros_like(storage_table))
+            pv_low = self._table_lows.get("pv", np.zeros_like(pv_table))
+            pv_high = self._table_highs.get("pv", np.zeros_like(pv_table))
+            ev_low = self._table_lows.get("ev", np.zeros_like(ev_table))
+            ev_high = self._table_highs.get("ev", np.zeros_like(ev_table))
+            deferrable_low = self._table_lows.get("deferrable_appliance", np.zeros_like(deferrable_table))
+            deferrable_high = self._table_highs.get("deferrable_appliance", np.zeros_like(deferrable_table))
 
         for building_index, building_id in enumerate(self._building_ids):
             names: List[str] = []
@@ -240,13 +502,36 @@ class EntityContractAdapter:
             lows: List[float] = []
             highs: List[float] = []
             origins: List[Tuple[str, str]] = []
+            alias_sources: List[Tuple[str, int]] = []
+            feature_sources: List[Tuple[Any, ...]] = []
 
-            def add_feature(name: str, value: float, low: float, high: float, origin: Tuple[str, str]):
-                names.append(str(name))
+            if not collect_layout:
+                observations.append(
+                    self._observation_values_from_source_group(
+                        self._cached_observation_source_groups[building_index],
+                        table_lookup=table_lookup,
+                        charger_connected_ev=charger_connected_ev,
+                        charger_incoming_ev=charger_incoming_ev,
+                    )
+                )
+                continue
+
+            def add_feature(
+                name: str,
+                value: float,
+                low: float,
+                high: float,
+                origin: Tuple[str, str],
+                source: Optional[Tuple[Any, ...]] = None,
+            ):
                 values.append(self._safe_scalar(value, 0.0))
-                lows.append(self._safe_scalar(low, -1.0e6))
-                highs.append(self._safe_scalar(high, 1.0e6))
-                origins.append(origin)
+                if collect_layout:
+                    names.append(str(name))
+                    lows.append(self._safe_scalar(low, -1.0e6))
+                    highs.append(self._safe_scalar(high, 1.0e6))
+                    origins.append(origin)
+                    if source is not None:
+                        feature_sources.append(source)
 
             for col, feature in enumerate(self._district_features):
                 add_feature(
@@ -255,6 +540,7 @@ class EntityContractAdapter:
                     district_low[0, col] if district_low.shape[1] > col else -1.0e6,
                     district_high[0, col] if district_high.shape[1] > col else 1.0e6,
                     ("district", feature),
+                    ("table", "district", 0, col),
                 )
 
             for col, feature in enumerate(self._building_features):
@@ -264,15 +550,16 @@ class EntityContractAdapter:
                     building_low[building_index, col] if building_low.shape[1] > col and building_low.shape[0] > building_index else -1.0e6,
                     building_high[building_index, col] if building_high.shape[1] > col and building_high.shape[0] > building_index else 1.0e6,
                     ("building", feature),
+                    ("table", "building", building_index, col),
                 )
 
-            building_chargers = self._edge_targets(edges.get("building_to_charger", []), building_index)
-            building_storages = self._edge_targets(edges.get("building_to_storage", []), building_index)
-            building_pvs = self._edge_targets(edges.get("building_to_pv", []), building_index)
-            building_deferrables = self._edge_targets(
-                edges.get("building_to_deferrable_appliance", []),
-                building_index,
-            )
+            building_chargers = self._building_asset_rows.get("charger", [[] for _ in self._building_ids])[building_index]
+            building_storages = self._building_asset_rows.get("storage", [[] for _ in self._building_ids])[building_index]
+            building_pvs = self._building_asset_rows.get("pv", [[] for _ in self._building_ids])[building_index]
+            building_deferrables = self._building_asset_rows.get(
+                "deferrable_appliance",
+                [[] for _ in self._building_ids],
+            )[building_index]
 
             for row in building_storages:
                 storage_id = self._storage_ids[row] if row < len(self._storage_ids) else f"storage_{row}"
@@ -283,6 +570,7 @@ class EntityContractAdapter:
                         storage_low[row, col] if storage_low.shape[0] > row and storage_low.shape[1] > col else -1.0e6,
                         storage_high[row, col] if storage_high.shape[0] > row and storage_high.shape[1] > col else 1.0e6,
                         ("storage", feature),
+                        ("table", "storage", row, col),
                     )
 
             for row in building_pvs:
@@ -294,6 +582,7 @@ class EntityContractAdapter:
                         pv_low[row, col] if pv_low.shape[0] > row and pv_low.shape[1] > col else -1.0e6,
                         pv_high[row, col] if pv_high.shape[0] > row and pv_high.shape[1] > col else 1.0e6,
                         ("pv", feature),
+                        ("table", "pv", row, col),
                     )
 
             for row in building_deferrables:
@@ -309,6 +598,7 @@ class EntityContractAdapter:
                         deferrable_low[row, col] if deferrable_low.shape[0] > row and deferrable_low.shape[1] > col else -1.0e6,
                         deferrable_high[row, col] if deferrable_high.shape[0] > row and deferrable_high.shape[1] > col else 1.0e6,
                         ("deferrable_appliance", feature),
+                        ("table", "deferrable_appliance", row, col),
                     )
 
             for row in building_chargers:
@@ -320,6 +610,7 @@ class EntityContractAdapter:
                         charger_low[row, col] if charger_low.shape[0] > row and charger_low.shape[1] > col else -1.0e6,
                         charger_high[row, col] if charger_high.shape[0] > row and charger_high.shape[1] > col else 1.0e6,
                         ("charger", feature),
+                        ("table", "charger", row, col),
                     )
 
                 def add_ev_context_features(context_label: str, ev_row: Optional[int]) -> None:
@@ -342,6 +633,7 @@ class EntityContractAdapter:
                             low_value,
                             high_value,
                             ("ev", feature),
+                            ("ev_context", context_label, row, col),
                         )
 
                 connected_ev_row = charger_connected_ev.get(row)
@@ -351,22 +643,44 @@ class EntityContractAdapter:
                 add_ev_context_features("incoming_ev", incoming_ev_row)
 
             # Operational counters per building.
-            add_feature("active_chargers_count", float(len(building_chargers)), 0.0, float(max(len(self._charger_ids), 1)), ("meta", "active_chargers_count"))
-            add_feature("active_storages_count", float(len(building_storages)), 0.0, float(max(len(self._storage_ids), 1)), ("meta", "active_storages_count"))
-            add_feature("active_pvs_count", float(len(building_pvs)), 0.0, float(max(len(self._pv_ids), 1)), ("meta", "active_pvs_count"))
+            add_feature(
+                "active_chargers_count",
+                float(len(building_chargers)),
+                0.0,
+                float(max(len(self._charger_ids), 1)),
+                ("meta", "active_chargers_count"),
+                ("constant", float(len(building_chargers))),
+            )
+            add_feature(
+                "active_storages_count",
+                float(len(building_storages)),
+                0.0,
+                float(max(len(self._storage_ids), 1)),
+                ("meta", "active_storages_count"),
+                ("constant", float(len(building_storages))),
+            )
+            add_feature(
+                "active_pvs_count",
+                float(len(building_pvs)),
+                0.0,
+                float(max(len(self._pv_ids), 1)),
+                ("meta", "active_pvs_count"),
+                ("constant", float(len(building_pvs))),
+            )
             add_feature(
                 "active_deferrable_appliances_count",
                 float(len(building_deferrables)),
                 0.0,
                 float(max(len(self._deferrable_ids), 1)),
                 ("meta", "active_deferrable_appliances_count"),
+                ("constant", float(len(building_deferrables))),
             )
 
             # RBC compatibility aliases from first connected charger if available.
             if building_chargers:
                 first_row = building_chargers[0]
                 for legacy_name, source_feature in self._LEGACY_CHARGER_ALIASES.items():
-                    source_col = charger_feature_col.get(source_feature)
+                    source_col = self._charger_feature_col.get(source_feature)
                     if source_col is None:
                         continue
                     add_feature(
@@ -375,40 +689,120 @@ class EntityContractAdapter:
                         charger_low[first_row, source_col] if charger_low.shape[0] > first_row and charger_low.shape[1] > source_col else 0.0,
                         charger_high[first_row, source_col] if charger_high.shape[0] > first_row and charger_high.shape[1] > source_col else 1.0,
                         ("charger", source_feature),
+                        ("table", "charger", first_row, source_col),
                     )
             else:
-                add_feature("electric_vehicle_charger_state", 0.0, 0.0, 1.0, ("charger", "connected_state"))
-                add_feature("electric_vehicle_soc", 0.0, 0.0, 100.0, ("charger", "connected_ev_soc"))
-                add_feature("electric_vehicle_required_soc_departure", 0.0, 0.0, 100.0, ("charger", "connected_ev_required_soc_departure"))
-                add_feature("electric_vehicle_departure_time", 0.0, 0.0, 24.0, ("charger", "connected_ev_departure_time_step"))
+                add_feature("electric_vehicle_charger_state", 0.0, 0.0, 1.0, ("charger", "connected_state"), ("constant", 0.0))
+                add_feature("electric_vehicle_soc", 0.0, 0.0, 100.0, ("charger", "connected_ev_soc"), ("constant", 0.0))
+                add_feature(
+                    "electric_vehicle_required_soc_departure",
+                    0.0,
+                    0.0,
+                    100.0,
+                    ("charger", "connected_ev_required_soc_departure"),
+                    ("constant", 0.0),
+                )
+                add_feature(
+                    "electric_vehicle_departure_time",
+                    0.0,
+                    0.0,
+                    24.0,
+                    ("charger", "connected_ev_departure_time_step"),
+                    ("constant", 0.0),
+                )
 
-            add_feature("electric_vehicle_is_flexible", 1.0, 0.0, 1.0, ("meta", "electric_vehicle_is_flexible"))
+            add_feature(
+                "electric_vehicle_is_flexible",
+                1.0,
+                0.0,
+                1.0,
+                ("meta", "electric_vehicle_is_flexible"),
+                ("constant", 1.0),
+            )
 
-            if "minute" not in names and "minutes" in names:
-                minute_idx = names.index("minutes")
-                add_feature("minute", values[minute_idx], lows[minute_idx], highs[minute_idx], origins[minute_idx])
+            if collect_layout:
+                if "minute" not in names and "minutes" in names:
+                    minute_idx = names.index("minutes")
+                    alias_sources.append(("minute", minute_idx))
+                    add_feature(
+                        "minute",
+                        values[minute_idx],
+                        lows[minute_idx],
+                        highs[minute_idx],
+                        origins[minute_idx],
+                    )
 
-            if "solar_generation" not in names and "pv_power_kw" in names:
-                pv_idx = names.index("pv_power_kw")
-                add_feature("solar_generation", values[pv_idx], lows[pv_idx], highs[pv_idx], origins[pv_idx])
+                if "solar_generation" not in names and "pv_power_kw" in names:
+                    pv_idx = names.index("pv_power_kw")
+                    alias_sources.append(("solar_generation", pv_idx))
+                    add_feature(
+                        "solar_generation",
+                        values[pv_idx],
+                        lows[pv_idx],
+                        highs[pv_idx],
+                        origins[pv_idx],
+                    )
 
             obs_vector = np.asarray(values, dtype=np.float64)
-            low_vector = np.asarray(lows, dtype=np.float64)
-            high_vector = np.asarray(highs, dtype=np.float64)
 
             observations.append(obs_vector)
-            observation_names.append(names)
-            observation_spaces.append(
-                spaces.Box(
-                    low=low_vector.astype(np.float32),
-                    high=high_vector.astype(np.float32),
-                    dtype=np.float32,
+            if collect_layout:
+                low_vector = np.asarray(lows, dtype=np.float64)
+                high_vector = np.asarray(highs, dtype=np.float64)
+                observation_names.append(names)
+                observation_spaces.append(
+                    spaces.Box(
+                        low=low_vector.astype(np.float32),
+                        high=high_vector.astype(np.float32),
+                        dtype=np.float32,
+                    )
                 )
-            )
-            observation_origins.append(origins)
+                observation_origins.append(origins)
+                if len(self._cached_alias_sources) < len(self._building_ids):
+                    self._cached_alias_sources.append(alias_sources)
+                if len(self._cached_observation_sources) < len(self._building_ids):
+                    self._cached_observation_sources.append(feature_sources)
+                if len(self._cached_observation_source_groups) < len(self._building_ids):
+                    self._cached_observation_source_groups.append(
+                        self._compile_observation_source_group(
+                            feature_sources,
+                            alias_sources,
+                        )
+                    )
 
-        self._latest_observation_origins = observation_origins
-        return observations, observation_names, observation_spaces
+        if collect_layout:
+            self._cached_observation_names = observation_names
+            self._cached_observation_spaces = observation_spaces
+            self._cached_observation_origins = observation_origins
+
+        self._latest_observation_origins = self._cached_observation_origins
+        return observations, self._cached_observation_names, self._cached_observation_spaces
+
+    def to_agent_encoded_observations(
+        self,
+        observation_payload: Mapping[str, Any],
+    ) -> Tuple[List[np.ndarray], List[List[str]], List[spaces.Box]]:
+        observations, observation_names, observation_spaces = self.to_agent_observations(
+            observation_payload
+        )
+        encoded_observations = [
+            self.normalize_observation(
+                agent_index=agent_index,
+                observation=observation,
+                observation_names=observation_names[agent_index]
+                if agent_index < len(observation_names)
+                else [],
+                observation_space=observation_spaces[agent_index]
+                if agent_index < len(observation_spaces)
+                else spaces.Box(
+                    low=np.full(len(observation), -1.0e6, dtype=np.float32),
+                    high=np.full(len(observation), 1.0e6, dtype=np.float32),
+                    dtype=np.float32,
+                ),
+            )
+            for agent_index, observation in enumerate(observations)
+        ]
+        return encoded_observations, observation_names, observation_spaces
 
     def normalize_observation(
         self,
@@ -422,23 +816,77 @@ class EntityContractAdapter:
         if not self.normalization_enabled:
             return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
 
-        if self.encoding_profile in {"maddpg_v1", "maddpg_v2_compact"}:
+        if self.encoding_profile in self._MADDPG_STYLE_PROFILES:
+            layout_cache = self._maddpg_encoded_layout_cache.get(agent_index)
+            cache_names = tuple(str(name) for name in observation_names)
+            if (
+                layout_cache is not None
+                and layout_cache.get("raw_names") == cache_names
+                and layout_cache.get("profile") == self.encoding_profile
+            ):
+                compiled_ops = layout_cache.get("compiled_ops")
+                if compiled_ops is not None:
+                    return self._execute_maddpg_compiled_plan(values, layout_cache)
+
+                encoded, _ = self._encode_maddpg_v1(
+                    observation=values,
+                    observation_names=observation_names,
+                    observation_space=observation_space,
+                    collect_names=False,
+                    keep_names=layout_cache.get("encoded_name_set"),
+                    raw_name_index_pairs=layout_cache.get("candidate_raw_name_index_pairs"),
+                    value_name_index_pairs=layout_cache.get("value_name_index_pairs"),
+                    value_name_to_index=layout_cache.get("value_name_to_index"),
+                )
+                return encoded
+
             encoded, encoded_names = self._encode_maddpg_v1(
                 observation=values,
                 observation_names=observation_names,
                 observation_space=observation_space,
+                collect_names=True,
             )
-            if self.encoding_profile == "maddpg_v2_compact":
+            keep_indices = None
+            if self.encoding_profile != "maddpg_v1":
                 keep_indices = [
                     idx
                     for idx, name in enumerate(encoded_names)
-                    if self._is_maddpg_v2_compact_feature(name)
+                    if self._is_maddpg_profile_feature(name, self.encoding_profile)
                 ]
                 encoded = encoded[keep_indices]
                 encoded_names = [encoded_names[idx] for idx in keep_indices]
+                keep_indices = np.asarray(keep_indices, dtype=np.int64)
             while len(self._latest_encoded_observation_names) <= agent_index:
                 self._latest_encoded_observation_names.append([])
             self._latest_encoded_observation_names[agent_index] = encoded_names
+            value_name_index_pairs = [(name, idx) for idx, name in enumerate(cache_names)]
+            candidate_raw_name_set = self._candidate_raw_names_for_encoded_profile(
+                observation_names,
+                set(encoded_names),
+            )
+            compiled_ops = self._build_maddpg_compiled_plan(
+                observation_names=cache_names,
+                observation_space=observation_space,
+                profile=self.encoding_profile,
+            )
+            compiled_vectors = self._split_maddpg_compiled_ops(compiled_ops)
+            self._maddpg_encoded_layout_cache[agent_index] = {
+                "raw_names": cache_names,
+                "profile": self.encoding_profile,
+                "encoded_names": encoded_names,
+                "encoded_name_set": set(encoded_names),
+                "candidate_raw_name_set": candidate_raw_name_set,
+                "candidate_raw_name_index_pairs": [
+                    (name, idx)
+                    for name, idx in value_name_index_pairs
+                    if name in candidate_raw_name_set
+                ],
+                "value_name_index_pairs": value_name_index_pairs,
+                "value_name_to_index": dict(value_name_index_pairs),
+                "keep_indices": keep_indices,
+                "compiled_ops": compiled_ops,
+                "compiled_vectors": compiled_vectors,
+            }
             return encoded
 
         low = np.asarray(observation_space.low, dtype=np.float64)
@@ -475,16 +923,432 @@ class EntityContractAdapter:
         return np.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0)
 
     def encoded_observation_names(self, observation_names: Sequence[Sequence[str]]) -> List[List[str]]:
-        if self.encoding_profile not in {"maddpg_v1", "maddpg_v2_compact"}:
+        if self.encoding_profile not in self._MADDPG_STYLE_PROFILES:
             return [[str(name) for name in group] for group in observation_names]
 
         encoded_names: List[List[str]] = []
         for group in observation_names:
             names = self._maddpg_v1_encoded_names(group)
-            if self.encoding_profile == "maddpg_v2_compact":
-                names = [name for name in names if self._is_maddpg_v2_compact_feature(name)]
+            if self.encoding_profile != "maddpg_v1":
+                names = [name for name in names if self._is_maddpg_profile_feature(name, self.encoding_profile)]
             encoded_names.append(names)
         return encoded_names
+
+    def _build_maddpg_compiled_plan(
+        self,
+        *,
+        observation_names: Sequence[str],
+        observation_space: spaces.Box,
+        profile: str,
+    ) -> List[Tuple[Any, ...]]:
+        low = np.asarray(observation_space.low, dtype=np.float64)
+        high = np.asarray(observation_space.high, dtype=np.float64)
+        value_name_to_index = {str(name): idx for idx, name in enumerate(observation_names)}
+        ops: List[Tuple[Any, ...]] = []
+        emitted_time_of_day = False
+
+        def keep(name: str) -> bool:
+            return profile == "maddpg_v1" or self._is_maddpg_profile_feature(name, profile)
+
+        def append(output_name: str, op: Tuple[Any, ...]) -> None:
+            if keep(output_name):
+                ops.append(op)
+
+        for index, raw_name in enumerate(observation_names):
+            name = str(raw_name)
+            lo = self._safe_scalar(low[index], -1.0e6)
+            hi = self._safe_scalar(high[index], 1.0e6)
+
+            if name.startswith("electric_vehicle_") or name in {"minute", "solar_generation"}:
+                continue
+
+            if name.startswith("district__"):
+                feature = name.split("__", 1)[1]
+                if feature == "topology_version":
+                    continue
+
+                if feature == "month":
+                    append("district__month_sin", ("cyclic_sin", index, 12.0, 1.0))
+                    append("district__month_cos", ("cyclic_cos", index, 12.0, 1.0))
+                    continue
+
+                if feature == "day_type":
+                    append("district__day_type_sin", ("cyclic_sin", index, 7.0, 1.0))
+                    append("district__day_type_cos", ("cyclic_cos", index, 7.0, 1.0))
+                    append("district__is_weekend", ("is_weekend", index))
+                    continue
+
+                if feature in {"hour", "minutes", "seconds"}:
+                    if not emitted_time_of_day:
+                        hour_idx = value_name_to_index.get("district__hour")
+                        minute_idx = value_name_to_index.get("district__minutes")
+                        second_idx = value_name_to_index.get("district__seconds")
+                        append("district__time_of_day_sin", ("time_of_day_sin", hour_idx, minute_idx, second_idx))
+                        append("district__time_of_day_cos", ("time_of_day_cos", hour_idx, minute_idx, second_idx))
+                        emitted_time_of_day = True
+                    continue
+
+            if self._is_binary_feature(name):
+                append(name, ("binary", index))
+                continue
+
+            if self._is_soc_feature(name):
+                append(name, ("soc_fraction", index))
+                if name.endswith("connected_ev_required_soc_departure"):
+                    soc_name = self._replace_last_feature(name, "connected_ev_soc")
+                    capacity_name = self._replace_last_feature(name, "connected_ev_battery_capacity_kwh")
+                    energy_to_required_name = self._replace_last_feature(name, "energy_to_required_soc_kwh")
+                    charge_power_name = self._replace_last_feature(name, "available_charge_power_kw")
+                    if charge_power_name not in value_name_to_index:
+                        charge_power_name = self._replace_last_feature(name, "max_charging_power_kw")
+                    efficiency_name = self._replace_last_feature(name, "charger_efficiency_ratio")
+                    append(
+                        self._replace_last_feature(name, "connected_ev_soc_deficit"),
+                        ("soc_deficit", index, value_name_to_index.get(soc_name)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "connected_ev_soc_surplus"),
+                        ("soc_surplus", index, value_name_to_index.get(soc_name)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "connected_ev_soc_error_signed"),
+                        ("soc_error_signed", index, value_name_to_index.get(soc_name)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "max_charge_to_required_soc_action_normalized"),
+                        (
+                            "ev_charge_to_required_action",
+                            index,
+                            value_name_to_index.get(soc_name),
+                            value_name_to_index.get(capacity_name),
+                            value_name_to_index.get(energy_to_required_name),
+                            value_name_to_index.get(charge_power_name),
+                            value_name_to_index.get(efficiency_name),
+                        ),
+                    )
+                if name.endswith("incoming_ev_required_soc_departure"):
+                    soc_name = self._replace_last_feature(name, "incoming_ev_estimated_soc_arrival")
+                    append(
+                        self._replace_last_feature(name, "incoming_ev_soc_deficit"),
+                        ("soc_deficit", index, value_name_to_index.get(soc_name)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "incoming_ev_soc_surplus"),
+                        ("soc_surplus", index, value_name_to_index.get(soc_name)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "incoming_ev_soc_error_signed"),
+                        ("soc_error_signed", index, value_name_to_index.get(soc_name)),
+                    )
+                continue
+
+            if name.endswith("connected_ev_departure_time_step"):
+                append(self._replace_last_feature(name, "connected_ev_hours_until_departure"), ("steps_until_hours24", index))
+                append(self._replace_last_feature(name, "connected_ev_departure_available"), ("nonnegative_available", index))
+                append(self._replace_last_feature(name, "connected_ev_departure_urgency_24h"), ("steps_until_urgency24", index))
+                continue
+
+            if name.endswith("incoming_ev_estimated_arrival_time_step"):
+                append(self._replace_last_feature(name, "incoming_ev_hours_until_arrival"), ("steps_until_hours24", index))
+                append(self._replace_last_feature(name, "incoming_ev_arrival_available"), ("nonnegative_available", index))
+                append(self._replace_last_feature(name, "incoming_ev_arrival_urgency_24h"), ("steps_until_urgency24", index))
+                continue
+
+            if name.endswith("incoming_ev_departure_time_step"):
+                append(self._replace_last_feature(name, "incoming_ev_hours_until_departure_from_time_step"), ("steps_until_hours24", index))
+                append(self._replace_last_feature(name, "incoming_ev_departure_available"), ("nonnegative_available", index))
+                append(self._replace_last_feature(name, "incoming_ev_departure_urgency_24h"), ("steps_until_urgency24", index))
+                continue
+
+            if name.startswith("deferrable_appliance::") and name.endswith("_time_step"):
+                base = name.removesuffix("_time_step")
+                append(f"{base}_time_of_day_sin", ("step_time_sin", index))
+                append(f"{base}_time_of_day_cos", ("step_time_cos", index))
+                append(f"{base}_available", ("nonnegative_available", index))
+                continue
+
+            if "hours_until_" in name:
+                append(f"{name}_24h", ("hours24", index))
+                continue
+
+            if name.endswith("slack_steps") or name.endswith("cycle_duration_steps") or name.endswith("remaining_duration_steps"):
+                append(f"{name}_day_ratio", ("steps_day_ratio", index))
+                continue
+
+            if name.endswith("remaining_energy_kwh"):
+                append(
+                    f"{name}_cycle_ratio",
+                    ("cycle_ratio", index, value_name_to_index.get(self._replace_last_feature(name, "cycle_energy_kwh"))),
+                )
+                continue
+
+            if name.endswith("current_step_energy_kwh"):
+                append(
+                    f"{name}_cycle_ratio",
+                    ("cycle_ratio", index, value_name_to_index.get(self._replace_last_feature(name, "cycle_energy_kwh"))),
+                )
+                continue
+
+            if name.endswith("cycle_peak_step_offset_ratio"):
+                append(name, ("clip_signed_unit", index))
+                continue
+
+            if name.endswith("_ratio") or name.endswith("priority"):
+                append(name, ("clip_unit_nonnegative", index))
+                continue
+
+            if name.endswith("last_charged_kwh") or name.endswith("electricity_consumption_kwh") or name == "net_electricity_consumption":
+                append(name, ("signed_by_bounds", index, lo, hi))
+                continue
+
+            if "headroom_kw" in name:
+                append(name, ("headroom_ratio", index, name, lo, hi))
+                continue
+
+            if name.endswith("constraint_violation_kwh"):
+                append(name, ("positive_by_high", index, hi, 0.5))
+                continue
+
+            if name.endswith("_kwh_step"):
+                append(name, ("step_energy_ratio", index, name, lo, hi))
+                continue
+
+            if (
+                name.endswith("energy_to_required_soc_kwh")
+                or name.endswith("energy_to_full_kwh")
+                or name.endswith("energy_available_kwh")
+            ):
+                append(name, ("energy_capacity_ratio", index, name, hi))
+                continue
+
+            if "battery_capacity_kwh" in name or name.endswith("capacity_kwh"):
+                append(name, ("positive_by_high", index, hi, 100.0))
+                continue
+
+            if (
+                name.endswith("nominal_power_kw")
+                or name.endswith("max_charging_power_kw")
+                or name.endswith("max_discharging_power_kw")
+            ):
+                append(name, ("positive_by_high", index, hi, 22.0))
+                continue
+
+            if name.endswith("_power_kw") or name.endswith("slack_kw"):
+                append(name, ("power_ratio", index, name, lo, hi))
+                continue
+
+            if "relative_humidity" in name:
+                append(name, ("scale_clip", index, 100.0, 0.0, 1.0))
+                continue
+
+            if "solar_irradiance" in name:
+                append(name, ("scale_clip", index, 1000.0, 0.0, 1.0))
+                continue
+
+            append(name, ("minmax", index, lo, hi))
+
+        return ops
+
+    @staticmethod
+    def _split_maddpg_compiled_ops(ops: Sequence[Tuple[Any, ...]]) -> Dict[str, Any]:
+        scalar_ops: List[Tuple[int, Tuple[Any, ...]]] = []
+        minmax_output_indices: List[int] = []
+        minmax_input_indices: List[int] = []
+        minmax_lows: List[float] = []
+        minmax_denominators: List[float] = []
+        minmax_valid: List[bool] = []
+
+        for output_index, op in enumerate(ops):
+            if op[0] != "minmax":
+                scalar_ops.append((output_index, op))
+                continue
+
+            _, input_index, low, high = op
+            denominator = float(high) - float(low)
+            valid = (
+                np.isfinite(low)
+                and np.isfinite(high)
+                and np.isfinite(denominator)
+                and denominator > 0.0
+            )
+            minmax_output_indices.append(output_index)
+            minmax_input_indices.append(int(input_index))
+            minmax_lows.append(float(low))
+            minmax_denominators.append(float(denominator) if valid else 1.0)
+            minmax_valid.append(bool(valid))
+
+        return {
+            "scalar_ops": scalar_ops,
+            "minmax_output_indices": np.asarray(minmax_output_indices, dtype=np.int64),
+            "minmax_input_indices": np.asarray(minmax_input_indices, dtype=np.int64),
+            "minmax_lows": np.asarray(minmax_lows, dtype=np.float64),
+            "minmax_denominators": np.asarray(minmax_denominators, dtype=np.float64),
+            "minmax_valid": np.asarray(minmax_valid, dtype=bool),
+        }
+
+    def _execute_maddpg_compiled_plan(
+        self,
+        observation: np.ndarray,
+        layout_cache: Mapping[str, Any],
+    ) -> np.ndarray:
+        ops = layout_cache.get("compiled_ops") or []
+        vectors = layout_cache.get("compiled_vectors") or {}
+        value_name_to_index = layout_cache.get("value_name_to_index") or {}
+        values_by_name = _ObservationValueLookup(observation, value_name_to_index)
+        encoded = np.empty(len(ops), dtype=np.float64)
+        steps_per_day = self.steps_per_day
+        seconds_per_time_step = self.seconds_per_time_step
+
+        minmax_output_indices = vectors.get("minmax_output_indices")
+        minmax_input_indices = vectors.get("minmax_input_indices")
+        if minmax_output_indices is not None and len(minmax_output_indices):
+            minmax_values = np.asarray(observation[minmax_input_indices], dtype=np.float64)
+            minmax_values = np.nan_to_num(minmax_values, nan=0.0, posinf=0.0, neginf=0.0)
+            minmax_valid = vectors["minmax_valid"]
+            minmax_encoded = np.zeros(len(minmax_output_indices), dtype=np.float64)
+            if np.any(minmax_valid):
+                minmax_encoded[minmax_valid] = np.clip(
+                    (
+                        minmax_values[minmax_valid]
+                        - vectors["minmax_lows"][minmax_valid]
+                    )
+                    / vectors["minmax_denominators"][minmax_valid],
+                    0.0,
+                    1.0,
+                )
+            encoded[minmax_output_indices] = minmax_encoded
+        scalar_ops = vectors.get("scalar_ops")
+        if scalar_ops is None:
+            scalar_ops = list(enumerate(ops))
+
+        def value_at(index: Optional[int], default: float = 0.0) -> float:
+            if index is None or index >= len(observation):
+                return default
+            try:
+                value = float(observation[index])
+            except (TypeError, ValueError):
+                return default
+            if np.isnan(value) or np.isinf(value):
+                return default
+            return value
+
+        def cyclic(value: float, *, period: float, offset: float) -> Tuple[float, float]:
+            angle = 2.0 * np.pi * ((value - offset) % period) / period
+            return float(np.sin(angle)), float(np.cos(angle))
+
+        for output_index, op in scalar_ops:
+            kind = op[0]
+
+            if kind == "binary":
+                encoded[output_index] = 1.0 if value_at(op[1]) > 0.5 else 0.0
+            elif kind == "soc_fraction":
+                value = value_at(op[1])
+                if value < 0.0:
+                    encoded[output_index] = 0.0
+                else:
+                    if value > 1.5:
+                        value /= 100.0
+                    encoded[output_index] = float(np.clip(value, 0.0, 1.0))
+            elif kind == "soc_deficit":
+                required = self._soc_fraction(value_at(op[1]))
+                soc = self._soc_fraction(value_at(op[2], value_at(op[1])))
+                encoded[output_index] = max(required - soc, 0.0)
+            elif kind == "soc_surplus":
+                required = self._soc_fraction(value_at(op[1]))
+                soc = self._soc_fraction(value_at(op[2], value_at(op[1])))
+                encoded[output_index] = max(soc - required, 0.0)
+            elif kind == "soc_error_signed":
+                required = self._soc_fraction(value_at(op[1]))
+                soc = self._soc_fraction(value_at(op[2], value_at(op[1])))
+                encoded[output_index] = float(np.clip(required - soc, -1.0, 1.0))
+            elif kind == "ev_charge_to_required_action":
+                encoded[output_index] = self._ev_charge_to_required_action(
+                    required_soc=value_at(op[1]),
+                    current_soc=value_at(op[2], value_at(op[1])),
+                    capacity_kwh=value_at(op[3]),
+                    energy_to_required_kwh=value_at(op[4]),
+                    charge_power_kw=value_at(op[5]),
+                    efficiency=value_at(op[6], 1.0),
+                )
+            elif kind == "cyclic_sin":
+                encoded[output_index] = cyclic(value_at(op[1]), period=op[2], offset=op[3])[0]
+            elif kind == "cyclic_cos":
+                encoded[output_index] = cyclic(value_at(op[1]), period=op[2], offset=op[3])[1]
+            elif kind == "is_weekend":
+                encoded[output_index] = 1.0 if int(round(value_at(op[1]))) in {6, 7} else 0.0
+            elif kind in {"time_of_day_sin", "time_of_day_cos"}:
+                hour = value_at(op[1])
+                minute = value_at(op[2])
+                second = value_at(op[3])
+                seconds_of_day = (hour % 24.0) * 3600.0 + minute * 60.0 + second
+                pair = cyclic(seconds_of_day, period=86400.0, offset=0.0)
+                encoded[output_index] = pair[0] if kind == "time_of_day_sin" else pair[1]
+            elif kind == "steps_until_hours24":
+                value = value_at(op[1])
+                hours = 24.0 if value < 0.0 else value * seconds_per_time_step / 3600.0
+                encoded[output_index] = float(np.clip(hours, 0.0, 24.0) / 24.0)
+            elif kind == "steps_until_urgency24":
+                value = value_at(op[1])
+                hours = 24.0 if value < 0.0 else value * seconds_per_time_step / 3600.0
+                encoded[output_index] = float(1.0 - np.clip(hours, 0.0, 24.0) / 24.0)
+            elif kind == "nonnegative_available":
+                encoded[output_index] = 1.0 if value_at(op[1]) >= 0.0 else 0.0
+            elif kind in {"step_time_sin", "step_time_cos"}:
+                value = value_at(op[1])
+                if value < 0.0:
+                    encoded[output_index] = 0.0
+                else:
+                    pair = cyclic(value % steps_per_day, period=steps_per_day, offset=0.0)
+                    encoded[output_index] = pair[0] if kind == "step_time_sin" else pair[1]
+            elif kind == "hours24":
+                encoded[output_index] = float(np.clip(value_at(op[1]), 0.0, 24.0) / 24.0)
+            elif kind == "steps_day_ratio":
+                value = value_at(op[1])
+                encoded[output_index] = 0.0 if value < 0.0 else float(np.clip(value / steps_per_day, 0.0, 1.0))
+            elif kind == "cycle_ratio":
+                numerator = value_at(op[1])
+                denominator = value_at(op[2])
+                encoded[output_index] = self._safe_ratio(numerator, denominator, default=0.0)
+            elif kind == "clip_signed_unit":
+                encoded[output_index] = float(np.clip(value_at(op[1]), -1.0, 1.0))
+            elif kind == "clip_unit_nonnegative":
+                value = value_at(op[1])
+                encoded[output_index] = 0.0 if value < 0.0 else float(np.clip(value, 0.0, 1.0))
+            elif kind == "signed_by_bounds":
+                encoded[output_index] = self._signed_by_bounds(value_at(op[1]), op[2], op[3])
+            elif kind == "headroom_ratio":
+                encoded[output_index] = self._headroom_ratio(name=op[2], value=value_at(op[1]), low=op[3], high=op[4])
+            elif kind == "positive_by_high":
+                encoded[output_index] = self._positive_by_high(value_at(op[1]), op[2], fallback=op[3])
+            elif kind == "step_energy_ratio":
+                encoded[output_index] = self._step_energy_ratio(
+                    name=op[2],
+                    value=value_at(op[1]),
+                    low=op[3],
+                    high=op[4],
+                    values_by_name=values_by_name,
+                )
+            elif kind == "energy_capacity_ratio":
+                encoded[output_index] = self._energy_capacity_ratio(
+                    name=op[2],
+                    value=value_at(op[1]),
+                    high=op[3],
+                    values_by_name=values_by_name,
+                )
+            elif kind == "power_ratio":
+                encoded[output_index] = self._power_ratio(
+                    name=op[2],
+                    value=value_at(op[1]),
+                    low=op[3],
+                    high=op[4],
+                    values_by_name=values_by_name,
+                )
+            elif kind == "scale_clip":
+                encoded[output_index] = float(np.clip(value_at(op[1]) / op[2], op[3], op[4]))
+            else:
+                encoded[output_index] = self._minmax(value_at(op[1]), op[2], op[3])
+
+        return encoded
 
     def _encode_maddpg_v1(
         self,
@@ -492,32 +1356,40 @@ class EntityContractAdapter:
         observation: np.ndarray,
         observation_names: Sequence[str],
         observation_space: spaces.Box,
+        collect_names: bool = True,
+        keep_names: Optional[set[str]] = None,
+        raw_name_index_pairs: Optional[Sequence[Tuple[str, int]]] = None,
+        value_name_index_pairs: Optional[Sequence[Tuple[str, int]]] = None,
+        value_name_to_index: Optional[Mapping[str, int]] = None,
     ) -> Tuple[np.ndarray, List[str]]:
         low = np.asarray(observation_space.low, dtype=np.float64)
         high = np.asarray(observation_space.high, dtype=np.float64)
-        values_by_name = {
-            str(name): self._safe_scalar(observation[index], 0.0)
-            for index, name in enumerate(observation_names)
-        }
-        low_by_name = {
-            str(name): self._safe_scalar(low[index], -1.0e6)
-            for index, name in enumerate(observation_names)
-        }
-        high_by_name = {
-            str(name): self._safe_scalar(high[index], 1.0e6)
-            for index, name in enumerate(observation_names)
-        }
+        if value_name_index_pairs is None:
+            value_name_index_pairs = [
+                (str(name), index) for index, name in enumerate(observation_names)
+            ]
+        if raw_name_index_pairs is None:
+            raw_name_index_pairs = value_name_index_pairs
+        if value_name_to_index is not None:
+            values_by_name = _ObservationValueLookup(observation, value_name_to_index)
+        else:
+            values_by_name = {
+                name: self._safe_scalar(observation[index], 0.0)
+                for name, index in value_name_index_pairs
+            }
 
         encoded: List[float] = []
         encoded_names: List[str] = []
         emitted_time_of_day = False
 
         def append(name: str, value: float) -> None:
-            encoded_names.append(name)
+            if keep_names is not None and name not in keep_names:
+                return
+            if collect_names:
+                encoded_names.append(name)
             encoded.append(float(value))
 
-        for index, raw_name in enumerate(observation_names):
-            name = str(raw_name)
+        for name, index in raw_name_index_pairs:
             value = self._safe_scalar(observation[index], 0.0)
             lo = self._safe_scalar(low[index], -1.0e6)
             hi = self._safe_scalar(high[index], 1.0e6)
@@ -565,12 +1437,39 @@ class EntityContractAdapter:
                     soc_name = self._replace_last_feature(name, "connected_ev_soc")
                     soc = self._soc_fraction(values_by_name.get(soc_name, value))
                     required = self._soc_fraction(value)
+                    capacity_name = self._replace_last_feature(name, "connected_ev_battery_capacity_kwh")
+                    energy_to_required_name = self._replace_last_feature(name, "energy_to_required_soc_kwh")
+                    charge_power_name = self._replace_last_feature(name, "available_charge_power_kw")
+                    if charge_power_name not in values_by_name:
+                        charge_power_name = self._replace_last_feature(name, "max_charging_power_kw")
+                    efficiency_name = self._replace_last_feature(name, "charger_efficiency_ratio")
                     append(self._replace_last_feature(name, "connected_ev_soc_deficit"), max(required - soc, 0.0))
+                    append(self._replace_last_feature(name, "connected_ev_soc_surplus"), max(soc - required, 0.0))
+                    append(
+                        self._replace_last_feature(name, "connected_ev_soc_error_signed"),
+                        float(np.clip(required - soc, -1.0, 1.0)),
+                    )
+                    append(
+                        self._replace_last_feature(name, "max_charge_to_required_soc_action_normalized"),
+                        self._ev_charge_to_required_action(
+                            required_soc=value,
+                            current_soc=values_by_name.get(soc_name, value),
+                            capacity_kwh=values_by_name.get(capacity_name, 0.0),
+                            energy_to_required_kwh=values_by_name.get(energy_to_required_name, 0.0),
+                            charge_power_kw=values_by_name.get(charge_power_name, 0.0),
+                            efficiency=values_by_name.get(efficiency_name, 1.0),
+                        ),
+                    )
                 if name.endswith("incoming_ev_required_soc_departure"):
                     soc_name = self._replace_last_feature(name, "incoming_ev_estimated_soc_arrival")
                     soc = self._soc_fraction(values_by_name.get(soc_name, value))
                     required = self._soc_fraction(value)
                     append(self._replace_last_feature(name, "incoming_ev_soc_deficit"), max(required - soc, 0.0))
+                    append(self._replace_last_feature(name, "incoming_ev_soc_surplus"), max(soc - required, 0.0))
+                    append(
+                        self._replace_last_feature(name, "incoming_ev_soc_error_signed"),
+                        float(np.clip(required - soc, -1.0, 1.0)),
+                    )
                 continue
 
             if name.endswith("connected_ev_departure_time_step"):
@@ -707,6 +1606,20 @@ class EntityContractAdapter:
 
         return np.asarray(encoded, dtype=np.float64), encoded_names
 
+    def _candidate_raw_names_for_encoded_profile(
+        self,
+        observation_names: Sequence[str],
+        encoded_name_set: set[str],
+    ) -> set[str]:
+        """Find raw names that can emit at least one kept encoded feature."""
+        candidates: set[str] = set()
+        for raw_name in observation_names:
+            name = str(raw_name)
+            possible_outputs = self._maddpg_v1_encoded_names([name])
+            if any(output_name in encoded_name_set for output_name in possible_outputs):
+                candidates.add(name)
+        return candidates
+
     def _maddpg_v1_encoded_names(self, observation_names: Sequence[str]) -> List[str]:
         names: List[str] = []
         emitted_time_of_day = False
@@ -747,8 +1660,13 @@ class EntityContractAdapter:
                 append(name)
                 if name.endswith("connected_ev_required_soc_departure"):
                     append(self._replace_last_feature(name, "connected_ev_soc_deficit"))
+                    append(self._replace_last_feature(name, "connected_ev_soc_surplus"))
+                    append(self._replace_last_feature(name, "connected_ev_soc_error_signed"))
+                    append(self._replace_last_feature(name, "max_charge_to_required_soc_action_normalized"))
                 if name.endswith("incoming_ev_required_soc_departure"):
                     append(self._replace_last_feature(name, "incoming_ev_soc_deficit"))
+                    append(self._replace_last_feature(name, "incoming_ev_soc_surplus"))
+                    append(self._replace_last_feature(name, "incoming_ev_soc_error_signed"))
                 continue
 
             if name.endswith("connected_ev_departure_time_step"):
@@ -791,6 +1709,20 @@ class EntityContractAdapter:
             append(name)
 
         return names
+
+    @classmethod
+    def _is_maddpg_profile_feature(cls, name: str, profile: str) -> bool:
+        if profile == "maddpg_v2_compact":
+            return cls._is_maddpg_v2_compact_feature(name)
+        if profile == "maddpg_v3_operational":
+            return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=True)
+        if profile == "maddpg_v3_realtime":
+            return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=False)
+        if profile == "cc_level1":
+            return cls._is_cc_level1_feature(name)
+        if profile == "cc_level2":
+            return cls._is_cc_level2_feature(name)
+        return True
 
     @classmethod
     def _is_maddpg_v2_compact_feature(cls, name: str) -> bool:
@@ -862,6 +1794,299 @@ class EntityContractAdapter:
             return cls._is_maddpg_v2_compact_deferrable_feature(feature)
 
         return True
+
+    @classmethod
+    def _is_maddpg_v3_operational_feature(
+        cls,
+        name: str,
+        *,
+        include_forecast_features: bool,
+    ) -> bool:
+        """Keep a compact operational observation set.
+
+        v3 keeps the v2 core plus simulator entity features that reduce
+        guesswork for controllers: feasible action capacity, EV/deferrable
+        deadline pressure, and last-action feedback. The realtime variant
+        drops simulator-derived perfect forecasts while preserving current
+        state, feasibility, and feedback features.
+        """
+
+        feature = cls._feature_tail_from_encoded_name(name)
+
+        if name.startswith("electric_vehicle_"):
+            return False
+
+        if name.startswith("district__"):
+            return cls._is_maddpg_v3_operational_district_feature(
+                feature,
+                include_forecast_features=include_forecast_features,
+            )
+
+        if name.startswith("storage::"):
+            return cls._is_maddpg_v3_operational_storage_feature(feature)
+
+        if name.startswith("charger::"):
+            return cls._is_maddpg_v3_operational_charger_feature(feature)
+
+        if name.startswith("deferrable_appliance::"):
+            return cls._is_maddpg_v3_operational_deferrable_feature(feature)
+
+        if feature.startswith("forecast_"):
+            return include_forecast_features
+
+        return cls._is_maddpg_v2_compact_feature(name)
+
+    @classmethod
+    def _is_maddpg_v3_operational_district_feature(
+        cls,
+        feature: str,
+        *,
+        include_forecast_features: bool,
+    ) -> bool:
+        if feature.startswith("forecast_"):
+            return include_forecast_features
+
+        if cls._is_maddpg_v2_compact_district_feature(feature):
+            return True
+
+        if "_energy_kwh_step" in feature:
+            return False
+
+        if feature.startswith("community_"):
+            return (
+                feature.endswith("_power_kw")
+                or feature.endswith("_headroom_kw")
+                or feature.endswith("_capacity_kw")
+                or feature.endswith("_available_power_kw")
+                or feature.endswith("_slack_kw")
+                or feature.endswith("_ratio")
+            )
+
+        return False
+
+    @classmethod
+    def _is_maddpg_v3_operational_storage_feature(cls, feature: str) -> bool:
+        if cls._is_maddpg_v2_compact_feature(f"storage::x::{feature}"):
+            return True
+
+        return feature in {
+            "can_charge",
+            "can_discharge",
+            "available_charge_power_kw",
+            "available_discharge_power_kw",
+            "available_charge_action_normalized",
+            "available_discharge_action_normalized",
+            "charge_headroom_ratio",
+            "discharge_available_ratio",
+            "usable_soc_ratio",
+            "last_requested_action_normalized",
+            "last_limited_action_normalized",
+            "last_requested_power_kw",
+            "last_limited_power_kw",
+            "last_applied_power_kw",
+            "last_projection_error_kw",
+            "applied_energy_prev_15m_kwh",
+            "applied_power_mean_prev_15m_kw",
+            "time_since_last_nonzero_action_hours",
+            "time_since_last_nonzero_action_hours_24h",
+            "clip_reason_availability",
+            "clip_reason_soc_min",
+            "clip_reason_soc_max",
+            "clip_reason_soc_limit",
+            "clip_reason_power_limit",
+            "clip_reason_headroom",
+            "clip_reason_building_headroom",
+            "clip_reason_phase_headroom",
+            "clip_reason_export_headroom",
+            "clip_reason_outage",
+            "clip_reason_offline",
+        }
+
+    @classmethod
+    def _is_maddpg_v3_operational_charger_feature(cls, feature: str) -> bool:
+        if cls._is_maddpg_v2_compact_charger_feature(feature):
+            return True
+
+        return feature in {
+            "hours_until_departure_24h",
+            "time_until_departure_ratio",
+            "connected_ev_soc_surplus",
+            "connected_ev_soc_error_signed",
+            "max_charge_to_required_soc_action_normalized",
+            "incoming_ev_soc_surplus",
+            "incoming_ev_soc_error_signed",
+            "can_charge",
+            "can_discharge",
+            "available_charge_power_kw",
+            "available_discharge_power_kw",
+            "available_charge_action_normalized",
+            "available_discharge_action_normalized",
+            "max_deliverable_energy_until_departure_kwh",
+            "departure_energy_margin_kwh",
+            "departure_feasibility_ratio",
+            "min_required_action_normalized",
+            "last_requested_action_normalized",
+            "last_limited_action_normalized",
+            "last_requested_power_kw",
+            "last_limited_power_kw",
+            "last_applied_power_kw",
+            "last_projection_error_kw",
+            "applied_energy_prev_15m_kwh",
+            "applied_power_mean_prev_15m_kw",
+            "time_since_last_nonzero_action_hours",
+            "time_since_last_nonzero_action_hours_24h",
+            "clip_reason_availability",
+            "clip_reason_no_ev",
+            "clip_reason_soc_min",
+            "clip_reason_soc_max",
+            "clip_reason_soc_limit",
+            "clip_reason_power_limit",
+            "clip_reason_headroom",
+            "clip_reason_building_headroom",
+            "clip_reason_phase_headroom",
+            "clip_reason_export_headroom",
+            "clip_reason_outage",
+            "clip_reason_deferrable_window",
+            "clip_reason_not_v2g",
+        }
+
+    @classmethod
+    def _is_maddpg_v3_operational_deferrable_feature(cls, feature: str) -> bool:
+        if cls._is_maddpg_v2_compact_deferrable_feature(feature):
+            return True
+
+        return feature in {
+            "must_start_now",
+            "remaining_duration_hours",
+            "cycle_remaining_fraction_ratio",
+            "hours_until_earliest_start_24h",
+            "start_window_width_hours",
+            "start_power_kw",
+            "start_energy_kwh_step",
+            "last_start_requested",
+            "last_start_applied",
+            "start_blocked",
+            "clip_reason_availability",
+            "clip_reason_power_limit",
+            "clip_reason_soc_limit",
+            "clip_reason_building_headroom",
+            "clip_reason_phase_headroom",
+            "clip_reason_export_headroom",
+            "clip_reason_outage",
+            "clip_reason_deferrable_window",
+            "clip_reason_not_pending",
+            "clip_reason_already_running",
+            "clip_reason_too_early",
+            "clip_reason_too_late",
+            "clip_reason_infeasible",
+        }
+
+    @classmethod
+    def _is_cc_level1_feature(cls, name: str) -> bool:
+        """Keep features relevant for community coordinator level 1.
+
+        CC Level 1 focuses on minimal community-level aggregations and
+        coordination signals: time, pricing, carbon, and community power/energy.
+        """
+        feature = cls._feature_tail_from_encoded_name(name)
+
+        # Filter out legacy EV aliases
+        if name.startswith("electric_vehicle_"):
+            return False
+
+        # Only keep specific district-level features
+        if name.startswith("district__"):
+            return cls._is_cc_level1_district_feature(feature)
+
+        # Filter out all other features (building-level, entity-specific, etc.)
+        return False
+
+    @classmethod
+    def _is_cc_level1_district_feature(cls, feature: str) -> bool:
+        """District-level features for community coordinator level 1.
+        
+        Minimal set: encoded time (cyclic), pricing, carbon, community power aggregations.
+        Pre-encodes temporal features so agent receives cyclic transformations.
+        """
+        # Keep encoded temporal features (NOT raw month/day_type/hour)
+        if feature in {
+            "month_sin",
+            "month_cos",
+            "day_type_sin",
+            "day_type_cos",
+            "is_weekend",
+            "time_of_day_sin",
+            "time_of_day_cos",
+        }:
+            return True
+
+        # Keep pricing signals
+        if feature in {
+            "electricity_pricing",
+            "electricity_pricing_predicted_1",
+            "electricity_pricing_predicted_2",
+            "electricity_pricing_predicted_3",
+        }:
+            return True
+
+        # Keep carbon intensity
+        if feature == "carbon_intensity":
+            return True
+
+        # Keep specific community power aggregations (NOT energy _kwh_step)
+        if feature in {
+            "community_net_power_kw",
+            "community_import_power_kw",
+            "community_export_power_kw",
+            "community_pv_power_kw",
+            "community_building_headroom_kw",
+        }:
+            return True
+
+        # Filter out everything else (including _energy_kwh_step variants)
+        return False
+
+    @classmethod
+    def _is_cc_level2_feature(cls, name: str) -> bool:
+        """Features for community coordinator level 2 (per-building price signals).
+
+        6 per-building features:
+          - storage::soc                           battery SoC [0, 1]
+          - pv::generation_power_kw                local PV output [0, 1]
+          - net_power_kw                           net consumption [-1, 1] (signed)
+          - charger::*::connected_state            EV connected {0, 1}
+          - charger::*::connected_ev_soc_deficit   max(required-soc, 0) [0, 1]
+          - charger::*::connected_ev_departure_urgency_24h  1-hours/24 [0, 1]
+
+        District features (16) are unchanged from cc_level1.
+        Buildings without chargers receive 0.0 for EV features.
+        """
+        feature = cls._feature_tail_from_encoded_name(name)
+
+        # Exclude legacy RBC charger aliases (electric_vehicle_* prefix).
+        if name.startswith("electric_vehicle_"):
+            return False
+
+        if name.startswith("district__"):
+            return cls._is_cc_level1_district_feature(feature)
+
+        if name.startswith("storage::"):
+            return feature == "soc"
+
+        if name.startswith("pv::"):
+            return feature == "generation_power_kw"
+
+        if feature == "net_power_kw":
+            return True
+
+        if name.startswith("charger::"):
+            return feature in {
+                "connected_state",
+                "connected_ev_soc_deficit",
+                "connected_ev_departure_urgency_24h",
+            }
+
+        return False
 
     @staticmethod
     def _feature_tail_from_encoded_name(name: str) -> str:
@@ -1105,11 +2330,19 @@ class EntityContractAdapter:
             "pending",
             "running",
             "can_start",
+            "can_charge",
+            "can_discharge",
             "deadline_missed",
             "must_run",
+            "must_start_now",
+            "start_blocked",
+            "last_start_requested",
+            "last_start_applied",
             "is_flexible",
         )
         if any(token in name for token in binary_tokens):
+            return True
+        if "clip_reason_" in name:
             return True
         if name.endswith("_available"):
             return True
@@ -1311,6 +2544,39 @@ class EntityContractAdapter:
 
         return self._positive_by_high(value, high, fallback=100.0)
 
+    def _ev_charge_to_required_action(
+        self,
+        *,
+        required_soc: float,
+        current_soc: float,
+        capacity_kwh: float,
+        energy_to_required_kwh: float,
+        charge_power_kw: float,
+        efficiency: float,
+    ) -> float:
+        required = self._soc_fraction(required_soc)
+        current = self._soc_fraction(current_soc)
+        deficit_fraction = max(required - current, 0.0)
+        if deficit_fraction <= 0.0:
+            return 0.0
+
+        capacity = self._safe_scalar(capacity_kwh, 0.0)
+        energy = self._safe_scalar(energy_to_required_kwh, 0.0)
+        if energy <= 0.0 and capacity > 0.0:
+            energy = deficit_fraction * capacity
+        if energy <= 0.0:
+            return float(np.clip(deficit_fraction, 0.0, 1.0))
+
+        power = self._safe_scalar(charge_power_kw, 0.0)
+        eff = self._safe_scalar(efficiency, 1.0)
+        if eff <= 0.0:
+            eff = 1.0
+        deliverable_this_step = power * eff * self.seconds_per_time_step / 3600.0
+        if deliverable_this_step <= 1.0e-6:
+            return float(np.clip(deficit_fraction, 0.0, 1.0))
+
+        return float(np.clip(energy / deliverable_this_step, 0.0, 1.0))
+
     @staticmethod
     def _signed_by_bounds(value: float, low: float, high: float) -> float:
         finite_bounds = np.isfinite(low) and np.isfinite(high) and max(abs(low), abs(high)) < 1.0e5
@@ -1372,8 +2638,9 @@ class EntityContractAdapter:
                 candidates.append(suffix)
 
         allowed = set(int(row) for row in allowed_rows)
+        row_by_id = self._charger_action_row_by_id or self._charger_row_by_id
         for charger_id in candidates:
-            row = self._charger_row_by_id.get(charger_id)
+            row = row_by_id.get(charger_id)
             if row is None:
                 continue
             if allowed and row not in allowed:
@@ -1455,8 +2722,9 @@ class EntityContractAdapter:
                 candidates.append(suffix)
 
         allowed = set(int(row) for row in allowed_rows)
+        row_by_id = self._deferrable_action_row_by_id or self._deferrable_row_by_id
         for appliance_id in candidates:
-            row = self._deferrable_row_by_id.get(appliance_id)
+            row = row_by_id.get(appliance_id)
             if row is None:
                 continue
             if allowed and row not in allowed:
@@ -1523,85 +2791,54 @@ class EntityContractAdapter:
 
         return None, None
 
-    def to_entity_actions(
+    def _entity_action_cache_key(self, action_names: Sequence[Sequence[str]]) -> Tuple[Any, ...]:
+        return (
+            tuple(self._building_action_ids),
+            tuple(self._charger_action_ids),
+            tuple(self._deferrable_action_ids),
+            tuple(self._building_action_features),
+            tuple(self._charger_action_features),
+            tuple(self._deferrable_action_features),
+            tuple(tuple(str(name) for name in names) for names in action_names),
+        )
+
+    def _build_entity_action_routes(
         self,
-        actions: Sequence[Sequence[float]],
         action_names: Sequence[Sequence[str]],
-    ) -> Mapping[str, Any]:
-        specs = self.env.entity_specs
-        action_specs = specs.get("actions", {})
-        building_ids = list(action_specs.get("building", {}).get("ids", []))
-        charger_ids = list(action_specs.get("charger", {}).get("ids", []))
-        deferrable_ids = list(action_specs.get("deferrable_appliance", {}).get("ids", []))
+    ) -> List[List[Tuple[int, str, int, int]]]:
+        charger_rows_by_building = self._charger_rows_by_building(self._charger_action_ids)
+        deferrable_rows_by_building = self._entity_rows_by_building(self._deferrable_action_ids)
 
-        self._building_action_features = list(action_specs.get("building", {}).get("features", []))
-        self._charger_action_features = list(action_specs.get("charger", {}).get("features", []))
-        self._deferrable_action_features = list(action_specs.get("deferrable_appliance", {}).get("features", []))
-        self._building_action_col_by_name = {
-            name: idx for idx, name in enumerate(self._building_action_features)
-        }
-        self._charger_action_col_by_name = {
-            name: idx for idx, name in enumerate(self._charger_action_features)
-        }
-        self._deferrable_action_col_by_name = {
-            name: idx for idx, name in enumerate(self._deferrable_action_features)
-        }
-        self._charger_row_by_id = {entity_id: row for row, entity_id in enumerate(charger_ids)}
-        self._deferrable_row_by_id = {entity_id: row for row, entity_id in enumerate(deferrable_ids)}
-        charger_rows_by_building = self._charger_rows_by_building(charger_ids)
-        deferrable_rows_by_building = self._entity_rows_by_building(deferrable_ids)
-
-        building_table = np.zeros(
-            (len(building_ids), len(self._building_action_features)),
-            dtype=np.float32,
-        )
-        charger_table = np.zeros(
-            (len(charger_ids), len(self._charger_action_features)),
-            dtype=np.float32,
-        )
-        deferrable_table = np.zeros(
-            (len(deferrable_ids), len(self._deferrable_action_features)),
-            dtype=np.float32,
-        )
-
-        for building_index, building_actions in enumerate(actions):
-            if building_index >= len(action_names) or building_index >= len(building_ids):
+        routes_by_building: List[List[Tuple[int, str, int, int]]] = []
+        for building_index, names in enumerate(action_names):
+            building_routes: List[Tuple[int, str, int, int]] = []
+            if building_index >= len(self._building_action_ids):
+                routes_by_building.append(building_routes)
                 continue
 
-            names = action_names[building_index]
-            building_name = building_ids[building_index]
+            building_name = self._building_action_ids[building_index]
             building_charger_rows = charger_rows_by_building.get(building_name, [])
             building_deferrable_rows = deferrable_rows_by_building.get(building_name, [])
 
             for position, action_name in enumerate(names):
-                value = 0.0
-                if position < len(building_actions):
-                    value = self._safe_scalar(building_actions[position], 0.0)
-
-                if action_name in self._building_action_col_by_name:
-                    col = self._building_action_col_by_name[action_name]
-                    building_table[building_index, col] = value
+                action_name_text = str(action_name)
+                if action_name_text in self._building_action_col_by_name:
+                    col = self._building_action_col_by_name[action_name_text]
+                    building_routes.append((position, "building", building_index, col))
                     continue
 
                 charger_row, charger_feature = self._resolve_charger_action_target(
-                    action_name=str(action_name),
+                    action_name=action_name_text,
                     building_name=building_name,
                     building_charger_rows=building_charger_rows,
                 )
                 if charger_row is None or charger_feature is None:
                     continue
-
                 charger_col = self._charger_action_col_by_name.get(charger_feature)
-                if charger_col is None:
-                    continue
-                charger_table[charger_row, charger_col] = value
-                continue
+                if charger_col is not None:
+                    building_routes.append((position, "charger", charger_row, charger_col))
 
             for position, action_name in enumerate(names):
-                value = 0.0
-                if position < len(building_actions):
-                    value = self._safe_scalar(building_actions[position], 0.0)
-
                 deferrable_row, deferrable_feature = self._resolve_deferrable_action_target(
                     action_name=str(action_name),
                     building_name=building_name,
@@ -1609,11 +2846,79 @@ class EntityContractAdapter:
                 )
                 if deferrable_row is None or deferrable_feature is None:
                     continue
-
                 deferrable_col = self._deferrable_action_col_by_name.get(deferrable_feature)
-                if deferrable_col is None:
-                    continue
-                deferrable_table[deferrable_row, deferrable_col] = value
+                if deferrable_col is not None:
+                    building_routes.append((position, "deferrable_appliance", deferrable_row, deferrable_col))
+
+            routes_by_building.append(building_routes)
+
+        return routes_by_building
+
+    def to_entity_actions(
+        self,
+        actions: Sequence[Sequence[float]],
+        action_names: Sequence[Sequence[str]],
+    ) -> Mapping[str, Any]:
+        if not self._building_action_ids and hasattr(self.env, "entity_specs"):
+            action_specs = self.env.entity_specs.get("actions", {})
+            self._building_action_features = list(action_specs.get("building", {}).get("features", []))
+            self._charger_action_features = list(action_specs.get("charger", {}).get("features", []))
+            self._deferrable_action_features = list(
+                action_specs.get("deferrable_appliance", {}).get("features", [])
+            )
+            self._building_action_ids = list(action_specs.get("building", {}).get("ids", []))
+            self._charger_action_ids = list(action_specs.get("charger", {}).get("ids", []))
+            self._deferrable_action_ids = list(action_specs.get("deferrable_appliance", {}).get("ids", []))
+            self._building_action_col_by_name = {
+                name: idx for idx, name in enumerate(self._building_action_features)
+            }
+            self._charger_action_col_by_name = {
+                name: idx for idx, name in enumerate(self._charger_action_features)
+            }
+            self._deferrable_action_col_by_name = {
+                name: idx for idx, name in enumerate(self._deferrable_action_features)
+            }
+            self._charger_action_row_by_id = {
+                entity_id: row for row, entity_id in enumerate(self._charger_action_ids)
+            }
+            self._deferrable_action_row_by_id = {
+                entity_id: row for row, entity_id in enumerate(self._deferrable_action_ids)
+            }
+
+        building_table = np.zeros(
+            (len(self._building_action_ids), len(self._building_action_features)),
+            dtype=np.float32,
+        )
+        charger_table = np.zeros(
+            (len(self._charger_action_ids), len(self._charger_action_features)),
+            dtype=np.float32,
+        )
+        deferrable_table = np.zeros(
+            (len(self._deferrable_action_ids), len(self._deferrable_action_features)),
+            dtype=np.float32,
+        )
+
+        cache_key = self._entity_action_cache_key(action_names)
+        if self._entity_action_layout_cache_key != cache_key:
+            self._entity_action_routes = self._build_entity_action_routes(action_names)
+            self._entity_action_layout_cache_key = cache_key
+
+        for building_index, building_actions in enumerate(actions):
+            if building_index >= len(self._entity_action_routes):
+                continue
+
+            action_values = np.asarray(building_actions, dtype=np.float32).reshape(-1)
+            if action_values.size > 0:
+                action_values = np.nan_to_num(action_values, nan=0.0, posinf=0.0, neginf=0.0)
+
+            for position, table_name, row, col in self._entity_action_routes[building_index]:
+                value = float(action_values[position]) if position < action_values.shape[0] else 0.0
+                if table_name == "building":
+                    building_table[row, col] = value
+                elif table_name == "charger":
+                    charger_table[row, col] = value
+                elif table_name == "deferrable_appliance":
+                    deferrable_table[row, col] = value
 
         return {
             "tables": {

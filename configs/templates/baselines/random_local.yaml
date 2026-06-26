@@ -43,14 +43,18 @@ simulator:
   export:
     mode: end
     export_kpis_on_episode_end: true
+    final_episode_only: true
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: true
+    kpi_round_decimals: null
     session_name: "random-15s-local"
 
 training:
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
-
-algorithm:
-  name: "RandomPolicy"
+pipeline:
+- algorithm: RandomPolicy
+  count: 1
   hyperparameters:
     seed: 123
