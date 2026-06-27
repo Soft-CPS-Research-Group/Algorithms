@@ -1,9 +1,7 @@
-"""WP06 — End-to-end smoke for AgentTransformerPPO on the assets-only dynamic demo.
+""" — End-to-end smoke for AgentTransformerPPO on the assets-only dynamic demo.
 
-Spec §16.7. Drives the unmodified ``run_experiment(...)`` entrypoint on a
-downsized horizon and asserts every row of §16.7.
-
-Marked ``slow``; auto-skips when the demo dataset is not bundled.
+Drives the unmodified ``run_experiment(...)`` entrypoint on a
+downsized horizon and asserts every row of Marked ``slow``; auto-skips when the demo dataset is not bundled.
 
 Wall-clock on an 8-core M-series CPU: ~2-5 minutes (depends on building
 count; the assets-only demo ships 18 buildings).
@@ -80,7 +78,7 @@ def smoke_run(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Spec §16.7 row 1
+# row 1
 # ---------------------------------------------------------------------------
 
 
@@ -91,7 +89,7 @@ def test_smoke_run_completes(smoke_run: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Spec §16.7 row 2
+# row 2
 # ---------------------------------------------------------------------------
 
 
@@ -136,7 +134,7 @@ def test_actions_in_valid_range(smoke_run: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Spec §16.7 row 3
+# row 3
 # ---------------------------------------------------------------------------
 
 
@@ -168,7 +166,7 @@ def test_topology_changes_observed_during_run(smoke_run: dict[str, Any]) -> None
 
 
 # ---------------------------------------------------------------------------
-# Spec §16.7 row 4
+# row 4
 # ---------------------------------------------------------------------------
 
 
@@ -186,14 +184,14 @@ def test_kpi_files_generated(smoke_run: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Spec §16.7 row 5 — manifest contract (§14.2 + §14.1)
+# row 5 — manifest contract (+ )
 # ---------------------------------------------------------------------------
 
 
 def test_artifact_manifest_includes_onnx_per_building(
     smoke_run: dict[str, Any],
 ) -> None:
-    """Spec §14.1 + §14.2: per-building ONNX with filename
+    """per-building ONNX with filename
     ``agent_<b>__topology_v<v>.onnx``; one entry per agent; bundle
     validator accepts the manifest."""
     job_dir: Path = smoke_run["job_dir"]
@@ -239,7 +237,7 @@ def test_artifact_manifest_includes_onnx_per_building(
 
 
 # ---------------------------------------------------------------------------
-# Spec §16.7 row 6
+# row 6
 # ---------------------------------------------------------------------------
 
 
@@ -249,7 +247,7 @@ def test_buffer_flush_on_topology_change_does_not_crash(
     """If we got here the smoke completed end-to-end past the step-1300
     mutation. Combined with the ``topology_version >= 1`` assertion above
     this proves the post-mutation update path
-    (PPO step → buffer flush → layout rebuild → §13.4 re-validation) ran
+    (PPO step → buffer flush → layout rebuild → re-validation) ran
     without crashing."""
     manifest = smoke_run["manifest"]
     assert manifest is not None

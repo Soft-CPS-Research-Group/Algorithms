@@ -1,14 +1,8 @@
-"""Test fixture: synthesize per-building observation names from the bundled
-entity payload sample without requiring a CityLearn env.
+"""Synthesize per-building observation names from the bundled entity payload
+sample without requiring a CityLearn env.
 
-Mirrors the emission ordering in ``utils/entity_adapter.py:213-329`` for the
-first building (``Building_1``) of
-``datasets/tmp_entity_obs_full_step2200_named.json``. This intentionally
-duplicates a small portion of adapter logic so the WP03 layout-builder tests
-do not depend on the adapter being instantiable in a unit-test environment
-(the real adapter requires a CityLearn ``env`` instance and 2D numpy table
-payloads, while the on-disk sample stores tables as
-``{"features": [...], "rows": [...]}``).
+Mirrors the emission ordering in ``utils/entity_adapter.py`` for the first
+building (``Building_1``) of the bundled tokenizer fixture.
 """
 from __future__ import annotations
 
@@ -17,7 +11,7 @@ from pathlib import Path
 from typing import List
 
 
-_SAMPLE_PATH = Path("datasets/tmp_entity_obs_full_step2200_named.json")
+_SAMPLE_PATH = Path("configs/tokenizers/fixtures/entity_obs_sample.json")
 
 
 def _table_features(payload: dict, table: str) -> list[str]:

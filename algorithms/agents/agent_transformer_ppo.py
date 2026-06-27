@@ -1,25 +1,23 @@
 """AgentTransformerPPO — per-building Transformer + PPO over the entity interface.
 
-Spec ``docs/specv2.md`` §11, §12, §14.
-
 Architecture (one stack per building, indexed by ``building_idx``):
     encoded_obs ─► EntityObservationTokenizer ─► (sros, nfc, cas)
                                             └─► TransformerBackbone ─► (ca_emb, pooled)
                                                                     └─► ActorHead  ─► action
                                                                     └─► CriticHead ─► V(s)
 
-Topology mutation (spec §12.2): the wrapper's ``_apply_entity_layout`` calls
+Topology mutation: the wrapper's ``_apply_entity_layout`` calls
 ``attach_environment(...)`` after every reset/step that increments the
-topology version. Our ``attach_environment`` is idempotent: it caches the
-``(observation_names, action_names)`` tuple per building and detects "this
-is a topology change" by comparing those tuples. On detection it
+topology version. ``attach_environment`` is idempotent: it caches the
+``(observation_names, action_names)`` tuple per building and detects a
+topology change by comparing those tuples. On detection it
 (1) flushes the in-flight rollout buffer with a final PPO step,
 (2) rebuilds the layout via the cached ``EntityTokenLayoutBuilder``,
-(3) re-runs the §13.4 hard-fail rules against the new names,
+(3) re-runs the hard-fail tokenizer rules against the new names,
 (4) rejects feature-count drift on existing types (would invalidate weights).
 
-Checkpoint resume across topology changes is explicitly out of scope
-(spec §14.3) — ``load_checkpoint`` rejects on ``layout_signature`` mismatch.
+Checkpoint resume across topology changes is out of scope —
+``load_checkpoint`` rejects on ``layout_signature`` mismatch.
 """
 
 from __future__ import annotations
@@ -96,8 +94,6 @@ def _atanh_safe(x: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
 class AgentTransformerPPO(BaseAgent):
     """Per-building Transformer + PPO."""
 
-    # Spec §12.4 + §11.4: this agent rebuilds its per-building stack on
-    # topology change, so it advertises capability.
     supports_dynamic_topology: ClassVar[bool] = True
 
     def __init__(self, config: Dict[str, Any]) -> None:
@@ -139,7 +135,7 @@ class AgentTransformerPPO(BaseAgent):
         self._per_building: List[_PerBuildingState] = []
 
         # Tracks whether ``attach_environment`` has ever been called. The
-        # very first call is *not* a topology change (spec §12.1).
+        # very first call is not a topology change.
         self._first_attach_done = False
 
     # ==========================================================================
@@ -198,8 +194,8 @@ class AgentTransformerPPO(BaseAgent):
             ):
                 # No change for this building.
                 continue
-            # Spec §12.2: stash new names atomically, then run the topology
-            # transition (flush PPO → rebuild layout → re-validate rules).
+            # Stash new names then run the topology transition
+            # (flush PPO → rebuild layout → re-validate rules).
             state.obs_names_tuple = new_obs
             state.action_names_tuple = new_act
             state.entity_specs_signature = self._signature(metadata)
@@ -289,9 +285,9 @@ class AgentTransformerPPO(BaseAgent):
     ) -> Dict[str, Any]:
         """Write per-building ONNX artefacts + return manifest metadata.
 
-        Spec §14.1: filename pattern ``agent_<b>__topology_v<v>.onnx``;
-        per-building entry includes ``agent_index``, ``path``, ``format``,
-        and a ``config`` block carrying the layout summary needed by the
+        Filename pattern: ``agent_<b>__topology_v<v>.onnx``. Per-building
+        entry includes ``agent_index``, ``path``, ``format``, and a
+        ``config`` block carrying the layout summary needed by the
         deployment side."""
         out = Path(output_dir)
         models_dir = out / "onnx_models"
@@ -395,7 +391,7 @@ class AgentTransformerPPO(BaseAgent):
             raise ValueError(
                 f"Checkpoint has {len(agents)} per-building entries; current "
                 f"agent has {len(self._per_building)}. Cross-cardinality "
-                "resume is not supported (spec §14.3)."
+                "resume is not supported."
             )
         for state, saved in zip(self._per_building, agents):
             sig_now = tuple(sorted(state.obs_names_tuple))
@@ -404,7 +400,7 @@ class AgentTransformerPPO(BaseAgent):
                 raise ValueError(
                     "Checkpoint layout_signature mismatch for building "
                     f"{state.building_id!r}: cannot resume across topology "
-                    "changes (spec §14.3)."
+                    "changes."
                 )
             state.tokenizer.load_state_dict(saved["tokenizer_state"])
             state.backbone.load_state_dict(saved["backbone_state"])
@@ -451,7 +447,7 @@ class AgentTransformerPPO(BaseAgent):
         layout = self._layout_builder.build(
             building_id, observation_names, action_names
         )
-        # Spec §10.1 post-condition: CA order matches simulator action order.
+        # post-condition: CA order matches simulator action order.
         # Match is exact OR ``action_field`` is a prefix of the simulator
         # action name (CityLearn appends a charger-id suffix when multiple
         # CAs of the same type are present, e.g.
@@ -504,7 +500,7 @@ class AgentTransformerPPO(BaseAgent):
         )
 
     def _handle_topology_change(self, building_idx: int) -> None:
-        """Spec §12.2: flush PPO → rebuild layout → re-validate rules."""
+        """Flush PPO → rebuild layout → re-validate rules."""
         state = self._per_building[building_idx]
 
         old_n_ca = state.layout.n_ca
@@ -533,7 +529,7 @@ class AgentTransformerPPO(BaseAgent):
             list(state.action_names_tuple),
         )
 
-        # 3. Re-run the §13.4 hard-fail rules against a synthetic single-table
+        # 3. Re-run the hard-fail rules against a synthetic single-table
         #    sample reconstructed from the current observation_names.
         synthetic_sample = _synthetic_sample_from_obs_names(
             list(state.obs_names_tuple)
@@ -574,7 +570,7 @@ class AgentTransformerPPO(BaseAgent):
                 )
 
         # 5. Replace the layout. Per-building NN weights and optimizer state
-        #    are preserved (spec §11.4 — per-type weight sharing).
+        #    are preserved (per-type weight sharing).
         state.layout = new_layout
         state.topology_version += 1
 
@@ -592,7 +588,7 @@ class AgentTransformerPPO(BaseAgent):
             list(new_layout.ca_action_names),
         )
 
-        # 6. Spec §10.1 post-condition. Mirror the startup-side prefix
+        # 6. post-condition. Mirror the startup-side prefix
         #    tolerance from :meth:`_build_one_per_building_state`: CityLearn
         #    suffixes ``electric_vehicle_storage_<charger_id>`` when there
         #    are multiple chargers, so we accept exact match OR
@@ -617,7 +613,7 @@ class AgentTransformerPPO(BaseAgent):
     def _compute_type_input_dims(
         self, layout: BuildingTokenLayout
     ) -> Dict[str, int]:
-        """Spec §8.5: per-type input dim derived from segment widths.
+        """Per-type input dim derived from segment widths.
 
         NFC is hard-coded to 1. Declared types absent from the layout get a
         placeholder dim equal to their declared ``input_dim_fallback`` so
@@ -913,20 +909,17 @@ def _synthetic_sample_from_obs_names(
     observation_names: List[str],
 ) -> EntityPayloadSample:
     """Reconstruct an ``EntityPayloadSample`` (per-table feature lists) from
-    the agent-level observation_names. The validator only needs to know
-    which features exist per table — not their values — so this is enough
-    to re-run the §13.4 rules at runtime after a topology change.
+    the agent-level observation_names, so the validator can re-run its rules
+    at runtime after a topology change without needing the env.
 
-    Naming is mirrored from ``utils/entity_adapter.py:213-329``:
+    Naming mirrors ``utils/entity_adapter.py``:
 
-    - ``district__<feat>``  → ``district`` table feature ``<feat>``
-    - ``storage::<id>::<feat>``  → ``storage`` table feature ``<feat>``
-    - ``pv::<id>::<feat>``  → ``pv``
-    - ``charger::<id>::<feat>``  → ``charger``  (excluding the EV nested
-      forms; those go to the ``ev`` table)
-    - ``charger::<id>::connected_ev::<feat>``  / ``::incoming_ev::<feat>``
-      → ``ev``
-    - everything else (no ``::`` and no ``district__``)  → ``building``
+    - ``district__<feat>``                         → ``district`` (prefix kept)
+    - ``storage::<id>::<feat>``                    → ``storage``
+    - ``pv::<id>::<feat>``                         → ``pv``
+    - ``charger::<id>::<feat>``                    → ``charger``
+    - ``charger::<id>::(connected_ev|incoming_ev)::<feat>`` → ``ev``
+    - everything else (no ``::`` and no ``district__``) → ``building``
     """
     by_table: Dict[str, set[str]] = {
         "district": set(),
@@ -938,30 +931,20 @@ def _synthetic_sample_from_obs_names(
     }
     for name in observation_names:
         if name.startswith("district__"):
-            # Validator's per-table feature lists for the ``district`` table
-            # are emitted with the ``district__`` prefix preserved (see
-            # ``utils/entity_tokenizer_schema.py:_load_default_payload_sample``
-            # — it applies the ``table_prefix`` map). Mirror that here so
-            # the §13.4 SRO ``feature_patterns`` matchers (which expect
-            # full prefixed names) line up.
             by_table["district"].add(name)
             continue
         if "::" in name:
             head, *rest = name.split("::")
             if head not in {"storage", "pv", "charger"}:
-                # Unknown prefix — silently skip (validator covers misses).
                 continue
             if head == "charger" and len(rest) >= 3 and rest[1] in {
                 "connected_ev",
                 "incoming_ev",
             }:
-                # charger::<id>::(connected_ev|incoming_ev)::<feat>
                 by_table["ev"].add(rest[2])
             else:
-                # <head>::<id>::<feat>
                 by_table[head].add(rest[1] if len(rest) >= 2 else rest[0])
             continue
-        # plain top-level: building feature
         by_table["building"].add(name)
     return EntityPayloadSample(
         feature_names_per_table={k: sorted(v) for k, v in by_table.items()}

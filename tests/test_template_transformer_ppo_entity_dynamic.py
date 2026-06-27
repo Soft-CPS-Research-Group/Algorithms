@@ -1,4 +1,4 @@
-"""WP06 — Schema/registry sanity tests for the transformer-PPO entity-dynamic template."""
+"""Schema/registry sanity tests for the transformer-PPO entity-dynamic template."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -33,7 +33,7 @@ def test_template_resolves_to_registered_agent() -> None:
 
 
 def test_template_tokenizer_path_validates_against_bundled_sample() -> None:
-    """Tokenizer JSON pointed to by the template MUST pass §13.4 5-rule
+    """Tokenizer JSON pointed to by the template MUST pass the 5-rule
     validation against the bundled sample payload + per-building action_field
     declarations declared by the simulator."""
     from utils.entity_tokenizer_schema import (

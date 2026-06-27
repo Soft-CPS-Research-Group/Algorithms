@@ -1,4 +1,4 @@
-"""Tests for ``EntityTokenLayoutBuilder``. Covers spec §16.1 (22 rows).
+"""Tests for ``EntityTokenLayoutBuilder``.
 
 Single-fixture style: most tests share a builder + Building_1 layout built
 from the bundled sample payload. Failure-mode tests build their own.
@@ -107,7 +107,7 @@ def test_uses_real_sample_payload(builder_and_obs):
 
 
 # ---------------------------------------------------------------------------
-# §16.1 rows 1-9 — classification
+# ---
 # ---------------------------------------------------------------------------
 
 
@@ -219,7 +219,7 @@ def test_classifies_charger_prefix_to_ca(builder_and_obs):
 
 
 # ---------------------------------------------------------------------------
-# §16.1 rows 10-11 — NFC
+# ---
 # ---------------------------------------------------------------------------
 
 
@@ -246,7 +246,7 @@ def test_nfc_source_features_not_in_any_sro_group(builder_and_obs):
 
 
 # ---------------------------------------------------------------------------
-# §16.1 row 12 — excluded
+# ---
 # ---------------------------------------------------------------------------
 
 
@@ -258,7 +258,7 @@ def test_excluded_features_dropped_before_classification(builder_and_obs):
 
 
 # ---------------------------------------------------------------------------
-# §16.1 rows 13-14 — failure modes
+# ---
 # ---------------------------------------------------------------------------
 
 
@@ -323,7 +323,7 @@ def test_ca_count_mismatch_raises(cfg):
 
 
 # ---------------------------------------------------------------------------
-# §16.1 rows 15-17 — ordering
+# ---
 # ---------------------------------------------------------------------------
 
 
@@ -389,7 +389,7 @@ def test_segment_overall_order(builder_and_obs):
 
 
 # ---------------------------------------------------------------------------
-# §16.1 rows 18-20 — caching / topology_changed
+# ---
 # ---------------------------------------------------------------------------
 
 
@@ -429,14 +429,14 @@ def test_layout_is_cached(builder_and_obs):
 
 
 # ---------------------------------------------------------------------------
-# §16.1 rows 21-22 — portability + coverage accounting
+# ---
 # ---------------------------------------------------------------------------
 
 
 def test_no_external_imports():
-    """``algorithms/utils/entity_token_layout.py`` must be portable
-    (spec §7.4): only stdlib + typing + re. No torch / numpy / pydantic /
-    algorithms.* / utils.* imports at any depth."""
+    """``algorithms/utils/entity_token_layout.py`` must be portable: only
+    stdlib + typing + re. No torch / numpy / pydantic / algorithms.* /
+    utils.* imports at any depth."""
     src = Path("algorithms/utils/entity_token_layout.py").read_text()
     tree = ast.parse(src)
     forbidden = ("torch", "numpy", "pydantic", "algorithms.", "utils.")
@@ -454,8 +454,7 @@ def test_no_external_imports():
 
 
 def test_coverage_accounting_matches_spec(builder_and_obs):
-    """Per spec §13.1 expected feature counts per singleton SRO type for
-    one building."""
+    """Expected feature counts per singleton SRO type for one building."""
     _, _, layout = builder_and_obs
     counts: dict[str, int] = {}
     for s in layout.segments:

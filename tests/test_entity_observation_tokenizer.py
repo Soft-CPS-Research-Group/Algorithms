@@ -1,4 +1,4 @@
-"""Tests for ``EntityObservationTokenizer``. Covers spec §16.2 + integration."""
+"""Tests for ``EntityObservationTokenizer``."""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def _type_input_dims_for_layout(cfg, layout) -> dict[str, int]:
 
 
 # --------------------------------------------------------------------------
-# §16.2 row 1: forward shape baseline
+# ---
 # --------------------------------------------------------------------------
 
 
@@ -103,7 +103,7 @@ def test_forward_shapes_baseline(cfg, layout, sentinel_obs) -> None:
 
 
 # --------------------------------------------------------------------------
-# §16.2 row 2: NFC scalar reduction = lhs - rhs
+# ---
 # --------------------------------------------------------------------------
 
 
@@ -154,7 +154,7 @@ def test_nfc_projection_input_dim_is_one(cfg, layout) -> None:
 
 
 # --------------------------------------------------------------------------
-# §16.2 row 3: zero new params on topology grow
+# ---
 # --------------------------------------------------------------------------
 
 
@@ -162,8 +162,7 @@ def test_projection_is_per_type_no_new_params_on_topology_grow(
     cfg, layout
 ) -> None:
     """Adding a second charger (or any extra CA of an existing type) must
-    NOT add new projection parameters — that is the whole point of per-type
-    weight sharing in spec §8.4."""
+    NOT add new projection parameters — per-type weight sharing."""
     from algorithms.utils.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
@@ -217,7 +216,7 @@ def test_projection_is_per_type_no_new_params_on_topology_grow(
 
 
 # --------------------------------------------------------------------------
-# §16.2 row 4: non-contiguous slicing via index_select
+# ---
 # --------------------------------------------------------------------------
 
 
@@ -270,7 +269,7 @@ def test_index_select_handles_non_contiguous_sro_segment(
 
 
 # --------------------------------------------------------------------------
-# §16.2 row 5: construction validation (NFC dim + missing types)
+# ---
 # --------------------------------------------------------------------------
 
 
@@ -299,7 +298,7 @@ def test_construction_rejects_missing_type(cfg, layout) -> None:
 
 
 # --------------------------------------------------------------------------
-# §16.2 row 6: dtype + device propagation
+# ---
 # --------------------------------------------------------------------------
 
 
@@ -323,7 +322,7 @@ def test_dtype_and_device_propagation(cfg, layout, sentinel_obs) -> None:
 
 
 # --------------------------------------------------------------------------
-# §16.2 row 7: rejects non-2D input
+# ---
 # --------------------------------------------------------------------------
 
 
@@ -342,7 +341,7 @@ def test_forward_rejects_non_2d_input(cfg, layout) -> None:
 
 
 # --------------------------------------------------------------------------
-# §16.2 row 8: gradient flows through projections
+# ---
 # --------------------------------------------------------------------------
 
 

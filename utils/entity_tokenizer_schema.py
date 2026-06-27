@@ -1,11 +1,8 @@
 """Pydantic models, loader, and validation rules for the entity tokenizer config.
 
-See ``docs/specv2.md`` §13.1 (catalog), §13.4 (5 hard-fail rules), §13.5 (model
-surface area).
-
-This module is pure-Python (no torch). It is consumed at config-validation time
-by :func:`utils.config_schema.validate_config` and re-used at runtime by the
-v2 agent (WP05) when the wrapper notifies a topology change.
+Pure-Python (no torch). Consumed at config-validation time by
+:func:`utils.config_schema.validate_config` and re-used at runtime by
+``AgentTransformerPPO`` when the wrapper notifies a topology change.
 """
 from __future__ import annotations
 
@@ -75,7 +72,7 @@ class _ValidationFlags(_Strict):
 
 
 class EntityTokenizerConfig(_Strict):
-    """Top-level entity tokenizer configuration (see spec §13.5)."""
+    """Top-level entity tokenizer configuration."""
 
     type_embeddings: Dict[str, int]
     excluded_features: ExcludedFeaturesConfig
@@ -169,7 +166,7 @@ def _load_default_sample() -> EntityPayloadSample:
 
 
 # ---------------------------------------------------------------------------
-# Five hard-fail validation rules (spec §13.4)
+# Five hard-fail validation rules
 # ---------------------------------------------------------------------------
 
 
@@ -332,15 +329,9 @@ def _validate_rule_5_action_field_coverage(
     expected (e.g. assets-only datasets where some buildings have no
     charger), so we enforce coverage at the *dataset* level rather than the
     per-building level. The per-building post-condition is enforced by
-    `EntityTokenLayoutBuilder` via the count match
+    ``EntityTokenLayoutBuilder`` via the count match
     (``len(ca_segments) == len(action_names)``); a building that lacks a
     given CA simply has no segment for that type.
-
-    Diverges from the literal ``docs/specv2.md`` §13.4 r5 wording ("for
-    every building") because real datasets (e.g. the bundled
-    ``citylearn_three_phase_dynamic_assets_only_demo``) intentionally have
-    asset-free buildings, and the simulator (softcpsrecsimulator >= 0.5.0)
-    correctly omits the corresponding actions.
     """
     required = {ca.action_field for ca in cfg.ca_types.values()}
     declared = {n for names in action_names_per_building for n in names}

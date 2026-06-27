@@ -1,7 +1,4 @@
-"""Tests for entity tokenizer JSON schema and the 5 hard-fail validation rules.
-
-Covers spec §13.4 (rules 1-5) and §16.6.
-"""
+"""Tests for entity tokenizer JSON schema and the 5 hard-fail validation rules."""
 from __future__ import annotations
 
 import json
@@ -12,7 +9,7 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Pydantic schema (Task 3 + Task 4 of the WP02 plan)
+# Pydantic schema
 # ---------------------------------------------------------------------------
 
 
@@ -58,7 +55,7 @@ def test_default_payload_sample_loads_from_repo():
     from utils.entity_tokenizer_schema import _load_default_sample
 
     sample = _load_default_sample()
-    # Per spec §13.1 coverage: district has 46 features, building has 38.
+    # Expected coverage: district has 46 features, building has 38.
     assert len(sample.feature_names_per_table["district"]) == 46
     assert len(sample.feature_names_per_table["building"]) == 38
     assert "district__hour" in sample.feature_names_per_table["district"]
@@ -266,7 +263,7 @@ def test_rule5_default_passes():
 
 
 # ---------------------------------------------------------------------------
-# Excluded patterns matcher (auxiliary; full §16.6 row in WP03)
+# Excluded patterns matcher
 # ---------------------------------------------------------------------------
 
 
@@ -288,8 +285,7 @@ def test_excluded_pattern_matches_topology_version():
 
 
 def test_excluded_feature_pattern_removes_topology_version():
-    """Builder-level corollary of the WP02 exclusion regex (deferred to WP03
-    because it requires ``EntityTokenLayoutBuilder``)."""
+    """The exclusion regex removes the ``topology_version`` feature."""
     from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder
     from tests._entity_sample_obs_names import (
         load_sample_observation_names_for_first_building,

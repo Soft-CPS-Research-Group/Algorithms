@@ -1,4 +1,4 @@
-"""WP05 §16.5 — Integration of AgentTransformerPPO with Wrapper_CityLearn
+"""Integration of AgentTransformerPPO with Wrapper_CityLearn
 over the entity interface in dynamic-topology mode.
 
 Reuses the dummy entity env from ``tests/test_wrapper_entity_mode.py`` but
@@ -158,9 +158,8 @@ def test_wrapper_to_env_actions_round_trips_ppo_output() -> None:
 
 
 def test_non_dynamic_agent_in_entity_dynamic_still_rejected_on_topology_change() -> None:
-    """Sanity: the flag-based guardrail must keep rejecting non-dynamic
-    agents when the topology actually mutates. (Regression guard for the
-    Task A refactor of ``utils/wrapper_citylearn.py:333``.)"""
+    """The flag-based guardrail must reject non-dynamic agents when the
+    topology actually mutates."""
 
     class _NonDynamicModel:
         supports_dynamic_topology = False

@@ -1,4 +1,4 @@
-"""Tests for TransformerBackbone (entity-mode contract). Covers spec §16.3."""
+"""Tests for TransformerBackbone (entity-mode contract)."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def backbone():
 
 
 def test_type_embedding_table_size_3(backbone) -> None:
-    """Spec §9: nn.Embedding(3, d_model) for {SRO=0, NFC=1, CA=2}."""
+    """nn.Embedding(3, d_model) for {SRO=0, NFC=1, CA=2}."""
     embeddings = [
         m for m in backbone.modules() if isinstance(m, nn.Embedding)
     ]

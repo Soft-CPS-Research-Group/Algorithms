@@ -1,4 +1,4 @@
-"""WP05 §16.4 — AgentTransformerPPO unit tests.
+"""AgentTransformerPPO unit tests.
 
 Covers:
 - ``predict`` returns ``[B][N_ca]`` floats clamped to ``[-1, 1]``.
@@ -7,7 +7,7 @@ Covers:
 - Layout-drift on existing type (feature-count change) hard-fails.
 - New type appearing on existing tokenizer hard-fails.
 - ``save_checkpoint`` / ``load_checkpoint`` round-trip + signature mismatch
-  rejection (spec §14.3).
+  rejection.
 - ``export_artifacts`` returns a well-formed manifest with one entry per
   building and TorchScript files on disk.
 - Registered in ``algorithms.registry.ALGORITHM_REGISTRY``.
@@ -257,7 +257,7 @@ def test_topology_change_rebuilds_layout_and_preserves_weights() -> None:
 
 def test_topology_change_feature_count_drift_hard_fails() -> None:
     """Inject an extra storage feature that wasn't present at attach time —
-    feature count for type 'storage' changes. Must raise (spec §11.4)."""
+    feature count for type 'storage' changes. Must raise."""
     agent, obs_per, act_per, _ = _make_agent(n_buildings=1)
     storage_id = next(
         n.split("::")[1] for n in obs_per[0] if n.startswith("storage::")
@@ -310,7 +310,7 @@ def test_checkpoint_round_trip(tmp_path: Path) -> None:
 def test_checkpoint_layout_signature_mismatch_rejected(tmp_path: Path) -> None:
     """Save a 1-building checkpoint, then try to load into a 2-building agent.
     Cardinality mismatch is rejected before signature check, exercising the
-    same §14.3 guarantee (cross-topology resume disallowed)."""
+    same guarantee (cross-topology resume disallowed)."""
     agent, _, _, _ = _make_agent(n_buildings=1)
     path = agent.save_checkpoint(str(tmp_path), step=1)
     assert path is not None

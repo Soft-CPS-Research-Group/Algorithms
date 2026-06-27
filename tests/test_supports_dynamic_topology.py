@@ -1,14 +1,5 @@
-"""Tests for the registry-driven ``supports_dynamic_topology`` flag.
-
-Spec ``docs/specv2.md`` §12.4: dynamic-topology permission is decided by a
-ClassVar on the agent class, not by hardcoded class-name comparisons in the
-wrapper or the schema. The cross-config validator behaviour is already
-covered by ``tests/test_config_validation.py``
-(``test_validate_config_rejects_maddpg_with_entity_dynamic`` and
-``test_validate_config_accepts_rule_based_with_entity_dynamic``); this
-module pins the per-class ClassVar values so the dispatch above keeps the
-right answer for each concrete agent.
-"""
+"""Pin the ``supports_dynamic_topology`` ClassVar on each registered agent
+class so the wrapper guardrail and config validator agree on capability."""
 
 from __future__ import annotations
 

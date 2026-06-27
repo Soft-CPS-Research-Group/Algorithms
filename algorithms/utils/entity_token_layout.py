@@ -1,10 +1,10 @@
 """EntityTokenLayoutBuilder — pure-Python token segmentation.
 
-See ``docs/specv2.md`` §7. No torch / numpy / pydantic / algorithms.* / utils.*
-imports — this module is portable to the inference repo (§7.4).
+No torch / numpy / pydantic / algorithms.* / utils.* imports — this module
+is portable to the inference repo.
 
-The builder is **passive**: it consumes per-building observation/action names
-that the wrapper has already produced and returns a deterministic
+The builder is **passive**: it consumes per-building observation/action
+names that the wrapper has already produced and returns a deterministic
 ``BuildingTokenLayout``. CA segments are permuted to match ``action_names``
 position-by-position; this is the single source of truth that the agent's
 startup assertion checks.
@@ -26,8 +26,7 @@ class NfcExpression:
     """Compiled NFC computation: ``op(features[left], features[right])``.
 
     Indices are offsets into the owning ``TokenSegment.feature_indices``,
-    NOT absolute observation indices. This decouples NFC compute from layout
-    positioning (spec §7.2 design note).
+    NOT absolute observation indices.
     """
 
     op: str
@@ -58,7 +57,7 @@ class BuildingTokenLayout:
 
     ``ca_action_names`` MUST equal ``tuple(action_names[building])`` element
     by element — enforced at construction time so the agent's startup
-    assertion (§10.1) is a redundant check, not the first failure point.
+    assertion is a redundant check, not the first failure point.
     """
 
     building_id: str
@@ -93,7 +92,7 @@ _DISTRICT_PREFIX = "district__"
 
 
 def _compile_pattern(pattern: str, json_path: str) -> "re.Pattern[str]":
-    """Compile a regex with a contextual error path (mirrors §13.4 rule 4)."""
+    """Compile a regex with a contextual error path."""
     try:
         return re.compile(pattern)
     except re.error as exc:
@@ -105,7 +104,7 @@ def _compile_pattern(pattern: str, json_path: str) -> "re.Pattern[str]":
 def _build_excluded_matchers(tokenizer_config: Any) -> List["re.Pattern[str]"]:
     """Compile excluded_features.patterns. Lifted from
     ``utils/entity_tokenizer_schema.py`` so this module stays portable
-    (spec §7.4: no schema-module import allowed)."""
+    (no schema-module import allowed)."""
     return [
         _compile_pattern(p, f"excluded_features.patterns[{i}]")
         for i, p in enumerate(tokenizer_config.excluded_features.patterns)
@@ -115,8 +114,8 @@ def _build_excluded_matchers(tokenizer_config: Any) -> List["re.Pattern[str]"]:
 def _build_sro_matchers(
     tokenizer_config: Any,
 ) -> Dict[str, List["re.Pattern[str]"]]:
-    """Compile feature_patterns for every singleton SRO type (per §7.4 same
-    rationale as above)."""
+    """Compile feature_patterns for every singleton SRO type (same
+    portability rationale as above)."""
     out: Dict[str, List["re.Pattern[str]"]] = {}
     for type_name, sro in tokenizer_config.sro_types.items():
         # Skip per-asset entries; they have no feature_patterns.
@@ -157,8 +156,7 @@ class EntityTokenLayoutBuilder:
             type_name: ca.action_field
             for type_name, ca in tokenizer_config.ca_types.items()
         }
-        # Adapter prefix (e.g. "storage", "charger") → CA type_name. WP02
-        # schema enforces presence of these two keys.
+        # Adapter prefix (e.g. "storage", "charger") → CA type_name.
         self._ca_prefix_to_type: Dict[str, str] = {
             "storage": "storage",
             "charger": "charger",
@@ -265,7 +263,7 @@ class EntityTokenLayoutBuilder:
                     (i, name)
                 )
 
-        # --- Step 5: hard-fail on leftovers (runtime mirror of §13.4 r1) ---
+        # --- Step 5: hard-fail on leftovers ---
         if unmatched:
             bullets = "\n".join(f"  - {n!r}" for n in unmatched)
             raise ValueError(
@@ -353,8 +351,7 @@ class EntityTokenLayoutBuilder:
     ) -> Optional[Tuple[str, str, str]]:
         """Return ``(family, type_name, instance_id)`` or ``None``.
 
-        Hard-fails on ambiguous singleton SRO matches (runtime mirror of
-        spec §13.4 rule 2).
+        Hard-fails on ambiguous singleton SRO matches.
         """
         # Per-asset (labelled) → ev_connected / ev_incoming SRO.
         m_lab = _PER_ASSET_LABELLED_RE.fullmatch(name)

@@ -1,6 +1,6 @@
 """EntityObservationTokenizer — slice + project encoded per-building observation.
 
-Spec ``docs/specv2.md`` §8: per-building module that consumes
+Per-building module that consumes
 (a) a 2-D ``encoded_obs`` tensor of shape ``[B, obs_dim]`` (already encoded
 by the wrapper's per-feature encoders), and
 (b) a ``BuildingTokenLayout`` produced by ``EntityTokenLayoutBuilder``.
@@ -8,7 +8,7 @@ by the wrapper's per-feature encoders), and
 It returns three token banks (SRO, NFC, CA) ready to be fed to
 ``TransformerBackbone.forward(sros, nfc, cas)``.
 
-Design (spec §8.4-§8.5):
+Design:
 - One ``nn.Linear`` per declared **type** (not per instance) so adding a
   second charger / PV / storage adds zero new parameters.
 - NFC has a fixed ``in_features = 1`` because the upstream
