@@ -55,6 +55,7 @@ class RuleBasedPolicy(BaseAgent):
     """Simple heuristic controller that prioritises PV utilisation while respecting EV requirements."""
 
     _use_raw_observations: bool = True
+    supports_dynamic_topology = True
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()

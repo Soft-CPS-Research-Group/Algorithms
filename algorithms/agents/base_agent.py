@@ -1,8 +1,8 @@
 from abc import abstractmethod
+from typing import Any, ClassVar, Dict, List, Optional
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional
 
 _BASE_AGENT_TRACE_ENABLED = (
     os.environ.get("OPEVA_STARTUP_TRACE", "1").strip().lower()
@@ -43,6 +43,7 @@ class BaseAgent(Module, ExecutionUnit):
     interchangeable from the wrapper's perspective.
     """
 
+    supports_dynamic_topology: ClassVar[bool] = False
     def __init__(self) -> None:
         super().__init__()
 
