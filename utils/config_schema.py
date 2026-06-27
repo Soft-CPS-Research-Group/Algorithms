@@ -618,6 +618,35 @@ class SingleAgentRLStageConfig(BaseModel):
         return self  # unreachable; satisfies type checker
 
 
+class TransformerPPOTransformerConfig(BaseModel):
+    d_model: int = Field(ge=1)
+    nhead: int = Field(ge=1)
+    num_layers: int = Field(ge=1)
+    dim_feedforward: int = Field(ge=1)
+    dropout: float = Field(default=0.1, ge=0.0, le=1.0)
+
+
+class TransformerPPOHyperparameters(BaseModel):
+    learning_rate: float = Field(gt=0)
+    gamma: float = Field(gt=0, le=1.0)
+    gae_lambda: float = Field(gt=0, le=1.0)
+    clip_eps: float = Field(gt=0)
+    ppo_epochs: int = Field(ge=1)
+    minibatch_size: int = Field(ge=1)
+    entropy_coeff: float = Field(ge=0)
+    value_coeff: float = Field(ge=0)
+    max_grad_norm: float = Field(gt=0)
+
+
+class TransformerPPOStageConfig(BaseModel):
+    algorithm: Literal["AgentTransformerPPO"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
+    tokenizer_config_path: str = Field(min_length=1)
+    transformer: TransformerPPOTransformerConfig
+    hyperparameters: TransformerPPOHyperparameters
+
+
 PipelineStageConfig = Union[
     BuildingAgentStageConfig,
     CCLevel1AlgorithmConfig,
@@ -626,7 +655,9 @@ PipelineStageConfig = Union[
     ActorCriticAlgorithmConfig,
     RuleBasedAlgorithmConfig,
     SingleAgentRLStageConfig,
+    TransformerPPOStageConfig,
 ]
+
 
 class DeucalionExecutionConfig(BaseModel):
     partition: Optional[str] = None
@@ -733,17 +764,22 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
-        stage_names = {stage.algorithm for stage in self.pipeline}
-        conflicting = stage_names & ENCODED_OBSERVATION_ALGORITHMS
-        if (
-            conflicting
-            and self.simulator.interface == "entity"
-            and self.simulator.topology_mode == "dynamic"
-        ):
-            raise ValueError(
-                f"Pipeline stages {sorted(conflicting)} do not support simulator.interface='entity' "
-                "with simulator.topology_mode='dynamic'."
-            )
+        if self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
+            from algorithms.registry import ALGORITHM_REGISTRY
+            for stage in self.pipeline:
+                agent_cls = ALGORITHM_REGISTRY.get(stage.algorithm)
+                if agent_cls is None:
+                    continue
+                if not bool(getattr(agent_cls, "supports_dynamic_topology", False)):
+                    if stage.algorithm == "MADDPG":
+                        raise ValueError(
+                            "algorithm.name='MADDPG' does not support simulator.interface='entity' "
+                            "with simulator.topology_mode='dynamic'."
+                        )
+                    raise ValueError(
+                        f"algorithm={stage.algorithm!r} does not support "
+                        "simulator.topology_mode='dynamic' (supports_dynamic_topology=False)."
+                    )
 
         return self
 
@@ -779,4 +815,20 @@ def validate_config(raw_config: Dict[str, Any]) -> ProjectConfig:
             "      replay_buffer: { ... }   # if applicable\n"
             "      exploration: { ... }   # if applicable\n"
         )
-    return ProjectConfig.model_validate(raw_config)
+    project = ProjectConfig.model_validate(raw_config)
+
+    for stage in project.pipeline:
+        if isinstance(stage, TransformerPPOStageConfig):
+            from utils.entity_tokenizer_schema import (
+                _load_default_sample,
+                load_entity_tokenizer_config,
+                validate_against_payload,
+            )
+            tokenizer_cfg = load_entity_tokenizer_config(stage.tokenizer_config_path)
+            sample = _load_default_sample()
+            action_names_per_building = [
+                [ca.action_field for ca in tokenizer_cfg.ca_types.values()]
+            ]
+            validate_against_payload(tokenizer_cfg, sample, action_names_per_building)
+
+    return project

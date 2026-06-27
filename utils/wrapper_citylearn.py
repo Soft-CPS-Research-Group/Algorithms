@@ -18,7 +18,6 @@ from citylearn.citylearn import CityLearnEnv
 from loguru import logger
 
 from algorithms.execution_unit import ExecutionUnit
-from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
 from utils.entity_adapter import EntityContractAdapter
 from utils.checkpoint_manager import CheckpointManager
 from utils.local_metrics import LocalMetricsLogger
@@ -164,6 +163,7 @@ class Wrapper_CityLearn(RLC):
             if isinstance(stage, dict) and stage.get("algorithm")
         }
         self._entity_topology_version: Optional[int] = None
+        self._topology_changed_during_step: bool = False
         self._entity_adapter: Optional[EntityContractAdapter] = None
         self.model = model
 
@@ -473,6 +473,9 @@ class Wrapper_CityLearn(RLC):
             or previous_version is None
             or self._entity_topology_version != previous_version
         )
+        self._topology_changed_during_step = (
+            topology_changed and not force_attach and previous_version is not None
+        )
         if topology_changed:
             self.observation_names = observation_names
             self.observation_space = observation_spaces
@@ -484,17 +487,24 @@ class Wrapper_CityLearn(RLC):
                 self.action_names = self.action_names[: len(self.action_space)]
             self.encoders = self.set_encoders()
             self._action_bounds_cache = None
-        conflicting = self._algorithm_names & ENCODED_OBSERVATION_ALGORITHMS
-        if (
-            topology_changed
-            and self._entity_dynamic_mode
-            and conflicting
-            and previous_version is not None
-        ):
-            raise ValueError(
-                f"{sorted(conflicting)} support entity interface only with topology_mode='static'. "
-                "Detected topology change during runtime."
-            )
+
+        if topology_changed and self._entity_dynamic_mode and previous_version is not None:
+            from algorithms.registry import ALGORITHM_REGISTRY
+            offenders = [
+                name for name in self._algorithm_names
+                if (cls := ALGORITHM_REGISTRY.get(name)) is not None
+                and not bool(getattr(cls, "supports_dynamic_topology", False))
+            ]
+            if offenders:
+                if "MADDPG" in offenders:
+                    raise ValueError(
+                        "MADDPG supports entity interface only with topology_mode='static'. "
+                        "Detected topology change during runtime."
+                    )
+                raise ValueError(
+                    f"{sorted(offenders)} do not support dynamic topology "
+                    "(supports_dynamic_topology=False). Detected topology change during runtime."
+                )
 
         if topology_changed and self.model is not None:
             self._attach_model_environment_metadata()
@@ -1294,44 +1304,51 @@ class Wrapper_CityLearn(RLC):
 
                 # Update model if not in deterministic mode
                 if not deterministic:
-                    self._write_phase_progress(
-                        phase="model_update_start",
-                        episode=episode,
-                        step=time_step,
-                        episode_total=episodes,
-                        step_total=episode_step_total,
-                        global_step_total=global_step_total,
-                        rewards=rewards,
-                    )
-                    phase_start_time = time.perf_counter() if should_profile_step else 0.0
-                    self.update(
-                        observations,
-                        actions,
-                        rewards,
-                        next_observations,
-                        terminated=terminated,
-                        truncated=truncated,
-                    )
-                    if should_profile_step:
-                        runtime_profile_metrics["Runtime/agent_update_seconds"] = (
-                            time.perf_counter() - phase_start_time
+                    if self._topology_changed_during_step:
+                        logger.debug(
+                            "Skipping model.update at global step {} due to mid-step topology change.",
+                            self.global_step,
                         )
-                        runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = float(
-                            getattr(self, "_last_model_observation_encoding_seconds", 0.0) or 0.0
+                        self._topology_changed_during_step = False
+                    else:
+                        self._write_phase_progress(
+                            phase="model_update_start",
+                            episode=episode,
+                            step=time_step,
+                            episode_total=episodes,
+                            step_total=episode_step_total,
+                            global_step_total=global_step_total,
+                            rewards=rewards,
                         )
-                        runtime_profile_metrics["Runtime/model_update_seconds"] = float(
-                            getattr(self, "_last_model_update_seconds", 0.0) or 0.0
+                        phase_start_time = time.perf_counter() if should_profile_step else 0.0
+                        self.update(
+                            observations,
+                            actions,
+                            rewards,
+                            next_observations,
+                            terminated=terminated,
+                            truncated=truncated,
                         )
-                    logger.debug("Model update executed at global step {}", self.global_step)
-                    self._write_phase_progress(
-                        phase="model_update_end",
-                        episode=episode,
-                        step=time_step,
-                        episode_total=episodes,
-                        step_total=episode_step_total,
-                        global_step_total=global_step_total,
-                        rewards=rewards,
-                    )
+                        if should_profile_step:
+                            runtime_profile_metrics["Runtime/agent_update_seconds"] = (
+                                time.perf_counter() - phase_start_time
+                            )
+                            runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = float(
+                                getattr(self, "_last_model_observation_encoding_seconds", 0.0) or 0.0
+                            )
+                            runtime_profile_metrics["Runtime/model_update_seconds"] = float(
+                                getattr(self, "_last_model_update_seconds", 0.0) or 0.0
+                            )
+                        logger.debug("Model update executed at global step {}", self.global_step)
+                        self._write_phase_progress(
+                            phase="model_update_end",
+                            episode=episode,
+                            step=time_step,
+                            episode_total=episodes,
+                            step_total=episode_step_total,
+                            global_step_total=global_step_total,
+                            rewards=rewards,
+                        )
 
                     self._write_phase_progress(
                         phase="checkpoint_start",

@@ -283,6 +283,7 @@ def test_excluded_pattern_matches_topology_version():
     )
     assert not any(p.fullmatch("district__hour") for p in matchers)
 
+
 def test_excluded_feature_pattern_removes_topology_version():
     """The exclusion regex removes the ``topology_version`` feature."""
     from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder
@@ -302,3 +303,162 @@ def test_excluded_feature_pattern_removes_topology_version():
     )
     assert "district__topology_version" in layout.excluded_feature_names
 
+
+# ---------------------------------------------------------------------------
+# validate_config integration (Tasks 12-13)
+# ---------------------------------------------------------------------------
+
+
+def _make_minimal_transformer_ppo_cfg(
+    *,
+    tokenizer_path: str = "configs/tokenizers/entity_default.json",
+) -> Dict[str, Any]:
+    """Construct a minimal ProjectConfig dict naming AgentTransformerPPO."""
+    return {
+        "metadata": {
+            "experiment_name": "x",
+            "run_name": "x",
+            "community_name": "x",
+        },
+        "runtime": {},
+        "tracking": {
+            "mlflow_enabled": False,
+            "log_level": "INFO",
+            "log_frequency": 1,
+            "mlflow_step_sample_interval": 10,
+            "mlflow_artifacts_profile": "minimal",
+            "progress_updates_enabled": True,
+            "progress_update_interval": 5,
+            "system_metrics_enabled": False,
+            "system_metrics_interval": 10,
+        },
+        "checkpointing": {
+            "resume_training": False,
+            "checkpoint_artifact": "x.pt",
+            "use_best_checkpoint_artifact": False,
+            "reset_replay_buffer": False,
+            "freeze_pretrained_layers": False,
+            "fine_tune": False,
+        },
+        "bundle": {
+            "require_observations_envelope": False,
+            "artifact_config": {},
+            "per_agent_artifact_config": {},
+        },
+        "simulator": {
+            "dataset_name": "citylearn_three_phase_dynamic_assets_only_demo",
+            "dataset_path": (
+                "./datasets/citylearn_three_phase_dynamic_assets_only_demo"
+                "/schema.json"
+            ),
+            "central_agent": False,
+            "interface": "entity",
+            "topology_mode": "dynamic",
+            "entity_encoding": {
+                "enabled": True,
+                "normalization": "minmax_space",
+                "clip": True,
+            },
+            "reward_function": "RewardFunction",
+            "reward_function_kwargs": {},
+            "episodes": 1,
+            "simulation_start_time_step": 0,
+            "simulation_end_time_step": 100,
+            "episode_time_steps": 101,
+            "export": {
+                "mode": "end",
+                "export_kpis_on_episode_end": True,
+            },
+            "wrapper_reward": {
+                "enabled": False,
+                "profile": "cost_limits_v1",
+                "clip_enabled": True,
+                "clip_min": -10.0,
+                "clip_max": 10.0,
+                "squash": "none",
+            },
+        },
+        "training": {
+            "seed": 0,
+            "steps_between_training_updates": 1,
+            "target_update_interval": 0,
+        },
+        "topology": {},
+        "pipeline": [
+            {
+                "algorithm": "AgentTransformerPPO",
+                "count": 1,
+                "tokenizer_config_path": tokenizer_path,
+                "transformer": {
+                    "d_model": 64,
+                    "nhead": 4,
+                    "num_layers": 2,
+                    "dim_feedforward": 128,
+                    "dropout": 0.1,
+                },
+                "hyperparameters": {
+                    "learning_rate": 3.0e-4,
+                    "gamma": 0.99,
+                    "gae_lambda": 0.95,
+                    "clip_eps": 0.2,
+                    "ppo_epochs": 4,
+                    "minibatch_size": 64,
+                    "entropy_coeff": 0.01,
+                    "value_coeff": 0.5,
+                    "max_grad_norm": 0.5,
+                },
+            }
+        ],
+        "execution": None,
+    }
+
+
+def test_validate_config_accepts_transformer_ppo_algorithm():
+    from utils.config_schema import validate_config
+
+    validate_config(_make_minimal_transformer_ppo_cfg())
+
+
+def test_validate_config_loads_tokenizer_json(tmp_path):
+    """validate_config opens the JSON path and runs the 5 rules."""
+    from utils.config_schema import validate_config
+
+    bad_tokenizer = tmp_path / "bad.json"
+    bad_tokenizer.write_text(
+        json.dumps(
+            {
+                "type_embeddings": {"SRO": 0, "NFC": 1, "CA": 2},
+                "excluded_features": {"patterns": []},
+                "nfc": {
+                    "type_name": "x",
+                    "entity_table": "building",
+                    "expression": {
+                        "op": "subtract",
+                        "left": {"feature": "ghost"},
+                        "right": {"feature": "solar_generation"},
+                    },
+                },
+                "ca_types": {
+                    "storage": {
+                        "entity_table": "storage",
+                        "action_field": "electrical_storage",
+                        "input_dim_fallback": 1,
+                    },
+                    "charger": {
+                        "entity_table": "charger",
+                        "action_field": "electric_vehicle_storage",
+                        "input_dim_fallback": 1,
+                    },
+                },
+                "sro_types": {},
+                "validation": {
+                    "unmatched_features": "fail",
+                    "ambiguous_pattern_match": "fail",
+                    "input_dim_mismatch": "fail",
+                },
+            }
+        )
+    )
+    cfg = _make_minimal_transformer_ppo_cfg(tokenizer_path=str(bad_tokenizer))
+    with pytest.raises(ValueError, match="ghost"):
+        validate_config(cfg)
