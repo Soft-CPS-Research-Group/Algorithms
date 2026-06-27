@@ -1,0 +1,1038 @@
+{
+  "schema": "/home/tiago/dev/Simulator/data/datasets/citylearn_three_phase_dynamic_topology_demo/schema.json",
+  "time_step": 2200,
+  "episode": 0,
+  "topology_version": 7,
+  "tables": {
+    "district": {
+      "features": [
+        "month",
+        "day_type",
+        "hour",
+        "outdoor_dry_bulb_temperature",
+        "outdoor_dry_bulb_temperature_predicted_1",
+        "outdoor_dry_bulb_temperature_predicted_2",
+        "outdoor_dry_bulb_temperature_predicted_3",
+        "outdoor_relative_humidity",
+        "outdoor_relative_humidity_predicted_1",
+        "outdoor_relative_humidity_predicted_2",
+        "outdoor_relative_humidity_predicted_3",
+        "diffuse_solar_irradiance",
+        "diffuse_solar_irradiance_predicted_1",
+        "diffuse_solar_irradiance_predicted_2",
+        "diffuse_solar_irradiance_predicted_3",
+        "direct_solar_irradiance",
+        "direct_solar_irradiance_predicted_1",
+        "direct_solar_irradiance_predicted_2",
+        "direct_solar_irradiance_predicted_3",
+        "carbon_intensity",
+        "electricity_pricing",
+        "electricity_pricing_predicted_1",
+        "electricity_pricing_predicted_2",
+        "electricity_pricing_predicted_3",
+        "community_net_power_kw",
+        "community_net_energy_kwh_step",
+        "community_import_power_kw",
+        "community_import_energy_kwh_step",
+        "community_export_power_kw",
+        "community_export_energy_kwh_step",
+        "community_pv_power_kw",
+        "community_pv_energy_kwh_step",
+        "community_bess_power_kw",
+        "community_bess_energy_kwh_step",
+        "community_ev_power_kw",
+        "community_ev_energy_kwh_step",
+        "community_building_headroom_kw",
+        "community_building_export_headroom_kw",
+        "community_phase_headroom_kw",
+        "community_phase_export_headroom_kw",
+        "active_buildings_count",
+        "active_chargers_count",
+        "active_evs_count",
+        "topology_version",
+        "community_net_prev_1_kwh_step",
+        "community_net_prev_3_mean_kwh_step"
+      ],
+      "units": [
+        "index",
+        "index",
+        "index",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kw",
+        "kw",
+        "kw",
+        "count",
+        "count",
+        "count",
+        "scalar",
+        "kwh_step",
+        "kwh_step"
+      ],
+      "rows": [
+        {
+          "id": "district_0"
+        }
+      ]
+    },
+    "building": {
+      "features": [
+        "non_shiftable_load",
+        "solar_generation",
+        "electrical_storage_soc",
+        "net_electricity_consumption",
+        "charging_phase_one_hot_charger_15_1_L1",
+        "charging_phase_one_hot_charger_15_1_L2",
+        "charging_phase_one_hot_charger_15_1_L3",
+        "charging_phase_one_hot_charger_15_2_L1",
+        "charging_phase_one_hot_charger_15_2_L2",
+        "charging_phase_one_hot_charger_15_2_L3",
+        "charging_building_headroom_kw",
+        "charging_phase_L1_headroom_kw",
+        "charging_phase_L2_headroom_kw",
+        "charging_phase_L3_headroom_kw",
+        "charging_building_export_headroom_kw",
+        "charging_phase_L1_export_headroom_kw",
+        "charging_phase_L2_export_headroom_kw",
+        "charging_phase_L3_export_headroom_kw",
+        "charging_constraint_violation_kwh",
+        "net_power_kw",
+        "net_energy_kwh_step",
+        "import_power_kw",
+        "import_energy_kwh_step",
+        "export_power_kw",
+        "export_energy_kwh_step",
+        "load_power_kw",
+        "load_energy_kwh_step",
+        "pv_power_kw",
+        "pv_energy_kwh_step",
+        "bess_power_kw",
+        "bess_energy_kwh_step",
+        "ev_charging_power_kw",
+        "ev_charging_energy_kwh_step",
+        "electrical_storage_soc_ratio",
+        "net_energy_prev_1_kwh_step",
+        "net_energy_prev_3_mean_kwh_step",
+        "import_energy_prev_1_kwh_step",
+        "export_energy_prev_1_kwh_step"
+      ],
+      "units": [
+        "scalar",
+        "kwh",
+        "ratio",
+        "kwh",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "scalar",
+        "kw",
+        "kw",
+        "kw",
+        "kw",
+        "kw",
+        "kw",
+        "kw",
+        "kw",
+        "kwh",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "kw",
+        "kwh_step",
+        "ratio",
+        "kwh_step",
+        "kwh_step",
+        "kwh_step",
+        "kwh_step"
+      ],
+      "rows": [
+        {
+          "id": "Building_1"
+        },
+        {
+          "id": "Building_2"
+        },
+        {
+          "id": "Building_3"
+        },
+        {
+          "id": "Building_4"
+        },
+        {
+          "id": "Building_5"
+        },
+        {
+          "id": "Building_6"
+        },
+        {
+          "id": "Building_7"
+        },
+        {
+          "id": "Building_8"
+        },
+        {
+          "id": "Building_9"
+        },
+        {
+          "id": "Building_10"
+        },
+        {
+          "id": "Building_11"
+        },
+        {
+          "id": "Building_12"
+        },
+        {
+          "id": "Building_13"
+        },
+        {
+          "id": "Building_14"
+        },
+        {
+          "id": "Building_15"
+        },
+        {
+          "id": "Building_16"
+        },
+        {
+          "id": "Building_17"
+        },
+        {
+          "id": "Building_18"
+        }
+      ]
+    },
+    "charger": {
+      "features": [
+        "connected_state",
+        "incoming_state",
+        "connected_ev_soc",
+        "connected_ev_required_soc_departure",
+        "connected_ev_battery_capacity_kwh",
+        "connected_ev_departure_time_step",
+        "incoming_ev_estimated_soc_arrival",
+        "incoming_ev_estimated_arrival_time_step",
+        "last_charged_kwh",
+        "max_charging_power_kw",
+        "max_discharging_power_kw",
+        "commanded_power_kw",
+        "applied_power_kw",
+        "applied_energy_kwh_step",
+        "energy_to_required_soc_kwh",
+        "avg_power_to_departure_kw"
+      ],
+      "units": [
+        "scalar",
+        "scalar",
+        "ratio",
+        "scalar",
+        "kwh",
+        "time_step",
+        "scalar",
+        "time_step",
+        "kwh",
+        "kw",
+        "kw",
+        "kw",
+        "kw",
+        "kwh_step",
+        "kwh",
+        "scalar"
+      ],
+      "rows": [
+        {
+          "id": "Building_1/charger_1_1"
+        },
+        {
+          "id": "Building_2/charger_2_dyn_1"
+        },
+        {
+          "id": "Building_4/charger_4_1"
+        },
+        {
+          "id": "Building_7/charger_7_1"
+        },
+        {
+          "id": "Building_10/charger_10_1"
+        },
+        {
+          "id": "Building_12/charger_12_1"
+        },
+        {
+          "id": "Building_15/charger_15_1"
+        },
+        {
+          "id": "Building_15/charger_15_2"
+        },
+        {
+          "id": "Building_18/charger_18_1"
+        }
+      ]
+    },
+    "ev": {
+      "features": [
+        "soc",
+        "battery_capacity_kwh",
+        "depth_of_discharge_ratio",
+        "soc_ratio",
+        "soc_min_ratio",
+        "soc_max_ratio",
+        "energy_available_kwh",
+        "energy_to_full_kwh"
+      ],
+      "units": [
+        "scalar",
+        "kwh",
+        "ratio",
+        "ratio",
+        "ratio",
+        "ratio",
+        "kwh",
+        "kwh"
+      ],
+      "rows": [
+        {
+          "id": "Electric_Vehicle_2"
+        },
+        {
+          "id": "Electric_Vehicle_3"
+        },
+        {
+          "id": "Electric_Vehicle_4"
+        },
+        {
+          "id": "Electric_Vehicle_5"
+        },
+        {
+          "id": "Electric_Vehicle_6"
+        },
+        {
+          "id": "Electric_Vehicle_7"
+        },
+        {
+          "id": "Electric_Vehicle_8"
+        },
+        {
+          "id": "Electric_Vehicle_9"
+        }
+      ]
+    },
+    "storage": {
+      "features": [
+        "soc",
+        "capacity_kwh",
+        "nominal_power_kw",
+        "electricity_consumption_kwh",
+        "electrical_storage_soc_ratio",
+        "max_charge_power_kw",
+        "max_discharge_power_kw",
+        "energy_to_full_kwh",
+        "energy_available_kwh"
+      ],
+      "units": [
+        "scalar",
+        "kwh",
+        "kw",
+        "kwh",
+        "ratio",
+        "kw",
+        "kw",
+        "kwh",
+        "kwh"
+      ],
+      "rows": [
+        {
+          "id": "Building_1/electrical_storage"
+        },
+        {
+          "id": "Building_2/electrical_storage"
+        },
+        {
+          "id": "Building_3/electrical_storage"
+        },
+        {
+          "id": "Building_4/electrical_storage"
+        },
+        {
+          "id": "Building_5/electrical_storage"
+        },
+        {
+          "id": "Building_6/electrical_storage"
+        },
+        {
+          "id": "Building_7/electrical_storage"
+        },
+        {
+          "id": "Building_8/electrical_storage"
+        },
+        {
+          "id": "Building_9/electrical_storage"
+        },
+        {
+          "id": "Building_10/electrical_storage"
+        },
+        {
+          "id": "Building_11/electrical_storage"
+        },
+        {
+          "id": "Building_13/electrical_storage"
+        },
+        {
+          "id": "Building_14/electrical_storage"
+        },
+        {
+          "id": "Building_15/electrical_storage"
+        },
+        {
+          "id": "Building_16/electrical_storage"
+        },
+        {
+          "id": "Building_17/electrical_storage"
+        },
+        {
+          "id": "Building_18/electrical_storage"
+        }
+      ]
+    },
+    "pv": {
+      "features": [
+        "generation_power_kw",
+        "generation_energy_kwh_step",
+        "installed_power_kw"
+      ],
+      "units": [
+        "kw",
+        "kwh_step",
+        "kw"
+      ],
+      "rows": [
+        {
+          "id": "Building_1/pv"
+        },
+        {
+          "id": "Building_2/pv"
+        },
+        {
+          "id": "Building_3/pv"
+        },
+        {
+          "id": "Building_4/pv"
+        },
+        {
+          "id": "Building_5/pv"
+        },
+        {
+          "id": "Building_6/pv"
+        },
+        {
+          "id": "Building_7/pv"
+        },
+        {
+          "id": "Building_8/pv"
+        },
+        {
+          "id": "Building_9/pv"
+        },
+        {
+          "id": "Building_10/pv"
+        },
+        {
+          "id": "Building_12/pv"
+        },
+        {
+          "id": "Building_13/pv"
+        },
+        {
+          "id": "Building_14/pv"
+        },
+        {
+          "id": "Building_15/pv"
+        },
+        {
+          "id": "Building_16/pv"
+        },
+        {
+          "id": "Building_17/pv"
+        },
+        {
+          "id": "Building_18/pv"
+        }
+      ]
+    }
+  },
+  "edges": {
+    "district_to_building": {
+      "source_table": null,
+      "target_table": null,
+      "edges": [
+        {
+          "source_index": 0,
+          "target_index": 0,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 2,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 3,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 4,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 5,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 6,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 7,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 8,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 9,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 10,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 11,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 12,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 13,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 14,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 15,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 16,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 0,
+          "target_index": 17,
+          "source_id": null,
+          "target_id": null
+        }
+      ]
+    },
+    "building_to_charger": {
+      "source_table": null,
+      "target_table": null,
+      "edges": [
+        {
+          "source_index": 0,
+          "target_index": 0,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 1,
+          "target_index": 1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 3,
+          "target_index": 2,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 6,
+          "target_index": 3,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 9,
+          "target_index": 4,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 11,
+          "target_index": 5,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 14,
+          "target_index": 6,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 14,
+          "target_index": 7,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 17,
+          "target_index": 8,
+          "source_id": null,
+          "target_id": null
+        }
+      ]
+    },
+    "building_to_storage": {
+      "source_table": null,
+      "target_table": null,
+      "edges": [
+        {
+          "source_index": 0,
+          "target_index": 0,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 1,
+          "target_index": 1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 2,
+          "target_index": 2,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 3,
+          "target_index": 3,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 4,
+          "target_index": 4,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 5,
+          "target_index": 5,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 6,
+          "target_index": 6,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 7,
+          "target_index": 7,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 8,
+          "target_index": 8,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 9,
+          "target_index": 9,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 10,
+          "target_index": 10,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 12,
+          "target_index": 11,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 13,
+          "target_index": 12,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 14,
+          "target_index": 13,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 15,
+          "target_index": 14,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 16,
+          "target_index": 15,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 17,
+          "target_index": 16,
+          "source_id": null,
+          "target_id": null
+        }
+      ]
+    },
+    "building_to_pv": {
+      "source_table": null,
+      "target_table": null,
+      "edges": [
+        {
+          "source_index": 0,
+          "target_index": 0,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 1,
+          "target_index": 1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 2,
+          "target_index": 2,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 3,
+          "target_index": 3,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 4,
+          "target_index": 4,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 5,
+          "target_index": 5,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 6,
+          "target_index": 6,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 7,
+          "target_index": 7,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 8,
+          "target_index": 8,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 9,
+          "target_index": 9,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 11,
+          "target_index": 10,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 12,
+          "target_index": 11,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 13,
+          "target_index": 12,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 14,
+          "target_index": 13,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 15,
+          "target_index": 14,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 16,
+          "target_index": 15,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 17,
+          "target_index": 16,
+          "source_id": null,
+          "target_id": null
+        }
+      ]
+    },
+    "charger_to_ev_connected": {
+      "source_table": null,
+      "target_table": null,
+      "edges": [
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 2,
+          "target_index": 6,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 3,
+          "target_index": 0,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 4,
+          "target_index": 1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 5,
+          "target_index": 2,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 6,
+          "target_index": 3,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 7,
+          "target_index": 4,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        }
+      ]
+    },
+    "charger_to_ev_connected_mask": {
+      "source_table": null,
+      "target_table": null,
+      "edges": []
+    },
+    "charger_to_ev_incoming": {
+      "source_table": null,
+      "target_table": null,
+      "edges": [
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": -1,
+          "target_index": -1,
+          "source_id": null,
+          "target_id": null
+        }
+      ]
+    },
+    "charger_to_ev_incoming_mask": {
+      "source_table": null,
+      "target_table": null,
+      "edges": []
+    }
+  },
+  "meta": {
+    "time_step": 2200,
+    "endogenous_time_step": 2199,
+    "spec_version": "entity_v1",
+    "temporal_semantics": {
+      "exogenous": "t",
+      "endogenous": "t_minus_1_settled"
+    },
+    "topology_version": 7
+  }
+}
