@@ -1,0 +1,353 @@
+# MATD3 residual template for the 15-minute static dataset.
+#
+# This is the Phase 2 15-minute starting point: keep the hourly champion recipe
+# shape, but use entity observations and time-aware schedules for 900 second
+# control steps.
+
+metadata:
+  experiment_name: "matd3_15min_residual_template"
+  run_name: "MATD3 15min Residual"
+  community_name: "citylearn_15min"
+  description: "MATD3 residual-over-RBCCommunity template for the static 15-minute dataset"
+  bundle_version: phase10-15min
+  alias_mapping_path: null
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  tracking_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: false
+  tags:
+    stage: phase10-15min
+    algorithm: MATD3
+    recipe: residual_rbc_community_15min
+    dataset_granularity: 15min
+    reward_function: CostServiceCommunityDenseEVResidualRewardV54
+    teacher_policy: RBCCommunityPolicy
+    residual_policy: true
+    actor_community_context_enabled: true
+  log_level: INFO
+  log_frequency: 512
+  mlflow_step_sample_interval: 512
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 128
+  system_metrics_enabled: false
+  system_metrics_interval: 32
+  action_diagnostics_enabled: true
+  action_diagnostics_detail: summary
+  action_saturation_tolerance: 0.01
+  action_idle_tolerance: 0.02
+  training_diagnostics_enabled: true
+  training_diagnostics_detail: summary
+  reward_diagnostics_enabled: true
+  reward_diagnostics_detail: summary
+  runtime_profiling_enabled: true
+  runtime_profiling_interval: 512
+  runtime_profiling_detail: summary
+  progress_phase_updates_enabled: true
+  progress_phase_start_step: 0
+  progress_phase_end_step: null
+  max_step_seconds: 240.0
+  stall_watchdog_enabled: true
+  stall_watchdog_timeout_seconds: 2400.0
+  stall_watchdog_exit_on_timeout: true
+  stall_watchdog_repeat: false
+  stall_watchdog_traceback_file: null
+  stall_watchdog_context_interval_steps: 64
+  resource_guard_enabled: true
+  max_process_rss_mb: 88000.0
+  min_available_ram_mb: 2048.0
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: latest_checkpoint.pth
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: null
+  require_update_step: true
+  require_initial_exploration_done: true
+
+simulator:
+  dataset_name: citylearn_three_phase_electrical_service_demo_15min_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15min_parquet/schema.json
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  reward_function: CostServiceCommunityDenseEVResidualRewardV54
+  reward_function_kwargs:
+    community_settlement_cost_weight: 1.18
+    community_peak_import_penalty: 0.0018
+    community_export_penalty: 0.0005
+    ev_connected_deficit_penalty: 165.0
+    ev_schedule_deficit_penalty: 1650.0
+    ev_departure_deficit_penalty: 1750.0
+    ev_departure_missed_penalty: 5200.0
+    ev_v2g_service_penalty: 2000.0
+    battery_throughput_penalty: 0.0045
+    scale_state_penalties_by_time_step: true
+    state_penalty_reference_seconds: 3600.0
+  episodes: 1
+  deterministic_finish: true
+  simulation_start_time_step: 0
+  simulation_end_time_step: 35039
+  episode_time_steps: 35040
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    final_episode_only: true
+    kpis_final_episode_only: true
+    timeseries_final_episode_only: true
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: false
+    kpi_round_decimals: null
+    session_name: matd3_15min_residual
+  wrapper_reward:
+    enabled: false
+    profile: cost_limits_v1
+    clip_enabled: true
+    clip_min: -10.0
+    clip_max: 10.0
+    squash: none
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    profile: maddpg_v3_operational
+    clip: true
+  community_market:
+    enabled: true
+    local_price_ratio_to_grid_import: 0.8
+    intra_community_sell_ratio: 0.8
+    grid_export_price: 0.0
+    import_member_weights: {}
+    kpis:
+      community_local_traded_enabled: true
+      community_self_consumption_enabled: true
+
+training:
+  seed: 123
+  steps_between_training_updates: 4
+  target_update_interval: 2
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+pipeline:
+  - algorithm: MATD3
+    count: 1
+    frozen: false
+    hyperparameters:
+      gamma: 0.99875
+      require_cuda: false
+    networks:
+      actor:
+        class: Actor
+        layers:
+          - 1024
+          - 512
+          - 256
+        lr: 5.0e-05
+      critic:
+        class: LateFusionCritic
+        layers:
+          - 1024
+          - 512
+          - 256
+        lr: 0.0005
+        state_layers:
+          - 1024
+          - 512
+        action_layers:
+          - 256
+        joint_layers:
+          - 512
+          - 256
+    replay_buffer:
+      class: RewardWeightedMultiAgentReplayBuffer
+      capacity: 300000
+      batch_size: 256
+      priority_fraction: 0.35
+      priority_alpha: 0.6
+      priority_epsilon: 0.001
+      priority_mode: negative_reward
+      priority_max: 50.0
+      behavior_action_priority_weight: 1.0
+      behavior_action_priority_mode: positive
+      behavior_action_priority_scope: ev
+      observation_event_priority_weight: 8.0
+      observation_event_priority_mode: combined
+    exploration:
+      strategy: GaussianNoise
+      params:
+        bias: 0.0
+        sigma: 0.08
+        decay: 0.999875
+        min_sigma: 0.01
+        noise_clip: 0.15
+        storage_exploration_noise_multiplier: 0.25
+        ev_negative_exploration_noise_multiplier: 0.1
+        gamma: 0.99875
+        tau: 0.001
+        use_amp: false
+        end_initial_exploration_time_step: 2048
+        random_exploration_steps: 2048
+        initial_exploration_strategy: policy
+        warm_start_policy: RBCCommunityPolicy
+        warm_start_policy_deterministic: true
+        warm_start_policy_noise_scale: 0.0
+        warm_start_policy_phaseout_steps: 24576
+        warm_start_policy_phaseout_mode: blend
+        train_during_initial_exploration: false
+        initial_exploration_training_start_step: 0
+        noop_noise_scale: 0.0
+        deferrable_on_probability: 0.2
+        deferrable_trigger_threshold: 0.5
+        noop_actor_initialization: true
+        noop_actor_initialization_epsilon: 0.05
+        critic_update_mode: joint_mean
+        actor_update_interval: 2
+        target_policy_smoothing: true
+        target_policy_noise: 0.05
+        target_policy_noise_clip: 0.1
+        actor_action_l2_penalty: 0.0
+        actor_action_saturation_penalty: 0.01
+        actor_storage_action_l2_penalty: 0.006
+        actor_ev_v2g_action_l2_penalty: 0.45
+        actor_action_saturation_threshold: 0.85
+        actor_behavior_cloning_weight: 0.42
+        actor_ev_behavior_cloning_multiplier: 24.0
+        actor_storage_behavior_cloning_multiplier: 0.18
+        actor_behavior_cloning_min_weight: 0.24
+        actor_behavior_cloning_decay_start_step: 2048
+        actor_behavior_cloning_decay_steps: 14336
+        reward_normalization: true
+        reward_normalization_clip: 30.0
+        reward_normalization_epsilon: 1.0e-08
+        warm_start_policy_hyperparameters:
+          seed: null
+          pv_charge_threshold: 0.0
+          flexibility_hours: 3.0
+          emergency_hours: 1.0
+          pv_preferred_charge_rate: 0.6
+          flex_trickle_charge: 0.0
+          min_charge_rate: 0.0
+          emergency_charge_rate: 1.0
+          energy_epsilon: 0.001
+          default_capacity_kwh: 60.0
+          non_flexible_chargers: []
+          control_storage: true
+          control_evs: true
+          control_deferrables: true
+          allow_v2g: true
+          deferrable_start_action: 1.0
+          deferrable_urgency_threshold: 0.6
+          deferrable_slack_threshold: 0.4
+          deferrable_priority_threshold: 0.5
+          deferrable_safety_margin_steps: 1.0
+          storage_min_soc: 0.35
+          storage_max_soc: 0.8
+          storage_target_soc: 0.65
+          storage_charge_rate: 0.35
+          storage_discharge_rate: 0.35
+          price_charge_rate: 0.0
+          price_discharge_rate: 0.15
+          pv_charge_rate: 0.45
+          peak_discharge_rate: 0.25
+          storage_price_charge_soc_ceiling: 0.6
+          storage_price_discharge_soc_floor: 0.4
+          storage_peak_discharge_soc_floor: 0.4
+          normal_storage_discharge_import_threshold_kw: 0.25
+          storage_discharge_import_threshold_kw: 0.5
+          ev_normal_charge_rate: 1.0
+          ev_normal_target_soc: 1.0
+          ev_price_charge_rate: 0.7
+          ev_pv_charge_rate: 0.85
+          ev_v2g_discharge_rate: 0.18
+          ev_community_charge_rate: 0.85
+          community_v2g_discharge_rate: 0.12
+          community_storage_charge_rate: 0.55
+          community_storage_discharge_rate: 0.28
+          community_surplus_charge_soc_ceiling: 0.7
+          community_surplus_threshold_kw: 0.5
+          community_import_threshold_kw: 10.0
+          community_local_price_ratio: 0.8
+          community_grid_export_price: 0.0
+          pv_surplus_threshold_kw: 0.5
+          import_peak_threshold_kw: 10.0
+          low_headroom_threshold_kw: 1.0
+          ev_v2g_reserve_soc: 0.0
+          ev_service_margin_rate: 0.05
+          ev_service_floor_rate: 0.25
+          ev_service_lookahead_hours: 4.0
+          ev_deadline_buffer_hours: 0.25
+          ev_v2g_min_departure_hours: 1.0
+          ev_v2g_service_margin_soc: 0.02
+          ev_subhour_service_guard_steps: 4.0
+          ev_subhour_deadline_buffer_steps: 1.0
+          ev_subhour_v2g_guard_steps: 4.0
+          ev_subhour_min_service_margin_rate: 0.05
+          ev_subhour_v2g_reserve_soc: 0.0
+        critic_loss: huber
+        critic_huber_beta: 1.0
+        critic_target_clip_abs: 25.0
+        n_step_returns: 32
+        n_step_gamma: 0.99875
+        n_step_priority_aggregation: max
+        actor_policy_loss_weight: 0.06
+        actor_policy_loss_warmup_weight: 0.008
+        actor_policy_loss_warmup_start_step: 2048
+        actor_policy_loss_warmup_steps: 24576
+        actor_policy_loss_normalization: true
+        actor_policy_loss_normalization_epsilon: 0.001
+        actor_policy_loss_normalization_max_scale: 80.0
+        critic_action_input_mode: final_base_delta_normalized
+        actor_ev_v2g_action_mass_penalty: 0.9
+        actor_residual_delta_l2_penalty: 0.06
+        actor_storage_smoothness_l2_penalty: 0.0
+        actor_storage_smoothness_deadband: 0.1
+        actor_community_context_enabled: true
+        actor_frame_stack_steps: 1
+        actor_auxiliary_loss_weight: 0.0
+        actor_auxiliary_hidden_layers: []
+        actor_behavior_cloning_extra_updates: 3
+        actor_behavior_cloning_extra_update_start_step: 2048
+        actor_behavior_cloning_extra_update_end_step: 16384
+        actor_behavior_cloning_source: warm_start_policy
+        actor_offline_bc_pretrain_steps: 64
+        actor_offline_bc_pretrain_weight: 1.0
+        actor_offline_bc_pretrain_min_replay: 256
+        actor_offline_bc_pretrain_sync_targets: true
+        actor_ev_behavior_cloning_positive_target_weight: 1.0
+        actor_ev_behavior_cloning_positive_target_power: 1.0
+        actor_ev_behavior_cloning_zero_target_weight: 7.0
+        actor_ev_behavior_cloning_zero_target_threshold: 0.05
+        residual_policy_enabled: true
+        residual_action_scale: 0.04
+        residual_action_final_scale: 0.2
+        residual_action_start_step: 0
+        residual_action_growth_steps: 32768
+        residual_storage_action_scale_multiplier: 0.5
+        residual_ev_action_scale_multiplier: 0.32
+        residual_deferrable_action_scale_multiplier: 0.7
+
+bundle:
+  bundle_version: phase10-15min
+  description: "Phase 2 15-minute MATD3 residual training template"
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+  per_agent_artifact_config: {}
