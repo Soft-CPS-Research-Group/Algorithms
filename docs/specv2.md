@@ -1,7 +1,7 @@
 ## Universal Local Controller — Specification v2 (Entity Interface, Dynamic Topology)
 
 > Reference v1: `docs/spec.md` and `docs/implementation_summary.md`.
-> Sample observation payload: `datasets/tmp_entity_obs_full_step2200_named.json`.
+> Sample observation payload: `configs/tokenizers/fixtures/entity_obs_sample.json`.
 > Target dataset: `citylearn_three_phase_dynamic_assets_only_demo`.
 > Reusable v1 source code is **not** present on this branch. It lives on
 > branch `gj/plan-c` (pinned to commit
@@ -48,7 +48,7 @@ distinct embedding subspaces.
 ### 0.2 Authoritative feature names
 
 The regex catalogs in §13.1 are derived from
-`datasets/tmp_entity_obs_full_step2200_named.json` (district 46
+`configs/tokenizers/fixtures/entity_obs_sample.json` (district 46
 features, building 38, charger 16, ev 8, storage 9, pv 3). Any new
 dataset version that introduces feature names not matched by an
 existing pattern must hard-fail at config validation time (see §13.4
@@ -158,7 +158,7 @@ either copy them (preferred when reuse is verbatim) or rewrite them.
 
 ## 3. Entity Interface Data Format
 
-Sample: `datasets/tmp_entity_obs_full_step2200_named.json` (step 2200,
+Sample: `configs/tokenizers/fixtures/entity_obs_sample.json` (step 2200,
 `topology_version = 7`). The payload has three top-level fields: `tables`,
 `edges`, `meta`.
 
@@ -176,9 +176,26 @@ with `id` + values). Tables observed in the demo dataset:
 | `pv` | up to N | 3 | Per-building PV state | **SRO token** per PV (per-asset cardinality) |
 | `ev` | K | 8 | EV state (SOC, capacity, ratios) | **SRO token** per EV (split into `ev_connected` / `ev_incoming` per parent charger) |
 
-Counts above match `datasets/tmp_entity_obs_full_step2200_named.json` and
+Counts above match `configs/tokenizers/fixtures/entity_obs_sample.json` and
 must be reverified during implementation against the active dataset’s
 `entity_specs` (see §8.4).
+
+**When to regenerate the fixture.** The fixture is a snapshot of a real
+simulator payload; the tokenizer JSON declares which of those columns are
+SRO / NFC / CA / excluded, and `validate_config` runs the 5 hard-fail rules
+(§13.4) at config load against the fixture. **Regenerate the fixture
+whenever the simulator schema changes** (feature added/removed/renamed in
+any table, new asset type, adapter emission order changed). Run:
+
+```
+python scripts/dump_entity_obs_sample.py \
+    --config configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml \
+    --output configs/tokenizers/fixtures/entity_obs_sample.json
+```
+
+If the new fixture uncovers uncovered features, `pytest tests/test_entity_tokenizer_config_schema.py`
+will fail with a rule 1 (coverage) violation — update the tokenizer JSON
+(`configs/tokenizers/entity_default.json`) to match, then re-run tests.
 
 ### 3.2 `edges`
 
@@ -1177,7 +1194,7 @@ code edit required.
 #### Coverage accounting (matches the sample payload exactly)
 
 Numbers below are derived from
-`datasets/tmp_entity_obs_full_step2200_named.json` (district 46,
+`configs/tokenizers/fixtures/entity_obs_sample.json` (district 46,
 building 38).
 
 | Table | Bucket | Count |
@@ -1364,7 +1381,7 @@ After successfully loading a YAML config that names
 `EntityTokenizerConfig.model_validate(...)`, and then enforces the
 following **five hard-fail rules** against a real entity-payload sample
 (loaded from the configured dataset, or from
-`datasets/tmp_entity_obs_full_step2200_named.json` if the simulator
+`configs/tokenizers/fixtures/entity_obs_sample.json` if the simulator
 hasn't been instantiated yet):
 
 1. **Coverage.** Every feature in every `entity_table` referenced by
@@ -1663,7 +1680,7 @@ Parallelizable: WP0, WP1, WP2.
 | `test_topology_unchanged_for_identical_names` | False |
 | `test_layout_is_cached` | Repeated `build()` returns the same instance |
 | `test_no_external_imports` | Module imports only stdlib + typing + re |
-| `test_uses_real_sample_payload` | Build layout from `datasets/tmp_entity_obs_full_step2200_named.json` (passed through the adapter) succeeds for every building, with all 46 district + 38 building features accounted for |
+| `test_uses_real_sample_payload` | Build layout from `configs/tokenizers/fixtures/entity_obs_sample.json` (passed through the adapter) succeeds for every building, with all 46 district + 38 building features accounted for |
 | `test_coverage_accounting_matches_spec` | Per-table feature counts in §13.1 coverage table are reproduced exactly |
 
 ### 16.2 `EntityObservationTokenizer` (`tests/test_entity_observation_tokenizer.py`)
