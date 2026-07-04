@@ -1,32 +1,23 @@
-## Universal Local Controller — Specification v2 (Entity Interface, Dynamic Topology)
+## Universal Local Controller — Transformer-PPO Specification (Entity Interface, Dynamic Topology)
 
-> Reference v1: `docs/spec.md` and `docs/implementation_summary.md`.
 > Sample observation payload: `configs/tokenizers/fixtures/entity_obs_sample.json`.
 > Target dataset: `citylearn_three_phase_dynamic_assets_only_demo`.
-> Reusable v1 source code is **not** present on this branch. It lives on
-> branch `gj/plan-c` (pinned to commit
-> `3e9a6737d7306b04f3516738f86a98ea52106ef5`). Implementing agents must check
-> that branch out (or `git show gj/plan-c:<path>`) to read the v1 modules
-> referenced below as “reuse from `gj/plan-c`”.
-> **No legacy (`flat`) interface logic should be added.** Anything new must
-> use the `entity` interface and `topology_version`-based topology tracking
-> introduced in `softcpsrecsimulator 0.3.0`.
+> The `entity` interface and `topology_version`-based topology tracking
+> introduced in `softcpsrecsimulator 0.3.0` are the only supported code
+> paths; no legacy `flat` interface logic is added.
 
 ---
 
 ## 0. Conventions
 
 - File paths are repo-relative.
-- Line references are pinned to current `HEAD` of this branch unless prefixed
-  with `gj/plan-c:` (e.g. `gj/plan-c:algorithms/utils/transformer_backbone.py`).
 - The phrase “the wrapper” means `utils/wrapper_citylearn.py:Wrapper_CityLearn`.
 - The phrase “the adapter” means
   `utils/entity_adapter.py:EntityContractAdapter`.
 
 ### 0.1 Token-family vocabulary
 
-v2 has **three** token families (down from four in earlier drafts — CTX
-has been collapsed into SRO):
+The model uses **three** token families:
 
 | Family | Cardinality per building | Has action output? | Examples |
 |---|---|---|---|
@@ -36,22 +27,21 @@ has been collapsed into SRO):
 
 The type embedding table has **3** entries: `SRO=0`, `NFC=1`, `CA=2`.
 
-“CTX” no longer appears anywhere in the design. Per-asset read-only
-streams that earlier drafts called CTX (`pv`, `ev_connected`,
-`ev_incoming`) are now SRO **types** with `cardinality: per_asset` (see
-§7.3). Per-feature-group district splits (`district_pricing_current`,
-`district_weather_forecast`, …) are SRO types with
-`cardinality: singleton`. The Transformer treats them all the same way
-at attention time; the per-type `Linear` projection is what gives them
+Per-asset read-only streams (`pv`, `ev_connected`, `ev_incoming`) are SRO
+**types** with `cardinality: per_asset` (see §6.3). Per-feature-group
+district splits (`district_pricing_current`, `district_weather_forecast`,
+…) are SRO types with `cardinality: singleton`. The Transformer treats
+them all the same way at attention time; the per-type `Linear`
+projection is what gives them
 distinct embedding subspaces.
 
 ### 0.2 Authoritative feature names
 
-The regex catalogs in §13.1 are derived from
+The regex catalogs in §12.1 are derived from
 `configs/tokenizers/fixtures/entity_obs_sample.json` (district 46
 features, building 38, charger 16, ev 8, storage 9, pv 3). Any new
 dataset version that introduces feature names not matched by an
-existing pattern must hard-fail at config validation time (see §13.4
+existing pattern must hard-fail at config validation time (see §12.4
 rule 1). The recommended fix is documented in the error message.
 
 ---
@@ -76,11 +66,10 @@ runtime and without retraining:
   solar_generation`).
 The agent produces one action per CA token, so the CA order must be consistent between observation and action sides. SRO and NFC tokens have **no action outputs** but feed into shared self-attention so they shape every CA action.
 
-The end goal is identical to v1. What changes in v2 is **how data flows in
-and out of the agent**: the simulator now exposes a structured `entity`
-contract with explicit `meta.topology_version`, so we no longer need
-sentinel marker values to recover token boundaries, and we no longer use
-asset/feature counting to detect topology changes.
+The simulator exposes a structured `entity` contract with explicit
+`meta.topology_version`, so we do not use sentinel marker values to
+recover token boundaries and we do not use asset/feature counting to
+detect topology changes.
 
 ### Core Principles
 
@@ -96,73 +85,20 @@ asset/feature counting to detect topology changes.
    `np.ndarray` and returns a per-building `List[float]`. The wrapper
    translates between the simulator’s entity payload and these flat vectors
    in both directions via `EntityContractAdapter`.
-4. **Per-building agent.** Same architecture as v1 — independent
-   tokenizer / backbone / actor / critic / rollout buffer per building.
-5. **Reusable v1 components.** TransformerBackbone, ActorHead, CriticHead,
-   RolloutBuffer and the PPO loss are imported verbatim from `gj/plan-c`.
-   The marker-based ObservationEnricher and marker-scanning Tokenizer are
-   replaced by entity-aware modules.
-6. **Portability.** The new layout-builder module is pure-Python (stdlib +
+4. **Per-building agent.** Independent tokenizer / backbone / actor /
+   critic / rollout buffer per building.
+5. **Portability.** The layout-builder module is pure-Python (stdlib +
    typing only) so the production inference repo can reuse it without
    pulling Torch.
 
----
 
-## 2. Repo Delta from `gj/plan-c`
-
-### 2.1 What this checkout already has (entity side)
-
-| Path | Purpose | Lines |
-|---|---|---|
-| `utils/wrapper_citylearn.py` | Entity-mode detection, topology tracking, metadata attach, action conversion delegation | `:147-175`, `:309-365`, `:733-740` |
-| `utils/entity_adapter.py` | Per-building observation flattening (`to_agent_observations`) and flat→entity action conversion (`to_entity_actions`) | `:145-347`, `:486-552` |
-| `algorithms/agents/base_agent.py` | The exact agent contract this work must satisfy | `:16-84` |
-| `utils/config_schema.py` | Pydantic models, including the existing `topology_mode='dynamic'` ⇒ `interface='entity'` validator and the MADDPG-vs-`entity+dynamic` guardrail | `:117-118`, `:157-158`, `:344-356` |
-| `configs/templates/rule_based_entity_dynamic_assets_only_local.yaml` | Reference template shape we must mirror | full file |
-
-### 2.2 What is on `gj/plan-c` and **must be brought across or recreated**
-
-These files do **not** exist on this branch. The implementing agent must
-either copy them (preferred when reuse is verbatim) or rewrite them.
-
-| Path on `gj/plan-c` | Reuse policy in v2 |
-|---|---|
-| `algorithms/utils/transformer_backbone.py` | **Copy verbatim**, then update for v2 token families: 3-entry type embedding (`SRO=0, NFC=1, CA=2`) and `forward(sros, nfc, cas)` signature. |
-| `algorithms/utils/ppo_components.py` (Actor, Critic, RolloutBuffer, `compute_ppo_loss`) | **Copy verbatim.** No API change. |
-| `algorithms/agents/transformer_ppo/update_helper.py` | **Copy verbatim.** |
-| `algorithms/agents/transformer_ppo/export_helper.py` | Copy and adapt: input shape now derived from `BuildingTokenLayout`. |
-| `algorithms/agents/transformer_ppo/state_helper.py` | Copy, then **drop the marker registry**; add a `BuildingTokenLayout` field per building. |
-| `algorithms/agents/transformer_ppo_agent.py` | Copy, then surgically replace the enricher/marker-tokenizer wiring with the new entity layout/tokenizer. |
-| `algorithms/registry.py` change | Re-apply the `"AgentTransformerPPO"` registration. |
-
-### 2.3 Files created **net-new** in v2
-
-| Path | Purpose |
-|---|---|
-| `algorithms/utils/entity_token_layout.py` | Pure-Python `EntityTokenLayoutBuilder`, `BuildingTokenLayout`, `TokenSegment`. Replaces the v1 `ObservationEnricher`. |
-| `algorithms/utils/entity_observation_tokenizer.py` | Torch `EntityObservationTokenizer`. Replaces the v1 marker-scanning tokenizer. |
-| `utils/wrapper_transformer/__init__.py` + `transformer_observation_coordinator.py` | New coordinator hooks the layout builder into the wrapper’s entity lifecycle. |
-| `configs/tokenizers/entity_default.json` | New tokenizer config (entity-type based, no marker fields). |
-| `configs/templates/transformer_ppo_entity_dynamic.yaml` | New algorithm template; full repo-valid shape (see §13.2). |
-| Tests under `tests/` (see §16). | |
-
-### 2.4 Files modified
-
-| Path | Modification |
-|---|---|
-| `utils/wrapper_citylearn.py` | Add a `TransformerObservationCoordinator` hook (idempotent for non-Transformer agents). Generalise the `MADDPG`-specific dynamic guardrail (see §12.4). |
-| `utils/config_schema.py` | Add `EntityTokenizerConfig`, `TransformerConfig`, `TransformerPPOHyperparameters`, `TransformerPPOAlgorithmConfig`. Generalise the dynamic-topology guardrail to use a `supports_dynamic_topology` allow-list (keeping MADDPG’s rejection unchanged). Add JSON-validation for the file pointed to by `algorithm.tokenizer_config_path` (see §13.4). |
-| `algorithms/registry.py` | Register `"AgentTransformerPPO"`. |
-
----
-
-## 3. Entity Interface Data Format
+## 2. Entity Interface Data Format
 
 Sample: `configs/tokenizers/fixtures/entity_obs_sample.json` (step 2200,
 `topology_version = 7`). The payload has three top-level fields: `tables`,
 `edges`, `meta`.
 
-### 3.1 `tables`
+### 2.1 `tables`
 
 Each table has `features` (column names), `units`, and `rows` (list of dicts
 with `id` + values). Tables observed in the demo dataset:
@@ -178,12 +114,12 @@ with `id` + values). Tables observed in the demo dataset:
 
 Counts above match `configs/tokenizers/fixtures/entity_obs_sample.json` and
 must be reverified during implementation against the active dataset’s
-`entity_specs` (see §8.4).
+`entity_specs` (see §7.4).
 
 **When to regenerate the fixture.** The fixture is a snapshot of a real
 simulator payload; the tokenizer JSON declares which of those columns are
 SRO / NFC / CA / excluded, and `validate_config` runs the 5 hard-fail rules
-(§13.4) at config load against the fixture. **Regenerate the fixture
+(§12.4) at config load against the fixture. **Regenerate the fixture
 whenever the simulator schema changes** (feature added/removed/renamed in
 any table, new asset type, adapter emission order changed). Run:
 
@@ -197,7 +133,7 @@ If the new fixture uncovers uncovered features, `pytest tests/test_entity_tokeni
 will fail with a rule 1 (coverage) violation — update the tokenizer JSON
 (`configs/tokenizers/entity_default.json`) to match, then re-run tests.
 
-### 3.2 `edges`
+### 2.2 `edges`
 
 Topology graph; the wrapper consumes these to slice the global tables down
 to per-building views.
@@ -211,7 +147,7 @@ to per-building views.
 | `charger_to_ev_connected` (+ `_mask`) | Currently-connected EV per charger; `-1` = none. |
 | `charger_to_ev_incoming` (+ `_mask`) | Reserved/incoming EV per charger; `-1` = none. |
 
-### 3.3 `meta`
+### 2.3 `meta`
 
 ```json
 {
@@ -225,9 +161,9 @@ to per-building views.
 
 `topology_version` is the **single source of truth** for layout invalidation.
 
-### 3.4 Action contract (current ground truth)
+### 2.4 Action contract (current ground truth)
 
-The adapter (`utils/entity_adapter.py:486-552`) returns:
+The adapter (`utils/entity_adapter.py`) returns:
 
 ```python
 {
@@ -258,7 +194,7 @@ Source of truth for shape and ordering:
 
 ---
 
-## 4. End-to-End Data Flow
+## 3. End-to-End Data Flow
 
 ```
                                                       step()
@@ -282,8 +218,8 @@ Source of truth for shape and ordering:
  │      → self.encoders = self.set_encoders()      (placeholder NoNormalization)  │
  │      → wrapper._attach_model_environment_metadata()   (re-emits entity_specs   │
  │            + new observation_names + new action_names BEFORE layout rebuild)   │
- │      → coordinator.handle_topology_change(self) → for each building:           │
- │            agent.on_topology_change(b)                                         │
+ │      → agent.attach_environment(...) → detects per-building drift,           │
+ │            calls agent._handle_topology_change(b) internally:                 │
  │              ├─ flush rollout_buffer[b] (PPO update on previous layout)        │
  │              ├─ layouts[b] = layout_builder.build(                             │
  │              │      building_id[b], observation_names[b], action_names[b])    │
@@ -292,7 +228,7 @@ Source of truth for shape and ordering:
  │                                                                                │
  │ 3. agent.predict(encoded_obs, deterministic) → List[List[float]]               │
  │    where encoded_obs[b] = adapter.normalize_observation(b, raw_obs[b], ...)    │
- │    (see utils/wrapper_citylearn.py:964-988 — current behaviour)                │
+ │    (see utils/wrapper_citylearn.py — current behaviour)                │
  │                                                                                │
  │ 4. EntityContractAdapter.to_entity_actions(actions, action_names)              │
  │    → {"tables": {"building": np.ndarray, "charger": np.ndarray}}               │
@@ -326,56 +262,56 @@ Source of truth for shape and ordering:
 
 > Reminder: although the entity payload is community-wide, the
 > `EntityContractAdapter` already produces **one flat vector per building**
-> (`utils/entity_adapter.py:145`). The agent therefore stays per-building.
+> (`utils/entity_adapter.py`). The agent therefore stays per-building.
 
 ---
 
-## 5. Definitive Observation Contract
+## 4. Definitive Observation Contract
 
 This section is the authoritative reference for the layout builder and
 tokenizer tests. It mirrors the emission order of
-`EntityContractAdapter.to_agent_observations` (`utils/entity_adapter.py:213-329`).
+`EntityContractAdapter.to_agent_observations` (`utils/entity_adapter.py`).
 
-### 5.1 Per-building emission order
+### 4.1 Per-building emission order
 
 For each building `b` (in district-to-building edge order), names are
 appended to `observation_names[b]` in this exact order:
 
 1. **District block** — one feature per `district` table column, prefixed
-   `district__<feature>` (`utils/entity_adapter.py:215`).
+   `district__<feature>` (`utils/entity_adapter.py`).
 2. **Building block** — one feature per `building` table column,
-   **unprefixed** (`utils/entity_adapter.py:223`). Example names from the
+   **unprefixed** (`utils/entity_adapter.py`). Example names from the
    sample payload: `non_shiftable_load`, `solar_generation`,
    `electrical_storage_soc`, `net_electricity_consumption`,
    `charging_phase_one_hot_charger_15_1_L1`, …
 3. **Per-storage blocks** — for each storage row attached to this building,
    prefixed `storage::<storage_id>::<feature>`
-   (`utils/entity_adapter.py:239`).
+   (`utils/entity_adapter.py`).
 4. **Per-PV blocks** — for each PV row attached to this building, prefixed
-   `pv::<pv_id>::<feature>` (`utils/entity_adapter.py:250`).
+   `pv::<pv_id>::<feature>` (`utils/entity_adapter.py`).
 5. **Per-charger blocks**, in this order per charger
-   (`utils/entity_adapter.py:258-296`):
+   (`utils/entity_adapter.py`):
    1. Charger features prefixed `charger::<charger_id>::<feature>`.
    2. Connected-EV context features prefixed
       `charger::<charger_id>::connected_ev::<feature>`. **The label is
-      exactly `connected_ev`** (`utils/entity_adapter.py:291`).
+      exactly `connected_ev`** (`utils/entity_adapter.py`).
    3. Incoming-EV context features prefixed
       `charger::<charger_id>::incoming_ev::<feature>`. **The label is
-      exactly `incoming_ev`** (`utils/entity_adapter.py:294`).
+      exactly `incoming_ev`** (`utils/entity_adapter.py`).
 6. **Active-counters block** — three unprefixed features:
    `active_chargers_count`, `active_storages_count`, `active_pvs_count`
-   (`utils/entity_adapter.py:298-300`).
+   (`utils/entity_adapter.py`).
 7. **Legacy-charger-aliases block** — zero or more unprefixed features whose
    names come from `EntityContractAdapter._LEGACY_CHARGER_ALIASES`
-   (`utils/entity_adapter.py:302-329`). These are RBC-compatibility aliases
+   (`utils/entity_adapter.py`). These are RBC-compatibility aliases
    sourced from the building’s first connected charger. **In v2 these are
-   excluded from the token catalog** (see §5.4 / §13.1
+   excluded from the token catalog** (see §4.4 / §12.1
    `excluded_features`); they remain in `observation_names` for adapter
    compatibility but are not bound to any token.
 
-### 5.2 Token-family classification
+### 4.2 Token-family classification
 
-Classification is **regex-driven and config-driven** (see §13.1 for the
+Classification is **regex-driven and config-driven** (see §12.1 for the
 full tokenizer JSON). The high-level rule per feature is:
 
 | Feature pattern | Family | Type name | Instance id | Notes |
@@ -385,13 +321,13 @@ full tokenizer JSON). The high-level rule per feature is:
 | `storage::<id>::<feature>` | `ca` | `storage` | `<id>` | Action `electrical_storage`. |
 | `charger::<id>::<feature>` (no `connected_ev`/`incoming_ev` segment) | `ca` | `charger` | `<id>` | Action `electric_vehicle_storage`. |
 | Matches `nfc.expression` source features (`non_shiftable_load`, `solar_generation`) | `nfc` | `building` | `<building_id>` | Two source features collapse into **one** scalar token via the configured expression. |
-| Matches `excluded_features` patterns | (excluded) | — | — | Removed before classification (see §5.4). |
-| Anything else | (error) | — | — | Hard-fail at validation (§13.4 rule 1). |
+| Matches `excluded_features` patterns | (excluded) | — | — | Removed before classification (see §4.4). |
+| Anything else | (error) | — | — | Hard-fail at validation (§12.4 rule 1). |
 
 Notes:
 
 - **One feature → one match**: tokenizer JSON validation rule 2
-  (uniqueness, §13.4) guarantees no feature is matched by patterns from
+  (uniqueness, §12.4) guarantees no feature is matched by patterns from
   more than one SRO type.
 - **NFC is a scalar**: the NFC token has dim 1 — the value of
   `non_shiftable_load - solar_generation`. The two source features are
@@ -400,26 +336,26 @@ Notes:
   `feature_patterns` (for table-scoped SRO types) or
   `len(entity_specs.tables[<entity_table>].features)` (for per-asset
   SRO types). This count is fixed per topology and used to size the
-  per-type `Linear` projection (§8).
+  per-type `Linear` projection (§7).
 - **Non-contiguous indices**: an SRO type’s feature positions in
   `observation_names` may be non-contiguous (e.g.
   `district_weather_forecast` mixes `outdoor_dry_bulb_temperature_predicted_*`
   and `direct_solar_irradiance_predicted_*`). The layout records the
   full index list per group; the tokenizer slices via
-  `torch.index_select` (§8.3).
+  `torch.index_select` (§7.3).
 
-### 5.3 Why no marker injection
+### 4.3 Why no marker injection
 
-v1 used numeric markers because the legacy `flat` interface emitted a single
-unstructured vector. With `interface=entity`, the wrapper already emits
-deterministic per-feature names (see §5.1). We classify them once per
-topology via the regex catalog (§13.1) and slice the encoded tensor at
-fixed integer indices every step.
+With `interface=entity`, the wrapper emits deterministic per-feature
+names (see §4.1). We classify them once per topology via the regex
+catalog (§12.1) and slice the encoded tensor at fixed integer indices
+every step. No sentinel numeric markers are injected into the
+observation tensor.
 
-### 5.4 Excluded features
+### 4.4 Excluded features
 
 The tokenizer config carries an `excluded_features` list of patterns
-(see §13.1). Features matching any pattern are removed *before*
+(see §12.1). Features matching any pattern are removed *before*
 classification. Use cases:
 
 - **`topology_version`** (in the district table) — already conveyed via
@@ -428,7 +364,7 @@ classification. Use cases:
   `electric_vehicle_soc`, `electric_vehicle_required_soc_departure`,
   `electric_vehicle_departure_time`, `electric_vehicle_is_flexible`)
   emitted by `EntityContractAdapter._LEGACY_CHARGER_ALIASES`
-  (`utils/entity_adapter.py:302-321`) — kept for RBC compatibility but
+  (`utils/entity_adapter.py`) — kept for RBC compatibility but
   redundant with the per-charger CA tokens for the Transformer.
 
 This is the primary "feature engineering" knob: to remove a feature
@@ -441,53 +377,51 @@ travel with the model (training and inference must agree).
 
 ---
 
-## 6. Encoding Story (entity mode)
+## 5. Encoding Story (entity mode)
 
 This is intentionally minimal in the current code base.
 
-### 6.1 Current behaviour
+### 5.1 Current behaviour
 
 - `Wrapper_CityLearn.set_encoders()` returns a list of `NoNormalization()`
   placeholders when `interface=entity`
-  (`utils/wrapper_citylearn.py:1100-1108`).
+  (`utils/wrapper_citylearn.py`).
 - `Wrapper_CityLearn.get_encoded_observations(index, observations)` ignores
   those placeholders and instead delegates to
   `EntityContractAdapter.normalize_observation(...)`
-  (`utils/wrapper_citylearn.py:964-988`).
+  (`utils/wrapper_citylearn.py`).
 - `normalize_observation` returns a numpy array of the **same length and
   ordering** as `observation_names[index]`, scaled per
   `simulator.entity_encoding`.
 
-### 6.2 Implication for v2
+### 5.2 Implication for v2
 
 There is **no encoded-dimension expansion**. Encoded index = raw feature
 position in `observation_names[building]`. The layout builder therefore
 records `feature_indices` directly as positions in
 `observation_names[building]`, and those same indices are used at slice
-time on the encoded tensor. We do **not** introduce an `encoded_index_map`
-parameter in v2 (it was an unnecessary abstraction in the first draft of
-this spec).
+time on the encoded tensor. There is no `encoded_index_map` parameter.
 
-### 6.3 When encoders are rebuilt
+### 5.3 When encoders are rebuilt
 
 Encoders (the placeholder list) are rebuilt from
 `Wrapper_CityLearn._apply_entity_layout` whenever `_apply_entity_layout`
 runs — i.e. on every reset and on every step that produces a new payload.
 The rebuild is cheap (it allocates one `NoNormalization()` per feature
 name). The agent’s layout rebuild, however, is gated on actual
-`topology_version` changes (see §12).
+`topology_version` changes (see §11).
 
 ---
 
-## 7. EntityTokenLayoutBuilder (replaces v1 ObservationEnricher)
+## 6. EntityTokenLayoutBuilder
 
-### 7.1 Responsibility
+### 6.1 Responsibility
 
 Given the per-building `observation_names` (post-adapter, pre-encoding —
-which equals the post-encoding ordering, see §6.2), build a token segment
+which equals the post-encoding ordering, see §5.2), build a token segment
 table. Pure Python so it can be reused by the inference repo.
 
-### 7.2 Interface
+### 6.2 Interface
 
 ```python
 @dataclass(frozen=True)
@@ -528,7 +462,7 @@ class BuildingTokenLayout:
                                           # construction.
     excluded_feature_names: Tuple[str, ...]
                                           # Features dropped before
-                                          # classification (see §5.4).
+                                          # classification (see §4.4).
 
 
 class EntityTokenLayoutBuilder:
@@ -541,7 +475,7 @@ class EntityTokenLayoutBuilder:
         action_names: Sequence[str],
     ) -> BuildingTokenLayout:
         """Return the cached layout if (observation_names, action_names) matches,
-        else recompute. Owns CA ordering — see §7.3."""
+        else recompute. Owns CA ordering — see §6.3."""
 
     def topology_changed(
         self,
@@ -551,12 +485,12 @@ class EntityTokenLayoutBuilder:
     ) -> bool: ...
 ```
 
-### 7.3 Classification rules
+### 6.3 Classification rules
 
 For each building, in order:
 
 1. **Drop excluded features**: any name matching `excluded_features`
-   patterns (§5.4) is recorded in `excluded_feature_names` and skipped
+   patterns (§4.4) is recorded in `excluded_feature_names` and skipped
    from the rest of classification. The remaining names form the
    classifier input.
 2. **Detect NFC**: locate the indices of all features named in
@@ -570,7 +504,7 @@ For each building, in order:
    by NFC and not eligible for any SRO group.
 3. **Match SRO patterns**: for each remaining name, walk the SRO type
    table and pick the unique match. The tokenizer JSON validation
-   guarantees uniqueness (§13.4 rule 2). Per-asset SRO types
+   guarantees uniqueness (§12.4 rule 2). Per-asset SRO types
    (`pv`, `ev_connected`, `ev_incoming`) are matched by their adapter
    prefix (e.g. `pv::<id>::…`); the `<id>` becomes the segment’s
    `instance_id`. Singleton SRO types are scoped to the table prefix
@@ -582,7 +516,7 @@ For each building, in order:
 5. **Reject leftovers**: any name that survives steps 1–4 unmatched →
    `ValueError` listing the name and table-of-origin (recoverable from
    the adapter prefix). This is the runtime mirror of the validation
-   rule in §13.4 rule 1; both must hard-fail to keep training and
+   rule in §12.4 rule 1; both must hard-fail to keep training and
    inference layouts identical.
 
 Within each matched group, `feature_indices` are appended in the order
@@ -611,26 +545,54 @@ sequences in the message.
 
 This makes CA order *defined by `action_names[building]`* — there is no
 secondary sort key, no lexicographic fallback, no instance-id ordering.
-The startup check in §10.1 then becomes a pure post-condition assertion.
+The startup check in §9.1 then becomes a pure post-condition assertion.
 
-### 7.4 Portability constraints
+### 6.4 Portability constraints
 
 - No imports from `algorithms.*`, `utils.*`, no torch/numpy.
 - Pure stdlib + `typing` + `re`.
 - File location: `algorithms/utils/entity_token_layout.py`.
 
+### Tests (`tests/test_entity_token_layout.py`)
+
+| Test | Verifies |
+|---|---|
+| `test_classifies_district_time_to_sro_singleton` | `district__hour` → `(sro, "district_time", building_id)` |
+| `test_classifies_district_pricing_current_separately_from_forecast` | `district__electricity_pricing` → `district_pricing_current`; `district__electricity_pricing_predicted_2` → `district_pricing_forecast` |
+| `test_classifies_district_carbon_separately_from_pricing` | `district__carbon_intensity` → `district_carbon`, not `district_pricing_*` |
+| `test_classifies_building_storage_state_to_sro` | `electrical_storage_soc`, `electrical_storage_soc_ratio` → `(sro, "building_storage_state")` |
+| `test_classifies_per_asset_pv_to_sro` | `pv::Building_1/pv::generation_power_kw` → `(sro, "pv", "Building_1/pv")` |
+| `test_classifies_per_asset_ev_connected_to_sro` | `charger::B/c::connected_ev::soc` → `(sro, "ev_connected", "B/c")` |
+| `test_classifies_per_asset_ev_incoming_to_sro` | `charger::B/c::incoming_ev::soc` → `(sro, "ev_incoming", "B/c")` |
+| `test_classifies_storage_prefix_to_ca` | `storage::Building_1/electrical_storage::soc` → `(ca, "storage", "Building_1/electrical_storage")` |
+| `test_classifies_charger_prefix_to_ca` | `charger::B/c::connected_state` → `(ca, "charger", "B/c")` |
+| `test_nfc_segment_has_two_source_indices_and_subtract_op` | NFC segment has `feature_indices=(idx_nsl, idx_solar)`; `derived.op == "subtract"` |
+| `test_nfc_source_features_not_in_any_sro_group` | `non_shiftable_load` and `solar_generation` do not appear in any SRO segment’s `feature_names` |
+| `test_excluded_features_dropped_before_classification` | `district__topology_version` and legacy charger aliases appear in `excluded_feature_names` and not in any segment |
+| `test_unmatched_feature_raises` | Inject a never-seen feature `district__some_new_feature` → `ValueError` listing the feature and table |
+| `test_ambiguous_pattern_raises` | Two SRO types claim the same feature → `ValueError` |
+| `test_sro_segment_order_follows_config_declaration` | `district_time` segment appears before `district_weather_current`, etc. |
+| `test_per_asset_sro_segments_sorted_by_instance_id` | Two PVs → segments in lexicographic order of `instance_id` |
+| `test_segment_overall_order` | `[sros…, nfc, cas…sorted_by_action_position]` |
+| `test_topology_changed_when_names_differ` | Adding a new charger → True |
+| `test_topology_unchanged_for_identical_names` | False |
+| `test_layout_is_cached` | Repeated `build()` returns the same instance |
+| `test_no_external_imports` | Module imports only stdlib + typing + re |
+| `test_uses_real_sample_payload` | Build layout from `configs/tokenizers/fixtures/entity_obs_sample.json` (passed through the adapter) succeeds for every building, with all 46 district + 38 building features accounted for |
+| `test_coverage_accounting_matches_spec` | Per-table feature counts in §12.1 coverage table are reproduced exactly |
+
 ---
 
-## 8. EntityObservationTokenizer (replaces v1 marker tokenizer)
+## 7. EntityObservationTokenizer
 
-### 8.1 Responsibility
+### 7.1 Responsibility
 
 Slice the encoded per-building tensor into token groups using a
 `BuildingTokenLayout`, then project each group to `d_model` via per-type
 `Linear` layers. NFC is the special case: its segment carries an
 `NfcExpression` and is reduced to a scalar before projection.
 
-### 8.2 Interface
+### 7.2 Interface
 
 ```python
 @dataclass
@@ -657,7 +619,7 @@ class EntityObservationTokenizer(nn.Module):
         single NFC type) to its raw feature count.
 
         For SRO and CA types the input dim is taken from entity_specs at
-        attach time (see §8.5). For the NFC type the input dim is always
+        attach time (see §7.5). For the NFC type the input dim is always
         1 because the NfcExpression collapses its source features to a
         scalar before projection."""
 
@@ -668,7 +630,7 @@ class EntityObservationTokenizer(nn.Module):
     ) -> TokenizedObservation: ...
 ```
 
-### 8.3 Slicing implementation
+### 7.3 Slicing implementation
 
 The tokenizer pre-registers, per segment, an `index_buffer = torch.tensor(
 segment.feature_indices, dtype=torch.long)` as a non-trainable buffer (so
@@ -684,14 +646,14 @@ via `index_select`, computes the configured op (currently only
 unsqueezes to shape `[batch, 1]`, then projects via
 `projections["building_nfc"]` → `[batch, d_model]`.
 
-### 8.4 Variable token counts (zero new parameters)
+### 7.4 Variable token counts (zero new parameters)
 
 A new charger reuses `projections["charger"]`. A new PV reuses
 `projections["pv"]`. A new building with the same `district` schema
 reuses every `projections["district_*"]`. Only the layout’s segment
 tuple grows — not the parameter set.
 
-### 8.5 Where input dimensions come from
+### 7.5 Where input dimensions come from
 
 - **NFC**: always `1` (the scalar produced by `NfcExpression`). The
   tokenizer config entry for NFC has no `input_dim_fallback` field —
@@ -715,17 +677,26 @@ values must equal the dim derived from `entity_specs`; mismatches raise
 `ValueError` listing both sides at instantiation. (NFC excepted as
 above.)
 
+### Tests (`tests/test_entity_observation_tokenizer.py`)
+
+| Test | Verifies |
+|---|---|
+| `test_forward_shapes_baseline` | sro_tokens=[1,N_sro,d], nfc_token=[1,1,d], ca_tokens=[1,N_ca,d] for the sample payload |
+| `test_forward_shapes_extra_charger` | ca_tokens=[1,2,d] when a second charger is present |
+| `test_projection_is_per_type_no_new_params_on_topology_grow` | Adding chargers / PVs does NOT add new parameters |
+| `test_index_select_handles_non_contiguous_sro_segment` | Mock encoded vector with sentinel values; verify `district_weather_forecast` slice gathers correct interleaved positions |
+| `test_nfc_token_value_equals_subtract_op` | Mock `non_shiftable_load=5.0`, `solar_generation=2.0` → NFC scalar = 3.0 (pre-projection) |
+| `test_nfc_input_dim_is_one` | `projections["building_nfc"].in_features == 1` |
+| `test_input_dim_mismatch_raises` | type_input_dims != entity_specs dim → clear ValueError naming both sides and the affected type |
+| `test_dtype_and_device_propagation` | Input cuda → output cuda; input float32 → output float32 |
+
 ---
 
-## 9. TransformerBackbone (reuse from `gj/plan-c`, extended)
+## 8. TransformerBackbone
 
-`gj/plan-c:algorithms/utils/transformer_backbone.py` is copied with two
-changes:
+`algorithms/utils/transformer_backbone.py`:
 
-- Type embedding table size = **3**: `SRO=0`, `NFC=1`, `CA=2`. (v1 had 3
-  for different families; the count happens to be unchanged but the
-  semantics differ. The CTX entry from earlier v2 drafts is **not**
-  introduced.)
+- Type embedding table size = **3**: `SRO=0`, `NFC=1`, `CA=2`.
 - `forward(sros, nfc, cas)` takes three tensors:
   - `sros`: `[batch, N_sro, d_model]`
   - `nfc`:  `[batch, 1,     d_model]`
@@ -735,18 +706,29 @@ changes:
   `ca_embeddings` at offsets `[N_sro + 1 : N_sro + 1 + N_ca]`. Mean
   pooling for the critic spans **all** tokens (SRO + NFC + CA).
 
-Pre-LN, GELU, no positional embeddings — unchanged.
+Pre-LN, GELU, no positional embeddings.
+
+### Tests (`tests/test_transformer_backbone.py`)
+
+| Test | Verifies |
+|---|---|
+| `test_type_embedding_table_size_3` | `nn.Embedding(3, d_model)` (SRO=0, NFC=1, CA=2) |
+| `test_concat_order_sros_nfc_cas` | First N_sro slots are sro tokens, slot N_sro is nfc, last block is ca |
+| `test_ca_embeddings_sliced_at_correct_offset` | Slice = `[N_sro + 1 : N_sro + 1 + N_ca]` |
+| `test_pooled_includes_sro_and_nfc_tokens` | Pooling spans all tokens (sros + nfc + cas) |
+| `test_gradient_flow_through_sro_tokens` | Backward through any sro token reaches the corresponding per-type projection |
+| `test_gradient_flow_through_nfc_token` | Backward through nfc reaches `projections["building_nfc"]` and the NfcExpression source indices |
 
 ---
 
-## 10. PPO Components & Action Contract
+## 9. PPO Components & Action Contract
 
-### 10.1 CA token order ↔ action order
+### 9.1 CA token order ↔ action order
 
 CA order is owned exclusively by `EntityTokenLayoutBuilder.build()`,
 which receives `action_names[building]` and constructs `segments` so
 that `BuildingTokenLayout.ca_action_names == tuple(action_names[building])`
-by construction (see §7.3).
+by construction (see §6.3).
 
 `AgentTransformerPPO.predict()` returns one scalar per CA token, in the
 order produced by `BuildingTokenLayout.segments`. The wrapper then
@@ -774,9 +756,9 @@ for b in range(len(action_names)):
 ```
 
 The same assertion runs inside `on_topology_change(b)` after the layout
-is rebuilt (see §12.2).
+is rebuilt (see §11.2).
 
-### 10.2 Reused PPO modules (verbatim from `gj/plan-c`)
+### 9.2 PPO modules
 
 - `ActorHead` — MLP per CA embedding; tanh-squashed Gaussian; learnable
   shared `log_std` per CA *type*.
@@ -784,19 +766,19 @@ is rebuilt (see §12.2).
 - `RolloutBuffer` — On-policy buffer with GAE.
 - `compute_ppo_loss` — Clipped surrogate + value loss + entropy bonus.
 
-### 10.3 Action range and clipping
+### 9.3 Action range and clipping
 
 `predict()` returns values in `[-1, 1]`. The wrapper clips to per-agent
 action-space bounds via the existing `_clip_actions`
-(`utils/wrapper_citylearn.py:743-779`).
+(`utils/wrapper_citylearn.py`).
 
 ---
 
-## 11. AgentTransformerPPO (v2)
+## 10. AgentTransformerPPO
 
-### 11.1 `BaseAgent` contract — exact signatures
+### 10.1 `BaseAgent` contract — exact signatures
 
-Copied from `algorithms/agents/base_agent.py:16-84`. Note `terminated` /
+Copied from `algorithms/agents/base_agent.py`. Note `terminated` /
 `truncated` are **scalar booleans** (not lists), `output_dir` is `str`,
 `predict` returns `List[List[float]]`, and `attach_environment` uses
 keyword-only arguments.
@@ -819,7 +801,7 @@ class AgentTransformerPPO(BaseAgent):
         """Build per-building EntityObservationTokenizer / TransformerBackbone /
         ActorHead / CriticHead / RolloutBuffer; store entity_specs; build the
         initial BuildingTokenLayout per building; validate CA-order vs
-        action_names (see §10.1)."""
+        action_names (see §9.1)."""
 
     def predict(
         self,
@@ -844,45 +826,63 @@ class AgentTransformerPPO(BaseAgent):
 
     def on_topology_change(self, building_idx: int) -> None:
         """Triggered by the wrapper after _entity_topology_version increments
-        (excluding the first attach — see §12.1).
+        (excluding the first attach — see §11.1).
         1. If rollout buffer has data → run a PPO update on collected trajectory.
         2. Clear the rollout buffer.
         3. Rebuild the BuildingTokenLayout from new observation_names + action_names.
-        4. Re-run §13.4 rules 1–5 against new entity_specs (coverage,
+        4. Re-run §12.4 rules 1–5 against new entity_specs (coverage,
            uniqueness, NFC sources, pattern compilation, action-field coverage).
-        5. The §10.1 CA-order post-condition is implicit in rule 5."""
+        5. The §9.1 CA-order post-condition is implicit in rule 5."""
 
     def export_artifacts(self, output_dir: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]: ...
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]: ...
     def load_checkpoint(self, checkpoint_path: str) -> None: ...
 ```
 
-### 11.2 Per-building structure
+### 10.2 Per-building structure
 
 Each building owns: tokenizer, backbone, actor, critic, rollout buffer,
-optimizer, cached `BuildingTokenLayout`. Same as v1.
+optimizer, cached `BuildingTokenLayout`.
+
+### Tests (`tests/test_agent_transformer_ppo.py`)
+
+| Test | Verifies |
+|---|---|
+| `test_attach_environment_builds_layouts` | One `BuildingTokenLayout` per building, cached |
+| `test_attach_environment_validates_ca_action_order` | Mismatched `action_names` order raises |
+| `test_attach_environment_does_not_treat_first_call_as_topology_change` | No PPO update, no buffer flush |
+| `test_predict_action_count_matches_n_ca` | `len(actions[b]) == n_ca[b]` |
+| `test_predict_returns_list_of_lists_of_float` | Matches `BaseAgent.predict` signature |
+| `test_deterministic_uses_means` | Two deterministic calls → identical actions |
+| `test_stochastic_samples` | Two stochastic calls → different actions (>1e-6) |
+| `test_update_signature_uses_scalar_terminated_truncated` | Calling with `bool` works; calling with `List[bool]` raises a clear TypeError from upstream |
+| `test_update_returns_none` | Matches `BaseAgent.update` |
+| `test_on_topology_change_runs_update_then_flushes_buffer` | Buffer length == 0 after; PPO step counter incremented |
+| `test_on_topology_change_rebuilds_layout` | New layout reflects new observation_names |
+| `test_on_topology_change_validates_input_dim` | Raises if entity_specs dim != tokenizer dim |
+| `test_supports_dynamic_topology_flag` | `AgentTransformerPPO.supports_dynamic_topology is True` |
+| `test_checkpoint_round_trip_same_topology` | Save → load → identical weights |
+| `test_checkpoint_load_rejects_layout_signature_mismatch` | Loading into a different topology raises |
 
 ---
 
-## 12. Lifecycle: Reset, Topology Change, Buffer Flush, PPO
+## 11. Lifecycle: Reset, Topology Change, Buffer Flush, PPO
 
-This section makes the boundaries the reviewer asked for explicit.
-
-### 12.1 First attach (wrapper construction → `set_model`)
+### 11.1 First attach (wrapper construction → `set_model`)
 
 The wrapper attaches the agent in **two stages** in the current code:
 
 1. `Wrapper_CityLearn.__init__` calls `_apply_entity_layout(payload,
-   force_attach=False)` (`utils/wrapper_citylearn.py:306`). At this
+   force_attach=False)` (`utils/wrapper_citylearn.py`). At this
    point `self.model is None`, so the inner
    `_attach_model_environment_metadata()` short-circuits
-   (`utils/wrapper_citylearn.py:344-346`). The wrapper has populated
+   (`utils/wrapper_citylearn.py`). The wrapper has populated
    `observation_names`, `observation_space`, `action_space`,
    `action_names`, `encoders`.
 2. `run_experiment.py` later instantiates the agent and calls
    `wrapper.set_model(agent)`, which assigns `self.model = agent` and
    immediately calls `_attach_model_environment_metadata()`
-   (`utils/wrapper_citylearn.py:418-423`). **This is the real first
+   (`utils/wrapper_citylearn.py`). **This is the real first
    `attach_environment(...)` invocation for the agent.**
 
 The Transformer agent therefore implements `attach_environment` so that
@@ -895,7 +895,7 @@ it works in this order:
    buffer / optimizer.
 3. Build layouts: `layouts[b] = layout_builder.build(building_id[b],
    observation_names[b], action_names[b])`.
-4. Run the post-condition assertion in §10.1.
+4. Run the post-condition assertion in §9.1.
 5. Do **not** treat this as a topology change — buffers are empty by
    definition; no PPO update is attempted.
 
@@ -904,78 +904,77 @@ identical `observation_names`/`action_names` (no-op, returns without
 mutation) because the wrapper may re-emit metadata on episode reset
 without a topology change.
 
-### 12.2 Genuine topology change mid-episode
+### 11.2 Genuine topology change mid-episode
 
-Call site: `Wrapper_CityLearn._apply_entity_layout`
-(`utils/wrapper_citylearn.py:309-342`) detects
+Call site: `Wrapper_CityLearn._apply_entity_layout` detects
 `previous_version is not None and self._entity_topology_version != previous_version`.
 
 The wrapper is the **single owner** of the rebuild trigger. The agent
 owns layout reconstruction. Sequence (must run in this order):
 
 1. Wrapper rebuilds `observation_names`, `observation_space`,
-   `action_space`, `action_names`, `encoders` (already happens at
-   `utils/wrapper_citylearn.py:317-326`).
-2. Wrapper calls `_attach_model_environment_metadata()` so the agent
-   sees the **new** `observation_names`/`action_names`/`entity_specs`
-   *before* it rebuilds layouts. (This replaces the existing call at
-   `utils/wrapper_citylearn.py:339-340`, which already runs in this
-   slot.)
-3. Wrapper calls
-   `TransformerObservationCoordinator.handle_topology_change(self)`,
-   which loops `for b in range(len(self.observation_names))` and calls
-   `agent.on_topology_change(b)`.
-4. Inside `on_topology_change(b)`:
+   `action_space`, `action_names`, `encoders`, `_action_bounds_cache`.
+2. Wrapper calls `_attach_model_environment_metadata()`, which invokes
+   `agent.attach_environment(...)` with the **new**
+   `observation_names`/`action_names`/`entity_specs`.
+3. `agent.attach_environment` compares per-building
+   `(observation_names, action_names)` against its cached tuples and,
+   for each building whose tuple changed, calls
+   `agent._handle_topology_change(b)`:
    a. If `rollout_buffer[b]` has data → run a single PPO update on the
       collected trajectory using the **previous** layout (cached on the
-      agent until step 4c). PPO is on-policy and the data was collected
+      agent until step c). PPO is on-policy and the data was collected
       under the old policy/topology, so this is the only sound moment
       to flush.
    b. Clear `rollout_buffer[b]`.
    c. Rebuild `layouts[b] = layout_builder.build(building_id[b],
       observation_names[b], action_names[b])`. Re-pre-register
       tokenizer index buffers.
-   d. Re-run §13.4 rules 1–5 against the new `entity_specs` (coverage,
+   d. Re-run §12.4 rules 1–5 against the new `entity_specs` (coverage,
       uniqueness, NFC sources, pattern compilation already cached, action-
       field coverage). Raise on any mismatch.
-   e. Re-run the §10.1 post-condition assertion.
-
-`attach_environment` does **not** rebuild layouts on its own when called
-during a topology change — the coordinator path above is the single
-entry point for layout rebuilds. This avoids the double-build that the
-reviewer flagged.
+   e. Re-run the §9.1 post-condition assertion.
 
 > Edge case: a topology change in the middle of an unfinished
 > `update_step` window is handled here (the buffer is force-flushed). The
 > next regularly-scheduled `update_step` will then operate on a fresh
 > buffer.
 
-### 12.3 No-op steps
+### 11.3 No-op steps
 
-When `_apply_entity_layout` runs but `topology_version` did not change, the
-coordinator does **nothing**. The agent does **not** rebuild layouts,
-buffers, or anything else.
+When `_apply_entity_layout` runs but `topology_version` did not change,
+`agent.attach_environment` observes identical per-building tuples and
+returns without touching any layout, buffer, or weight.
 
-### 12.4 Dynamic-topology guardrail (generalised)
+### 11.4 Dynamic-topology guardrail
 
-The current MADDPG-specific raise (`utils/wrapper_citylearn.py:333-338` and
-`utils/config_schema.py:352-356`) is replaced by a single, generic rule:
+A single rule enforced at both config-load time and wrapper runtime:
 
 - Each agent class declares `supports_dynamic_topology: ClassVar[bool]`
-  (default `False`). `MADDPG` keeps `False`; `RuleBasedPolicy` is `True`
-  (it already works dynamically); `AgentTransformerPPO` is `True`.
+  (default `False`). `MADDPG` keeps `False`; `RuleBasedPolicy` is `True`;
+  `AgentTransformerPPO` is `True`.
 - `utils/config_schema.py` reads the registry at validation time and
-  raises if `simulator.topology_mode == "dynamic"` and the chosen
+  raises if `simulator.topology_mode == "dynamic"` and any stage's
   algorithm class has `supports_dynamic_topology is False`. The error
   message keeps the existing wording for MADDPG to preserve test output.
 - `utils/wrapper_citylearn.py` keeps a runtime double-check (defence in
-  depth) but uses the same flag rather than a hard-coded `MADDPG` literal.
+  depth) using the same flag.
+
+### Tests (`tests/test_agent_transformer_ppo_wrapper_integration.py`)
+
+| Test | Verifies |
+|---|---|
+| `test_topology_version_increment_triggers_rebuild` | Mock env where `meta.topology_version` flips → encoders + layouts + agent rebuilds happen exactly once |
+| `test_topology_unchanged_does_not_rebuild` | Repeated steps with same `topology_version` → no rebuilds |
+| `test_action_conversion_uses_entity_adapter_tables_only` | Wrapper outputs `{"tables": {"building": ndarray, "charger": ndarray}}`; no `"map"` key |
+| `test_dynamic_guardrail_uses_supports_dynamic_topology_flag` | Setting flag to False on a dummy agent triggers the existing schema/runtime error; True does not |
+| `test_maddpg_dynamic_error_message_unchanged` | The exact MADDPG error string remains so existing tests continue to pass |
 
 ---
 
-## 13. Configuration
+## 12. Configuration
 
-### 13.1 Tokenizer config
+### 12.1 Tokenizer config
 
 `configs/tokenizers/entity_default.json`
 
@@ -1239,13 +1238,13 @@ Per-asset SRO and CA token counts vary at runtime with topology.
 The `nfc` block declares the **single** NFC token. `expression.op`
 must be one of: `subtract`. `left.feature` and `right.feature` must
 exist in the `entity_table`. The tokenizer collapses these two source
-features into a scalar at forward time (§8.3) — the source features
-do not appear in any SRO group (§7.3 step 2).
+features into a scalar at forward time (§7.3) — the source features
+do not appear in any SRO group (§6.3 step 2).
 
 To change the NFC definition (e.g. add a third term, or use a
 different expression), modify this block — no code change required.
 
-### 13.2 Algorithm template (full repo-valid shape)
+### 12.2 Algorithm template (full repo-valid shape)
 
 `configs/templates/transformer_ppo_entity_dynamic.yaml`
 
@@ -1335,28 +1334,26 @@ topology:
   action_dimensions: null
   action_space: null
 
-algorithm:
-  name: "AgentTransformerPPO"
-  tokenizer_config_path: configs/tokenizers/entity_default.json
-  transformer:
-    d_model: 64
-    nhead: 4
-    num_layers: 2
-    dim_feedforward: 128
-    dropout: 0.1
-  hyperparameters:
-    learning_rate: 3.0e-4
-    gamma: 0.99
-    gae_lambda: 0.95
-    clip_eps: 0.2
-    ppo_epochs: 4
-    minibatch_size: 64
-    entropy_coeff: 0.01
-    value_coeff: 0.5
-    max_grad_norm: 0.5
-  networks: null
-  replay_buffer: null
-  exploration: null
+pipeline:
+  - algorithm: "AgentTransformerPPO"
+    count: 1
+    tokenizer_config_path: configs/tokenizers/entity_default.json
+    transformer:
+      d_model: 64
+      nhead: 4
+      num_layers: 2
+      dim_feedforward: 128
+      dropout: 0.1
+    hyperparameters:
+      learning_rate: 3.0e-4
+      gamma: 0.99
+      gae_lambda: 0.95
+      clip_eps: 0.2
+      ppo_epochs: 4
+      minibatch_size: 64
+      entropy_coeff: 0.01
+      value_coeff: 0.5
+      max_grad_norm: 0.5
 
 execution: null
 ```
@@ -1365,19 +1362,20 @@ This template mirrors the field set of
 `configs/templates/rule_based_entity_dynamic_assets_only_local.yaml` so it
 will pass `validate_config(...)` without further plumbing.
 
-### 13.3 Hyperparameter naming (canonical)
+### 12.3 Hyperparameter naming (canonical)
 
 The single canonical name for the optimizer learning rate is
-**`learning_rate`** (matching v1 spec §9 and the YAML above). Internally the
-agent may alias `self.lr = self.config["algorithm"]["hyperparameters"]["learning_rate"]`,
+**`learning_rate`** (matching the YAML above). Internally the agent may
+alias `self._lr = self.config["algorithm"]["hyperparameters"]["learning_rate"]`,
 but no schema, config or docstring uses `lr` as the canonical key.
 
-### 13.4 Tokenizer JSON validation
+### 12.4 Tokenizer JSON validation
 
-`utils/config_schema.py` is extended with `EntityTokenizerConfig` (Pydantic).
-After successfully loading a YAML config that names
-`AgentTransformerPPO`, `validate_config(...)` opens the file at
-`algorithm.tokenizer_config_path`, parses it as JSON, constructs
+`utils/config_schema.py` extends `PipelineStageConfig` with
+`TransformerPPOStageConfig`. After successfully loading a YAML config,
+`validate_config(...)` walks `project.pipeline` and, for each stage of
+type `TransformerPPOStageConfig`, opens the file at
+`tokenizer_config_path`, parses it as JSON, constructs
 `EntityTokenizerConfig.model_validate(...)`, and then enforces the
 following **five hard-fail rules** against a real entity-payload sample
 (loaded from the configured dataset, or from
@@ -1406,7 +1404,7 @@ hasn't been instantiated yet):
    and the regex error message.
 5. **Action-field coverage.** Every `ca_types[*].action_field` must
    appear in `action_names[building]` for every building reported by
-   the dataset. Missing → `ValueError` (this is the existing §10.1
+   the dataset. Missing → `ValueError` (this is the existing §9.1
    post-condition, generalised).
 
 These same rules also run at runtime inside `attach_environment` and
@@ -1418,9 +1416,9 @@ Validation is performed in a single authoritative place
 (`validate_config`) — no caller may instantiate
 `AgentTransformerPPO` with a malformed tokenizer config.
 
-### 13.5 Schema additions summary
+### 12.5 Schema additions summary
 
-- `EntityTokenizerConfig` — fields per §13.1:
+- `EntityTokenizerConfig` — fields per §12.1:
   - `type_embeddings: Mapping[Literal["SRO","NFC","CA"], int]` (must equal
     `{"SRO": 0, "NFC": 1, "CA": 2}`).
   - `excluded_features: ExcludedFeaturesConfig` (with `patterns: List[str]`).
@@ -1438,23 +1436,40 @@ Validation is performed in a single authoritative place
     `unmatched_features`, `ambiguous_pattern_match`,
     `input_dim_mismatch`. All must be `"fail"` (no soft modes today —
     reserved for the future).
-- `TransformerConfig` — `d_model`, `nhead`, `num_layers`, `dim_feedforward`,
-  `dropout` (positive ints / unit-interval floats).
+- `TransformerPPOTransformerConfig` — `d_model`, `nhead`, `num_layers`,
+  `dim_feedforward`, `dropout` (positive ints / unit-interval floats).
 - `TransformerPPOHyperparameters` — `learning_rate`, `gamma`, `gae_lambda`,
   `clip_eps`, `ppo_epochs`, `minibatch_size`, `entropy_coeff`,
   `value_coeff`, `max_grad_norm`.
-- `TransformerPPOAlgorithmConfig` — `name: Literal["AgentTransformerPPO"]`,
-  `tokenizer_config_path: str`, `transformer: TransformerConfig`,
+- `TransformerPPOStageConfig` — pipeline-stage variant:
+  `algorithm: Literal["AgentTransformerPPO"]`, `count: int`, `frozen: bool`,
+  `tokenizer_config_path: str`, `transformer: TransformerPPOTransformerConfig`,
   `hyperparameters: TransformerPPOHyperparameters`. Added to
-  `ProjectConfig.algorithm` discriminated union.
+  `PipelineStageConfig` discriminated union.
 - Generic dynamic-topology guardrail (replaces MADDPG-specific check, see
-  §12.4).
+  §11.4).
+
+### Tests (`tests/test_entity_tokenizer_config_schema.py`)
+
+| Test | Verifies |
+|---|---|
+| `test_valid_json_loads` | The shipped `entity_default.json` validates against `EntityTokenizerConfig` and passes all 5 hard-fail rules on the sample payload |
+| `test_missing_ca_type_raises` | Removing `ca_types.charger` fails Pydantic validation |
+| `test_unknown_field_raises` | Extra unknown field at any level fails (strict mode) |
+| `test_validate_config_loads_tokenizer_json` | Top-level `validate_config(...)` invokes the JSON loader and reports the JSON path on failure |
+| `test_rule1_unmatched_feature_fails` | Add a fake feature `district__some_new_thing` to the sample payload → `ValueError` listing it |
+| `test_rule2_ambiguous_pattern_fails` | Two SRO types with overlapping patterns → `ValueError` listing the colliding feature and types |
+| `test_rule3_missing_nfc_source_fails` | Tokenizer references `nfc.expression.left.feature = "does_not_exist"` → `ValueError` |
+| `test_rule4_bad_regex_fails` | A `feature_patterns` entry like `"^[unclosed"` → `ValueError` reporting the JSON path and regex error |
+| `test_rule5_missing_action_field_fails` | Set `ca_types.charger.action_field = "no_such_action"` → `ValueError` |
+| `test_excluded_feature_pattern_removes_topology_version` | After validation, `district__topology_version` is in `excluded_feature_names` for every building |
+| `test_excluded_feature_cannot_match_an_sro_type` | Same feature in both `excluded_features.patterns` and an SRO `feature_patterns` → rule 2 conflict |
 
 ---
 
-## 14. Export & Checkpoint Contract (dynamic topology)
+## 13. Export & Checkpoint Contract (dynamic topology)
 
-### 14.1 ONNX export
+### 13.1 ONNX export
 
 Per-building, per call to `export_artifacts(output_dir, context=...)`. For
 each building `b`:
@@ -1475,17 +1490,17 @@ each building `b`:
   valid if encoded length changes inside the same topology, which it
   doesn’t today but is cheap to guard against).
 
-### 14.2 Manifest entries
+### 13.2 Manifest entries
 
 `export_artifacts` MUST return the canonical artifact payload required
-by `utils/artifact_manifest.py:69-84` and validated by
-`utils/bundle_validator.py:108-172`. The required keys are `format`
+by `utils/artifact_manifest.py` and validated by
+`utils/bundle_validator.py`. The required keys are `format`
 (top-level) and `artifacts` (a non-empty list, one entry per building,
 each with `agent_index: int >= 0`, `path: str` pointing to a file that
 exists under `output_dir`, and a JSON-serialisable `config` object).
 For ONNX artifacts the file MUST end in `.onnx`. The number of entries
 in `artifacts` MUST equal `topology.num_agents` (set by
-`run_experiment.py:691-697` from the wrapper just before
+`run_experiment.py` from the wrapper just before
 `export_artifacts` runs).
 
 Returned shape:
@@ -1551,12 +1566,12 @@ The `format` and `artifacts` fields are mandatory (validated by
 `bundle_validator`). The remaining fields (`tokenizer_config_path`,
 `supports_dynamic_topology`, `agent_models`) are supplemental metadata
 used by debugging and tooling and are passed through verbatim by
-`build_manifest` (`utils/artifact_manifest.py:41`).
+`build_manifest` (`utils/artifact_manifest.py`).
 
 We export **only the topology version current at export time**; no
 cross-topology weight portability is required for production.
 
-### 14.3 Checkpoints
+### 13.3 Checkpoints
 
 - File: `<output_dir>/checkpoints/transformer_ppo_step<step>.pt`.
 - Payload (`torch.save`):
@@ -1582,180 +1597,7 @@ cross-topology weight portability is required for production.
   `layout_signature` differs from the saved one, with an error pointing to
   the field that disagrees. Cross-topology resumption is **not** supported.
 
----
-
-## 15. File Structure & Work Packages
-
-### 15.1 Files
-
-(See §2 for the full delta. Summary view here.)
-
-```
-algorithms/
-├── agents/
-│   ├── transformer_ppo_agent.py                 # PORT from gj/plan-c, surgical edits
-│   └── transformer_ppo/
-│       ├── __init__.py                          # PORT
-│       ├── state_helper.py                      # PORT, drop marker registry
-│       ├── update_helper.py                     # PORT verbatim
-│       └── export_helper.py                     # PORT, drive shapes from layout
-├── utils/
-│   ├── entity_token_layout.py                   # NEW
-│   ├── entity_observation_tokenizer.py          # NEW
-│   ├── transformer_backbone.py                  # PORT, extend type embedding to 4
-│   └── ppo_components.py                        # PORT verbatim
-
-configs/
-├── tokenizers/
-│   └── entity_default.json                      # NEW
-└── templates/
-    └── transformer_ppo_entity_dynamic.yaml      # NEW
-
-utils/
-├── wrapper_citylearn.py                         # MODIFY (coordinator hook, generic guardrail)
-├── wrapper_transformer/
-│   ├── __init__.py                              # NEW
-│   └── transformer_observation_coordinator.py   # NEW
-└── config_schema.py                             # MODIFY (new models, JSON validation, generic guardrail)
-
-algorithms/registry.py                           # MODIFY (register AgentTransformerPPO)
-
-tests/
-├── test_entity_token_layout.py                  # NEW
-├── test_entity_observation_tokenizer.py         # NEW
-├── test_transformer_backbone.py                 # PORT + extend
-├── test_ppo_components.py                       # PORT
-├── test_agent_transformer_ppo_entity.py         # NEW
-├── test_wrapper_transformer_entity.py           # NEW
-└── test_e2e_transformer_ppo_entity_dynamic.py   # NEW
-
-docs/
-└── transformer_ppo_spec.md                     # this document
-```
-
-### 15.2 Work packages
-
-| WP | Component | Depends on | Deliverables |
-|----|---|---|---|
-| WP0 | Bring sources from `gj/plan-c` | — | Backbone, PPO components, helpers (see §2.2) |
-| WP1 | `EntityTokenLayoutBuilder` | — | `entity_token_layout.py` + tests |
-| WP2 | Tokenizer config + Pydantic schema + JSON validation | — | `entity_default.json`, `EntityTokenizerConfig`, validator hook |
-| WP3 | `EntityObservationTokenizer` | WP1, WP2 | `entity_observation_tokenizer.py` + tests |
-| WP4 | TransformerBackbone update (3-entry type embedding, new forward signature `(sros, nfc, cas)`) | WP0 | extended backbone + tests |
-| WP5 | PPO components verification | WP0 | re-run ported tests |
-| WP6 | `TransformerObservationCoordinator` | WP1 | coordinator + tests |
-| WP7 | Wrapper hooks + generic guardrail | WP6 | wrapper diff + integration tests |
-| WP8 | `AgentTransformerPPO` (CA-order check, attach lifecycle) | WP3, WP4, WP5, WP7 | agent + helpers + tests |
-| WP9 | Algorithm template, registry, schema additions | WP2, WP8 | yaml, registry, schema |
-| WP10 | E2E validation on `citylearn_three_phase_dynamic_assets_only_demo` | All | smoke test producing KPIs and ONNX |
-
-Parallelizable: WP0, WP1, WP2.
-
----
-
-## 16. Test Plan
-
-### 16.1 `EntityTokenLayoutBuilder` (`tests/test_entity_token_layout.py`)
-
-| Test | Verifies |
-|---|---|
-| `test_classifies_district_time_to_sro_singleton` | `district__hour` → `(sro, "district_time", building_id)` |
-| `test_classifies_district_pricing_current_separately_from_forecast` | `district__electricity_pricing` → `district_pricing_current`; `district__electricity_pricing_predicted_2` → `district_pricing_forecast` |
-| `test_classifies_district_carbon_separately_from_pricing` | `district__carbon_intensity` → `district_carbon`, not `district_pricing_*` |
-| `test_classifies_building_storage_state_to_sro` | `electrical_storage_soc`, `electrical_storage_soc_ratio` → `(sro, "building_storage_state")` |
-| `test_classifies_per_asset_pv_to_sro` | `pv::Building_1/pv::generation_power_kw` → `(sro, "pv", "Building_1/pv")` |
-| `test_classifies_per_asset_ev_connected_to_sro` | `charger::B/c::connected_ev::soc` → `(sro, "ev_connected", "B/c")` |
-| `test_classifies_per_asset_ev_incoming_to_sro` | `charger::B/c::incoming_ev::soc` → `(sro, "ev_incoming", "B/c")` |
-| `test_classifies_storage_prefix_to_ca` | `storage::Building_1/electrical_storage::soc` → `(ca, "storage", "Building_1/electrical_storage")` |
-| `test_classifies_charger_prefix_to_ca` | `charger::B/c::connected_state` → `(ca, "charger", "B/c")` |
-| `test_nfc_segment_has_two_source_indices_and_subtract_op` | NFC segment has `feature_indices=(idx_nsl, idx_solar)`; `derived.op == "subtract"` |
-| `test_nfc_source_features_not_in_any_sro_group` | `non_shiftable_load` and `solar_generation` do not appear in any SRO segment’s `feature_names` |
-| `test_excluded_features_dropped_before_classification` | `district__topology_version` and legacy charger aliases appear in `excluded_feature_names` and not in any segment |
-| `test_unmatched_feature_raises` | Inject a never-seen feature `district__some_new_feature` → `ValueError` listing the feature and table |
-| `test_ambiguous_pattern_raises` | Two SRO types claim the same feature → `ValueError` |
-| `test_sro_segment_order_follows_config_declaration` | `district_time` segment appears before `district_weather_current`, etc. |
-| `test_per_asset_sro_segments_sorted_by_instance_id` | Two PVs → segments in lexicographic order of `instance_id` |
-| `test_segment_overall_order` | `[sros…, nfc, cas…sorted_by_action_position]` |
-| `test_topology_changed_when_names_differ` | Adding a new charger → True |
-| `test_topology_unchanged_for_identical_names` | False |
-| `test_layout_is_cached` | Repeated `build()` returns the same instance |
-| `test_no_external_imports` | Module imports only stdlib + typing + re |
-| `test_uses_real_sample_payload` | Build layout from `configs/tokenizers/fixtures/entity_obs_sample.json` (passed through the adapter) succeeds for every building, with all 46 district + 38 building features accounted for |
-| `test_coverage_accounting_matches_spec` | Per-table feature counts in §13.1 coverage table are reproduced exactly |
-
-### 16.2 `EntityObservationTokenizer` (`tests/test_entity_observation_tokenizer.py`)
-
-| Test | Verifies |
-|---|---|
-| `test_forward_shapes_baseline` | sro_tokens=[1,N_sro,d], nfc_token=[1,1,d], ca_tokens=[1,N_ca,d] for the sample payload |
-| `test_forward_shapes_extra_charger` | ca_tokens=[1,2,d] when a second charger is present |
-| `test_projection_is_per_type_no_new_params_on_topology_grow` | Adding chargers / PVs does NOT add new parameters |
-| `test_index_select_handles_non_contiguous_sro_segment` | Mock encoded vector with sentinel values; verify `district_weather_forecast` slice gathers correct interleaved positions |
-| `test_nfc_token_value_equals_subtract_op` | Mock `non_shiftable_load=5.0`, `solar_generation=2.0` → NFC scalar = 3.0 (pre-projection) |
-| `test_nfc_input_dim_is_one` | `projections["building_nfc"].in_features == 1` |
-| `test_input_dim_mismatch_raises` | type_input_dims != entity_specs dim → clear ValueError naming both sides and the affected type |
-| `test_dtype_and_device_propagation` | Input cuda → output cuda; input float32 → output float32 |
-
-### 16.3 TransformerBackbone update (`tests/test_transformer_backbone.py`)
-
-| Test | Verifies |
-|---|---|
-| `test_type_embedding_table_size_3` | `nn.Embedding(3, d_model)` (SRO=0, NFC=1, CA=2) |
-| `test_concat_order_sros_nfc_cas` | First N_sro slots are sro tokens, slot N_sro is nfc, last block is ca |
-| `test_ca_embeddings_sliced_at_correct_offset` | Slice = `[N_sro + 1 : N_sro + 1 + N_ca]` |
-| `test_pooled_includes_sro_and_nfc_tokens` | Pooling spans all tokens (sros + nfc + cas) |
-| `test_gradient_flow_through_sro_tokens` | Backward through any sro token reaches the corresponding per-type projection |
-| `test_gradient_flow_through_nfc_token` | Backward through nfc reaches `projections["building_nfc"]` and the NfcExpression source indices |
-
-### 16.4 `AgentTransformerPPO` (`tests/test_agent_transformer_ppo_entity.py`)
-
-| Test | Verifies |
-|---|---|
-| `test_attach_environment_builds_layouts` | One `BuildingTokenLayout` per building, cached |
-| `test_attach_environment_validates_ca_action_order` | Mismatched `action_names` order raises |
-| `test_attach_environment_does_not_treat_first_call_as_topology_change` | No PPO update, no buffer flush |
-| `test_predict_action_count_matches_n_ca` | `len(actions[b]) == n_ca[b]` |
-| `test_predict_returns_list_of_lists_of_float` | Matches `BaseAgent.predict` signature |
-| `test_deterministic_uses_means` | Two deterministic calls → identical actions |
-| `test_stochastic_samples` | Two stochastic calls → different actions (>1e-6) |
-| `test_update_signature_uses_scalar_terminated_truncated` | Calling with `bool` works; calling with `List[bool]` raises a clear TypeError from upstream |
-| `test_update_returns_none` | Matches `BaseAgent.update` |
-| `test_on_topology_change_runs_update_then_flushes_buffer` | Buffer length == 0 after; PPO step counter incremented |
-| `test_on_topology_change_rebuilds_layout` | New layout reflects new observation_names |
-| `test_on_topology_change_validates_input_dim` | Raises if entity_specs dim != tokenizer dim |
-| `test_supports_dynamic_topology_flag` | `AgentTransformerPPO.supports_dynamic_topology is True` |
-| `test_checkpoint_round_trip_same_topology` | Save → load → identical weights |
-| `test_checkpoint_load_rejects_layout_signature_mismatch` | Loading into a different topology raises |
-
-### 16.5 Wrapper integration (`tests/test_wrapper_transformer_entity.py`)
-
-| Test | Verifies |
-|---|---|
-| `test_coordinator_initialised_only_for_transformer_agent` | `RuleBasedPolicy` doesn't trigger coordinator hooks |
-| `test_first_attach_does_not_trigger_topology_change` | `agent.on_topology_change` not called on initial reset |
-| `test_topology_version_increment_triggers_rebuild` | Mock env where `meta.topology_version` flips → encoders + layouts + agent rebuilds happen exactly once |
-| `test_topology_unchanged_does_not_rebuild` | Repeated steps with same `topology_version` → no rebuilds |
-| `test_action_conversion_uses_entity_adapter_tables_only` | Wrapper outputs `{"tables": {"building": ndarray, "charger": ndarray}}`; no `"map"` key |
-| `test_dynamic_guardrail_uses_supports_dynamic_topology_flag` | Setting flag to False on a dummy agent triggers the existing schema/runtime error; True does not |
-| `test_maddpg_dynamic_error_message_unchanged` | The exact MADDPG error string remains so existing tests continue to pass |
-
-### 16.6 Tokenizer JSON validation (`tests/test_entity_tokenizer_config_schema.py`)
-
-| Test | Verifies |
-|---|---|
-| `test_valid_json_loads` | The shipped `entity_default.json` validates against `EntityTokenizerConfig` and passes all 5 hard-fail rules on the sample payload |
-| `test_missing_ca_type_raises` | Removing `ca_types.charger` fails Pydantic validation |
-| `test_unknown_field_raises` | Extra unknown field at any level fails (strict mode) |
-| `test_validate_config_loads_tokenizer_json` | Top-level `validate_config(...)` invokes the JSON loader and reports the JSON path on failure |
-| `test_rule1_unmatched_feature_fails` | Add a fake feature `district__some_new_thing` to the sample payload → `ValueError` listing it |
-| `test_rule2_ambiguous_pattern_fails` | Two SRO types with overlapping patterns → `ValueError` listing the colliding feature and types |
-| `test_rule3_missing_nfc_source_fails` | Tokenizer references `nfc.expression.left.feature = "does_not_exist"` → `ValueError` |
-| `test_rule4_bad_regex_fails` | A `feature_patterns` entry like `"^[unclosed"` → `ValueError` reporting the JSON path and regex error |
-| `test_rule5_missing_action_field_fails` | Set `ca_types.charger.action_field = "no_such_action"` → `ValueError` |
-| `test_excluded_feature_pattern_removes_topology_version` | After validation, `district__topology_version` is in `excluded_feature_names` for every building |
-| `test_excluded_feature_cannot_match_an_sro_type` | Same feature in both `excluded_features.patterns` and an SRO `feature_patterns` → rule 2 conflict |
-
-### 16.7 End-to-end (`tests/test_e2e_transformer_ppo_entity_dynamic.py`)
+### Tests (`tests/e2e/test_e2e_transformer_ppo_entity_dynamic.py`)
 
 Run on `citylearn_three_phase_dynamic_assets_only_demo` for a small horizon.
 
@@ -1765,36 +1607,35 @@ Run on `citylearn_three_phase_dynamic_assets_only_demo` for a small horizon.
 | `test_actions_in_valid_range` | All actions in `[-1, 1]`, no NaN |
 | `test_topology_changes_observed_during_run` | At least one `topology_version` increment in 200 steps (the assets-only demo guarantees this) |
 | `test_kpi_files_generated` | `runs/jobs/<id>/results/{result,summary}.json` exist |
-| `test_artifact_manifest_includes_onnx_per_building` | `artifact_manifest.json` lists per-building ONNX with the naming from §14.2 |
+| `test_artifact_manifest_includes_onnx_per_building` | `artifact_manifest.json` lists per-building ONNX with the naming from §13.2 |
 | `test_buffer_flush_on_topology_change_does_not_crash` | The PPO update triggered by topology change runs and the agent continues training |
 
 ---
-
-## 17. Decisions Log
+## 14. Decisions Log
 
 | # | Question | Decision |
 |---|---|---|
 | 1 | Token boundary signal | Per-feature origin prefixes emitted by `EntityContractAdapter`, classified once per topology by `EntityTokenLayoutBuilder`. No marker values in tensor. |
 | 2 | Topology-change detection | `meta.topology_version` increment, exclusively. No asset/feature counting. |
-| 3 | Per-building vs centralized | Per-building, like v1. |
-| 4 | Action payload | `{"tables": {"building": ndarray, "charger": ndarray}}` only. **No `"map"` field**, matching the current adapter (`utils/entity_adapter.py:548-552`). |
+| 3 | Per-building vs centralized | Per-building. |
+| 4 | Action payload | `{"tables": {"building": ndarray, "charger": ndarray}}` only. **No `"map"` field**, matching the current adapter (`utils/entity_adapter.py`). |
 | 5 | CA token order | Sorted by position in `action_names[building]`, validated at `attach_environment` and `on_topology_change`. |
 | 6 | Graph structure usage | Edges consumed by the wrapper for slicing only. The Transformer treats the result as a set of typed tokens. |
 | 7 | EV / PV handling | Per-asset SRO tokens. EV split into `ev_connected` and `ev_incoming` (matching `connected_ev` / `incoming_ev` adapter labels). PV is its own SRO type. |
-| 8 | RL algorithm | PPO, as in v1. Rollout buffer, GAE, clipped surrogate, K epochs. |
+| 8 | RL algorithm | PPO. Rollout buffer, GAE, clipped surrogate, K epochs. |
 | 9 | Encoder rebuilds | `set_encoders()` is called every `_apply_entity_layout`; cheap (placeholder `NoNormalization`). Agent layout rebuilds are gated on `topology_version` change. |
 | 10 | Type embeddings | 3 families: SRO, NFC, CA. CTX from earlier drafts collapsed into SRO with per-type projections distinguishing semantic groups. |
 | 21 | NFC scope | Strict: NFC = single scalar per building, value of `non_shiftable_load - solar_generation` computed by `NfcExpression`. Other building-table features become singleton SRO types (`building_storage_state`, `building_charging_*`, `building_energy_*`, `building_meta`). |
 | 22 | SRO grouping | Driven by `feature_patterns` (regex) in tokenizer JSON. District split into 10 semantic SROs (time, weather current/forecast, carbon, pricing current/forecast, community energy/headroom/history, meta). Pricing and carbon are separate. Current and forecast are separate. |
 | 23 | Feature exclusion | `excluded_features.patterns` in tokenizer JSON. Excludes `topology_version` (redundant with `meta`) and legacy charger aliases (redundant with per-charger CA tokens). Adding/removing features is config-only. |
-| 24 | Validation rules | Five hard-fail rules in §13.4 enforced both at config-validation time and at runtime on every topology change. No silent dropping of features. |
-| 11 | Reuse policy | Backbone, PPO components, helpers ported from `gj/plan-c@3e9a673`. Marker-based modules replaced. |
+| 24 | Validation rules | Five hard-fail rules in §12.4 enforced both at config-validation time and at runtime on every topology change. No silent dropping of features. |
+| 11 | Reuse policy | Backbone, PPO components, actor/critic heads were ported from an earlier internal branch (`gj/plan-c@3e9a673`) as the historical origin. Marker-based modules were replaced with the entity-aware equivalents. |
 | 12 | Cross-topology checkpoints/exports | Not supported. Checkpoint loader rejects layout-signature mismatch. ONNX file name encodes `topology_version`. |
 | 13 | Dynamic-topology guardrail | Replaced by generic `agent.supports_dynamic_topology` flag, enforced both in `validate_config` and at runtime. MADDPG error message preserved. |
 | 14 | Tokenizer input dims | Read from `entity_specs` at attach time; tokenizer config’s `input_dim_fallback` exists only for inference. |
 | 15 | Tokenizer JSON validation | Performed inside `validate_config(...)` after YAML validation succeeds. |
 | 16 | Hyperparameter naming | `learning_rate` is canonical. `lr` is never used as a config key. |
-| 17 | `terminated`/`truncated` types | Scalar `bool`, matching `BaseAgent.update` (`algorithms/agents/base_agent.py:33`). |
-| 18 | `attach_environment` arguments | Keyword-only, matching `BaseAgent.attach_environment` (`algorithms/agents/base_agent.py:58-65`). |
+| 17 | `terminated`/`truncated` types | Scalar `bool`, matching `BaseAgent.update` (`algorithms/agents/base_agent.py`). |
+| 18 | `attach_environment` arguments | Keyword-only, matching `BaseAgent.attach_environment` (`algorithms/agents/base_agent.py`). |
 | 19 | Encoder dimension expansion | Not supported in v2; encoded length equals raw `observation_names` length (current entity-mode behaviour). No `encoded_index_map`. |
 | 20 | Portability | `EntityTokenLayoutBuilder` stays pure-Python; `EntityObservationTokenizer` (torch) lives only in training repo. |
