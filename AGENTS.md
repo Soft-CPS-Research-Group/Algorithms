@@ -133,6 +133,34 @@ Dynamic topology notes:
 - Current guardrail: `MADDPG` in `entity+dynamic` raises fail-fast on runtime topology mutation.
   Use `RuleBasedPolicy` (or another dynamic-ready agent) for dynamic topology scenarios.
 
+## Tokenizer Fixture (Entity Interface)
+
+`configs/tokenizers/fixtures/entity_obs_sample.json` is the pinned
+simulator-schema snapshot used by `validate_config` and by the tokenizer
+unit tests. The 5 hard-fail rules run against this fixture, so a
+tokenizer JSON that omits or misclassifies a column fails at
+config-load time.
+
+**Regenerate whenever the simulator schema changes** (columns
+added/removed/renamed in any entity table, new asset type, adapter
+emission order changed):
+
+```bash
+python scripts/dump_entity_obs_sample.py \
+    --config configs/templates/dynamic/rule_based_entity_dynamic_assets_only_local.yaml \
+    --output configs/tokenizers/fixtures/entity_obs_sample.json
+```
+
+If the new fixture uncovers uncovered features, `pytest
+tests/test_entity_tokenizer_config_schema.py` fails with a rule-1
+(coverage) violation — update `configs/tokenizers/entity_default.json`
+to classify the new columns (SRO / NFC / CA / excluded), then re-run
+tests.
+
+Any entity-mode YAML config works for the dump; the script only reads
+`env.entity_specs` (feature names + row ids) and the initial payload's
+edge structure.
+
 ## Outputs
 
 After training completes, all artifacts are organized in a job-specific directory:
