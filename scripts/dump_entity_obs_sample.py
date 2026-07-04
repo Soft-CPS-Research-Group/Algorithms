@@ -4,7 +4,7 @@ The fixture ``configs/tokenizers/fixtures/entity_obs_sample.json`` is a
 JSON snapshot of the simulator's entity schema (per-table feature names
 and row ids, plus edge index pairs). It is loaded by
 ``utils.entity_tokenizer_schema._load_default_sample()`` and used by the
-5 hard-fail tokenizer validation rules (see docs/specv2.md §13.4).
+5 hard-fail tokenizer validation rules (see docs/transformer_ppo_spec.md §13.4).
 
 Regenerate whenever the simulator schema changes (feature added/removed,
 new asset type, adapter emission order changed).

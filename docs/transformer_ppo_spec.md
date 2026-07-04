@@ -1630,7 +1630,7 @@ tests/
 └── test_e2e_transformer_ppo_entity_dynamic.py   # NEW
 
 docs/
-└── specv2.md                                    # this document
+└── transformer_ppo_spec.md                     # this document
 ```
 
 ### 15.2 Work packages
