@@ -62,7 +62,6 @@ class EntityObservationTokenizer(nn.Module):
         type_input_dims: Mapping[str, int],
     ) -> None:
         super().__init__()
-        self._cfg = tokenizer_config
         self._d_model = int(d_model)
 
         nfc_name = tokenizer_config.nfc.type_name

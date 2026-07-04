@@ -6,9 +6,8 @@ share the Transformer backbone but have separate heads.
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -313,7 +312,8 @@ def compute_ppo_loss(
     Returns:
         Tuple of:
             - total_loss: Combined loss for backprop.
-            - metrics: Dict with policy_loss, value_loss, entropy.
+            - metrics: Dict with ``policy_loss``, ``value_loss``, ``entropy``,
+              and ``clip_fraction``.
     """
     # Probability ratio
     ratio = torch.exp(log_probs_new - log_probs_old)

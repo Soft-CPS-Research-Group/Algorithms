@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-import torch.nn as nn
 
 from tests._entity_sample_obs_names import (
     load_sample_observation_names_for_first_building,
@@ -76,11 +75,6 @@ def _type_input_dims_for_layout(cfg, layout) -> dict[str, int]:
     return dims
 
 
-# --------------------------------------------------------------------------
-# ---
-# --------------------------------------------------------------------------
-
-
 def test_forward_shapes_baseline(cfg, layout, sentinel_obs) -> None:
     from algorithms.utils.entity_observation_tokenizer import (
         EntityObservationTokenizer,
@@ -100,11 +94,6 @@ def test_forward_shapes_baseline(cfg, layout, sentinel_obs) -> None:
     assert len(out.ca_types) == layout.n_ca
     assert out.n_sro == layout.n_sro
     assert out.n_ca == layout.n_ca
-
-
-# --------------------------------------------------------------------------
-# ---
-# --------------------------------------------------------------------------
 
 
 def test_nfc_token_value_equals_subtract_op(cfg, layout) -> None:
@@ -151,11 +140,6 @@ def test_nfc_projection_input_dim_is_one(cfg, layout) -> None:
     )
     nfc_name = cfg.nfc.type_name
     assert tok.projections[nfc_name].in_features == 1
-
-
-# --------------------------------------------------------------------------
-# ---
-# --------------------------------------------------------------------------
 
 
 def test_projection_is_per_type_no_new_params_on_topology_grow(
@@ -215,11 +199,6 @@ def test_projection_is_per_type_no_new_params_on_topology_grow(
     )
 
 
-# --------------------------------------------------------------------------
-# ---
-# --------------------------------------------------------------------------
-
-
 def test_index_select_handles_non_contiguous_sro_segment(
     cfg, layout, sentinel_obs
 ) -> None:
@@ -268,11 +247,6 @@ def test_index_select_handles_non_contiguous_sro_segment(
     )
 
 
-# --------------------------------------------------------------------------
-# ---
-# --------------------------------------------------------------------------
-
-
 def test_construction_rejects_wrong_nfc_dim(cfg, layout) -> None:
     from algorithms.utils.entity_observation_tokenizer import (
         EntityObservationTokenizer,
@@ -297,11 +271,6 @@ def test_construction_rejects_missing_type(cfg, layout) -> None:
         EntityObservationTokenizer(cfg, D_MODEL, bad)
 
 
-# --------------------------------------------------------------------------
-# ---
-# --------------------------------------------------------------------------
-
-
 def test_dtype_and_device_propagation(cfg, layout, sentinel_obs) -> None:
     from algorithms.utils.entity_observation_tokenizer import (
         EntityObservationTokenizer,
@@ -321,11 +290,6 @@ def test_dtype_and_device_propagation(cfg, layout, sentinel_obs) -> None:
     assert out.ca_tokens.device == obs32.device
 
 
-# --------------------------------------------------------------------------
-# ---
-# --------------------------------------------------------------------------
-
-
 def test_forward_rejects_non_2d_input(cfg, layout) -> None:
     from algorithms.utils.entity_observation_tokenizer import (
         EntityObservationTokenizer,
@@ -338,11 +302,6 @@ def test_forward_rejects_non_2d_input(cfg, layout) -> None:
         tok(torch.zeros(5), layout)  # 1-D
     with pytest.raises(ValueError, match="2-D"):
         tok(torch.zeros(2, 3, 4), layout)  # 3-D
-
-
-# --------------------------------------------------------------------------
-# ---
-# --------------------------------------------------------------------------
 
 
 def test_gradient_flows_through_projections(
@@ -410,5 +369,4 @@ def test_tokenizer_backbone_ppo_components_integration(
     assert actions.shape == (1, layout.n_ca, 1)
     assert log_probs.shape == (1, layout.n_ca)
     assert means.shape == (1, layout.n_ca, 1)
-    # Critic returns either [B, 1] or [B] depending on internal squeeze.
-    assert value.shape in {(1, 1), (1,)}
+    assert value.shape == (1, 1)
