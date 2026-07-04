@@ -283,6 +283,7 @@ def test_excluded_pattern_matches_topology_version():
     )
     assert not any(p.fullmatch("district__hour") for p in matchers)
 
+
 def test_excluded_feature_pattern_removes_topology_version():
     """The exclusion regex removes the ``topology_version`` feature."""
     from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder

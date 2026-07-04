@@ -6,8 +6,7 @@ is portable to the inference repo.
 The builder is **passive**: it consumes per-building observation/action
 names that the wrapper has already produced and returns a deterministic
 ``BuildingTokenLayout``. CA segments are permuted to match ``action_names``
-position-by-position; this is the single source of truth that the agent's
-startup assertion checks.
+position-by-position; the invariant is enforced at construction time.
 """
 from __future__ import annotations
 
@@ -56,8 +55,7 @@ class BuildingTokenLayout:
     """Deterministic layout for a single building.
 
     ``ca_action_names`` MUST equal ``tuple(action_names[building])`` element
-    by element — enforced at construction time so the agent's startup
-    assertion is a redundant check, not the first failure point.
+    by element — enforced at construction time.
     """
 
     building_id: str
@@ -88,7 +86,6 @@ _PER_ASSET_UNLABELLED_RE = re.compile(
     r"^(?P<prefix>pv|storage|charger|deferrable_appliance)::(?P<id>[^:]+(?:/[^:]+)*)::"
     r"(?P<feature>(?!connected_ev::|incoming_ev::).+)$"
 )
-_DISTRICT_PREFIX = "district__"
 
 
 def _compile_pattern(pattern: str, json_path: str) -> "re.Pattern[str]":
@@ -181,17 +178,6 @@ class EntityTokenLayoutBuilder:
         )
         self._cache[key] = layout
         return layout
-
-    def topology_changed(
-        self,
-        building_id: str,
-        observation_names: Sequence[str],
-        action_names: Sequence[str],
-    ) -> bool:
-        """Cheap predicate: ``True`` iff no cached layout exists for this
-        exact ``(building, observation_names, action_names)`` combination."""
-        key = (building_id, tuple(observation_names), tuple(action_names))
-        return key not in self._cache
 
     # ------------------------------------------------------------------
     # internals
@@ -406,14 +392,14 @@ class EntityTokenLayoutBuilder:
            the single building-level battery).
         2. Prefix match: ``action_name == f"{action_field}_{instance_id}"``.
            CityLearn appends a charger ID suffix when multiple CAs of the
-           same type exist (e.g.,
-           ``electric_vehicle_storage_charger_1_1``); we match by checking
-           ``action_name.startswith(action_field + "_")`` and verifying the
-           suffix equals the segment's ``instance_id``. Falls back to first
-           prefix-matching segment if exact instance match fails.
+           same type exist (e.g., ``electric_vehicle_storage_charger_1_1``).
+           If multiple action_fields could prefix-match, the longest one
+           wins.
 
         Within an action_field, segments are picked in sorted ``instance_id``
-        order for determinism (only relevant for the prefix fallback).
+        order. When the suffix of ``action_name`` matches a segment's
+        ``instance_id`` exactly, that segment is preferred; otherwise the
+        first unconsumed segment in sorted order is used.
         """
         if len(ca_segments) != len(action_names):
             raise ValueError(

@@ -106,10 +106,6 @@ def test_uses_real_sample_payload(builder_and_obs):
     )
 
 
-# ---------------------------------------------------------------------------
-# ---
-# ---------------------------------------------------------------------------
-
 
 def test_classifies_district_time_to_sro_singleton(builder_and_obs):
     _, obs, layout = builder_and_obs
@@ -218,10 +214,6 @@ def test_classifies_charger_prefix_to_ca(builder_and_obs):
             assert "::incoming_ev::" not in n
 
 
-# ---------------------------------------------------------------------------
-# ---
-# ---------------------------------------------------------------------------
-
 
 def test_nfc_segment_has_two_source_indices_and_subtract_op(builder_and_obs):
     _, obs, layout = builder_and_obs
@@ -245,10 +237,6 @@ def test_nfc_source_features_not_in_any_sro_group(builder_and_obs):
             assert "solar_generation" not in s.feature_names
 
 
-# ---------------------------------------------------------------------------
-# ---
-# ---------------------------------------------------------------------------
-
 
 def test_excluded_features_dropped_before_classification(builder_and_obs):
     _, _, layout = builder_and_obs
@@ -256,10 +244,6 @@ def test_excluded_features_dropped_before_classification(builder_and_obs):
     for s in layout.segments:
         assert "district__topology_version" not in s.feature_names
 
-
-# ---------------------------------------------------------------------------
-# ---
-# ---------------------------------------------------------------------------
 
 
 def test_unmatched_feature_raises(cfg):
@@ -322,10 +306,6 @@ def test_ca_count_mismatch_raises(cfg):
         builder.build("Building_1", obs, ["electrical_storage"])
 
 
-# ---------------------------------------------------------------------------
-# ---
-# ---------------------------------------------------------------------------
-
 
 def test_sro_segment_order_follows_config_declaration(builder_and_obs):
     _, _, layout = builder_and_obs
@@ -387,37 +367,6 @@ def test_segment_overall_order(builder_and_obs):
     assert families[n_sro] == "nfc"
     assert families[n_sro + 1 :] == ["ca"] * layout.n_ca
 
-
-# ---------------------------------------------------------------------------
-# ---
-# ---------------------------------------------------------------------------
-
-
-def test_topology_changed_when_names_differ(builder_and_obs):
-    builder, obs, _ = builder_and_obs
-    new_obs = list(obs) + ["charger::Building_1/charger_99::power_kw"]
-    assert (
-        builder.topology_changed(
-            "Building_1",
-            new_obs,
-            ["electrical_storage", "electric_vehicle_storage"],
-        )
-        is True
-    )
-
-
-def test_topology_unchanged_for_identical_names(builder_and_obs):
-    builder, obs, _ = builder_and_obs
-    assert (
-        builder.topology_changed(
-            "Building_1",
-            obs,
-            ["electrical_storage", "electric_vehicle_storage"],
-        )
-        is False
-    )
-
-
 def test_layout_is_cached(builder_and_obs):
     builder, obs, layout = builder_and_obs
     layout2 = builder.build(
@@ -427,10 +376,6 @@ def test_layout_is_cached(builder_and_obs):
     )
     assert layout2 is layout
 
-
-# ---------------------------------------------------------------------------
-# ---
-# ---------------------------------------------------------------------------
 
 
 def test_no_external_imports():
