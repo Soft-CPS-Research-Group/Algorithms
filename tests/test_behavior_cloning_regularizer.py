@@ -334,6 +334,27 @@ def test_maybe_phaseout_probability_mode_can_return_teacher_actions(monkeypatch)
     assert metrics["behavior_cloning_phaseout_used"] == pytest.approx(1.0)
 
 
+def test_maybe_phaseout_probability_mode_keeps_actor_on_teacher_shape_mismatch(monkeypatch):
+    regularizer = _regularizer(warm_start={
+        "policy": "RBCCommunityPolicy",
+        "deterministic": True,
+        "noise_scale": 0.0,
+        "phaseout_steps": 4,
+        "phaseout_mode": "probability",
+        "hyperparameters": {},
+    })
+    regularizer.set_latest_teacher_actions([[0.7], [0.9]])
+    actor_actions = [[-0.7], [-0.1, 0.1]]
+    monkeypatch.setattr(random, "random", lambda: 0.1)
+
+    actions = regularizer.maybe_phaseout(actor_actions, deterministic=False)
+
+    assert actions == [[0.7], [-0.1, 0.1]]
+    metrics = regularizer.snapshot_metrics()
+    assert metrics["behavior_cloning_phaseout_probability"] == pytest.approx(0.75)
+    assert metrics["behavior_cloning_phaseout_used"] == pytest.approx(1.0)
+
+
 def test_maybe_phaseout_deterministic_returns_actor_actions_unchanged():
     regularizer = _regularizer(warm_start={
         "policy": "RBCCommunityPolicy",

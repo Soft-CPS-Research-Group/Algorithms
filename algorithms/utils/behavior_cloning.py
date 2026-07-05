@@ -276,8 +276,12 @@ class BehaviorCloningRegularizer:
             return blended
 
         if random.random() < probability:
-            self._latest_phaseout_used = True
-            return self._copy_actions(self.latest_teacher_actions)
+            actions = self._replace_compatible_actions(
+                actor_actions,
+                self.latest_teacher_actions,
+            )
+            self._latest_phaseout_used = actions is not actor_actions
+            return actions
         return actor_actions
 
     def record_transition(self, building_idx: int) -> None:
@@ -383,6 +387,27 @@ class BehaviorCloningRegularizer:
         if not used_teacher:
             return actor_actions
         return blended
+
+    def _replace_compatible_actions(
+        self,
+        actor_actions: List[List[float]],
+        teacher_actions: List[List[float]],
+    ) -> List[List[float]]:
+        replaced: List[List[float]] = []
+        used_teacher = False
+        for building_idx, actor_building_actions in enumerate(actor_actions):
+            if building_idx >= len(teacher_actions):
+                replaced.append(actor_building_actions)
+                continue
+            teacher_building_actions = teacher_actions[building_idx]
+            if len(teacher_building_actions) != len(actor_building_actions):
+                replaced.append(actor_building_actions)
+                continue
+            replaced.append([float(value) for value in teacher_building_actions])
+            used_teacher = True
+        if not used_teacher:
+            return actor_actions
+        return replaced
 
     def _set_bc_loss_diagnostics(
         self,
