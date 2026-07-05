@@ -545,6 +545,48 @@ def test_episode_steps_not_forwarded_when_unset(monkeypatch, tmp_path):
     assert "--episode-steps" not in collect_cmds[0]
 
 
+def test_episode_steps_forwarded_to_benchmark(monkeypatch, tmp_path):
+    """Phase 13: --episode-steps must reach the benchmark subprocess.
+
+    Regression fix: without this, production benchmarks defaulted to 1-day
+    episodes (~96 steps for 15-min via episode_steps_for_schema()), so the
+    full-year evaluation of trained IQL/CQL checkpoints was silently
+    truncated. Passing --episode-steps 35040 lets a 15-min run evaluate
+    over a full simulated year.
+    """
+    rc, captured = _run_main_capture(
+        monkeypatch,
+        [
+            "--output", str(tmp_path),
+            "--steps", "benchmark",
+            "--episode-steps", "35040",
+        ],
+    )
+    assert rc == 0
+    bench_cmds = _cmds_for(captured, "benchmark_entity_agents")
+    assert bench_cmds, f"expected benchmark invocation; captured={captured}"
+    cmd = bench_cmds[0]
+    assert "--episode-steps" in cmd, f"missing --episode-steps in {cmd}"
+    idx = cmd.index("--episode-steps")
+    assert cmd[idx + 1] == "35040"
+
+
+def test_episode_steps_not_forwarded_to_benchmark_when_unset(monkeypatch, tmp_path):
+    """When --episode-steps is unset, benchmark falls back to its own default
+    (episode_steps_for_schema → steps-per-day). The orchestrator must NOT
+    inject an --episode-steps flag in that case, preserving backward-compat
+    for existing runs that relied on the 1-day default.
+    """
+    rc, captured = _run_main_capture(
+        monkeypatch,
+        ["--output", str(tmp_path), "--steps", "benchmark"],
+    )
+    assert rc == 0
+    bench_cmds = _cmds_for(captured, "benchmark_entity_agents")
+    assert bench_cmds
+    assert "--episode-steps" not in bench_cmds[0]
+
+
 def test_force_train_iql_passes_force_to_trainer(monkeypatch, tmp_path):
     """--force train-iql passes --force to train_iql_entity."""
     rc, captured = _run_main_capture(

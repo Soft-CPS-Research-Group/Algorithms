@@ -120,11 +120,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Override per-episode length forwarded to the collector. "
-            "When unset, the collector falls back to schema steps-per-day "
-            "(24 hourly, 96 for 15-min, 5760 for 15-sec). Set to the full "
-            "annual horizon (e.g. 35040 for 15-min) to collect 1 year per "
-            "seed and avoid overfitting on 150k gradient steps."
+            "Override per-episode length forwarded to both the collector "
+            "and the benchmark. When unset, each stage falls back to its own "
+            "schema-derived default (24 hourly, 96 for 15-min, 5760 for "
+            "15-sec). Set to the full annual horizon (e.g. 35040 for 15-min) "
+            "to collect 1 year per seed and evaluate on 1-year rollouts."
         ),
     )
     p.add_argument("--train-seeds", default=DEFAULT_TRAIN_SEEDS)
@@ -442,6 +442,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "--device", args.device,
             *offline_flag,
         ]
+        if args.episode_steps is not None:
+            cmd.extend(["--episode-steps", str(args.episode_steps)])
         if "train-iql" in steps or (iql_dir / "all_groups_summary.json").exists():
             cmd += ["--iql-root", str(iql_dir)]
         if "train-cql" in steps or (cql_dir / "all_groups_summary.json").exists():
