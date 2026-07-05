@@ -305,7 +305,7 @@ def test_excluded_feature_pattern_removes_topology_version():
 
 
 # ---------------------------------------------------------------------------
-# validate_config integration (Tasks 12-13)
+# validate_config integration
 # ---------------------------------------------------------------------------
 
 

@@ -1,7 +1,8 @@
-""" — End-to-end smoke for AgentTransformerPPO on the assets-only dynamic demo.
+"""End-to-end smoke for AgentTransformerPPO on the assets-only dynamic demo.
 
-Drives the unmodified ``run_experiment(...)`` entrypoint on a
-downsized horizon and asserts every row of Marked ``slow``; auto-skips when the demo dataset is not bundled.
+Drives the unmodified ``run_experiment(...)`` entrypoint on a downsized
+horizon. Marked ``slow``; auto-skips when the demo dataset is not
+bundled.
 
 Wall-clock on an 8-core M-series CPU: ~2-5 minutes (depends on building
 count; the assets-only demo ships 18 buildings).
@@ -40,9 +41,6 @@ def smoke_run(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     cfg["simulator"]["episodes"] = 1
     cfg["simulator"]["simulation_end_time_step"] = 1400
     cfg["simulator"]["episode_time_steps"] = 1401
-    # Ensure ≥1 PPO update fires before the topology mutation by keeping
-    # ``steps_between_training_updates`` at 1; PPO consumes one full
-    # rollout per call to ``update_step=True``.
     cfg["tracking"]["mlflow_enabled"] = False
     cfg["tracking"]["progress_updates_enabled"] = False
     cfg["checkpointing"]["resume_training"] = False
@@ -77,20 +75,10 @@ def smoke_run(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# row 1
-# ---------------------------------------------------------------------------
-
-
 def test_smoke_run_completes(smoke_run: dict[str, Any]) -> None:
     """Fixture having returned without exception is the assertion."""
     assert smoke_run["job_dir"].exists()
     assert smoke_run["manifest"] is not None, "artifact_manifest.json missing"
-
-
-# ---------------------------------------------------------------------------
-# row 2
-# ---------------------------------------------------------------------------
 
 
 def _walk_floats(x: Any):
@@ -133,11 +121,6 @@ def test_actions_in_valid_range(smoke_run: dict[str, Any]) -> None:
     assert not out_of_range, f"Out-of-range actions: {out_of_range[:10]}"
 
 
-# ---------------------------------------------------------------------------
-# row 3
-# ---------------------------------------------------------------------------
-
-
 def test_topology_changes_observed_during_run(smoke_run: dict[str, Any]) -> None:
     """The assets-only demo schedules events at simulator timesteps
     ``{1300, 1500, 1700, 1900, 2100, 2300}``. With ``simulation_end_time_step =
@@ -165,11 +148,6 @@ def test_topology_changes_observed_during_run(smoke_run: dict[str, Any]) -> None
     )
 
 
-# ---------------------------------------------------------------------------
-# row 4
-# ---------------------------------------------------------------------------
-
-
 def test_kpi_files_generated(smoke_run: dict[str, Any]) -> None:
     """``result.json`` and ``summary.json`` must exist with parseable content."""
     res = smoke_run["results_dir"]
@@ -181,11 +159,6 @@ def test_kpi_files_generated(smoke_run: dict[str, Any]) -> None:
     assert summary_path.stat().st_size > 0
     json.loads(result_path.read_text())  # raises on invalid JSON
     json.loads(summary_path.read_text())
-
-
-# ---------------------------------------------------------------------------
-# row 5 — manifest contract (+ )
-# ---------------------------------------------------------------------------
 
 
 def test_artifact_manifest_includes_onnx_per_building(
@@ -234,11 +207,6 @@ def test_artifact_manifest_includes_onnx_per_building(
     from utils.bundle_validator import validate_bundle_contract
 
     validate_bundle_contract(manifest, job_dir / "bundle")
-
-
-# ---------------------------------------------------------------------------
-# row 6
-# ---------------------------------------------------------------------------
 
 
 def test_buffer_flush_on_topology_change_does_not_crash(
