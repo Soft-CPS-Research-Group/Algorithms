@@ -194,6 +194,34 @@ class TestRolloutBuffer:
         assert len(buffer.rewards) == 0
 
 
+def test_rollout_buffer_batches_include_original_step_indices():
+    import torch
+    from algorithms.utils.ppo_components import RolloutBuffer
+
+    buffer = RolloutBuffer(gamma=0.99, gae_lambda=0.95)
+    for idx in range(5):
+        buffer.add(
+            observation=torch.tensor([float(idx)]),
+            action=torch.tensor([[float(idx)]]),
+            log_prob=torch.tensor([0.0]),
+            reward=0.0,
+            value=torch.tensor([0.0]),
+            done=False,
+        )
+    buffer.compute_returns_and_advantages(torch.tensor([0.0]))
+
+    seen = []
+    for batch in buffer.get_batches(batch_size=2):
+        assert batch.step_indices.dtype == torch.long
+        assert batch.step_indices.shape[0] == batch.observations.shape[0]
+        for row, original_idx in enumerate(batch.step_indices.tolist()):
+            assert batch.observations[row, 0].item() == float(original_idx)
+            assert batch.actions[row, 0, 0].item() == float(original_idx)
+            seen.append(original_idx)
+
+    assert sorted(seen) == [0, 1, 2, 3, 4]
+
+
 class TestPPOLoss:
     """Tests for PPO loss computation."""
 
