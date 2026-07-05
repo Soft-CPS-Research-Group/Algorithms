@@ -638,6 +638,26 @@ class TransformerPPOHyperparameters(BaseModel):
     max_grad_norm: float = Field(gt=0)
 
 
+class TransformerPPOWarmStartConfig(BaseModel):
+    policy: str = Field(min_length=1)
+    deterministic: bool = True
+    noise_scale: float = Field(default=0.0, ge=0.0)
+    phaseout_steps: int = Field(default=0, ge=0)
+    phaseout_mode: Literal["probability", "blend"] = "blend"
+    hyperparameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TransformerPPOBehaviorCloningConfig(BaseModel):
+    enabled: bool = True
+    weight: float = Field(default=0.0, ge=0.0)
+    min_weight: float = Field(default=0.0, ge=0.0)
+    decay_start_step: int = Field(default=0, ge=0)
+    decay_steps: int = Field(default=0, ge=0)
+    ev_multiplier: float = Field(default=1.0, ge=0.0)
+    storage_multiplier: float = Field(default=1.0, ge=0.0)
+    warm_start: Optional[TransformerPPOWarmStartConfig] = None
+
+
 class TransformerPPOStageConfig(BaseModel):
     algorithm: Literal["AgentTransformerPPO"]
     count: int = Field(default=1, ge=1)
@@ -645,6 +665,7 @@ class TransformerPPOStageConfig(BaseModel):
     tokenizer_config_path: str = Field(min_length=1)
     transformer: TransformerPPOTransformerConfig
     hyperparameters: TransformerPPOHyperparameters
+    behavior_cloning: Optional[TransformerPPOBehaviorCloningConfig] = None
 
 
 PipelineStageConfig = Union[

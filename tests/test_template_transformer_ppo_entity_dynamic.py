@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
+from pydantic import ValidationError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_PATH = REPO_ROOT / "configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml"
@@ -20,6 +22,72 @@ def test_template_passes_schema_validation() -> None:
 
     cfg = _load_template()
     validate_config(cfg)  # should not raise
+
+
+def test_transformer_ppo_stage_accepts_behavior_cloning_config() -> None:
+    from utils.config_schema import validate_config
+
+    cfg = _load_template()
+    cfg["pipeline"][0]["behavior_cloning"] = {
+        "enabled": True,
+        "weight": 0.42,
+        "min_weight": 0.24,
+        "decay_start_step": 512,
+        "decay_steps": 3584,
+        "ev_multiplier": 24.0,
+        "storage_multiplier": 0.18,
+        "warm_start": {
+            "policy": "RBCCommunityPolicy",
+            "deterministic": True,
+            "noise_scale": 0.0,
+            "phaseout_steps": 6144,
+            "phaseout_mode": "blend",
+            "hyperparameters": {},
+        },
+    }
+
+    stage = validate_config(cfg).pipeline[0]
+
+    assert stage.behavior_cloning is not None
+    assert stage.behavior_cloning.enabled is True
+    assert stage.behavior_cloning.weight == pytest.approx(0.42)
+    assert stage.behavior_cloning.min_weight == pytest.approx(0.24)
+    assert stage.behavior_cloning.decay_start_step == 512
+    assert stage.behavior_cloning.decay_steps == 3584
+    assert stage.behavior_cloning.ev_multiplier == pytest.approx(24.0)
+    assert stage.behavior_cloning.storage_multiplier == pytest.approx(0.18)
+    assert stage.behavior_cloning.warm_start is not None
+    assert stage.behavior_cloning.warm_start.policy == "RBCCommunityPolicy"
+    assert stage.behavior_cloning.warm_start.deterministic is True
+    assert stage.behavior_cloning.warm_start.noise_scale == pytest.approx(0.0)
+    assert stage.behavior_cloning.warm_start.phaseout_steps == 6144
+    assert stage.behavior_cloning.warm_start.phaseout_mode == "blend"
+    assert stage.behavior_cloning.warm_start.hyperparameters == {}
+
+
+def test_transformer_ppo_stage_rejects_invalid_behavior_cloning_phaseout_mode() -> None:
+    from utils.config_schema import validate_config
+
+    cfg = _load_template()
+    cfg["pipeline"][0]["behavior_cloning"] = {
+        "warm_start": {
+            "policy": "RBCCommunityPolicy",
+            "phaseout_mode": "invalid",
+        },
+    }
+
+    with pytest.raises(ValidationError):
+        validate_config(cfg)
+
+
+def test_transformer_ppo_stage_without_behavior_cloning_defaults_to_none() -> None:
+    from utils.config_schema import validate_config
+
+    cfg = _load_template()
+
+    stage = validate_config(cfg).pipeline[0]
+
+    assert stage.behavior_cloning is None
 
 
 def test_template_resolves_to_registered_agent() -> None:
