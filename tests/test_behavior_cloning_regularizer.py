@@ -167,6 +167,23 @@ def test_record_transition_appends_none_when_teacher_missing():
     assert regularizer.teacher_action_for(1, 0) is None
 
 
+def test_set_latest_teacher_actions_none_clears_and_records_none():
+    regularizer = BehaviorCloningRegularizer.from_config(
+        _algorithm_config(), _agent_config_template()
+    )
+    regularizer.attach_environment(**_attach_args())
+    regularizer.set_latest_teacher_actions([[0.1], [0.2]])
+
+    regularizer.set_latest_teacher_actions(None)
+    regularizer.record_transition(0)
+    regularizer.record_transition(1)
+
+    assert regularizer.latest_teacher_actions is None
+    assert regularizer.teacher_action_buffers == [[None], [None]]
+    assert regularizer.teacher_action_for(0, 0) is None
+    assert regularizer.teacher_action_for(1, 0) is None
+
+
 def test_on_buffer_flushed_clears_only_one_building():
     regularizer = BehaviorCloningRegularizer.from_config(
         _algorithm_config(), _agent_config_template()
@@ -198,3 +215,34 @@ def test_on_topology_change_clears_buffers_and_reattaches_teacher():
     assert isinstance(regularizer.teacher_policy, RBCCommunityPolicy)
     assert regularizer.latest_teacher_actions is None
     assert regularizer.teacher_action_buffers == [[]]
+
+
+def test_snapshot_metrics_reports_lifecycle_diagnostics():
+    regularizer = BehaviorCloningRegularizer.from_config(
+        _algorithm_config(), _agent_config_template()
+    )
+
+    assert regularizer.snapshot_metrics() == {
+        "behavior_cloning_teacher_enabled": 0.0,
+        "behavior_cloning_latest_teacher_available": 0.0,
+        "behavior_cloning_teacher_buffer_size": 0.0,
+    }
+
+    regularizer.attach_environment(**_attach_args())
+    regularizer.set_latest_teacher_actions([[0.1], [0.2]])
+    regularizer.record_transition(0)
+    regularizer.record_transition(1)
+
+    assert regularizer.snapshot_metrics() == {
+        "behavior_cloning_teacher_enabled": 1.0,
+        "behavior_cloning_latest_teacher_available": 1.0,
+        "behavior_cloning_teacher_buffer_size": 2.0,
+    }
+
+    regularizer.set_latest_teacher_actions(None)
+
+    assert regularizer.snapshot_metrics() == {
+        "behavior_cloning_teacher_enabled": 1.0,
+        "behavior_cloning_latest_teacher_available": 0.0,
+        "behavior_cloning_teacher_buffer_size": 2.0,
+    }
