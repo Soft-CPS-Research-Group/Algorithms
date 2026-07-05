@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import random
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +15,7 @@ from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.maddpg_agent import ActionScaledActor, _log_torch_runtime, _select_torch_device
 from algorithms.constants import DEFAULT_ONNX_OPSET
 from algorithms.utils.networks import GaussianActor, ValueNetwork
+from algorithms.utils.warm_start_policy import build_warm_start_policy
 from utils.artifact_config_builder import build_auto_artifact_config
 
 
@@ -307,43 +307,16 @@ class _PPOBase(BaseAgent):
         if not self.warm_start_policy_name:
             return
 
-        from algorithms.agents.baseline_policies import (  # Local import avoids registry cycles.
-            NormalNoBatteryPolicy,
-            NormalPolicy,
-            RBCBasicPolicy,
-            RBCSmartPolicy,
-            RandomPolicy,
-        )
-        from algorithms.agents.rbc_agent import RuleBasedPolicy
-
-        policy_registry = {
-            "RuleBasedPolicy": RuleBasedPolicy,
-            "RandomPolicy": RandomPolicy,
-            "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
-            "NormalPolicy": NormalPolicy,
-            "RBCBasicPolicy": RBCBasicPolicy,
-            "RBCSmartPolicy": RBCSmartPolicy,
-        }
-        policy_cls = policy_registry.get(str(self.warm_start_policy_name))
-        if policy_cls is None:
-            supported = ", ".join(sorted(policy_registry))
-            raise ValueError(
-                f"Unsupported PPO warm_start_policy '{self.warm_start_policy_name}'. "
-                f"Supported policies: {supported}."
-            )
-
         exploration_cfg = self.config["algorithm"]["exploration"]["params"]
         policy_hyperparams = exploration_cfg.get("warm_start_policy_hyperparameters") or {}
         if not isinstance(policy_hyperparams, dict):
             raise ValueError("PPO warm_start_policy_hyperparameters must be an object when provided.")
 
-        policy_config = deepcopy(self.config)
-        policy_config["algorithm"] = {
-            "name": str(self.warm_start_policy_name),
-            "hyperparameters": dict(policy_hyperparams),
-        }
-        self._warm_start_policy = policy_cls(policy_config)
-        self._warm_start_policy.attach_environment(
+        self._warm_start_policy = build_warm_start_policy(
+            owner_name="PPO",
+            policy_name=str(self.warm_start_policy_name),
+            policy_hyperparameters=policy_hyperparams,
+            config_template=self.config,
             observation_names=observation_names,
             action_names=action_names,
             action_space=action_space,
