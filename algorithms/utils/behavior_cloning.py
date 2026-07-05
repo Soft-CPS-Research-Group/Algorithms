@@ -235,7 +235,9 @@ class BehaviorCloningRegularizer:
             dtype=predicted_means.dtype,
             device=predicted_means.device,
         ).view(1, -1)
-        raw_loss = ((predicted - teacher).pow(2) * ca_weights).mean()
+        weighted_error = (predicted - teacher).pow(2) * ca_weights
+        denominator = ca_weights.expand_as(predicted).sum().clamp_min(1.0)
+        raw_loss = weighted_error.sum() / denominator
         weighted_loss = raw_loss * float(effective_weight)
         self._set_bc_loss_diagnostics(
             float(raw_loss.detach().cpu().item()),

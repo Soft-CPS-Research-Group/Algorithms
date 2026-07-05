@@ -233,32 +233,32 @@ def test_bc_loss_ignores_missing_teacher_and_mismatched_lengths():
     assert regularizer.snapshot_metrics()["behavior_cloning_valid_samples"] == pytest.approx(2.0)
 
 
-def test_bc_loss_applies_ca_type_multipliers_and_effective_weight():
+def test_bc_loss_normalizes_by_active_ca_type_weights():
     regularizer = _regularizer(
-        weight=0.4,
-        min_weight=0.2,
-        decay_start_step=10,
-        decay_steps=10,
-        ev_multiplier=2.0,
-        storage_multiplier=0.5,
+        weight=1.0,
+        min_weight=1.0,
+        decay_start_step=0,
+        decay_steps=0,
+        ev_multiplier=10.0,
+        storage_multiplier=1.0,
     )
     regularizer.teacher_action_buffers = [[[0.0, 0.0]]]
-    predictions = torch.tensor([[[1.0], [1.0]]])
+    predictions = torch.tensor([[[1.0], [0.0]]])
 
     loss = regularizer.bc_loss_term(
         building_idx=0,
         layout=_layout("charger", "storage"),
         predicted_means=predictions,
         step_indices=torch.tensor([0]),
-        global_learning_step=15,
+        global_learning_step=0,
     )
 
-    raw_loss = (2.0 + 0.5) / 2.0
-    assert loss.item() == pytest.approx(raw_loss * 0.3)
+    raw_loss = 10.0 / 11.0
+    assert loss.item() == pytest.approx(raw_loss)
     metrics = regularizer.snapshot_metrics()
     assert metrics["behavior_cloning_loss"] == pytest.approx(raw_loss)
-    assert metrics["behavior_cloning_weighted_loss"] == pytest.approx(raw_loss * 0.3)
-    assert metrics["behavior_cloning_effective_weight"] == pytest.approx(0.3)
+    assert metrics["behavior_cloning_weighted_loss"] == pytest.approx(raw_loss)
+    assert metrics["behavior_cloning_effective_weight"] == pytest.approx(1.0)
     assert metrics["behavior_cloning_valid_samples"] == pytest.approx(1.0)
 
 
