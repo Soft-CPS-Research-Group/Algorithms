@@ -311,3 +311,164 @@ def test_main_empty_run_dir_produces_only_pipeline_diagram(tmp_path):
     assert pngs == ["01_pipeline_overview.png"]
     payload = json.loads((out / ".curation.done").read_text())
     assert payload["n_figures"] == 1
+
+
+# -----------------------------------------------------------------------------
+# Task 9 (Phase 13): Wilcoxon report helpers
+# -----------------------------------------------------------------------------
+#
+# Bug 9 rerun retrospective added a machine-readable ``wilcoxon_report.json``
+# alongside the curated PNGs so every p-value cited in section 7 of
+# docs/offline_rl/iql_cql_initiative.md is regeneratable from a single
+# curate call. The helpers are pure functions of the benchmark results.json
+# dict; tests use a synthetic 10-seed dict rather than requiring the actual
+# full-year artifacts to be present.
+
+
+def _synthetic_10seed_results():
+    """Fabricated benchmark dict with 10 seeds and deterministic KPIs.
+
+    Designed so that IQL beats RBC on cost/carbon/etc. (all-negative delta)
+    and CQL is slightly worse than IQL but still better than RBC. Provides
+    a signed, non-degenerate signal for the Wilcoxon paired test.
+
+    Unserved-energy KPI is all-zero across algos to exercise the
+    identical-series shortcut in the Wilcoxon helper.
+    """
+    import numpy as np
+    rbc_vals = [2.1 + 0.1 * i for i in range(10)]
+    iql_vals = [1.1 + 0.05 * i for i in range(10)]
+    cql_vals = [1.5 + 0.2 * i for i in range(10)]
+
+    def _mk(name, vals):
+        return {
+            "runs": [
+                {
+                    "env_seed": 200 + i,
+                    "label": name,
+                    "district": {
+                        "cost_total": v,
+                        "carbon_emissions_total": v,
+                        "daily_peak_average": 1.0,
+                        "ramping_average": v * 1.5,
+                        "annual_normalized_unserved_energy_total": 0.0,
+                        "zero_net_energy": v - 1.0,
+                    },
+                    "steps": 35039,
+                }
+                for i, v in enumerate(vals)
+            ],
+            "aggregate": {
+                "cost_total": {"mean": float(np.mean(vals)), "std": float(np.std(vals, ddof=1)), "n": 10},
+                "carbon_emissions_total": {"mean": float(np.mean(vals)), "std": float(np.std(vals, ddof=1)), "n": 10},
+                "daily_peak_average": {"mean": 1.0, "std": 0.0, "n": 10},
+                "ramping_average": {"mean": float(np.mean(vals) * 1.5), "std": float(np.std(vals, ddof=1) * 1.5), "n": 10},
+                "annual_normalized_unserved_energy_total": {"mean": 0.0, "std": 0.0, "n": 10},
+                "zero_net_energy": {"mean": float(np.mean(vals) - 1.0), "std": float(np.std(vals, ddof=1)), "n": 10},
+            },
+        }
+
+    return {
+        "eval_seeds": list(range(200, 210)),
+        "iql_root": "/dummy",
+        "cql_root": "/dummy",
+        "RBCSmart": _mk("RBCSmart", rbc_vals),
+        "IQL": _mk("IQL", iql_vals),
+        "CQL": _mk("CQL", cql_vals),
+    }
+
+
+def test_compute_wilcoxon_report_shape():
+    """The report has the expected top-level shape and covers all six
+    KPIs cited in section 7 of the initiative doc."""
+    import scripts.curate_initiative_figures as m
+    data = _synthetic_10seed_results()
+    report = m._compute_wilcoxon_report(data)
+    assert report["eval_seeds"] == list(range(200, 210))
+    expected_kpis = {
+        "cost_total",
+        "carbon_emissions_total",
+        "daily_peak_average",
+        "ramping_average",
+        "annual_normalized_unserved_energy_total",
+        "zero_net_energy",
+    }
+    assert set(report["kpis"]) == expected_kpis
+    for kpi, entry in report["kpis"].items():
+        assert set(entry["algos"]) == {"RBCSmart", "IQL", "CQL"}, kpi
+        assert set(entry["pvalues"]) == {"IQL_vs_RBCSmart", "CQL_vs_RBCSmart", "IQL_vs_CQL"}, kpi
+
+
+def test_compute_wilcoxon_report_deltas_have_correct_sign():
+    """IQL and CQL synthetic means are lower than RBC's -> deltas_pct_vs_rbc
+    must be negative for cost_total. Guards against sign-flip regressions
+    in the delta arithmetic which would corrupt section 7 language."""
+    import scripts.curate_initiative_figures as m
+    data = _synthetic_10seed_results()
+    report = m._compute_wilcoxon_report(data)
+    deltas = report["kpis"]["cost_total"]["deltas_pct_vs_rbc"]
+    assert deltas["IQL"] < 0
+    assert deltas["CQL"] < 0
+    # IQL is strictly better than CQL (lower cost) -> more-negative delta
+    assert deltas["IQL"] < deltas["CQL"]
+
+
+def test_compute_wilcoxon_report_pvalues_are_significant_for_signal():
+    """Synthetic IQL vs RBC are strictly monotonically different -> the
+    paired Wilcoxon must produce p well below 0.05. Regression guard
+    for accidentally swapping test statistics or misordered pairs."""
+    import scripts.curate_initiative_figures as m
+    data = _synthetic_10seed_results()
+    report = m._compute_wilcoxon_report(data)
+    p_iql_rbc = report["kpis"]["cost_total"]["pvalues"]["IQL_vs_RBCSmart"]["p"]
+    assert p_iql_rbc is not None
+    assert p_iql_rbc < 0.05, f"expected significant IQL_vs_RBCSmart p, got {p_iql_rbc}"
+
+
+def test_compute_wilcoxon_report_identical_series_handled_gracefully():
+    """All-zero unserved-energy across algos -> Wilcoxon degenerate case.
+    The helper must not raise and must record either p=1.0 (shortcut) or
+    p=None with an explanatory note. Guards against noisy CI failures
+    when a KPI happens to be constant across seeds."""
+    import scripts.curate_initiative_figures as m
+    data = _synthetic_10seed_results()
+    report = m._compute_wilcoxon_report(data)
+    pvs = report["kpis"]["annual_normalized_unserved_energy_total"]["pvalues"]
+    for pair, info in pvs.items():
+        assert info["p"] in (1.0, None), f"{pair}: {info}"
+        # When p is None, an explanatory note must be present.
+        if info["p"] is None:
+            assert info.get("note"), f"{pair}: missing note for degenerate case"
+
+
+def test_persist_wilcoxon_report_writes_json(tmp_path):
+    """_persist_wilcoxon_report writes wilcoxon_report.json under output_dir
+    (atomic rename), returning the destination path. Downstream tooling
+    (doc §7 rewrite) depends on this filename being stable."""
+    import scripts.curate_initiative_figures as m
+    data = _synthetic_10seed_results()
+    report = m._compute_wilcoxon_report(data)
+    dst = m._persist_wilcoxon_report(report, tmp_path)
+    assert dst.name == "wilcoxon_report.json"
+    assert dst.exists()
+    loaded = json.loads(dst.read_text())
+    assert loaded["eval_seeds"] == list(range(200, 210))
+    assert "cost_total" in loaded["kpis"]
+
+
+def test_render_benchmark_kpi_bars_emits_wilcoxon_report(tmp_path):
+    """Integration: rendering fig 10 must have the side effect of
+    persisting wilcoxon_report.json in the same output dir. This is the
+    single-call reproducibility guarantee for section 7 p-values."""
+    import scripts.curate_initiative_figures as m
+    data = _synthetic_10seed_results()
+    results_json = tmp_path / "results.json"
+    results_json.write_text(json.dumps(data))
+    out = tmp_path / "out"
+    out.mkdir()
+    dst = m._render_benchmark_kpi_bars(results_json=results_json, output_dir=out)
+    assert dst is not None
+    assert (out / "10_benchmark_kpi_bars.png").exists()
+    assert (out / "wilcoxon_report.json").exists(), (
+        "fig 10 render must also emit wilcoxon_report.json for section 7 reproducibility"
+    )

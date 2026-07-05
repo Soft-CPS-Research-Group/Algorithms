@@ -246,6 +246,14 @@ def _render_benchmark_kpi_bars(*, results_json: Path, output_dir: Path) -> Path 
     with results_json.open() as f:
         data = json.load(f)
 
+    # Phase 13: emit wilcoxon_report.json alongside the PNGs so section 7
+    # p-values in docs/offline_rl/iql_cql_initiative.md are reproducible
+    # from a single curate call. Log-only side effect if scipy is absent
+    # (individual pvalues will be None with an explanatory note).
+    report = _compute_wilcoxon_report(data)
+    _persist_wilcoxon_report(report, output_dir)
+    _log_wilcoxon_summary(report)
+
     fig, axes = plt.subplots(2, 2, figsize=(11, 8))
     fig.suptitle("Benchmark KPIs -- RBCSmart vs IQL vs CQL", fontsize=13)
 
@@ -369,6 +377,168 @@ def _render_iql_vs_cql_scatter(*, results_json: Path, output_dir: Path) -> Path 
     plt.close(fig)
     logger.info("[curate] rendered %s", dst.name)
     return dst
+
+
+# -----------------------------------------------------------------------------
+# Wilcoxon report helpers (Phase 13)
+# -----------------------------------------------------------------------------
+#
+# Emit a machine-readable ``wilcoxon_report.json`` alongside the curated PNGs
+# so every p-value cited in section 7 of docs/offline_rl/iql_cql_initiative.md
+# is regeneratable from a single ``curate_initiative_figures`` invocation
+# (and, transitively, from ``run_entity_pipeline`` when Phase 10 fires).
+
+_WILCOXON_KPIS = (
+    "cost_total",
+    "carbon_emissions_total",
+    "daily_peak_average",
+    "ramping_average",
+    "annual_normalized_unserved_energy_total",
+    "zero_net_energy",
+)
+_WILCOXON_ALGOS = ("RBCSmart", "IQL", "CQL")
+_WILCOXON_PAIRS = (
+    ("IQL", "RBCSmart"),
+    ("CQL", "RBCSmart"),
+    ("IQL", "CQL"),
+)
+
+
+def _extract_per_seed_kpi(runs, kpi):
+    """Return ``{env_seed: value}`` for one KPI across ``runs``."""
+    out = {}
+    for r in runs or []:
+        if not isinstance(r, dict):
+            continue
+        seed = r.get("env_seed")
+        district = r.get("district") or {}
+        if seed is None or kpi not in district:
+            continue
+        try:
+            out[int(seed)] = float(district[kpi])
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _paired_wilcoxon(a, b):
+    """Return ``(pvalue, note)``; ``pvalue=None`` when the test cannot apply.
+
+    * lengths differ -> ``(None, ...)``
+    * n < 2          -> ``(None, ...)``
+    * a == b         -> ``(1.0, "identical series ...")`` shortcut
+    * scipy missing or raises -> ``(None, "scipy ...")``
+    """
+    if len(a) != len(b):
+        return None, f"length mismatch a={len(a)} b={len(b)}"
+    if len(a) < 2:
+        return None, f"n={len(a)} < 2"
+    if list(a) == list(b):
+        return 1.0, "identical series (all pairwise differences = 0)"
+    try:
+        from scipy.stats import wilcoxon
+    except ImportError as exc:  # pragma: no cover - scipy assumed available
+        return None, f"scipy not available: {exc}"
+    try:
+        _stat, p = wilcoxon(a, b)
+        return float(p), ""
+    except ValueError as exc:
+        return None, f"scipy error: {exc}"
+
+
+def _compute_wilcoxon_report(data, kpis=_WILCOXON_KPIS):
+    """Structured per-KPI p-value + delta report over algos.
+
+    ``data`` is the parsed benchmark ``results.json`` dict; the schema
+    matches what :mod:`scripts.benchmark_entity_agents` writes.
+
+    Returned dict structure::
+
+        {
+            "eval_seeds": [...],
+            "kpis": {
+                kpi: {
+                    "algos": {algo: {"mean", "std", "n"}, ...},
+                    "deltas_pct_vs_rbc": {"IQL": pct, "CQL": pct},
+                    "pvalues": {
+                        "IQL_vs_RBCSmart": {"p", "note", "n"},
+                        "CQL_vs_RBCSmart": {...},
+                        "IQL_vs_CQL": {...},
+                    },
+                }
+            }
+        }
+    """
+    eval_seeds = list(data.get("eval_seeds", []))
+    out = {"eval_seeds": eval_seeds, "kpis": {}}
+    for kpi in kpis:
+        entry = {"algos": {}, "deltas_pct_vs_rbc": {}, "pvalues": {}}
+        per_seed = {}
+        for algo in _WILCOXON_ALGOS:
+            runs = data.get(algo, {}).get("runs", [])
+            per_seed[algo] = _extract_per_seed_kpi(runs, kpi)
+            agg = data.get(algo, {}).get("aggregate", {}).get(kpi)
+            if agg:
+                entry["algos"][algo] = {
+                    "mean": float(agg["mean"]),
+                    "std": float(agg.get("std", 0.0) or 0.0),
+                    "n": int(agg.get("n", len(per_seed[algo]))),
+                }
+            elif per_seed[algo]:
+                vals = list(per_seed[algo].values())
+                n = len(vals)
+                mean = sum(vals) / n
+                var = sum((v - mean) ** 2 for v in vals) / max(n - 1, 1)
+                entry["algos"][algo] = {
+                    "mean": mean,
+                    "std": var ** 0.5,
+                    "n": n,
+                }
+        rbc_mean = entry["algos"].get("RBCSmart", {}).get("mean")
+        if rbc_mean not in (None, 0):
+            for algo in ("IQL", "CQL"):
+                m = entry["algos"].get(algo, {}).get("mean")
+                if m is not None:
+                    entry["deltas_pct_vs_rbc"][algo] = 100.0 * (m - rbc_mean) / rbc_mean
+        for a, b in _WILCOXON_PAIRS:
+            key = f"{a}_vs_{b}"
+            sa, sb = per_seed.get(a, {}), per_seed.get(b, {})
+            common = sorted(set(sa) & set(sb))
+            if len(common) < 2:
+                entry["pvalues"][key] = {
+                    "p": None,
+                    "note": f"n={len(common)} paired seeds",
+                    "n": len(common),
+                }
+                continue
+            va = [sa[s] for s in common]
+            vb = [sb[s] for s in common]
+            p, note = _paired_wilcoxon(va, vb)
+            entry["pvalues"][key] = {"p": p, "note": note, "n": len(common)}
+        out["kpis"][kpi] = entry
+    return out
+
+
+def _persist_wilcoxon_report(report, output_dir):
+    """Atomically write ``report`` to ``<output_dir>/wilcoxon_report.json``."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dst = output_dir / "wilcoxon_report.json"
+    tmp = dst.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(report, indent=2))
+    os.replace(tmp, dst)
+    return dst
+
+
+def _log_wilcoxon_summary(report):
+    """Log a compact per-KPI Wilcoxon summary at INFO level."""
+    for kpi, entry in report["kpis"].items():
+        pv = entry.get("pvalues", {})
+        parts = []
+        for pair in ("IQL_vs_RBCSmart", "CQL_vs_RBCSmart", "IQL_vs_CQL"):
+            info = pv.get(pair, {})
+            p = info.get("p")
+            parts.append(f"{pair}={p:.3f}" if isinstance(p, float) else f"{pair}=N/A")
+        logger.info("[curate] wilcoxon %s | %s", kpi, " | ".join(parts))
 
 
 def _write_sentinel(*, output_dir: Path, run_dir: Path, produced: List[Path]) -> Path:
