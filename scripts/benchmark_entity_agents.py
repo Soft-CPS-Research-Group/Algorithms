@@ -188,7 +188,7 @@ def entity_rollout(
     *,
     env_seed: int,
     label: str,
-    max_steps: int = 6000,
+    max_steps: Optional[int] = None,
     env_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run one full-episode entity rollout and return KPIs.
@@ -196,6 +196,19 @@ def entity_rollout(
     The agent is called with per-agent observation vectors from the
     EntityContractAdapter.  If the agent is not an IQL/CQL entity agent,
     it is called directly (e.g. RBCSmartPolicy which handles its own dispatch).
+
+    Termination:
+        By default (``max_steps=None``) the rollout runs until the
+        environment signals ``terminated`` or ``truncated``.  This mirrors
+        :func:`rbc_rollout` and lets CityLearn's ``episode_time_steps``
+        drive the horizon.  Callers may pass an integer ``max_steps`` for
+        an explicit bounded rollout (e.g. smoke tests).
+
+        Regression fix (Phase 13 / Bug 9): a previous default of 6000
+        silently truncated full-year IQL/CQL rollouts (35,040 steps at
+        15-min resolution) to ~62 days while ``rbc_rollout`` — which had
+        no cap — ran the full horizon.  The mismatch produced
+        horizon-inconsistent CityLearn normalized KPIs.
     """
     _env_kwargs = env_kwargs or {}
     env = _make_env(env_seed, **_env_kwargs)
@@ -237,7 +250,7 @@ def entity_rollout(
         step += 1
         if step % 1000 == 0:
             print(f"  [{label} seed={env_seed}] step {step}", flush=True)
-        if step >= max_steps:
+        if max_steps is not None and step >= max_steps:
             print(f"  [{label} seed={env_seed}] WARN: max_steps={max_steps} reached", flush=True)
             break
 
@@ -403,6 +416,29 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", type=Path, default=None,
                    help="Optional JSON output path for results")
     p.add_argument("--device", default="cpu")
+    p.add_argument(
+        "--skip-rbc",
+        dest="skip_rbc",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the RBCSmart rollout loop entirely. Combined with "
+            "--merge-existing, this reuses a prior full-year RBC block so "
+            "IQL/CQL can be rerun without redoing the (~7h) RBC baseline. "
+            "Introduced in Phase 13 to work around Bug 9."
+        ),
+    )
+    p.add_argument(
+        "--merge-existing",
+        dest="merge_existing",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a prior results.json whose RBCSmart block should be "
+            "spliced into the output (overrides any freshly-computed RBC "
+            "block). Intended for --skip-rbc reruns after Bug 9 fix."
+        ),
+    )
     return p
 
 
@@ -431,13 +467,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"[benchmark] offline       = {args.offline}")
     print(f"[benchmark] iql_root      = {args.iql_root}")
     print(f"[benchmark] cql_root      = {args.cql_root}")
+    print(f"[benchmark] skip_rbc      = {args.skip_rbc}")
+    print(f"[benchmark] merge_existing= {args.merge_existing}")
     print()
 
     # --- RBCSmart rollouts ---
-    print("=== RBCSmart rollouts ===")
     rbc_runs: List[Dict[str, Any]] = []
-    for seed in eval_seeds:
-        rbc_runs.append(rbc_rollout(env_seed=seed, env_kwargs=env_kwargs))
+    if args.skip_rbc:
+        print("=== RBCSmart rollouts SKIPPED (--skip-rbc) ===")
+    else:
+        print("=== RBCSmart rollouts ===")
+        for seed in eval_seeds:
+            rbc_runs.append(rbc_rollout(env_seed=seed, env_kwargs=env_kwargs))
 
     # --- IQL rollouts ---
     iql_runs: Optional[List[Dict[str, Any]]] = None
@@ -466,26 +507,56 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
 
     # --- Aggregate ---
-    rbc_agg = _aggregate(rbc_runs, HEADLINE_KPIs)
+    rbc_agg = _aggregate(rbc_runs, HEADLINE_KPIs) if rbc_runs else None
     iql_agg = _aggregate(iql_runs, HEADLINE_KPIs) if iql_runs else None
     cql_agg = _aggregate(cql_runs, HEADLINE_KPIs) if cql_runs else None
 
-    # --- Print report ---
+    # --- Optional splice: overwrite RBCSmart block from a prior results.json ---
+    merged_rbc_block: Optional[Dict[str, Any]] = None
+    if args.merge_existing is not None:
+        try:
+            prev = json.loads(Path(args.merge_existing).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(
+                f"[benchmark] ERROR: could not read --merge-existing "
+                f"{args.merge_existing}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        if "RBCSmart" not in prev:
+            print(
+                f"[benchmark] ERROR: --merge-existing file {args.merge_existing} "
+                f"has no 'RBCSmart' block; cannot splice.",
+                file=sys.stderr,
+            )
+            return 1
+        merged_rbc_block = prev["RBCSmart"]
+        merged_seeds = [r.get("env_seed") for r in merged_rbc_block.get("runs", [])]
+        print(
+            f"[benchmark] Splicing RBCSmart from {args.merge_existing} "
+            f"(seeds={merged_seeds}, n={len(merged_seeds)})"
+        )
+
+    # --- Print report (fresh values; merged splice happens after) ---
     print("\n\n=== Benchmark Results ===")
     print(f"Eval seeds: {eval_seeds}  (n={len(eval_seeds)})\n")
-    _print_report(rbc_agg, iql_agg, cql_agg, HEADLINE_KPIs)
+    _print_report(rbc_agg or {}, iql_agg, cql_agg, HEADLINE_KPIs)
 
     # --- Save results ---
-    results = {
+    results: Dict[str, Any] = {
         "eval_seeds": eval_seeds,
         "iql_root": str(args.iql_root) if args.iql_root else None,
         "cql_root": str(args.cql_root) if args.cql_root else None,
-        "RBCSmart": {"runs": rbc_runs, "aggregate": rbc_agg},
     }
+    if rbc_runs:
+        results["RBCSmart"] = {"runs": rbc_runs, "aggregate": rbc_agg}
+    # Merged block takes precedence over any freshly-computed RBC block
+    if merged_rbc_block is not None:
+        results["RBCSmart"] = merged_rbc_block
     if iql_runs is not None:
-        results["IQL"] = {"runs": iql_runs, "aggregate": iql_agg}  # type: ignore[index]
+        results["IQL"] = {"runs": iql_runs, "aggregate": iql_agg}
     if cql_runs is not None:
-        results["CQL"] = {"runs": cql_runs, "aggregate": cql_agg}  # type: ignore[index]
+        results["CQL"] = {"runs": cql_runs, "aggregate": cql_agg}
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

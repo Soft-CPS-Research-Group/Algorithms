@@ -46,3 +46,40 @@ def test_benchmark_main_accepts_argv():
     with pytest.raises(SystemExit) as exc:
         m.main(["--help"])
     assert exc.value.code == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 / Bug 9: --skip-rbc and --merge-existing flags
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_skip_rbc_default_false():
+    """--skip-rbc defaults to False so existing pipelines continue to
+    include a fresh RBC baseline in every benchmark run."""
+    args = _parse([])
+    assert args.skip_rbc is False
+
+
+def test_benchmark_skip_rbc_flag_parses():
+    """--skip-rbc sets a truthy attribute so main() can gate the
+    rbc_rollout loop. Used by Phase 13 to reuse existing full-year RBC
+    runs when reprocessing IQL/CQL after Bug 9 fix."""
+    args = _parse(["--skip-rbc"])
+    assert args.skip_rbc is True
+
+
+def test_benchmark_merge_existing_default_none():
+    """--merge-existing defaults to None so results.json only reflects
+    freshly-computed runs unless the caller opts in to splicing."""
+    args = _parse([])
+    assert args.merge_existing is None
+
+
+def test_benchmark_merge_existing_flag_parses(tmp_path):
+    """--merge-existing PATH resolves to a Path attribute so main() can
+    load a prior RBCSmart block and inject it into the output JSON."""
+    prev = tmp_path / "prev.json"
+    prev.write_text("{}")
+    args = _parse(["--merge-existing", str(prev)])
+    assert args.merge_existing is not None
+    assert Path(args.merge_existing).name == "prev.json"
