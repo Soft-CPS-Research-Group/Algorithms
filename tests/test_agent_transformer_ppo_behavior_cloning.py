@@ -83,6 +83,26 @@ def _random_transition(agent: AgentTransformerPPO, obs_dim: int, rng: np.random.
     return obs, actions, next_obs
 
 
+def _random_transition_for_all_buildings(
+    agent: AgentTransformerPPO,
+    obs_dim: int,
+    rng: np.random.Generator,
+):
+    obs = [
+        rng.standard_normal(obs_dim).astype(np.float64)
+        for _ in agent._per_building
+    ]
+    next_obs = [
+        rng.standard_normal(obs_dim).astype(np.float64)
+        for _ in agent._per_building
+    ]
+    actions = [
+        rng.uniform(-0.5, 0.5, size=(state.layout.n_ca,))
+        for state in agent._per_building
+    ]
+    return obs, actions, next_obs
+
+
 def _set_fake_teacher(agent: AgentTransformerPPO, actions: List[List[float]]) -> None:
     assert agent._bc is not None
 
@@ -243,3 +263,59 @@ def test_topology_change_flushes_bc_buffers() -> None:
     assert agent._bc.teacher_action_buffers == [[]]
     assert agent._bc.teacher_policy is not old_teacher
     assert isinstance(agent._bc.teacher_policy, RBCCommunityPolicy)
+
+
+def test_partial_topology_change_preserves_unchanged_bc_buffer_alignment() -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(config=_bc_config(), n_buildings=2)
+    assert agent._bc is not None
+    teacher_actions = [
+        [0.1 for _ in range(state.layout.n_ca)]
+        for state in agent._per_building
+    ]
+    _set_fake_teacher(agent, teacher_actions)
+    rng = np.random.default_rng(4)
+
+    for step in range(2):
+        obs, actions, next_obs = _random_transition_for_all_buildings(agent, obs_dim, rng)
+        agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
+        agent.predict(obs, deterministic=bool(step % 2))
+        agent.update(
+            observations=obs,
+            actions=actions,
+            rewards=[0.1, 0.2],
+            next_observations=next_obs,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    assert [len(state.buffer) for state in agent._per_building] == [2, 2]
+    assert [len(buffer) for buffer in agent._bc.teacher_action_buffers] == [2, 2]
+
+    orig_id = next(
+        n.split("::")[1]
+        for n in obs_per[0]
+        if n.startswith("charger::") and "::connected_ev::" not in n and "::incoming_ev::" not in n
+    )
+    new_id = "Building_1/charger_PARTIAL_BC_NEW"
+    new_obs_0 = list(obs_per[0])
+    new_obs_0.extend(
+        n.replace(f"charger::{orig_id}::", f"charger::{new_id}::", 1)
+        for n in obs_per[0]
+        if n.startswith(f"charger::{orig_id}::")
+    )
+    new_acts_0 = list(act_per[0]) + ["electric_vehicle_storage"]
+
+    agent.attach_environment(
+        observation_names=[new_obs_0, list(obs_per[1])],
+        action_names=[new_acts_0, list(act_per[1])],
+        action_space=[_DummySpace(len(new_acts_0)), _DummySpace(len(act_per[1]))],
+        observation_space=[None, None],
+        metadata={"building_names": ["Building_1", "Building_2"]},
+    )
+
+    assert [len(state.buffer) for state in agent._per_building] == [0, 2]
+    assert [len(buffer) for buffer in agent._bc.teacher_action_buffers] == [0, 2]

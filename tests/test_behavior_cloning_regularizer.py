@@ -473,6 +473,24 @@ def test_on_topology_change_clears_buffers_and_reattaches_teacher():
     assert regularizer.teacher_action_buffers == [[]]
 
 
+def test_on_topology_change_preserves_unchanged_building_buffers():
+    regularizer = BehaviorCloningRegularizer.from_config(
+        _algorithm_config(), _agent_config_template()
+    )
+    regularizer.attach_environment(**_attach_args())
+    old_teacher = regularizer.teacher_policy
+    regularizer.set_latest_teacher_actions([[0.1], [0.2]])
+    regularizer.record_transition(0)
+    regularizer.record_transition(1)
+
+    regularizer.on_topology_change(**_attach_args(), changed_buildings=[0])
+
+    assert regularizer.teacher_policy is not old_teacher
+    assert isinstance(regularizer.teacher_policy, RBCCommunityPolicy)
+    assert regularizer.latest_teacher_actions is None
+    assert regularizer.teacher_action_buffers == [[], [[0.2]]]
+
+
 def test_snapshot_metrics_reports_lifecycle_diagnostics():
     regularizer = BehaviorCloningRegularizer.from_config(
         _algorithm_config(), _agent_config_template()

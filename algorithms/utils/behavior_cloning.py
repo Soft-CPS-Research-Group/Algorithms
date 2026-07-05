@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from copy import deepcopy
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import numpy as np
 import torch
@@ -107,11 +107,7 @@ class BehaviorCloningRegularizer:
         observation_space: List[Any],
         metadata: Optional[Dict[str, Any]],
     ) -> None:
-        self.teacher_policy = build_warm_start_policy(
-            owner_name="AgentTransformerPPO",
-            policy_name=self.policy,
-            policy_hyperparameters=self.hyperparameters,
-            config_template=self.agent_config_template,
+        self.teacher_policy = self._build_teacher_policy(
             observation_names=observation_names,
             action_names=action_names,
             action_space=action_space,
@@ -321,16 +317,28 @@ class BehaviorCloningRegularizer:
         action_space: List[Any],
         observation_space: List[Any],
         metadata: Optional[Dict[str, Any]],
+        changed_buildings: Optional[Iterable[int]] = None,
     ) -> None:
-        self.teacher_action_buffers = []
         self.latest_teacher_actions = None
-        self.attach_environment(
+        previous_buffers = self.teacher_action_buffers
+        self.teacher_policy = self._build_teacher_policy(
             observation_names=observation_names,
             action_names=action_names,
             action_space=action_space,
             observation_space=observation_space,
             metadata=metadata,
         )
+        if changed_buildings is None:
+            self.teacher_action_buffers = [[] for _ in observation_names]
+            return
+
+        changed = {int(idx) for idx in changed_buildings}
+        self.teacher_action_buffers = [
+            []
+            if idx in changed or idx >= len(previous_buffers)
+            else self._copy_buffer(previous_buffers[idx])
+            for idx in range(len(observation_names))
+        ]
 
     def snapshot_metrics(self) -> Dict[str, float]:
         return {
@@ -355,6 +363,33 @@ class BehaviorCloningRegularizer:
         if building_idx < 0 or building_idx >= len(self.teacher_action_buffers):
             raise IndexError(f"Building index {building_idx} is out of range.")
         return self.teacher_action_buffers[building_idx]
+
+    def _build_teacher_policy(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+    ):
+        return build_warm_start_policy(
+            owner_name="AgentTransformerPPO",
+            policy_name=self.policy,
+            policy_hyperparameters=self.hyperparameters,
+            config_template=self.agent_config_template,
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _copy_buffer(
+        buffer: List[Optional[List[float]]],
+    ) -> List[Optional[List[float]]]:
+        return [None if action is None else list(action) for action in buffer]
 
     def _add_teacher_noise(self, actions: List[List[float]]) -> List[List[float]]:
         noisy: List[List[float]] = []

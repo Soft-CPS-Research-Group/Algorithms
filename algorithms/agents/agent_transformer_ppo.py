@@ -196,7 +196,7 @@ class AgentTransformerPPO(BaseAgent):
             )
             return
 
-        topology_changed = False
+        changed_buildings: List[int] = []
         for b, (obs_n, act_n) in enumerate(
             zip(observation_names, action_names)
         ):
@@ -214,15 +214,16 @@ class AgentTransformerPPO(BaseAgent):
             state.obs_names_tuple = new_obs
             state.action_names_tuple = new_act
             self._handle_topology_change(b)
-            topology_changed = True
+            changed_buildings.append(b)
 
-        if topology_changed:
+        if changed_buildings:
             self._notify_bc_topology_change(
                 observation_names=observation_names,
                 action_names=action_names,
                 action_space=action_space,
                 observation_space=observation_space,
                 metadata=metadata,
+                changed_buildings=changed_buildings,
             )
 
     def set_observation_context(
@@ -527,6 +528,7 @@ class AgentTransformerPPO(BaseAgent):
         action_space: List[Any],
         observation_space: List[Any],
         metadata: Optional[Dict[str, Any]],
+        changed_buildings: Optional[List[int]] = None,
     ) -> None:
         if self._bc is None:
             return
@@ -536,6 +538,7 @@ class AgentTransformerPPO(BaseAgent):
             action_space=action_space,
             observation_space=observation_space,
             metadata=metadata,
+            changed_buildings=changed_buildings,
         )
 
     def _build_one_per_building_state(
