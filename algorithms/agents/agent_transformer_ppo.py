@@ -129,6 +129,7 @@ class AgentTransformerPPO(BaseAgent):
         self._layout_builder = EntityTokenLayoutBuilder(self._tokenizer_config)
         self._per_building: List[_PerBuildingState] = []
         self._bc = BehaviorCloningRegularizer.from_config(algo, self.config)
+        self.requires_raw_observation_context = bool(self._bc is not None)
         self._latest_raw_observations: Optional[List[npt.NDArray[np.float64]]] = None
         self._latest_encoded_observations: Optional[List[npt.NDArray[np.float64]]] = None
         self._latest_global_learning_step = 0

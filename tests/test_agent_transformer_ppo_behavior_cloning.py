@@ -126,6 +126,18 @@ def test_bc_absent_leaves_agent_without_regularizer() -> None:
     assert len(actions[0]) == agent._per_building[0].layout.n_ca
 
 
+def test_bc_absent_does_not_require_raw_observation_context() -> None:
+    agent = AgentTransformerPPO(_base_config())
+
+    assert getattr(agent, "requires_raw_observation_context", False) is False
+
+
+def test_bc_present_requires_raw_observation_context() -> None:
+    agent = AgentTransformerPPO(_bc_config())
+
+    assert agent.requires_raw_observation_context is True
+
+
 def test_bc_present_attaches_teacher_policy() -> None:
     agent, _, _, _ = _make_agent(config=_bc_config())
 
