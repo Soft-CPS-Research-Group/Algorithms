@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import random
 from copy import deepcopy
 from typing import Any, Dict, List, Mapping, Optional
 
+import numpy as np
+import torch
+
+from algorithms.utils.entity_token_layout import BuildingTokenLayout
 from algorithms.utils.warm_start_policy import build_warm_start_policy
 
 
@@ -48,6 +53,13 @@ class BehaviorCloningRegularizer:
         self.teacher_policy = None
         self.teacher_action_buffers: List[List[Optional[List[float]]]] = []
         self.latest_teacher_actions: Optional[List[List[float]]] = None
+        self.phaseout_step = 0
+        self._latest_bc_effective_weight = 0.0
+        self._latest_bc_loss = 0.0
+        self._latest_bc_weighted_loss = 0.0
+        self._latest_bc_valid_samples = 0.0
+        self._latest_phaseout_probability = 0.0
+        self._latest_phaseout_used = False
 
     @classmethod
     def from_config(
@@ -119,6 +131,155 @@ class BehaviorCloningRegularizer:
             for building_actions in actions
         ]
 
+    def compute_teacher_actions(
+        self, raw_or_encoded_observations: List[np.ndarray]
+    ) -> Optional[List[List[float]]]:
+        if self.teacher_policy is None:
+            self.set_latest_teacher_actions(None)
+            return None
+
+        actions = self.teacher_policy.predict(
+            raw_or_encoded_observations,
+            deterministic=self.deterministic,
+        )
+        normalized = self._copy_actions(actions)
+        if self.noise_scale > 0.0:
+            normalized = self._add_teacher_noise(normalized)
+        self.set_latest_teacher_actions(normalized)
+        return self._copy_actions(self.latest_teacher_actions or [])
+
+    def effective_weight(self, global_learning_step: int) -> float:
+        if self.weight <= 0.0:
+            return 0.0
+        if global_learning_step < self.decay_start_step:
+            return float(self.weight)
+        if self.decay_steps <= 0:
+            return float(self.weight)
+
+        target = min(float(self.weight), float(self.min_weight))
+        progress = min(
+            max(
+                float(global_learning_step - self.decay_start_step)
+                / float(self.decay_steps),
+                0.0,
+            ),
+            1.0,
+        )
+        return float(self.weight + (target - self.weight) * progress)
+
+    def ca_type_weights(
+        self,
+        layout: BuildingTokenLayout,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        weights: List[float] = []
+        for segment in layout.segments:
+            if segment.family != "ca":
+                continue
+            if segment.type_name == "charger":
+                weights.append(float(self.ev_multiplier))
+            elif segment.type_name == "storage":
+                weights.append(float(self.storage_multiplier))
+            else:
+                weights.append(1.0)
+        return torch.tensor(weights[: layout.n_ca], dtype=dtype, device=device)
+
+    def bc_loss_term(
+        self,
+        *,
+        building_idx: int,
+        layout: BuildingTokenLayout,
+        predicted_means: torch.Tensor,
+        step_indices: torch.Tensor,
+        global_learning_step: int,
+    ) -> torch.Tensor:
+        effective_weight = self.effective_weight(global_learning_step)
+        self._latest_bc_effective_weight = float(effective_weight)
+        if effective_weight <= 0.0:
+            self._set_bc_loss_diagnostics(0.0, 0.0, 0.0)
+            return predicted_means.new_tensor(0.0)
+
+        valid_batch_indices: List[int] = []
+        teacher_rows: List[List[float]] = []
+        for batch_idx, step_idx in enumerate(
+            step_indices.detach().cpu().view(-1).tolist()
+        ):
+            teacher_action = self.teacher_action_for(building_idx, int(step_idx))
+            if teacher_action is None or len(teacher_action) != layout.n_ca:
+                continue
+            teacher_array = np.asarray(teacher_action, dtype=np.float32)
+            if (
+                teacher_array.shape != (layout.n_ca,)
+                or not np.isfinite(teacher_array).all()
+            ):
+                continue
+            valid_batch_indices.append(batch_idx)
+            teacher_rows.append(teacher_array.astype(np.float32).tolist())
+
+        valid_samples = float(len(valid_batch_indices))
+        if not valid_batch_indices:
+            self._set_bc_loss_diagnostics(0.0, 0.0, 0.0)
+            return predicted_means.new_tensor(0.0)
+
+        index = torch.as_tensor(
+            valid_batch_indices,
+            dtype=torch.long,
+            device=predicted_means.device,
+        )
+        predicted = predicted_means.index_select(0, index).squeeze(-1)
+        teacher = predicted_means.new_tensor(teacher_rows)
+        ca_weights = self.ca_type_weights(
+            layout,
+            dtype=predicted_means.dtype,
+            device=predicted_means.device,
+        ).view(1, -1)
+        raw_loss = ((predicted - teacher).pow(2) * ca_weights).mean()
+        weighted_loss = raw_loss * float(effective_weight)
+        self._set_bc_loss_diagnostics(
+            float(raw_loss.detach().cpu().item()),
+            float(weighted_loss.detach().cpu().item()),
+            valid_samples,
+        )
+        return weighted_loss
+
+    def maybe_phaseout(
+        self,
+        actor_actions: List[List[float]],
+        deterministic: bool,
+    ) -> List[List[float]]:
+        self._latest_phaseout_probability = 0.0
+        self._latest_phaseout_used = False
+        if deterministic:
+            return actor_actions
+
+        self.phaseout_step += 1
+        if self.latest_teacher_actions is None or self.phaseout_steps <= 0:
+            return actor_actions
+
+        probability = max(
+            0.0,
+            1.0 - float(self.phaseout_step) / float(self.phaseout_steps),
+        )
+        self._latest_phaseout_probability = probability
+        if probability <= 0.0:
+            return actor_actions
+
+        if self.phaseout_mode == "blend":
+            blended = self._blend_actions(
+                actor_actions,
+                self.latest_teacher_actions,
+                probability,
+            )
+            self._latest_phaseout_used = blended is not actor_actions
+            return blended
+
+        if random.random() < probability:
+            self._latest_phaseout_used = True
+            return self._copy_actions(self.latest_teacher_actions)
+        return actor_actions
+
     def record_transition(self, building_idx: int) -> None:
         buffer = self._buffer_for(building_idx)
         if (
@@ -174,12 +335,71 @@ class BehaviorCloningRegularizer:
             "behavior_cloning_teacher_buffer_size": float(
                 sum(len(buffer) for buffer in self.teacher_action_buffers)
             ),
+            "behavior_cloning_effective_weight": float(self._latest_bc_effective_weight),
+            "behavior_cloning_loss": float(self._latest_bc_loss),
+            "behavior_cloning_weighted_loss": float(self._latest_bc_weighted_loss),
+            "behavior_cloning_valid_samples": float(self._latest_bc_valid_samples),
+            "behavior_cloning_phaseout_probability": float(
+                self._latest_phaseout_probability
+            ),
+            "behavior_cloning_phaseout_used": float(self._latest_phaseout_used),
         }
 
     def _buffer_for(self, building_idx: int) -> List[Optional[List[float]]]:
         if building_idx < 0 or building_idx >= len(self.teacher_action_buffers):
             raise IndexError(f"Building index {building_idx} is out of range.")
         return self.teacher_action_buffers[building_idx]
+
+    def _add_teacher_noise(self, actions: List[List[float]]) -> List[List[float]]:
+        noisy: List[List[float]] = []
+        for building_actions in actions:
+            values = np.asarray(building_actions, dtype=np.float32)
+            noise = np.random.normal(0.0, self.noise_scale, size=values.shape)
+            noisy.append(
+                np.clip(values + noise, -1.0, 1.0).astype(np.float32).tolist()
+            )
+        return noisy
+
+    def _blend_actions(
+        self,
+        actor_actions: List[List[float]],
+        teacher_actions: List[List[float]],
+        probability: float,
+    ) -> List[List[float]]:
+        blended: List[List[float]] = []
+        used_teacher = False
+        for building_idx, actor_building_actions in enumerate(actor_actions):
+            if building_idx >= len(teacher_actions):
+                blended.append(actor_building_actions)
+                continue
+            actor = np.asarray(actor_building_actions, dtype=np.float32)
+            teacher = np.asarray(teacher_actions[building_idx], dtype=np.float32)
+            if actor.shape != teacher.shape:
+                blended.append(actor_building_actions)
+                continue
+            values = probability * teacher + (1.0 - probability) * actor
+            blended.append(np.clip(values, -1.0, 1.0).astype(np.float32).tolist())
+            used_teacher = True
+        if not used_teacher:
+            return actor_actions
+        return blended
+
+    def _set_bc_loss_diagnostics(
+        self,
+        raw_loss: float,
+        weighted_loss: float,
+        valid_samples: float,
+    ) -> None:
+        self._latest_bc_loss = float(raw_loss)
+        self._latest_bc_weighted_loss = float(weighted_loss)
+        self._latest_bc_valid_samples = float(valid_samples)
+
+    @staticmethod
+    def _copy_actions(actions: List[List[float]]) -> List[List[float]]:
+        return [
+            [float(value) for value in building_actions]
+            for building_actions in actions
+        ]
 
 
 __all__ = ["BehaviorCloningRegularizer"]
