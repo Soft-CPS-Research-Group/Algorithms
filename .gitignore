@@ -16,3 +16,4 @@ __pycache__/
 configs/local_ui_test_entity.yaml
 configs/local_ui_test_static.yaml
 .DS_Store
+.worktrees/
