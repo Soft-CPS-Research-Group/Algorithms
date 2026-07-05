@@ -1467,9 +1467,71 @@ Validation is performed in a single authoritative place
 
 ---
 
-## 13. Export & Checkpoint Contract (dynamic topology)
+## 13. Behavior Cloning
 
-### 13.1 ONNX export
+`AgentTransformerPPO` can optionally add a behavior-cloning (BC)
+regularizer and warm-start controller through the pipeline stage's
+`behavior_cloning` block. When enabled, the agent still learns with PPO,
+but each rollout step also records teacher actions from a configured RBC
+teacher and adds a weighted mean-squared action loss during PPO updates.
+The teacher path uses raw entity-adapter observations through
+`set_observation_context(...)`, while the Transformer policy continues to
+consume encoded observations.
+
+The shipped BC template uses `RBCCommunityPolicy` as the teacher because it
+shares the operational community-aware dispatch rules used by the baseline
+controllers. The template enables deterministic teacher actions with no
+noise and a `blend` warm-start phaseout. During phaseout, stochastic PPO
+actions are blended with teacher actions according to the remaining
+phaseout probability; deterministic evaluation is not teacher-replaced.
+
+BC weighting is configured independently from PPO hyperparameters:
+
+```yaml
+behavior_cloning:
+  enabled: true
+  weight: 0.42
+  min_weight: 0.24
+  decay_start_step: 512
+  decay_steps: 3584
+  ev_multiplier: 24.0
+  storage_multiplier: 0.18
+  warm_start:
+    policy: RBCCommunityPolicy
+    deterministic: true
+    noise_scale: 0.0
+    phaseout_steps: 6144
+    phaseout_mode: blend
+    hyperparameters: {}
+```
+
+`weight` decays linearly toward `min_weight` after `decay_start_step` for
+`decay_steps`. `ev_multiplier` and `storage_multiplier` scale BC error per
+CA type before the weighted loss is added, so EV charger imitation can be
+made more important than stationary storage imitation without changing the
+policy output contract.
+
+On topology changes, the wrapper rebuilds the entity layout and reattaches
+the agent. BC rebuilds the `RBCCommunityPolicy` teacher against the new
+observation/action names and clears teacher-action buffers for changed
+buildings so rollout steps and teacher rows stay aligned. For building-count
+changes, the full BC buffer set is recreated to match the new per-building
+layout. BC diagnostics are exposed through `get_diagnostic_metrics()` and
+`consume_latest_training_metrics()` with keys such as
+`behavior_cloning_effective_weight`, `behavior_cloning_loss`,
+`behavior_cloning_valid_samples`, `behavior_cloning_phaseout_probability`,
+and `behavior_cloning_phaseout_used`.
+
+The deferred residual policy support is intentionally not implemented in this
+version. A future residual policy can be added as a separate teacher or
+action-correction module after the BC template and topology-safe buffer
+alignment have proven stable.
+
+---
+
+## 14. Export & Checkpoint Contract (dynamic topology)
+
+### 14.1 ONNX export
 
 Per-building, per call to `export_artifacts(output_dir, context=...)`. For
 each building `b`:
@@ -1490,7 +1552,7 @@ each building `b`:
   valid if encoded length changes inside the same topology, which it
   doesn’t today but is cheap to guard against).
 
-### 13.2 Manifest entries
+### 14.2 Manifest entries
 
 `export_artifacts` MUST return the canonical artifact payload required
 by `utils/artifact_manifest.py` and validated by
@@ -1571,7 +1633,7 @@ used by debugging and tooling and are passed through verbatim by
 We export **only the topology version current at export time**; no
 cross-topology weight portability is required for production.
 
-### 13.3 Checkpoints
+### 14.3 Checkpoints
 
 - File: `<output_dir>/checkpoints/transformer_ppo_step<step>.pt`.
 - Payload (`torch.save`):
@@ -1607,11 +1669,11 @@ Run on `citylearn_three_phase_dynamic_assets_only_demo` for a small horizon.
 | `test_actions_in_valid_range` | All actions in `[-1, 1]`, no NaN |
 | `test_topology_changes_observed_during_run` | At least one `topology_version` increment in 200 steps (the assets-only demo guarantees this) |
 | `test_kpi_files_generated` | `runs/jobs/<id>/results/{result,summary}.json` exist |
-| `test_artifact_manifest_includes_onnx_per_building` | `artifact_manifest.json` lists per-building ONNX with the naming from §13.2 |
+| `test_artifact_manifest_includes_onnx_per_building` | `artifact_manifest.json` lists per-building ONNX with the naming from §14.2 |
 | `test_buffer_flush_on_topology_change_does_not_crash` | The PPO update triggered by topology change runs and the agent continues training |
 
 ---
-## 14. Decisions Log
+## 15. Decisions Log
 
 | # | Question | Decision |
 |---|---|---|

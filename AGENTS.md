@@ -82,6 +82,7 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
 |-----------|-------------|
 | `MADDPG` | Multi-Agent DDPG with replay buffer, actor-critic networks |
 | `RuleBasedPolicy` | Heuristic controller for EV charging (uses raw observations) |
+| `AgentTransformerPPO` | Entity-interface Transformer PPO with dynamic-topology support and optional behavior cloning / warm-start via `RBCCommunityPolicy` |
 | `SingleAgentRL` | Schema placeholder only |
 
 ## Runtime Flow
@@ -132,6 +133,7 @@ Dynamic topology notes:
 - Wrapper rebuilds layout automatically on `topology_version` change.
 - Current guardrail: `MADDPG` in `entity+dynamic` raises fail-fast on runtime topology mutation.
   Use `RuleBasedPolicy` (or another dynamic-ready agent) for dynamic topology scenarios.
+- `AgentTransformerPPO` supports `entity+dynamic` and can optionally enable behavior cloning with an `RBCCommunityPolicy` warm-start teacher; BC teacher buffers are rebuilt or cleared when topology changes.
 
 ## Tokenizer Fixture (Entity Interface)
 
