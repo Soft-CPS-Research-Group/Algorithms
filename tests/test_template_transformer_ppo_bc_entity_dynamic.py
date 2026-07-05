@@ -115,11 +115,19 @@ def test_template_passes_schema_validation_and_resolves_bc_block() -> None:
     assert "bc" in cfg["metadata"]["run_name"].lower()
     assert stage.behavior_cloning is not None
     assert stage.behavior_cloning.enabled is True
-    assert stage.behavior_cloning.warm_start is not None
-    assert stage.behavior_cloning.warm_start.policy == "RBCCommunityPolicy"
-    assert stage.behavior_cloning.warm_start.phaseout_mode == "blend"
+    assert stage.behavior_cloning.weight == pytest.approx(0.42)
+    assert stage.behavior_cloning.min_weight == pytest.approx(0.24)
+    assert stage.behavior_cloning.decay_start_step == 512
+    assert stage.behavior_cloning.decay_steps == 3584
     assert stage.behavior_cloning.ev_multiplier == pytest.approx(24.0)
     assert stage.behavior_cloning.storage_multiplier == pytest.approx(0.18)
+    assert stage.behavior_cloning.warm_start is not None
+    assert stage.behavior_cloning.warm_start.policy == "RBCCommunityPolicy"
+    assert stage.behavior_cloning.warm_start.deterministic is True
+    assert stage.behavior_cloning.warm_start.noise_scale == pytest.approx(0.0)
+    assert stage.behavior_cloning.warm_start.phaseout_steps == 6144
+    assert stage.behavior_cloning.warm_start.phaseout_mode == "blend"
+    assert stage.behavior_cloning.warm_start.hyperparameters == {}
 
 
 def test_transformer_ppo_bc_smoke_records_bc_metrics_across_topology_change() -> None:
