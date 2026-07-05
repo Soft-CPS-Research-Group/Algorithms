@@ -11,9 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-import numpy as np
 import pytest
-from gymnasium import spaces
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
 from tests.test_wrapper_entity_mode import _DummyEntityEnv, _entity_config
@@ -73,19 +71,13 @@ def _ppo_full_config() -> Dict[str, Any]:
     return {"algorithm": _ppo_algo_config()}
 
 
-def _wrapper_config_with_ppo() -> Dict[str, Any]:
-    cfg = _entity_config()
-    cfg["algorithm"] = _ppo_algo_config()
-    return cfg
-
-
 def test_wrapper_attaches_transformer_ppo_with_entity_dynamic() -> None:
     """The dynamic-topology guardrail must accept ``AgentTransformerPPO``
     (it has ``supports_dynamic_topology=True``) and ``set_model`` must
     drive a single ``attach_environment`` call."""
     env = _DummyEntityEnvForPPO()
     wrapper = Wrapper_CityLearn(
-        env=env, config=_wrapper_config_with_ppo(), job_id="ppo-entity"
+        env=env, config=_entity_config(), job_id="ppo-entity"
     )
     agent = AgentTransformerPPO(_ppo_full_config())
     wrapper.set_model(agent)
@@ -99,7 +91,7 @@ def test_wrapper_attaches_transformer_ppo_with_entity_dynamic() -> None:
 def test_wrapper_predict_returns_per_building_per_ca_actions() -> None:
     env = _DummyEntityEnvForPPO()
     wrapper = Wrapper_CityLearn(
-        env=env, config=_wrapper_config_with_ppo(), job_id="ppo-entity-predict"
+        env=env, config=_entity_config(), job_id="ppo-entity-predict"
     )
     agent = AgentTransformerPPO(_ppo_full_config())
     wrapper.set_model(agent)
@@ -121,7 +113,7 @@ def test_wrapper_topology_change_triggers_agent_rebuild() -> None:
     accordingly."""
     env = _DummyEntityEnvForPPO()
     wrapper = Wrapper_CityLearn(
-        env=env, config=_wrapper_config_with_ppo(), job_id="ppo-entity-topo"
+        env=env, config=_entity_config(), job_id="ppo-entity-topo"
     )
     agent = AgentTransformerPPO(_ppo_full_config())
     wrapper.set_model(agent)
@@ -141,7 +133,7 @@ def test_wrapper_to_env_actions_round_trips_ppo_output() -> None:
     payload the simulator expects."""
     env = _DummyEntityEnvForPPO()
     wrapper = Wrapper_CityLearn(
-        env=env, config=_wrapper_config_with_ppo(), job_id="ppo-entity-actions"
+        env=env, config=_entity_config(), job_id="ppo-entity-actions"
     )
     agent = AgentTransformerPPO(_ppo_full_config())
     wrapper.set_model(agent)

@@ -20,3 +20,9 @@ def test_rule_based_policy_supports_dynamic_topology() -> None:
     from algorithms.agents.rbc_agent import RuleBasedPolicy
 
     assert RuleBasedPolicy.supports_dynamic_topology is True
+
+
+def test_agent_transformer_ppo_supports_dynamic_topology() -> None:
+    from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+
+    assert AgentTransformerPPO.supports_dynamic_topology is True

@@ -22,9 +22,7 @@ Checkpoint resume across topology changes is out of scope —
 
 from __future__ import annotations
 
-import hashlib
-import json as _json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
@@ -57,9 +55,6 @@ from utils.entity_tokenizer_schema import (
 )
 
 
-_SRO_PREFIX_RE = ("storage::", "charger::", "pv::")
-
-
 @dataclass
 class _PerBuildingState:
     """All learning state owned by one building. Held in a list on the agent
@@ -76,7 +71,6 @@ class _PerBuildingState:
     layout: BuildingTokenLayout
     obs_names_tuple: Tuple[str, ...]
     action_names_tuple: Tuple[str, ...]
-    entity_specs_signature: Optional[str] = None
     # Per-building topology version. Starts at 0 on first attach and is
     # incremented each time :meth:`_handle_topology_change` succeeds. The
     # exporter records this in ``artifact_manifest.json`` so deployment
@@ -123,7 +117,7 @@ class AgentTransformerPPO(BaseAgent):
         self._entropy_coeff = float(h.get("entropy_coeff", 0.0))
         self._value_coeff = float(h.get("value_coeff", 0.5))
         self._max_grad_norm = float(h.get("max_grad_norm", 0.5))
-        self._reward_clip = float(h.get("reward_clip", 10.0))  # clip rewards to [-clip, 0]
+        self._reward_clip = float(h.get("reward_clip", 10.0))  # floor rewards at -clip
         self._actor_hidden_dim = int(
             h.get("actor_hidden_dim", max(32, self._d_model * 2))
         )
@@ -198,7 +192,6 @@ class AgentTransformerPPO(BaseAgent):
             # (flush PPO → rebuild layout → re-validate rules).
             state.obs_names_tuple = new_obs
             state.action_names_tuple = new_act
-            state.entity_specs_signature = self._signature(metadata)
             self._handle_topology_change(b)
 
     def predict(
@@ -418,7 +411,6 @@ class AgentTransformerPPO(BaseAgent):
         action_names: List[List[str]],
         metadata: Optional[Dict[str, Any]],
     ) -> None:
-        sig = self._signature(metadata)
         building_names = (
             (metadata or {}).get("building_names")
             if metadata is not None
@@ -433,7 +425,7 @@ class AgentTransformerPPO(BaseAgent):
                 else f"building_{b}"
             )
             state = self._build_one_per_building_state(
-                building_id, list(obs_n), list(act_n), sig
+                building_id, list(obs_n), list(act_n)
             )
             self._per_building.append(state)
 
@@ -442,7 +434,6 @@ class AgentTransformerPPO(BaseAgent):
         building_id: str,
         observation_names: List[str],
         action_names: List[str],
-        entity_specs_signature: Optional[str],
     ) -> _PerBuildingState:
         layout = self._layout_builder.build(
             building_id, observation_names, action_names
@@ -496,7 +487,6 @@ class AgentTransformerPPO(BaseAgent):
             layout=layout,
             obs_names_tuple=tuple(observation_names),
             action_names_tuple=tuple(action_names),
-            entity_specs_signature=entity_specs_signature,
         )
 
     def _handle_topology_change(self, building_idx: int) -> None:
@@ -646,13 +636,6 @@ class AgentTransformerPPO(BaseAgent):
         for tname, sro_cfg in self._tokenizer_config.sro_types.items():
             dims.setdefault(tname, int(sro_cfg.input_dim_fallback))
         return dims
-
-    @staticmethod
-    def _signature(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
-        if not metadata or "entity_specs" not in metadata or not metadata["entity_specs"]:
-            return None
-        s = _json.dumps(metadata["entity_specs"], sort_keys=True, default=str)
-        return hashlib.sha256(s.encode()).hexdigest()[:16]
 
     @staticmethod
     def _infer_obs_dim(layout: BuildingTokenLayout) -> int:

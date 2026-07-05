@@ -8,14 +8,13 @@ Covers:
 - New type appearing on existing tokenizer hard-fails.
 - ``save_checkpoint`` / ``load_checkpoint`` round-trip + signature mismatch
   rejection.
-- ``export_artifacts`` returns a well-formed manifest with one entry per
-  building and TorchScript files on disk.
+- ``export_artifacts`` returns a well-formed manifest with one ONNX file
+  per building.
 - Registered in ``algorithms.registry.ALGORITHM_REGISTRY``.
 """
 from __future__ import annotations
 
 import copy
-import json
 from pathlib import Path
 from typing import List
 
