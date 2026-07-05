@@ -80,6 +80,19 @@ def test_transformer_ppo_stage_rejects_invalid_behavior_cloning_phaseout_mode() 
         validate_config(cfg)
 
 
+def test_transformer_ppo_stage_rejects_enabled_behavior_cloning_without_warm_start() -> None:
+    from utils.config_schema import validate_config
+
+    cfg = _load_template()
+    cfg["pipeline"][0]["behavior_cloning"] = {
+        "enabled": True,
+        "weight": 0.42,
+    }
+
+    with pytest.raises(ValidationError, match="warm_start"):
+        validate_config(cfg)
+
+
 def test_transformer_ppo_stage_without_behavior_cloning_defaults_to_none() -> None:
     from utils.config_schema import validate_config
 

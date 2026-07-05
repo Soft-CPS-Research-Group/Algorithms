@@ -657,6 +657,12 @@ class TransformerPPOBehaviorCloningConfig(BaseModel):
     storage_multiplier: float = Field(default=1.0, ge=0.0)
     warm_start: Optional[TransformerPPOWarmStartConfig] = None
 
+    @model_validator(mode="after")
+    def validate_enabled_has_warm_start(self) -> "TransformerPPOBehaviorCloningConfig":
+        if self.enabled and self.warm_start is None:
+            raise ValueError("TransformerPPO behavior_cloning.enabled requires warm_start.")
+        return self
+
 
 class TransformerPPOStageConfig(BaseModel):
     algorithm: Literal["AgentTransformerPPO"]

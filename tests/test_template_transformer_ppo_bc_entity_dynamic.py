@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.registry import build_execution_unit
 from tests.test_agent_transformer_ppo_wrapper_integration import (
     _DummyEntityEnvForPPO,
 )
@@ -128,6 +129,31 @@ def test_template_passes_schema_validation_and_resolves_bc_block() -> None:
     assert stage.behavior_cloning.warm_start.phaseout_steps == 6144
     assert stage.behavior_cloning.warm_start.phaseout_mode == "blend"
     assert stage.behavior_cloning.warm_start.hyperparameters == {}
+
+
+def test_bc_template_build_execution_unit_enables_regularizer() -> None:
+    cfg = _load_template()
+    cfg["pipeline"][0]["tokenizer_config_path"] = _TOKENIZER_FIXTURE
+    cfg["pipeline"][0]["transformer"] = {
+        "d_model": 16,
+        "nhead": 2,
+        "num_layers": 1,
+        "dim_feedforward": 32,
+        "dropout": 0.0,
+    }
+    cfg["pipeline"][0]["hyperparameters"].update(
+        {
+            "minibatch_size": 4,
+            "actor_hidden_dim": 32,
+            "critic_hidden_dim": 32,
+        }
+    )
+
+    agent = build_execution_unit(cfg)
+
+    assert isinstance(agent, AgentTransformerPPO)
+    assert agent._bc is not None
+    assert agent.requires_raw_observation_context is True
 
 
 def test_transformer_ppo_bc_smoke_records_bc_metrics_across_topology_change() -> None:
