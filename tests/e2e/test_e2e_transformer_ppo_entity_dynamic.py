@@ -24,11 +24,39 @@ TEMPLATE = REPO_ROOT / "configs/templates/dynamic/transformer_ppo_entity_dynamic
 DATASET = REPO_ROOT / "datasets/citylearn_three_phase_dynamic_assets_only_demo_15s_parquet/schema.json"
 
 pytestmark = pytest.mark.slow
+SMOKE_FIRST_TOPOLOGY_EVENT_STEP = 300
+SMOKE_END_STEP = 360
 
 
 def _require_dataset_or_skip() -> None:
     if not DATASET.exists():
         pytest.skip(f"Demo dataset not present: {DATASET}")
+
+
+def _write_smoke_schema_with_early_topology_event(work: Path) -> Path:
+    """Copy the bundled dynamic schema and shift topology events earlier.
+
+    The real demo dataset schedules asset mutations much later in the
+    full-resolution timeline. The e2e should stay short, so it uses an
+    otherwise identical temporary schema with the same ordered events moved
+    into the smoke window.
+    """
+    for source in DATASET.parent.iterdir():
+        if source.name == DATASET.name:
+            continue
+        target = work / source.name
+        if not target.exists():
+            target.symlink_to(source)
+
+    schema = json.loads(DATASET.read_text())
+    schema["root_directory"] = str(DATASET.parent.resolve())
+    events = schema.get("topology_events") or []
+    assert events, "Dynamic smoke dataset has no topology_events"
+    for offset, event in enumerate(events):
+        event["time_step"] = SMOKE_FIRST_TOPOLOGY_EVENT_STEP + 200 * offset
+    smoke_schema_path = work / "schema.dynamic_smoke.json"
+    smoke_schema_path.write_text(json.dumps(schema, indent=2))
+    return smoke_schema_path
 
 
 @pytest.fixture(scope="module")
@@ -38,12 +66,16 @@ def smoke_run(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     work = tmp_path_factory.mktemp("wp06_e2e")
 
     cfg = yaml.safe_load(TEMPLATE.read_text())
+    smoke_schema_path = _write_smoke_schema_with_early_topology_event(work)
     cfg["simulator"]["episodes"] = 1
-    cfg["simulator"]["simulation_end_time_step"] = 1400
-    cfg["simulator"]["episode_time_steps"] = 1401
+    cfg["simulator"]["dataset_path"] = str(smoke_schema_path)
+    cfg["simulator"]["simulation_end_time_step"] = SMOKE_END_STEP
+    cfg["simulator"]["episode_time_steps"] = SMOKE_END_STEP + 1
     cfg["tracking"]["mlflow_enabled"] = False
+    cfg["tracking"]["log_frequency"] = 128
     cfg["tracking"]["progress_updates_enabled"] = False
     cfg["checkpointing"]["resume_training"] = False
+    cfg["checkpointing"]["checkpoint_interval"] = None
     smoke_cfg_path = work / "smoke_config.yaml"
     smoke_cfg_path.write_text(yaml.safe_dump(cfg))
 
@@ -122,10 +154,11 @@ def test_actions_in_valid_range(smoke_run: dict[str, Any]) -> None:
 
 
 def test_topology_changes_observed_during_run(smoke_run: dict[str, Any]) -> None:
-    """The assets-only demo schedules events at simulator timesteps
-    ``{1300, 1500, 1700, 1900, 2100, 2300}``. With ``simulation_end_time_step =
-    1400`` exactly one mutation has happened by run end; the agent's
-    per-building manifest entries must record ``topology_version >= 1``."""
+    """The smoke schema moves the first topology event into the short run.
+
+    By export time, the agent's per-building manifest entries must record
+    ``topology_version >= 1``.
+    """
     manifest = smoke_run["manifest"]
     assert manifest is not None, "artifact_manifest.json missing"
 
@@ -143,7 +176,7 @@ def test_topology_changes_observed_during_run(smoke_run: dict[str, Any]) -> None
     versions = [v for v in versions if isinstance(v, int)]
     assert versions, "No artifact carries config.topology_version"
     assert max(versions) >= 1, (
-        f"Expected ≥1 topology mutation by step 1400; "
+        f"Expected ≥1 topology mutation by step {SMOKE_END_STEP}; "
         f"observed topology_versions={versions}"
     )
 
@@ -212,7 +245,7 @@ def test_artifact_manifest_includes_onnx_per_building(
 def test_buffer_flush_on_topology_change_does_not_crash(
     smoke_run: dict[str, Any],
 ) -> None:
-    """If we got here the smoke completed end-to-end past the step-1300
+    """If we got here the smoke completed end-to-end past the injected
     mutation. Combined with the ``topology_version >= 1`` assertion above
     this proves the post-mutation update path
     (PPO step → buffer flush → layout rebuild → re-validation) ran
