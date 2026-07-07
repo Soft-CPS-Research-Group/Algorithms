@@ -195,3 +195,99 @@ class TestAttachAndPredict:
         a1 = agent.predict(obs, deterministic=True)
         a2 = agent.predict(obs, deterministic=True)
         assert a1 == a2
+
+
+import tempfile
+from pathlib import Path
+
+
+class TestTopologyChange:
+    def test_topology_change_rebuilds_layout(self):
+        agent, obs_per, act_per, _ = _make_matd3()
+        # Add a fake charger to observation names by mirroring a full existing
+        # charger feature block, so per-type feature dimensions remain stable.
+        charger_id = next(
+            n.split("::", 2)[1]
+            for n in obs_per[0]
+            if n.startswith("charger::")
+            and "::connected_ev::" not in n
+            and "::incoming_ev::" not in n
+        )
+        old_prefix = f"charger::{charger_id}::"
+        new_prefix = "charger::Building_0/charger_new::"
+        new_obs = list(obs_per[0]) + [
+            new_prefix + n[len(old_prefix):]
+            for n in obs_per[0]
+            if n.startswith(old_prefix)
+        ]
+        new_act = list(act_per[0]) + ["electric_vehicle_storage_charger_new"]
+        agent.attach_environment(
+            observation_names=[new_obs],
+            action_names=[new_act],
+            action_space=[None],
+            observation_space=[None],
+        )
+        assert agent._actors[0].layout.n_ca == 3
+        assert agent._actors[0].topology_version == 1
+
+    def test_topology_feature_count_drift_fails(self):
+        agent, obs_per, act_per, _ = _make_matd3()
+        # Remove one feature from a storage segment to trigger feature-count drift
+        # while keeping the storage CA/action mapping present.
+        removed = False
+        new_obs = []
+        for name in obs_per[0]:
+            if not removed and name.startswith("storage::"):
+                removed = True
+                continue
+            new_obs.append(name)
+        # This should fail because storage type feature count changes
+        with pytest.raises(ValueError, match="feature count"):
+            agent.attach_environment(
+                observation_names=[new_obs],
+                action_names=[act_per[0]],
+                action_space=[None],
+                observation_space=[None],
+            )
+
+
+class TestExport:
+    def test_export_creates_onnx_files(self):
+        agent, _, _, _ = _make_matd3(n_buildings=2)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = agent.export_artifacts(tmpdir)
+            assert manifest["format"] == "onnx"
+            assert len(manifest["artifacts"]) == 2
+            for art in manifest["artifacts"]:
+                onnx_path = Path(tmpdir) / art["path"]
+                assert onnx_path.exists()
+                assert art["config"]["n_ca"] == 2
+                assert "action_low" in art["config"]
+                assert "action_high" in art["config"]
+
+    def test_export_manifest_has_no_critic(self):
+        agent, _, _, _ = _make_matd3()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = agent.export_artifacts(tmpdir)
+            # No critic keys in manifest
+            assert "critic" not in str(manifest).lower() or "critic" not in manifest
+
+    def test_checkpoint_round_trip(self):
+        agent, _, _, obs_dim = _make_matd3()
+        obs = [np.random.randn(obs_dim).astype(np.float64)]
+        a_before = agent.predict(obs, deterministic=True)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = agent.save_checkpoint(tmpdir, step=100)
+            # Create a fresh agent and load
+            agent2, _, _, _ = _make_matd3()
+            agent2.load_checkpoint(ckpt_path)
+            a_after = agent2.predict(obs, deterministic=True)
+        assert a_before == a_after
+
+    def test_checkpoint_rejects_building_count_mismatch(self):
+        agent1, _, _, _ = _make_matd3(n_buildings=1)
+        agent2, _, _, _ = _make_matd3(n_buildings=2)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = agent1.save_checkpoint(tmpdir, step=1)
+            with pytest.raises(ValueError, match="Building-count mismatch"):
+                agent2.load_checkpoint(ckpt_path)
