@@ -116,6 +116,11 @@ class AgentTransformerMATD3(BaseAgent):
         self._latest_next_teacher_actions: Optional[List[List[float]]] = None
         self._teacher_alive = bool((algo.get("exploration") or {}).get("warm_start_policy", {}).get("enabled", False))
         self._warm_start_policy: Optional[Any] = self if self._teacher_alive else None
+        self._latest_training_metrics: Dict[str, float] = {}
+        self._reward_normalization_enabled = bool(h.get("reward_normalization", False))
+        self._reward_norm_count = 0
+        self._reward_norm_mean = 0.0
+        self._reward_norm_m2 = 0.0
         self._first_attach_done = False
 
     # ==========================================================================
@@ -300,6 +305,10 @@ class AgentTransformerMATD3(BaseAgent):
             for state in self._actors:
                 self._soft_update(state.actor, state.target_actor, self._tau)
             self._target_update_count += 1
+        if self._should_log_training_step(global_learning_step):
+            self._record_training_metrics(
+                self._collect_diagnostics(global_learning_step), global_learning_step
+            )
 
     def export_artifacts(
         self, output_dir: str, context: Optional[Dict[str, Any]] = None
@@ -676,8 +685,10 @@ class AgentTransformerMATD3(BaseAgent):
                 loss = actions.pow(2).mean()
                 state.optimizer.zero_grad()
                 loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(state.actor.parameters(), 10.0)
                 state.optimizer.step()
                 self._last_actor_loss = float(loss.detach().item())
+                self._last_actor_grad_norm = float(grad_norm)
             finally:
                 for param in self._critic_1.parameters():
                     param.requires_grad_(True)
@@ -701,6 +712,57 @@ class AgentTransformerMATD3(BaseAgent):
                 )
             tokens.append(all_tokens)
         return tokens
+
+    def _reward_normalization_std(self) -> float:
+        if self._reward_norm_count < 2:
+            return 0.0
+        return float(np.sqrt(self._reward_norm_m2 / max(self._reward_norm_count - 1, 1)))
+
+    def _collect_diagnostics(self, global_learning_step: int) -> Dict[str, float]:
+        """Collect all training diagnostics under TransformerMATD3/ namespace."""
+        sig = self._current_topology_signature()
+        critic_mode = self.config["algorithm"]["hyperparameters"].get(
+            "critic_action_input_mode", "final"
+        )
+        metrics: Dict[str, float] = {
+            "TransformerMATD3/replay_size": float(self._replay.total_size),
+            "TransformerMATD3/active_partition_size": float(self._replay.partition_size(sig)),
+            "TransformerMATD3/partition_count": float(self._replay.partition_count),
+            "TransformerMATD3/critic_q1_loss": float(getattr(self, "_last_q1_loss", 0.0)),
+            "TransformerMATD3/critic_q2_loss": float(getattr(self, "_last_q2_loss", 0.0)),
+            "TransformerMATD3/critic_q_gap": float(getattr(self, "_last_q_gap", 0.0)),
+            "TransformerMATD3/target_q_mean": float(getattr(self, "_last_target_q_mean", 0.0)),
+            "TransformerMATD3/target_q_std": float(getattr(self, "_last_target_q_std", 0.0)),
+            "TransformerMATD3/actor_loss": float(getattr(self, "_last_actor_loss", 0.0)),
+            "TransformerMATD3/actor_grad_norm": float(getattr(self, "_last_actor_grad_norm", 0.0)),
+            "TransformerMATD3/teacher_alive": float(self._teacher_alive),
+            "TransformerMATD3/residual_scale": float(getattr(self, "_residual_scale", 0.0)),
+            "TransformerMATD3/phaseout_probability": float(getattr(self, "_last_phaseout_probability", 0.0)),
+            "TransformerMATD3/bc_loss": float(getattr(self, "_last_bc_loss", 0.0)),
+            "TransformerMATD3/bc_effective_weight": float(getattr(self, "_bc_effective_weight", 0.0)),
+            "TransformerMATD3/reward_norm_mean": float(getattr(self, "_reward_norm_mean", 0.0)),
+            "TransformerMATD3/reward_norm_std": float(
+                self._reward_normalization_std() if self._reward_normalization_enabled else 0.0
+            ),
+            "TransformerMATD3/reward_norm_count": float(getattr(self, "_reward_norm_count", 0)),
+            "TransformerMATD3/critic_action_input_mode_final": float(critic_mode == "final"),
+            "TransformerMATD3/critic_action_input_mode_delta": float(
+                critic_mode in ("final_base_delta", "final_base_delta_normalized")
+            ),
+            "TransformerMATD3/critic_update_count": float(self._critic_update_count),
+            "TransformerMATD3/actor_update_count": float(self._actor_update_count),
+            "TransformerMATD3/global_learning_step": float(global_learning_step),
+        }
+        return metrics
+
+    def _should_log_training_step(self, global_learning_step: int) -> bool:
+        interval = self.config["algorithm"]["hyperparameters"].get("log_interval", 10)
+        return global_learning_step % max(int(interval), 1) == 0
+
+    def _record_training_metrics(self, metrics: Dict[str, float], step: int) -> None:
+        del step
+        if metrics:
+            self._latest_training_metrics = dict(metrics)
 
     def _compute_type_input_dims(self, layout: BuildingTokenLayout) -> Dict[str, int]:
         nfc_name = self._tokenizer_config.nfc.type_name
