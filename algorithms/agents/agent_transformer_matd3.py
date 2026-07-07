@@ -22,6 +22,15 @@ from algorithms.utils.entity_token_layout import (
     EntityTokenLayoutBuilder,
 )
 from algorithms.utils.matd3_actor_head import DeterministicActorHead
+from algorithms.utils.matd3_critic import TwinTransformerCritics
+from algorithms.utils.matd3_critic_update import compute_target_q, critic_update_step
+from algorithms.utils.matd3_global_packer import BuildingLayout, GlobalTokenPacker
+from algorithms.utils.matd3_replay import (
+    LayoutSummary,
+    TopologyPartitionedReplay,
+    TransitionData,
+    compute_topology_signature,
+)
 from algorithms.utils.transformer_backbone import TransformerBackbone
 from utils.entity_tokenizer_schema import (
     load_entity_tokenizer_config,
@@ -73,9 +82,30 @@ class AgentTransformerMATD3(BaseAgent):
         h = dict(algo["hyperparameters"])
         self._actor_lr = float(h["actor_lr"])
         self._actor_hidden_dim = int(h.get("actor_hidden_dim", max(32, self._actor_d_model * 2)))
+        critic_cfg = dict(algo["transformer_critic"])
+        self._critic_d_model = int(critic_cfg["d_model"])
+        self._critic_nhead = int(critic_cfg["nhead"])
+        self._critic_num_layers = int(critic_cfg["num_layers"])
+        self._critic_dim_feedforward = int(critic_cfg.get("dim_feedforward", 256))
+        self._critic_dropout = float(critic_cfg.get("dropout", 0.1))
+        self._critic_lr = float(h["critic_lr"])
+        self._gamma = float(h["gamma"])
+        self._tau = float(h["tau"])
+        self._batch_size = int(h["batch_size"])
+        self._replay_capacity = int(h["replay_capacity"])
+        self._critic_action_input_mode = str(h.get("critic_action_input_mode", "final"))
+        self._num_token_types = 8
+        self._max_buildings = 16
 
         self._layout_builder = EntityTokenLayoutBuilder(self._tokenizer_config)
         self._actors: List[_ActorState] = []
+        self._online_critics: Optional[TwinTransformerCritics] = None
+        self._target_critics: Optional[TwinTransformerCritics] = None
+        self._global_packer: Optional[GlobalTokenPacker] = None
+        self._replay: Optional[TopologyPartitionedReplay] = None
+        self._critic_optimizer: Optional[torch.optim.Optimizer] = None
+        self._critic_update_count = 0
+        self._target_update_count = 0
         self._first_attach_done = False
 
     # ==========================================================================
@@ -146,8 +176,39 @@ class AgentTransformerMATD3(BaseAgent):
         update_step: bool,
         initial_exploration_done: bool,
     ) -> None:
-        # Plan A: no-op. Training wired in Plan B/C/D.
-        pass
+        done = bool(terminated or truncated)
+        topology_sig = self._current_topology_signature()
+        self._replay.set_active_signature(topology_sig)
+        transition = TransitionData(
+            observations=[np.asarray(o, dtype=np.float32) for o in observations],
+            next_observations=[np.asarray(o, dtype=np.float32) for o in next_observations],
+            actions=[np.asarray(a, dtype=np.float32) for a in actions],
+            base_actions=[np.zeros_like(np.asarray(a, dtype=np.float32)) for a in actions],
+            next_base_actions=[np.zeros_like(np.asarray(a, dtype=np.float32)) for a in actions],
+            rewards=[float(r) for r in rewards],
+            done=done,
+            topology_signature=topology_sig,
+            layout_summaries=[
+                LayoutSummary(
+                    building_id=s.building_id,
+                    n_ca=s.layout.n_ca,
+                    n_sro=s.layout.n_sro,
+                    obs_dim=len(s.obs_names_tuple),
+                    action_dim=s.layout.n_ca,
+                )
+                for s in self._actors
+            ],
+        )
+        self._replay.push(transition)
+
+        if not initial_exploration_done or not update_step:
+            return
+        if self._replay.active_partition_size < self._batch_size:
+            return
+        self._perform_critic_update()
+        if update_target_step:
+            self._target_critics.soft_update_from(self._online_critics, self._tau)
+            self._target_update_count += 1
 
     def export_artifacts(
         self, output_dir: str, context: Optional[Dict[str, Any]] = None
@@ -245,6 +306,7 @@ class AgentTransformerMATD3(BaseAgent):
             )
             state = self._build_one_actor_state(building_id, list(obs_n), list(act_n))
             self._actors.append(state)
+        self._initialize_critic_infrastructure()
 
     def _build_one_actor_state(
         self, building_id: str, observation_names: List[str], action_names: List[str]
@@ -315,9 +377,132 @@ class AgentTransformerMATD3(BaseAgent):
         state.layout = new_layout
         state.topology_version += 1
         logger.info(
-            "Topology change: {} v{} — n_ca={}",
+            "Topology change: {} v{} - n_ca={}",
             state.building_id, state.topology_version, new_layout.n_ca,
         )
+        if self._replay is not None:
+            self._replay.set_active_signature(self._current_topology_signature())
+
+    def _initialize_critic_infrastructure(self) -> None:
+        self._online_critics = TwinTransformerCritics(
+            d_model=self._critic_d_model,
+            nhead=self._critic_nhead,
+            num_layers=self._critic_num_layers,
+            dim_feedforward=self._critic_dim_feedforward,
+            dropout=self._critic_dropout,
+            num_token_types=self._num_token_types,
+            max_buildings=self._max_buildings,
+        )
+        self._target_critics = TwinTransformerCritics(
+            d_model=self._critic_d_model,
+            nhead=self._critic_nhead,
+            num_layers=self._critic_num_layers,
+            dim_feedforward=self._critic_dim_feedforward,
+            dropout=self._critic_dropout,
+            num_token_types=self._num_token_types,
+            max_buildings=self._max_buildings,
+        )
+        self._target_critics.load_state_dict(self._online_critics.state_dict())
+        self._critic_optimizer = torch.optim.Adam(
+            self._online_critics.parameters(), lr=self._critic_lr
+        )
+        self._global_packer = GlobalTokenPacker(
+            d_model=self._critic_d_model,
+            num_token_types=self._num_token_types,
+            max_buildings=self._max_buildings,
+            action_input_mode=self._critic_action_input_mode,
+        )
+        self._replay = TopologyPartitionedReplay(
+            capacity=self._replay_capacity,
+            batch_size=self._batch_size,
+        )
+        self._replay.set_active_signature(self._current_topology_signature())
+
+    def _current_topology_signature(self) -> str:
+        return compute_topology_signature(
+            building_ids=[s.building_id for s in self._actors],
+            observation_names=[list(s.obs_names_tuple) for s in self._actors],
+            action_names=[list(s.action_names_tuple) for s in self._actors],
+            ca_action_names=[list(s.layout.ca_action_names) for s in self._actors],
+            per_type_feature_dims=self._get_per_type_feature_dims(),
+        )
+
+    def _get_per_type_feature_dims(self) -> Dict[str, int]:
+        dims: Dict[str, int] = {}
+        for state in self._actors:
+            for seg in state.layout.segments:
+                if seg.family == "nfc":
+                    continue
+                dims.setdefault(seg.type_name, len(seg.feature_indices))
+        return dims
+
+    def _get_building_layouts(self) -> List[BuildingLayout]:
+        return [
+            BuildingLayout(
+                building_index=i,
+                n_sro=s.layout.n_sro,
+                n_nfc=1,
+                n_ca=s.layout.n_ca,
+                is_controlled=s.layout.n_ca > 0,
+            )
+            for i, s in enumerate(self._actors)
+        ]
+
+    def _perform_critic_update(self) -> None:
+        batch = self._replay.sample()
+        if batch is None:
+            return
+        layouts = self._get_building_layouts()
+        obs_tokens_current = self._tokenize_batch(batch.observations)
+        obs_tokens_next = self._tokenize_batch(batch.next_observations)
+        n_buildings = len(batch.observations)
+        action_tensors = [
+            torch.as_tensor(batch.actions[b], dtype=torch.float32)
+            for b in range(n_buildings)
+        ]
+        packed_current = self._global_packer.pack(
+            obs_tokens_current, action_tensors, layouts
+        )
+        packed_next = self._global_packer.pack(
+            obs_tokens_next, action_tensors, layouts
+        )
+        controlled = [b for b, layout in enumerate(layouts) if layout.is_controlled]
+        rewards_t = torch.stack(
+            [torch.as_tensor(batch.rewards[b], dtype=torch.float32) for b in controlled],
+            dim=1,
+        )
+        done_t = torch.as_tensor(batch.done, dtype=torch.float32).unsqueeze(1).expand_as(rewards_t)
+        target_q = compute_target_q(
+            target_critics=self._target_critics,
+            packed_next_state=packed_next,
+            rewards=rewards_t,
+            done=done_t,
+            gamma=self._gamma,
+        )
+        result = critic_update_step(
+            online_critics=self._online_critics,
+            optimizer=self._critic_optimizer,
+            packed_current_state=packed_current,
+            target_q=target_q,
+        )
+        self._last_q1_loss = result.critic_1_loss
+        self._last_q2_loss = result.critic_2_loss
+        self._last_target_q_mean = result.mean_target_q
+        self._critic_update_count += 1
+
+    def _tokenize_batch(
+        self, observations_per_building: List[npt.NDArray[np.float32]]
+    ) -> List[torch.Tensor]:
+        tokens: List[torch.Tensor] = []
+        for b, state in enumerate(self._actors):
+            obs_t = torch.as_tensor(observations_per_building[b], dtype=torch.float32)
+            with torch.no_grad():
+                tokenized = state.tokenizer(obs_t, state.layout)
+                all_tokens = torch.cat(
+                    [tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens], dim=1
+                )
+            tokens.append(all_tokens)
+        return tokens
 
     def _compute_type_input_dims(self, layout: BuildingTokenLayout) -> Dict[str, int]:
         nfc_name = self._tokenizer_config.nfc.type_name

@@ -303,3 +303,150 @@ class TestDynamicTopologyGuardrail:
         """Legacy MATD3 error message must remain unchanged."""
         from algorithms.agents.matd3_agent import MATD3
         assert not getattr(MATD3, "supports_dynamic_topology", False)
+
+
+def _matd3_config_with_critic() -> dict:
+    return {
+        "algorithm": {
+            "name": "AgentTransformerMATD3",
+            "tokenizer_config_path": _TOKENIZER_CFG,
+            "transformer_actor": {
+                "d_model": 16, "nhead": 2, "num_layers": 1,
+                "dim_feedforward": 32, "dropout": 0.0,
+            },
+            "transformer_critic": {
+                "d_model": 16, "nhead": 2, "num_layers": 1,
+                "dim_feedforward": 32, "dropout": 0.0,
+            },
+            "hyperparameters": {
+                "gamma": 0.99, "tau": 0.005, "batch_size": 4,
+                "replay_capacity": 100, "actor_lr": 1e-3, "critic_lr": 3e-4,
+                "target_policy_noise": 0.2, "target_policy_noise_clip": 0.5,
+                "actor_update_interval": 2, "actor_hidden_dim": 32,
+                "critic_action_input_mode": "final",
+            },
+        },
+    }
+
+
+class TestCriticIntegration:
+    """Critic stacks are created and critic updates run."""
+
+    def _make_agent(self, n_buildings=2):
+        obs_names = load_sample_observation_names_for_first_building()
+        obs_per = [list(obs_names) for _ in range(n_buildings)]
+        act_per = [["electrical_storage", "electric_vehicle_storage"] for _ in range(n_buildings)]
+        agent = AgentTransformerMATD3(_matd3_config_with_critic())
+        agent.attach_environment(
+            observation_names=obs_per,
+            action_names=act_per,
+            action_space=[None] * n_buildings,
+            observation_space=[None] * n_buildings,
+            metadata={"building_names": [f"Building_{b}" for b in range(n_buildings)]},
+        )
+        return agent, obs_per, act_per, len(obs_names)
+
+    def test_twin_critics_created(self):
+        agent, _, _, _ = self._make_agent()
+        assert agent._online_critics is not None
+        assert agent._target_critics is not None
+        params_1 = set(id(p) for p in agent._online_critics.critic_1.parameters())
+        params_2 = set(id(p) for p in agent._online_critics.critic_2.parameters())
+        assert params_1.isdisjoint(params_2)
+
+    def test_replay_created(self):
+        agent, _, _, _ = self._make_agent()
+        assert agent._replay is not None
+        assert agent._replay.active_signature is not None
+
+    def test_update_stores_transition(self):
+        agent, _, _, obs_dim = self._make_agent(n_buildings=2)
+        obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+        next_obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+        actions = [np.array([0.1, -0.2], dtype=np.float64) for _ in range(2)]
+        rewards = [0.5, -0.3]
+
+        agent.update(
+            observations=obs,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_obs,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=100,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+        assert agent._replay.active_partition_size == 1
+
+    def test_critic_update_runs_when_enough_samples(self):
+        agent, _, _, obs_dim = self._make_agent(n_buildings=2)
+        for _ in range(10):
+            obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            next_obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            actions = [np.random.randn(2).astype(np.float64) for _ in range(2)]
+            agent.update(
+                observations=obs, actions=actions, rewards=[0.0, 0.0],
+                next_observations=next_obs, terminated=False, truncated=False,
+                update_target_step=False, global_learning_step=100,
+                update_step=True, initial_exploration_done=True,
+            )
+        assert agent._critic_update_count > 0
+
+    def test_no_update_when_exploration_not_done(self):
+        agent, _, _, obs_dim = self._make_agent(n_buildings=2)
+        for _ in range(10):
+            obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            next_obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            actions = [np.random.randn(2).astype(np.float64) for _ in range(2)]
+            agent.update(
+                observations=obs, actions=actions, rewards=[0.0, 0.0],
+                next_observations=next_obs, terminated=False, truncated=False,
+                update_target_step=False, global_learning_step=100,
+                update_step=True, initial_exploration_done=False,
+            )
+        assert agent._critic_update_count == 0
+
+    def test_target_soft_update_on_flag(self):
+        agent, _, _, obs_dim = self._make_agent(n_buildings=2)
+        for _ in range(10):
+            obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            next_obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            actions = [np.random.randn(2).astype(np.float64) for _ in range(2)]
+            agent.update(
+                observations=obs, actions=actions, rewards=[0.0, 0.0],
+                next_observations=next_obs, terminated=False, truncated=False,
+                update_target_step=True, global_learning_step=100,
+                update_step=True, initial_exploration_done=True,
+            )
+        assert agent._target_update_count > 0
+
+    def test_topology_change_updates_replay_signature(self):
+        agent, obs_per, act_per, _ = self._make_agent(n_buildings=2)
+        sig_before = agent._replay.active_signature
+
+        charger_id = next(
+            n.split("::", 2)[1]
+            for n in obs_per[0]
+            if n.startswith("charger::")
+            and "::connected_ev::" not in n
+            and "::incoming_ev::" not in n
+        )
+        old_prefix = f"charger::{charger_id}::"
+        new_prefix = "charger::Building_0/charger_new::"
+        new_obs_0 = obs_per[0] + [
+            new_prefix + n[len(old_prefix):]
+            for n in obs_per[0]
+            if n.startswith(old_prefix)
+        ]
+        new_act_0 = act_per[0] + ["electric_vehicle_storage_charger_new"]
+        agent.attach_environment(
+            observation_names=[new_obs_0, obs_per[1]],
+            action_names=[new_act_0, act_per[1]],
+            action_space=[None, None],
+            observation_space=[None, None],
+        )
+
+        sig_after = agent._replay.active_signature
+        assert sig_after != sig_before
