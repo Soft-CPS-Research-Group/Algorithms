@@ -310,6 +310,12 @@ class AgentTransformerMATD3(BaseAgent):
                 self._collect_diagnostics(global_learning_step), global_learning_step
             )
 
+    def is_initial_exploration_done(self, global_learning_step: int) -> bool:
+        """Gate for the wrapper: true when initial exploration window is over."""
+        exploration_cfg = self.config["algorithm"].get("exploration", {}) or {}
+        end_step = int(exploration_cfg.get("end_initial_exploration_time_step", 0))
+        return global_learning_step >= end_step
+
     def export_artifacts(
         self, output_dir: str, context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:

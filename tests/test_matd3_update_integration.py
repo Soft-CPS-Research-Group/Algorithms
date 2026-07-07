@@ -341,3 +341,56 @@ class TestFullCheckpoint:
             agent_1b, _, _, _ = _make_matd3_full(n_buildings=1)
             with pytest.raises(ValueError, match="[Bb]uilding.count"):
                 agent_1b.load_checkpoint(path)
+
+
+class TestWrapperIntegration:
+    """Verify the agent exposes the hooks the wrapper expects."""
+
+    def test_set_observation_context_is_callable(self):
+        agent, _, _, _ = _make_matd3_full()
+        hook = getattr(agent, "set_observation_context", None)
+        assert callable(hook)
+
+    def test_set_transition_context_is_callable(self):
+        agent, _, _, _ = _make_matd3_full()
+        hook = getattr(agent, "set_transition_context", None)
+        assert callable(hook)
+
+    def test_is_initial_exploration_done(self):
+        agent, _, _, _ = _make_matd3_full()
+        assert agent.is_initial_exploration_done(0) is False
+        assert agent.is_initial_exploration_done(3) is False
+        assert agent.is_initial_exploration_done(4) is True
+        assert agent.is_initial_exploration_done(100) is True
+
+    def test_update_called_without_context_does_not_crash(self):
+        """Wrapper may skip context hooks if teacher not needed."""
+        agent, _, _, obs_dim = _make_matd3_full(n_buildings=2)
+        agent._teacher_alive = False
+        agent._warm_start_policy = None
+        obs, actions, rewards, next_obs, term, trunc = _generate_transition(2, obs_dim)
+        agent.update(
+            observations=obs, actions=actions, rewards=rewards,
+            next_observations=next_obs, terminated=term, truncated=trunc,
+            update_target_step=False, global_learning_step=100,
+            update_step=True, initial_exploration_done=True,
+        )
+
+    def test_export_after_update_only_actors_in_manifest(self):
+        """Manifest must not contain critic/replay/teacher state."""
+        agent, _, _, obs_dim = _make_matd3_full(n_buildings=2)
+        for step in range(6):
+            obs, actions, rewards, next_obs, term, trunc = _generate_transition(2, obs_dim)
+            _run_update_step(
+                agent, obs, actions, rewards, next_obs, term, trunc,
+                global_learning_step=step + 10,
+                update_step=True,
+                initial_exploration_done=True,
+            )
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = agent.export_artifacts(tmpdir)
+            assert all("critic" not in a["path"] for a in manifest["artifacts"])
+            assert all("replay" not in a["path"] for a in manifest["artifacts"])
+            assert all("teacher" not in a["path"] for a in manifest["artifacts"])
