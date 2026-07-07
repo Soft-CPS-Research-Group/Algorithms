@@ -100,16 +100,20 @@
     "district_pricing_forecast": {
       "entity_table": "district",
       "cardinality": "singleton",
-      "feature_patterns": [ "^district__electricity_pricing_predicted_\\d+$" ],
-      "input_dim_fallback": 3
+      "feature_patterns": [
+        "^district__electricity_pricing_predicted_\\d+$",
+        "^district__forecast_price_next_.+$"
+      ],
+      "input_dim_fallback": 8
     },
     "district_community_energy": {
       "entity_table": "district",
       "cardinality": "singleton",
       "feature_patterns": [
-        "^district__community_(net|import|export|pv|bess|ev)_(power_kw|energy_kwh_step)$"
+        "^district__community_(net|import|export|pv|bess|ev)_(power_kw|energy_kwh_step)$",
+        "^district__forecast_community_(load|pv|net)_next_.+_kw$"
       ],
-      "input_dim_fallback": 12
+      "input_dim_fallback": 27
     },
     "district_community_headroom": {
       "entity_table": "district",
@@ -168,9 +172,10 @@
       "cardinality": "singleton",
       "feature_patterns": [
         "^net_electricity_consumption$",
-        "^(net|import|export|load|pv|bess|ev_charging)_(power_kw|energy_kwh_step)$"
+        "^(net|import|export|load|pv|bess|ev_charging)_(power_kw|energy_kwh_step)$",
+        "^forecast_(load|pv|net)_next_.+_kw$"
       ],
-      "input_dim_fallback": 15
+      "input_dim_fallback": 30
     },
     "building_energy_history": {
       "entity_table": "building",

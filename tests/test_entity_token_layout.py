@@ -106,6 +106,28 @@ def test_uses_real_sample_payload(builder_and_obs):
     )
 
 
+def test_forecast_operational_features_are_classified(cfg):
+    from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder
+
+    obs = load_sample_observation_names_for_first_building() + [
+        "district__forecast_price_next_15m",
+        "district__forecast_community_load_next_15m_kw",
+        "district__forecast_community_pv_next_15m_kw",
+        "district__forecast_community_net_next_15m_kw",
+        "forecast_load_next_15m_kw",
+        "forecast_pv_next_15m_kw",
+        "forecast_net_next_15m_kw",
+    ]
+    layout = EntityTokenLayoutBuilder(cfg).build(
+        "Building_1", obs, ["electrical_storage", "electric_vehicle_storage"]
+    )
+    classified_names = {
+        name for segment in layout.segments for name in segment.feature_names
+    }
+    assert "district__forecast_price_next_15m" in classified_names
+    assert "forecast_load_next_15m_kw" in classified_names
+
+
 
 def test_classifies_district_time_to_sro_singleton(builder_and_obs):
     _, obs, layout = builder_and_obs

@@ -133,11 +133,13 @@ class EntityObservationTokenizer(nn.Module):
                 nfc_token = projected.unsqueeze(1)  # [B, 1, d_model]
 
             elif seg.family == "sro":
+                group = self._match_projection_width(group, seg.type_name)
                 projected = self.projections[seg.type_name](group)
                 sro_tokens.append(projected.unsqueeze(1))
                 sro_types.append(seg.type_name)
 
             elif seg.family == "ca":
+                group = self._match_projection_width(group, seg.type_name)
                 projected = self.projections[seg.type_name](group)
                 ca_tokens.append(projected.unsqueeze(1))
                 ca_types.append(seg.type_name)
@@ -169,3 +171,14 @@ class EntityObservationTokenizer(nn.Module):
             n_sro=len(sro_tokens),
             n_ca=len(ca_tokens),
         )
+
+    def _match_projection_width(self, group: torch.Tensor, type_name: str) -> torch.Tensor:
+        """Pad/truncate a segment group to its per-type projection width."""
+        expected = int(self.projections[type_name].in_features)
+        actual = int(group.shape[1])
+        if actual == expected:
+            return group
+        if actual < expected:
+            pad = group.new_zeros(group.shape[0], expected - actual)
+            return torch.cat([group, pad], dim=1)
+        return group[:, :expected]

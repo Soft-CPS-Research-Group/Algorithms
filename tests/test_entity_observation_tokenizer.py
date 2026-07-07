@@ -199,6 +199,39 @@ def test_projection_is_per_type_no_new_params_on_topology_grow(
     )
 
 
+def test_projection_accepts_charger_feature_width_growth(cfg, layout) -> None:
+    from algorithms.utils.entity_observation_tokenizer import EntityObservationTokenizer
+    from algorithms.utils.entity_token_layout import BuildingTokenLayout, TokenSegment
+
+    dims = _type_input_dims_for_layout(cfg, layout)
+    dims["charger"] = 33
+    tok = EntityObservationTokenizer(cfg, D_MODEL, dims)
+    charger = next(
+        segment
+        for segment in layout.segments
+        if segment.family == "ca" and segment.type_name == "charger"
+    )
+    extra_indices = tuple(range(max(max(s.feature_indices) for s in layout.segments) + 1, max(max(s.feature_indices) for s in layout.segments) + 18))
+    widened = TokenSegment(
+        family="ca",
+        type_name="charger",
+        instance_id="Building_1/charger_wide",
+        feature_indices=charger.feature_indices + extra_indices,
+        feature_names=charger.feature_names + tuple(f"charger::wide::f{i}" for i in range(len(extra_indices))),
+    )
+    grown = BuildingTokenLayout(
+        building_id=layout.building_id,
+        segments=tuple(list(layout.segments) + [widened]),
+        n_sro=layout.n_sro,
+        n_ca=layout.n_ca + 1,
+        ca_action_names=layout.ca_action_names + ("electric_vehicle_storage_charger_wide",),
+        excluded_feature_names=layout.excluded_feature_names,
+    )
+    obs_dim = max(max(s.feature_indices) for s in grown.segments) + 1
+    out = tok(torch.zeros(1, obs_dim), grown)
+    assert out.ca_tokens.shape == (1, grown.n_ca, D_MODEL)
+
+
 def test_index_select_handles_non_contiguous_sro_segment(
     cfg, layout, sentinel_obs
 ) -> None:

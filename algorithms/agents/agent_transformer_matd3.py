@@ -555,7 +555,7 @@ class AgentTransformerMATD3(BaseAgent):
                     f"Topology change for {state.building_id!r}: new type "
                     f"{tname!r} has no projection. Restart required."
                 )
-            if int(state.tokenizer.projections[tname].in_features) != int(dim):
+            if int(state.tokenizer.projections[tname].in_features) < int(dim):
                 raise ValueError(
                     f"Topology change for {state.building_id!r}: feature count "
                     f"for type {tname!r} changed. Weights cannot be preserved."
@@ -788,7 +788,14 @@ class AgentTransformerMATD3(BaseAgent):
             if seg.family == "nfc":
                 continue
             existing = dims.get(seg.type_name)
-            new = len(seg.feature_indices)
+            new = max(
+                len(seg.feature_indices),
+                int(self._tokenizer_config.ca_types[seg.type_name].input_dim_fallback)
+                if seg.type_name in self._tokenizer_config.ca_types
+                else int(self._tokenizer_config.sro_types[seg.type_name].input_dim_fallback)
+                if seg.type_name in self._tokenizer_config.sro_types
+                else len(seg.feature_indices),
+            )
             if existing is not None and existing != new:
                 raise ValueError(
                     f"Inconsistent input dim for type {seg.type_name!r}: "
@@ -836,10 +843,20 @@ class AgentTransformerMATD3(BaseAgent):
                 sro_list = []
                 for i, idx in enumerate(sros_idx):
                     g = encoded_obs.index_select(dim=1, index=idx)
+                    expected = self_inner.tokenizer.projections[sro_types[i]].in_features
+                    if g.shape[1] < expected:
+                        g = torch.cat([g, g.new_zeros(g.shape[0], expected - g.shape[1])], dim=1)
+                    elif g.shape[1] > expected:
+                        g = g[:, :expected]
                     sro_list.append(self_inner.tokenizer.projections[sro_types[i]](g).unsqueeze(1))
                 ca_list = []
                 for i, idx in enumerate(ca_idx):
                     g = encoded_obs.index_select(dim=1, index=idx)
+                    expected = self_inner.tokenizer.projections[ca_types[i]].in_features
+                    if g.shape[1] < expected:
+                        g = torch.cat([g, g.new_zeros(g.shape[0], expected - g.shape[1])], dim=1)
+                    elif g.shape[1] > expected:
+                        g = g[:, :expected]
                     ca_list.append(self_inner.tokenizer.projections[ca_types[i]](g).unsqueeze(1))
                 nfc_grp = encoded_obs.index_select(dim=1, index=nfc_idx)
                 scalar = (nfc_grp[:, nfc_l] - nfc_grp[:, nfc_r]).unsqueeze(1)

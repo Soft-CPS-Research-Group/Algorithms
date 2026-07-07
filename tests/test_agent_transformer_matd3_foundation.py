@@ -232,16 +232,13 @@ class TestTopologyChange:
 
     def test_topology_feature_count_drift_fails(self):
         agent, obs_per, act_per, _ = _make_matd3()
-        # Remove one feature from a storage segment to trigger feature-count drift
-        # while keeping the storage CA/action mapping present.
-        removed = False
-        new_obs = []
-        for name in obs_per[0]:
-            if not removed and name.startswith("storage::"):
-                removed = True
-                continue
-            new_obs.append(name)
-        # This should fail because storage type feature count changes
+        storage_id = next(n.split("::", 2)[1] for n in obs_per[0] if n.startswith("storage::"))
+        new_obs = list(obs_per[0]) + [
+            f"storage::{storage_id}::extra_schema_feature_{i}"
+            for i in range(32)
+        ]
+        # This should fail because storage type feature count exceeds the
+        # preallocated projection width.
         with pytest.raises(ValueError, match="feature count"):
             agent.attach_environment(
                 observation_names=[new_obs],
