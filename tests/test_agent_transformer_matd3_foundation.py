@@ -230,22 +230,56 @@ class TestTopologyChange:
         assert agent._actors[0].layout.n_ca == 3
         assert agent._actors[0].topology_version == 1
 
-    def test_topology_feature_count_drift_fails(self):
+    def test_topology_change_expands_wider_charger_projection(self):
+        agent, obs_per, act_per, _ = _make_matd3()
+        charger_id = next(
+            n.split("::", 2)[1]
+            for n in obs_per[0]
+            if n.startswith("charger::")
+            and "::connected_ev::" not in n
+            and "::incoming_ev::" not in n
+        )
+        old_prefix = f"charger::{charger_id}::"
+        new_prefix = "charger::Building_0/charger_wide::"
+        extra_features = [
+            f"extra_schema_feature_{i}"
+            for i in range(agent._actors[0].tokenizer.projections["charger"].in_features)
+        ]
+        new_obs = list(obs_per[0]) + [
+            new_prefix + n[len(old_prefix):]
+            for n in obs_per[0]
+            if n.startswith(old_prefix)
+        ] + [new_prefix + feature for feature in extra_features]
+        new_act = list(act_per[0]) + ["electric_vehicle_storage_charger_wide"]
+        before_width = agent._actors[0].tokenizer.projections["charger"].in_features
+
+        agent.attach_environment(
+            observation_names=[new_obs],
+            action_names=[new_act],
+            action_space=[None],
+            observation_space=[None],
+        )
+
+        after_width = agent._actors[0].tokenizer.projections["charger"].in_features
+        assert after_width > before_width
+        assert agent._actors[0].layout.n_ca == 3
+
+    def test_topology_feature_count_growth_expands_projection(self):
         agent, obs_per, act_per, _ = _make_matd3()
         storage_id = next(n.split("::", 2)[1] for n in obs_per[0] if n.startswith("storage::"))
         new_obs = list(obs_per[0]) + [
             f"storage::{storage_id}::extra_schema_feature_{i}"
             for i in range(32)
         ]
-        # This should fail because storage type feature count exceeds the
-        # preallocated projection width.
-        with pytest.raises(ValueError, match="feature count"):
-            agent.attach_environment(
-                observation_names=[new_obs],
-                action_names=[act_per[0]],
-                action_space=[None],
-                observation_space=[None],
-            )
+        before_width = agent._actors[0].tokenizer.projections["storage"].in_features
+        agent.attach_environment(
+            observation_names=[new_obs],
+            action_names=[act_per[0]],
+            action_space=[None],
+            observation_space=[None],
+        )
+        after_width = agent._actors[0].tokenizer.projections["storage"].in_features
+        assert after_width > before_width
 
 
 class TestExport:

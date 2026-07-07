@@ -556,10 +556,7 @@ class AgentTransformerMATD3(BaseAgent):
                     f"{tname!r} has no projection. Restart required."
                 )
             if int(state.tokenizer.projections[tname].in_features) < int(dim):
-                raise ValueError(
-                    f"Topology change for {state.building_id!r}: feature count "
-                    f"for type {tname!r} changed. Weights cannot be preserved."
-                )
+                self._expand_tokenizer_projection(state, tname, int(dim))
         state.layout = new_layout
         state.topology_version += 1
         logger.info(
@@ -568,6 +565,25 @@ class AgentTransformerMATD3(BaseAgent):
         )
         if self._replay is not None:
             self._replay.set_active_signature(self._current_topology_signature())
+
+    def _expand_tokenizer_projection(
+        self, state: _ActorState, type_name: str, new_input_dim: int
+    ) -> None:
+        old = state.tokenizer.projections[type_name]
+        if new_input_dim <= int(old.in_features):
+            return
+        expanded = nn.Linear(new_input_dim, old.out_features)
+        with torch.no_grad():
+            expanded.weight.zero_()
+            expanded.bias.copy_(old.bias)
+            expanded.weight[:, : old.in_features].copy_(old.weight)
+        state.tokenizer.projections[type_name] = expanded
+        params = (
+            list(state.tokenizer.parameters())
+            + list(state.backbone.parameters())
+            + list(state.actor.parameters())
+        )
+        state.optimizer = torch.optim.Adam(params, lr=self._actor_lr)
 
     def _initialize_critic_infrastructure(self) -> None:
         max_buildings = max(self._max_buildings, len(self._actors))
@@ -796,12 +812,7 @@ class AgentTransformerMATD3(BaseAgent):
                 if seg.type_name in self._tokenizer_config.sro_types
                 else len(seg.feature_indices),
             )
-            if existing is not None and existing != new:
-                raise ValueError(
-                    f"Inconsistent input dim for type {seg.type_name!r}: "
-                    f"{existing} vs {new}"
-                )
-            dims[seg.type_name] = new
+            dims[seg.type_name] = max(int(existing or 0), int(new))
         for tname, ca_cfg in self._tokenizer_config.ca_types.items():
             dims.setdefault(tname, int(ca_cfg.input_dim_fallback))
         for tname, sro_cfg in self._tokenizer_config.sro_types.items():
