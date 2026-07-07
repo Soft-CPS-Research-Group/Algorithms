@@ -227,3 +227,135 @@ class TestTargetPolicySmoothing:
         assert smoothed.shape == composed.shape
         assert smoothed.min() >= -1.0
         assert smoothed.max() <= 1.0
+
+
+from algorithms.utils.matd3_exploration import (
+    add_exploration_noise,
+    compute_sigma,
+    apply_exploration_phaseout,
+    compute_phaseout_probability,
+)
+from algorithms.utils.matd3_bc import compute_bc_loss, compute_bc_effective_weight, compute_ca_type_weights
+
+
+class TestFullPipelineComposition:
+    """Integration tests verifying correct ordering of operations."""
+
+    def test_predict_with_residual_and_noise(self):
+        """Simulate predict flow: residual compose -> phaseout -> noise."""
+        torch.manual_seed(42)
+        actor_out = torch.tanh(torch.randn(2, 3))
+        teacher_actions = torch.tensor([[0.3, -0.2, 0.1], [0.0, 0.5, -0.3]])
+        span = torch.full((3,), 2.0)
+        low = torch.full((3,), -1.0)
+        high = torch.full((3,), 1.0)
+
+        composed = compose_residual_actions(
+            teacher_actions=teacher_actions,
+            actor_outputs=actor_out,
+            action_span=span,
+            action_low=low,
+            action_high=high,
+            residual_action_scale=0.3,
+            scale_mask=torch.tensor([0.5, 1.0, 1.0]),
+        )
+        assert composed.min() >= -1.0
+        assert composed.max() <= 1.0
+
+        phaseout_prob = compute_phaseout_probability(exploration_step=25, phaseout_steps=100)
+        assert phaseout_prob == pytest.approx(0.75)
+        blended = apply_exploration_phaseout(
+            actor_actions=composed,
+            teacher_actions=teacher_actions,
+            phaseout_probability=phaseout_prob,
+            mode="blend",
+            deterministic=False,
+        )
+        assert blended.shape == (2, 3)
+
+        sigma = compute_sigma(
+            exploration_step=500,
+            sigma_initial=0.3,
+            sigma_final=0.05,
+            sigma_decay_steps=2000,
+        )
+        noisy = add_exploration_noise(
+            actions=blended,
+            action_span=span,
+            action_low=low,
+            action_high=high,
+            sigma=sigma,
+            noise_clip=0.5,
+        )
+        assert noisy.min() >= -1.0
+        assert noisy.max() <= 1.0
+
+    def test_target_smoothing_post_residual(self):
+        """Simulate target computation: target actor -> residual -> smooth."""
+        torch.manual_seed(7)
+        target_actor_out = torch.tanh(torch.randn(4, 2))
+        span = torch.full((2,), 2.0)
+        low = torch.full((2,), -1.0)
+        high = torch.full((2,), 1.0)
+        target_composed = compose_residual_actions(
+            teacher_actions=torch.zeros(4, 2),
+            actor_outputs=target_actor_out,
+            action_span=span,
+            action_low=low,
+            action_high=high,
+            residual_action_scale=0.5,
+            scale_mask=torch.ones(2),
+        )
+        smoothed = apply_target_policy_smoothing(
+            target_actions=target_composed,
+            action_span=span,
+            action_low=low,
+            action_high=high,
+            target_policy_noise=0.2,
+            target_policy_noise_clip=0.5,
+        )
+        assert smoothed.shape == (4, 2)
+        assert smoothed.min() >= -1.0
+        assert smoothed.max() <= 1.0
+
+    def test_bc_loss_at_actor_update(self):
+        """Simulate actor update: actor output -> BC loss from replay teacher."""
+        torch.manual_seed(99)
+        actor_actions = torch.tanh(torch.randn(8, 4, requires_grad=True))
+        actor_actions.retain_grad()
+        teacher_from_replay = torch.rand(8, 4) * 2 - 1
+        ca_weights = compute_ca_type_weights(
+            ca_type_names=["storage", "charger", "charger", "pv"],
+            ev_multiplier=2.0,
+            storage_multiplier=0.5,
+        )
+        eff_weight = compute_bc_effective_weight(
+            global_learning_step=150,
+            initial_weight=1.0,
+            min_weight=0.0,
+            decay_start_step=100,
+            decay_steps=200,
+        )
+        assert eff_weight == pytest.approx(0.75)
+        bc_loss = compute_bc_loss(
+            actor_actions=actor_actions,
+            teacher_actions=teacher_from_replay,
+            ca_type_weights=ca_weights,
+            effective_weight=eff_weight,
+        )
+        assert bc_loss.item() > 0.0
+        bc_loss.backward()
+        assert actor_actions.grad is not None
+
+    def test_direct_scaling_without_teacher(self):
+        """When teacher is released, use direct scaling."""
+        actor_out = torch.tanh(torch.randn(3, 2))
+        direct = scale_direct_actions(
+            actor_outputs=actor_out,
+            action_span=torch.tensor([2.0, 2.0]),
+            action_low=torch.tensor([-1.0, -1.0]),
+            action_high=torch.tensor([1.0, 1.0]),
+        )
+        assert direct.min() >= -1.0
+        assert direct.max() <= 1.0
+        assert direct.shape == (3, 2)
