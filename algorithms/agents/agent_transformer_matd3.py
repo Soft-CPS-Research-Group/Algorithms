@@ -117,6 +117,7 @@ class AgentTransformerMATD3(BaseAgent):
         self._teacher_alive = bool((algo.get("exploration") or {}).get("warm_start_policy", {}).get("enabled", False))
         self._warm_start_policy: Optional[Any] = self if self._teacher_alive else None
         self._latest_training_metrics: Dict[str, float] = {}
+        self._last_logged_action_counts: Optional[List[int]] = None
         self._reward_normalization_enabled = bool(h.get("reward_normalization", False))
         self._reward_norm_count = 0
         self._reward_norm_mean = 0.0
@@ -175,6 +176,15 @@ class AgentTransformerMATD3(BaseAgent):
                 )
                 actions = state.actor(ca_emb)
             out.append(actions.squeeze(0).squeeze(-1).clamp(-1.0, 1.0).tolist())
+        counts = [len(actions) for actions in out]
+        if counts != self._last_logged_action_counts:
+            logger.info(
+                "AgentTransformerMATD3 action counts changed: topology_signature={}, counts={}, total={}",
+                self._current_topology_signature() if self._actors else "unattached",
+                counts,
+                sum(counts),
+            )
+            self._last_logged_action_counts = list(counts)
         return out
 
     def set_observation_context(
@@ -560,6 +570,7 @@ class AgentTransformerMATD3(BaseAgent):
             self._replay.set_active_signature(self._current_topology_signature())
 
     def _initialize_critic_infrastructure(self) -> None:
+        max_buildings = max(self._max_buildings, len(self._actors))
         self._online_critics = TwinTransformerCritics(
             d_model=self._critic_d_model,
             nhead=self._critic_nhead,
@@ -567,7 +578,7 @@ class AgentTransformerMATD3(BaseAgent):
             dim_feedforward=self._critic_dim_feedforward,
             dropout=self._critic_dropout,
             num_token_types=self._num_token_types,
-            max_buildings=self._max_buildings,
+            max_buildings=max_buildings,
         )
         self._target_critics = TwinTransformerCritics(
             d_model=self._critic_d_model,
@@ -576,7 +587,7 @@ class AgentTransformerMATD3(BaseAgent):
             dim_feedforward=self._critic_dim_feedforward,
             dropout=self._critic_dropout,
             num_token_types=self._num_token_types,
-            max_buildings=self._max_buildings,
+            max_buildings=max_buildings,
         )
         self._target_critics.load_state_dict(self._online_critics.state_dict())
         self._critic_1 = self._online_critics.critic_1
@@ -589,7 +600,7 @@ class AgentTransformerMATD3(BaseAgent):
         self._global_packer = GlobalTokenPacker(
             d_model=self._critic_d_model,
             num_token_types=self._num_token_types,
-            max_buildings=self._max_buildings,
+            max_buildings=max_buildings,
             action_input_mode=self._critic_action_input_mode,
         )
         self._replay = TopologyPartitionedReplay(
