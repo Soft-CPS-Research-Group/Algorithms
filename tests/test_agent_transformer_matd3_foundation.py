@@ -291,3 +291,15 @@ class TestExport:
             ckpt_path = agent1.save_checkpoint(tmpdir, step=1)
             with pytest.raises(ValueError, match="Building-count mismatch"):
                 agent2.load_checkpoint(ckpt_path)
+
+
+class TestDynamicTopologyGuardrail:
+    def test_transformer_matd3_allows_dynamic_topology(self):
+        """AgentTransformerMATD3 should not trigger the dynamic-topology error."""
+        from algorithms.agents.agent_transformer_matd3 import AgentTransformerMATD3
+        assert AgentTransformerMATD3.supports_dynamic_topology is True
+
+    def test_legacy_matd3_still_rejects_dynamic(self):
+        """Legacy MATD3 error message must remain unchanged."""
+        from algorithms.agents.matd3_agent import MATD3
+        assert not getattr(MATD3, "supports_dynamic_topology", False)
