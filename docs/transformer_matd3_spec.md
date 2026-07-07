@@ -67,11 +67,13 @@ Each building owns a deployable actor stack:
 Training owns centralized, non-deployable critic state:
 
 - Global critic token packer.
-- Single Transformer critic backbone shared by both twin critics.
-- Two independent Q heads (twin critics) producing one scalar Q per
-  controlled building.
-- Twin target critics with the same architecture.
-- Critic optimizer(s).
+- Two fully independent Transformer critic stacks (critic 1 and critic 2),
+  each with its own backbone, type embeddings, and Q head. This preserves
+  TD3's overestimation reduction property; a shared backbone would make the
+  twin critics correlated and undermine min-Q.
+- Two independent target critic stacks mirroring the online critics.
+- Critic optimizer(s) (one per critic stack, or a combined optimizer over
+  both — implementation choice).
 - Replay partitions keyed by topology signature.
 
 The exported artifact boundary is hard: only per-building actor pipelines are
@@ -82,7 +84,10 @@ file and are never referenced by the manifest.
 **Controlled building** is defined here as a building whose current layout has
 `n_ca >= 1`. Only controlled buildings produce Q-values, actor updates, and
 per-building diagnostics. Uncontrolled buildings still contribute observation
-tokens to the critic as community context.
+tokens to the critic as community context. If a building loses all CAs
+(becomes uncontrolled), its actor optimizer and target actor state are frozen
+in place; if it later regains CAs with the same token-type feature dimensions,
+training resumes from the frozen state without rebuild.
 
 ## Package Boundaries
 
@@ -125,24 +130,31 @@ Prediction flow per building `b`:
 2. Run the local Transformer actor backbone.
 3. Emit deterministic actor means in `[-1, 1]`, one scalar per CA token.
 4. In training mode (`deterministic=False`):
-   - Optionally compose with the teacher policy per the warm-start/residual
-     rules (see below).
+   - Compose with the teacher policy per the residual rules (see below) if
+     residual is enabled.
+   - During warm-start/phaseout window, optionally blend or replace with
+     teacher actions per the exploration rules (see below).
    - Add exploration noise; clip to `[-1, 1]`.
 5. Return actions ordered by `layout.ca_action_names[b]`.
 
 Training flow at step `t`:
 
-1. Store the transition with the current topology signature and per-building
-   layout summaries.
-2. If `len(active_partition) < batch_size`, skip the update this step.
+1. Store the transition with the current topology signature, per-building
+   layout summaries, and teacher/base actions.
+2. Gate training: skip if `initial_exploration_done` is false and
+   `train_during_initial_exploration` is disabled. Skip if
+   `len(active_partition) < batch_size`.
 3. Otherwise sample from the active-signature partition only.
 4. Build global observation/action tokens for all buildings; apply padding
    masks for variable token counts.
-5. Compute target actions from target actors and apply target policy
-   smoothing (pre-tanh; see below).
+5. Compute target actions from target actors, apply residual composition
+   with target teacher actions, then apply target policy smoothing in the
+   final action space.
 6. Update twin critics with the min-Q TD3 target.
 7. On delayed-actor-update steps, update each controlled building's actor
-   against the global critic, keeping other buildings' actions detached.
+   against critic 1, keeping other buildings' actions detached. Critic
+   parameters are frozen (excluded from gradient) during actor loss
+   computation.
 8. Soft-update actor and critic targets on scheduled target-update steps.
 
 The wrapper's per-agent `rewards: List[float]` (see
@@ -182,113 +194,203 @@ Unsupported in the first version:
 On a supported topology change, per changed building `b`:
 
 1. Rebuild `layouts[b]` from the new observation/action names.
-2. Recompute global critic packing metadata and masks.
+2. Recompute global critic packing metadata and masks for both twin critics.
 3. Validate tokenizer coverage, CA action ordering, and feature-count
    stability. Fail fast if a token type's feature count changes.
 4. Preserve actor/critic weights and target weights, because per-type
    projections are shared across instances of the same type.
 5. Switch active replay sampling to the new topology signature. Old
-   partitions are retained read-only for diagnostics and checkpoint
-   continuity.
+   partitions are retained read-only subject to eviction rules (see Replay
+   Contract).
 6. Skip actor/critic updates until the active partition has at least
-   `batch_size` transitions. Do not warm-start critic outputs from
-   old-signature critic weights.
-7. Apply teacher-policy handling per the warm-start rules below.
+   `batch_size` transitions.
+7. Re-attach the teacher policy with new metadata if residual or BC still
+   needs it (see Warm-Start and Residual sections below).
+
+Topology signature is a stable hash of per-building
+`(building_id, observation_names, action_names, ca_action_names,
+per_type_feature_dims)`. Including building ids and feature dimensions
+prevents accidentally reusing incompatible replay or actor state when
+buildings are reordered or schema drifts within a stable name set.
 
 ## Warm-Start Policy Lifecycle
 
-The behavior mirrors the current MATD3/MADDPG warm-start recipe:
+The warm-start teacher has **two independent roles**:
+
+1. **Exploration replacement/blending** during the early training window.
+2. **Residual baseline provider** for the residual policy composition.
+
+These roles have different lifetimes:
+
+### Exploration role (finite)
 
 - Steps `[0, random_exploration_steps)`: teacher provides all actions.
 - Steps `[random_exploration_steps,
   random_exploration_steps + warm_start_policy_phaseout_steps)`: teacher
   contribution decays linearly via the existing phaseout probability.
-- After the phaseout window: teacher is not used and its per-building state
-  is released.
+- After the phaseout window: teacher no longer participates in exploration
+  blending or action replacement.
 
-Topology-change rules:
+### Residual baseline role (indefinite while residual is enabled)
+
+When `residual_policy_enabled` is true, the teacher continues to provide
+base actions for the residual composition formula at every step,
+independently of the phaseout counter. The teacher policy object remains
+alive and attached for as long as residual mode is active.
+
+This matches current MATD3 behavior where
+`_current_residual_base_actions()` calls the teacher at every step
+regardless of `exploration_step` (`maddpg_agent.py:3034-3044`).
+
+### BC role (finite, scheduled by BC weight decay)
+
+When BC is enabled, the teacher provides target actions for the BC loss
+term. This continues as long as `bc_effective_weight > 0`. The teacher
+remains alive until both the BC weight has decayed to zero and the residual
+role no longer needs it.
+
+### Teacher release rule
+
+The teacher policy is released (set to None, state freed) only when **all
+three roles** are inactive: exploration phaseout has ended, residual policy
+is disabled or weight is zero, and BC effective weight has decayed to zero.
+If any role still needs the teacher, it stays attached.
+
+### Topology-change rules
 
 1. `exploration_step`, `random_exploration_steps`, and
    `warm_start_policy_phaseout_steps` are preserved across topology changes.
    They are never reset.
-2. If the topology change occurs while the teacher is still active (before
-   the phaseout window ends), the teacher policy is re-attached with the new
+2. If the teacher is still alive (any role active), re-attach it with new
    `observation_names`/`action_names`/`entity_specs` so it can produce valid
    actions for the new layout. This is a state-refresh, not a schedule
    reset.
-3. If the topology change occurs after the phaseout window has ended, the
-   teacher is not re-attached. Its per-building state has already been
-   released and it is not used again.
-4. Teacher-action buffers used by BC and residual composition are cleared
-   for changed buildings on topology change (aligned with how
-   `AgentTransformerPPO`'s BC regularizer clears buffers on rebuild).
+3. If the teacher has already been released, it is not re-attached.
+4. Teacher-action entries in replay are stored alongside transitions; on
+   topology change they are cleared only for the affected buildings' new
+   active partition.
 
 ## Target Policy Smoothing
 
-Applied to target actor outputs during critic-target computation:
+Applied to target actor outputs during critic-target computation, in the
+**final action space** (post-residual-composition):
 
-1. Compute target actor pre-tanh means for each CA token.
-2. Add Gaussian noise with standard deviation `target_policy_noise`, clipped
-   elementwise to `[-target_policy_noise_clip, +target_policy_noise_clip]`.
-3. Apply tanh.
-4. Clip the final smoothed action to `[-1, 1]`.
+1. Compute target actor output for each CA token.
+2. If residual is enabled, compose with the teacher base action to get the
+   final target action (same formula as inference residual composition).
+3. Add Gaussian noise scaled by `target_policy_noise * action_span`,
+   clipped elementwise to `[-target_policy_noise_clip * action_span,
+   +target_policy_noise_clip * action_span]`.
+4. Clip the smoothed target action to action-space bounds (currently
+   `[-1, 1]`).
 
-This matches TD3's convention of adding noise in the pre-squash space.
+This matches current MATD3 behavior (`maddpg_agent.py:3311-3324`) where
+smoothing is applied after full policy composition and clipping, not to the
+raw actor latent.
 
 ## Residual Policy Composition
 
 Residual composition is enabled only when a warm-start teacher policy is
-configured. The final action for CA token `k` on building `b` is:
+configured and `residual_policy_enabled` is true. The final action for CA
+token `k` on building `b` is:
 
-`action[b, k] = clip(teacher_action[b, k] + residual_action_scale *
-actor_output[b, k], -1, 1)`
+`action[b, k] = clip(teacher_action[b, k] + 0.5 * action_span[k] *
+residual_action_scale * scale_mask[k] * actor_output[b, k],
+action_low[k], action_high[k])`
 
 - `actor_output[b, k]` is the tanh-squashed output of the local Transformer
-  actor.
-- `residual_action_scale` follows the existing MATD3 scale/growth schedule
-  (per-CA-type multipliers are applied by CA token type).
+  actor (range `[-1, 1]`).
+- `action_span[k] = action_high[k] - action_low[k]` (currently 2.0 for
+  `[-1, 1]` bounds).
+- `residual_action_scale` follows the existing MATD3 growth schedule.
+- `scale_mask[k]` applies per-CA-type multipliers
+  (`residual_storage_action_scale_multiplier`,
+  `residual_ev_action_scale_multiplier`, etc.) keyed by CA token type.
 - Exploration noise is applied to the composed action before the final clip,
   matching current MATD3 behavior.
-- When no teacher is configured, the actor output is used directly as the
-  final action and residual composition is disabled.
+- When residual is disabled or no teacher is configured, the actor output is
+  scaled to action bounds directly: `action[b, k] =
+  action_low[k] + 0.5 * (actor_output[b, k] + 1) * action_span[k]`.
 
 ## Behavior Cloning
 
-Reuses the existing `BehaviorCloningRegularizer` used by
-`AgentTransformerPPO` (`algorithms/utils/behavior_cloning.py`).
+BC for `AgentTransformerMATD3` is **replay-native**. Unlike the on-policy
+`BehaviorCloningRegularizer` used by `AgentTransformerPPO` (which indexes
+teacher actions by rollout step), MATD3 BC stores teacher/base actions
+directly in the replay buffer alongside each transition and reads them back
+at sample time.
 
-- BC targets are per CA token, keyed by CA token `type_name` from the
-  layout. Type-specific multipliers (EV, storage, etc.) are read from the BC
-  config exactly as they are today.
-- Teacher-action buffers are cleared per building on topology change.
-- BC is a training-only loss term added to the actor objective; it produces
-  no runtime action modification (residual composition handles that).
-- If BC is enabled in config, `set_observation_context` and
-  `set_transition_context` are implemented and populated by the wrapper for
-  teacher-aware replay.
+Implementation approach:
+
+- **Shared utilities** extracted from `BehaviorCloningRegularizer`:
+  - Teacher policy building and attach lifecycle (`build_warm_start_policy`).
+  - CA-type weight computation (`ca_type_weights` logic).
+  - BC effective-weight decay schedule.
+- **MATD3-specific BC path**:
+  - Teacher actions are stored in replay per transition (no separate buffer).
+  - At actor-update time, sampled `teacher_actions` come from the replay
+    batch directly.
+  - BC loss: weighted MSE between actor-predicted actions and teacher actions
+    from replay, weighted per CA token type (EV, storage, other).
+  - BC weight decay uses `global_learning_step` and the same
+    `decay_start_step`/`decay_steps`/`min_weight` schedule.
+
+- Teacher-action entries in replay use the new topology signature; on
+  topology change, affected buildings' entries are invalidated in the old
+  partition.
+- If BC is enabled, `set_observation_context` and `set_transition_context`
+  are implemented so the wrapper can provide raw observations for teacher
+  action computation.
 
 ## Critic Design
 
 Actors stay local and deployable. Critics are centralized and training-only.
 
-- Input to the critic is a single global token sequence covering every
-  building's observation tokens plus one action token per CA token. Each
+### Token packing
+
+- Input to each critic is a single global token sequence covering every
+  building's observation tokens plus action tokens for each CA token. Each
   token carries type-family, per-type, and per-building identity embeddings.
   Padding masks handle variable per-building token counts.
-- One shared Transformer critic backbone processes the global sequence. Two
-  independent Q heads read the encoded per-building query token to produce
-  the twin Q-values `Q1(s, a)`, `Q2(s, a)` for each controlled building.
-- Target critics use the same packing path with target actor actions after
-  target policy smoothing.
-- The per-building actor update at building `b` recomputes only building
-  `b`'s actor output; all other buildings' actions in the global sequence
-  are detached. The actor loss is
-  `-Q1_global(s, a_with_b_replaced_by_current_actor)`.
-- Actor updates iterate over controlled buildings inside a single delayed-
-  actor-update step. Compute cost is
-  `O(controlled_buildings * critic_forward)` per actor update; this is an
-  explicit performance-vs-fidelity choice and is noted in
-  `Look If We Need Improvements` for revisiting if it becomes a bottleneck.
+
+### Action token content
+
+When `critic_action_input_mode` is `final` (default): one action token per
+CA token containing the final composed action scalar.
+
+When `critic_action_input_mode` is `final_base_delta` or
+`final_base_delta_normalized`: each CA action token carries three scalars —
+the final action, the teacher/base action, and the residual delta (optionally
+normalized by action span). This matches the current MATD3 15-min residual
+recipe (`maddpg_agent.py:2996-3032`).
+
+### Twin critic stacks
+
+Two **fully independent** Transformer critic stacks process the global
+sequence. Each stack has:
+
+- Its own Transformer encoder (backbone, type embeddings, layer weights).
+- Its own Q head (per-building query token → scalar Q-value per controlled
+  building).
+- Its own target critic (soft-updated independently).
+
+Independence is required for TD3's overestimation reduction. A shared
+backbone makes the twin critics correlated and is explicitly listed as a
+future performance optimization in `Look If We Need Improvements`.
+
+### Actor update gradient path
+
+The per-building actor update at building `b` recomputes only building `b`'s
+actor output; all other buildings' actions in the global sequence are
+detached. Critic 1 parameters are frozen (excluded from gradient
+accumulation) during actor loss backward. The actor loss is
+`-Q1(s, a_with_b_replaced_by_current_actor)`.
+
+Actor updates iterate over controlled buildings inside a single delayed-
+actor-update step. Compute cost is
+`O(controlled_buildings * critic_forward)` per actor update; this is an
+explicit performance-vs-fidelity choice and is noted in
+`Look If We Need Improvements`.
 
 ## Replay Contract
 
@@ -297,15 +399,15 @@ Each replay transition stores:
 - Encoded per-building observations.
 - Encoded per-building next observations.
 - Final actions sent to the wrapper.
-- Teacher/base actions when warm-start or residual behavior is active
-  (populated via `set_transition_context`).
+- Teacher/base actions (for residual/BC; populated via
+  `set_transition_context`).
+- Next-state teacher/base actions (for target residual composition).
 - Per-building rewards.
 - Done flag.
-- Topology signature (a stable hash of per-building
-  `(observation_names, action_names)`).
+- Topology signature.
 - Layout summaries needed to reconstruct token batches for that signature.
 
-Sampling rules:
+### Sampling rules
 
 - The sampler returns batches only from the current active topology
   signature.
@@ -313,19 +415,48 @@ Sampling rules:
 - Old partitions are retained read-only for diagnostics and checkpoint
   continuity but do not contribute gradients.
 
-Replay checkpoint state includes all retained partitions plus the active
-signature, so resumed training can continue from the correct partition.
+### Capacity and eviction
+
+A single `replay_capacity` config parameter defines the maximum total
+transitions across all partitions combined. When a new transition would
+exceed capacity, the oldest transition from the oldest non-active partition
+is evicted first; if all non-active partitions are empty, the oldest
+transition from the active partition is overwritten (standard ring-buffer
+semantics within a partition). Per-partition capacity is not fixed; only the
+global total is bounded.
+
+Replay checkpoint state includes all retained partitions (subject to
+capacity) plus the active signature.
+
+## Initial Exploration Gating
+
+`is_initial_exploration_done(global_learning_step)` returns True when
+`global_learning_step >= end_initial_exploration_time_step` (matching current
+MATD3 behavior in `maddpg_agent.py:2028-2029`).
+
+When `initial_exploration_done` is False:
+
+- If `train_during_initial_exploration` is False (default): skip all updates.
+- If `train_during_initial_exploration` is True and
+  `global_learning_step >= initial_exploration_training_start_step`: allow
+  updates.
+
+This gates both critic and actor updates, matching the existing MATD3
+contract.
 
 ## Diagnostics
 
 Essential parity with current MATD3 diagnostics:
 
-- Replay size, active partition size, and topology-signature changes.
+- Replay size, active partition size, partition count, topology-signature
+  changes.
 - Critic 1 / critic 2 loss, critic Q gap, target Q distribution stats.
 - Actor loss, gradient norms, per-building action deviation from teacher.
-- Warm-start phaseout probability, whether teacher is still active.
-- BC loss by CA token type (EV, storage, other).
+- Warm-start exploration phaseout probability, residual scale, whether
+  teacher is still alive.
+- BC loss by CA token type (EV, storage, other), BC effective weight.
 - Residual delta magnitude by CA token type.
+- Critic action-input mode and whether delta normalization is active.
 
 Metric namespace is `TransformerMATD3/...`. Metrics reference building
 identifiers, not fixed agent indices, so they stay meaningful across
@@ -342,12 +473,14 @@ Add `TransformerMATD3StageConfig` in `utils/config_schema.py`, alongside
   dropout).
 - `hyperparameters`: `gamma`, `tau`, `batch_size`, `replay_capacity`,
   `actor_lr`, `critic_lr`, `target_policy_noise`,
-  `target_policy_noise_clip`, `actor_update_interval`, reward normalization
-  settings.
+  `target_policy_noise_clip`, `actor_update_interval`,
+  `critic_action_input_mode`, reward normalization settings.
 - `exploration`: existing MATD3 exploration structure, including
-  `random_exploration_steps` and `warm_start_policy` sub-block.
+  `random_exploration_steps`, `end_initial_exploration_time_step`,
+  `train_during_initial_exploration`, and `warm_start_policy` sub-block.
 - `residual`: existing MATD3 residual policy structure.
-- `behavior_cloning`: reuses the Transformer BC config shape.
+- `behavior_cloning`: weight, min_weight, decay_start_step, decay_steps,
+  ev_multiplier, storage_multiplier, warm_start sub-block.
 - `diagnostics`: toggles and detail levels.
 
 The class declares `supports_dynamic_topology = True`. Config and runtime
@@ -360,13 +493,14 @@ legacy `MATD3` is unchanged; a new allow-list entry is added for
 
 Checkpoints include:
 
-- Actor, target actor, critic backbone, twin Q heads, target critics
-  weights.
+- Actor, target actor weights per building.
+- Critic 1 and critic 2 full stacks (backbone + Q head) and their targets.
 - Actor and critic optimizer state.
 - Replay partitions and active topology signature.
 - Reward normalization state (per building).
-- Exploration state (`exploration_step`, `sigma`, teacher activity).
-- Teacher/residual/BC state.
+- Exploration state (`exploration_step`, `sigma`, teacher activity flags).
+- Teacher/residual/BC state (teacher policy weights if stateful, phaseout
+  step, BC weight schedule state).
 - RNG state.
 - Per-building layout signatures and topology versions.
 
@@ -386,6 +520,7 @@ includes:
 - Observation dimension.
 - SRO and CA type lists.
 - CA action names.
+- Action bounds (low, high per CA action).
 - Tokenizer config path.
 - Dynamic-topology support flag.
 
@@ -400,32 +535,42 @@ Unit tests should cover:
 - Registry and schema support for `AgentTransformerMATD3`.
 - First attach builds layouts and model stacks.
 - Repeated attach with identical `observation_names`/`action_names` is a
-  no-op (the agent-visible signal for topology change).
-- Topology-change attach rebuilds changed layouts and global critic
-  packing.
+  no-op.
+- Topology-change attach rebuilds changed layouts and global critic packing.
 - Building-count change on attach or checkpoint load fails fast.
 - Actor output count equals `layout.n_ca`.
 - Actor output order matches `layout.ca_action_names`.
+- Twin critics are fully independent (no shared parameters between critic 1
+  and critic 2).
 - Global critic token packing handles variable buildings/assets and masks.
+- Critic action tokens carry final/base/delta when configured.
 - Replay partitions transitions by topology signature.
 - Sampler only returns active-signature transitions.
+- Replay eviction respects global capacity across partitions.
 - Updates skipped when `len(active_partition) < batch_size`.
-- Target policy smoothing applies pre-tanh with correct clipping.
+- Updates skipped when `initial_exploration_done` is false and
+  `train_during_initial_exploration` is disabled.
+- Target policy smoothing applies in final action space after residual
+  composition.
 - Delayed actor updates respect the configured interval.
-- Warm-start phaseout counter is preserved across topology changes.
-- Teacher is re-attached only while still active; discarded after phaseout.
-- Residual composition uses `teacher + residual_action_scale * actor` with
-  correct clipping.
-- BC uses `BehaviorCloningRegularizer`; teacher buffers are cleared on
-  topology change.
+- Critic parameters are frozen during actor loss backward.
+- Teacher stays alive while residual or BC still needs it, even after
+  exploration phaseout ends.
+- Teacher is released only when all three roles are inactive.
+- Teacher is re-attached on topology change only if still alive.
+- Warm-start exploration phaseout counter is preserved across topology
+  changes.
+- Residual composition uses correct action-span scaling formula.
+- BC loss reads teacher actions from replay samples (not a rollout buffer).
+- BC per-CA-type weighting uses layout token types.
 - `set_observation_context` and `set_transition_context` are honored when
   BC/residual are enabled.
-- Checkpoint round trip preserves weights, replay active signature, and
-  topology metadata.
+- Checkpoint round trip preserves weights, replay active signature, topology
+  metadata, and teacher/BC state.
 - Checkpoint load rejects incompatible feature schemas and building-count
   changes.
 - Export writes actor ONNX artifacts only.
-- Export metadata contains layout/action data required for serving.
+- Export metadata contains layout/action data and action bounds.
 - Manifest excludes critic/replay/teacher state.
 
 Integration tests should mirror the dynamic entity smoke coverage used for
@@ -436,8 +581,10 @@ Integration tests should mirror the dynamic entity smoke coverage used for
   dimensions are stable.
 - Critic artifacts are absent from export output.
 - Per-building actor artifacts remain independently deployable.
-- Warm-start phaseout continues correctly across an in-window topology
-  change.
+- Warm-start exploration phaseout continues correctly across an in-window
+  topology change.
+- Teacher residual baseline continues correctly after exploration phaseout
+  ends.
 - Building-count change fails fast in both attach and checkpoint-load paths.
 
 ## Look If We Need Improvements
@@ -463,6 +610,9 @@ Design-preserving tuning knobs:
 - Joint per-step actor update (single global backward touching all actors)
   instead of the current per-building loop, if the per-building loop
   becomes a training-throughput bottleneck.
+- Shared Transformer backbone between twin critics (collapses independence
+  but reduces VRAM and compute; measure overestimation bias impact before
+  adopting).
 
 Redesign-level changes (would require revisiting the deployment boundary or
 per-building actor model):
