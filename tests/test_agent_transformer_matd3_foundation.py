@@ -450,3 +450,97 @@ class TestCriticIntegration:
 
         sig_after = agent._replay.active_signature
         assert sig_after != sig_before
+
+
+class TestCriticCheckpoint:
+    """Checkpoint includes critic and replay state."""
+
+    def _make_agent(self, n_buildings=2):
+        obs_names = load_sample_observation_names_for_first_building()
+        obs_per = [list(obs_names) for _ in range(n_buildings)]
+        act_per = [["electrical_storage", "electric_vehicle_storage"] for _ in range(n_buildings)]
+        agent = AgentTransformerMATD3(_matd3_config_with_critic())
+        agent.attach_environment(
+            observation_names=obs_per,
+            action_names=act_per,
+            action_space=[None] * n_buildings,
+            observation_space=[None] * n_buildings,
+            metadata={"building_names": [f"Building_{b}" for b in range(n_buildings)]},
+        )
+        return agent, obs_per, act_per, len(obs_names)
+
+    def test_checkpoint_includes_critics(self):
+        agent, _, _, obs_dim = self._make_agent()
+        for _ in range(5):
+            obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            next_obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            actions = [np.random.randn(2).astype(np.float64) for _ in range(2)]
+            agent.update(
+                observations=obs, actions=actions, rewards=[0.0, 0.0],
+                next_observations=next_obs, terminated=False, truncated=False,
+                update_target_step=False, global_learning_step=100,
+                update_step=True, initial_exploration_done=True,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = agent.save_checkpoint(tmpdir, step=50)
+            import torch as _torch
+            payload = _torch.load(ckpt_path, map_location="cpu")
+            assert "online_critics_state" in payload
+            assert "target_critics_state" in payload
+            assert "critic_optimizer_state" in payload
+            assert "replay_state" in payload
+
+    def test_checkpoint_restores_critic_weights(self):
+        agent, _, _, obs_dim = self._make_agent()
+        for _ in range(10):
+            obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            next_obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            actions = [np.random.randn(2).astype(np.float64) for _ in range(2)]
+            agent.update(
+                observations=obs, actions=actions, rewards=[1.0, -1.0],
+                next_observations=next_obs, terminated=False, truncated=False,
+                update_target_step=True, global_learning_step=100,
+                update_step=True, initial_exploration_done=True,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = agent.save_checkpoint(tmpdir, step=100)
+            test_tokens = torch.randn(1, 6, agent._critic_d_model)
+            type_ids = torch.zeros(1, 6, dtype=torch.long)
+            building_ids = torch.zeros(1, 6, dtype=torch.long)
+            mask = torch.zeros(1, 6, dtype=torch.bool)
+            with torch.no_grad():
+                q1_before, q2_before = agent._online_critics(
+                    test_tokens, type_ids, building_ids, mask, [0],
+                )
+
+            agent2, _, _, _ = self._make_agent()
+            agent2.load_checkpoint(ckpt_path)
+
+            with torch.no_grad():
+                q1_after, q2_after = agent2._online_critics(
+                    test_tokens, type_ids, building_ids, mask, [0],
+                )
+            assert torch.allclose(q1_before, q1_after, atol=1e-6)
+            assert torch.allclose(q2_before, q2_after, atol=1e-6)
+
+    def test_checkpoint_restores_replay(self):
+        agent, _, _, obs_dim = self._make_agent()
+        for _ in range(8):
+            obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            next_obs = [np.random.randn(obs_dim).astype(np.float64) for _ in range(2)]
+            actions = [np.random.randn(2).astype(np.float64) for _ in range(2)]
+            agent.update(
+                observations=obs, actions=actions, rewards=[0.0, 0.0],
+                next_observations=next_obs, terminated=False, truncated=False,
+                update_target_step=False, global_learning_step=50,
+                update_step=False, initial_exploration_done=False,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = agent.save_checkpoint(tmpdir, step=50)
+            agent2, _, _, _ = self._make_agent()
+            agent2.load_checkpoint(ckpt_path)
+            assert agent2._replay.active_partition_size == 8
+            assert agent2._replay.active_signature == agent._replay.active_signature

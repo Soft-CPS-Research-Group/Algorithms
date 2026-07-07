@@ -248,7 +248,6 @@ class AgentTransformerMATD3(BaseAgent):
         }
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
-        # Plan A: minimal checkpoint.
         out = Path(output_dir) / "checkpoints"
         out.mkdir(parents=True, exist_ok=True)
         path = out / f"transformer_matd3_step{step}.pt"
@@ -268,6 +267,13 @@ class AgentTransformerMATD3(BaseAgent):
                 }
                 for s in self._actors
             ],
+            "online_critics_state": self._online_critics.state_dict() if self._online_critics else None,
+            "target_critics_state": self._target_critics.state_dict() if self._target_critics else None,
+            "critic_optimizer_state": self._critic_optimizer.state_dict() if self._critic_optimizer else None,
+            "global_packer_state": self._global_packer.state_dict() if self._global_packer else None,
+            "replay_state": self._replay.state_dict() if self._replay else None,
+            "critic_update_count": self._critic_update_count,
+            "target_update_count": self._target_update_count,
         }
         torch.save(payload, path)
         return str(path)
@@ -286,6 +292,18 @@ class AgentTransformerMATD3(BaseAgent):
             state.actor.load_state_dict(saved["actor_state"])
             state.target_actor.load_state_dict(saved["target_actor_state"])
             state.optimizer.load_state_dict(saved["optimizer_state"])
+        if payload.get("online_critics_state") and self._online_critics:
+            self._online_critics.load_state_dict(payload["online_critics_state"])
+        if payload.get("target_critics_state") and self._target_critics:
+            self._target_critics.load_state_dict(payload["target_critics_state"])
+        if payload.get("critic_optimizer_state") and self._critic_optimizer:
+            self._critic_optimizer.load_state_dict(payload["critic_optimizer_state"])
+        if payload.get("global_packer_state") and self._global_packer:
+            self._global_packer.load_state_dict(payload["global_packer_state"])
+        if payload.get("replay_state") and self._replay:
+            self._replay.load_state_dict(payload["replay_state"])
+        self._critic_update_count = int(payload.get("critic_update_count", 0))
+        self._target_update_count = int(payload.get("target_update_count", 0))
 
     # ==========================================================================
     # Internal
