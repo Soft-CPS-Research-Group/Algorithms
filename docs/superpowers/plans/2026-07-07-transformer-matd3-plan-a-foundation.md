@@ -2,6 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **DELEGATION**: This is Plan A of 4. Execute strictly in order:
+> Plan A → Plan B → Plan C → Plan D. Read the **Delegation Checklist** at the
+> bottom of Plan D before starting. Plan B defines the exact APIs used by
+> Plan D — do NOT improvise method names when wiring the training loop.
+>
+> Plans:
+> - `docs/superpowers/plans/2026-07-07-transformer-matd3-plan-a-foundation.md` (this file)
+> - `docs/superpowers/plans/2026-07-07-transformer-matd3-plan-b-critics-replay.md`
+> - `docs/superpowers/plans/2026-07-07-transformer-matd3-plan-c-teacher-residual-bc.md`
+> - `docs/superpowers/plans/2026-07-07-transformer-matd3-plan-d-training-wiring.md`
+>
+> Spec: `docs/transformer_matd3_spec.md`
+
 **Goal:** Establish the skeleton `AgentTransformerMATD3` agent with config schema, registry, per-building actor stack, `attach_environment`, `predict`, and `export_artifacts` — enough to run a no-op forward pass and export ONNX actors.
 
 **Architecture:** Per-building Transformer actor (tokenizer → backbone → deterministic head), registered via `TransformerMATD3StageConfig`. Reuses shared entity-transformer modules. No critic, no replay, no training — those come in Plan B/C/D.

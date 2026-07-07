@@ -12,7 +12,75 @@
 
 **Depends on:** Plan A (actor stack, predict, export), Plan B (twin critics, global token packer, topology-partitioned replay, critic update primitives), Plan C (teacher lifecycle, residual composition, target smoothing, replay-native BC, exploration gating).
 
-**Produces:** A fully trainable agent that passes multi-step update integration tests, dynamic topology smoke tests, diagnostics verification, and full checkpoint round-trip.
+**Produces:** A fully trainable agent that passes multi-step update integration tests, dynamic topology smoke tests, diagnostics verification, full checkpoint round-trip, and a wrapper-driven end-to-end smoke.
+
+---
+
+## API Contract from Plan B (READ FIRST)
+
+Plan D wires modules created in Plan B. Use these exact APIs — do NOT improvise method names.
+
+### `TopologyPartitionedReplay` (from `algorithms/utils/matd3_replay.py`)
+
+```python
+replay = TopologyPartitionedReplay(capacity=int, batch_size=int)
+replay.set_active_signature(signature: str)      # switch active before push/sample
+replay.push(transition: TransitionData)          # store one transition
+batch: Optional[SampledBatch] = replay.sample()  # NO args; returns None if active < batch_size
+size = replay.total_size                          # PROPERTY, not method
+size = replay.active_partition_size               # PROPERTY
+size = replay.partition_size(sig)                 # method
+count = replay.partition_count                    # PROPERTY
+state = replay.state_dict()                       # for checkpoint
+replay.load_state_dict(state)
+```
+
+`TransitionData` fields (all required at construction):
+`observations, next_observations, actions, base_actions, next_base_actions, rewards, done, topology_signature, layout_summaries`.
+
+`SampledBatch` fields (returned by sample):
+`observations, next_observations, actions, base_actions, next_base_actions, rewards, done, topology_signature, layout_summaries` — each per-building list is `[batch_size, dim]`.
+
+### `GlobalTokenPacker` (from `algorithms/utils/matd3_global_packer.py`)
+
+```python
+packer = GlobalTokenPacker(d_model, num_token_types, max_buildings, action_input_mode)
+packed: PackedGlobalSequence = packer.pack(
+    obs_tokens_per_building=[Tensor(B, n_obs_b, d_model), ...],
+    action_values_per_building=[Tensor(B, n_ca_b), ...],
+    layouts=[BuildingLayout(...), ...],
+    base_actions=[Tensor(B, n_ca_b), ...] or None,
+    action_span=2.0,
+)
+```
+
+`PackedGlobalSequence` fields: `global_tokens, type_ids, building_ids, padding_mask, controlled_building_indices`.
+
+### `TwinTransformerCritics` (from `algorithms/utils/matd3_critic.py`)
+
+Critics take UNPACKED tensors, not a `PackedGlobalSequence` object:
+
+```python
+q1, q2 = twins(
+    packed.global_tokens,
+    packed.type_ids,
+    packed.building_ids,
+    packed.padding_mask,
+    packed.controlled_building_indices,
+)
+min_q = twins.min_q(...)  # same signature
+twins.soft_update_from(source, tau=float)
+```
+
+### Agent-Owned Helper Contract
+
+The agent (`AgentTransformerMATD3`) is responsible for these helper methods (Plan D introduces them; Plan B does not):
+
+- `self._build_obs_tokens(observations_per_building)` — call each building's tokenizer+backbone to produce `obs_tokens_per_building` for the packer.
+- `self._current_topology_signature()` — stable hash from current `_actors` state (matches `compute_topology_signature` from Plan B).
+- `self._recompute_actions_for_building(b, current_actor_output_tensor)` — build a fresh action tokens list where building b uses the current actor output; all other buildings use detached final actions from the sampled batch.
+
+These are defined inline in Task 3 below.
 
 ---
 
@@ -21,9 +89,11 @@
 | File | Responsibility |
 |------|---------------|
 | `algorithms/agents/agent_transformer_matd3.py` (modify) | Wire full `update()`, context hooks, diagnostics, full checkpoint |
+| `tests/_matd3_test_helpers.py` (create) | Shared fixture helpers (config, transition gen, valid topology-change names) |
 | `tests/test_matd3_update_integration.py` (create) | Full update loop tests |
 | `tests/test_matd3_dynamic_topology_integration.py` (create) | Dynamic topology smoke tests |
 | `tests/test_matd3_diagnostics.py` (create) | Diagnostics output tests |
+| `tests/test_matd3_wrapper_smoke.py` (create) | End-to-end wrapper-driven smoke |
 
 ---
 
@@ -153,6 +223,48 @@ def _run_update_step(
         update_step=update_step,
         initial_exploration_done=initial_exploration_done,
     )
+
+
+def _add_charger_to_building_obs(
+    obs_names: List[str],
+    building_id: str,
+    new_charger_id: str,
+) -> Tuple[List[str], str]:
+    """Extend obs_names with a full valid charger asset block.
+
+    A single feature name is NOT enough — the tokenizer requires the FULL
+    per-type feature set for the `charger` type plus its EV connected/incoming
+    context features. This helper duplicates the feature signature from an
+    existing charger in the building so the topology-change test triggers a
+    real rebuild instead of tokenizer validation errors.
+
+    Returns (new_obs_names, new_action_name).
+    """
+    # Discover existing charger to mirror its feature block
+    charger_prefix = None
+    for name in obs_names:
+        if name.startswith("charger::") and "::" in name[len("charger::"):]:
+            # e.g. "charger::Building_0/charger_1_1::connected_state"
+            _, existing_id, _ = name.split("::", 2)
+            charger_prefix = existing_id
+            break
+    if charger_prefix is None:
+        raise RuntimeError(
+            "No existing charger in obs_names — cannot mirror feature block. "
+            "Use a base fixture that contains at least one charger."
+        )
+
+    # Collect all feature suffixes belonging to that charger (including
+    # connected_ev::* and incoming_ev::* sub-blocks).
+    prefix = f"charger::{charger_prefix}::"
+    suffixes = [name[len(prefix):] for name in obs_names if name.startswith(prefix)]
+    if not suffixes:
+        raise RuntimeError(f"No features found under prefix {prefix!r}")
+
+    new_prefix = f"charger::{building_id}/{new_charger_id}::"
+    new_names = list(obs_names) + [new_prefix + s for s in suffixes]
+    new_action = f"electric_vehicle_storage_{new_charger_id}"
+    return new_names, new_action
 ```
 
 ---
@@ -381,7 +493,7 @@ class TestUpdateGating:
         )
         # Transition should be stored but no gradient step
         assert agent._replay is not None
-        assert agent._replay.total_size() >= 1
+        assert agent._replay.total_size >= 1
         assert agent._critic_update_count == 0
 
     def test_update_skips_when_replay_too_small(self):
@@ -424,10 +536,16 @@ class TestUpdateGating:
             update_step=True, initial_exploration_done=True,
         )
         sig = agent._current_topology_signature()
-        batch = agent._replay.sample(sig, batch_size=1)
-        # teacher_actions field present in batch
-        assert "teacher_actions" in batch
-        assert "next_teacher_actions" in batch
+        assert agent._replay.partition_size(sig) >= 1
+        # sample() uses active partition; set it and sample one transition to
+        # verify teacher actions were stored (batch_size=1 for this test).
+        agent._replay.batch_size = 1
+        agent._replay.set_active_signature(sig)
+        batch = agent._replay.sample()
+        assert batch is not None
+        # teacher/base actions present as SampledBatch fields
+        assert batch.base_actions is not None
+        assert batch.next_base_actions is not None
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -455,6 +573,8 @@ def update(
     initial_exploration_done: bool,
 ) -> None:
     """Full training step: store → gate → critic → delayed actor → targets."""
+    from algorithms.utils.matd3_replay import TransitionData, LayoutSummary
+
     done = terminated or truncated
 
     # --- 1. Update reward normalizer ---
@@ -462,67 +582,157 @@ def update(
 
     # --- 2. Store transition in replay ---
     topology_sig = self._current_topology_signature()
-    self._replay.store(
-        topology_signature=topology_sig,
-        observations=[np.asarray(o, dtype=np.float64) for o in observations],
-        actions=[np.asarray(a, dtype=np.float64) for a in actions],
-        rewards=list(rewards),
-        next_observations=[np.asarray(o, dtype=np.float64) for o in next_observations],
-        done=done,
-        teacher_actions=self._latest_teacher_actions,
-        next_teacher_actions=self._latest_next_teacher_actions,
+    self._replay.set_active_signature(topology_sig)
+
+    # Derive teacher/base actions per building (None → zeros as placeholder)
+    n_buildings = len(observations)
+    base_actions_np = self._teacher_actions_or_zeros(
+        self._latest_teacher_actions, n_buildings
     )
+    next_base_actions_np = self._teacher_actions_or_zeros(
+        self._latest_next_teacher_actions, n_buildings
+    )
+    layout_summaries = [
+        LayoutSummary(
+            building_id=s.building_id,
+            n_ca=s.layout.n_ca,
+            n_sro=s.layout.n_sro,
+            obs_dim=len(s.obs_names_tuple),
+            action_dim=s.layout.n_ca,
+        )
+        for s in self._actors
+    ]
+    transition = TransitionData(
+        observations=[np.asarray(o, dtype=np.float32) for o in observations],
+        next_observations=[np.asarray(o, dtype=np.float32) for o in next_observations],
+        actions=[np.asarray(a, dtype=np.float32) for a in actions],
+        base_actions=base_actions_np,
+        next_base_actions=next_base_actions_np,
+        rewards=[float(r) for r in rewards],
+        done=bool(done),
+        topology_signature=topology_sig,
+        layout_summaries=layout_summaries,
+    )
+    self._replay.push(transition)
 
     # --- 3. Gate: skip gradient updates if conditions not met ---
     if not self._should_train_on_step(initial_exploration_done, global_learning_step):
         return
     if not update_step:
         return
-
-    active_size = self._replay.partition_size(topology_sig)
-    batch_size = self._batch_size
-    if active_size < batch_size:
+    if self._replay.active_partition_size < self._batch_size:
         return
 
     # --- 4. Sample batch from active partition ---
-    batch = self._replay.sample(topology_sig, batch_size=batch_size)
+    batch = self._replay.sample()
+    if batch is None:
+        return
 
-    # --- 5. Build global tokens via packer ---
-    packed = self._critic_packer.pack_batch(
-        batch["observations"],
-        batch["actions"],
-        batch["teacher_actions"],
-        topology_sig,
-    )
-    packed_next = self._critic_packer.pack_batch(
-        batch["next_observations"],
-        None,  # next actions computed from target actors below
-        batch["next_teacher_actions"],
-        topology_sig,
+    # --- 5. Build global tokens for current-state critic input ---
+    # obs_tokens_per_building[b]: [B, n_obs_tokens_b, d_model]
+    # actions_per_building[b]: [B, n_ca_b]
+    obs_tokens = self._build_obs_tokens_from_batch(batch.observations)
+    actions_t = [
+        torch.as_tensor(batch.actions[b], dtype=torch.float32)
+        for b in range(n_buildings)
+    ]
+    base_t = [
+        torch.as_tensor(batch.base_actions[b], dtype=torch.float32)
+        for b in range(n_buildings)
+    ]
+    packed_current = self._critic_packer.pack(
+        obs_tokens_per_building=obs_tokens,
+        action_values_per_building=actions_t,
+        layouts=self._packer_layouts(),
+        base_actions=base_t if self._residual_enabled else None,
     )
 
-    # --- 6. Compute target actions ---
+    # Build packed_next with target-actor actions (post-residual, post-smoothing)
     target_actions = self._compute_target_actions(
-        batch["next_observations"], batch["next_teacher_actions"]
+        batch.next_observations, batch.next_base_actions
+    )
+    next_base_t = [
+        torch.as_tensor(batch.next_base_actions[b], dtype=torch.float32)
+        for b in range(n_buildings)
+    ]
+    with torch.no_grad():
+        next_obs_tokens = self._build_obs_tokens_from_batch(batch.next_observations)
+    packed_next = self._critic_packer.pack(
+        obs_tokens_per_building=next_obs_tokens,
+        action_values_per_building=target_actions,
+        layouts=self._packer_layouts(),
+        base_actions=next_base_t if self._residual_enabled else None,
     )
 
-    # --- 7. Critic update ---
-    self._update_critics(packed, packed_next, target_actions, batch, global_learning_step)
+    # --- 6. Critic update ---
+    self._update_critics(packed_current, packed_next, batch, global_learning_step)
     self._critic_update_count += 1
 
-    # --- 8. Delayed actor update ---
+    # --- 7. Delayed actor update ---
     if self._critic_update_count % self._actor_update_interval == 0:
-        self._update_actors(packed, batch, global_learning_step)
+        self._update_actors(batch, obs_tokens, actions_t, base_t, global_learning_step)
         self._actor_update_count += 1
 
-    # --- 9. Soft-update targets ---
+    # --- 8. Soft-update targets ---
     if update_target_step:
         self._soft_update_all_targets()
 
-    # --- 10. Diagnostics ---
+    # --- 9. Diagnostics ---
     if self._should_log_training_step(global_learning_step):
         metrics = self._collect_diagnostics(global_learning_step)
         self._record_training_metrics(metrics, global_learning_step)
+
+
+def _teacher_actions_or_zeros(
+    self,
+    teacher: Optional[List[List[float]]],
+    n_buildings: int,
+) -> List[npt.NDArray[np.float32]]:
+    """Return per-building teacher action arrays; zeros if teacher unavailable."""
+    result: List[npt.NDArray[np.float32]] = []
+    for b in range(n_buildings):
+        n_ca = self._actors[b].layout.n_ca
+        if teacher is not None and b < len(teacher) and len(teacher[b]) == n_ca:
+            result.append(np.asarray(teacher[b], dtype=np.float32))
+        else:
+            result.append(np.zeros(n_ca, dtype=np.float32))
+    return result
+
+
+def _build_obs_tokens_from_batch(
+    self,
+    observations_per_building: List[npt.NDArray[np.float32]],
+) -> List[torch.Tensor]:
+    """Run each building's tokenizer+backbone to get obs token embeddings.
+
+    Returns a list of tensors, one per building, each [B, n_obs_tokens_b, d_model].
+    Concatenates [SRO tokens, NFC token, CA tokens] per building.
+    """
+    obs_tokens: List[torch.Tensor] = []
+    for b, state in enumerate(self._actors):
+        obs_b = torch.as_tensor(observations_per_building[b], dtype=torch.float32)
+        tokenized = state.tokenizer(obs_b, state.layout)
+        # Concatenate all obs-side token banks
+        concat = torch.cat(
+            [tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens], dim=1
+        )
+        obs_tokens.append(concat)
+    return obs_tokens
+
+
+def _packer_layouts(self):
+    """Build BuildingLayout list for the packer from current actor states."""
+    from algorithms.utils.matd3_global_packer import BuildingLayout
+    return [
+        BuildingLayout(
+            building_index=b,
+            n_sro=s.layout.n_sro,
+            n_nfc=1,
+            n_ca=s.layout.n_ca,
+            is_controlled=s.layout.n_ca >= 1,
+        )
+        for b, s in enumerate(self._actors)
+    ]
 ```
 
 Initialize counters in `__init__`:
@@ -744,40 +954,62 @@ Add to `algorithms/agents/agent_transformer_matd3.py`:
 ```python
 def _update_critics(
     self,
-    packed_current: Dict[str, torch.Tensor],
-    packed_next: Dict[str, torch.Tensor],
-    target_actions: List[torch.Tensor],
-    batch: Dict[str, Any],
+    packed_current,           # PackedGlobalSequence for (s, a)
+    packed_next,              # PackedGlobalSequence for (s', a')
+    batch,                    # SampledBatch
     global_learning_step: int,
 ) -> None:
     """Twin critic update with min-Q target."""
-    rewards_t = torch.as_tensor(
-        np.array(batch["rewards"]), dtype=torch.float32
-    )  # [B, n_buildings]
-    dones_t = torch.as_tensor(
-        np.array(batch["done"]), dtype=torch.float32
-    ).unsqueeze(-1)  # [B, 1]
+    n_buildings = len(batch.observations)
+    # Rewards per building → shape [B, n_controlled]. Concat only for controlled buildings.
+    controlled_idx = packed_current.controlled_building_indices
+    rewards_by_ctrl = np.stack(
+        [batch.rewards[b] for b in controlled_idx], axis=1
+    ).astype(np.float32)  # [B, n_controlled]
+    rewards_t = torch.as_tensor(rewards_by_ctrl, dtype=torch.float32)
+    dones_t = torch.as_tensor(batch.done, dtype=torch.float32).unsqueeze(-1)  # [B, 1]
 
     if self._reward_normalization_enabled:
         rewards_t = self._normalize_reward_tensor(rewards_t)
 
     # Target Q: min(Q1_target, Q2_target)
     with torch.no_grad():
-        packed_next_with_actions = self._critic_packer.inject_actions(
-            packed_next, target_actions
+        target_q1 = self._target_critic_1(
+            packed_next.global_tokens,
+            packed_next.type_ids,
+            packed_next.building_ids,
+            packed_next.padding_mask,
+            packed_next.controlled_building_indices,
         )
-        target_q1 = self._target_critic_1(packed_next_with_actions)  # [B, n_controlled]
-        target_q2 = self._target_critic_2(packed_next_with_actions)  # [B, n_controlled]
-        target_q = torch.min(target_q1, target_q2)
+        target_q2 = self._target_critic_2(
+            packed_next.global_tokens,
+            packed_next.type_ids,
+            packed_next.building_ids,
+            packed_next.padding_mask,
+            packed_next.controlled_building_indices,
+        )
+        target_q = torch.min(target_q1, target_q2)  # [B, n_controlled]
         # TD target: r + gamma * (1 - done) * min_Q_target
         td_target = rewards_t + self._gamma * (1.0 - dones_t) * target_q
 
     # Critic 1 loss
-    q1_pred = self._critic_1(packed_current)
+    q1_pred = self._critic_1(
+        packed_current.global_tokens,
+        packed_current.type_ids,
+        packed_current.building_ids,
+        packed_current.padding_mask,
+        packed_current.controlled_building_indices,
+    )
     q1_loss = torch.nn.functional.mse_loss(q1_pred, td_target)
 
     # Critic 2 loss
-    q2_pred = self._critic_2(packed_current)
+    q2_pred = self._critic_2(
+        packed_current.global_tokens,
+        packed_current.type_ids,
+        packed_current.building_ids,
+        packed_current.padding_mask,
+        packed_current.controlled_building_indices,
+    )
     q2_loss = torch.nn.functional.mse_loss(q2_pred, td_target)
 
     # Combined gradient step
@@ -801,90 +1033,114 @@ Add to `algorithms/agents/agent_transformer_matd3.py`:
 ```python
 def _update_actors(
     self,
-    packed_current: Dict[str, torch.Tensor],
-    batch: Dict[str, Any],
+    batch,                        # SampledBatch
+    obs_tokens_current,           # List[Tensor(B, n_obs_b, d_model)] precomputed
+    actions_current_t,            # List[Tensor(B, n_ca_b)] final actions from batch
+    base_actions_current_t,       # List[Tensor(B, n_ca_b)] teacher/base from batch
     global_learning_step: int,
 ) -> None:
-    """Delayed actor update: per-building actor against critic 1 (frozen)."""
+    """Delayed actor update: per-building actor against critic 1 (frozen).
+
+    For each controlled building b, rebuild the packed sequence with only
+    building b's action tokens recomputed from the current actor (gradient
+    flows through b's actor/backbone/tokenizer). Other buildings' actions
+    and obs tokens are detached.
+    """
     controlled_buildings = [
         b for b, state in enumerate(self._actors) if state.layout.n_ca >= 1
     ]
+
+    # Detach every building's obs tokens so gradient only flows through b.
+    # We'll re-encode building b inside the loop (with grad enabled).
+    obs_tokens_detached = [t.detach() for t in obs_tokens_current]
+    actions_detached = [t.detach() for t in actions_current_t]
+    base_detached = [t.detach() for t in base_actions_current_t]
+    layouts = self._packer_layouts()
 
     total_actor_loss = 0.0
     total_bc_loss = 0.0
     total_grad_norm = 0.0
 
-    for b in controlled_buildings:
-        state = self._actors[b]
+    # Freeze critic 1 for the actor updates
+    for p in self._critic_1.parameters():
+        p.requires_grad_(False)
 
-        # Forward through building b's current actor
-        obs_b = torch.as_tensor(
-            np.array([t[b] for t in batch["observations"]]),
-            dtype=torch.float32,
-        )  # [B, obs_dim]
-        tokenized = state.tokenizer(obs_b, state.layout)
-        ca_emb, _ = state.backbone(
-            tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
-        )
-        actor_output = state.actor(ca_emb).squeeze(-1)  # [B, n_ca]
+    try:
+        for b in controlled_buildings:
+            state = self._actors[b]
 
-        # Compose residual if enabled
-        if self._residual_enabled and batch.get("teacher_actions") is not None:
-            teacher_b = torch.as_tensor(
-                np.array([t[b] for t in batch["teacher_actions"]]),
-                dtype=torch.float32,
+            # Re-encode building b with grad enabled
+            obs_b = torch.as_tensor(batch.observations[b], dtype=torch.float32)
+            tokenized = state.tokenizer(obs_b, state.layout)
+            ca_emb, _ = state.backbone(
+                tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
             )
-            composed_actions = self._residual_compose(actor_output, teacher_b, b)
-        else:
-            composed_actions = self._scale_actor_to_action_space(actor_output)
+            raw_actor_output = state.actor(ca_emb).squeeze(-1)  # [B, n_ca]
 
-        # Build global packed tokens with b's actions replaced by current actor
-        # (all other buildings detached)
-        packed_with_actor_b = self._critic_packer.inject_single_building_actions(
-            packed_current, b, composed_actions
-        )
+            # Compose residual if enabled (uses teacher/base from batch)
+            teacher_b = torch.as_tensor(batch.base_actions[b], dtype=torch.float32)
+            if self._residual_enabled:
+                composed_b = self._residual_compose(raw_actor_output, teacher_b, b)
+            else:
+                composed_b = self._scale_actor_to_action_space(raw_actor_output)
 
-        # Critic 1 forward (frozen) — actor loss is -Q1
-        for p in self._critic_1.parameters():
-            p.requires_grad_(False)
-
-        q1_for_actor = self._critic_1(packed_with_actor_b)  # [B, n_controlled]
-        # Extract Q for building b
-        ctrl_idx = controlled_buildings.index(b)
-        actor_policy_loss = -q1_for_actor[:, ctrl_idx].mean()
-
-        # BC loss (if enabled)
-        bc_loss = torch.tensor(0.0)
-        if self._bc_enabled and batch.get("teacher_actions") is not None:
-            teacher_b = torch.as_tensor(
-                np.array([t[b] for t in batch["teacher_actions"]]),
-                dtype=torch.float32,
+            # Build fresh obs_tokens list: b uses freshly-encoded (grad), others detached
+            obs_tokens_b = list(obs_tokens_detached)
+            obs_tokens_b[b] = torch.cat(
+                [tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens], dim=1
             )
-            bc_loss = self._compute_bc_loss(composed_actions, teacher_b, b, global_learning_step)
 
-        # Total loss for building b's actor
-        loss_b = actor_policy_loss + bc_loss
+            # Build fresh actions list: b uses composed (grad), others detached
+            actions_b = list(actions_detached)
+            actions_b[b] = composed_b
 
-        # Backward through actor only
-        state.optimizer.zero_grad()
-        loss_b.backward()
+            base_actions_b = list(base_detached)
+            base_actions_b[b] = teacher_b
 
-        # Gradient norm for diagnostics
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            list(state.tokenizer.parameters())
-            + list(state.backbone.parameters())
-            + list(state.actor.parameters()),
-            max_norm=10.0,
-        )
-        state.optimizer.step()
+            packed_with_actor_b = self._critic_packer.pack(
+                obs_tokens_per_building=obs_tokens_b,
+                action_values_per_building=actions_b,
+                layouts=layouts,
+                base_actions=base_actions_b if self._residual_enabled else None,
+            )
 
+            q1_for_actor = self._critic_1(
+                packed_with_actor_b.global_tokens,
+                packed_with_actor_b.type_ids,
+                packed_with_actor_b.building_ids,
+                packed_with_actor_b.padding_mask,
+                packed_with_actor_b.controlled_building_indices,
+            )
+            ctrl_idx = packed_with_actor_b.controlled_building_indices.index(b)
+            actor_policy_loss = -q1_for_actor[:, ctrl_idx].mean()
+
+            # BC loss (if enabled)
+            bc_loss = torch.tensor(0.0)
+            if self._bc_enabled:
+                bc_loss = self._compute_bc_loss(
+                    composed_b, teacher_b, b, global_learning_step
+                )
+
+            loss_b = actor_policy_loss + bc_loss
+
+            # Backward through actor only (critic is frozen)
+            state.optimizer.zero_grad()
+            loss_b.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                list(state.tokenizer.parameters())
+                + list(state.backbone.parameters())
+                + list(state.actor.parameters()),
+                max_norm=10.0,
+            )
+            state.optimizer.step()
+
+            total_actor_loss += float(actor_policy_loss.item())
+            total_bc_loss += float(bc_loss.item())
+            total_grad_norm += float(grad_norm)
+    finally:
         # Re-enable critic gradients
         for p in self._critic_1.parameters():
             p.requires_grad_(True)
-
-        total_actor_loss += float(actor_policy_loss.item())
-        total_bc_loss += float(bc_loss.item())
-        total_grad_norm += float(grad_norm)
 
     n = max(len(controlled_buildings), 1)
     self._last_actor_loss = total_actor_loss / n
@@ -924,23 +1180,30 @@ Add to `algorithms/agents/agent_transformer_matd3.py`:
 ```python
 def _compute_target_actions(
     self,
-    next_observations: List[List[np.ndarray]],
-    next_teacher_actions: Optional[List[List[List[float]]]],
+    next_observations_per_building,        # List[np.ndarray] of [B, obs_dim_b]
+    next_base_actions_per_building,        # List[np.ndarray] of [B, n_ca_b]
 ) -> List[torch.Tensor]:
     """Compute target actions for critic-target computation.
 
-    Steps: target_actor → residual compose → target policy smoothing → clip.
+    Steps per building: target_actor → residual compose (with next teacher
+    actions from replay) → target policy smoothing → clip.
+    Returns per-building tensors of shape [B, n_ca_b], with grad disabled.
     """
-    target_actions = []
+    target_actions: List[torch.Tensor] = []
     with torch.no_grad():
         for b, state in enumerate(self._actors):
             if state.layout.n_ca < 1:
-                target_actions.append(torch.zeros(self._batch_size, 0))
+                # Uncontrolled buildings still need a tensor slot for the packer
+                target_actions.append(
+                    torch.zeros(
+                        next_observations_per_building[b].shape[0], 0,
+                        dtype=torch.float32,
+                    )
+                )
                 continue
 
             obs_b = torch.as_tensor(
-                np.array([t[b] for t in next_observations]),
-                dtype=torch.float32,
+                next_observations_per_building[b], dtype=torch.float32
             )
             tokenized = state.tokenizer(obs_b, state.layout)
             ca_emb, _ = state.backbone(
@@ -948,15 +1211,10 @@ def _compute_target_actions(
             )
             raw_target = state.target_actor(ca_emb).squeeze(-1)  # [B, n_ca]
 
-            # Residual composition with next teacher actions
-            if (
-                self._residual_enabled
-                and next_teacher_actions is not None
-                and next_teacher_actions[0] is not None
-            ):
+            # Residual composition with next base actions from replay
+            if self._residual_enabled:
                 teacher_b = torch.as_tensor(
-                    np.array([t[b] for t in next_teacher_actions]),
-                    dtype=torch.float32,
+                    next_base_actions_per_building[b], dtype=torch.float32
                 )
                 composed = self._residual_compose(raw_target, teacher_b, b)
             else:
@@ -1400,11 +1658,11 @@ def _collect_diagnostics(self, global_learning_step: int) -> Dict[str, float]:
 
     metrics: Dict[str, float] = {
         # Replay
-        "TransformerMATD3/replay_size": float(self._replay.total_size()),
+        "TransformerMATD3/replay_size": float(self._replay.total_size),
         "TransformerMATD3/active_partition_size": float(
             self._replay.partition_size(sig)
         ),
-        "TransformerMATD3/partition_count": float(self._replay.partition_count()),
+        "TransformerMATD3/partition_count": float(self._replay.partition_count),
         # Critic
         "TransformerMATD3/critic_q1_loss": float(getattr(self, "_last_q1_loss", 0.0)),
         "TransformerMATD3/critic_q2_loss": float(getattr(self, "_last_q2_loss", 0.0)),
@@ -1515,6 +1773,7 @@ from tests._matd3_test_helpers import (
     _generate_transition,
     _run_update_step,
     _matd3_config_full_training,
+    _add_charger_to_building_obs,
 )
 from tests._entity_sample_obs_names import load_sample_observation_names_for_first_building
 from algorithms.agents.agent_transformer_matd3 import AgentTransformerMATD3
@@ -1545,11 +1804,11 @@ class TestDynamicTopologySmoke:
         replay_size_before = agent._replay.partition_size(sig_before)
         assert replay_size_before > 0
 
-        # Trigger topology change: add a charger to building 0
-        new_obs_0 = list(obs_per[0]) + [
-            "charger::Building_0/new_charger::connected_state"
-        ]
-        new_act_0 = list(act_per[0]) + ["electric_vehicle_storage_new_charger"]
+        # Trigger topology change: add a full valid charger block to building 0
+        new_obs_0, new_action = _add_charger_to_building_obs(
+            obs_per[0], building_id="Building_0", new_charger_id="new_charger"
+        )
+        new_act_0 = list(act_per[0]) + [new_action]
         agent.attach_environment(
             observation_names=[new_obs_0, obs_per[1]],
             action_names=[new_act_0, act_per[1]],
@@ -1572,11 +1831,11 @@ class TestDynamicTopologySmoke:
             p.clone() for p in agent._actors[1].actor.parameters()
         ]
 
-        # Trigger topology change on building 0 only
-        new_obs_0 = list(obs_per[0]) + [
-            "charger::Building_0/new_charger::connected_state"
-        ]
-        new_act_0 = list(act_per[0]) + ["electric_vehicle_storage_new_charger"]
+        # Trigger topology change on building 0 only (full valid charger block)
+        new_obs_0, new_action = _add_charger_to_building_obs(
+            obs_per[0], building_id="Building_0", new_charger_id="new_charger"
+        )
+        new_act_0 = list(act_per[0]) + [new_action]
         agent.attach_environment(
             observation_names=[new_obs_0, obs_per[1]],
             action_names=[new_act_0, act_per[1]],
@@ -1606,11 +1865,11 @@ class TestDynamicTopologySmoke:
         # Snapshot critic backbone params
         c1_params_before = [p.clone() for p in agent._critic_1.parameters()]
 
-        # Trigger topology change
-        new_obs_0 = list(obs_per[0]) + [
-            "charger::Building_0/new_charger::connected_state"
-        ]
-        new_act_0 = list(act_per[0]) + ["electric_vehicle_storage_new_charger"]
+        # Trigger topology change (full valid charger block)
+        new_obs_0, new_action = _add_charger_to_building_obs(
+            obs_per[0], building_id="Building_0", new_charger_id="new_charger"
+        )
+        new_act_0 = list(act_per[0]) + [new_action]
         agent.attach_environment(
             observation_names=[new_obs_0, obs_per[1]],
             action_names=[new_act_0, act_per[1]],
@@ -1628,11 +1887,11 @@ class TestDynamicTopologySmoke:
         # Teacher should be alive (exploration/residual still active)
         assert agent._teacher_alive is True
 
-        # Trigger topology change
-        new_obs_0 = list(obs_per[0]) + [
-            "charger::Building_0/new_charger::connected_state"
-        ]
-        new_act_0 = list(act_per[0]) + ["electric_vehicle_storage_new_charger"]
+        # Trigger topology change (full valid charger block)
+        new_obs_0, new_action = _add_charger_to_building_obs(
+            obs_per[0], building_id="Building_0", new_charger_id="new_charger"
+        )
+        new_act_0 = list(act_per[0]) + [new_action]
         agent.attach_environment(
             observation_names=[new_obs_0, obs_per[1]],
             action_names=[new_act_0, act_per[1]],
@@ -1655,11 +1914,11 @@ class TestDynamicTopologySmoke:
         agent, obs_per, act_per, obs_dim = self._build_agent_and_train(n_steps=8)
         critic_updates_before = agent._critic_update_count
 
-        # Trigger topology change
-        new_obs_0 = list(obs_per[0]) + [
-            "charger::Building_0/new_charger::connected_state"
-        ]
-        new_act_0 = list(act_per[0]) + ["electric_vehicle_storage_new_charger"]
+        # Trigger topology change (full valid charger block)
+        new_obs_0, new_action = _add_charger_to_building_obs(
+            obs_per[0], building_id="Building_0", new_charger_id="new_charger"
+        )
+        new_act_0 = list(act_per[0]) + [new_action]
         agent.attach_environment(
             observation_names=[new_obs_0, obs_per[1]],
             action_names=[new_act_0, act_per[1]],
@@ -1697,11 +1956,11 @@ class TestDynamicTopologySmoke:
         agent, obs_per, act_per, obs_dim = self._build_agent_and_train(n_steps=8)
         critic_updates_at_change = agent._critic_update_count
 
-        # Trigger topology change
-        new_obs_0 = list(obs_per[0]) + [
-            "charger::Building_0/new_charger::connected_state"
-        ]
-        new_act_0 = list(act_per[0]) + ["electric_vehicle_storage_new_charger"]
+        # Trigger topology change (full valid charger block)
+        new_obs_0, new_action = _add_charger_to_building_obs(
+            obs_per[0], building_id="Building_0", new_charger_id="new_charger"
+        )
+        new_act_0 = list(act_per[0]) + [new_action]
         agent.attach_environment(
             observation_names=[new_obs_0, obs_per[1]],
             action_names=[new_act_0, act_per[1]],
@@ -1945,7 +2204,172 @@ git commit -m "feat(matd3-t): is_initial_exploration_done + wrapper integration 
 
 ---
 
-## Task 8: Final Full-Suite Verification
+## Task 8: End-to-End Wrapper Smoke (Real Simulator)
+
+This is the acceptance test that proves the final goal: the agent works
+through `Wrapper_CityLearn` on the real dynamic entity dataset, survives at
+least one topology change, and produces an actor-only export manifest.
+
+**Files:**
+- Create: `tests/test_matd3_wrapper_smoke.py`
+
+- [ ] **Step 1: Write the smoke test**
+
+Create `tests/test_matd3_wrapper_smoke.py`:
+
+```python
+"""End-to-end wrapper-driven smoke test for AgentTransformerMATD3.
+
+Runs the agent through Wrapper_CityLearn on the dynamic entity dataset for a
+short window, verifies topology changes are handled, and validates the
+exported manifest contains only actor artifacts.
+
+Skipped if the dataset is not present locally.
+"""
+from __future__ import annotations
+
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+import yaml
+
+
+_TEMPLATE = "configs/templates/rl/transformer_matd3_local.yaml"
+_DATASET_SCHEMA = (
+    "./datasets/citylearn_three_phase_dynamic_assets_only_demo_15s_parquet/schema.json"
+)
+
+
+def _dataset_available() -> bool:
+    return Path(_DATASET_SCHEMA).exists()
+
+
+@pytest.mark.skipif(not _dataset_available(), reason="dynamic entity dataset not present")
+class TestWrapperSmoke:
+    def _short_config(self, tmpdir: Path) -> Path:
+        """Load the template and shorten the simulation window."""
+        with open(_TEMPLATE) as f:
+            cfg = yaml.safe_load(f)
+        cfg["simulator"]["simulation_start_time_step"] = 0
+        cfg["simulator"]["simulation_end_time_step"] = 200
+        cfg["simulator"]["episode_time_steps"] = 201
+        cfg["simulator"]["episodes"] = 1
+        cfg["training"]["steps_between_training_updates"] = 4
+        cfg["training"]["target_update_interval"] = 2
+        # Ensure batch size is small enough to trigger updates in a short window
+        cfg["pipeline"][0]["hyperparameters"]["batch_size"] = 16
+        cfg["pipeline"][0]["hyperparameters"]["replay_capacity"] = 5000
+        # Provide runtime dirs
+        job_dir = tmpdir / "job"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "logs").mkdir(exist_ok=True)
+        (job_dir / "results").mkdir(exist_ok=True)
+        cfg["runtime"]["job_dir"] = str(job_dir)
+        cfg["runtime"]["log_dir"] = str(job_dir / "logs")
+        out_path = tmpdir / "config.yaml"
+        with open(out_path, "w") as f:
+            yaml.safe_dump(cfg, f)
+        return out_path
+
+    def test_config_validates(self, tmp_path):
+        """Config passes schema validation with the new stage type."""
+        from utils.config_schema import load_and_validate_config
+        cfg_path = self._short_config(tmp_path)
+        cfg = load_and_validate_config(str(cfg_path))
+        assert cfg.pipeline[0].algorithm == "AgentTransformerMATD3"
+
+    def test_short_run_completes(self, tmp_path):
+        """Agent runs through wrapper for the shortened window without crashing."""
+        from utils.config_schema import load_and_validate_config
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+        from algorithms.registry import build_execution_unit
+
+        cfg_path = self._short_config(tmp_path)
+        cfg = load_and_validate_config(str(cfg_path))
+        cfg_dict = cfg.model_dump()
+
+        agent = build_execution_unit(cfg_dict)
+        wrapper = Wrapper_CityLearn(cfg_dict)
+        wrapper.set_model(agent)
+        # Run one short episode
+        wrapper.train()  # or the equivalent entry point used in tests
+
+        # After training, the agent should have processed transitions
+        # and (if updates were triggered) run critic updates.
+        assert agent._replay.total_size >= 1
+
+    def test_export_manifest_actors_only(self, tmp_path):
+        """After training, export produces an actor-only manifest."""
+        from utils.config_schema import load_and_validate_config
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+        from algorithms.registry import build_execution_unit
+
+        cfg_path = self._short_config(tmp_path)
+        cfg = load_and_validate_config(str(cfg_path))
+        cfg_dict = cfg.model_dump()
+
+        agent = build_execution_unit(cfg_dict)
+        wrapper = Wrapper_CityLearn(cfg_dict)
+        wrapper.set_model(agent)
+        wrapper.train()
+
+        export_dir = tmp_path / "export"
+        manifest = agent.export_artifacts(str(export_dir), context={"config": cfg_dict})
+
+        # Only actor ONNX artifacts
+        assert manifest["format"] == "onnx"
+        assert len(manifest["artifacts"]) >= 1
+        for art in manifest["artifacts"]:
+            assert "critic" not in art["path"].lower()
+            assert (export_dir / art["path"]).exists()
+            # Manifest config carries layout/action metadata
+            assert "ca_action_names" in art["config"]
+            assert "action_low" in art["config"]
+            assert "action_high" in art["config"]
+
+    def test_topology_change_survives_if_dataset_triggers(self, tmp_path):
+        """If the dynamic dataset triggers a topology_version increment during
+        the short window, the agent must switch replay signature and continue.
+        This test only asserts if a change actually happened."""
+        from utils.config_schema import load_and_validate_config
+        from utils.wrapper_citylearn import Wrapper_CityLearn
+        from algorithms.registry import build_execution_unit
+
+        cfg_path = self._short_config(tmp_path)
+        cfg = load_and_validate_config(str(cfg_path))
+        cfg_dict = cfg.model_dump()
+
+        agent = build_execution_unit(cfg_dict)
+        wrapper = Wrapper_CityLearn(cfg_dict)
+        wrapper.set_model(agent)
+        wrapper.train()
+
+        # If more than one partition exists, a topology change occurred.
+        # The active signature must be the most recent one and non-empty.
+        if agent._replay.partition_count > 1:
+            assert agent._replay.active_signature is not None
+            assert agent._replay.active_partition_size >= 1
+```
+
+- [ ] **Step 2: Run the smoke test**
+
+Run: `pytest tests/test_matd3_wrapper_smoke.py -v`
+Expected (with dataset present): All tests PASS.
+Expected (without dataset): All tests SKIPPED — this is acceptable for CI
+without the dataset, but the dataset must be present locally before merge.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/test_matd3_wrapper_smoke.py
+git commit -m "test(matd3-t): end-to-end wrapper smoke on dynamic entity dataset"
+```
+
+---
+
+## Task 9: Final Full-Suite Verification
 
 - [ ] **Step 1: Run all Plan D tests**
 
@@ -1979,7 +2403,7 @@ for step in range(20):
     )
 print(f'Critic updates: {agent._critic_update_count}')
 print(f'Actor updates: {agent._actor_update_count}')
-print(f'Replay size: {agent._replay.total_size()}')
+print(f'Replay size: {agent._replay.total_size}')
 metrics = agent._collect_diagnostics(30)
 print(f'Diagnostics keys: {len(metrics)}')
 print('Plan D smoke: PASS')
@@ -2006,13 +2430,28 @@ git commit -m "test(matd3-t): Plan D final verification pass"
 
 ## Plan D Complete
 
-After Task 8, `AgentTransformerMATD3` has:
+After Task 9, `AgentTransformerMATD3` has:
 - A fully wired `update()` method: store → gate → critic update → delayed actor update → soft targets.
 - `set_observation_context` / `set_transition_context` hooks for wrapper integration.
 - Comprehensive diagnostics under `TransformerMATD3/` namespace.
 - Full checkpoint including critics, replay, reward normalization, exploration state, and RNG.
-- Dynamic topology smoke tests verifying replay signature switch, weight preservation, teacher re-attach, and training continuity.
+- Dynamic topology unit smoke tests verifying replay signature switch, weight preservation, teacher re-attach, and training continuity.
+- **End-to-end wrapper smoke on the real dynamic entity dataset (Task 8)** proving config validation, wrapper-driven training, topology handling, and actor-only export manifest.
 - `is_initial_exploration_done` for wrapper gating.
 - Export remains actor-only (manifest excludes all training state).
+
+---
+
+## Delegation Checklist (READ BEFORE ASSIGNING TO AN AGENT)
+
+If handing this plan (and Plans A/B/C) to an implementation agent, the agent MUST:
+
+1. **Execute plans strictly in order: A → B → C → D.** Do not start Plan B before Plan A tests pass. Same for C after B, and D after C.
+2. **Use the exact API names from Plan B.** Do not invent new method names. If a helper looks missing, add it as a new task or agent-owned helper — do not silently rename Plan B primitives. See the "API Contract from Plan B" section at the top of this plan.
+3. **Do not skip failing-test steps.** Every task follows red-green: write failing test → run to confirm failure → implement → run to confirm pass → commit.
+4. **Do not batch commits.** Every task ends with a commit as specified.
+5. **Ask for guidance on ambiguity.** If any signature or behavior does not match between plans, stop and ask. Do NOT improvise.
+6. **Task 8 (wrapper smoke) is the acceptance test.** If the dataset is present, Task 8 must pass. If not present, install the dataset before declaring Plan D complete.
+7. **After each plan, run the full `pytest tests/ -x --timeout=120` suite.** No regressions allowed.
 
 Combined with Plans A-C, the agent is fully functional for training, checkpoint/resume, dynamic topology, and deployment export.
