@@ -54,7 +54,11 @@ class Pipeline(ExecutionUnit):
 
     @property
     def requires_raw_observation_context(self) -> bool:
-        return any(stage.use_raw_observations for stage in self.stages)
+        return any(
+            stage.use_raw_observations
+            or bool(getattr(stage, "requires_raw_observation_context", False))
+            for stage in self.stages
+        )
 
     def _observations_for_stage(self, stage: ExecutionUnit, fallback: Any) -> Any:
         if stage.use_raw_observations and self._raw_observations is not None:
@@ -283,6 +287,14 @@ class Ensemble(ExecutionUnit):
     @property
     def use_raw_observations(self) -> bool:
         return any(agent.use_raw_observations for agent in self.agents)
+
+    @property
+    def requires_raw_observation_context(self) -> bool:
+        return any(
+            agent.use_raw_observations
+            or bool(getattr(agent, "requires_raw_observation_context", False))
+            for agent in self.agents
+        )
 
     # ------------------------------------------------------------------
     # Core loop

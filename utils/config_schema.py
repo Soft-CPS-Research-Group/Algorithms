@@ -638,6 +638,32 @@ class TransformerPPOHyperparameters(BaseModel):
     max_grad_norm: float = Field(gt=0)
 
 
+class TransformerPPOWarmStartConfig(BaseModel):
+    policy: str = Field(min_length=1)
+    deterministic: bool = True
+    noise_scale: float = Field(default=0.0, ge=0.0)
+    phaseout_steps: int = Field(default=0, ge=0)
+    phaseout_mode: Literal["probability", "blend"] = "blend"
+    hyperparameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TransformerPPOBehaviorCloningConfig(BaseModel):
+    enabled: bool = True
+    weight: float = Field(default=0.0, ge=0.0)
+    min_weight: float = Field(default=0.0, ge=0.0)
+    decay_start_step: int = Field(default=0, ge=0)
+    decay_steps: int = Field(default=0, ge=0)
+    ev_multiplier: float = Field(default=1.0, ge=0.0)
+    storage_multiplier: float = Field(default=1.0, ge=0.0)
+    warm_start: Optional[TransformerPPOWarmStartConfig] = None
+
+    @model_validator(mode="after")
+    def validate_enabled_has_warm_start(self) -> "TransformerPPOBehaviorCloningConfig":
+        if self.enabled and self.warm_start is None:
+            raise ValueError("TransformerPPO behavior_cloning.enabled requires warm_start.")
+        return self
+
+
 class TransformerPPOStageConfig(BaseModel):
     algorithm: Literal["AgentTransformerPPO"]
     count: int = Field(default=1, ge=1)
@@ -645,6 +671,46 @@ class TransformerPPOStageConfig(BaseModel):
     tokenizer_config_path: str = Field(min_length=1)
     transformer: TransformerPPOTransformerConfig
     hyperparameters: TransformerPPOHyperparameters
+    behavior_cloning: Optional[TransformerPPOBehaviorCloningConfig] = None
+
+
+class TransformerMATD3TransformerConfig(BaseModel):
+    """Transformer architecture config (reused for both actor and critic)."""
+    d_model: int = Field(ge=1)
+    nhead: int = Field(ge=1)
+    num_layers: int = Field(ge=1)
+    dim_feedforward: int = Field(ge=1)
+    dropout: float = Field(default=0.1, ge=0.0, le=1.0)
+
+
+class TransformerMATD3Hyperparameters(BaseModel):
+    gamma: float = Field(gt=0, le=1.0)
+    tau: float = Field(gt=0, le=1.0)
+    batch_size: int = Field(ge=1)
+    replay_capacity: int = Field(ge=1)
+    actor_lr: float = Field(gt=0)
+    critic_lr: float = Field(gt=0)
+    target_policy_noise: float = Field(ge=0)
+    target_policy_noise_clip: float = Field(ge=0)
+    actor_update_interval: int = Field(ge=1)
+    critic_action_input_mode: Literal["final", "final_base_delta", "final_base_delta_normalized"] = "final"
+    reward_normalization: bool = False
+    reward_normalization_clip: float = Field(default=10.0, gt=0)
+    reward_normalization_epsilon: float = Field(default=1e-8, gt=0)
+
+
+class TransformerMATD3StageConfig(BaseModel):
+    algorithm: Literal["AgentTransformerMATD3"]
+    count: int = Field(default=1, ge=1)
+    frozen: bool = False
+    tokenizer_config_path: str = Field(min_length=1)
+    transformer_actor: TransformerMATD3TransformerConfig
+    transformer_critic: TransformerMATD3TransformerConfig
+    hyperparameters: TransformerMATD3Hyperparameters
+    exploration: Optional[Any] = None
+    residual: Optional[Any] = None
+    behavior_cloning: Optional[Any] = None
+    diagnostics: Optional[Any] = None
 
 
 PipelineStageConfig = Union[
@@ -656,6 +722,7 @@ PipelineStageConfig = Union[
     RuleBasedAlgorithmConfig,
     SingleAgentRLStageConfig,
     TransformerPPOStageConfig,
+    TransformerMATD3StageConfig,
 ]
 
 

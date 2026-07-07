@@ -33,6 +33,7 @@ from loguru import logger
 from torch import nn
 
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.utils.behavior_cloning import BehaviorCloningRegularizer
 from algorithms.utils.entity_observation_tokenizer import (
     EntityObservationTokenizer,
 )
@@ -127,6 +128,12 @@ class AgentTransformerPPO(BaseAgent):
 
         self._layout_builder = EntityTokenLayoutBuilder(self._tokenizer_config)
         self._per_building: List[_PerBuildingState] = []
+        self._bc = BehaviorCloningRegularizer.from_config(algo, self.config)
+        self.requires_raw_observation_context = bool(self._bc is not None)
+        self._latest_raw_observations: Optional[List[npt.NDArray[np.float64]]] = None
+        self._latest_encoded_observations: Optional[List[npt.NDArray[np.float64]]] = None
+        self._latest_global_learning_step = 0
+        self._latest_training_metrics: Dict[str, float] = {}
 
         # Tracks whether ``attach_environment`` has ever been called. The
         # very first call is not a topology change.
@@ -155,6 +162,13 @@ class AgentTransformerPPO(BaseAgent):
                 observation_names, action_names, metadata
             )
             self._first_attach_done = True
+            self._attach_bc_environment(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                observation_space=observation_space,
+                metadata=metadata,
+            )
             for st in self._per_building:
                 logger.info(
                     "Initial attach: {} — obs_dim={}, n_sro={}, n_ca={}, "
@@ -174,8 +188,16 @@ class AgentTransformerPPO(BaseAgent):
             self._build_all_per_building_states(
                 observation_names, action_names, metadata
             )
+            self._notify_bc_topology_change(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                observation_space=observation_space,
+                metadata=metadata,
+            )
             return
 
+        changed_buildings: List[int] = []
         for b, (obs_n, act_n) in enumerate(
             zip(observation_names, action_names)
         ):
@@ -193,6 +215,34 @@ class AgentTransformerPPO(BaseAgent):
             state.obs_names_tuple = new_obs
             state.action_names_tuple = new_act
             self._handle_topology_change(b)
+            changed_buildings.append(b)
+
+        if changed_buildings:
+            self._notify_bc_topology_change(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                observation_space=observation_space,
+                metadata=metadata,
+                changed_buildings=changed_buildings,
+            )
+
+    def set_observation_context(
+        self,
+        *,
+        raw_observations: Optional[List[npt.NDArray[np.float64]]] = None,
+        encoded_observations: Optional[List[npt.NDArray[np.float64]]] = None,
+    ) -> None:
+        self._latest_raw_observations = (
+            [np.asarray(obs, dtype=np.float64) for obs in raw_observations]
+            if raw_observations is not None
+            else None
+        )
+        self._latest_encoded_observations = (
+            [np.asarray(obs, dtype=np.float64) for obs in encoded_observations]
+            if encoded_observations is not None
+            else None
+        )
 
     def predict(
         self,
@@ -216,7 +266,15 @@ class AgentTransformerPPO(BaseAgent):
             # ActorHead returns ``[B, N_ca, 1]``; the wrapper expects a flat
             # per-CA list.
             out.append(actions.squeeze(0).squeeze(-1).clamp(-1.0, 1.0).tolist())
-        return out
+        if self._bc is None:
+            return out
+        teacher_observations = (
+            self._latest_raw_observations
+            if self._latest_raw_observations is not None
+            else observations
+        )
+        self._bc.compute_teacher_actions(teacher_observations)
+        return self._bc.maybe_phaseout(out, deterministic=det)
 
     def update(
         self,
@@ -234,7 +292,8 @@ class AgentTransformerPPO(BaseAgent):
     ) -> None:
         """Append the transition to each per-building rollout buffer; when
         ``update_step`` is true, run a PPO update per building and clear."""
-        del update_target_step, global_learning_step, initial_exploration_done
+        del update_target_step, initial_exploration_done
+        self._latest_global_learning_step = int(global_learning_step)
 
         done = bool(terminated or truncated)
         for b, state in enumerate(self._per_building):
@@ -263,13 +322,27 @@ class AgentTransformerPPO(BaseAgent):
                 value=value,
                 done=done,
             )
+            if self._bc is not None:
+                self._bc.record_transition(b)
 
         if not update_step:
             return
 
-        for state in self._per_building:
-            self._ppo_update(state, next_observations)
+        for b, state in enumerate(self._per_building):
+            self._ppo_update(b, state, next_observations)
             state.buffer.clear()
+            if self._bc is not None:
+                self._bc.on_buffer_flushed(b)
+
+    def get_diagnostic_metrics(self) -> Dict[str, float]:
+        if self._bc is None:
+            return {}
+        return self._bc.snapshot_metrics()
+
+    def consume_latest_training_metrics(self) -> Dict[str, float]:
+        metrics = dict(self._latest_training_metrics)
+        self._latest_training_metrics = {}
+        return metrics
 
     def export_artifacts(  # type: ignore[override]
         self,
@@ -429,6 +502,46 @@ class AgentTransformerPPO(BaseAgent):
             )
             self._per_building.append(state)
 
+    def _attach_bc_environment(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        if self._bc is None:
+            return
+        self._bc.attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+
+    def _notify_bc_topology_change(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+        changed_buildings: Optional[List[int]] = None,
+    ) -> None:
+        if self._bc is None:
+            return
+        self._bc.on_topology_change(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+            changed_buildings=changed_buildings,
+        )
+
     def _build_one_per_building_state(
         self,
         building_id: str,
@@ -507,7 +620,9 @@ class AgentTransformerPPO(BaseAgent):
                 # the conservative choice; a future improvement could
                 # forward through the new layout's critic.
                 self._run_ppo_update_with_last_value(
-                    state, last_value=torch.zeros(1)
+                    state,
+                    last_value=torch.zeros(1),
+                    building_idx=building_idx,
                 )
             finally:
                 state.buffer.clear()
@@ -666,6 +781,7 @@ class AgentTransformerPPO(BaseAgent):
 
     def _ppo_update(
         self,
+        building_idx: int,
         state: _PerBuildingState,
         next_observations: List[npt.NDArray[np.float64]],
     ) -> None:
@@ -689,9 +805,8 @@ class AgentTransformerPPO(BaseAgent):
             return
         # Bootstrap value from the next observation of this building.
         try:
-            b_idx = self._per_building.index(state)
-            next_obs = next_observations[b_idx]
-        except (ValueError, IndexError):
+            next_obs = next_observations[building_idx]
+        except IndexError:
             next_obs = None
         if next_obs is None:
             last_value = torch.zeros(1)
@@ -699,7 +814,11 @@ class AgentTransformerPPO(BaseAgent):
             last_value = self._critic_value(
                 state, np.asarray(next_obs, dtype=np.float64)
             )
-        self._run_ppo_update_with_last_value(state, last_value)
+        self._run_ppo_update_with_last_value(
+            state,
+            last_value,
+            building_idx=building_idx,
+        )
 
     def _critic_value(
         self,
@@ -715,7 +834,11 @@ class AgentTransformerPPO(BaseAgent):
             return state.critic(pooled).squeeze(-1)
 
     def _run_ppo_update_with_last_value(
-        self, state: _PerBuildingState, last_value: torch.Tensor
+        self,
+        state: _PerBuildingState,
+        last_value: torch.Tensor,
+        *,
+        building_idx: int,
     ) -> None:
         state.buffer.compute_returns_and_advantages(last_value)
         all_metrics: dict = {"policy_loss": [], "value_loss": [], "entropy": []}
@@ -749,6 +872,15 @@ class AgentTransformerPPO(BaseAgent):
                     value_coeff=self._value_coeff,
                     entropy_coeff=self._entropy_coeff,
                 )
+                if self._bc is not None:
+                    means = torch.tanh(state.actor.mlp(ca_emb))
+                    loss = loss + self._bc.bc_loss_term(
+                        building_idx=building_idx,
+                        layout=state.layout,
+                        predicted_means=means,
+                        step_indices=batch.step_indices,
+                        global_learning_step=self._latest_global_learning_step,
+                    )
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     list(state.tokenizer.parameters())
@@ -761,6 +893,8 @@ class AgentTransformerPPO(BaseAgent):
                 for k, v in _metrics.items():
                     all_metrics.setdefault(k, []).append(v)
         averaged = {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
+        if self._bc is not None:
+            self._latest_training_metrics.update(self._bc.snapshot_metrics())
         building_id = getattr(state, "building_id", "?")
         logger.info(
             "PPO update [{}]: policy_loss={:.4f}, value_loss={:.4f}, entropy={:.4f}, clip_frac={:.3f}",

@@ -24,11 +24,13 @@ class RecordingUnit(ExecutionUnit):
         name: str,
         predict_output: Any = None,
         use_raw_observations: bool = False,
+        requires_raw_observation_context: bool = False,
         initial_exploration_done: bool = True,
     ) -> None:
         self.name = name
         self._predict_output = predict_output if predict_output is not None else [[0.0]]
         self.use_raw_observations = use_raw_observations
+        self.requires_raw_observation_context = requires_raw_observation_context
         self._initial_exploration_done = initial_exploration_done
 
         self.predict_calls: List[Dict[str, Any]] = []
@@ -233,6 +235,17 @@ class TestPipelineLifecycle:
         assert Pipeline([raw, raw]).use_raw_observations is True
         assert Pipeline([none_raw, raw]).use_raw_observations is False
         assert Pipeline([none_raw, raw]).requires_raw_observation_context is True
+
+    def test_requires_raw_observation_context_aggregates_stage_requirement(self) -> None:
+        encoded_stage = RecordingUnit("encoded", use_raw_observations=False)
+        bc_stage = RecordingUnit(
+            "bc",
+            use_raw_observations=False,
+            requires_raw_observation_context=True,
+        )
+
+        assert Pipeline([encoded_stage]).requires_raw_observation_context is False
+        assert Pipeline([encoded_stage, bc_stage]).requires_raw_observation_context is True
 
     def test_attach_environment_routes_raw_and_encoded_names_per_stage(self) -> None:
         manager = RecordingUnit("manager", use_raw_observations=False)

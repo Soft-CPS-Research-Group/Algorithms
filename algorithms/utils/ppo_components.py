@@ -148,6 +148,7 @@ class Batch:
     advantages: torch.Tensor
     returns: torch.Tensor
     values: torch.Tensor
+    step_indices: torch.Tensor
 
 
 class RolloutBuffer:
@@ -268,6 +269,7 @@ class RolloutBuffer:
                 advantages=self.advantages[batch_indices],
                 returns=self.returns[batch_indices],
                 values=torch.stack([self.values[i].squeeze() for i in batch_indices]),
+                step_indices=batch_indices.detach().clone().long(),
             )
 
     def clear(self) -> None:

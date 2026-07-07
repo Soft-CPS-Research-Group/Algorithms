@@ -69,6 +69,9 @@ _registry_trace("after PPO agents import")
 _registry_trace("before AgentTransformerPPO agents import")
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
 _registry_trace("after AgentTransformerPPO agents import")
+_registry_trace("before AgentTransformerMATD3 agents import")
+from algorithms.agents.agent_transformer_matd3 import AgentTransformerMATD3
+_registry_trace("after AgentTransformerMATD3 agents import")
 _registry_trace("before RuleBasedPolicy import")
 from algorithms.agents.rbc_agent import RuleBasedPolicy
 _registry_trace("after RuleBasedPolicy import")
@@ -99,6 +102,7 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "RuleBasedPolicy": RuleBasedPolicy,
     "SignalAwareRBC": SignalAwareRBC,
     "AgentTransformerPPO": AgentTransformerPPO,
+    "AgentTransformerMATD3": AgentTransformerMATD3,
 }
 
 PLACEHOLDER_ALGORITHMS = {
@@ -170,7 +174,19 @@ def _stage_to_agent_view(global_config: Dict[str, Any], stage_cfg: Dict[str, Any
         "name": stage_cfg["algorithm"],
         "hyperparameters": stage_cfg.get("hyperparameters", {}) or {},
     }
-    for optional_key in ("networks", "replay_buffer", "exploration", "policy", "tokenizer_config_path", "transformer"):
+    for optional_key in (
+        "networks",
+        "replay_buffer",
+        "exploration",
+        "policy",
+        "tokenizer_config_path",
+        "transformer",
+        "transformer_actor",
+        "transformer_critic",
+        "behavior_cloning",
+        "residual",
+        "diagnostics",
+    ):
         if optional_key in stage_cfg and stage_cfg[optional_key] is not None:
             algorithm_block[optional_key] = stage_cfg[optional_key]
     agent_view["algorithm"] = algorithm_block
