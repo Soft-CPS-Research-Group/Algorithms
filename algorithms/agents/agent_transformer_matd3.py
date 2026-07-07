@@ -360,11 +360,34 @@ class AgentTransformerMATD3(BaseAgent):
             ],
             "online_critics_state": self._online_critics.state_dict() if self._online_critics else None,
             "target_critics_state": self._target_critics.state_dict() if self._target_critics else None,
+            "critic_1_state": self._critic_1.state_dict(),
+            "critic_2_state": self._critic_2.state_dict(),
+            "target_critic_1_state": self._target_critic_1.state_dict(),
+            "target_critic_2_state": self._target_critic_2.state_dict(),
             "critic_optimizer_state": self._critic_optimizer.state_dict() if self._critic_optimizer else None,
             "global_packer_state": self._global_packer.state_dict() if self._global_packer else None,
             "replay_state": self._replay.state_dict() if self._replay else None,
+            "active_topology_signature": self._current_topology_signature(),
             "critic_update_count": self._critic_update_count,
+            "actor_update_count": self._actor_update_count,
             "target_update_count": self._target_update_count,
+            "reward_normalization_state": {
+                "count": getattr(self, "_reward_norm_count", 0),
+                "mean": getattr(self, "_reward_norm_mean", 0.0),
+                "m2": getattr(self, "_reward_norm_m2", 0.0),
+            },
+            "exploration_state": {
+                "exploration_step": getattr(self, "_exploration_step", 0),
+                "teacher_alive": self._teacher_alive,
+                "bc_effective_weight": getattr(self, "_bc_effective_weight", 0.0),
+                "residual_scale": getattr(self, "_residual_scale", 0.0),
+            },
+            "per_type_feature_dims": self._get_per_type_feature_dims(),
+            "n_buildings": len(self._actors),
+            "rng_state": {
+                "torch": torch.random.get_rng_state(),
+                "numpy": np.random.get_state(),
+            },
         }
         torch.save(payload, path)
         return str(path)
@@ -377,6 +400,15 @@ class AgentTransformerMATD3(BaseAgent):
                 f"Checkpoint has {len(actors_data)} buildings; current agent "
                 f"has {len(self._actors)}. Building-count mismatch."
             )
+        saved_dims = payload.get("per_type_feature_dims", {})
+        current_dims = self._get_per_type_feature_dims()
+        for type_name, saved_dim in saved_dims.items():
+            current_dim = current_dims.get(type_name)
+            if current_dim is not None and int(saved_dim) != int(current_dim):
+                raise ValueError(
+                    f"feature count mismatch for type {type_name!r}: checkpoint has "
+                    f"{saved_dim}, current has {current_dim}. Cannot restore weights."
+                )
         for state, saved in zip(self._actors, actors_data):
             state.tokenizer.load_state_dict(saved["tokenizer_state"])
             state.backbone.load_state_dict(saved["backbone_state"])
@@ -385,8 +417,14 @@ class AgentTransformerMATD3(BaseAgent):
             state.optimizer.load_state_dict(saved["optimizer_state"])
         if payload.get("online_critics_state") and self._online_critics:
             self._online_critics.load_state_dict(payload["online_critics_state"])
+        elif payload.get("critic_1_state") and self._online_critics:
+            self._critic_1.load_state_dict(payload["critic_1_state"])
+            self._critic_2.load_state_dict(payload["critic_2_state"])
         if payload.get("target_critics_state") and self._target_critics:
             self._target_critics.load_state_dict(payload["target_critics_state"])
+        elif payload.get("target_critic_1_state") and self._target_critics:
+            self._target_critic_1.load_state_dict(payload["target_critic_1_state"])
+            self._target_critic_2.load_state_dict(payload["target_critic_2_state"])
         if payload.get("critic_optimizer_state") and self._critic_optimizer:
             self._critic_optimizer.load_state_dict(payload["critic_optimizer_state"])
         if payload.get("global_packer_state") and self._global_packer:
@@ -394,7 +432,21 @@ class AgentTransformerMATD3(BaseAgent):
         if payload.get("replay_state") and self._replay:
             self._replay.load_state_dict(payload["replay_state"])
         self._critic_update_count = int(payload.get("critic_update_count", 0))
+        self._actor_update_count = int(payload.get("actor_update_count", 0))
         self._target_update_count = int(payload.get("target_update_count", 0))
+        rn = payload.get("reward_normalization_state", {})
+        self._reward_norm_count = int(rn.get("count", 0))
+        self._reward_norm_mean = float(rn.get("mean", 0.0))
+        self._reward_norm_m2 = float(rn.get("m2", 0.0))
+        es = payload.get("exploration_state", {})
+        self._exploration_step = int(es.get("exploration_step", 0))
+        self._teacher_alive = bool(es.get("teacher_alive", self._teacher_alive))
+        self._bc_effective_weight = float(es.get("bc_effective_weight", 0.0))
+        self._residual_scale = float(es.get("residual_scale", 0.0))
+        rng = payload.get("rng_state")
+        if rng is not None:
+            torch.random.set_rng_state(rng["torch"])
+            np.random.set_state(rng["numpy"])
 
     # ==========================================================================
     # Internal

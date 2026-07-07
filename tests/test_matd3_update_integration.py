@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
+import tempfile
 import torch
 
 from tests._matd3_test_helpers import (
@@ -252,3 +254,90 @@ class TestCriticAndActorUpdate:
             not torch.allclose(p1, p2)
             for p1, p2 in zip(c1_params, c2_params)
         )
+
+
+class TestFullCheckpoint:
+    def _trained_agent(self, n_buildings=2, n_transitions=10):
+        agent, _, _, obs_dim = _make_matd3_full(n_buildings=n_buildings)
+        for step in range(n_transitions):
+            obs, actions, rewards, next_obs, term, trunc = _generate_transition(
+                n_buildings, obs_dim
+            )
+            _run_update_step(
+                agent, obs, actions, rewards, next_obs, term, trunc,
+                global_learning_step=step + 10,
+                update_step=True,
+                update_target_step=(step % 2 == 0),
+                initial_exploration_done=True,
+            )
+        return agent, obs_dim
+
+    def test_checkpoint_includes_critics(self):
+        agent, _ = self._trained_agent()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = agent.save_checkpoint(tmpdir, step=100)
+            payload = torch.load(path, map_location="cpu")
+            assert "critic_1_state" in payload
+            assert "critic_2_state" in payload
+            assert "target_critic_1_state" in payload
+            assert "target_critic_2_state" in payload
+            assert "critic_optimizer_state" in payload
+
+    def test_checkpoint_includes_replay(self):
+        agent, _ = self._trained_agent()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = agent.save_checkpoint(tmpdir, step=100)
+            payload = torch.load(path, map_location="cpu")
+            assert "replay_state" in payload
+            assert "active_topology_signature" in payload
+
+    def test_checkpoint_includes_training_state(self):
+        agent, _ = self._trained_agent()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = agent.save_checkpoint(tmpdir, step=100)
+            payload = torch.load(path, map_location="cpu")
+            assert "critic_update_count" in payload
+            assert "actor_update_count" in payload
+            assert "reward_normalization_state" in payload
+            assert "exploration_state" in payload
+            assert "rng_state" in payload
+
+    def test_checkpoint_round_trip_preserves_training(self):
+        agent, _ = self._trained_agent()
+        critic_count_before = agent._critic_update_count
+        actor_count_before = agent._actor_update_count
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = agent.save_checkpoint(tmpdir, step=100)
+            agent2, _, _, _ = _make_matd3_full(n_buildings=2)
+            agent2.load_checkpoint(path)
+            assert agent2._critic_update_count == critic_count_before
+            assert agent2._actor_update_count == actor_count_before
+
+    def test_checkpoint_round_trip_preserves_replay(self):
+        agent, _ = self._trained_agent()
+        sig = agent._current_topology_signature()
+        replay_size_before = agent._replay.partition_size(sig)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = agent.save_checkpoint(tmpdir, step=100)
+            agent2, _, _, _ = _make_matd3_full(n_buildings=2)
+            agent2.load_checkpoint(path)
+            assert agent2._replay.partition_size(sig) == replay_size_before
+
+    def test_checkpoint_rejects_feature_count_mismatch(self):
+        agent, _ = self._trained_agent(n_buildings=2)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = agent.save_checkpoint(tmpdir, step=100)
+            payload = torch.load(path, map_location="cpu")
+            payload["per_type_feature_dims"]["storage"] = 999
+            torch.save(payload, path)
+            agent2, _, _, _ = _make_matd3_full(n_buildings=2)
+            with pytest.raises(ValueError, match="feature.*(count|dim)"):
+                agent2.load_checkpoint(path)
+
+    def test_checkpoint_rejects_building_count_mismatch(self):
+        agent, _ = self._trained_agent(n_buildings=2)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = agent.save_checkpoint(tmpdir, step=100)
+            agent_1b, _, _, _ = _make_matd3_full(n_buildings=1)
+            with pytest.raises(ValueError, match="[Bb]uilding.count"):
+                agent_1b.load_checkpoint(path)
