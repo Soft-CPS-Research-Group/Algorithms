@@ -181,7 +181,11 @@ def _stage_to_agent_view(global_config: Dict[str, Any], stage_cfg: Dict[str, Any
         "policy",
         "tokenizer_config_path",
         "transformer",
+        "transformer_actor",
+        "transformer_critic",
         "behavior_cloning",
+        "residual",
+        "diagnostics",
     ):
         if optional_key in stage_cfg and stage_cfg[optional_key] is not None:
             algorithm_block[optional_key] = stage_cfg[optional_key]
