@@ -53,8 +53,28 @@ def build_ca_type_scale_mask(
     return torch.tensor(multipliers, dtype=torch.float32)
 
 
+def apply_target_policy_smoothing(
+    *,
+    target_actions: torch.Tensor,
+    action_span: torch.Tensor,
+    action_low: torch.Tensor,
+    action_high: torch.Tensor,
+    target_policy_noise: float,
+    target_policy_noise_clip: float,
+) -> torch.Tensor:
+    """Apply target policy smoothing in final action space."""
+    if target_policy_noise <= 0.0:
+        return torch.clamp(target_actions, min=action_low, max=action_high)
+    noise = torch.randn_like(target_actions) * (target_policy_noise * action_span)
+    if target_policy_noise_clip > 0.0:
+        clip_bound = target_policy_noise_clip * action_span
+        noise = torch.clamp(noise, min=-clip_bound, max=clip_bound)
+    return torch.clamp(target_actions + noise, min=action_low, max=action_high)
+
+
 __all__ = [
     "compose_residual_actions",
     "scale_direct_actions",
     "build_ca_type_scale_mask",
+    "apply_target_policy_smoothing",
 ]

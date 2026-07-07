@@ -136,3 +136,94 @@ class TestBuildCATypeScaleMask:
             ev_multiplier=2.0,
         )
         assert mask.shape == (0,)
+
+
+from algorithms.utils.matd3_residual import apply_target_policy_smoothing
+
+
+class TestTargetPolicySmoothing:
+    def test_no_noise_when_disabled(self):
+        """Zero noise scale means output equals input (clipped)."""
+        actions = torch.tensor([[0.5, -0.3]])
+        span = torch.tensor([2.0, 2.0])
+        low = torch.tensor([-1.0, -1.0])
+        high = torch.tensor([1.0, 1.0])
+
+        result = apply_target_policy_smoothing(
+            target_actions=actions,
+            action_span=span,
+            action_low=low,
+            action_high=high,
+            target_policy_noise=0.0,
+            target_policy_noise_clip=0.5,
+        )
+        assert torch.allclose(result, actions)
+
+    def test_output_within_bounds(self):
+        """Smoothed actions must stay within [low, high]."""
+        torch.manual_seed(42)
+        actions = torch.rand(100, 5) * 2 - 1
+        span = torch.full((5,), 2.0)
+        low = torch.full((5,), -1.0)
+        high = torch.full((5,), 1.0)
+
+        result = apply_target_policy_smoothing(
+            target_actions=actions,
+            action_span=span,
+            action_low=low,
+            action_high=high,
+            target_policy_noise=0.2,
+            target_policy_noise_clip=0.5,
+        )
+        assert result.min() >= -1.0
+        assert result.max() <= 1.0
+
+    def test_noise_clip_respected(self):
+        """Noise magnitude is bounded by noise_clip * span."""
+        torch.manual_seed(0)
+        actions = torch.zeros(1000, 3)
+        span = torch.tensor([2.0, 2.0, 2.0])
+        low = torch.full((3,), -10.0)
+        high = torch.full((3,), 10.0)
+        noise_clip = 0.3
+
+        result = apply_target_policy_smoothing(
+            target_actions=actions,
+            action_span=span,
+            action_low=low,
+            action_high=high,
+            target_policy_noise=1.0,
+            target_policy_noise_clip=noise_clip,
+        )
+        deviation = (result - actions).abs()
+        assert deviation.max() <= noise_clip * span.max() + 1e-6
+
+    def test_post_residual_application(self):
+        """Smoothing applied AFTER residual composition."""
+        torch.manual_seed(7)
+        teacher = torch.tensor([[0.5, -0.2]])
+        actor = torch.tensor([[0.3, 0.1]])
+        span = torch.tensor([2.0, 2.0])
+        low = torch.tensor([-1.0, -1.0])
+        high = torch.tensor([1.0, 1.0])
+
+        composed = compose_residual_actions(
+            teacher_actions=teacher,
+            actor_outputs=actor,
+            action_span=span,
+            action_low=low,
+            action_high=high,
+            residual_action_scale=0.5,
+            scale_mask=torch.ones(2),
+        )
+        smoothed = apply_target_policy_smoothing(
+            target_actions=composed,
+            action_span=span,
+            action_low=low,
+            action_high=high,
+            target_policy_noise=0.1,
+            target_policy_noise_clip=0.3,
+        )
+        assert smoothed.shape == composed.shape
+        assert smoothed.min() >= -1.0
+        assert smoothed.max() <= 1.0
