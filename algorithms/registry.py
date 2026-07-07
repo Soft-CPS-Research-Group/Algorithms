@@ -69,6 +69,9 @@ _registry_trace("after PPO agents import")
 _registry_trace("before AgentTransformerPPO agents import")
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
 _registry_trace("after AgentTransformerPPO agents import")
+_registry_trace("before AgentTransformerMATD3 agents import")
+from algorithms.agents.agent_transformer_matd3 import AgentTransformerMATD3
+_registry_trace("after AgentTransformerMATD3 agents import")
 _registry_trace("before RuleBasedPolicy import")
 from algorithms.agents.rbc_agent import RuleBasedPolicy
 _registry_trace("after RuleBasedPolicy import")
@@ -99,6 +102,7 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "RuleBasedPolicy": RuleBasedPolicy,
     "SignalAwareRBC": SignalAwareRBC,
     "AgentTransformerPPO": AgentTransformerPPO,
+    "AgentTransformerMATD3": AgentTransformerMATD3,
 }
 
 PLACEHOLDER_ALGORITHMS = {

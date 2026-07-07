@@ -83,3 +83,15 @@ class TestDeterministicActorHead:
         ca_emb = torch.randn(1, 2, 16)
         actions, pre_tanh = head.forward_with_pre_tanh(ca_emb)
         assert torch.allclose(actions, torch.tanh(pre_tanh))
+
+
+from algorithms.registry import ALGORITHM_REGISTRY
+
+
+class TestRegistry:
+    def test_agent_registered(self):
+        assert "AgentTransformerMATD3" in ALGORITHM_REGISTRY
+
+    def test_supports_dynamic_topology(self):
+        cls = ALGORITHM_REGISTRY["AgentTransformerMATD3"]
+        assert cls.supports_dynamic_topology is True
