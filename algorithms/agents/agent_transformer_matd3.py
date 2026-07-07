@@ -106,6 +106,14 @@ class AgentTransformerMATD3(BaseAgent):
         self._critic_optimizer: Optional[torch.optim.Optimizer] = None
         self._critic_update_count = 0
         self._target_update_count = 0
+        self._latest_raw_observations: Optional[List[np.ndarray]] = None
+        self._latest_encoded_observations: Optional[List[np.ndarray]] = None
+        self._latest_raw_next_observations: Optional[List[np.ndarray]] = None
+        self._latest_encoded_next_observations: Optional[List[np.ndarray]] = None
+        self._latest_teacher_actions: Optional[List[List[float]]] = None
+        self._latest_next_teacher_actions: Optional[List[List[float]]] = None
+        self._teacher_alive = bool((algo.get("exploration") or {}).get("warm_start_policy", {}).get("enabled", False))
+        self._warm_start_policy: Optional[Any] = self if self._teacher_alive else None
         self._first_attach_done = False
 
     # ==========================================================================
@@ -161,6 +169,80 @@ class AgentTransformerMATD3(BaseAgent):
                 actions = state.actor(ca_emb)
             out.append(actions.squeeze(0).squeeze(-1).clamp(-1.0, 1.0).tolist())
         return out
+
+    def set_observation_context(
+        self,
+        *,
+        raw_observations: Optional[List[np.ndarray]] = None,
+        encoded_observations: Optional[List[np.ndarray]] = None,
+    ) -> None:
+        """Receive wrapper-side observation context for teacher action computation."""
+        self._latest_raw_observations = (
+            [np.asarray(obs, dtype=np.float64) for obs in raw_observations]
+            if raw_observations is not None
+            else None
+        )
+        self._latest_encoded_observations = (
+            [np.asarray(obs, dtype=np.float64) for obs in encoded_observations]
+            if encoded_observations is not None
+            else None
+        )
+        if self._teacher_alive and self._warm_start_policy is not None:
+            self._latest_teacher_actions = self._compute_teacher_actions(
+                self._latest_raw_observations
+            )
+        else:
+            self._latest_teacher_actions = None
+
+    def set_transition_context(
+        self,
+        *,
+        raw_observations: Optional[List[np.ndarray]] = None,
+        raw_next_observations: Optional[List[np.ndarray]] = None,
+        encoded_observations: Optional[List[np.ndarray]] = None,
+        encoded_next_observations: Optional[List[np.ndarray]] = None,
+    ) -> None:
+        """Receive current/next observation context for teacher-aware replay."""
+        if raw_observations is not None:
+            self._latest_raw_observations = [
+                np.asarray(obs, dtype=np.float64) for obs in raw_observations
+            ]
+        if encoded_observations is not None:
+            self._latest_encoded_observations = [
+                np.asarray(obs, dtype=np.float64) for obs in encoded_observations
+            ]
+        self._latest_raw_next_observations = (
+            [np.asarray(obs, dtype=np.float64) for obs in raw_next_observations]
+            if raw_next_observations is not None
+            else None
+        )
+        self._latest_encoded_next_observations = (
+            [np.asarray(obs, dtype=np.float64) for obs in encoded_next_observations]
+            if encoded_next_observations is not None
+            else None
+        )
+        if self._teacher_alive and self._warm_start_policy is not None:
+            self._latest_teacher_actions = self._compute_teacher_actions(
+                self._latest_raw_observations
+            )
+            self._latest_next_teacher_actions = self._compute_teacher_actions(
+                self._latest_raw_next_observations
+            )
+        else:
+            self._latest_teacher_actions = None
+            self._latest_next_teacher_actions = None
+
+    def _compute_teacher_actions(
+        self, raw_observations: Optional[List[np.ndarray]]
+    ) -> Optional[List[List[float]]]:
+        """Get teacher policy actions for the given observations."""
+        if self._warm_start_policy is None or raw_observations is None:
+            return None
+        actions = self._warm_start_policy.predict(raw_observations, deterministic=True)
+        return [
+            np.clip(np.asarray(a, dtype=np.float64).reshape(-1), -1.0, 1.0).tolist()
+            for a in actions
+        ]
 
     def update(
         self,
