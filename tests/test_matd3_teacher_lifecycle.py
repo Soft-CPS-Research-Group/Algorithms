@@ -201,3 +201,142 @@ class TestTeacherLifecycleManager:
         mgr.try_release(exploration_step=5, global_learning_step=999)
         assert mgr.teacher_policy is None
         assert mock_build.call_count == 1
+
+
+class TestTeacherTopologyChange:
+    """Teacher lifecycle on topology changes."""
+
+    @patch("algorithms.utils.matd3_teacher_lifecycle.build_warm_start_policy")
+    def test_reattach_preserves_counters(self, mock_build):
+        """Exploration/phaseout counters are NOT reset on topology change."""
+        mock_build.return_value = MagicMock()
+        mgr = TeacherLifecycleManager(
+            exploration_enabled=True,
+            residual_enabled=True,
+            bc_enabled=False,
+            phaseout_steps=100,
+            bc_weight=0.0,
+            bc_min_weight=0.0,
+            bc_decay_start_step=0,
+            bc_decay_steps=0,
+            policy_name="RBCCommunityPolicy",
+            policy_hyperparameters={},
+            config_template={"algorithm": {"name": "dummy", "hyperparameters": {}}},
+        )
+        mgr.attach(
+            observation_names=[["obs1"]],
+            action_names=[["act1"]],
+            action_space=[MagicMock()],
+            observation_space=[MagicMock()],
+            metadata=None,
+        )
+        mgr.reattach(
+            observation_names=[["obs1", "obs2"]],
+            action_names=[["act1", "act2"]],
+            action_space=[MagicMock()],
+            observation_space=[MagicMock()],
+            metadata=None,
+        )
+        assert mgr.teacher_policy is not None
+        assert mock_build.call_count == 2
+
+    @patch("algorithms.utils.matd3_teacher_lifecycle.build_warm_start_policy")
+    def test_reattach_skipped_if_released(self, mock_build):
+        """Released teacher is NOT re-attached on topology change."""
+        mock_build.return_value = MagicMock()
+        mgr = TeacherLifecycleManager(
+            exploration_enabled=False,
+            residual_enabled=False,
+            bc_enabled=False,
+            phaseout_steps=0,
+            bc_weight=0.0,
+            bc_min_weight=0.0,
+            bc_decay_start_step=0,
+            bc_decay_steps=0,
+            policy_name="RBCCommunityPolicy",
+            policy_hyperparameters={},
+            config_template={"algorithm": {"name": "dummy", "hyperparameters": {}}},
+        )
+        mgr.attach(
+            observation_names=[["obs1"]],
+            action_names=[["act1"]],
+            action_space=[MagicMock()],
+            observation_space=[MagicMock()],
+            metadata=None,
+        )
+        mgr.release()
+        mgr.reattach(
+            observation_names=[["obs1", "obs2"]],
+            action_names=[["act1", "act2"]],
+            action_space=[MagicMock()],
+            observation_space=[MagicMock()],
+            metadata=None,
+        )
+        assert mgr.teacher_policy is None
+        assert mock_build.call_count == 1
+
+    @patch("algorithms.utils.matd3_teacher_lifecycle.build_warm_start_policy")
+    def test_reattach_with_residual_active_after_exploration_done(self, mock_build):
+        """Teacher survives topology change when residual still active."""
+        mock_build.return_value = MagicMock()
+        mgr = TeacherLifecycleManager(
+            exploration_enabled=True,
+            residual_enabled=True,
+            bc_enabled=False,
+            phaseout_steps=10,
+            bc_weight=0.0,
+            bc_min_weight=0.0,
+            bc_decay_start_step=0,
+            bc_decay_steps=0,
+            policy_name="RBCCommunityPolicy",
+            policy_hyperparameters={},
+            config_template={"algorithm": {"name": "dummy", "hyperparameters": {}}},
+        )
+        mgr.attach(
+            observation_names=[["obs1"]],
+            action_names=[["act1"]],
+            action_space=[MagicMock()],
+            observation_space=[MagicMock()],
+            metadata=None,
+        )
+        assert mgr.is_exploration_role_active(exploration_step=10) is False
+        assert mgr.is_residual_role_active() is True
+        assert mgr.is_teacher_needed(exploration_step=10, global_learning_step=999) is True
+        mgr.reattach(
+            observation_names=[["obs_new"]],
+            action_names=[["act_new"]],
+            action_space=[MagicMock()],
+            observation_space=[MagicMock()],
+            metadata=None,
+        )
+        assert mgr.teacher_policy is not None
+        assert mock_build.call_count == 2
+
+    @patch("algorithms.utils.matd3_teacher_lifecycle.build_warm_start_policy")
+    def test_is_alive_property(self, mock_build):
+        """is_alive reflects current state correctly."""
+        mock_build.return_value = MagicMock()
+        mgr = TeacherLifecycleManager(
+            exploration_enabled=True,
+            residual_enabled=False,
+            bc_enabled=False,
+            phaseout_steps=5,
+            bc_weight=0.0,
+            bc_min_weight=0.0,
+            bc_decay_start_step=0,
+            bc_decay_steps=0,
+            policy_name="RBCCommunityPolicy",
+            policy_hyperparameters={},
+            config_template={"algorithm": {"name": "dummy", "hyperparameters": {}}},
+        )
+        assert mgr.is_alive is False
+        mgr.attach(
+            observation_names=[["obs1"]],
+            action_names=[["act1"]],
+            action_space=[MagicMock()],
+            observation_space=[MagicMock()],
+            metadata=None,
+        )
+        assert mgr.is_alive is True
+        mgr.release()
+        assert mgr.is_alive is False
