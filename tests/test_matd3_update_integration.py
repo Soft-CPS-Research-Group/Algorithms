@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
+import torch
 
 from tests._matd3_test_helpers import (
     _make_matd3_full,
@@ -129,3 +130,125 @@ class TestUpdateGating:
         assert batch is not None
         assert batch.base_actions is not None
         assert batch.next_base_actions is not None
+
+
+class TestCriticAndActorUpdate:
+    def _fill_replay(self, agent, n_buildings, obs_dim, n_transitions=8):
+        """Push enough transitions so sampling works."""
+        for step in range(n_transitions):
+            obs, actions, rewards, next_obs, term, trunc = _generate_transition(
+                n_buildings, obs_dim
+            )
+            agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
+            agent.set_transition_context(
+                raw_observations=obs, raw_next_observations=next_obs,
+                encoded_observations=obs, encoded_next_observations=next_obs,
+            )
+            agent.update(
+                observations=obs, actions=actions, rewards=rewards,
+                next_observations=next_obs, terminated=term, truncated=trunc,
+                update_target_step=False, global_learning_step=step,
+                update_step=False,
+                initial_exploration_done=True,
+            )
+
+    def test_critic_update_changes_critic_params(self):
+        agent, _, _, obs_dim = _make_matd3_full(n_buildings=2)
+        self._fill_replay(agent, 2, obs_dim, n_transitions=8)
+        c1_params_before = [p.clone() for p in agent._critic_1.parameters()]
+        obs, actions, rewards, next_obs, term, trunc = _generate_transition(2, obs_dim)
+        _run_update_step(
+            agent, obs, actions, rewards, next_obs, term, trunc,
+            global_learning_step=100,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+        assert agent._critic_update_count >= 1
+        c1_params_after = list(agent._critic_1.parameters())
+        assert any(
+            not torch.allclose(before, after)
+            for before, after in zip(c1_params_before, c1_params_after)
+        )
+
+    def test_actor_update_respects_interval(self):
+        agent, _, _, obs_dim = _make_matd3_full(n_buildings=2)
+        self._fill_replay(agent, 2, obs_dim, n_transitions=8)
+        obs, actions, rewards, next_obs, term, trunc = _generate_transition(2, obs_dim)
+        _run_update_step(
+            agent, obs, actions, rewards, next_obs, term, trunc,
+            global_learning_step=100,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+        assert agent._critic_update_count == 1
+        assert agent._actor_update_count == 0
+        obs, actions, rewards, next_obs, term, trunc = _generate_transition(2, obs_dim)
+        _run_update_step(
+            agent, obs, actions, rewards, next_obs, term, trunc,
+            global_learning_step=101,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+        assert agent._critic_update_count == 2
+        assert agent._actor_update_count == 1
+
+    def test_actor_update_changes_actor_params(self):
+        agent, _, _, obs_dim = _make_matd3_full(n_buildings=2)
+        self._fill_replay(agent, 2, obs_dim, n_transitions=8)
+        agent._actor_update_interval = 1
+        actor_params_before = [p.clone() for p in agent._actors[0].actor.parameters()]
+        obs, actions, rewards, next_obs, term, trunc = _generate_transition(2, obs_dim)
+        _run_update_step(
+            agent, obs, actions, rewards, next_obs, term, trunc,
+            global_learning_step=100,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+        actor_params_after = list(agent._actors[0].actor.parameters())
+        assert any(
+            not torch.allclose(before, after)
+            for before, after in zip(actor_params_before, actor_params_after)
+        )
+
+    def test_critic_frozen_during_actor_update(self):
+        agent, _, _, obs_dim = _make_matd3_full(n_buildings=2)
+        self._fill_replay(agent, 2, obs_dim, n_transitions=8)
+        agent._actor_update_interval = 1
+        agent._verify_critic_frozen_during_actor = True
+        obs, actions, rewards, next_obs, term, trunc = _generate_transition(2, obs_dim)
+        _run_update_step(
+            agent, obs, actions, rewards, next_obs, term, trunc,
+            global_learning_step=100,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+    def test_soft_target_update(self):
+        agent, _, _, obs_dim = _make_matd3_full(n_buildings=2)
+        self._fill_replay(agent, 2, obs_dim, n_transitions=8)
+        target_params_before = [
+            p.clone() for p in agent._actors[0].target_actor.parameters()
+        ]
+        obs, actions, rewards, next_obs, term, trunc = _generate_transition(2, obs_dim)
+        _run_update_step(
+            agent, obs, actions, rewards, next_obs, term, trunc,
+            global_learning_step=100,
+            update_step=True,
+            update_target_step=True,
+            initial_exploration_done=True,
+        )
+        target_params_after = list(agent._actors[0].target_actor.parameters())
+        assert any(
+            not torch.allclose(before, after)
+            for before, after in zip(target_params_before, target_params_after)
+        )
+
+    def test_min_q_target_uses_both_critics(self):
+        agent, _, _, obs_dim = _make_matd3_full(n_buildings=2)
+        self._fill_replay(agent, 2, obs_dim, n_transitions=8)
+        c1_params = list(agent._critic_1.parameters())
+        c2_params = list(agent._critic_2.parameters())
+        assert any(
+            not torch.allclose(p1, p2)
+            for p1, p2 in zip(c1_params, c2_params)
+        )

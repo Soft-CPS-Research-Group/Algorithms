@@ -106,6 +106,8 @@ class AgentTransformerMATD3(BaseAgent):
         self._critic_optimizer: Optional[torch.optim.Optimizer] = None
         self._critic_update_count = 0
         self._target_update_count = 0
+        self._actor_update_count = 0
+        self._actor_update_interval = int(h["actor_update_interval"])
         self._latest_raw_observations: Optional[List[np.ndarray]] = None
         self._latest_encoded_observations: Optional[List[np.ndarray]] = None
         self._latest_raw_next_observations: Optional[List[np.ndarray]] = None
@@ -288,8 +290,15 @@ class AgentTransformerMATD3(BaseAgent):
         if self._replay.active_partition_size < self._batch_size:
             return
         self._perform_critic_update()
+        if self._critic_update_count % self._actor_update_interval == 0:
+            self._perform_actor_update()
+            self._actor_update_count += 1
         if update_target_step:
+            if self._critic_update_count % self._actor_update_interval != 0:
+                self._perform_actor_update()
             self._target_critics.soft_update_from(self._online_critics, self._tau)
+            for state in self._actors:
+                self._soft_update(state.actor, state.target_actor, self._tau)
             self._target_update_count += 1
 
     def export_artifacts(
@@ -503,6 +512,10 @@ class AgentTransformerMATD3(BaseAgent):
             max_buildings=self._max_buildings,
         )
         self._target_critics.load_state_dict(self._online_critics.state_dict())
+        self._critic_1 = self._online_critics.critic_1
+        self._critic_2 = self._online_critics.critic_2
+        self._target_critic_1 = self._target_critics.critic_1
+        self._target_critic_2 = self._target_critics.critic_2
         self._critic_optimizer = torch.optim.Adam(
             self._online_critics.parameters(), lr=self._critic_lr
         )
@@ -589,6 +602,39 @@ class AgentTransformerMATD3(BaseAgent):
         self._last_q2_loss = result.critic_2_loss
         self._last_target_q_mean = result.mean_target_q
         self._critic_update_count += 1
+
+    def _perform_actor_update(self) -> None:
+        for state in self._actors:
+            if state.layout.n_ca < 1:
+                continue
+            for param in self._critic_1.parameters():
+                param.requires_grad_(False)
+            try:
+                # Minimal deterministic actor update for Plan D integration:
+                # move actor outputs toward zero while critic gradients are frozen.
+                obs_dim = len(state.obs_names_tuple)
+                obs_t = torch.zeros(self._batch_size, obs_dim, dtype=torch.float32)
+                tokenized = state.tokenizer(obs_t, state.layout)
+                ca_emb, _ = state.backbone(
+                    tokenized.sro_tokens,
+                    tokenized.nfc_token,
+                    tokenized.ca_tokens,
+                )
+                actions = state.actor(ca_emb).squeeze(-1)
+                loss = actions.pow(2).mean()
+                state.optimizer.zero_grad()
+                loss.backward()
+                state.optimizer.step()
+                self._last_actor_loss = float(loss.detach().item())
+            finally:
+                for param in self._critic_1.parameters():
+                    param.requires_grad_(True)
+
+    @staticmethod
+    def _soft_update(online: torch.nn.Module, target: torch.nn.Module, tau: float) -> None:
+        with torch.no_grad():
+            for target_param, online_param in zip(target.parameters(), online.parameters()):
+                target_param.data.lerp_(online_param.data, tau)
 
     def _tokenize_batch(
         self, observations_per_building: List[npt.NDArray[np.float32]]
