@@ -22,11 +22,13 @@ ENV LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libgomp.so.1
 WORKDIR /app
 
 COPY requirements.jetson-r35.3.1.txt .
+COPY docker/patch_citylearn_py38.py /tmp/patch_citylearn_py38.py
 
 RUN set -eux; \
     python3 -m pip install --upgrade pip setuptools wheel; \
     python3 -m pip install --no-cache-dir -r requirements.jetson-r35.3.1.txt; \
     python3 -m pip install --no-cache-dir --no-deps --ignore-requires-python softcpsrecsimulator==1.5.4; \
+    python3 /tmp/patch_citylearn_py38.py; \
     python3 -c "import torch; import sklearn; import citylearn; from citylearn.citylearn import CityLearnEnv; print('torch:', torch.__version__); print('torch cuda:', torch.version.cuda); print('cuda available at build:', torch.cuda.is_available()); print('sklearn:', sklearn.__version__); print('citylearn:', citylearn.__file__); print('citylearn env:', CityLearnEnv.__name__)"
 
 COPY . .
