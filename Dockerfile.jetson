@@ -10,6 +10,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     OPEVA_BASE_DIR=/data
 
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends libgomp1; \
+    rm -rf /var/lib/apt/lists/*
+
+# scikit-learn's bundled OpenMP library can fail on Jetson/aarch64 with
+# "cannot allocate memory in static TLS block" if it is loaded late.
+ENV LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libgomp.so.1
+
 WORKDIR /app
 
 COPY requirements.jetson-r35.3.1.txt .
@@ -18,7 +27,7 @@ RUN set -eux; \
     python3 -m pip install --upgrade pip setuptools wheel; \
     python3 -m pip install --no-cache-dir -r requirements.jetson-r35.3.1.txt; \
     python3 -m pip install --no-cache-dir --no-deps --ignore-requires-python softcpsrecsimulator==1.5.4; \
-    python3 -c "import torch; import citylearn; print('torch:', torch.__version__); print('torch cuda:', torch.version.cuda); print('cuda available at build:', torch.cuda.is_available()); print('citylearn:', citylearn.__file__)"
+    python3 -c "import torch; import sklearn; import citylearn; from citylearn.citylearn import CityLearnEnv; print('torch:', torch.__version__); print('torch cuda:', torch.version.cuda); print('cuda available at build:', torch.cuda.is_available()); print('sklearn:', sklearn.__version__); print('citylearn:', citylearn.__file__); print('citylearn env:', CityLearnEnv.__name__)"
 
 COPY . .
 
