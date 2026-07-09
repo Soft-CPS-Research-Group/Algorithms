@@ -12,7 +12,6 @@ import mlflow
 import numpy as np
 import torch
 from loguru import logger
-from torch.amp import GradScaler, autocast
 from torch.nn.functional import mse_loss, smooth_l1_loss
 from torch.nn.utils import clip_grad_norm_
 
@@ -24,6 +23,7 @@ from algorithms.utils.replay_buffer import (
     PrioritizedReplayBuffer,
     RewardWeightedMultiAgentReplayBuffer,
 )
+from algorithms.utils.torch_amp import GradScaler, autocast
 from utils.artifact_config_builder import build_auto_artifact_config
 
 REPLAY_BUFFER_REGISTRY = {
