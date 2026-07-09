@@ -1,0 +1,25 @@
+# Jetson Xavier / JetPack 5.1.1 / L4T 35.3.1 GPU runtime image.
+#
+# This base was validated on the target Xavier:
+#   torch: 2.0.0a0+ec3941ad.nv23.02
+#   torch cuda: 11.4
+#   torch.cuda.is_available(): True
+FROM nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    OPEVA_BASE_DIR=/data
+
+WORKDIR /app
+
+COPY requirements.jetson-r35.3.1.txt .
+
+RUN set -eux; \
+    python3 -m pip install --upgrade pip setuptools wheel; \
+    python3 -m pip install --no-cache-dir -r requirements.jetson-r35.3.1.txt; \
+    python3 -m pip install --no-cache-dir --no-deps --ignore-requires-python softcpsrecsimulator==1.5.4; \
+    python3 -c "import torch; import citylearn; print('torch:', torch.__version__); print('torch cuda:', torch.version.cuda); print('cuda available at build:', torch.cuda.is_available()); print('citylearn:', citylearn.__file__)"
+
+COPY . .
+
+ENTRYPOINT ["python3", "run_experiment.py"]
