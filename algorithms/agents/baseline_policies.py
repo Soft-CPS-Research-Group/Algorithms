@@ -2315,3 +2315,119 @@ class SignalAwareRBC(RBCSmartPolicy):
             "expensive":         effective_price >= forecast_mean + 0.20 * spread or effective_price >= forecast_max - 0.10 * spread,
             "near_forecast_peak": effective_price >= forecast_max - max(0.10 * spread, 0.005),
         }
+
+
+class SignalAwareRBCCommunity(RBCCommunityPolicy):
+    """RBCCommunityPolicy that reacts to a CC price multiplier.
+
+    This is the price-reactive residual base for the ``CC -> frozen MATD3``
+    pipeline. It is used as MADDPG's warm-start / residual base policy: MADDPG
+    forwards the CC multiplier via :meth:`set_price_multiplier`, and this class
+    scales the perceived electricity price before all cheap/expensive/peak
+    decisions — the same coupling as :class:`SignalAwareRBC`, but preserving the
+    full RBCCommunity community-aware dispatch that the frozen residual actors
+    were trained on top of.
+
+    Two differences from :class:`SignalAwareRBC`, both required by the residual
+    use case:
+
+    * The multiplier is set out-of-band via :meth:`set_price_multiplier` (MADDPG
+      calls the base's ``predict`` without a context), so ``predict`` must NOT
+      reset it to neutral when called with ``context=None``.
+    * A length-N multiplier (CCLevel2, per building) is supported: the multiplier
+      for the building currently being dispatched is selected by tracking the
+      agent index the parent dispatch loop is on. A scalar multiplier (CCLevel1)
+      is broadcast to every building.
+
+    multiplier > 1.0  ->  price appears higher  ->  base conserves / discharges
+    multiplier = 1.0  ->  neutral (identical to plain RBCCommunityPolicy)
+    multiplier < 1.0  ->  price appears lower   ->  base consumes / charges
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        self._price_multiplier: float = 1.0                       # scalar / broadcast
+        self._price_multipliers: Optional[np.ndarray] = None      # per-building (CCLevel2)
+        self._current_agent_idx: int = 0
+
+    def _policy_type(self) -> str:
+        return "signal_aware_rbc_community"
+
+    def set_price_multiplier(self, multiplier: Any) -> None:
+        """Set the perceived-price multiplier(s), persisting until next set.
+
+        Accepts a scalar (broadcast to all buildings), a length-N array
+        (per building), or None (reset to neutral 1.0).
+        """
+        if multiplier is None:
+            self._price_multipliers = None
+            self._price_multiplier = 1.0
+            return
+        if isinstance(multiplier, (list, tuple, np.ndarray)):
+            arr = np.asarray(multiplier, dtype=float).reshape(-1)
+            # A length-1 vector is treated as a broadcast scalar.
+            self._price_multipliers = arr if arr.size > 1 else None
+            self._price_multiplier = float(arr.flat[0]) if arr.size else 1.0
+        else:
+            self._price_multipliers = None
+            self._price_multiplier = float(multiplier)
+
+    def predict(
+        self,
+        observations: List[np.ndarray],
+        deterministic: bool | None = None,
+        *,
+        context: Any = None,
+    ) -> List[List[float]]:
+        # Only override the multiplier when a context is explicitly supplied.
+        # MADDPG's residual base is driven via set_price_multiplier and calls
+        # predict without a context, so context=None must NOT reset to neutral.
+        if context is not None:
+            self.set_price_multiplier(context)
+        return super().predict(observations, deterministic)
+
+    def _init_dispatch_budget(self, agent_idx: int, obs: np.ndarray, obs_map: Mapping[str, int]) -> None:
+        # The parent dispatch loop calls this once per building, before any
+        # _get_price_context call for that building — so it is the reliable place
+        # to record which building's multiplier applies to the price context.
+        self._current_agent_idx = agent_idx
+        super()._init_dispatch_budget(agent_idx, obs, obs_map)
+
+    def _effective_price_multiplier(self) -> float:
+        if self._price_multipliers is not None:
+            idx = self._current_agent_idx
+            if 0 <= idx < len(self._price_multipliers):
+                return float(self._price_multipliers[idx])
+        return self._price_multiplier
+
+    def _get_price_context(
+        self,
+        obs: np.ndarray,
+        obs_map: Mapping[str, int],
+    ) -> Dict[str, float | bool]:
+        ctx = super()._get_price_context(obs, obs_map)
+        multiplier = self._effective_price_multiplier()
+        if multiplier == 1.0:
+            return ctx
+        effective_price = ctx["price"] * multiplier
+        forecasts = [
+            self._get_first_value(
+                obs, obs_map,
+                [f"electricity_pricing_predicted_{i}", f"district__electricity_pricing_predicted_{i}"],
+                default=float("nan"),
+            )
+            for i in (1, 2, 3)
+        ]
+        valid = [v for v in forecasts if not math.isnan(v)]
+        if not valid:
+            return {**ctx, "price": effective_price}
+        forecast_mean = float(np.mean(valid))
+        forecast_min  = float(np.min(valid))
+        forecast_max  = float(np.max(valid))
+        spread = max(forecast_max - forecast_min, abs(forecast_mean) * 0.05, 1e-9)
+        return {
+            "price":             effective_price,
+            "cheap":             effective_price <= forecast_mean - 0.20 * spread or effective_price <= forecast_min + 0.10 * spread,
+            "expensive":         effective_price >= forecast_mean + 0.20 * spread or effective_price >= forecast_max - 0.10 * spread,
+            "near_forecast_peak": effective_price >= forecast_max - max(0.10 * spread, 0.005),
+        }

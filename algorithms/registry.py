@@ -37,6 +37,7 @@ from algorithms.agents.baseline_policies import (
     RBCSmartPolicy,
     RandomPolicy,
     SignalAwareRBC,
+    SignalAwareRBCCommunity,
 )
 _registry_trace("after baseline policies import")
 _registry_trace("before base agent import")
@@ -98,6 +99,7 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "RandomPolicy": RandomPolicy,
     "RuleBasedPolicy": RuleBasedPolicy,
     "SignalAwareRBC": SignalAwareRBC,
+    "SignalAwareRBCCommunity": SignalAwareRBCCommunity,
     "AgentTransformerPPO": AgentTransformerPPO,
 }
 

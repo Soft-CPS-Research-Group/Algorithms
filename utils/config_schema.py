@@ -587,6 +587,7 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "RBCCommunityPolicy",
         "RBCSmartPolicy",
         "SignalAwareRBC",
+        "SignalAwareRBCCommunity",
     ]
     count: int = Field(default=1, ge=1)
     frozen: bool = False

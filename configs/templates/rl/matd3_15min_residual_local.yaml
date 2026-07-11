@@ -98,7 +98,7 @@ simulator:
     battery_throughput_penalty: 0.0045
     scale_state_penalties_by_time_step: true
     state_penalty_reference_seconds: 3600.0
-  episodes: 1
+  episodes: 4
   deterministic_finish: true
   simulation_start_time_step: 0
   simulation_end_time_step: 35039

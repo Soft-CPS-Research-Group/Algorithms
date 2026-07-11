@@ -396,6 +396,21 @@ class MADDPG(BaseAgent):
             float(exploration_cfg.get("residual_deferrable_action_scale_multiplier", 1.0) or 0.0),
         )
         self._last_residual_action_scale = 0.0
+        # Optional hierarchical coupling to a Community Coordinator (CC).
+        # When enabled, predict() forwards the pipeline `context` (a price
+        # multiplier — scalar for CCLevel1, length-N array for CCLevel2) to the
+        # residual warm-start base policy, which scales its perceived raw price
+        # exactly like SignalAwareRBC. This only has an effect when the base is a
+        # SignalAwareRBCCommunity (exposes set_price_multiplier). Defaults OFF so
+        # the standalone inference path stays bit-identical.
+        self.signal_aware_base_enabled = bool(exploration_cfg.get("signal_aware_base", False))
+        # Optional per-stage frozen checkpoint. A frozen worker inside a CC
+        # pipeline loads its trained weights from this .pth at attach time
+        # (after actors are sized). None → no self-load (normal training runs and
+        # the standard resume_training flow are untouched).
+        self._frozen_checkpoint_path = self._optional_string(
+            exploration_cfg.get("frozen_checkpoint_path")
+        )
         self.critic_action_input_mode = str(
             exploration_cfg.get("critic_action_input_mode", "final") or "final"
         ).strip().lower()
@@ -661,6 +676,32 @@ class MADDPG(BaseAgent):
             metadata=metadata,
         )
         self._apply_noop_actor_initialization()
+        self._maybe_load_frozen_checkpoint()
+
+    def _maybe_load_frozen_checkpoint(self) -> None:
+        """Load a per-stage frozen checkpoint once actors are sized.
+
+        Used by a frozen worker inside a CC pipeline: the standard
+        resume_training flow loads a whole Pipeline from a stage-directory tree,
+        but a frozen worker instead loads its own trained ``.pth`` directly.
+        Runs at the end of attach_environment (actors already built). No-op when
+        ``frozen_checkpoint_path`` is unset, so ordinary runs are unaffected.
+        """
+        path = getattr(self, "_frozen_checkpoint_path", None)
+        if not path:
+            return
+        resolved = Path(path).expanduser()
+        if not resolved.exists():
+            raise FileNotFoundError(
+                f"frozen_checkpoint_path does not exist: {resolved} "
+                f"(configured as '{path}')."
+            )
+        logger.info(
+            "Loading frozen worker checkpoint from {} (frozen={}).",
+            resolved,
+            getattr(self, "frozen", False),
+        )
+        self.load_checkpoint(str(resolved))
 
     def _rebuild_actor_networks_for_semantic_heads_if_needed(self) -> None:
         if not hasattr(self, "config"):
@@ -731,6 +772,7 @@ class MADDPG(BaseAgent):
             RBCCommunityPolicy,
             RBCSmartPolicy,
             RandomPolicy,
+            SignalAwareRBCCommunity,
         )
         from algorithms.agents.rbc_agent import RuleBasedPolicy
 
@@ -742,6 +784,7 @@ class MADDPG(BaseAgent):
             "RBCBasicPolicy": RBCBasicPolicy,
             "RBCCommunityPolicy": RBCCommunityPolicy,
             "RBCSmartPolicy": RBCSmartPolicy,
+            "SignalAwareRBCCommunity": SignalAwareRBCCommunity,
         }
         policy_cls = policy_registry.get(str(self.warm_start_policy_name))
         if policy_cls is None:
@@ -2387,12 +2430,35 @@ class MADDPG(BaseAgent):
         *,
         context: Any = None,
     ) -> List[List[float]]:
-        _ = context
+        if self.signal_aware_base_enabled:
+            # Forward the CC price multiplier to the residual base BEFORE the
+            # base actions are recomputed inside _predict_deterministic.
+            self._apply_manager_price_signal(context)
+        else:
+            _ = context
+        if getattr(self, "frozen", False):
+            # A frozen worker is eval-only: never explore, regardless of the
+            # deterministic flag the pipeline propagates during CC training.
+            deterministic = True
         logger.debug("Predicting actions with deterministic={}.", deterministic)
         actor_observations = self._prepare_policy_actor_observations(observations)
         if deterministic:
             return self._predict_deterministic(actor_observations)
         return self._predict_with_exploration(actor_observations)
+
+    def _apply_manager_price_signal(self, context: Any) -> None:
+        """Forward a manager (CC) price multiplier to the residual base policy.
+
+        The multiplier reaches the frozen worker through the residual base
+        (RBCCommunityPolicy), which reads raw observations and reacts to price
+        via _get_price_context. Handles a scalar multiplier (CCLevel1, broadcast
+        to all buildings) and a length-N array (CCLevel2, per building). A no-op
+        if the base policy does not expose set_price_multiplier.
+        """
+        base = getattr(self, "_warm_start_policy", None)
+        setter = getattr(base, "set_price_multiplier", None)
+        if callable(setter):
+            setter(context)
 
     def _predict_deterministic(self, observations):
         base_actions = self._current_residual_base_actions()
