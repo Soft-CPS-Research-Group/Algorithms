@@ -404,6 +404,23 @@ class MADDPG(BaseAgent):
         # SignalAwareRBCCommunity (exposes set_price_multiplier). Defaults OFF so
         # the standalone inference path stays bit-identical.
         self.signal_aware_base_enabled = bool(exploration_cfg.get("signal_aware_base", False))
+        # Optional coupling to the LEARNED actor: shift the price feature(s) in the
+        # actor's encoded observation by the CC multiplier, so the trained policy
+        # itself reacts to the CC-adjusted price (not only the rule-based base).
+        # A bounded shift in normalized space is used instead of literal price×m:
+        # in this dataset the price varies in a tiny band, so scaling the raw price
+        # saturates the encoded feature to a constant — the shift keeps the actor
+        # inside its trained range and preserves graded response.
+        #     enc'[price] = clip(enc[price] + (m - 1) * gain, 0, 1)
+        # Defaults OFF so the standalone inference path stays bit-identical.
+        self.signal_aware_actor_obs_enabled = bool(
+            exploration_cfg.get("signal_aware_actor_obs", False)
+        )
+        self.signal_aware_actor_obs_gain = float(
+            exploration_cfg.get("signal_aware_actor_obs_gain", 1.0)
+        )
+        # Encoded-obs indices of the price features, resolved at attach_environment.
+        self._price_obs_indices: List[int] = []
         # Optional per-stage frozen checkpoint. A frozen worker inside a CC
         # pipeline loads its trained weights from this .pth at attach time
         # (after actors are sized). None → no self-load (normal training runs and
@@ -676,7 +693,29 @@ class MADDPG(BaseAgent):
             metadata=metadata,
         )
         self._apply_noop_actor_initialization()
+        self._cache_price_obs_indices()
         self._maybe_load_frozen_checkpoint()
+
+    def _cache_price_obs_indices(self) -> None:
+        """Resolve the encoded-obs indices of the price features (district price +
+        3 forecasts) for the optional signal_aware_actor_obs coupling. District
+        features are identically positioned across buildings, so building 0's
+        encoded names suffice."""
+        self._price_obs_indices = []
+        names = self.observation_names[0] if getattr(self, "observation_names", None) else []
+        for pname in (
+            "district__electricity_pricing",
+            "district__electricity_pricing_predicted_1",
+            "district__electricity_pricing_predicted_2",
+            "district__electricity_pricing_predicted_3",
+        ):
+            if pname in names:
+                self._price_obs_indices.append(names.index(pname))
+        if self.signal_aware_actor_obs_enabled and not self._price_obs_indices:
+            logger.warning(
+                "MADDPG signal_aware_actor_obs enabled but no price features found "
+                "in the encoded observation names; actor-obs price coupling is a no-op."
+            )
 
     def _maybe_load_frozen_checkpoint(self) -> None:
         """Load a per-stage frozen checkpoint once actors are sized.
@@ -805,8 +844,21 @@ class MADDPG(BaseAgent):
             "hyperparameters": dict(policy_hyperparams),
         }
         self._warm_start_policy = policy_cls(policy_config)
+        # The warm-start / residual base policy consumes RAW observations (fed via
+        # set_observation_context -> _latest_raw_observations). Its name->index map
+        # must therefore be built from the RAW observation names. Standalone, the
+        # `observation_names` handed to this agent are already raw; but inside a
+        # Pipeline the stage receives ENCODED names, so attaching the base with them
+        # would misalign every index against the raw obs it is actually fed -> the
+        # base reads garbage, returns all-zero actions, and the residual runs over a
+        # zero base (making any manager price signal inert). Prefer raw names.
+        base_observation_names = observation_names
+        if metadata:
+            raw_names = metadata.get("raw_observation_names")
+            if raw_names is not None:
+                base_observation_names = raw_names
         self._warm_start_policy.attach_environment(
-            observation_names=observation_names,
+            observation_names=base_observation_names,
             action_names=action_names,
             action_space=action_space,
             observation_space=observation_space,
@@ -2436,6 +2488,11 @@ class MADDPG(BaseAgent):
             self._apply_manager_price_signal(context)
         else:
             _ = context
+        if self.signal_aware_actor_obs_enabled and self._price_obs_indices:
+            # Shift the price feature(s) in the LEARNED actor's observation so the
+            # trained policy reacts to the CC-adjusted price. Operates on a copy —
+            # never mutate the shared obs the CC (upstream stage) already read.
+            observations = self._apply_manager_price_to_actor_obs(observations, context)
         if getattr(self, "frozen", False):
             # A frozen worker is eval-only: never explore, regardless of the
             # deterministic flag the pipeline propagates during CC training.
@@ -2459,6 +2516,48 @@ class MADDPG(BaseAgent):
         setter = getattr(base, "set_price_multiplier", None)
         if callable(setter):
             setter(context)
+
+    def _manager_multiplier_array(self, context: Any, n: int) -> np.ndarray:
+        """Turn the pipeline `context` into a per-building multiplier array of
+        length n. Scalar (CCLevel1) → broadcast; length-n array (CCLevel2) →
+        per building; None or any mismatch → neutral 1.0."""
+        if context is None:
+            return np.ones(n, dtype=np.float32)
+        if isinstance(context, (list, tuple, np.ndarray)):
+            arr = np.asarray(context, dtype=np.float32).reshape(-1)
+            if arr.size == n:
+                return arr
+            if arr.size >= 1:
+                return np.full(n, float(arr.flat[0]), dtype=np.float32)
+            return np.ones(n, dtype=np.float32)
+        try:
+            return np.full(n, float(context), dtype=np.float32)
+        except (TypeError, ValueError):
+            return np.ones(n, dtype=np.float32)
+
+    def _apply_manager_price_to_actor_obs(
+        self, observations: List[Any], context: Any
+    ) -> List[np.ndarray]:
+        """Return a copy of the encoded observations with the price feature(s)
+        shifted by the CC multiplier, so the learned actor perceives the
+        CC-adjusted price:  enc'[p] = clip(enc[p] + (m - 1) * gain, 0, 1).
+
+        A bounded normalized-space shift is used (not literal price×m): the price
+        varies in a tiny band in this data, so scaling the raw price saturates the
+        encoded feature to a constant. Never mutates the input (the CC stage read
+        the same obs upstream)."""
+        mults = self._manager_multiplier_array(context, len(observations))
+        gain = float(self.signal_aware_actor_obs_gain)
+        adjusted: List[np.ndarray] = []
+        for i, obs in enumerate(observations):
+            o = np.asarray(obs, dtype=np.float32).copy()
+            shift = (float(mults[i]) - 1.0) * gain
+            if shift != 0.0:
+                for p in self._price_obs_indices:
+                    if 0 <= p < o.shape[0]:
+                        o[p] = np.clip(o[p] + shift, 0.0, 1.0)
+            adjusted.append(o)
+        return adjusted
 
     def _predict_deterministic(self, observations):
         base_actions = self._current_residual_base_actions()

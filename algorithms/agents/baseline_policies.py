@@ -2431,3 +2431,69 @@ class SignalAwareRBCCommunity(RBCCommunityPolicy):
             "expensive":         effective_price >= forecast_mean + 0.20 * spread or effective_price >= forecast_max - 0.10 * spread,
             "near_forecast_peak": effective_price >= forecast_max - max(0.10 * spread, 0.005),
         }
+
+
+class SignalDirectedRBC(RBCSmartPolicy):
+    """RBCSmartPolicy variant that executes a CC *directional* battery signal.
+
+    Companion leaf stage for the direct-control ``CommunityCoordinator`` run in
+    signal mode (``output_mode: "signal"``). The CC emits, per building, a
+    directional value ``o1 ∈ (-1, 1)``::
+
+        o1 > 0  ->  charge      o1 < 0  ->  discharge      o1 ~= 0  ->  idle
+
+    This worker applies ``o1`` directly as the stationary-battery action,
+    clamped to SoC / power / availability limits by ``_clip_storage_action``.
+    EV and deferrable dispatch keep the parent ``RBCSmartPolicy`` logic, so local
+    service constraints are still respected -- only the battery follows the
+    manager's direction.
+
+    Contrast with :class:`SignalAwareRBC`, which scales the perceived *price*:
+    here there is no price coupling. The manager supplies the battery intent
+    directly, and at ``o1 = 0`` the battery idles (the manager must actively
+    command it). The pair ``CommunityCoordinator -> SignalDirectedRBC`` is thus a
+    *directional-command* coordination paradigm, to be contrasted against the
+    *price-incentive* ``CCLevel1 -> SignalAwareRBC`` paradigm.
+
+    Used as the leaf stage of a ``CommunityCoordinator -> SignalDirectedRBC``
+    pipeline (``count: 17``); the :class:`Ensemble` routes ``context[i]`` (the
+    CC's ``o1`` for building ``i``) to member ``i`` as a scalar -- exactly as it
+    routes a CCLevel2 per-building multiplier to :class:`SignalAwareRBC`.
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        self._signal: float = 0.0
+
+    def _policy_type(self) -> str:
+        return "signal_directed_rbc"
+
+    def predict(
+        self,
+        observations: List[np.ndarray],
+        deterministic: bool | None = None,
+        *,
+        context: Any = None,
+    ) -> List[List[float]]:
+        if context is not None:
+            try:
+                self._signal = float(context)
+            except (TypeError, ValueError):
+                self._signal = 0.0
+        else:
+            self._signal = 0.0
+        return super().predict(observations, deterministic)
+
+    def _compute_storage_action(
+        self,
+        agent_idx: int,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        action_name: str,
+        bounds: Sequence[float],
+    ) -> float:
+        del action_name
+        # Directional command from the manager: o1 in (-1, 1) maps straight to the
+        # normalized storage action (+charge / -discharge). _clip_storage_action
+        # enforces SoC / power / availability limits; o1 ~= 0 -> idle.
+        return self._clip_storage_action(float(self._signal), obs, obs_map, bounds)

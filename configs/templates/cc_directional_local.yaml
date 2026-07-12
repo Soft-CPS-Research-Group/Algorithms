@@ -1,0 +1,143 @@
+# Community Coordinator — Directional Signal (hierarchical direct-control variant).
+#
+# The pre-pivot "direct control" idea, made hierarchical and fair:
+#   * Manager: CommunityCoordinator in SIGNAL mode — emits one directional value
+#     per building, o1 ∈ (-1, 1)  (>0 charge, <0 discharge, ≈0 idle).
+#   * Low level: SignalDirectedRBC — applies o1 as the battery action (clamped to
+#     SoC / power / availability); EV + deferrable dispatch keep the RBCSmart logic.
+#   * Reward: CCRewardLevel1 (community). use_env_reward=true routes the community
+#     reward that results from the worker's actions back to the CC, so learning
+#     flows  CC signal → worker → env → reward  (not the CC's internal heuristic).
+#
+# Purpose: a controlled contrast to the price-signal CC (CCLevel1 → SignalAwareRBC).
+#   Directional command  vs  price incentive, same community reward.
+#   Expected to underperform the price-signal setup — that is the point (it
+#   motivates the pivot to economic price signals).
+
+metadata:
+  experiment_name: "cc_directional"
+  run_name: "CC Directional Signal → SignalDirectedRBC"
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: true
+  log_level: "INFO"
+  log_frequency: 1
+  mlflow_step_sample_interval: 50
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 5
+  system_metrics_enabled: false
+  system_metrics_interval: 10
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "latest_checkpoint.pth"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 960
+
+bundle:
+  bundle_version: null
+  description: null
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+
+simulator:
+  dataset_name: citylearn_three_phase_electrical_service_demo_15min_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15min_parquet/schema.json
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    profile: cc_level1        # encoded obs unused by the CC (raw features), kept for a valid env
+    clip: true
+  reward_function: CCRewardLevel1
+  episodes: 4                 # first look; raise once the trend is clear
+  simulation_start_time_step: null
+  simulation_end_time_step: null
+  episode_time_steps: 34944   # full year per ep (dataset total = 34944 steps)
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    session_name: null
+
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 2
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+# Two-stage pipeline: CommunityCoordinator (directional, signal mode) → SignalDirectedRBC.
+# The CC emits a length-17 o1 vector; the Ensemble routes o1[i] to building i.
+pipeline:
+  - algorithm: "CommunityCoordinator"
+    frozen: false
+    count: 1
+    hyperparameters:
+      # Emit the o1 signal downstream instead of commanding batteries directly.
+      output_mode: "signal"
+      # Train on the community reward produced by the worker's actions
+      # (CCRewardLevel1), not the CC's self-contained internal decision reward.
+      use_env_reward: true
+
+      # Set-based CC (raw observations): community context + per-building features.
+      c_dim: 12          # _build_community_context width
+      b_dim: 7           # _build_building_features width
+      num_buildings: 17
+      hidden_dims: [128, 128]
+
+      # Temporal abstraction: decide every hour over 15-min steps (matches CCLevel1).
+      cc_action_interval: 4
+
+      # Rollout buffer.
+      num_steps: 96
+
+      # Optimiser
+      lr: 1.0e-4
+
+      # Discount & GAE
+      gamma: 0.99
+      gae_lambda: 0.95
+
+      # PPO update (matches cc_local.yaml for a fair comparison).
+      num_epochs: 10
+      mini_batch_size: 64
+      clip_coef: 0.2
+      vf_coef: 0.5
+      ent_coef: 0.005
+      max_grad_norm: 0.5
+      target_kl: 0.1
+
+  - algorithm: SignalDirectedRBC
+    count: 17
+    hyperparameters:
+      allow_v2g: true
+      ev_v2g_discharge_rate: 0.18
+      ev_v2g_reserve_soc: 0.0
+      ev_v2g_min_departure_hours: 2.0
+      ev_v2g_service_margin_soc: 0.02
+      ev_v2g_buffer_soc: 0.12
+
+execution: null
