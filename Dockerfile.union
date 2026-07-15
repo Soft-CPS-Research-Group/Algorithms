@@ -1,0 +1,30 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY requirements.txt ./
+
+# Union currently schedules OPEVA jobs on Blackwell GPUs (sm_120). Keep this
+# runtime separate from the generic and Jetson images so their CUDA contracts
+# remain unchanged.
+RUN set -eux; \
+    pip install --upgrade pip; \
+    sed -E \
+        -e '/^torch==/d' \
+        -e '/^torchvision==/d' \
+        -e '/^torchaudio==/d' \
+        -e '/^--extra-index-url https:\/\/download\.pytorch\.org\/whl\//d' \
+        requirements.txt > /tmp/requirements-union.txt; \
+    pip install --no-cache-dir -r /tmp/requirements-union.txt; \
+    pip install --no-cache-dir \
+        torch==2.7.1 \
+        torchvision==0.22.1 \
+        torchaudio==2.7.1 \
+        --index-url https://download.pytorch.org/whl/cu128; \
+    python -c "import torch; flags=torch._C._cuda_getArchFlags(); print('torch:', torch.__version__, 'cuda:', torch.version.cuda, 'archs:', flags); assert 'sm_120' in flags.split(), flags"
+
+COPY . .
+
+ENV OPEVA_BASE_DIR=/data
+
+ENTRYPOINT ["python", "run_experiment.py"]
