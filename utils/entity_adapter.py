@@ -2076,7 +2076,11 @@ class EntityContractAdapter:
             return cls._is_cc_level1_district_feature(feature)
 
         if name.startswith("storage::"):
-            return feature == "soc"
+            # soc gives fill level [0,1]; capacity_kwh gives ABSOLUTE battery size
+            # (normalized against a fixed 100 kWh reference, so a 1 kWh and a 16 kWh
+            # battery are distinguishable). Together they let the CC recover each
+            # building's absolute storage flexibility instead of only a fill ratio.
+            return feature in {"soc", "capacity_kwh"}
 
         if name.startswith("pv::"):
             return feature == "generation_power_kw"

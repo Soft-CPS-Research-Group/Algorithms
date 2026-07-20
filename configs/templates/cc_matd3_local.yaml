@@ -172,8 +172,6 @@ pipeline:
     bc_w_ramp: 0.4
     bc_w_export: 0.05
     bc_w_violation: 2.0
-    bc_w_headroom: 1.0
-    bc_reference_headroom: 2.0
     bc_reference_ramping: 1.878
     bc_dt_hours: 0.25
     bc_mult_scale: 1.0

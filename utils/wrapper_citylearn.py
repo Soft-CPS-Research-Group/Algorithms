@@ -558,6 +558,12 @@ class Wrapper_CityLearn(RLC):
             "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
             "raw_observation_names": raw_observation_names,
             "encoded_observation_names": encoded_observation_names,
+            # Per-building battery capacity (kWh) — lets capacity-aware agents (CCL2)
+            # see absolute storage size, which the self-normalizing encoded obs hides.
+            "building_battery_capacity_kwh": [
+                float((m.get("electrical_storage") or {}).get("capacity", 0.0) or 0.0)
+                for m in (self.building_metadata or [])
+            ],
         }
 
         try:

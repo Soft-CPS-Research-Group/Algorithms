@@ -146,11 +146,6 @@ pipeline:
       bc_w_ramp: 0.4               # ramping signal weight (NEW)
       bc_w_export: 0.05            # excess export signal weight (was 0.1)
       bc_w_violation: 2.0          # electrical violation signal weight (NEW)
-      # Community oversight — the CC watches the shared three-phase service limit
-      # and raises the multiplier as headroom shrinks, so workers back off BEFORE
-      # a violation. This is the CC's job, not the per-building Smart RBC's.
-      bc_w_headroom: 1.0           # community headroom-stress signal weight (NEW)
-      bc_reference_headroom: 2.0   # kW margin below which the CC starts conserving
       bc_reference_ramping: 1.878  # p90 step-to-step import change (kWh)
       # Reference values for the BC teacher.
       # By default these are auto-calibrated from episode-0 data (p75/p90 of the

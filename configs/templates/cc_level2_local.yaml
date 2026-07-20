@@ -178,9 +178,7 @@ pipeline:
       bc_w_ramp: 0.4             # ramping signal (NEW — ported from Phase 1)
       bc_w_export: 0.05          # was 0.1 — aligned with CC Phase 1
       bc_w_violation: 2.0        # electrical violation signal (NEW — ported from Phase 1)
-      bc_w_headroom: 1.0         # proactive community-oversight signal (NEW — ported from Phase 1)
       bc_reference_ramping: 1.878  # p90 step-to-step import change (kWh)
-      bc_reference_headroom: 2.0   # kW margin below which the CC raises prices
       # Per-building EV modulation — mirrors CCRewardLevel2 w_ev
       bc_w_ev: 0.5                # EV urgency → lower mult when gap·urgency is high
       # Must match CCRewardLevel2.urgency_horizon exactly.

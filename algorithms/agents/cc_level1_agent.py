@@ -290,16 +290,6 @@ class CCLevel1Agent(BaseAgent):
         self._bc_w_export        = float(hyper.get("bc_w_export",        0.05))
         self._bc_w_ramp          = float(hyper.get("bc_w_ramp",          0.4))
         self._bc_w_violation     = float(hyper.get("bc_w_violation",     2.0))
-        # Community oversight: proactively raise the multiplier as the shared
-        # electrical-service headroom shrinks, so workers conserve BEFORE the
-        # community trips its three-phase limit. This is the CC analogue of
-        # RBCCommunityPolicy's community-stress backoff — the per-building Smart
-        # RBC stays selfish, the CC watches the community as a whole.
-        self._bc_w_headroom      = float(hyper.get("bc_w_headroom",      1.0))
-        # kW margin below which the CC starts pushing prices up (mirrors the
-        # RBC's low_headroom_threshold_kw). Stress ramps 0→1 as headroom falls
-        # from this threshold to 0, and exceeds 1 once headroom goes negative.
-        self._bc_reference_headroom = float(hyper.get("bc_reference_headroom", 2.0))
         # Reference values for the BC teacher (peak/export thresholds).
         # None = auto-calibrate from episode-0 data (p75/p90 of observed distribution).
         # Set explicitly in config only to force fixed community-specific values.
@@ -467,16 +457,10 @@ class CCLevel1Agent(BaseAgent):
           ramp_signal      = ramp_kwh / ref_ramping            # ≈ [0, 3]
           export_signal    = -(exp_kWh / ref_export)           # ≈ [-1, 0]
           violation_signal = violation_kwh / 1.0               # kWh of violations
-          headroom_signal  = max(0, (ref_headroom - headroom_kw) / ref_headroom)  # ≥ 0
 
           raw  = w_cost*cost + w_peak*peak + w_ramp*ramp + w_export*export
-                 + w_violation*violation + w_headroom*headroom
+                 + w_violation*violation
           mult = clip(1.0 + raw * scale, price_min, price_max)
-
-        The headroom_signal is the CC's community-oversight reflex: as the shared
-        electrical-service margin shrinks, the multiplier rises so workers
-        conserve BEFORE a violation occurs (proactive), while violation_signal
-        reacts once a limit is already breached.
         """
         _idx = _CC_LEVEL1_FEATURES.index
         price    = float(ctx[_idx("district__electricity_pricing")])
@@ -485,7 +469,6 @@ class CCLevel1Agent(BaseAgent):
         price_p3 = float(ctx[_idx("district__electricity_pricing_predicted_3")])
         imp_kw   = float(ctx[_idx("district__community_import_power_kw")])
         exp_kw   = float(ctx[_idx("district__community_export_power_kw")])
-        headroom_kw = float(ctx[_idx("district__community_building_headroom_kw")])
 
         # Convert power (kW) → energy (kWh) for this timestep
         dt      = self._bc_dt_hours
@@ -522,26 +505,18 @@ class CCLevel1Agent(BaseAgent):
         # Violation — strong positive signal when grid limits breached
         violation_signal = violation_kwh  # reference is 1.0 kWh (same as CCRewardLevel1)
 
-        # Community headroom — proactive oversight. Stress ramps 0→1 as the
-        # shared electrical-service margin falls from ref_headroom to 0, and
-        # exceeds 1 once headroom is negative (already over the limit). Positive
-        # stress pushes the multiplier UP so workers conserve before a violation.
-        ref_headroom = max(self._bc_reference_headroom, 1e-8)
-        headroom_signal = max(0.0, (ref_headroom - headroom_kw) / ref_headroom)
-
         raw = (self._bc_w_cost      * cost_signal
                + self._bc_w_peak      * peak_signal
                + self._bc_w_ramp      * ramp_signal
                + self._bc_w_export    * export_signal
-               + self._bc_w_violation * violation_signal
-               + self._bc_w_headroom  * headroom_signal)
+               + self._bc_w_violation * violation_signal)
 
         mult = 1.0 + float(np.clip(raw * self._bc_mult_scale, -0.8, 0.8))
         logger.debug(
-            "BC teacher | price={:.3f} ref={:.3f} imp_kWh={:.3f} exp_kWh={:.3f} headroom_kW={:.3f} "
-            "cost={:.3f} peak={:.3f} ramp={:.3f} exp_sig={:.3f} viol={:.3f} headroom_sig={:.3f} raw={:.3f} mult={:.3f}",
-            price, ref_price, imp_kwh, exp_kwh, headroom_kw,
-            cost_signal, peak_signal, ramp_signal, export_signal, violation_signal, headroom_signal, raw,
+            "BC teacher | price={:.3f} ref={:.3f} imp_kWh={:.3f} exp_kWh={:.3f} "
+            "cost={:.3f} peak={:.3f} ramp={:.3f} exp_sig={:.3f} viol={:.3f} raw={:.3f} mult={:.3f}",
+            price, ref_price, imp_kwh, exp_kwh,
+            cost_signal, peak_signal, ramp_signal, export_signal, violation_signal, raw,
             float(np.clip(mult, self._price_min, self._price_max)),
         )
         return float(np.clip(mult, self._price_min, self._price_max))
@@ -579,13 +554,12 @@ class CCLevel1Agent(BaseAgent):
 
         logger.info(
             "BC | collected {} contexts | "
-            "target_import={:.3f} ref_peak={:.4f} ref_export={:.3f} ref_ramping={:.3f} ref_price={:.4f} ref_headroom={:.3f} | "
-            "w_cost={:.2f} w_peak={:.2f} w_ramp={:.2f} w_export={:.2f} w_violation={:.2f} w_headroom={:.2f}",
+            "target_import={:.3f} ref_peak={:.4f} ref_export={:.3f} ref_ramping={:.3f} ref_price={:.4f} | "
+            "w_cost={:.2f} w_peak={:.2f} w_ramp={:.2f} w_export={:.2f} w_violation={:.2f}",
             len(X),
             self._bc_target_import, self._bc_reference_peak, self._bc_reference_export,
-            self._bc_reference_ramping, self._bc_reference_price, self._bc_reference_headroom,
+            self._bc_reference_ramping, self._bc_reference_price,
             self._bc_w_cost, self._bc_w_peak, self._bc_w_ramp, self._bc_w_export, self._bc_w_violation,
-            self._bc_w_headroom,
         )
 
         # Teacher targets: invert the tanh squash so BC trains in pre-tanh space.
@@ -650,10 +624,8 @@ class CCLevel1Agent(BaseAgent):
                 "CC/bc_pretrain_w_ramp":           self._bc_w_ramp,
                 "CC/bc_pretrain_w_export":         self._bc_w_export,
                 "CC/bc_pretrain_w_violation":      self._bc_w_violation,
-                "CC/bc_pretrain_w_headroom":       self._bc_w_headroom,
                 "CC/bc_pretrain_reference_ramping": self._bc_reference_ramping,
                 "CC/bc_pretrain_reference_price":   self._bc_reference_price,
-                "CC/bc_pretrain_reference_headroom": self._bc_reference_headroom,
             }
             if not np.isnan(corr):
                 metrics["CC/bc_pretrain_corr_price_mult"] = corr

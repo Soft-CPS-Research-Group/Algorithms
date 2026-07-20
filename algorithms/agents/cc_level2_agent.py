@@ -57,6 +57,7 @@ Pipeline integration:
 from __future__ import annotations
 
 import csv
+import os
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -101,14 +102,19 @@ _PRICE_FEATURE = "district__electricity_pricing"
 #   "feature"         → name must end with ::feature (or equal feature exactly)
 # Buildings without chargers receive 0.0 for EV features (adapter zero-fills).
 _CC_LEVEL2_BUILDING_FEATURES = (
-    "storage::soc",                          # battery SoC [0, 1]
-    "pv::generation_power_kw",               # local PV output [0, 1]
-    "net_power_kw",                          # net consumption [-1, 1] (signed)
-    "connected_state",                       # EV connected {0, 1}
-    "connected_ev_soc_deficit",              # max(required-soc, 0) [0, 1]
-    "connected_ev_departure_urgency_24h",    # 1 - hours_to_depart/24 [0, 1]
+    "storage::soc",                          # [0] battery SoC [0, 1]
+    "pv::generation_power_kw",               # [1] local PV output [0, 1]
+    "net_power_kw",                          # [2] net consumption [-1, 1] (signed)
+    "connected_state",                       # [3] EV connected {0, 1}
+    "connected_ev_soc_deficit",              # [4] max(required-soc, 0) [0, 1]
+    "connected_ev_departure_urgency_24h",    # [5] 1 - hours_to_depart/24 [0, 1]
+    "storage::capacity_kwh",                 # [6] ABSOLUTE battery size (fixed 100 kWh ref)
 )
-_N_BUILDING_FEATS = len(_CC_LEVEL2_BUILDING_FEATURES)  # 6
+_N_BUILDING_FEATS = len(_CC_LEVEL2_BUILDING_FEATURES)  # 7
+# Named indices within each per-building block (append-only ordering keeps the
+# original EV indices 3/4/5 valid for the BC teacher).
+_SOC_FEAT_IDX = 0
+_CAPACITY_FEAT_IDX = 6  # storage::capacity_kwh — used by the teacher flexibility term
 
 
 def _match_building_feature(encoded_name: str, pattern: str) -> bool:
@@ -405,11 +411,20 @@ class CCLevel2Agent(BaseAgent):
         # Community size — must be set before rollout buffer is created.
         self._num_buildings = int(hyper.get("num_buildings", 17))
 
-        # Context dimension: 17 district + 6 per-building × N = 119 for N=17
+        # Context dimension: 17 district + _N_BUILDING_FEATS per-building × N.
+        # The entity-encoding feature set is the source of truth, so always derive
+        # c_dim from it (a stale config c_dim would mismatch the encoded context).
         self._n_district = _N_DISTRICT
         self._n_building_feats = _N_BUILDING_FEATS
         default_c_dim = _N_DISTRICT + _N_BUILDING_FEATS * self._num_buildings
-        self._c_dim = int(hyper.get("c_dim", default_c_dim))
+        cfg_c_dim = hyper.get("c_dim")
+        if cfg_c_dim is not None and int(cfg_c_dim) != default_c_dim:
+            logger.warning(
+                "CCLevel2: ignoring config c_dim={} — deriving c_dim={} from "
+                "{} district + {} per-building feats × {} buildings.",
+                cfg_c_dim, default_c_dim, _N_DISTRICT, _N_BUILDING_FEATS, self._num_buildings,
+            )
+        self._c_dim = default_c_dim
 
         # Per-building feature positions in encoded obs — populated at attach_environment.
         self._district_positions: List[int] = []
@@ -467,7 +482,6 @@ class CCLevel2Agent(BaseAgent):
         self._bc_reference_export = hyper.get("bc_reference_export", None)
         self._bc_reference_price  = hyper.get("bc_reference_price",  None)  # €/kWh p50, auto if None
         self._bc_reference_ramping = float(hyper.get("bc_reference_ramping", 1.878))  # p90 step-to-step Δimport
-        self._bc_reference_headroom = float(hyper.get("bc_reference_headroom", 2.0))  # kW low-headroom threshold
         self._bc_import_samples: List[float] = []
         self._bc_export_samples: List[float] = []
         self._bc_price_samples:  List[float] = []
@@ -481,7 +495,6 @@ class CCLevel2Agent(BaseAgent):
         self._bc_w_ramp      = float(hyper.get("bc_w_ramp",      0.4))
         self._bc_w_export    = float(hyper.get("bc_w_export",    0.05))
         self._bc_w_violation = float(hyper.get("bc_w_violation", 2.0))
-        self._bc_w_headroom  = float(hyper.get("bc_w_headroom",  1.0))
         self._bc_mult_scale  = float(hyper.get("bc_mult_scale",  1.0))
         # Per-building EV modulation weight (mirrors CCRewardLevel2 w_ev).
         self._bc_w_ev     = float(hyper.get("bc_w_ev",   0.5))   # mirrors CCRewardLevel2 w_ev
@@ -489,6 +502,17 @@ class CCLevel2Agent(BaseAgent):
         # The encoded obs feature connected_ev_departure_urgency_24h uses a fixed 24h horizon;
         # we invert it to recover actual hours and re-apply this horizon.
         self._bc_urgency_horizon = float(hyper.get("bc_urgency_horizon", 4.0))
+        # Per-building STORAGE-FLEXIBILITY modulation. Buildings with more absolute
+        # battery flexibility (in the direction the community signal wants) get a
+        # stronger signal; near-zero-capacity buildings stay ~neutral. Needs the
+        # storage::capacity_kwh per-building feature. bc_ref_capacity_norm is a
+        # reference for the fixed-100kWh-normalized capacity (0.1 ≈ 10 kWh) so the
+        # scale is O(1). Set bc_w_flex=0 to disable (recovers EV-only teacher).
+        self._bc_w_flex = float(hyper.get("bc_w_flex", 0.5))
+        # Per-building battery capacity (kWh), captured from env metadata at attach,
+        # normalized against this fixed reference → absolute-size signal in [0, ~1.5].
+        self._cc_capacity_reference_kwh = max(float(hyper.get("cc_capacity_reference_kwh", 10.0)), 1e-6)
+        self._building_cap_norm: List[float] = []
 
         # Obs layout (set in attach_environment)
         self._obs_index: Dict[str, int] = {}  # feature name → index in obs
@@ -545,6 +569,25 @@ class CCLevel2Agent(BaseAgent):
                 "CCLevel2: per-building features not found in obs: {}. "
                 "These will be zero-filled.", missing,
             )
+
+        # Per-building battery capacity from env metadata → fixed-reference norm.
+        # (The encoded storage::capacity_kwh self-normalizes to 1.0 and is useless;
+        # this is the real absolute-size signal, injected in _build_context.)
+        caps = None
+        if metadata:
+            caps = metadata.get("building_battery_capacity_kwh")
+        if isinstance(caps, (list, tuple)) and len(caps) == len(observation_names):
+            ref = self._cc_capacity_reference_kwh
+            self._building_cap_norm = [
+                float(np.clip(float(c) / ref, 0.0, 1.5)) for c in caps
+            ]
+        else:
+            self._building_cap_norm = []
+            if self._bc_w_flex > 0.0:
+                logger.warning(
+                    "CCLevel2: building_battery_capacity_kwh not in metadata — "
+                    "storage-flexibility term is capacity-blind (SoC only)."
+                )
 
         # Update num_buildings from the actual environment if not overridden.
         if len(observation_names) != self._num_buildings:
@@ -630,7 +673,33 @@ class CCLevel2Agent(BaseAgent):
                     self._bc_pretrain_done = True
             else:
                 self._sample_new_decision(observations, deterministic)
+            self._maybe_trace_multipliers(observations)
         return self._cached_multipliers.tolist()
+
+    def _maybe_trace_multipliers(self, observations: List[np.ndarray]) -> None:
+        """Diagnostic: dump emitted per-building multipliers + the 119-dim context
+        to a CSV when env var CC2_MULT_TRACE points at a path. Opt-in, no-op
+        otherwise. phase=0 while BC teacher is emitting, 1 once the policy is."""
+        path = os.environ.get("CC2_MULT_TRACE")
+        if not path:
+            return
+        try:
+            ctx = np.asarray(self._build_context(observations), dtype=np.float32).ravel()
+            mults = np.asarray(self._cached_multipliers, dtype=np.float32).ravel()
+            phase = 0 if not self._bc_pretrain_done else 1
+            new_file = not os.path.exists(path)
+            with open(path, "a", newline="") as fh:
+                writer = csv.writer(fh)
+                if new_file:
+                    header = (
+                        ["phase"]
+                        + [f"mult_{i}" for i in range(mults.size)]
+                        + [f"ctx_{j}" for j in range(ctx.size)]
+                    )
+                    writer.writerow(header)
+                writer.writerow([phase] + mults.tolist() + ctx.tolist())
+        except Exception:  # noqa: BLE001 — never let tracing break a run
+            pass
 
     def update(
         self,
@@ -729,7 +798,6 @@ class CCLevel2Agent(BaseAgent):
           ramp_signal      = ramp_kwh / ref_ramping
           export_signal    = -(exp_kWh / ref_export)
           violation_signal = violation_kwh
-          headroom_signal  = max(0, (ref_headroom - headroom_kw) / ref_headroom)
         """
         _idx = _CC_LEVEL2_DISTRICT_FEATURES.index
         price    = float(ctx[_idx("district__electricity_pricing")])
@@ -738,7 +806,6 @@ class CCLevel2Agent(BaseAgent):
         price_p3 = float(ctx[_idx("district__electricity_pricing_predicted_3")])
         imp_kw   = float(ctx[_idx("district__community_import_power_kw")])
         exp_kw   = float(ctx[_idx("district__community_export_power_kw")])
-        headroom_kw = float(ctx[_idx("district__community_building_headroom_kw")])
         dt       = self._bc_dt_hours
         imp_kwh  = imp_kw * dt
         exp_kwh  = exp_kw * dt
@@ -766,15 +833,38 @@ class CCLevel2Agent(BaseAgent):
 
         ramp_signal      = ramp_kwh / max(self._bc_reference_ramping, 1e-8)
         violation_signal = violation_kwh
-        ref_headroom     = max(self._bc_reference_headroom, 1e-8)
-        headroom_signal  = max(0.0, (ref_headroom - headroom_kw) / ref_headroom)
 
         return (self._bc_w_cost      * cost_signal
                 + self._bc_w_peak      * peak_signal
                 + self._bc_w_ramp      * ramp_signal
                 + self._bc_w_export    * export_signal
-                + self._bc_w_violation * violation_signal
-                + self._bc_w_headroom  * headroom_signal)
+                + self._bc_w_violation * violation_signal)
+
+    def _community_multiplier(self, base: float) -> float:
+        """De-saturated shared community multiplier. The raw `base` signal is an
+        unbounded weighted sum that otherwise pegs the price ceiling and clips the
+        per-building terms away; tanh-squash it into a narrow band (±0.25) so the
+        community level sits mid-range, leaving headroom for the per-building EV
+        and flexibility terms to push each building up OR down. Same for all
+        buildings."""
+        signal = float(np.tanh(base * self._bc_mult_scale))  # (-1, 1)
+        return float(np.clip(1.0 + signal * 0.25, self._price_min, self._price_max))
+
+    def _storage_flex_mod(self, base: float, soc: float, cap_norm: float) -> float:
+        """Per-building storage-flexibility modulation. Amplifies the community
+        signal on buildings that can actually act in its direction, scaled by
+        ABSOLUTE battery size (cap_norm, fixed-100kWh-normalized):
+          - signal >= 0 (community wants less import → discharge): weight by
+            available discharge energy ∝ soc;
+          - signal < 0  (community wants absorption → charge): weight by charge
+            headroom ∝ (1 - soc).
+        Near-zero-capacity buildings (cap_norm ≈ 0) get ~0 → stay neutral, so a
+        1 kWh and a 16 kWh battery at the same SoC receive different signals."""
+        if self._bc_w_flex <= 0.0 or cap_norm <= 0.0:
+            return 0.0
+        signal = float(np.tanh(base * self._bc_mult_scale))
+        directional = soc if signal >= 0.0 else (1.0 - soc)  # discharge vs charge flex
+        return self._bc_w_flex * signal * directional * cap_norm
 
     def _bc_teacher_multipliers_per_building(
         self,
@@ -788,7 +878,7 @@ class CCLevel2Agent(BaseAgent):
 
         Mirrors CCRewardLevel2 term structure:
             base       = community signal (cost + peak + ramp + export
-                         + violation + headroom — same 5 terms as CCRewardLevel1)
+                         + violation — same 5 terms as CCRewardLevel1)
             ev_mod[i]  = -w_ev * urgency[i] * gap[i]
                          (high urgency + large deficit → lower mult to allow charging)
 
@@ -798,18 +888,23 @@ class CCLevel2Agent(BaseAgent):
             [5] connected_ev_departure_urgency_24h = 1 - hours/24 ∈ [0, 1]
         """
         # During collection (before calibration) the community signal still
-        # yields the cost/ramp/violation/headroom terms; peak/export stay 0.
+        # yields the cost/ramp/violation terms; peak/export stay 0.
         base = self._community_signal(ctx, ramp_kwh=ramp_kwh, violation_kwh=violation_kwh)
+        community_mult = self._community_multiplier(base)  # de-saturated, shared
         mults = np.empty(self._num_buildings, dtype=np.float32)
         for i in range(self._num_buildings):
+            soc = 0.0
+            ev_conn = soc_def = urgency_24h = 0.0
+            # Absolute capacity comes from env metadata (fixed-ref normalized), not
+            # the self-normalizing encoded slot.
+            cap_norm = self._building_cap_norm[i] if i < len(self._building_cap_norm) else 0.0
             obs_i = observations[i] if i < len(observations) else None
             if obs_i is not None and i < len(self._building_feat_positions):
                 positions = self._building_feat_positions[i]
+                soc          = float(obs_i[positions[_SOC_FEAT_IDX]])      if positions[_SOC_FEAT_IDX] >= 0 else 0.0
                 ev_conn      = float(obs_i[positions[3]]) if positions[3] >= 0 else 0.0
                 soc_def      = float(obs_i[positions[4]]) if positions[4] >= 0 else 0.0
                 urgency_24h  = float(obs_i[positions[5]]) if positions[5] >= 0 else 0.0
-            else:
-                ev_conn, soc_def, urgency_24h = 0.0, 0.0, 0.0
 
             # The encoded feature connected_ev_departure_urgency_24h = 1 - hours/24.
             # Invert to recover actual hours, then re-apply the same horizon as
@@ -821,9 +916,13 @@ class CCLevel2Agent(BaseAgent):
             # EV modulation: mirrors -w_ev * urgency * gap in CCRewardLevel2.
             # Negative sign: high harm → lower multiplier → cheaper price → EV charges.
             ev_mod = -self._bc_w_ev * urgency * soc_def * ev_conn
+            # Storage-flexibility modulation (needs storage::capacity_kwh feature).
+            flex_mod = self._storage_flex_mod(base, soc, cap_norm)
 
-            raw = float(np.clip((base + ev_mod) * self._bc_mult_scale, -0.8, 0.8))
-            mults[i] = float(np.clip(1.0 + raw, self._price_min, self._price_max))
+            # Per-building terms applied ON TOP of the price-clipped community
+            # multiplier so a saturated base cannot clip them away.
+            mults[i] = float(np.clip(community_mult + ev_mod + flex_mod,
+                                     self._price_min, self._price_max))
         return mults
 
     def _run_bc_pretraining(self) -> None:
@@ -850,14 +949,14 @@ class CCLevel2Agent(BaseAgent):
         logger.info(
             "CC-L2 BC | collected {} contexts | "
             "target_import={:.3f} ref_peak={:.4f} ref_export={:.3f} ref_price={:.4f} "
-            "ref_ramping={:.3f} ref_headroom={:.3f} | "
+            "ref_ramping={:.3f} | "
             "w_cost={:.2f} w_peak={:.2f} w_ramp={:.2f} w_export={:.2f} w_violation={:.2f} "
-            "w_headroom={:.2f} w_ev={:.2f}",
+            "w_ev={:.2f}",
             len(X),
             self._bc_target_import, self._bc_reference_peak, self._bc_reference_export,
-            self._bc_reference_price, self._bc_reference_ramping, self._bc_reference_headroom,
+            self._bc_reference_price, self._bc_reference_ramping,
             self._bc_w_cost, self._bc_w_peak, self._bc_w_ramp, self._bc_w_export,
-            self._bc_w_violation, self._bc_w_headroom, self._bc_w_ev,
+            self._bc_w_violation, self._bc_w_ev,
         )
 
         # Re-compute targets now that reference values are calibrated.
@@ -866,9 +965,12 @@ class CCLevel2Agent(BaseAgent):
             ramp_kwh = self._bc_ramp_samples[j]      if j < len(self._bc_ramp_samples)      else 0.0
             viol_kwh = self._bc_violation_samples[j] if j < len(self._bc_violation_samples) else 0.0
             base = self._community_signal(X[j], ramp_kwh=ramp_kwh, violation_kwh=viol_kwh)
+            community_mult = self._community_multiplier(base)  # de-saturated, shared
             d_start = _N_DISTRICT
             for i in range(self._num_buildings):
                 feat_start = d_start + i * _N_BUILDING_FEATS
+                soc         = float(X[j][feat_start + _SOC_FEAT_IDX])       # battery SoC [0,1]
+                cap_norm    = float(X[j][feat_start + _CAPACITY_FEAT_IDX])  # capacity (fixed-100kWh)
                 ev_conn     = float(X[j][feat_start + 3])  # connected_state {0,1}
                 soc_def     = float(X[j][feat_start + 4])  # soc_deficit [0,1]
                 urgency_24h = float(X[j][feat_start + 5])  # departure_urgency_24h [0,1]
@@ -876,9 +978,10 @@ class CCLevel2Agent(BaseAgent):
                 # then re-apply bc_urgency_horizon (same as CCRewardLevel2).
                 actual_hours = (1.0 - urgency_24h) * 24.0
                 urgency = max(1.0 - actual_hours / self._bc_urgency_horizon, 0.0)
-                ev_mod  = -self._bc_w_ev * urgency * soc_def * ev_conn
-                raw = float(np.clip((base + ev_mod) * self._bc_mult_scale, -0.8, 0.8))
-                T[j, i] = float(np.clip(1.0 + raw, self._price_min, self._price_max))
+                ev_mod   = -self._bc_w_ev * urgency * soc_def * ev_conn
+                flex_mod = self._storage_flex_mod(base, soc, cap_norm)
+                T[j, i] = float(np.clip(community_mult + ev_mod + flex_mod,
+                                        self._price_min, self._price_max))
 
         # Convert multiplier targets to pre-tanh space (atanh).
         def to_raw(mult: np.ndarray) -> np.ndarray:
@@ -923,13 +1026,11 @@ class CCLevel2Agent(BaseAgent):
                     "CC2/bc_pretrain_ref_export":        self._bc_reference_export,
                     "CC2/bc_pretrain_ref_price":         self._bc_reference_price,
                     "CC2/bc_pretrain_ref_ramping":       self._bc_reference_ramping,
-                    "CC2/bc_pretrain_ref_headroom":      self._bc_reference_headroom,
                     "CC2/bc_pretrain_w_cost":            self._bc_w_cost,
                     "CC2/bc_pretrain_w_peak":            self._bc_w_peak,
                     "CC2/bc_pretrain_w_ramp":            self._bc_w_ramp,
                     "CC2/bc_pretrain_w_export":          self._bc_w_export,
                     "CC2/bc_pretrain_w_violation":       self._bc_w_violation,
-                    "CC2/bc_pretrain_w_headroom":        self._bc_w_headroom,
                     "CC2/bc_pretrain_w_ev":              self._bc_w_ev,
                 },
                 step=0,
@@ -985,6 +1086,12 @@ class CCLevel2Agent(BaseAgent):
                 )
             else:
                 bfeat = np.zeros(n_feat, dtype=np.float32)
+            # The encoded storage::capacity_kwh self-normalizes to ~1.0 (value / its
+            # own capacity), carrying no size information. Override that slot with the
+            # metadata-derived, fixed-reference capacity so ABSOLUTE battery size is
+            # visible to the policy — a 1 kWh and a 16 kWh battery now differ here.
+            if i < len(self._building_cap_norm):
+                bfeat[_CAPACITY_FEAT_IDX] = self._building_cap_norm[i]
             building_parts.append(bfeat)
 
         return np.concatenate([district] + building_parts)

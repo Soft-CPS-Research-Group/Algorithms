@@ -4,7 +4,7 @@
 # the frozen Community base V2G-dumped the EV fleet. This config attacks the saturation:
 #   (1) episodes 4 -> 12 (real RL: ep0 is BC collection, last is eval -> ~10 RL episodes).
 #   (2) w_factor 0.6 -> 1.5   (strong anti-saturation pull toward mult=1.0).
-#   (3) BC teacher de-biased:  bc_w_headroom 1.0->0.0, bc_w_peak 0.6->0.3, bc_mult_scale 1.0->0.5
+#   (3) BC teacher de-biased:  bc_w_peak 0.6->0.3, bc_mult_scale 1.0->0.5
 #       (the teacher was targeting high multipliers, so the post-BC CC started saturated).
 #   (4) reward: w_export 0.05 -> 0.4 (dumping stored energy to grid is no longer free),
 #       w_ev 0.5 -> 1.0 (stronger EV-service protection).
@@ -184,9 +184,7 @@ pipeline:
     bc_w_ramp: 0.4
     bc_w_export: 0.05
     bc_w_violation: 2.0
-    bc_w_headroom: 0.0
     bc_reference_ramping: 1.878
-    bc_reference_headroom: 2.0
     bc_w_ev: 0.5
     bc_urgency_horizon: 4.0
     bc_mult_scale: 0.5
