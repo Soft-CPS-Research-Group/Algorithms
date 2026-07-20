@@ -231,6 +231,23 @@ class MADDPG(BaseAgent):
                 )
             )
         )
+        # Community-blind ("solo") actor: zero out community aggregate features in
+        # the LEARNED actor observation so the worker reacts to local + price state
+        # only, leaving community-level coordination to the CC. Applied by name at
+        # runtime (dims unchanged), identically at train and inference time. Does
+        # NOT touch the CC (separate stage) nor price/local features.
+        self.actor_community_observation_masking = bool(
+            exploration_cfg.get("actor_community_observation_masking", False)
+        )
+        self.actor_community_observation_mask_tokens = tuple(
+            str(token).strip().lower()
+            for token in (
+                exploration_cfg.get("actor_community_observation_mask_tokens")
+                or ("community",)
+            )
+            if str(token).strip()
+        )
+        self._masked_obs_indices: List[List[int]] = []
         self.actor_frame_stack_steps = max(
             1,
             int(exploration_cfg.get("actor_frame_stack_steps", 1) or 1),
@@ -694,7 +711,72 @@ class MADDPG(BaseAgent):
         )
         self._apply_noop_actor_initialization()
         self._cache_price_obs_indices()
+        self._cache_masked_obs_indices()
         self._maybe_load_frozen_checkpoint()
+
+    def _cache_masked_obs_indices(self) -> None:
+        """Resolve per-agent encoded-obs indices to zero for a community-blind actor.
+
+        Any encoded feature whose (lowercased) name contains a configured token
+        (default ``"community"``) is masked so the LEARNED actor cannot observe
+        community aggregates. Price/local features never match and are preserved.
+        No-op unless ``actor_community_observation_masking`` is enabled. Enabling
+        the mask while matching nothing is a silent-regression trap, so it fails
+        loudly instead."""
+        self._masked_obs_indices = [[] for _ in range(int(self.num_agents))]
+        if not getattr(self, "actor_community_observation_masking", False):
+            return
+        tokens = self.actor_community_observation_mask_tokens
+        for agent_idx in range(int(self.num_agents)):
+            names = (
+                self.observation_names[agent_idx]
+                if agent_idx < len(self.observation_names)
+                else []
+            )
+            self._masked_obs_indices[agent_idx] = [
+                idx
+                for idx, name in enumerate(names)
+                if any(token in str(name).lower() for token in tokens)
+            ]
+        counts = [len(indices) for indices in self._masked_obs_indices]
+        if not counts or min(counts) == 0:
+            raise ValueError(
+                "actor_community_observation_masking is enabled but at least one "
+                f"agent matched no observation features for tokens {tokens!r}. "
+                "Refusing to run a mask that silently does nothing — check the "
+                "encoded observation names / profile."
+            )
+        masked_names = [
+            self.observation_names[0][idx] for idx in self._masked_obs_indices[0]
+        ]
+        logger.info(
+            "MADDPG community observation masking ENABLED: zeroing {} actor-obs "
+            "feature(s) per agent (tokens={}). Masked features (agent 0): {}",
+            counts[0],
+            list(tokens),
+            masked_names,
+        )
+
+    def _apply_actor_observation_mask(self, observations: List[Any]) -> List[Any]:
+        """Zero the configured community features in each agent's observation.
+
+        Idempotent and non-mutating: returns copies so the shared observation the
+        CC (upstream stage) already read is never altered. No-op unless masking is
+        enabled and indices were resolved in :meth:`attach_environment`."""
+        masked_indices = getattr(self, "_masked_obs_indices", None)
+        if not masked_indices or not getattr(
+            self, "actor_community_observation_masking", False
+        ):
+            return observations
+        masked_observations: List[Any] = []
+        for agent_idx, observation in enumerate(observations):
+            array = np.asarray(observation, dtype=np.float32).reshape(-1).copy()
+            indices = masked_indices[agent_idx] if agent_idx < len(masked_indices) else []
+            for idx in indices:
+                if idx < array.shape[0]:
+                    array[idx] = 0.0
+            masked_observations.append(array)
+        return masked_observations
 
     def _cache_price_obs_indices(self) -> None:
         """Resolve the encoded-obs indices of the price features (district price +
@@ -711,7 +793,7 @@ class MADDPG(BaseAgent):
         ):
             if pname in names:
                 self._price_obs_indices.append(names.index(pname))
-        if self.signal_aware_actor_obs_enabled and not self._price_obs_indices:
+        if getattr(self, "signal_aware_actor_obs_enabled", False) and not self._price_obs_indices:
             logger.warning(
                 "MADDPG signal_aware_actor_obs enabled but no price features found "
                 "in the encoded observation names; actor-obs price coupling is a no-op."
@@ -924,6 +1006,7 @@ class MADDPG(BaseAgent):
         )
 
     def _prepare_policy_actor_observations(self, observations: List[Any]) -> List[np.ndarray]:
+        observations = self._apply_actor_observation_mask(observations)
         if self._observations_look_augmented(observations):
             return [np.asarray(obs, dtype=np.float32).reshape(-1) for obs in observations]
 
@@ -948,6 +1031,8 @@ class MADDPG(BaseAgent):
         *,
         done: bool,
     ) -> tuple[List[np.ndarray], List[np.ndarray]]:
+        observations = self._apply_actor_observation_mask(observations)
+        next_observations = self._apply_actor_observation_mask(next_observations)
         if self._observations_look_augmented(observations):
             current_augmented = [np.asarray(obs, dtype=np.float32).reshape(-1) for obs in observations]
         elif getattr(self, "_last_augmented_policy_observations", None) is not None:
@@ -2252,6 +2337,14 @@ class MADDPG(BaseAgent):
             ),
             "MADDPG/actor_policy_loss_normalization_max_scale": float(
                 getattr(self, "actor_policy_loss_normalization_max_scale", 0.0)
+            ),
+            "MADDPG/actor_community_observation_masking": float(
+                getattr(self, "actor_community_observation_masking", False)
+            ),
+            "MADDPG/actor_community_observation_masked_count": float(
+                len(self._masked_obs_indices[0])
+                if getattr(self, "_masked_obs_indices", None)
+                else 0
             ),
             "MADDPG/target_policy_smoothing": float(getattr(self, "target_policy_smoothing", False)),
             "MADDPG/actor_action_l2_penalty": float(getattr(self, "actor_action_l2_penalty", 0.0)),
