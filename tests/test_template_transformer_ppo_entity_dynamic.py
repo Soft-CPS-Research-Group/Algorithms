@@ -103,6 +103,17 @@ def test_transformer_ppo_stage_without_behavior_cloning_defaults_to_none() -> No
     assert stage.behavior_cloning is None
 
 
+def test_topology_event_offset_requires_dynamic_entity_mode() -> None:
+    from utils.config_schema import validate_config
+
+    cfg = _load_template()
+    cfg["simulator"]["topology_event_time_offset"] = -10
+    cfg["simulator"]["topology_mode"] = "static"
+
+    with pytest.raises(ValidationError, match="topology_event_time_offset"):
+        validate_config(cfg)
+
+
 def test_template_resolves_to_registered_agent() -> None:
     from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
     from algorithms.registry import ALGORITHM_REGISTRY
