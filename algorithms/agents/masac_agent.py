@@ -9,11 +9,11 @@ import mlflow
 import numpy as np
 import torch
 from loguru import logger
-from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.utils.networks import GaussianActor, build_critic_network
+from algorithms.utils.torch_amp import autocast
 
 
 class MASAC(MADDPG):

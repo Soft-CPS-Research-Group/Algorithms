@@ -56,6 +56,25 @@ python run_experiment.py --config /data/configs/<experiment>.yaml --job_id <job_
 Artefacts appear under `/data/jobs/<job_id>/`, ready to publish or archive for
 inference.
 
+### Published Docker image
+
+Pushes to `main`, `gj/*`, and version tags publish `calof/opeva_simulator` as a
+multi-arch image for `linux/amd64` and `linux/arm64`.
+
+- `linux/amd64` keeps the CUDA 12.1 PyTorch wheels from `requirements.txt`.
+- `linux/arm64` uses PyPI arm64 PyTorch wheels because the `+cu121` wheels are
+  not available for ARM.
+
+Jetson Xavier GPU runs use a separate L4T image tag built from NVIDIA's
+`nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3`, validated on JetPack 5.1.1 /
+L4T 35.3.1 with CUDA visible to PyTorch:
+
+- default branch: `calof/opeva_simulator:latest-jetson-r35.3.1`
+- commit tags: `calof/opeva_simulator:sha-<short_sha>-jetson-r35.3.1`
+- release tags: `calof/opeva_simulator:<tag>-jetson-r35.3.1`
+
+Use the Jetson tag when targeting the `jetson-xavier` worker with GPU.
+
 ### Deucalion/SIF parity
 
 The same training entrypoint is compatible with the Deucalion worker runtime:

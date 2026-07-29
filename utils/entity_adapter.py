@@ -57,6 +57,11 @@ class EntityContractAdapter:
         "electric_vehicle_departure_time": "connected_ev_departure_time_step",
     }
 
+    @staticmethod
+    def _remove_suffix(value: str, suffix: str) -> str:
+        text = str(value)
+        return text[: -len(suffix)] if suffix and text.endswith(suffix) else text
+
     def __init__(
         self,
         env: Any,
@@ -1061,7 +1066,7 @@ class EntityContractAdapter:
                 continue
 
             if name.startswith("deferrable_appliance::") and name.endswith("_time_step"):
-                base = name.removesuffix("_time_step")
+                base = self._remove_suffix(name, "_time_step")
                 append(f"{base}_time_of_day_sin", ("step_time_sin", index))
                 append(f"{base}_time_of_day_cos", ("step_time_cos", index))
                 append(f"{base}_available", ("nonnegative_available", index))
@@ -1496,7 +1501,7 @@ class EntityContractAdapter:
             if name.startswith("deferrable_appliance::") and name.endswith("_time_step"):
                 available = 1.0 if value >= 0.0 else 0.0
                 sin_value, cos_value = self._step_time_of_day_pair(value)
-                base = name.removesuffix("_time_step")
+                base = self._remove_suffix(name, "_time_step")
                 append(f"{base}_time_of_day_sin", sin_value)
                 append(f"{base}_time_of_day_cos", cos_value)
                 append(f"{base}_available", available)
@@ -1688,7 +1693,7 @@ class EntityContractAdapter:
                 continue
 
             if name.startswith("deferrable_appliance::") and name.endswith("_time_step"):
-                base = name.removesuffix("_time_step")
+                base = self._remove_suffix(name, "_time_step")
                 append(f"{base}_time_of_day_sin")
                 append(f"{base}_time_of_day_cos")
                 append(f"{base}_available")

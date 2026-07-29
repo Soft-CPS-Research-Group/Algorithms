@@ -28,9 +28,35 @@ jobs:
       - name: Run tests
         run: pytest
 
+  version:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create readable image version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject="$(git log -1 --pretty=%s)"
+          slug="$(printf '%s' "${subject}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+            | cut -c1-72 \
+            | sed -E 's/-+$//')"
+          if [ -z "${slug}" ]; then
+            slug="version"
+          fi
+          tag="${slug}-${GITHUB_SHA::7}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "Image version: ${tag}"
+
   docker:
     if: github.event_name == 'push'
-    needs: test
+    needs: [test, version]
     runs-on: ubuntu-latest
     outputs:
       tags: ${{ steps.meta.outputs.tags }}
@@ -42,6 +68,8 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Docker metadata
@@ -51,8 +79,7 @@ jobs:
           images: calof/opeva_simulator
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=short,prefix=sha-
-            type=ref,event=tag
+            type=raw,value=${{ needs.version.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -60,15 +87,94 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=calof/opeva_simulator:buildcache
           cache-to: type=registry,ref=calof/opeva_simulator:buildcache,mode=max
 
+  jetson_docker:
+    if: github.event_name == 'push'
+    needs: [test, version]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Docker metadata for Jetson
+        id: meta_jetson
+        uses: docker/metadata-action@v5
+        with:
+          images: calof/opeva_simulator
+          tags: |
+            type=raw,value=latest-jetson-r35.3.1,enable={{is_default_branch}}
+            type=raw,value=${{ needs.version.outputs.tag }}-jetson-r35.3.1
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Jetson Xavier L4T 35.3.1 PyTorch CUDA image
+      - name: Build and push Jetson Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.jetson
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.meta_jetson.outputs.tags }}
+          labels: ${{ steps.meta_jetson.outputs.labels }}
+          cache-from: type=registry,ref=calof/opeva_simulator:buildcache-jetson-r35.3.1
+          cache-to: type=registry,ref=calof/opeva_simulator:buildcache-jetson-r35.3.1,mode=max
+
+  union_docker:
+    if: github.event_name == 'push'
+    needs: [test, version]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Docker metadata for Union Blackwell
+        id: meta_union
+        uses: docker/metadata-action@v5
+        with:
+          images: calof/opeva_simulator
+          tags: |
+            type=raw,value=latest-union-blackwell,enable={{is_default_branch}}
+            type=raw,value=${{ needs.version.outputs.tag }}-union-blackwell
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=OPEVA Algorithms for Union Blackwell GPUs
+      - name: Build and push Union Blackwell image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.union
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta_union.outputs.tags }}
+          labels: ${{ steps.meta_union.outputs.labels }}
+          cache-from: type=registry,ref=calof/opeva_simulator:buildcache-union-blackwell
+          cache-to: type=registry,ref=calof/opeva_simulator:buildcache-union-blackwell,mode=max
+
   sif:
     if: github.event_name == 'push'
-    needs: docker
+    needs: [docker, version]
     runs-on: ubuntu-latest
     env:
       SOURCE_IMAGE_REPO: calof/opeva_simulator
@@ -83,8 +189,7 @@ jobs:
         with:
           images: ${{ env.SOURCE_IMAGE_REPO }}
           tags: |
-            type=sha,format=short,prefix=sha-
-            type=ref,event=tag
+            type=raw,value=${{ needs.version.outputs.tag }}
 
       - name: Install Apptainer
         run: |

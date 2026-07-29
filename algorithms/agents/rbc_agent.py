@@ -16,7 +16,7 @@ from algorithms.agents.base_agent import BaseAgent
 from utils.artifact_config_builder import build_auto_artifact_config
 
 
-@dataclass(slots=True)
+@dataclass
 class ChargerInfo:
     charger_id: str
     max_power: float
@@ -29,14 +29,14 @@ class ChargerInfo:
     phase_connection: Optional[str] = None
 
 
-@dataclass(slots=True)
+@dataclass
 class StorageInfo:
     nominal_power: float
     capacity: float = 0.0
     phase_connection: Optional[str] = None
 
 
-@dataclass(slots=True)
+@dataclass
 class ElectricalServiceInfo:
     total_import_kw: float = float("nan")
     total_export_kw: float = float("nan")

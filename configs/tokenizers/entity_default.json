@@ -41,12 +41,12 @@
     "storage": {
       "entity_table": "storage",
       "action_field": "electrical_storage",
-      "input_dim_fallback": 19
+      "input_dim_fallback": 49
     },
     "charger": {
       "entity_table": "charger",
       "action_field": "electric_vehicle_storage",
-      "input_dim_fallback": 33
+      "input_dim_fallback": 63
     }
   },
 
@@ -100,8 +100,11 @@
     "district_pricing_forecast": {
       "entity_table": "district",
       "cardinality": "singleton",
-      "feature_patterns": [ "^district__electricity_pricing_predicted_\\d+$" ],
-      "input_dim_fallback": 3
+      "feature_patterns": [
+        "^district__electricity_pricing_predicted_\\d+$",
+        "^district__forecast_price_next_(15m|1h|3h|6h|24h)$"
+      ],
+      "input_dim_fallback": 8
     },
     "district_community_energy": {
       "entity_table": "district",
@@ -126,6 +129,14 @@
         "^district__community_net_prev_\\d+_(kwh_step|mean_kwh_step)$"
       ],
       "input_dim_fallback": 2
+    },
+    "district_community_forecast": {
+      "entity_table": "district",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^district__forecast_community_(load|pv|net)_next_(15m|1h|3h|6h|24h)_kw$"
+      ],
+      "input_dim_fallback": 15
     },
     "district_meta": {
       "entity_table": "district",
@@ -179,6 +190,14 @@
         "^(net|import|export)_energy_prev_\\d+_(kwh_step|mean_kwh_step)$"
       ],
       "input_dim_fallback": 4
+    },
+    "building_energy_forecast": {
+      "entity_table": "building",
+      "cardinality": "singleton",
+      "feature_patterns": [
+        "^forecast_(load|pv|net)_next_(15m|1h|3h|6h|24h)_kw$"
+      ],
+      "input_dim_fallback": 15
     },
     "building_meta": {
       "entity_table": "building",

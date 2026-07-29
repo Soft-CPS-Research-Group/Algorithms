@@ -35,7 +35,13 @@ intermedios foram removidos do repo. Resultados brutos devem ficar em
 ## Regra De Organizacao
 
 - `docs/` guarda estado atual, contratos e decisoes.
+- `docs/experiment_history/` guarda o ledger e os resumos curados de campanhas
+  remotas; payloads, logs e resultados brutos continuam em `runs/`.
 - `configs/templates/` guarda templates reutilizaveis.
 - `configs/experiments/` so deve receber configs ativos de uma ronda nova.
 - `runs/` guarda outputs locais/remotos gerados e pode ser limpo sem afetar o
   codigo versionado.
+
+O ciclo remoto pode ser preparado, submetido, acompanhado e arquivado com
+`scripts/manage_remote_experiment.py`. A submissao exige sempre
+`--confirm-submit`; o CLI nao inclui comandos de stop/delete.
