@@ -7,7 +7,7 @@ scorecards obsoletos foi removido do repo; resultados brutos ficam em `runs/`.
 
 ## Estado Atual
 
-- Simulador: `softcpsrecsimulator==1.5.3`.
+- Simulador: `softcpsrecsimulator==1.5.6`.
 - Dataset principal anual: `citylearn_challenge_2022_phase_all_plus_evs`.
 - Interface principal: `entity`.
 - Topologia neural suportada: `static`.
