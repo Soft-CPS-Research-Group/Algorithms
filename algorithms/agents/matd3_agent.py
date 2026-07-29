@@ -606,14 +606,32 @@ class MATD3(MADDPG):
 
         rng_state = checkpoint.get("rng_state")
         if isinstance(rng_state, dict):
+            # RNG restoration is best-effort: it only matters for exact training
+            # reproducibility, never for loading a frozen worker. A checkpoint saved
+            # on a different torch/numpy build can yield an RNG state that no longer
+            # deserializes as a torch.ByteTensor, so guard each restore instead of
+            # letting it crash the whole load.
             if rng_state.get("python") is not None:
-                random.setstate(rng_state["python"])
+                try:
+                    random.setstate(rng_state["python"])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Skipping Python RNG restore from checkpoint: {}", exc)
             if rng_state.get("numpy") is not None:
-                np.random.set_state(rng_state["numpy"])
+                try:
+                    np.random.set_state(rng_state["numpy"])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Skipping NumPy RNG restore from checkpoint: {}", exc)
             if rng_state.get("torch") is not None:
-                torch.set_rng_state(rng_state["torch"])
+                try:
+                    torch_rng = torch.as_tensor(rng_state["torch"], dtype=torch.uint8, device="cpu")
+                    torch.set_rng_state(torch_rng)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Skipping torch RNG restore from checkpoint: {}", exc)
             if rng_state.get("torch_cuda") is not None and torch.cuda.is_available():
-                torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+                try:
+                    torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Skipping CUDA RNG restore from checkpoint: {}", exc)
 
         if self.freeze_pretrained_layers:
             self.freeze_layers(freeze_actor=True, freeze_critic=False)
