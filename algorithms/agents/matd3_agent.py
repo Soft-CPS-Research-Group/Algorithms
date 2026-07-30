@@ -611,9 +611,9 @@ class MATD3(MADDPG):
             if rng_state.get("numpy") is not None:
                 np.random.set_state(rng_state["numpy"])
             if rng_state.get("torch") is not None:
-                torch.set_rng_state(rng_state["torch"])
+                torch.set_rng_state(rng_state["torch"].cpu())
             if rng_state.get("torch_cuda") is not None and torch.cuda.is_available():
-                torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+                torch.cuda.set_rng_state_all([state.cpu() for state in rng_state["torch_cuda"]])
 
         if self.freeze_pretrained_layers:
             self.freeze_layers(freeze_actor=True, freeze_critic=False)

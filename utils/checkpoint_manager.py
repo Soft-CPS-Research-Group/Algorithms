@@ -61,6 +61,10 @@ class CheckpointManager:
             return None
 
         if checkpoint_path and self.log_to_mlflow and mlflow.active_run():
-            mlflow.log_artifact(checkpoint_path, artifact_path="checkpoints")
+            resolved_checkpoint = Path(checkpoint_path)
+            if resolved_checkpoint.is_dir():
+                mlflow.log_artifacts(str(resolved_checkpoint), artifact_path="checkpoints")
+            else:
+                mlflow.log_artifact(str(resolved_checkpoint), artifact_path="checkpoints")
             logger.info("Checkpoint logged to MLflow: {}", checkpoint_path)
         return Path(checkpoint_path) if checkpoint_path else None
