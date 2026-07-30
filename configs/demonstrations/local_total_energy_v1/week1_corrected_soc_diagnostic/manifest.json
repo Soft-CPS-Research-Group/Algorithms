@@ -1,0 +1,60 @@
+{
+  "artifacts": {
+    "replay_schedule": {
+      "path": "replay_schedule.json",
+      "sha256": "04288d9394f03e82257043b15d7945fabdbb9b35f987933984796b6efb277259"
+    },
+    "source_audit_summary_sha256": "8fd1a96c088aecc767d48427bf465463a5183c4ff65a05ea4ec804596e57ca9a",
+    "source_schedule_sha256": "778b1f460f0df63b144f592c5ad6afa3d451b2db5d055da0d0439d508a38e32d",
+    "source_solve_summary_sha256": "89050b08d5607c5dd9add83010de706897dbb1e690422f1e291413d738cfde1d"
+  },
+  "audit": {
+    "all_buildings_pass_local_gates": true,
+    "building_count": 17,
+    "buildings_beating_baseline_count": 17,
+    "local_cost_eur_sum": 424.01190696587344,
+    "local_gate_pass_count": 17,
+    "local_gate_reject_count": 0,
+    "run": "milp"
+  },
+  "boundary_service_exact": false,
+  "building_ids": [
+    "Building_1",
+    "Building_2",
+    "Building_3",
+    "Building_4",
+    "Building_5",
+    "Building_6",
+    "Building_7",
+    "Building_8",
+    "Building_9",
+    "Building_10",
+    "Building_11",
+    "Building_12",
+    "Building_13",
+    "Building_14",
+    "Building_15",
+    "Building_16",
+    "Building_17"
+  ],
+  "claims": {
+    "citylearn_global_optimum": false,
+    "citylearn_replay_validated": true,
+    "community_optimum": false,
+    "optimal_for_supplied_linear_model": true
+  },
+  "dataset_name": "citylearn_three_phase_electrical_service_demo_15min_parquet",
+  "demonstration_name": "local-total-energy-week1-corrected-soc-diagnostic-v1",
+  "diagnostic_only": true,
+  "portable": true,
+  "schema_version": 1,
+  "settlement": "individual",
+  "source_commit": "1b990e1",
+  "source_problem_id": "total-energy-individual-week1-corrected-soc-20260731",
+  "source_replay_job_id": "total-energy-individual-week1-corrected-soc-replay-20260731",
+  "source_window": {
+    "end_time_step_exclusive": 672,
+    "horizon": 672,
+    "start_time_step": 0
+  }
+}
