@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import torch
 
 from algorithms.agents.maddpg_agent import MADDPG
+
+
+def test_maddpg_rejects_semantically_incomplete_residual_export(tmp_path):
+    agent = MADDPG.__new__(MADDPG)
+    agent.residual_policy_enabled = True
+
+    with pytest.raises(RuntimeError, match="Residual policy export is not yet deployment-safe"):
+        agent.export_artifacts(output_dir=str(tmp_path))
 
 
 def test_maddpg_export_artifacts_includes_per_artifact_format_and_config(tmp_path):

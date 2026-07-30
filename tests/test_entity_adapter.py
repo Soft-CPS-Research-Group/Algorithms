@@ -684,6 +684,90 @@ def test_entity_adapter_maddpg_v3_realtime_drops_simulator_perfect_forecasts():
     assert "forecast_load_next_1h_kw" not in encoded_names
 
 
+def test_entity_adapter_building_local_v1_excludes_community_information():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(
+        env,
+        normalization_enabled=True,
+        clip=True,
+        encoding_profile="building_local_v1",
+    )
+
+    observation_names = [
+        "district__electricity_pricing",
+        "district__forecast_price_next_1h",
+        "district__community_net_power_kw",
+        "district__community_phase_headroom_kw",
+        "district__forecast_community_net_next_1h_kw",
+        "forecast_community_net_next_1h_kw",
+        "building_community_shadow_price",
+        "DISTRICT__COMMUNITY_SIGNAL",
+        "forecast_load_next_1h_kw",
+        "forecast_pv_next_1h_kw",
+        "building_import_headroom_kw",
+        "storage::B1/electrical_storage::soc",
+        "charger::B1/C1::min_required_action_normalized",
+    ]
+    observation = np.array(
+        [
+            0.2,
+            0.1,
+            8.0,
+            20.0,
+            7.0,
+            6.0,
+            5.0,
+            4.0,
+            4.0,
+            2.0,
+            5.0,
+            0.5,
+            0.35,
+        ],
+        dtype=np.float32,
+    )
+    observation_space = spaces.Box(
+        low=np.zeros(len(observation), dtype=np.float32),
+        high=np.array(
+            [
+                1.0,
+                1.0,
+                100.0,
+                100.0,
+                100.0,
+                100.0,
+                100.0,
+                100.0,
+                20.0,
+                20.0,
+                20.0,
+                1.0,
+                1.0,
+            ],
+            dtype=np.float32,
+        ),
+        dtype=np.float32,
+    )
+
+    encoded = adapter.normalize_observation(
+        agent_index=0,
+        observation=observation,
+        observation_names=observation_names,
+        observation_space=observation_space,
+    )
+    encoded_names = adapter.encoded_observation_names([observation_names])[0]
+
+    assert len(encoded) == len(encoded_names)
+    assert "district__electricity_pricing" in encoded_names
+    assert "district__forecast_price_next_1h" in encoded_names
+    assert "forecast_load_next_1h_kw" in encoded_names
+    assert "forecast_pv_next_1h_kw" in encoded_names
+    assert "building_import_headroom_kw" in encoded_names
+    assert "storage::B1/electrical_storage::soc" in encoded_names
+    assert "charger::B1/C1::min_required_action_normalized" in encoded_names
+    assert not any("community" in name.casefold() for name in encoded_names)
+
+
 def test_entity_adapter_observation_dimension_is_stable_when_ev_links_toggle():
     env = _DummyEntityEnv()
     adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)

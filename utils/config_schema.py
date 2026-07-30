@@ -199,11 +199,16 @@ class TrackingConfig(BaseModel):
 class CheckpointingConfig(BaseModel):
     resume_training: bool = False
     checkpoint_run_id: Optional[str] = None
+    checkpoint_local_path: Optional[str] = None
     checkpoint_artifact: str = Field(default="latest_checkpoint.pth")
     use_best_checkpoint_artifact: bool = False
     reset_replay_buffer: bool = False
     freeze_pretrained_layers: bool = False
     fine_tune: bool = False
+    restore_optimizers: Optional[bool] = None
+    restore_replay_buffer: Optional[bool] = None
+    restore_exploration_state: bool = True
+    restore_reward_normalizer: bool = True
     checkpoint_interval: Optional[int] = Field(default=None, ge=1)
     require_update_step: bool = True
     require_initial_exploration_done: bool = True
@@ -245,6 +250,7 @@ class EntityEncodingConfig(BaseModel):
         "maddpg_v2_compact",
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
+        "building_local_v1",
         "cc_level1",
         "cc_level2",
     ] = "minmax_space"
@@ -460,6 +466,18 @@ class RuleBasedHyperparameters(BaseModel):
     ev_deadline_buffer_hours: float = Field(default=0.25, ge=0)
     ev_v2g_min_departure_hours: float = Field(default=2.0, ge=0)
     ev_v2g_service_margin_soc: float = Field(default=0.05, ge=0)
+    schedule_path: Optional[str] = None
+    repeat_schedule_for_training: bool = False
+    local_action_safety_enabled: bool = True
+    local_action_safety_fail_on_infeasible: bool = False
+    local_action_safety_protect_ev_minimum: bool = True
+    local_action_safety_ev_minimum_mode: Literal[
+        "average", "deadline_feasible"
+    ] = "average"
+    local_action_safety_protect_ev_service_target: bool = False
+    local_action_safety_protect_deferrable_must_start: bool = True
+    local_action_safety_allow_discretionary_deferrable_start: bool = True
+    local_action_safety_headroom_reserve_kw: float = Field(default=0.0, ge=0)
 
 
 class TopologyConfig(BaseModel):
@@ -568,7 +586,7 @@ class BuildingAgentStageConfig(BaseModel):
 
 
 class ActorCriticAlgorithmConfig(BaseModel):
-    algorithm: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
+    algorithm: Literal["MADDPG", "MATD3", "MASAC", "PPO", "TD3", "IPPO", "MAPPO", "HAPPO"]
     count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
     frozen: bool = False
     hyperparameters: AlgorithmHyperparameters
@@ -585,8 +603,12 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "NormalNoBatteryPolicy",
         "RBCBasicPolicy",
         "RBCCommunityPolicy",
+        "RBCSmartLocalPolicy",
         "RBCSmartPolicy",
         "SignalAwareRBC",
+        "FixedServiceOracleReplayPolicy",
+        "TotalHomeOracleReplayPolicy",
+        "TotalOracleReplayPolicy",
     ]
     count: int = Field(default=1, ge=1)
     frozen: bool = False
@@ -612,7 +634,7 @@ class SingleAgentRLStageConfig(BaseModel):
         raise ValueError(
             "Algorithm 'SingleAgentRL' is a schema placeholder and has no runtime "
             "implementation yet. Use one of: MADDPG, MATD3, MASAC, IPPO, MAPPO, HAPPO, "
-            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartPolicy, SignalAwareRBC, "
+            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartLocalPolicy, RBCSmartPolicy, SignalAwareRBC, "
             "RandomPolicy, NormalPolicy, NormalNoBatteryPolicy."
         )
         return self  # unreachable; satisfies type checker

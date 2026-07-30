@@ -1897,6 +1897,163 @@ class RBCSmartPolicy(RBCBasicPolicy):
         return float(np.clip(0.0, low, high))
 
 
+class RBCSmartLocalPolicy(RBCSmartPolicy):
+    """Strict building-local variant of :class:`RBCSmartPolicy`.
+
+    The regular smart policy remains backwards compatible and may use a
+    community signal as a fallback when a local signal is absent.  That is a
+    useful operational behaviour, but it is not an admissible baseline or
+    teacher for experiments that claim strict per-building information.
+
+    This variant deliberately makes every community accessor neutral and
+    derives solar/headroom decisions only from local or public exogenous
+    observations.  Keeping the restriction in the policy, rather than only in
+    an encoder profile, is important because rule-based teachers consume raw
+    observations.
+    """
+
+    def attach_environment(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+        # Keep the original raw-vector indices.  Only the lookup keys are
+        # removed, so a community column before a local column cannot shift the
+        # latter and corrupt raw observation access.
+        self._obs_index = [
+            {
+                name: index
+                for name, index in obs_map.items()
+                if "community" not in str(name).casefold()
+            }
+            for obs_map in self._obs_index
+        ]
+        self._obs_match_cache = {}
+
+    def _policy_type(self) -> str:
+        return "rbc_smart_local_policy"
+
+    def _forecast_solar_resource_expected(
+        self,
+        obs: np.ndarray,
+        obs_map: Mapping[str, int],
+    ) -> bool:
+        pv_values = self._forecast_values(
+            obs,
+            obs_map,
+            ["forecast_pv"],
+            exclude_tokens=["community"],
+        )
+        irradiance_values = self._forecast_values(
+            obs,
+            obs_map,
+            ["solar_irradiance_predicted"],
+            exclude_tokens=["community"],
+        )
+        return (
+            max((max(0.0, value) for value in pv_values), default=0.0)
+            > self.pv_surplus_threshold_kw
+            or max((max(0.0, value) for value in irradiance_values), default=0.0)
+            > 100.0
+        )
+
+    def _get_headroom_kw(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
+        exact_names = (
+            "charging_building_headroom_kw",
+            "building_import_headroom_kw",
+            "phase_headroom_kw",
+        )
+        for name in exact_names:
+            value = self._get_value(obs, obs_map, name, default=float("nan"))
+            if math.isfinite(value):
+                return value
+
+        matches = self._cached_observation_matches(
+            obs_map,
+            include_tokens=("headroom",),
+            exclude_tokens=("community", "export", "forecast"),
+        )
+        local_values: List[float] = []
+        for name, index in matches:
+            if index >= len(obs) or not (
+                "building" in name.lower()
+                or "phase" in name.lower()
+                or "charging" in name.lower()
+            ):
+                continue
+            value = self._get_value(obs, obs_map, name, default=float("nan"))
+            if math.isfinite(value):
+                local_values.append(value)
+        return min(local_values) if local_values else float("inf")
+
+    def _forecast_community_surplus_kw(
+        self,
+        obs: np.ndarray,
+        obs_map: Mapping[str, int],
+    ) -> float:
+        del obs, obs_map
+        return 0.0
+
+    def _forecast_community_import_peak_kw(
+        self,
+        obs: np.ndarray,
+        obs_map: Mapping[str, int],
+    ) -> float:
+        del obs, obs_map
+        return 0.0
+
+    def _forecast_community_headroom_min_kw(
+        self,
+        obs: np.ndarray,
+        obs_map: Mapping[str, int],
+    ) -> float:
+        del obs, obs_map
+        return float("inf")
+
+    def _get_community_import_power(
+        self,
+        obs: np.ndarray,
+        obs_map: Mapping[str, int],
+    ) -> float:
+        del obs, obs_map
+        return 0.0
+
+    def _get_community_export_power(
+        self,
+        obs: np.ndarray,
+        obs_map: Mapping[str, int],
+    ) -> float:
+        del obs, obs_map
+        return 0.0
+
+    def _get_community_pv_power(
+        self,
+        obs: np.ndarray,
+        obs_map: Mapping[str, int],
+    ) -> float:
+        del obs, obs_map
+        return 0.0
+
+    def _get_community_headroom_kw(
+        self,
+        obs: np.ndarray,
+        obs_map: Mapping[str, int],
+    ) -> float:
+        del obs, obs_map
+        return float("inf")
+
+
 class RBCCommunityPolicy(RBCSmartPolicy):
     """Community-aware heuristic that prioritises REC surplus and peak relief."""
 

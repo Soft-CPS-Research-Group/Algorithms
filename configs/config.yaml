@@ -214,9 +214,13 @@ pipeline:
         actor_ev_behavior_cloning_zero_target_weight: 0.0
         actor_ev_behavior_cloning_zero_target_threshold: 0.05
         actor_storage_behavior_cloning_multiplier: 1.0
+        actor_deferrable_behavior_cloning_multiplier: 1.0
+        actor_deferrable_behavior_cloning_positive_target_weight: 0.0
+        actor_deferrable_behavior_cloning_positive_target_power: 1.0
         actor_behavior_cloning_min_weight: 0.0
         actor_behavior_cloning_decay_start_step: 0
         actor_behavior_cloning_decay_steps: 0
+        actor_behavior_cloning_replay_capacity: 0
         actor_behavior_cloning_source: replay_action
 
 # Optional worker-specific overrides (e.g., Deucalion). Keep null for local runs.

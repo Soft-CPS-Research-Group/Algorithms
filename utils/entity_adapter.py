@@ -38,6 +38,7 @@ class EntityContractAdapter:
         "maddpg_v2_compact",
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
+        "building_local_v1",
         "cc_level1",
         "cc_level2",
     }
@@ -46,6 +47,7 @@ class EntityContractAdapter:
         "maddpg_v2_compact",
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
+        "building_local_v1",
         "cc_level1",
         "cc_level2",
     }
@@ -1723,11 +1725,30 @@ class EntityContractAdapter:
             return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=True)
         if profile == "maddpg_v3_realtime":
             return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=False)
+        if profile == "building_local_v1":
+            return cls._is_building_local_v1_feature(name)
         if profile == "cc_level1":
             return cls._is_cc_level1_feature(name)
         if profile == "cc_level2":
             return cls._is_cc_level2_feature(name)
         return True
+
+    @classmethod
+    def _is_building_local_v1_feature(cls, name: str) -> bool:
+        """Keep operational building state while enforcing a local boundary.
+
+        Weather, calendar and tariff signals are public exogenous broadcasts
+        and remain available.  Current and forecast community aggregates are
+        excluded, while the building's own load/PV forecasts, device state and
+        electrical headroom remain observable.
+        """
+
+        if "community" in name.casefold():
+            return False
+        return cls._is_maddpg_v3_operational_feature(
+            name,
+            include_forecast_features=True,
+        )
 
     @classmethod
     def _is_maddpg_v2_compact_feature(cls, name: str) -> bool:

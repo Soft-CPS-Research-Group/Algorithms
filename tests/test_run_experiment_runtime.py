@@ -12,6 +12,42 @@ from algorithms.pipeline import Pipeline
 from utils.local_metrics import LocalMetricsLogger
 
 
+def test_local_checkpoint_resolution_supports_ensemble_and_legacy_layout(tmp_path):
+    current_root = tmp_path / "job" / "checkpoints"
+    legacy_root = tmp_path / "job" / "logs" / "checkpoints"
+    (legacy_root / "agent_0").mkdir(parents=True)
+    (legacy_root / "agent_0" / "latest_checkpoint.pth").write_bytes(b"checkpoint")
+
+    resolved = runner._resolve_local_checkpoint_path(
+        checkpoint_artifact="latest_checkpoint.pth",
+        checkpoints_dir=current_root,
+    )
+
+    assert resolved == legacy_root.resolve()
+
+
+def test_resume_supports_explicit_local_checkpoint_root(tmp_path):
+    checkpoint_root = tmp_path / "previous-job" / "checkpoints"
+    checkpoint_root.mkdir(parents=True)
+    agent = _DummyResumeAgent()
+
+    resolved = runner._resume_agent_from_checkpoint(
+        agent=agent,
+        config={
+            "checkpointing": {
+                "resume_training": True,
+                "checkpoint_local_path": str(checkpoint_root),
+                "checkpoint_artifact": "latest_checkpoint.pth",
+            }
+        },
+        tracking_uri="",
+        checkpoints_dir=tmp_path / "new-job" / "checkpoints",
+    )
+
+    assert resolved == checkpoint_root.resolve()
+    assert agent.loaded_checkpoint_paths == [str(checkpoint_root.resolve())]
+
+
 class _DummyConfigModel:
     def __init__(self, payload: dict):
         self._payload = payload
@@ -491,6 +527,8 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert result_payload["status"] == "completed"
     assert result_payload["kpi_source"] == "simulator_export"
     assert result_payload["export_kpis_on_episode_end"] is True
+    assert "reward_function" in result_payload
+    assert result_payload["wrapper_reward_enabled"] is False
     assert result_payload["wrapper_reward_profile"] == "cost_limits_v1"
     assert result_payload["wrapper_reward_version"] == "cost_limits_v1.0.0"
 

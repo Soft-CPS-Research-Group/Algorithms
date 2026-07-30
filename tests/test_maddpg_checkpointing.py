@@ -45,6 +45,7 @@ def _build_checkpoint_payload():
         "critic_optimizer_state_dict_0": critic_optimizer.state_dict(),
         "replay_buffer": {"entries": 7},
         "exploration_state": {"sigma": 0.123, "exploration_step": 42},
+        "reward_normalization_state": {"count": 9, "mean": 3.0, "m2": 4.0},
     }
 
 
@@ -62,6 +63,9 @@ def _build_agent_for_load() -> MADDPG:
     agent.freeze_pretrained_layers = False
     agent.sigma = 0.9
     agent.exploration_step = 0
+    agent.reward_norm_count = 0
+    agent.reward_norm_mean = 0.0
+    agent.reward_norm_m2 = 0.0
     return agent
 
 
@@ -105,6 +109,30 @@ def test_maddpg_load_checkpoint_respects_fine_tune_and_freeze_flags(tmp_path):
 
     assert agent.actor_optimizers[0].state_dict()["state"] == actor_optimizer_state_before["state"]
     assert freeze_calls == [(True, False)]
+
+
+def test_maddpg_explicit_restore_flags_override_legacy_fine_tune_mix(tmp_path):
+    payload = _build_checkpoint_payload()
+    checkpoint_path = tmp_path / "resume_checkpoint.pth"
+    torch.save(payload, checkpoint_path)
+
+    agent = _build_agent_for_load()
+    agent.fine_tune = True
+    agent.reset_replay_buffer = True
+    agent.restore_optimizers = True
+    agent.restore_replay_buffer = False
+    agent.restore_exploration_state = False
+    agent.restore_reward_normalizer = False
+
+    agent.load_checkpoint(str(checkpoint_path))
+
+    assert len(agent.actor_optimizers[0].state_dict()["state"]) > 0
+    assert agent.replay_buffer.loaded_state is None
+    assert agent.sigma == 0.9
+    assert agent.exploration_step == 0
+    assert agent.reward_norm_count == 0
+    assert agent.reward_norm_mean == 0.0
+    assert agent.reward_norm_m2 == 0.0
 
 
 def test_maddpg_update_uses_terminated_or_truncated_for_done():

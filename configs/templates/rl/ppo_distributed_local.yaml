@@ -1,0 +1,104 @@
+metadata:
+  experiment_name: "ppo_distributed_local"
+  run_name: "PPO distributed local"
+  community_name: "citylearn_static_15min"
+  description: "One independent PPO learner per building with strictly local rewards"
+
+tracking:
+  mlflow_enabled: false
+  log_level: "INFO"
+  log_frequency: 512
+  mlflow_step_sample_interval: 64
+  progress_update_interval: 256
+  action_diagnostics_enabled: true
+  training_diagnostics_enabled: true
+  training_diagnostics_detail: summary
+  reward_diagnostics_enabled: true
+  reward_diagnostics_detail: summary
+
+checkpointing:
+  resume_training: false
+  checkpoint_artifact: "latest_checkpoint.pth"
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 2048
+
+simulator:
+  dataset_name: citylearn_three_phase_electrical_service_demo_15min_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15min_parquet/schema.json
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    profile: building_local_v1
+    clip: true
+  reward_function: LocalCostServiceRewardV1
+  reward_function_kwargs:
+    # Preserve the objective while keeping PPO value targets numerically stable.
+    reward_scale: 0.01
+  episodes: 2
+  deterministic_finish: true
+  simulation_start_time_step: 0
+  simulation_end_time_step: 35039
+  episode_time_steps: 35040
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    final_episode_only: true
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: false
+    session_name: "ppo-distributed-local"
+
+training:
+  seed: 123
+  steps_between_training_updates: 1
+  target_update_interval: 0
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+pipeline:
+  - algorithm: PPO
+    count: 17
+    hyperparameters:
+      gamma: 0.995
+    networks:
+      actor:
+        class: Actor
+        layers: [256, 256]
+        lr: 3.0e-4
+      critic:
+        class: Critic
+        layers: [256, 256]
+        lr: 1.0e-3
+    replay_buffer:
+      class: OnPolicyRolloutBuffer
+      capacity: 512
+      batch_size: 128
+    exploration:
+      strategy: PPO
+      params:
+        rollout_length: 512
+        minibatch_size: 128
+        ppo_epochs: 4
+        gae_lambda: 0.95
+        clip_ratio: 0.2
+        entropy_coef: 0.01
+        value_loss_coef: 0.5
+        max_grad_norm: 0.5
+        initial_log_std: -0.5
+        min_log_std: -5.0
+        max_log_std: 1.0
+        target_kl: 0.03
+        end_initial_exploration_time_step: 0
+        random_exploration_steps: 0
+        initial_exploration_strategy: uniform_full_range
+        train_during_initial_exploration: true
+
+execution: null

@@ -62,6 +62,20 @@ def test_hierarchical_raw_observation_agents_are_registered():
         assert ALGORITHM_REGISTRY[name]._use_raw_observations is True
 
 
+def test_fixed_service_oracle_replay_policy_is_registered_as_raw_observation_policy():
+    assert is_algorithm_supported("FixedServiceOracleReplayPolicy")
+    assert ALGORITHM_REGISTRY["FixedServiceOracleReplayPolicy"]._use_raw_observations is True
+    assert is_algorithm_supported("TotalHomeOracleReplayPolicy")
+    assert ALGORITHM_REGISTRY["TotalHomeOracleReplayPolicy"]._use_raw_observations is True
+    assert is_algorithm_supported("TotalOracleReplayPolicy")
+    assert ALGORITHM_REGISTRY["TotalOracleReplayPolicy"]._use_raw_observations is True
+
+
+def test_strict_local_rbc_is_registered_as_raw_observation_policy():
+    assert is_algorithm_supported("RBCSmartLocalPolicy")
+    assert ALGORITHM_REGISTRY["RBCSmartLocalPolicy"]._use_raw_observations is True
+
+
 def test_hierarchical_manager_agents_use_encoded_observations():
     for name in ("CCLevel1", "CCLevel2"):
         assert is_algorithm_supported(name)

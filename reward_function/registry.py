@@ -30,6 +30,10 @@ from reward_function.cost_hard_constraint_reward import (
     CostServiceCommunitySmoothServiceRewardV44,
     CostServiceCommunityStorageBandRewardV41,
     CostServiceGuardRewardV2,
+    IndividualScorecardAlignedRewardV3,
+    LocalCostServiceRewardV1,
+    LocalEconomicSafetyRewardV3,
+    LocalScorecardGuardRewardV2,
 )
 from reward_function.cost_minimization_reward import CostMinimizationReward
 
@@ -45,6 +49,10 @@ REWARD_FUNCTION_MAP: Dict[str, Type[RewardFunction]] = {
     "CostHardConstraintReward": CostHardConstraintReward,
     "CostServiceGuardRewardV2": CostServiceGuardRewardV2,
     "CostServiceCostBalancedRewardV3": CostServiceCostBalancedRewardV3,
+    "LocalCostServiceRewardV1": LocalCostServiceRewardV1,
+    "LocalScorecardGuardRewardV2": LocalScorecardGuardRewardV2,
+    "LocalEconomicSafetyRewardV3": LocalEconomicSafetyRewardV3,
+    "IndividualScorecardAlignedRewardV3": IndividualScorecardAlignedRewardV3,
     "CostServiceCommunityBandRewardV4": CostServiceCommunityBandRewardV4,
     "CostServiceCommunityStorageBandRewardV41": CostServiceCommunityStorageBandRewardV41,
     "CostServiceCommunityServiceBandRewardV42": CostServiceCommunityServiceBandRewardV42,

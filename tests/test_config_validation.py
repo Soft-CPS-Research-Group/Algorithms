@@ -25,6 +25,24 @@ def test_validate_config_accepts_metadata_community_name(base_config):
     validate_config(config)
 
 
+def test_validate_config_accepts_building_local_entity_profile(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["entity_encoding"]["profile"] = "building_local_v1"
+    validate_config(config)
+
+
+def test_validate_config_accepts_strict_local_rbc_policy(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"] = [
+        {
+            "algorithm": "RBCSmartLocalPolicy",
+            "count": 1,
+            "hyperparameters": {},
+        }
+    ]
+    validate_config(config)
+
+
 def test_validate_config_rejects_legacy_algorithm_key(base_config):
     config = copy.deepcopy(base_config)
     config.pop("pipeline", None)

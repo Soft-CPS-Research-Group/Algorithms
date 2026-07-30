@@ -388,8 +388,9 @@ class Wrapper_CityLearn(RLC):
             )
             self.wrapper_reward_squash = "none"
 
+        checkpoint_base_dir = config.get("runtime", {}).get("job_dir") or self.log_dir
         self.checkpoint_manager = CheckpointManager(
-            base_dir=self.log_dir,
+            base_dir=checkpoint_base_dir,
             interval=checkpoint_cfg.get("checkpoint_interval"),
             log_to_mlflow=tracking_cfg.get("mlflow_enabled", True),
             require_update_step=bool(checkpoint_cfg.get("require_update_step", True)),
@@ -558,6 +559,13 @@ class Wrapper_CityLearn(RLC):
             "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
             "raw_observation_names": raw_observation_names,
             "encoded_observation_names": encoded_observation_names,
+            "raw_observation_bounds": [
+                {
+                    "low": np.asarray(space.low, dtype=np.float64).reshape(-1).tolist(),
+                    "high": np.asarray(space.high, dtype=np.float64).reshape(-1).tolist(),
+                }
+                for space in self.observation_space
+            ],
         }
 
         try:
@@ -1183,7 +1191,11 @@ class Wrapper_CityLearn(RLC):
                     global_step_total=global_step_total,
                 )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
-                actions = self.predict(observations, deterministic=deterministic)
+                actions = self.predict(
+                    observations,
+                    deterministic=deterministic,
+                    episode_step=time_step,
+                )
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/predict_seconds"] = (
                         time.perf_counter() - phase_start_time
@@ -1689,7 +1701,7 @@ class Wrapper_CityLearn(RLC):
         self._cancel_stall_watchdog()
         self._close_stall_watchdog_file()
 
-    def predict(self, observations, deterministic=None):
+    def predict(self, observations, deterministic=None, *, episode_step=None):
         """
         Updates the predict action logic. It now uses a mix of algorithm and the next time step.
         """
@@ -1705,6 +1717,16 @@ class Wrapper_CityLearn(RLC):
             ]
         else:
             encoded_observations = self._encode_observations_for_model(observations)
+
+        self._current_model_episode_step = (
+            None if episode_step is None else int(episode_step)
+        )
+        episode_context_hook = getattr(self.model, "set_episode_context", None)
+        if callable(episode_context_hook):
+            episode_context_hook(
+                episode_step=self._current_model_episode_step,
+                next_episode_step=None,
+            )
 
         observation_context_hook = getattr(self.model, "set_observation_context", None)
         if callable(observation_context_hook):
@@ -2321,6 +2343,17 @@ class Wrapper_CityLearn(RLC):
             self._last_model_observation_encoding_seconds = time.perf_counter() - phase_start_time
 
         transition_context_hook = getattr(self.model, "set_transition_context", None)
+        episode_context_hook = getattr(self.model, "set_episode_context", None)
+        current_episode_step = getattr(self, "_current_model_episode_step", None)
+        if callable(episode_context_hook):
+            episode_context_hook(
+                episode_step=current_episode_step,
+                next_episode_step=(
+                    None
+                    if terminated or truncated or current_episode_step is None
+                    else int(current_episode_step) + 1
+                ),
+            )
         if callable(transition_context_hook):
             transition_context_hook(
                 raw_observations=None

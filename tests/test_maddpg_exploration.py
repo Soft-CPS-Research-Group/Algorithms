@@ -264,6 +264,23 @@ def test_actor_behavior_cloning_loss_can_weight_ev_actions_more_than_storage():
     assert loss.item() == pytest.approx(1.5 / 4.5, abs=1e-6)
 
 
+def test_actor_behavior_cloning_loss_can_prioritize_deferrable_actions():
+    agent = _build_agent_for_exploration()
+    agent.action_names = [["electrical_storage", "deferrable_appliance_1"]]
+    agent.action_low = [np.array([-1.0, 0.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0, 1.0], dtype=np.float32)]
+    agent.actor_behavior_cloning_weight = 0.10
+    agent.actor_storage_behavior_cloning_multiplier = 0.25
+    agent.actor_deferrable_behavior_cloning_multiplier = 4.0
+
+    predicted = torch.tensor([[1.0, 0.5]], dtype=torch.float32)
+    replay = torch.tensor([[0.0, 1.0]], dtype=torch.float32)
+
+    loss = agent._actor_behavior_cloning_loss(0, predicted, replay)
+
+    assert loss.item() == pytest.approx(4.25 / 4.25, abs=1e-6)
+
+
 def test_actor_behavior_cloning_loss_can_upweight_positive_ev_targets():
     agent = _build_agent_for_exploration()
     agent.action_names = [["electric_vehicle_storage_charger_1"]]
@@ -279,6 +296,23 @@ def test_actor_behavior_cloning_loss_can_upweight_positive_ev_targets():
     loss = agent._actor_behavior_cloning_loss(0, predicted, replay)
 
     assert loss.item() == pytest.approx(4.0 / 5.0, abs=1e-6)
+
+
+def test_actor_behavior_cloning_loss_can_upweight_positive_deferrable_targets():
+    agent = _build_agent_for_exploration()
+    agent.action_names = [["deferrable_appliance_1"]]
+    agent.action_low = [np.array([0.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0], dtype=np.float32)]
+    agent.actor_behavior_cloning_weight = 0.10
+    agent.actor_deferrable_behavior_cloning_multiplier = 1.0
+    agent.actor_deferrable_behavior_cloning_positive_target_weight = 3.0
+
+    predicted = torch.tensor([[0.5], [1.0]], dtype=torch.float32)
+    replay = torch.tensor([[1.0], [0.0]], dtype=torch.float32)
+
+    loss = agent._actor_behavior_cloning_loss(0, predicted, replay)
+
+    assert loss.item() == pytest.approx(8.0 / 5.0, abs=1e-6)
 
 
 def test_actor_behavior_cloning_loss_can_upweight_zero_ev_targets():

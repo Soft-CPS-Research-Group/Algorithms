@@ -1659,6 +1659,150 @@ class CostServiceCostBalancedRewardV3(CostHardConstraintReward):
         super().__init__(env_metadata, **params)
 
 
+class LocalCostServiceRewardV1(CostHardConstraintReward):
+    """Strictly local cost-and-service objective for distributed controllers.
+
+    The profile intentionally disables community settlement and shared
+    import/export penalties.  Every returned reward can therefore be computed
+    from one building's own observation, making it suitable for independent
+    PPO/TD3 baselines without hidden centralized training information.
+    """
+
+    DEFAULT_KWARGS = {
+        "export_credit_ratio": 0.0,
+        "local_cost_weight": 1.0,
+        "grid_violation_penalty": 60.0,
+        "power_outage_penalty": 120.0,
+        "ev_departure_window_hours": 3.0,
+        "ev_departure_service_tolerance": 0.05,
+        "ev_over_service_tolerance": 0.05,
+        "ev_over_service_penalty": 0.0,
+        "ev_connected_deficit_penalty": 70.0,
+        "ev_schedule_deficit_penalty": 320.0,
+        "ev_departure_deficit_penalty": 420.0,
+        "ev_departure_missed_penalty": 1000.0,
+        "ev_v2g_service_penalty": 140.0,
+        "battery_soc_min": 0.0,
+        "battery_soc_max": 1.0,
+        "use_observed_storage_soc_limits": True,
+        "battery_soc_violation_penalty": 30.0,
+        "battery_throughput_penalty": 0.002,
+        "deferrable_deadline_missed_penalty": 100.0,
+        "deferrable_urgency_penalty": 10.0,
+        "community_import_penalty": 0.0,
+        "community_peak_import_penalty": 0.0,
+        "community_export_penalty": 0.0,
+        "community_settlement_cost_weight": 0.0,
+        "scale_state_penalties_by_time_step": True,
+        "state_penalty_reference_seconds": 3600.0,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        self.reward_scale = float(kwargs.pop("reward_scale", 0.01))
+        if self.reward_scale <= 0.0:
+            raise ValueError("LocalCostServiceRewardV1 reward_scale must be > 0.")
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)
+        # Simulator 1.5.6 may instantiate the reward once with ``None`` while
+        # resolving the schema, then attach the actual environment metadata.
+        # Validate eagerly whenever metadata is available without breaking
+        # that supported two-phase construction lifecycle.
+        if env_metadata is not None and self.central_agent:
+            raise ValueError(
+                "LocalCostServiceRewardV1 requires central_agent=false so each "
+                "learner receives exactly one local reward stream."
+            )
+
+    def calculate(self, observations: List[Mapping[str, Union[int, float]]]) -> List[float]:
+        raw_rewards = super().calculate(observations)
+        scaled_rewards = [float(reward) * self.reward_scale for reward in raw_rewards]
+
+        scaled_rows: List[Mapping[str, float]] = []
+        for row, scaled in zip(self.last_components_by_agent, scaled_rewards):
+            mutable = dict(row)
+            mutable["reward_total_unscaled"] = float(mutable.get("reward_total", 0.0))
+            mutable["reward_scale"] = self.reward_scale
+            mutable["reward_total"] = scaled
+            scaled_rows.append(mutable)
+        self.last_components_by_agent = scaled_rows
+        return scaled_rewards
+
+
+class LocalScorecardGuardRewardV2(LocalCostServiceRewardV1):
+    """Local objective calibrated around the frozen scorecard gates.
+
+    V1 established the correct information boundary for independent learners.
+    V2 keeps that boundary and the same 0.01 output scale, but makes electrical,
+    EV, storage and deferrable service failures decisively more expensive than
+    the small short-term cost saving that can cause them.  It remains a soft
+    reward: final acceptance still comes from simulator KPIs, never from the
+    training reward itself.
+    """
+
+    DEFAULT_KWARGS = {
+        **LocalCostServiceRewardV1.DEFAULT_KWARGS,
+        "grid_violation_penalty": 600.0,
+        "power_outage_penalty": 600.0,
+        "ev_connected_deficit_penalty": 120.0,
+        "ev_schedule_deficit_penalty": 600.0,
+        "ev_departure_deficit_penalty": 900.0,
+        "ev_departure_missed_penalty": 2400.0,
+        "ev_v2g_service_penalty": 400.0,
+        "battery_soc_violation_penalty": 300.0,
+        "deferrable_deadline_missed_penalty": 2000.0,
+        "deferrable_urgency_penalty": 120.0,
+    }
+
+
+class LocalEconomicSafetyRewardV3(LocalScorecardGuardRewardV2):
+    """Local cost objective with terminal service gates and no urgency bias.
+
+    The deadline-feasible action projector already prevents an EV or
+    deferrable load from becoming physically unrecoverable.  Penalizing every
+    recoverable intermediate deficit at the same time makes waiting for a
+    cheaper tariff look worse than charging immediately, which conflicts with
+    the perfect-foresight demonstrations used by local PPO/TD3.  V3 therefore
+    removes only those dense urgency terms while preserving departure,
+    electrical, outage, storage and deadline failure penalties.
+    """
+
+    DEFAULT_KWARGS = {
+        **LocalScorecardGuardRewardV2.DEFAULT_KWARGS,
+        "ev_connected_deficit_penalty": 0.0,
+        "ev_schedule_deficit_penalty": 0.0,
+        "deferrable_urgency_penalty": 0.0,
+    }
+
+
+class IndividualScorecardAlignedRewardV3(LocalScorecardGuardRewardV2):
+    """Scorecard-aligned reward for independent per-building learners.
+
+    The actor, critic, optimiser and replay remain local to one building.  The
+    economic term is the building's row of the community-market settlement,
+    however, because that is the bill used by the official scorecard.  This is
+    therefore independent learning with a market/broadcast reward signal, not
+    a centralized critic and not a strictly local-information ablation.
+
+    Hard operational constraints keep the V2 calibration.  The settlement
+    parameters deliberately mirror the current dataset contract and remain
+    overridable in YAML so another market cannot silently inherit them.
+    """
+
+    DEFAULT_KWARGS = {
+        **LocalScorecardGuardRewardV2.DEFAULT_KWARGS,
+        "local_cost_weight": 0.0,
+        "export_credit_ratio": 0.0,
+        "community_settlement_cost_weight": 1.0,
+        "community_local_price_ratio": 0.8,
+        "community_grid_export_price": 0.0,
+        "community_import_penalty": 0.0,
+        "community_peak_import_penalty": 0.0,
+        "community_export_penalty": 0.0,
+        "community_penalty_divide_by_agents": False,
+    }
+
+
 class CostServiceCommunityBandRewardV4(CostHardConstraintReward):
     """Phase 6F.2 profile aligned with community settlement and EV target bands.
 

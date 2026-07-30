@@ -54,7 +54,13 @@ class Pipeline(ExecutionUnit):
 
     @property
     def requires_raw_observation_context(self) -> bool:
-        return any(stage.use_raw_observations for stage in self.stages)
+        return any(
+            stage.use_raw_observations
+            or bool(getattr(stage, "requires_raw_observation_context", False))
+            or getattr(stage, "_warm_start_policy", None) is not None
+            or bool(getattr(stage, "warm_start_policy_name", None))
+            for stage in self.stages
+        )
 
     def _observations_for_stage(self, stage: ExecutionUnit, fallback: Any) -> Any:
         if stage.use_raw_observations and self._raw_observations is not None:
@@ -108,6 +114,21 @@ class Pipeline(ExecutionUnit):
                     raw_next_observations=raw_next_observations,
                     encoded_observations=encoded_observations,
                     encoded_next_observations=encoded_next_observations,
+                )
+
+    def set_episode_context(
+        self,
+        *,
+        episode_step: Optional[int] = None,
+        next_episode_step: Optional[int] = None,
+    ) -> None:
+        """Propagate episode-local clock state independently of hierarchy context."""
+        for stage in self.stages:
+            hook = getattr(stage, "set_episode_context", None)
+            if callable(hook):
+                hook(
+                    episode_step=episode_step,
+                    next_episode_step=next_episode_step,
                 )
 
     # ------------------------------------------------------------------
@@ -279,10 +300,115 @@ class Ensemble(ExecutionUnit):
         if not agents:
             raise ValueError("Ensemble requires at least one agent.")
         self.agents: List[ExecutionUnit] = list(agents)
+        for agent in self.agents:
+            # Child metrics are aggregated by the Ensemble and then logged by
+            # the wrapper.  Direct child logging would make N independent
+            # learners overwrite the same metric keys at every step.
+            setattr(agent, "managed_by_ensemble", True)
 
     @property
     def use_raw_observations(self) -> bool:
         return any(agent.use_raw_observations for agent in self.agents)
+
+    @property
+    def requires_raw_observation_context(self) -> bool:
+        """Whether any member needs raw observations beside its model input.
+
+        Independent neural learners normally consume encoded observations, but
+        a warm-start/behaviour-cloning teacher such as ``RBCSmartPolicy`` uses
+        the raw semantic observation stream.  Exposing this recursively keeps
+        the wrapper from selecting the direct encoded-only fast path.
+        """
+        return any(
+            agent.use_raw_observations
+            or bool(getattr(agent, "requires_raw_observation_context", False))
+            or getattr(agent, "_warm_start_policy", None) is not None
+            or bool(getattr(agent, "warm_start_policy_name", None))
+            for agent in self.agents
+        )
+
+    @staticmethod
+    def _member_observation_slice(observations: Any, index: int) -> Any:
+        if observations is None:
+            return None
+        try:
+            if index >= len(observations):
+                return []
+        except TypeError:
+            return observations
+        return [observations[index]]
+
+    def set_observation_context(
+        self,
+        *,
+        raw_observations: Any = None,
+        encoded_observations: Any = None,
+    ) -> None:
+        """Fan wrapper observation context out to the matching member.
+
+        This is deliberately separate from :meth:`predict`: teachers must see
+        the raw observation for their own building while the learned policy
+        continues to receive the encoded vector.
+        """
+        for index, agent in enumerate(self.agents):
+            hook = getattr(agent, "set_observation_context", None)
+            if callable(hook):
+                hook(
+                    raw_observations=self._member_observation_slice(
+                        raw_observations,
+                        index,
+                    ),
+                    encoded_observations=self._member_observation_slice(
+                        encoded_observations,
+                        index,
+                    ),
+                )
+
+    def set_transition_context(
+        self,
+        *,
+        raw_observations: Any = None,
+        raw_next_observations: Any = None,
+        encoded_observations: Any = None,
+        encoded_next_observations: Any = None,
+    ) -> None:
+        """Fan current/next context out for teacher-aware replay and BC."""
+        for index, agent in enumerate(self.agents):
+            hook = getattr(agent, "set_transition_context", None)
+            if callable(hook):
+                hook(
+                    raw_observations=self._member_observation_slice(
+                        raw_observations,
+                        index,
+                    ),
+                    raw_next_observations=self._member_observation_slice(
+                        raw_next_observations,
+                        index,
+                    ),
+                    encoded_observations=self._member_observation_slice(
+                        encoded_observations,
+                        index,
+                    ),
+                    encoded_next_observations=self._member_observation_slice(
+                        encoded_next_observations,
+                        index,
+                    ),
+                )
+
+    def set_episode_context(
+        self,
+        *,
+        episode_step: Optional[int] = None,
+        next_episode_step: Optional[int] = None,
+    ) -> None:
+        """Give every independent member the same episode-local clock."""
+        for agent in self.agents:
+            hook = getattr(agent, "set_episode_context", None)
+            if callable(hook):
+                hook(
+                    episode_step=episode_step,
+                    next_episode_step=next_episode_step,
+                )
 
     # ------------------------------------------------------------------
     # Core loop
@@ -383,6 +509,42 @@ class Ensemble(ExecutionUnit):
             for agent in self.agents
         )
 
+    def _aggregate_metric_hook(self, hook_name: str) -> Dict[str, float]:
+        values_by_key: Dict[str, List[float]] = {}
+        for agent in self.agents:
+            hook = getattr(agent, hook_name, None)
+            if not callable(hook):
+                continue
+            payload = hook()
+            if not isinstance(payload, dict):
+                continue
+            for key, value in payload.items():
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(numeric):
+                    continue
+                values_by_key.setdefault(str(key), []).append(numeric)
+
+        metrics: Dict[str, float] = {
+            "Ensemble/member_count": float(len(self.agents)),
+        }
+        for key, values in values_by_key.items():
+            array = np.asarray(values, dtype=np.float64)
+            metrics[f"Ensemble/{key}_mean"] = float(np.mean(array))
+            metrics[f"Ensemble/{key}_min"] = float(np.min(array))
+            metrics[f"Ensemble/{key}_max"] = float(np.max(array))
+        return metrics
+
+    def get_diagnostic_metrics(self) -> Dict[str, float]:
+        """Aggregate member status without leaking one member over another."""
+        return self._aggregate_metric_hook("get_diagnostic_metrics")
+
+    def consume_latest_training_metrics(self) -> Dict[str, float]:
+        """Consume and aggregate the latest independent learner metrics."""
+        return self._aggregate_metric_hook("consume_latest_training_metrics")
+
     def attach_environment(
         self,
         *,
@@ -405,6 +567,7 @@ class Ensemble(ExecutionUnit):
                 "building_names",
                 "raw_observation_names",
                 "encoded_observation_names",
+                "raw_observation_bounds",
             ):
                 value = member_metadata.get(key)
                 if isinstance(value, (list, tuple)) and index < len(value):
@@ -449,12 +612,21 @@ class Ensemble(ExecutionUnit):
         root = Path(checkpoint_path)
         if not root.exists():
             raise FileNotFoundError(f"Ensemble checkpoint root not found: {root}")
+        if root.is_file():
+            root = root.parent
         for index, agent in enumerate(self.agents):
             agent_dir = root / f"agent_{index}"
             if not agent_dir.exists():
                 continue
             try:
-                agent.load_checkpoint(str(agent_dir))
+                artifact_name = str(
+                    getattr(agent, "checkpoint_artifact", "latest_checkpoint.pth")
+                    or "latest_checkpoint.pth"
+                )
+                artifact_path = agent_dir / artifact_name
+                agent.load_checkpoint(
+                    str(artifact_path if artifact_path.exists() else agent_dir)
+                )
             except NotImplementedError:
                 logger.debug(
                     "Ensemble member {} ({}) does not implement load_checkpoint; skipping.",

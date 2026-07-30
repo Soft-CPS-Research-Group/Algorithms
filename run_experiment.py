@@ -465,13 +465,24 @@ def _resolve_local_checkpoint_path(
 ) -> Path:
     """Resolve a local checkpoint path using standard and fallback locations."""
     artifact = str(checkpoint_artifact or "latest_checkpoint.pth").strip() or "latest_checkpoint.pth"
-    candidate_paths = [
-        checkpoints_dir / artifact,
-        Path(artifact),
+    # Current jobs write to <job>/checkpoints.  The legacy wrapper wrote to
+    # <job>/logs/checkpoints, so keep that root readable for old runs.
+    checkpoint_roots = [
+        checkpoints_dir,
+        checkpoints_dir.parent / "logs" / "checkpoints",
     ]
+    candidate_paths = [root / artifact for root in checkpoint_roots]
+    candidate_paths.append(Path(artifact))
     for candidate in candidate_paths:
         if candidate.exists():
             return candidate.resolve()
+
+    # Composite single-agent baselines persist one checkpoint per Ensemble
+    # member under checkpoints/agent_<index>/.  Resolve the root so the
+    # Ensemble can route each file to the matching local learner.
+    for checkpoint_root in checkpoint_roots:
+        if checkpoint_root.exists() and any(checkpoint_root.glob("agent_*")):
+            return checkpoint_root.resolve()
 
     attempted = ", ".join(str(path) for path in candidate_paths)
     raise RuntimeError(f"Could not resolve local checkpoint path. Tried: {attempted}.")
@@ -496,6 +507,7 @@ def _resume_agent_from_checkpoint(
 
     checkpoint_artifact = str(checkpoint_cfg.get("checkpoint_artifact", "latest_checkpoint.pth"))
     checkpoint_run_id = checkpoint_cfg.get("checkpoint_run_id")
+    checkpoint_local_path = checkpoint_cfg.get("checkpoint_local_path")
     if bool(checkpoint_cfg.get("use_best_checkpoint_artifact", False)) and not checkpoint_run_id:
         metadata_cfg = config.get("metadata", {}) or {}
         checkpoint_run_id = _resolve_best_checkpoint_run_id(
@@ -511,6 +523,12 @@ def _resume_agent_from_checkpoint(
             tracking_uri=tracking_uri,
             download_dir=checkpoints_dir,
         )
+    elif checkpoint_local_path:
+        checkpoint_path = Path(str(checkpoint_local_path)).expanduser().resolve()
+        if not checkpoint_path.exists():
+            raise RuntimeError(
+                f"Configured checkpoint_local_path does not exist: {checkpoint_path}"
+            )
     else:
         checkpoint_path = _resolve_local_checkpoint_path(
             checkpoint_artifact=checkpoint_artifact,
@@ -838,6 +856,16 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
                 "squash": str((simulator_cfg.get("wrapper_reward") or {}).get("squash", "none")),
             }
         )
+        environment_metadata = (
+            wrapper.describe_environment()
+            if hasattr(wrapper, "describe_environment")
+            else {}
+        )
+        reward_function_metadata = (
+            environment_metadata.get("reward_function", {})
+            if isinstance(environment_metadata, dict)
+            else {}
+        )
 
         result_payload = {
             "status": "completed",
@@ -855,6 +883,8 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
                 export_cfg.get("export_business_as_usual_timeseries", True)
             ),
             "simulation_data_dir": str(path_info["simulation_data_dir"]),
+            "reward_function": reward_function_metadata,
+            "wrapper_reward_enabled": bool(wrapper_reward_metadata.get("enabled", False)),
             "wrapper_reward_profile": wrapper_reward_metadata.get("profile"),
             "wrapper_reward_version": wrapper_reward_metadata.get("version"),
         }

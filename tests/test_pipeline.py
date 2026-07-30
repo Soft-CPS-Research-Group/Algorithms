@@ -37,6 +37,8 @@ class RecordingUnit(ExecutionUnit):
         self.save_calls: List[Dict[str, Any]] = []
         self.load_calls: List[str] = []
         self.export_calls: List[Dict[str, Any]] = []
+        self.observation_context_calls: List[Dict[str, Any]] = []
+        self.transition_context_calls: List[Dict[str, Any]] = []
 
     def predict(self, observations, deterministic=None, *, context=None):
         self.predict_calls.append(
@@ -82,6 +84,12 @@ class RecordingUnit(ExecutionUnit):
 
     def attach_environment(self, **kwargs) -> None:
         self.attach_calls.append(kwargs)
+
+    def set_observation_context(self, **kwargs) -> None:
+        self.observation_context_calls.append(kwargs)
+
+    def set_transition_context(self, **kwargs) -> None:
+        self.transition_context_calls.append(kwargs)
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
         self.save_calls.append({"output_dir": output_dir, "step": step})
@@ -364,6 +372,44 @@ class TestEnsembleUpdate:
 
 
 class TestEnsembleLifecycle:
+    def test_context_hooks_route_raw_and_encoded_slices(self) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+        ensemble = Ensemble([a, b])
+
+        ensemble.set_observation_context(
+            raw_observations=[["raw-a"], ["raw-b"]],
+            encoded_observations=[["encoded-a"], ["encoded-b"]],
+        )
+        ensemble.set_transition_context(
+            raw_observations=[["raw-a"], ["raw-b"]],
+            raw_next_observations=[["next-raw-a"], ["next-raw-b"]],
+            encoded_observations=[["encoded-a"], ["encoded-b"]],
+            encoded_next_observations=[["next-encoded-a"], ["next-encoded-b"]],
+        )
+
+        assert a.observation_context_calls[0] == {
+            "raw_observations": [["raw-a"]],
+            "encoded_observations": [["encoded-a"]],
+        }
+        assert b.observation_context_calls[0] == {
+            "raw_observations": [["raw-b"]],
+            "encoded_observations": [["encoded-b"]],
+        }
+        assert a.transition_context_calls[0]["raw_next_observations"] == [["next-raw-a"]]
+        assert b.transition_context_calls[0]["encoded_next_observations"] == [["next-encoded-b"]]
+
+    def test_warm_start_member_requires_raw_context(self) -> None:
+        plain = RecordingUnit("plain")
+        guided = RecordingUnit("guided")
+        guided.warm_start_policy_name = "RBCSmartPolicy"
+
+        ensemble = Ensemble([plain, guided])
+        pipeline = Pipeline([ensemble])
+
+        assert ensemble.requires_raw_observation_context is True
+        assert pipeline.requires_raw_observation_context is True
+
     def test_attach_environment_routes_each_slice(self) -> None:
         a = RecordingUnit("a")
         b = RecordingUnit("b")
@@ -393,6 +439,10 @@ class TestEnsembleLifecycle:
                 "building_names": ["Building_1", "Building_2"],
                 "raw_observation_names": [["raw_a"], ["raw_b"]],
                 "encoded_observation_names": [["encoded_a"], ["encoded_b"]],
+                "raw_observation_bounds": [
+                    {"low": [0.0], "high": [1.0]},
+                    {"low": [-1.0], "high": [2.0]},
+                ],
                 "shared": "kept",
             },
         )
@@ -403,6 +453,12 @@ class TestEnsembleLifecycle:
         assert b.attach_calls[0]["metadata"]["raw_observation_names"] == [["raw_b"]]
         assert a.attach_calls[0]["metadata"]["encoded_observation_names"] == [["encoded_a"]]
         assert b.attach_calls[0]["metadata"]["encoded_observation_names"] == [["encoded_b"]]
+        assert a.attach_calls[0]["metadata"]["raw_observation_bounds"] == [
+            {"low": [0.0], "high": [1.0]}
+        ]
+        assert b.attach_calls[0]["metadata"]["raw_observation_bounds"] == [
+            {"low": [-1.0], "high": [2.0]}
+        ]
         assert a.attach_calls[0]["metadata"]["shared"] == "kept"
         assert b.attach_calls[0]["metadata"]["shared"] == "kept"
 
