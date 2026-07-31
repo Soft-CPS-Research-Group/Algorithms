@@ -25,4 +25,5 @@ venv/
 experiments/
 datasets/
 mlruns/
-
+runs/
+.pytest_cache/
