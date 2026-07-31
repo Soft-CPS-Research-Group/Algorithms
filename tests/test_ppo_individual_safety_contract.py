@@ -101,6 +101,77 @@ def _transition(agent: PPO, observation, action) -> None:
     )
 
 
+class _NegativeBehaviorTeacher(torch.nn.Module):
+    def predict(self, observations, deterministic=None):
+        del observations, deterministic
+        return [[-1.0]]
+
+
+def _single_ev_bc_agent(
+    *,
+    safety_enabled: bool,
+    with_teacher: bool,
+) -> tuple[PPO, np.ndarray, np.ndarray]:
+    exploration = {
+        "local_action_safety_enabled": safety_enabled,
+        "actor_behavior_cloning_replay_capacity": 4,
+    }
+    if with_teacher:
+        exploration.update(
+            {
+                "initial_exploration_strategy": "policy",
+                "warm_start_policy": "RandomPolicy",
+                "warm_start_policy_deterministic": True,
+                "random_exploration_steps": 2,
+                "end_initial_exploration_time_step": 2,
+                "actor_behavior_cloning_weight": 1.0,
+            }
+        )
+
+    agent = PPO(_ppo_config(**exploration))
+    building = "Building_10"
+    charger = "charger_10_1"
+    prefix = f"charger::{building}/{charger}::"
+    raw_observation_names = [
+        f"{prefix}connected_state",
+        f"{prefix}max_charging_power_kw",
+        f"{prefix}max_discharging_power_kw",
+        f"{prefix}available_charge_action_normalized",
+        f"{prefix}available_discharge_action_normalized",
+        f"{prefix}min_required_action_normalized",
+    ]
+    raw_observation = np.asarray(
+        [1.0, 7.4, 7.4, 1.0, 1.0, 0.5],
+        dtype=np.float64,
+    )
+    actor_observation = np.asarray([0.1, 0.2, 0.3], dtype=np.float32)
+    agent.attach_environment(
+        observation_names=[raw_observation_names],
+        action_names=[[f"electric_vehicle_storage_{charger}"]],
+        action_space=[_Box([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": [building]},
+    )
+    if with_teacher:
+        agent._warm_start_policy = _NegativeBehaviorTeacher()
+    return agent, raw_observation, actor_observation
+
+
+def _store_single_ev_transition(
+    agent: PPO,
+    raw_observation: np.ndarray,
+    actor_observation: np.ndarray,
+) -> list[list[float]]:
+    agent.set_episode_context(episode_step=0)
+    agent.set_observation_context(
+        raw_observations=[raw_observation],
+        encoded_observations=[actor_observation],
+    )
+    action = agent.predict([actor_observation], deterministic=False)
+    _transition(agent, actor_observation, action)
+    return action
+
+
 def test_policy_rollout_uses_atomic_predict_cache_without_recomputation(monkeypatch):
     agent = _agent()
     observation = np.asarray([0.1, -0.2, 0.3], dtype=np.float32)
@@ -253,6 +324,83 @@ def test_projected_action_preserves_latent_ratio_contract() -> None:
     assert rollout["latent_actions"][0].tolist() == pytest.approx(
         cached["raw_action"].tolist()
     )
+
+
+def test_ppo_rollout_and_bc_replay_use_projected_behavior_teacher_target() -> None:
+    agent, raw_observation, actor_observation = _single_ev_bc_agent(
+        safety_enabled=True,
+        with_teacher=True,
+    )
+
+    action = _store_single_ev_transition(
+        agent,
+        raw_observation,
+        actor_observation,
+    )
+
+    assert action[0] == pytest.approx([0.5])
+    assert agent.rollout[0]["teacher_actions"][0].tolist() == pytest.approx([0.5])
+    assert (
+        agent.behavior_cloning_replay[0]["teacher_actions"][0].tolist()
+        == pytest.approx([0.5])
+    )
+    assert agent._last_raw_behavior_teacher_actions == [[-1.0]]
+    assert agent._last_projected_behavior_teacher_actions == [[0.5]]
+    metrics = agent.get_diagnostic_metrics()
+    assert metrics["PPO/behavior_teacher_raw_projected_target_available"] == 1.0
+    assert metrics["PPO/behavior_teacher_raw_projected_projection_applied"] == 1.0
+    assert metrics["PPO/behavior_teacher_raw_projected_disagreement_count"] == 1.0
+    assert metrics["PPO/behavior_teacher_raw_projected_disagreement_ratio"] == 1.0
+    assert metrics["PPO/behavior_teacher_raw_projected_mae"] == pytest.approx(1.5)
+    assert metrics["PPO/behavior_teacher_raw_projected_max_abs"] == pytest.approx(1.5)
+
+
+def test_ppo_behavior_teacher_target_is_unchanged_when_safety_is_disabled() -> None:
+    agent, raw_observation, actor_observation = _single_ev_bc_agent(
+        safety_enabled=False,
+        with_teacher=True,
+    )
+
+    action = _store_single_ev_transition(
+        agent,
+        raw_observation,
+        actor_observation,
+    )
+
+    assert action[0] == pytest.approx([-1.0])
+    assert agent.rollout[0]["teacher_actions"][0].tolist() == pytest.approx([-1.0])
+    assert (
+        agent.behavior_cloning_replay[0]["teacher_actions"][0].tolist()
+        == pytest.approx([-1.0])
+    )
+    assert agent._last_raw_behavior_teacher_actions == [[-1.0]]
+    assert agent._last_projected_behavior_teacher_actions == [[-1.0]]
+    metrics = agent.get_diagnostic_metrics()
+    assert metrics["PPO/behavior_teacher_raw_projected_target_available"] == 1.0
+    assert metrics["PPO/behavior_teacher_raw_projected_projection_applied"] == 0.0
+    assert metrics["PPO/behavior_teacher_raw_projected_disagreement_count"] == 0.0
+
+
+def test_ppo_behavior_teacher_diagnostics_stay_empty_without_teacher() -> None:
+    agent, raw_observation, actor_observation = _single_ev_bc_agent(
+        safety_enabled=True,
+        with_teacher=False,
+    )
+
+    _store_single_ev_transition(
+        agent,
+        raw_observation,
+        actor_observation,
+    )
+
+    assert agent._last_raw_behavior_teacher_actions is None
+    assert agent._last_projected_behavior_teacher_actions is None
+    assert len(agent.behavior_cloning_replay) == 0
+    assert not torch.isfinite(agent.rollout[0]["teacher_actions"][0]).any()
+    metrics = agent.get_diagnostic_metrics()
+    assert metrics["PPO/behavior_teacher_raw_projected_target_available"] == 0.0
+    assert metrics["PPO/behavior_teacher_raw_projected_projection_applied"] == 0.0
+    assert metrics["PPO/behavior_teacher_raw_projected_disagreement_count"] == 0.0
 
 
 def test_ppo_rejects_onnx_export_that_omits_enabled_safety(tmp_path) -> None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from algorithms.agents.matd3_agent import MATD3
 from algorithms.utils.citylearn_local_action_safety import (
     CityLearnLocalSafetyAdapter,
@@ -99,6 +101,18 @@ class TD3(MATD3):
         self._last_local_action_projection = None
         self._service_teacher_runtime_call_count = 0
         self._last_service_teacher_applied = False
+        self._last_raw_behavior_teacher_actions: Optional[List[List[float]]] = None
+        self._last_projected_behavior_teacher_actions: Optional[List[List[float]]] = None
+        self._last_raw_next_behavior_teacher_actions: Optional[List[List[float]]] = None
+        self._last_projected_next_behavior_teacher_actions: Optional[
+            List[List[float]]
+        ] = None
+        self._behavior_teacher_projection_diagnostics = (
+            self._empty_behavior_teacher_projection_diagnostics()
+        )
+        self._next_behavior_teacher_projection_diagnostics = (
+            self._empty_behavior_teacher_projection_diagnostics()
+        )
         if self.local_action_safety_enabled:
             self.requires_raw_observation_context = True
 
@@ -257,6 +271,189 @@ class TD3(MATD3):
         return super().update(*args, **kwargs)
 
     @staticmethod
+    def _empty_behavior_teacher_projection_diagnostics() -> Dict[str, float]:
+        return {
+            "target_available": 0.0,
+            "projection_applied": 0.0,
+            "action_count": 0.0,
+            "disagreement_count": 0.0,
+            "disagreement_ratio": 0.0,
+            "mae": 0.0,
+            "max_abs": 0.0,
+        }
+
+    @staticmethod
+    def _copy_action_groups(actions: List[Any]) -> List[List[float]]:
+        return [
+            np.asarray(action, dtype=np.float64).reshape(-1).tolist()
+            for action in actions
+        ]
+
+    def _set_behavior_teacher_projection_diagnostics(
+        self,
+        *,
+        raw_actions: Optional[List[List[float]]],
+        projected_actions: Optional[List[List[float]]],
+        projection_applied: bool,
+        next_observation: bool,
+    ) -> None:
+        diagnostics = self._empty_behavior_teacher_projection_diagnostics()
+        if raw_actions is not None and projected_actions is not None:
+            raw_parts = [
+                np.asarray(action, dtype=np.float64).reshape(-1)
+                for action in raw_actions
+            ]
+            projected_parts = [
+                np.asarray(action, dtype=np.float64).reshape(-1)
+                for action in projected_actions
+            ]
+            raw_flat = (
+                np.concatenate(raw_parts)
+                if raw_parts
+                else np.empty(0, dtype=np.float64)
+            )
+            projected_flat = (
+                np.concatenate(projected_parts)
+                if projected_parts
+                else np.empty(0, dtype=np.float64)
+            )
+            if raw_flat.shape != projected_flat.shape:
+                raise ValueError(
+                    "TD3 behavior-teacher safety projection returned an action shape "
+                    "different from the raw teacher target."
+                )
+            absolute_difference = np.abs(projected_flat - raw_flat)
+            action_count = int(absolute_difference.size)
+            disagreement_count = int(
+                np.count_nonzero(absolute_difference > 1.0e-9)
+            )
+            diagnostics.update(
+                {
+                    "target_available": 1.0,
+                    "projection_applied": float(projection_applied),
+                    "action_count": float(action_count),
+                    "disagreement_count": float(disagreement_count),
+                    "disagreement_ratio": (
+                        float(disagreement_count / action_count)
+                        if action_count > 0
+                        else 0.0
+                    ),
+                    "mae": (
+                        float(np.mean(absolute_difference))
+                        if action_count > 0
+                        else 0.0
+                    ),
+                    "max_abs": (
+                        float(np.max(absolute_difference))
+                        if action_count > 0
+                        else 0.0
+                    ),
+                }
+            )
+        if next_observation:
+            self._next_behavior_teacher_projection_diagnostics = diagnostics
+        else:
+            self._behavior_teacher_projection_diagnostics = diagnostics
+
+    def _project_behavior_teacher_actions(
+        self,
+        raw_actions: List[Any],
+        *,
+        raw_observations: Optional[List[np.ndarray]],
+        next_observation: bool,
+    ) -> List[List[float]]:
+        raw_copy = self._copy_action_groups(raw_actions)
+        projected = [list(action) for action in raw_copy]
+        projection_applied = False
+        if self.local_action_safety_enabled:
+            if self._local_action_safety_adapter is None:
+                raise RuntimeError(
+                    "TD3 behavior-teacher safety projection requires an attached "
+                    "local action safety adapter."
+                )
+            if raw_observations is None or len(raw_observations) != 1:
+                raise RuntimeError(
+                    "TD3 behavior-teacher safety projection requires one raw "
+                    "observation context."
+                )
+            if len(raw_copy) != 1:
+                raise RuntimeError(
+                    "TD3 behavior-teacher safety projection requires one action group."
+                )
+            result = self._local_action_safety_adapter.project(
+                raw_observations[0],
+                raw_copy[0],
+            )
+            projected = [list(result.executed_actions)]
+            projection_applied = True
+
+        if next_observation:
+            self._last_raw_next_behavior_teacher_actions = raw_copy
+            self._last_projected_next_behavior_teacher_actions = projected
+        else:
+            self._last_raw_behavior_teacher_actions = raw_copy
+            self._last_projected_behavior_teacher_actions = projected
+        self._set_behavior_teacher_projection_diagnostics(
+            raw_actions=raw_copy,
+            projected_actions=projected,
+            projection_applied=projection_applied,
+            next_observation=next_observation,
+        )
+        return projected
+
+    def _transition_behavior_actions(self, actions: List[Any]) -> List[Any]:
+        raw_actions = super()._transition_behavior_actions(actions)
+        teacher_target_available = bool(
+            self.actor_behavior_cloning_source == "warm_start_policy"
+            and self._warm_start_policy is not None
+            and self._latest_raw_observations is not None
+        )
+        if not teacher_target_available:
+            self._last_raw_behavior_teacher_actions = None
+            self._last_projected_behavior_teacher_actions = None
+            self._set_behavior_teacher_projection_diagnostics(
+                raw_actions=None,
+                projected_actions=None,
+                projection_applied=False,
+                next_observation=False,
+            )
+            return raw_actions
+        return self._project_behavior_teacher_actions(
+            raw_actions,
+            raw_observations=self._latest_raw_observations,
+            next_observation=False,
+        )
+
+    def _transition_next_behavior_actions(
+        self,
+        fallback_actions: List[Any],
+    ) -> List[Any]:
+        raw_actions = super()._transition_next_behavior_actions(fallback_actions)
+        teacher_target_available = bool(
+            self._warm_start_policy is not None
+            and self._latest_raw_next_observations is not None
+            and (
+                self.residual_policy_enabled
+                or self.actor_behavior_cloning_source == "warm_start_policy"
+            )
+        )
+        if not teacher_target_available:
+            self._last_raw_next_behavior_teacher_actions = None
+            self._last_projected_next_behavior_teacher_actions = None
+            self._set_behavior_teacher_projection_diagnostics(
+                raw_actions=None,
+                projected_actions=None,
+                projection_applied=False,
+                next_observation=True,
+            )
+            return raw_actions
+        return self._project_behavior_teacher_actions(
+            raw_actions,
+            raw_observations=self._latest_raw_next_observations,
+            next_observation=True,
+        )
+
+    @staticmethod
     def _rename_metric_prefixes(metrics: Dict[str, float]) -> Dict[str, float]:
         renamed: Dict[str, float] = {}
         for key, value in metrics.items():
@@ -343,4 +540,8 @@ class TD3(MATD3):
         metrics["TD3/local_action_safety_infeasible"] = float(
             len(projection.infeasible_reasons) if projection is not None else 0
         )
+        for key, value in self._behavior_teacher_projection_diagnostics.items():
+            metrics[f"TD3/behavior_teacher_raw_projected_{key}"] = float(value)
+        for key, value in self._next_behavior_teacher_projection_diagnostics.items():
+            metrics[f"TD3/next_behavior_teacher_raw_projected_{key}"] = float(value)
         return metrics

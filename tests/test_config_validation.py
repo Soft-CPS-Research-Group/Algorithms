@@ -75,6 +75,30 @@ def test_validate_config_invalid_network_layers(base_config):
         validate_config(config)
 
 
+def test_validate_config_accepts_ev_stratified_replay_sampling(base_config):
+    config = copy.deepcopy(base_config)
+    replay = config["pipeline"][0]["replay_buffer"]
+    replay["behavior_action_priority_scope"] = "ev"
+    replay["behavior_action_stratified_sampling"] = True
+    replay["behavior_action_positive_threshold"] = 0.1
+
+    model = validate_config(config)
+    parsed = model.pipeline[0].replay_buffer
+
+    assert parsed.behavior_action_stratified_sampling is True
+    assert parsed.behavior_action_positive_threshold == pytest.approx(0.1)
+
+
+def test_validate_config_rejects_ev_stratified_sampling_without_ev_scope(base_config):
+    config = copy.deepcopy(base_config)
+    replay = config["pipeline"][0]["replay_buffer"]
+    replay["behavior_action_priority_scope"] = "all"
+    replay["behavior_action_stratified_sampling"] = True
+
+    with pytest.raises(ValueError, match="requires behavior_action_priority_scope='ev'"):
+        validate_config(config)
+
+
 def test_validate_config_accepts_late_fusion_critic_layers(base_config):
     config = copy.deepcopy(base_config)
     config["pipeline"][0]["networks"]["critic"] = {

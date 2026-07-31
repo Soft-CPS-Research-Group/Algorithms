@@ -1221,6 +1221,14 @@ class MADDPG(BaseAgent):
                         "behavior_action_priority_scope",
                         "all",
                     ),
+                    "behavior_action_stratified_sampling": buffer_cfg.get(
+                        "behavior_action_stratified_sampling",
+                        False,
+                    ),
+                    "behavior_action_positive_threshold": buffer_cfg.get(
+                        "behavior_action_positive_threshold",
+                        0.0,
+                    ),
                 }
             )
         return replay_cls(**params)
@@ -2394,6 +2402,22 @@ class MADDPG(BaseAgent):
                     ),
                     "MADDPG/replay_behavior_action_priority_scope_ev": float(
                         getattr(replay_buffer, "behavior_action_priority_scope", "all") == "ev"
+                    ),
+                    "MADDPG/replay_behavior_action_stratified_sampling": float(
+                        getattr(replay_buffer, "behavior_action_stratified_sampling", False)
+                    ),
+                    "MADDPG/replay_behavior_action_positive_threshold": float(
+                        getattr(replay_buffer, "behavior_action_positive_threshold", 0.0)
+                    ),
+                    "MADDPG/replay_behavior_action_stratum_count": float(
+                        getattr(replay_buffer, "_last_behavior_action_stratum_count", 0)
+                    ),
+                    "MADDPG/replay_behavior_action_stratified_sample_count": float(
+                        getattr(
+                            replay_buffer,
+                            "_last_behavior_action_stratified_sample_count",
+                            0,
+                        )
                     ),
                 }
             )

@@ -55,6 +55,72 @@ def _config(observation_dim: int) -> dict:
     }
 
 
+def _single_ev_agent(*, safety_enabled: bool) -> tuple[TD3, np.ndarray]:
+    building = "Building_10"
+    charger = "charger_10_1"
+    prefix = f"charger::{building}/{charger}::"
+    names = [
+        f"{prefix}connected_state",
+        f"{prefix}max_charging_power_kw",
+        f"{prefix}max_discharging_power_kw",
+        f"{prefix}available_charge_action_normalized",
+        f"{prefix}available_discharge_action_normalized",
+        f"{prefix}min_required_action_normalized",
+    ]
+    values = np.asarray([1.0, 7.4, 7.4, 1.0, 1.0, 0.5], dtype=np.float64)
+    config = _config(len(names))
+    config["topology"]["action_dimensions"] = [1]
+    config["algorithm"]["exploration"]["params"][
+        "local_action_safety_enabled"
+    ] = safety_enabled
+    agent = TD3(config)
+    agent.attach_environment(
+        observation_names=[names],
+        action_names=[[f"electric_vehicle_storage_{charger}"]],
+        action_space=[_Box([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": [building]},
+    )
+    return agent, values
+
+
+class _NegativeBehaviorTeacher:
+    def predict(self, observations, deterministic=None):
+        del observations, deterministic
+        return [[-1.0]]
+
+
+def _store_one_teacher_transition(
+    agent: TD3,
+    raw_observation: np.ndarray,
+    *,
+    executed_action: float,
+) -> None:
+    agent.actor_behavior_cloning_source = "warm_start_policy"
+    agent._warm_start_policy = _NegativeBehaviorTeacher()
+    agent.set_episode_context(episode_step=0, next_episode_step=1)
+    agent.set_observation_context(raw_observations=[raw_observation])
+    agent._predict_warm_start_policy(apply_noise=False, deterministic=True)
+    agent.set_transition_context(
+        raw_observations=[raw_observation],
+        raw_next_observations=[raw_observation],
+        encoded_observations=[raw_observation],
+        encoded_next_observations=[raw_observation],
+    )
+    agent.update(
+        [raw_observation],
+        [np.asarray([executed_action], dtype=np.float32)],
+        [-1.0],
+        [raw_observation],
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=1,
+        update_step=False,
+        initial_exploration_done=False,
+    )
+
+
 def test_td3_projects_final_action_and_exposes_diagnostics(monkeypatch) -> None:
     building = "Building_15"
     names = [
@@ -113,6 +179,174 @@ def test_td3_projects_final_action_and_exposes_diagnostics(monkeypatch) -> None:
     metrics = agent.get_diagnostic_metrics()
     assert metrics["TD3/local_action_safety_enabled"] == 1.0
     assert metrics["TD3/local_action_safety_interventions"] >= 1.0
+
+
+def test_td3_replay_uses_projected_behavior_teacher_target() -> None:
+    agent, raw_observation = _single_ev_agent(safety_enabled=True)
+
+    _store_one_teacher_transition(
+        agent,
+        raw_observation,
+        executed_action=0.5,
+    )
+
+    assert agent.replay_buffer._behavior_actions is not None
+    assert agent.replay_buffer._next_behavior_actions is not None
+    assert agent.replay_buffer._behavior_actions[0][0, 0] == pytest.approx(0.5)
+    assert agent.replay_buffer._next_behavior_actions[0][0, 0] == pytest.approx(0.5)
+    assert agent._last_raw_behavior_teacher_actions == [[-1.0]]
+    assert agent._last_projected_behavior_teacher_actions == [[0.5]]
+    assert agent._last_raw_next_behavior_teacher_actions == [[-1.0]]
+    assert agent._last_projected_next_behavior_teacher_actions == [[0.5]]
+
+    metrics = agent.get_diagnostic_metrics()
+    assert (
+        metrics["TD3/behavior_teacher_raw_projected_target_available"]
+        == 1.0
+    )
+    assert (
+        metrics["TD3/behavior_teacher_raw_projected_projection_applied"]
+        == 1.0
+    )
+    assert (
+        metrics["TD3/behavior_teacher_raw_projected_disagreement_count"]
+        == 1.0
+    )
+    assert (
+        metrics["TD3/behavior_teacher_raw_projected_disagreement_ratio"]
+        == 1.0
+    )
+    assert metrics["TD3/behavior_teacher_raw_projected_mae"] == pytest.approx(1.5)
+    assert metrics["TD3/behavior_teacher_raw_projected_max_abs"] == pytest.approx(
+        1.5
+    )
+    assert (
+        metrics["TD3/next_behavior_teacher_raw_projected_disagreement_count"]
+        == 1.0
+    )
+
+
+def test_td3_behavior_teacher_target_is_unchanged_when_safety_is_disabled() -> None:
+    agent, raw_observation = _single_ev_agent(safety_enabled=False)
+
+    _store_one_teacher_transition(
+        agent,
+        raw_observation,
+        executed_action=-1.0,
+    )
+
+    assert agent.replay_buffer._behavior_actions is not None
+    assert agent.replay_buffer._next_behavior_actions is not None
+    assert agent.replay_buffer._behavior_actions[0][0, 0] == pytest.approx(-1.0)
+    assert agent.replay_buffer._next_behavior_actions[0][0, 0] == pytest.approx(
+        -1.0
+    )
+    metrics = agent.get_diagnostic_metrics()
+    assert (
+        metrics["TD3/behavior_teacher_raw_projected_target_available"]
+        == 1.0
+    )
+    assert (
+        metrics["TD3/behavior_teacher_raw_projected_projection_applied"]
+        == 0.0
+    )
+    assert (
+        metrics["TD3/behavior_teacher_raw_projected_disagreement_count"]
+        == 0.0
+    )
+
+
+def test_td3_behavior_replay_is_unchanged_without_teacher() -> None:
+    agent, raw_observation = _single_ev_agent(safety_enabled=True)
+    agent.set_transition_context(
+        raw_observations=[raw_observation],
+        raw_next_observations=[raw_observation],
+        encoded_observations=[raw_observation],
+        encoded_next_observations=[raw_observation],
+    )
+
+    agent.update(
+        [raw_observation],
+        [np.asarray([0.25], dtype=np.float32)],
+        [-1.0],
+        [raw_observation],
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=1,
+        update_step=False,
+        initial_exploration_done=False,
+    )
+
+    assert agent.replay_buffer._behavior_actions is not None
+    assert agent.replay_buffer._next_behavior_actions is not None
+    assert agent.replay_buffer._behavior_actions[0][0, 0] == pytest.approx(0.25)
+    assert agent.replay_buffer._next_behavior_actions[0][0, 0] == pytest.approx(
+        0.25
+    )
+    metrics = agent.get_diagnostic_metrics()
+    assert (
+        metrics["TD3/behavior_teacher_raw_projected_target_available"]
+        == 0.0
+    )
+    assert (
+        metrics["TD3/behavior_teacher_raw_projected_disagreement_count"]
+        == 0.0
+    )
+
+
+def test_td3_building_15_replay_detects_and_combines_both_ev_actions() -> None:
+    config = _config(observation_dim=1)
+    config["algorithm"]["replay_buffer"] = {
+        "class": "RewardWeightedMultiAgentReplayBuffer",
+        "capacity": 16,
+        "batch_size": 2,
+        "priority_fraction": 1.0,
+        "priority_alpha": 1.0,
+        "priority_epsilon": 1.0e-3,
+        "priority_mode": "negative_reward",
+        "behavior_action_priority_weight": 2.0,
+        "behavior_action_priority_mode": "positive",
+        "behavior_action_priority_scope": "ev",
+        "behavior_action_stratified_sampling": True,
+        "behavior_action_positive_threshold": 0.1,
+    }
+    agent = TD3(config)
+    agent.attach_environment(
+        observation_names=[["feature"]],
+        action_names=[
+            [
+                "electrical_storage",
+                "electric_vehicle_storage_charger_15_1",
+                "electric_vehicle_storage_charger_15_2",
+            ]
+        ],
+        action_space=[_Box([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_15"]},
+    )
+
+    assert [mask.tolist() for mask in agent.replay_buffer.behavior_action_priority_masks] == [
+        [False, True, True]
+    ]
+    assert agent.replay_buffer.behavior_action_stratified_sampling is True
+    assert agent.replay_buffer.behavior_action_positive_threshold == pytest.approx(0.1)
+
+    agent.replay_buffer.push(
+        states=[np.array([0.0], dtype=np.float32)],
+        actions=[np.zeros(3, dtype=np.float32)],
+        rewards=[0.0],
+        next_states=[np.array([1.0], dtype=np.float32)],
+        done=False,
+        behavior_actions=[np.array([1.0, 0.8, 0.6], dtype=np.float32)],
+    )
+
+    # Storage is ignored, while the two concurrent EV targets are combined:
+    # (0.8 + 0.6) * weight 2.0 + epsilon.
+    assert list(agent.replay_buffer.priorities) == pytest.approx([2.801])
+    metrics = agent.get_diagnostic_metrics()
+    assert metrics["TD3/replay_behavior_action_stratified_sampling"] == 1.0
+    assert metrics["TD3/replay_behavior_action_positive_threshold"] == pytest.approx(0.1)
 
 
 def test_td3_rejects_onnx_export_that_omits_enabled_safety(tmp_path) -> None:

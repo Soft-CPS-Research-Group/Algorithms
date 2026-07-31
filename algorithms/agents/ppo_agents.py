@@ -374,6 +374,11 @@ class _PPOBase(BaseAgent):
         self._episode_clock_is_explicit = False
         self._episode_schedule_step: Optional[int] = None
         self._last_warm_start_policy_actions: Optional[List[List[float]]] = None
+        self._last_raw_behavior_teacher_actions: Optional[List[List[float]]] = None
+        self._last_projected_behavior_teacher_actions: Optional[List[List[float]]] = None
+        self._behavior_teacher_projection_diagnostics = (
+            self._empty_behavior_teacher_projection_diagnostics()
+        )
         self._last_warm_start_phaseout_probability = 0.0
         self._last_warm_start_phaseout_used = False
         self._last_policy_action_eligible = [True for _ in range(int(self.num_agents))]
@@ -617,6 +622,7 @@ class _PPOBase(BaseAgent):
             else None
         )
         self._last_warm_start_policy_actions = None
+        self._reset_behavior_teacher_projection()
 
     def set_episode_context(
         self,
@@ -652,6 +658,7 @@ class _PPOBase(BaseAgent):
         self.exploration_step += 1
         self._last_service_teacher_applied = False
         self._last_warm_start_policy_actions = None
+        self._reset_behavior_teacher_projection()
         self._last_policy_action_eligible = [False for _ in range(int(self.num_agents))]
         self._last_policy_samples = None
         if not deterministic and self.exploration_step <= self.random_exploration_steps:
@@ -763,6 +770,141 @@ class _PPOBase(BaseAgent):
                     dtype=torch.float32,
                 )
         self._last_local_action_projections = projections
+        return projected
+
+    @staticmethod
+    def _empty_behavior_teacher_projection_diagnostics() -> Dict[str, float]:
+        return {
+            "target_available": 0.0,
+            "projection_applied": 0.0,
+            "action_count": 0.0,
+            "disagreement_count": 0.0,
+            "disagreement_ratio": 0.0,
+            "mae": 0.0,
+            "max_abs": 0.0,
+        }
+
+    def _reset_behavior_teacher_projection(self) -> None:
+        self._last_raw_behavior_teacher_actions = None
+        self._last_projected_behavior_teacher_actions = None
+        self._behavior_teacher_projection_diagnostics = (
+            self._empty_behavior_teacher_projection_diagnostics()
+        )
+
+    @staticmethod
+    def _copy_action_groups(actions: List[Any]) -> List[List[float]]:
+        return [
+            np.asarray(action, dtype=np.float64).reshape(-1).tolist()
+            for action in actions
+        ]
+
+    def _set_behavior_teacher_projection_diagnostics(
+        self,
+        *,
+        raw_actions: Optional[List[List[float]]],
+        projected_actions: Optional[List[List[float]]],
+        projection_applied: bool,
+    ) -> None:
+        diagnostics = self._empty_behavior_teacher_projection_diagnostics()
+        if raw_actions is not None and projected_actions is not None:
+            raw_parts = [
+                np.asarray(action, dtype=np.float64).reshape(-1)
+                for action in raw_actions
+            ]
+            projected_parts = [
+                np.asarray(action, dtype=np.float64).reshape(-1)
+                for action in projected_actions
+            ]
+            raw_flat = (
+                np.concatenate(raw_parts)
+                if raw_parts
+                else np.empty(0, dtype=np.float64)
+            )
+            projected_flat = (
+                np.concatenate(projected_parts)
+                if projected_parts
+                else np.empty(0, dtype=np.float64)
+            )
+            if raw_flat.shape != projected_flat.shape:
+                raise ValueError(
+                    "PPO behavior-teacher safety projection returned an action shape "
+                    "different from the raw teacher target."
+                )
+            absolute_difference = np.abs(projected_flat - raw_flat)
+            action_count = int(absolute_difference.size)
+            disagreement_count = int(
+                np.count_nonzero(absolute_difference > 1.0e-9)
+            )
+            diagnostics.update(
+                {
+                    "target_available": 1.0,
+                    "projection_applied": float(projection_applied),
+                    "action_count": float(action_count),
+                    "disagreement_count": float(disagreement_count),
+                    "disagreement_ratio": (
+                        float(disagreement_count / action_count)
+                        if action_count > 0
+                        else 0.0
+                    ),
+                    "mae": (
+                        float(np.mean(absolute_difference))
+                        if action_count > 0
+                        else 0.0
+                    ),
+                    "max_abs": (
+                        float(np.max(absolute_difference))
+                        if action_count > 0
+                        else 0.0
+                    ),
+                }
+            )
+        self._behavior_teacher_projection_diagnostics = diagnostics
+
+    def _project_behavior_teacher_actions(
+        self,
+        raw_actions: Optional[List[Any]],
+    ) -> Optional[List[List[float]]]:
+        if raw_actions is None:
+            self._reset_behavior_teacher_projection()
+            return None
+
+        raw_copy = self._copy_action_groups(raw_actions)
+        if len(raw_copy) != int(self.num_agents):
+            raise RuntimeError(
+                "PPO behavior-teacher target does not match the attached agent count."
+            )
+        projected = [list(action) for action in raw_copy]
+        projection_applied = False
+        if self.local_action_safety_enabled:
+            if len(self._local_action_safety_adapters) != int(self.num_agents):
+                raise RuntimeError(
+                    "PPO behavior-teacher safety projection requires attached local "
+                    "action safety adapters."
+                )
+            if self._latest_raw_observations is None or len(
+                self._latest_raw_observations
+            ) != int(self.num_agents):
+                raise RuntimeError(
+                    "PPO behavior-teacher safety projection requires current raw "
+                    "observation context."
+                )
+            projected = [
+                list(adapter.project(raw_observation, action).executed_actions)
+                for adapter, raw_observation, action in zip(
+                    self._local_action_safety_adapters,
+                    self._latest_raw_observations,
+                    raw_copy,
+                )
+            ]
+            projection_applied = True
+
+        self._last_raw_behavior_teacher_actions = raw_copy
+        self._last_projected_behavior_teacher_actions = projected
+        self._set_behavior_teacher_projection_diagnostics(
+            raw_actions=raw_copy,
+            projected_actions=projected,
+            projection_applied=projection_applied,
+        )
         return projected
 
     def _predict_actor(self, observations, *, deterministic: bool) -> List[List[float]]:
@@ -1004,6 +1146,9 @@ class _PPOBase(BaseAgent):
         teacher_actions = []
         old_log_probs = []
         values = []
+        behavior_teacher_actions = self._project_behavior_teacher_actions(
+            self._last_warm_start_policy_actions
+        )
         with torch.no_grad():
             for agent_idx in range(int(self.num_agents)):
                 action_tensor = torch.as_tensor(actions[agent_idx], dtype=torch.float32, device=self.device).view(1, -1)
@@ -1078,9 +1223,12 @@ class _PPOBase(BaseAgent):
                     latent_action = torch.atanh(bounded)
                     log_prob = torch.zeros(1, dtype=normalized.dtype, device=self.device)
                 teacher_action = None
-                if self._last_warm_start_policy_actions is not None and agent_idx < len(self._last_warm_start_policy_actions):
+                if (
+                    behavior_teacher_actions is not None
+                    and agent_idx < len(behavior_teacher_actions)
+                ):
                     teacher_tensor = torch.as_tensor(
-                        self._last_warm_start_policy_actions[agent_idx],
+                        behavior_teacher_actions[agent_idx],
                         dtype=torch.float32,
                         device=self.device,
                     ).view(1, -1)
@@ -1796,7 +1944,7 @@ class _PPOBase(BaseAgent):
         return torch.clamp(2.0 * (action - low) / span - 1.0, -1.0, 1.0)
 
     def get_diagnostic_metrics(self) -> Dict[str, float]:
-        return {
+        metrics = {
             f"{self.metric_prefix}/rollout_buffer_size": float(len(self.rollout)),
             f"{self.metric_prefix}/rollout_length": float(self.rollout_length),
             f"{self.metric_prefix}/minibatch_size": float(self.minibatch_size),
@@ -1883,6 +2031,11 @@ class _PPOBase(BaseAgent):
                 )
             ),
         }
+        for key, value in self._behavior_teacher_projection_diagnostics.items():
+            metrics[
+                f"{self.metric_prefix}/behavior_teacher_raw_projected_{key}"
+            ] = float(value)
+        return metrics
 
     def consume_latest_training_metrics(self) -> Dict[str, float]:
         metrics = dict(self._latest_training_metrics)

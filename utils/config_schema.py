@@ -387,10 +387,24 @@ class ReplayBufferConfig(BaseModel):
     behavior_action_priority_weight: Optional[float] = Field(default=None, ge=0.0)
     behavior_action_priority_mode: Optional[Literal["positive", "abs"]] = None
     behavior_action_priority_scope: Optional[Literal["all", "ev"]] = None
+    behavior_action_stratified_sampling: Optional[bool] = None
+    behavior_action_positive_threshold: Optional[float] = Field(default=None, ge=0.0)
     observation_event_priority_weight: Optional[float] = Field(default=None, ge=0.0)
     observation_event_priority_mode: Optional[
         Literal["ev_departure_service", "ev_pv_price_peak", "combined"]
     ] = None
+
+    @model_validator(mode="after")
+    def validate_behavior_action_stratified_sampling(self) -> "ReplayBufferConfig":
+        if (
+            self.behavior_action_stratified_sampling
+            and self.behavior_action_priority_scope != "ev"
+        ):
+            raise ValueError(
+                "behavior_action_stratified_sampling requires "
+                "behavior_action_priority_scope='ev'"
+            )
+        return self
 
 
 class ExplorationParams(BaseModel):
