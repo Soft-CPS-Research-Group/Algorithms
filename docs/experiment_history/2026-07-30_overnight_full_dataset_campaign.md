@@ -416,6 +416,15 @@ através de CUDA. A imagem local tem digest
 `sha256:daa11eab9403a4956790915c81a6e05af2e5b243ee507f6ebbda5c4a24732e12` e
 aproximadamente 6,62 GB. Esta validação não equivale a publicação no registry.
 
+Foi ainda executado dentro dessa imagem um replay CityLearn real de 672 passos,
+com o dataset montado read-only e a demonstração lida do caminho versionado. O
+scorecard do contentor reproduziu exatamente EUR 424,0119069659, passou 17/17
+gates e colocou 17/17 edifícios abaixo do RBC local. A evidência está em
+`runs/analysis/image_runtime_replay_smoke_06000b5_audit`. Fica assim validado
+localmente o percurso imagem-dataset-schedule-simulador-scorecard; a execução
+nos workers continua dependente apenas da publicação da imagem e do novo
+preflight.
+
 O próximo gate de promoção é: janelas sazonais boundary-exact, seeds
 123/456/789, 17/17 hard gates, custo agregado abaixo do RBC e cada edifício a
 bater o RBC em pelo menos duas seeds. Só depois se congelam os agentes locais.
