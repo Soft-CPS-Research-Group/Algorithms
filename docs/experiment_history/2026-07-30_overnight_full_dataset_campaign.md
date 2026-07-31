@@ -494,3 +494,118 @@ Não foi lançado treino remoto nesta continuação. Primeiro fecham-se os label
 BC pós-projector, os testes e a nova receita local; depois organizam-se commits
 em `main`, publica-se uma imagem do commit e repete-se o preflight do Job
 Orchestrator. O CC continua explicitamente fora de escopo.
+
+## Cobertura sazonal exata
+
+Para deixar de treinar os atores apenas no início do ano, foram resolvidas e
+empacotadas sete janelas adicionais, todas boundary-exact e sem sessões EV
+cortadas ou arrivals SOC ambíguas. Cada janela contém 672 transições e sete
+ciclos deferrable. Os problemas individuais terminaram `optimal` em 17/17
+edifícios e todos os replays MILP passaram 17/17 gates.
+
+| Janela | Sessões EV | RBC | MILP replay | vs. RBC | Casas abaixo do RBC |
+|---|---:|---:|---:|---:|---:|
+| `[6972,7644)` | 54 | EUR 319,6097 | EUR 270,9729 | -15,22% | 16/17 |
+| `[11000,11672)` | 52 | EUR 393,6793 | EUR 354,5253 | -9,95% | 17/17 |
+| `[16000,16672)` | 55 | EUR 741,4340 | EUR 709,4291 | -4,32% | 14/17 |
+| `[20020,20692)` | 53 | EUR 909,7326 | EUR 840,4625 | -7,61% | 16/17 |
+| `[25096,25768)` | 55 | EUR 298,0855 | EUR 197,1584 | -33,86% | 17/17 |
+| `[30472,31144)` | 52 | EUR 558,3170 | EUR 488,8417 | -12,44% | 17/17 |
+| `[33476,34148)` | 52 | EUR 406,5101 | EUR 372,1543 | -8,45% | 16/17 |
+
+As demonstrações portáteis estão em
+`configs/demonstrations/local_total_energy_v1/train_<start>_<end>_exact`.
+O holdout `[3688,4360)` foi deliberadamente excluído desta cobertura. Os
+problems, solves, replays e scorecards permanecem sob
+`runs/analysis/local_rl_seasonal_train_*_20260731` e
+`runs/jobs/local-rl-seasonal-*-20260731`.
+
+## PPO autónomo: do fracasso de uma janela ao primeiro ganho cego
+
+O PPO treinado apenas no teacher exato `[0,1316)` custou EUR 919,4305 na janela
+de treino, contra EUR 938,9482 do RBC (-2,08%), mas falhou a generalização. No
+holdout congelado custou EUR 439,2791, +1,26% sobre o RBC, apesar de passar
+17/17 gates. Fica `REJECT_SINGLE_WINDOW_GENERALIZATION`.
+
+A primeira cadeia sazonal usou DAgger, otimizador novo e labels MILP projetadas.
+O checkpoint final autónomo custou EUR 430,3813 no holdout: -0,79% face ao RBC,
+17/17 gates e 8/17 casas abaixo do baseline. Foi o primeiro PPO local
+multi-building desta ronda a bater o RBC agregado fora do treino, mas ainda com
+uma regressão máxima de EUR 2,5805 numa casa.
+
+Para separar aprendizagem económica por reforço de simples destilação, o PPO
+passou a aceitar `actor_policy_loss_weight`. A cadeia seguinte desligou por
+completo a loss PPO e a entropia (`0.0`), mantendo apenas BC contra os sete
+teachers projetados. No mesmo holdout produziu:
+
+| Candidato | Custo | vs. RBC | Gates | Casas abaixo do RBC | Pior casa | Gap fechado até MILP |
+|---|---:|---:|---:|---:|---:|---:|
+| RBCSmart local | EUR 433,8211 | referência | 17/17 | referência | EUR 0,0000 | 0,00% |
+| MILP total individual replay | EUR 366,4114 | -15,54% | 17/17 | 17/17 | -EUR 1,6039 | 100,00% |
+| PPO DAgger sazonal | EUR 430,3813 | -0,79% | 17/17 | 8/17 | +EUR 2,5805 | 5,10% |
+| PPO BC-only sazonal | **EUR 430,3442** | **-0,80%** | **17/17** | **9/17** | **+EUR 2,0400** | **5,16%** |
+
+O PPO BC-only sazonal fica `BEST_DEVELOPMENT_CANDIDATE_NOT_FROZEN`. A prova é
+cega e autónoma, mas a margem agregada é pequena e a regra de promoção ainda
+exige seeds 123/456/789 e consistência por edifício. A evidência principal está
+em `runs/analysis/ppo_seasonal_distill_v2_holdout_3688_4360_audit_20260731`.
+
+## TD3: bug de resume, destilação sazonal e limite atual
+
+Durante a primeira continuação conservadora foi encontrado um bug no resume do
+MATD3/TD3: `load_checkpoint` ignorava as flags explícitas
+`restore_optimizers`, `restore_replay_buffer`, `restore_exploration_state` e
+`restore_reward_normalizer`. Isto podia restaurar silenciosamente o learning
+rate e o estado de exploração de uma receita anterior. O loader foi alinhado
+com o contrato MADDPG, coberto por testes e o run parcial foi descartado.
+
+Com o loader corrigido, as receitas anteriores não passaram o holdout:
+
+| Receita TD3 | Custo holdout | vs. RBC | Gates | Casas abaixo do RBC | Decisão |
+|---|---:|---:|---:|---:|---|
+| BC exato `[0,1316)` | EUR 448,6889 | +3,43% | 17/17 | 6/17 | rejeitar |
+| Fine-tune agressivo | EUR 502,0825 | +15,73% | 17/17 | 0/17 | rejeitar |
+| Fine-tune conservador v2 | EUR 458,6506 | +5,72% | 17/17 | 1/17 | rejeitar |
+| Reward fine-tune ancorado | EUR 448,8535 | +3,47% | 17/17 | 4/17 | rejeitar |
+
+O diagnóstico mostrou ainda que o suposto fine-tune sazonal ancorado tinha
+`warm_start_policy: null` e `actor_behavior_cloning_source: replay_action`:
+visitava as janelas sazonais, mas clonava as próprias ações antigas em vez de
+aprender os novos MILPs.
+
+Foi então executada uma cadeia TD3 BC-only que usa realmente cada schedule
+sazonal como label projetada. O checkpoint final custou EUR 446,3058. Um sweep
+frozen dos sete checkpoints encontrou o melhor ponto após o segundo teacher,
+EUR 442,8634, demonstrando melhoria seguida de esquecimento não monotónico. Uma
+última consolidação partiu desse checkpoint, reduziu a fração de replay
+prioritário de 0,75 para 0,25 e multiplicou por quatro a loss BC da bateria.
+Resultado final:
+
+| Candidato | Custo | vs. RBC | Gates | Casas abaixo do RBC |
+|---|---:|---:|---:|---:|
+| TD3 original exato | EUR 448,6889 | +3,43% | 17/17 | 6/17 |
+| TD3 sazonal, melhor checkpoint | EUR 442,8634 | +2,08% | 17/17 | 6/17 |
+| TD3 consolidado storage-weighted | **EUR 441,6846** | **+1,81%** | **17/17** | **6/17** |
+
+O TD3 consolidado poupa EUR 7,0043 face ao TD3 original e mantém todos os hard
+gates, mas continua EUR 7,8636 acima do RBC. Fica
+`IMPROVED_NOT_PROMOTED`; não deve consumir campanha remota multi-seed enquanto
+não houver uma nova hipótese técnica. O scorecard final está em
+`runs/analysis/td3_seasonal_consolidate_v2_holdout_3688_4360_audit_20260731`
+e o sweep em
+`runs/analysis/td3_seasonal_distill_checkpoint_sweep_holdout_3688_4360_audit_20260731`.
+
+## Fecho local de 31 de julho
+
+A suite completa após as alterações de safety, checkpoint e PPO terminou com
+`790 passed` e 28 warnings conhecidos. Os três diretórios de runs abortadas
+(TD3 conservador inicial, PPO DAgger com optimizer restaurado e PPO distill com
+entropia ativa) foram movidos para o lixo; toda a evidência completa foi
+preservada.
+
+Não foi submetido nenhum job remoto nesta ronda. O único candidato autorizado
+para o próximo passo remoto é o PPO BC-only sazonal, primeiro nas seeds 456 e
+789 e sempre contra RBC matching. O TD3 fica local. Antes da submissão é
+necessário publicar uma imagem da `main` atual e repetir o preflight live de
+hosts, fila, autenticação e readiness. O CC continua fora de escopo até os
+agentes locais serem congelados.
