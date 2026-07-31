@@ -408,6 +408,14 @@ commit anterior; a nova demonstração portátil elimina a dependência de
 artefactos ignorados, mas é necessário publicar uma imagem do novo commit e
 repetir o preflight antes da campanha sazonal/multi-seed.
 
+A imagem do commit runtime `06000b5` foi construída localmente como
+`opeva-algorithms:06000b5`. A inclusão de `runs/` na `.dockerignore` reduziu o
+contexto de build observado de 7,51 GB para 7,44 MB. O contentor importou o
+registry, encontrou o manifesto e a schedule portátil e reconheceu a RTX 4080
+através de CUDA. A imagem local tem digest
+`sha256:daa11eab9403a4956790915c81a6e05af2e5b243ee507f6ebbda5c4a24732e12` e
+aproximadamente 6,62 GB. Esta validação não equivale a publicação no registry.
+
 O próximo gate de promoção é: janelas sazonais boundary-exact, seeds
 123/456/789, 17/17 hard gates, custo agregado abaixo do RBC e cada edifício a
 bater o RBC em pelo menos duas seeds. Só depois se congelam os agentes locais.
