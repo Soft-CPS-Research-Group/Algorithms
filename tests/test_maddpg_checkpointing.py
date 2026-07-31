@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 
 from algorithms.agents.maddpg_agent import MADDPG
+from algorithms.agents.matd3_agent import MATD3
 
 
 class _ReplayBufferProbe:
@@ -57,6 +58,45 @@ def _build_agent_for_load() -> MADDPG:
     agent.critics = [torch.nn.Linear(3, 1)]
     agent.actor_optimizers = [torch.optim.Adam(agent.actors[0].parameters(), lr=1e-3)]
     agent.critic_optimizers = [torch.optim.Adam(agent.critics[0].parameters(), lr=1e-3)]
+    agent.replay_buffer = _ReplayBufferProbe()
+    agent.fine_tune = False
+    agent.reset_replay_buffer = False
+    agent.freeze_pretrained_layers = False
+    agent.sigma = 0.9
+    agent.exploration_step = 0
+    agent.reward_norm_count = 0
+    agent.reward_norm_mean = 0.0
+    agent.reward_norm_m2 = 0.0
+    return agent
+
+
+def _build_matd3_checkpoint_payload():
+    payload = _build_checkpoint_payload()
+    critic_2 = torch.nn.Linear(3, 1)
+    critic_optimizer_2 = torch.optim.Adam(critic_2.parameters(), lr=1e-3)
+    critic_loss = critic_2(torch.ones(1, 3)).sum()
+    critic_loss.backward()
+    critic_optimizer_2.step()
+    critic_optimizer_2.zero_grad(set_to_none=True)
+    payload["critic_2_state_dict_0"] = critic_2.state_dict()
+    payload["critic_optimizer_2_state_dict_0"] = critic_optimizer_2.state_dict()
+    return payload
+
+
+def _build_matd3_agent_for_load() -> MATD3:
+    agent = MATD3.__new__(MATD3)
+    agent.device = torch.device("cpu")
+    agent.num_agents = 1
+    agent.actors = [torch.nn.Linear(2, 1)]
+    agent.actor_targets = [torch.nn.Linear(2, 1)]
+    agent.critics = [torch.nn.Linear(3, 1)]
+    agent.critics_2 = [torch.nn.Linear(3, 1)]
+    agent.critic_targets = [torch.nn.Linear(3, 1)]
+    agent.critic_targets_2 = [torch.nn.Linear(3, 1)]
+    agent.actor_aux_heads = []
+    agent.actor_optimizers = [torch.optim.Adam(agent.actors[0].parameters(), lr=1e-3)]
+    agent.critic_optimizers = [torch.optim.Adam(agent.critics[0].parameters(), lr=1e-3)]
+    agent.critic_optimizers_2 = [torch.optim.Adam(agent.critics_2[0].parameters(), lr=1e-3)]
     agent.replay_buffer = _ReplayBufferProbe()
     agent.fine_tune = False
     agent.reset_replay_buffer = False
@@ -133,6 +173,62 @@ def test_maddpg_explicit_restore_flags_override_legacy_fine_tune_mix(tmp_path):
     assert agent.reward_norm_count == 0
     assert agent.reward_norm_mean == 0.0
     assert agent.reward_norm_m2 == 0.0
+
+
+def test_matd3_explicit_restore_flags_can_reset_continuation_state(tmp_path):
+    payload = _build_matd3_checkpoint_payload()
+    checkpoint_path = tmp_path / "matd3_resume_checkpoint.pth"
+    torch.save(payload, checkpoint_path)
+
+    agent = _build_matd3_agent_for_load()
+    agent.restore_optimizers = False
+    agent.restore_replay_buffer = False
+    agent.restore_exploration_state = False
+    agent.restore_reward_normalizer = False
+
+    agent.load_checkpoint(str(checkpoint_path))
+
+    for key, value in payload["actor_state_dict_0"].items():
+        assert torch.equal(agent.actors[0].state_dict()[key], value)
+    for key, value in payload["critic_state_dict_0"].items():
+        assert torch.equal(agent.critics[0].state_dict()[key], value)
+    for key, value in payload["critic_2_state_dict_0"].items():
+        assert torch.equal(agent.critics_2[0].state_dict()[key], value)
+    assert agent.actor_optimizers[0].state_dict()["state"] == {}
+    assert agent.critic_optimizers[0].state_dict()["state"] == {}
+    assert agent.critic_optimizers_2[0].state_dict()["state"] == {}
+    assert agent.replay_buffer.loaded_state is None
+    assert agent.sigma == 0.9
+    assert agent.exploration_step == 0
+    assert agent.reward_norm_count == 0
+    assert agent.reward_norm_mean == 0.0
+    assert agent.reward_norm_m2 == 0.0
+
+
+def test_matd3_explicit_restore_flags_override_legacy_fine_tune_mix(tmp_path):
+    payload = _build_matd3_checkpoint_payload()
+    checkpoint_path = tmp_path / "matd3_resume_checkpoint.pth"
+    torch.save(payload, checkpoint_path)
+
+    agent = _build_matd3_agent_for_load()
+    agent.fine_tune = True
+    agent.reset_replay_buffer = True
+    agent.restore_optimizers = True
+    agent.restore_replay_buffer = True
+    agent.restore_exploration_state = True
+    agent.restore_reward_normalizer = True
+
+    agent.load_checkpoint(str(checkpoint_path))
+
+    assert len(agent.actor_optimizers[0].state_dict()["state"]) > 0
+    assert len(agent.critic_optimizers[0].state_dict()["state"]) > 0
+    assert len(agent.critic_optimizers_2[0].state_dict()["state"]) > 0
+    assert agent.replay_buffer.loaded_state == {"entries": 7}
+    assert agent.sigma == 0.123
+    assert agent.exploration_step == 42
+    assert agent.reward_norm_count == 9
+    assert agent.reward_norm_mean == 3.0
+    assert agent.reward_norm_m2 == 4.0
 
 
 def test_maddpg_update_uses_terminated_or_truncated_for_done():
