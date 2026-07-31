@@ -393,8 +393,8 @@ cobertura multi-building começou, não que os agentes estejam prontos para CC.
 
 ## Estado de promoção e execução remota
 
-A implementação está isolada na branch
-`codex/local-rl-milp-validation-20260730`. Os snapshots one-off foram retirados
+A implementação está integrada diretamente em `main`; a branch auxiliar usada
+durante a organização da worktree foi removida. Os snapshots one-off foram retirados
 de `configs/experiments` e preservados sob `runs/config_snapshots`; os templates
 permanentes já não contêm caminhos para `/home` ou `runs`. A suite completa
 terminou com `758 passed` e 28 warnings conhecidos.
@@ -431,3 +431,66 @@ bater o RBC em pelo menos duas seeds. Só depois se congelam os agentes locais.
 O CC permanece fora dos atores: quando chegar essa fase, verá a comunidade e
 atuará apenas através do multiplicador de preço efetivo; os leaves continuam
 sem observações comunitárias.
+
+## Continuação de 31 de julho: segurança local e referências maiores
+
+O diagnóstico do `Building_15` encontrou dois erros de contrato no shield
+local. Primeiro, o headroom observado pelo entity interface já era residual à
+ação anterior e estava a ser tratado como um novo orçamento; em passos
+consecutivos isto descontava a ação anterior duas vezes. O adapter passou a
+reconstruir o envelope substituível com `last_applied_power_kw`, sem transformar
+headroom zero-filled de edifícios sem serviço configurado num limite falso.
+Segundo, o modo `deadline_feasible` calculava a capacidade futura antes da
+reserva elétrica, enquanto o projector executava depois dessa reserva. O
+deadline e o projector usam agora o mesmo envelope reservado total e por fase.
+
+Com a primeira correção e reserva de 1 kW, o TD3 BC-only com replay EV
+estratificado terminou o smoke `[0,672)` em EUR 457,1696 contra EUR 477,0224 do
+RBC (-4,16%), passou 17/17 gates e removeu a falha física do `Building_15`:
+minimum feasible 1,0, precisão 0,9091 e zero violações elétricas. Ainda perdeu
+isoladamente em `Building_7` (+EUR 0,2130), `Building_10` (+EUR 2,3097) e
+`Building_12` (+EUR 0,7444), portanto não está promovido. O checkpoint PPO
+anterior, reavaliado com o mesmo shield, ficou em EUR 465,1052, apenas 11/17
+edifícios abaixo do RBC e rejeitou o minimum EV do `Building_15`; também não
+está promovido.
+
+Foi ainda identificado que o TD3 guardava como label BC a ação raw do teacher,
+apesar de executar no replay a ação pós-projector. No teacher diagnóstico curto,
+as descargas EV de `Building_10` e `Building_12` pertenciam apenas a sessões
+truncadas à direita e eram alteradas pelo shield. A próxima receita usa labels
+teacher projetadas no mesmo estado e o teacher maior exato descrito abaixo; o
+teacher `[0,672)` continua apenas diagnóstico.
+
+## Teacher exato `[0,1316)` e holdout exato `[3688,4360)`
+
+A janela de treino `[0,1316)` tem 1.316 transições, 103 sessões EV, 14 ciclos
+deferrable e nenhuma sessão cortada ou chegada SOC ambígua. O MILP total
+individual foi ótimo nos 17 subproblemas e o replay CityLearn passou 17/17
+gates. O replay custou EUR 857,4945 contra EUR 938,9482 do RBC (-8,67%); 16/17
+edifícios bateram o RBC, sendo `Building_15` a única exceção (+EUR 1,4158).
+A schedule foi empacotada portavelmente em
+`configs/demonstrations/local_total_energy_v1/train_0_1316_exact` e não é
+diagnóstica.
+
+A primeira tentativa de validação `[1316,1988)` fica em quarentena. O reset no
+passo inicial foi corrigido para usar o SOC efetivo do schema em vez da row
+anterior ao episódio. Contudo, duas ligações posteriores (`Building_10` e
+`Building_15`) não fornecem `current_soc` nem arrival SOC. Nesses casos o
+CityLearn conserva e faz evoluir o SOC do EV desligado através de um passeio
+aleatório multiplicativo determinístico para o seed/episódio; um MILP estático
+que use o SOC do schema não reproduz essa trajetória. O builder marca agora
+estas sessões e força `boundary_service_exact=false`.
+
+Foi selecionado um holdout separado, `[3688,4360)`, com 672 transições, 54
+sessões EV, sete ciclos deferrable e zero cortes/arrivals ambíguas. Os 17 MILPs
+individuais terminaram `optimal`, com objetivo linear agregado de EUR 368,6389.
+O replay CityLearn custou EUR 366,4114 contra EUR 433,8211 do RBC (-15,54%),
+passou 17/17 gates, teve zero violações elétricas e colocou 17/17 edifícios
+abaixo do RBC. Esta passa a ser a janela matching de validação; a diferença
+replay-modelo reflete a formulação conservadora/linear e não altera a claim:
+ótimo para o modelo fornecido e replay factível, não ótimo global do simulador.
+
+Não foi lançado treino remoto nesta continuação. Primeiro fecham-se os labels
+BC pós-projector, os testes e a nova receita local; depois organizam-se commits
+em `main`, publica-se uma imagem do commit e repete-se o preflight do Job
+Orchestrator. O CC continua explicitamente fora de escopo.
