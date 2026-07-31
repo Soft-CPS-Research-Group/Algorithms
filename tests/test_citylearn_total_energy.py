@@ -49,6 +49,10 @@ def test_extracts_full_real_dataset_assets_and_reserved_service() -> None:
     assert diagnostics.charger_count == 8
     assert diagnostics.left_truncated_ev_session_ids == ()
     assert diagnostics.assumed_initial_soc_ev_session_ids == ()
+    # Twenty-five later connections have no current/arrival SOC in the
+    # packaged dataset.  CityLearn drifts those EVs while disconnected, so a
+    # static schema fallback is visible and cannot be called replay-exact.
+    assert len(diagnostics.runtime_drift_initial_soc_ev_session_ids) == 25
     # Each charger is still state=1 in the last dataset row, so all eight
     # terminal sessions are explicitly right-censored rather than treated as
     # observed departures.
@@ -109,8 +113,56 @@ def test_later_window_marks_left_soc_assumption_and_restricts_cycle() -> None:
     assert built.problem.metadata["boundary_service_exact"] is False
     assert (
         built.problem.metadata["ev_initial_soc_source"][session.session_id]
-        == "original_arrival_soc_assumed_at_window_start"
+        == "schema_episode_reset"
     )
+    assert session.initial_energy_kwh == pytest.approx(60.0 * 0.25)
+
+
+def test_nonzero_episode_boundary_uses_citylearn_reset_soc_not_prior_dataset_row() -> None:
+    built = build_citylearn_total_energy_problem(
+        schema_path=_SCHEMA,
+        start_time_step=1316,
+        end_time_step=1404,
+        building_ids=("Building_1",),
+        problem_id="nonzero-boundary-reset-soc",
+    )
+
+    session = built.problem.ev_sessions[0]
+    assert session.session_id.endswith("session_0015::1316_1396")
+    # Row 1315 advertises an incoming SOC of 0.46, but it is outside the
+    # episode.  CityLearn resets EV7 to its schema initial SOC of 0.25.
+    assert session.initial_energy_kwh == pytest.approx(60.0 * 0.25)
+    assert (
+        built.problem.metadata["ev_initial_soc_source"][session.session_id]
+        == "schema_episode_reset"
+    )
+
+
+def test_later_connection_without_arrival_soc_is_explicitly_not_replay_exact() -> None:
+    built = build_citylearn_total_energy_problem(
+        schema_path=_SCHEMA,
+        start_time_step=1316,
+        end_time_step=1500,
+        building_ids=("Building_10",),
+        problem_id="runtime-drift-arrival-diagnostic",
+    )
+
+    session_id = "Building_10::charger_10_1::session_0013::1440_1496"
+    assert built.diagnostics.runtime_drift_initial_soc_ev_session_ids == (
+        session_id,
+    )
+    assert built.diagnostics.boundary_service_exact is False
+    assert built.problem.metadata["boundary_service_exact"] is False
+    assert (
+        built.problem.metadata["ev_initial_soc_source"][session_id]
+        == (
+            "citylearn_deterministic_schema_seed_fallback_"
+            "runtime_drift_unreproducible"
+        )
+    )
+    assert "runtime_drift_initial_soc_reason" in built.problem.metadata[
+        "boundary_diagnostics"
+    ]
 
 
 def test_initial_sessions_match_citylearn_deterministic_soc_for_b10_and_b12() -> None:

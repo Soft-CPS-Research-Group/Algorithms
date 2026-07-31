@@ -39,8 +39,17 @@ KPI_NAMES: Mapping[str, str] = {
     "settled_cost_eur": "building_cost_community_market_settled_total_eur",
     "cost_bau_eur": "building_cost_total_business_as_usual_eur",
     "ev_departure_count": "building_ev_events_departure_count",
+    "ev_min_acceptable_count": (
+        "building_ev_events_departure_min_acceptable_count"
+    ),
     "ev_min_acceptable_feasible_rate": (
         "building_ev_performance_departure_min_acceptable_feasible_ratio"
+    ),
+    "ev_min_acceptable_rate": (
+        "building_ev_performance_departure_min_acceptable_ratio"
+    ),
+    "ev_min_acceptable_infeasible_count": (
+        "building_ev_events_departure_min_acceptable_infeasible_count"
     ),
     "ev_within_tolerance_feasible_rate": (
         "building_ev_performance_departure_within_tolerance_feasible_ratio"

@@ -19,6 +19,9 @@ def _write_export(
     b1_cost: float,
     b2_cost: float,
     b2_ev: float,
+    b2_ev_min_count: float | None = None,
+    b2_ev_raw: float | None = None,
+    b2_ev_min_infeasible_count: float = 0.0,
     b2_violation_kwh: float = 0.0,
     b2_violation_events: float = 0.0,
 ) -> None:
@@ -28,7 +31,19 @@ def _write_export(
         "building_cost_community_market_settled_total_eur": (b1_cost, b2_cost),
         "building_cost_total_business_as_usual_eur": (20.0, 40.0),
         "building_ev_events_departure_count": (0.0, 2.0),
+        "building_ev_events_departure_min_acceptable_count": (
+            0.0,
+            2.0 if b2_ev_min_count is None else b2_ev_min_count,
+        ),
         "building_ev_performance_departure_min_acceptable_feasible_ratio": (None, b2_ev),
+        "building_ev_performance_departure_min_acceptable_ratio": (
+            None,
+            b2_ev if b2_ev_raw is None else b2_ev_raw,
+        ),
+        "building_ev_events_departure_min_acceptable_infeasible_count": (
+            0.0,
+            b2_ev_min_infeasible_count,
+        ),
         "building_ev_performance_departure_within_tolerance_feasible_ratio": (None, 0.5),
         "building_electrical_service_phase_violations_energy_total_kwh": (0.0, b2_violation_kwh),
         "building_electrical_service_phase_violations_event_count": (0.0, b2_violation_events),
@@ -73,6 +88,33 @@ def test_building_audit_applies_gates_and_baseline_per_building(tmp_path):
     assert summary["ppo"]["local_cost_delta_to_baseline_eur_median"] == -1.5
     assert summary["ppo"]["local_cost_delta_to_baseline_eur_worst"] == -1.0
     assert summary["ppo"]["all_buildings_pass_local_gates"] == 0
+
+
+def test_building_audit_exposes_raw_ev_service_and_infeasible_departures_without_changing_gate(
+    tmp_path,
+):
+    candidate_dir = tmp_path / "candidate"
+    _write_export(
+        candidate_dir,
+        b1_cost=10.0,
+        b2_cost=30.0,
+        b2_ev=1.0,
+        b2_ev_min_count=1.0,
+        b2_ev_raw=0.5,
+        b2_ev_min_infeasible_count=1.0,
+    )
+
+    row = {
+        item["building"]: item for item in audit_run("candidate", candidate_dir)
+    }["Building_2"]
+
+    assert row["ev_min_acceptable_feasible_rate"] == 1.0
+    assert row["ev_min_acceptable_count"] == 1.0
+    assert row["ev_min_acceptable_rate"] == 0.5
+    assert row["ev_min_acceptable_infeasible_count"] == 1.0
+    # The frozen Phase 10 W6 gate remains based on feasible departures.
+    assert row["pass_ev_service"] == 1
+    assert row["local_gate_decision"] == "PASS_LOCAL_GATES"
 
 
 def test_building_audit_reports_oracle_regret_and_gap_closure(tmp_path):

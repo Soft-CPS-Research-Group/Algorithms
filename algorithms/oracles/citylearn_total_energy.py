@@ -38,6 +38,11 @@ from algorithms.oracles.total_energy_milp import (
 
 
 _PHASES = ("L1", "L2", "L3")
+_RUNTIME_DRIFT_INITIAL_SOC_REASON = (
+    "Connection occurs after episode reset without electric_vehicle_current_soc "
+    "or an explicit arrival SOC. CityLearn evolves unconnected EV SOC at runtime, "
+    "so the static schema initial SOC fallback cannot reproduce that state."
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,7 @@ class CityLearnTotalEnergyDiagnostics:
     left_truncated_ev_session_ids: tuple[str, ...]
     right_truncated_ev_session_ids: tuple[str, ...]
     assumed_initial_soc_ev_session_ids: tuple[str, ...]
+    runtime_drift_initial_soc_ev_session_ids: tuple[str, ...]
     restricted_deferrable_cycle_ids: tuple[str, ...]
     omitted_boundary_deferrable_cycle_ids: tuple[str, ...]
     electrical_service_reserve_kw: float
@@ -71,6 +77,7 @@ class CityLearnTotalEnergyDiagnostics:
                 self.left_truncated_ev_session_ids,
                 self.right_truncated_ev_session_ids,
                 self.assumed_initial_soc_ev_session_ids,
+                self.runtime_drift_initial_soc_ev_session_ids,
                 self.restricted_deferrable_cycle_ids,
                 self.omitted_boundary_deferrable_cycle_ids,
             )
@@ -98,6 +105,10 @@ class CityLearnTotalEnergyDiagnostics:
             "assumed_initial_soc_ev_session_ids": list(
                 self.assumed_initial_soc_ev_session_ids
             ),
+            "runtime_drift_initial_soc_ev_session_ids": list(
+                self.runtime_drift_initial_soc_ev_session_ids
+            ),
+            "runtime_drift_initial_soc_reason": _RUNTIME_DRIFT_INITIAL_SOC_REASON,
             "restricted_deferrable_cycle_ids": list(
                 self.restricted_deferrable_cycle_ids
             ),
@@ -395,12 +406,27 @@ def _arrival_soc(
     ev_id: str,
     default_soc: float,
     default_source: str,
+    episode_start: int,
 ) -> tuple[float, str]:
     if "electric_vehicle_current_soc" in frame:
         candidate = frame.iloc[session_start]["electric_vehicle_current_soc"]
         if pd.notna(candidate):
             return _soc(candidate, default=default_soc), "current_soc"
     arrival_column = "electric_vehicle_estimated_soc_arrival"
+    # A non-zero CityLearn episode is reset at its local time step zero.  The
+    # original dataset row immediately before the window is not loaded into
+    # that episode and therefore cannot seed its EV battery.  Mirror the
+    # runtime contract: use an explicit value on the current row when
+    # available, otherwise retain the effective schema initial SOC.
+    if session_start == episode_start and episode_start > 0:
+        if arrival_column in frame:
+            candidate = frame.iloc[session_start][arrival_column]
+            if pd.notna(candidate):
+                return (
+                    _soc(candidate, default=default_soc),
+                    "arrival_at_episode_start",
+                )
+        return float(default_soc), f"{default_source}_episode_reset"
     if arrival_column in frame:
         if session_start > 0:
             previous = frame.iloc[session_start - 1]
@@ -480,6 +506,7 @@ def build_citylearn_total_energy_problem(
     left_ev: list[str] = []
     right_ev: list[str] = []
     assumed_ev: list[str] = []
+    runtime_drift_ev: list[str] = []
     restricted_cycles: list[str] = []
     omitted_cycles: list[str] = []
     ev_initial_sources: dict[str, str] = {}
@@ -597,16 +624,17 @@ def build_citylearn_total_energy_problem(
                 else:
                     schema_initial_soc = _soc(configured_initial_soc)
                     schema_initial_source = "schema"
-                arrival_soc, initial_source = _arrival_soc(
-                    frame,
-                    global_start,
-                    ev_id=ev_id,
-                    default_soc=schema_initial_soc,
-                    default_source=schema_initial_source,
-                )
                 clipped_start = max(global_start, start)
                 clipped_end = min(global_end, end)
                 left_truncated = global_start < start
+                arrival_soc, initial_source = _arrival_soc(
+                    frame,
+                    clipped_start,
+                    ev_id=ev_id,
+                    default_soc=schema_initial_soc,
+                    default_source=schema_initial_source,
+                    episode_start=start,
+                )
                 # A run that remains connected in the final dataset row is
                 # right-censored: ``global_end == len(frame)`` reflects EOF,
                 # not an observed departure.  Do not manufacture a terminal
@@ -621,16 +649,15 @@ def build_citylearn_total_energy_problem(
                 )
                 if left_truncated:
                     left_ev.append(session_id)
-                    if "electric_vehicle_current_soc" in frame and pd.notna(
-                        frame.iloc[clipped_start]["electric_vehicle_current_soc"]
-                    ):
-                        arrival_soc = _soc(
-                            frame.iloc[clipped_start]["electric_vehicle_current_soc"]
-                        )
-                        initial_source = "current_soc_at_window_start"
-                    else:
+                    if initial_source != "current_soc":
                         assumed_ev.append(session_id)
-                        initial_source = "original_arrival_soc_assumed_at_window_start"
+                if (
+                    clipped_start > start
+                    and initial_source
+                    in {"schema", "citylearn_deterministic_schema_seed_fallback"}
+                ):
+                    runtime_drift_ev.append(session_id)
+                    initial_source = f"{initial_source}_runtime_drift_unreproducible"
                 if right_truncated:
                     right_ev.append(session_id)
                 ev_initial_sources[session_id] = initial_source
@@ -779,6 +806,7 @@ def build_citylearn_total_energy_problem(
         left_truncated_ev_session_ids=tuple(left_ev),
         right_truncated_ev_session_ids=tuple(right_ev),
         assumed_initial_soc_ev_session_ids=tuple(assumed_ev),
+        runtime_drift_initial_soc_ev_session_ids=tuple(runtime_drift_ev),
         restricted_deferrable_cycle_ids=tuple(restricted_cycles),
         omitted_boundary_deferrable_cycle_ids=tuple(omitted_cycles),
         electrical_service_reserve_kw=reserve_kw,
