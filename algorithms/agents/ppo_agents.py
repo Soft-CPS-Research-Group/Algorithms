@@ -70,6 +70,9 @@ class _PPOBase(BaseAgent):
         self.clip_ratio = float(max(exploration_cfg.get("clip_ratio", 0.2), 1.0e-6))
         self.entropy_coef = float(max(exploration_cfg.get("entropy_coef", 0.01), 0.0))
         self.value_loss_coef = float(max(exploration_cfg.get("value_loss_coef", 0.5), 0.0))
+        self.actor_policy_loss_weight = float(
+            max(exploration_cfg.get("actor_policy_loss_weight", 1.0), 0.0)
+        )
         self.max_grad_norm = float(max(exploration_cfg.get("max_grad_norm", 0.5), 0.0))
         self.ppo_epochs = max(1, int(exploration_cfg.get("ppo_epochs", 4) or 4))
         self.rollout_length = max(
@@ -1400,7 +1403,7 @@ class _PPOBase(BaseAgent):
                     )
                     actor_regularization_loss = self._actor_action_regularization_loss(agent_idx, obs_batch)
                     loss = (
-                        policy_loss
+                        self.actor_policy_loss_weight * policy_loss
                         + self.value_loss_coef * value_loss
                         - self.entropy_coef * entropy
                         + behavior_cloning_weight * behavior_cloning_loss
@@ -1951,7 +1954,10 @@ class _PPOBase(BaseAgent):
             f"{self.metric_prefix}/ppo_epochs": float(self.ppo_epochs),
             f"{self.metric_prefix}/clip_ratio": float(self.clip_ratio),
             f"{self.metric_prefix}/entropy_coef": float(self.entropy_coef),
-            f"{self.metric_prefix}/value_loss_coef": float(self.value_loss_coef),
+                f"{self.metric_prefix}/value_loss_coef": float(self.value_loss_coef),
+                f"{self.metric_prefix}/actor_policy_loss_weight": float(
+                    self.actor_policy_loss_weight
+                ),
             f"{self.metric_prefix}/gae_lambda": float(self.gae_lambda),
             f"{self.metric_prefix}/value_scope_global": float(self.value_scope == "global"),
             f"{self.metric_prefix}/agent_update_order_random": float(self.agent_update_order == "random"),

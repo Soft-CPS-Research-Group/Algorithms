@@ -86,6 +86,13 @@ def _agent(**exploration_overrides) -> PPO:
     return agent
 
 
+def test_ppo_actor_policy_loss_weight_is_configurable() -> None:
+    agent = _agent(actor_policy_loss_weight=0.0)
+
+    assert agent.actor_policy_loss_weight == 0.0
+    assert agent.get_diagnostic_metrics()["PPO/actor_policy_loss_weight"] == 0.0
+
+
 def _transition(agent: PPO, observation, action) -> None:
     agent.update(
         observations=[observation],
