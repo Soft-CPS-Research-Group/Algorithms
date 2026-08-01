@@ -45,7 +45,7 @@ def _build_agent_for_exploration() -> MADDPG:
 def test_select_torch_device_fails_when_cuda_is_required_but_unavailable(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
-    with pytest.raises(RuntimeError, match="require_cuda=true"):
+    with pytest.raises(RuntimeError, match="MADDPG requires CUDA"):
         _select_torch_device(require_cuda=True)
 
     assert _select_torch_device(require_cuda=False).type == "cpu"

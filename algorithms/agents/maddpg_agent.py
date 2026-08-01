@@ -33,13 +33,15 @@ REPLAY_BUFFER_REGISTRY = {
 }
 
 
-def _select_torch_device(*, require_cuda: bool = False) -> torch.device:
+def _select_torch_device(
+    *, require_cuda: bool = False, algorithm_name: str = "MADDPG"
+) -> torch.device:
     """Select the torch device and fail early when CUDA was explicitly required."""
     if torch.cuda.is_available():
         return torch.device("cuda")
     if require_cuda:
         raise RuntimeError(
-            "MADDPG was configured with require_cuda=true, but torch.cuda.is_available() is false."
+            f"{algorithm_name} requires CUDA, but torch.cuda.is_available() is false."
         )
     return torch.device("cpu")
 

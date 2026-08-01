@@ -33,6 +33,7 @@ from loguru import logger
 from torch import nn
 
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.agents.maddpg_agent import _log_torch_runtime, _select_torch_device
 from algorithms.utils.entity_observation_tokenizer import (
     EntityObservationTokenizer,
 )
@@ -108,6 +109,13 @@ class AgentTransformerPPO(BaseAgent):
         self._dropout = float(transformer_cfg.get("dropout", 0.1))
 
         h = dict(algo["hyperparameters"])
+        self.require_cuda = bool(h.get("require_cuda", False))
+        self.device = _select_torch_device(
+            require_cuda=self.require_cuda,
+            algorithm_name="AgentTransformerPPO",
+        )
+        _log_torch_runtime(self.device)
+        torch.backends.cudnn.benchmark = self.device.type == "cuda"
         self._lr = float(h["learning_rate"])
         self._gamma = float(h["gamma"])
         self._gae_lambda = float(h["gae_lambda"])
@@ -456,18 +464,20 @@ class AgentTransformerPPO(BaseAgent):
             tokenizer_config=self._tokenizer_config,
             d_model=self._d_model,
             type_input_dims=type_input_dims,
-        )
+        ).to(self.device)
         backbone = TransformerBackbone(
             d_model=self._d_model,
             nhead=self._nhead,
             num_layers=self._num_layers,
             dim_feedforward=self._dim_feedforward,
             dropout=self._dropout,
-        )
-        actor = ActorHead(d_model=self._d_model, hidden_dim=self._actor_hidden_dim)
+        ).to(self.device)
+        actor = ActorHead(
+            d_model=self._d_model, hidden_dim=self._actor_hidden_dim
+        ).to(self.device)
         critic = CriticHead(
             d_model=self._d_model, hidden_dim=self._critic_hidden_dim
-        )
+        ).to(self.device)
         params = (
             list(tokenizer.parameters())
             + list(backbone.parameters())
