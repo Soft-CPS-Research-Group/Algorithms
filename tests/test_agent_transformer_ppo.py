@@ -508,9 +508,13 @@ def test_cuda_export_keeps_in_memory_actor_on_cuda(tmp_path: Path) -> None:
     config["algorithm"]["hyperparameters"]["require_cuda"] = True
     agent, _, _, _ = _make_agent(config=config)
 
-    agent.export_artifacts(str(tmp_path))
+    manifest = agent.export_artifacts(str(tmp_path))
 
     assert next(agent._per_building[0].actor.parameters()).device.type == "cuda"
+    for artifact in manifest["artifacts"]:
+        path = tmp_path / artifact["path"]
+        assert path.exists()
+        assert path.stat().st_size > 0
 
 
 # ---------------------------------------------------------------------------
