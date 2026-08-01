@@ -166,6 +166,8 @@ class Wrapper_CityLearn(RLC):
         }
         self._entity_topology_version: Optional[int] = None
         self._topology_changed_during_step: bool = False
+        self._pending_model_environment_attach: bool = False
+        self._defer_model_environment_attach: bool = False
         self._entity_adapter: Optional[EntityContractAdapter] = None
         self.model = model
 
@@ -512,7 +514,10 @@ class Wrapper_CityLearn(RLC):
                 )
 
         if topology_changed and self.model is not None:
-            self._attach_model_environment_metadata()
+            if self._defer_model_environment_attach:
+                self._pending_model_environment_attach = True
+            else:
+                self._attach_model_environment_metadata()
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
 
@@ -1304,11 +1309,15 @@ class Wrapper_CityLearn(RLC):
                 )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 if self._entity_interface_mode:
-                    next_observations = self._apply_entity_layout(
-                        next_observations_raw,
-                        force_attach=False,
-                        model_observations=self._entity_model_observations_direct,
-                    )
+                    self._defer_model_environment_attach = not deterministic
+                    try:
+                        next_observations = self._apply_entity_layout(
+                            next_observations_raw,
+                            force_attach=False,
+                            model_observations=self._entity_model_observations_direct,
+                        )
+                    finally:
+                        self._defer_model_environment_attach = False
                 else:
                     next_observations = next_observations_raw
                 if should_profile_step:
@@ -1352,7 +1361,7 @@ class Wrapper_CityLearn(RLC):
 
                 # Update model if not in deterministic mode
                 if not deterministic:
-                    if self._topology_changed_during_step:
+                    if self._topology_changed_during_step and not self._pending_model_environment_attach:
                         logger.debug(
                             "Skipping model.update at global step {} due to mid-step topology change.",
                             self.global_step,
@@ -1370,14 +1379,19 @@ class Wrapper_CityLearn(RLC):
                         )
                         self._synchronize_model_cuda_for_timing()
                         phase_start_time = time.perf_counter()
-                        self.update(
-                            observations,
-                            actions,
-                            rewards,
-                            next_observations,
-                            terminated=terminated,
-                            truncated=truncated,
-                        )
+                        if self._pending_model_environment_attach:
+                            self._pending_model_environment_attach = False
+                            self._refresh_update_schedule()
+                            self._attach_model_environment_metadata()
+                        else:
+                            self.update(
+                                observations,
+                                actions,
+                                rewards,
+                                next_observations,
+                                terminated=terminated,
+                                truncated=truncated,
+                            )
                         self._synchronize_model_cuda_for_timing()
                         model_update_duration = time.perf_counter() - phase_start_time
                         self._last_model_update_seconds = model_update_duration
@@ -1410,6 +1424,7 @@ class Wrapper_CityLearn(RLC):
                             global_step_total=global_step_total,
                             rewards=rewards,
                         )
+                        self._topology_changed_during_step = False
 
                     self._write_phase_progress(
                         phase="checkpoint_start",
@@ -2348,28 +2363,7 @@ class Wrapper_CityLearn(RLC):
             logger.error("Model is not set. Use `set_model` to provide a model.")
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        # Determine whether to update
-        if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
-            self.update_step = True
-        else:
-            self.update_step = self.global_step % self.steps_between_training_updates == 0
-        logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
-
-        # Exploration phase ownership belongs to the algorithm.
-        self.initial_exploration_done = bool(self.model.is_initial_exploration_done(self.global_step))
-        logger.debug(
-            "Initial exploration done: {} (global step={})",
-            self.initial_exploration_done,
-            self.global_step,
-        )
-
-        # Determine whether to update the target networks
-        if not self.target_update_interval:
-            self.update_target_step = False
-        else:
-            self.update_target_step = self.global_step % self.target_update_interval == 0
-        logger.debug(
-            "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
+        self._refresh_update_schedule()
 
         phase_start_time = time.perf_counter()
         direct_entity_model_observations = bool(
@@ -2411,6 +2405,30 @@ class Wrapper_CityLearn(RLC):
         )
         self._last_model_update_seconds = time.perf_counter() - phase_start_time
         return update_result
+
+    def _refresh_update_schedule(self) -> None:
+        """Refresh per-step training and checkpoint scheduling state."""
+        if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
+            self.update_step = True
+        else:
+            self.update_step = self.global_step % self.steps_between_training_updates == 0
+        logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
+
+        # Exploration phase ownership belongs to the algorithm.
+        self.initial_exploration_done = bool(self.model.is_initial_exploration_done(self.global_step))
+        logger.debug(
+            "Initial exploration done: {} (global step={})",
+            self.initial_exploration_done,
+            self.global_step,
+        )
+
+        # Determine whether to update the target networks
+        if not self.target_update_interval:
+            self.update_target_step = False
+        else:
+            self.update_target_step = self.global_step % self.target_update_interval == 0
+        logger.debug(
+            "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
     def _should_log_step(self, step: int) -> bool:
         return step % self.step_metric_interval == 0
