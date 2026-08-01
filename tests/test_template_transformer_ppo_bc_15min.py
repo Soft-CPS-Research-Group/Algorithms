@@ -6,9 +6,11 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import torch
 import yaml
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.agents import agent_transformer_ppo
 from algorithms.registry import build_execution_unit
 from utils.config_schema import validate_config
 
@@ -254,6 +256,8 @@ def test_server_template_has_full_year_15min_bc_contract(
     assert tracking["runtime_profiling_enabled"] is True
     assert tracking["runtime_profiling_interval"] == 512
     assert tracking["runtime_profiling_detail"] == "summary"
+    assert tracking["max_step_seconds"] == pytest.approx(240.0)
+    assert tracking["max_update_seconds"] == pytest.approx(2400.0)
     assert tracking["stall_watchdog_enabled"] is True
     assert tracking["stall_watchdog_timeout_seconds"] == pytest.approx(2400.0)
     assert tracking["resource_guard_enabled"] is True
@@ -287,6 +291,7 @@ def test_server_template_has_full_year_15min_bc_contract(
         "entropy_coeff": pytest.approx(0.03),
         "value_coeff": pytest.approx(0.5),
         "max_grad_norm": pytest.approx(1.0),
+        "require_cuda": True,
     }
 
     assert behavior_cloning["enabled"] is True
@@ -316,8 +321,14 @@ def test_server_template_builds_agent_with_requested_bc_duration(
     template_path: Path,
     bc_decay_steps: int,
     phaseout_steps: int,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     del duration_name
+    monkeypatch.setattr(
+        agent_transformer_ppo,
+        "_select_torch_device",
+        lambda **_: torch.device("cpu"),
+    )
     agent = build_execution_unit(_load_yaml(template_path))
 
     assert isinstance(agent, AgentTransformerPPO)
@@ -359,7 +370,9 @@ def test_server_templates_use_full_year_dynamic_15min_dataset_coordinates() -> N
         assert simulator.get("topology_event_time_offset", 0) == 0
 
 
-def test_year_template_reaches_zero_teacher_influence_within_episode() -> None:
+def test_year_template_reaches_zero_teacher_influence_within_episode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     year_path = next(
         template_path
         for duration_name, template_path, _, _ in SERVER_TEMPLATE_CASES
@@ -375,6 +388,11 @@ def test_year_template_reaches_zero_teacher_influence_within_episode() -> None:
     assert bc["decay_steps"] == final_update_step
     assert bc["warm_start"]["phaseout_steps"] == decision_count
 
+    monkeypatch.setattr(
+        agent_transformer_ppo,
+        "_select_torch_device",
+        lambda **_: torch.device("cpu"),
+    )
     agent = build_execution_unit(config)
     assert agent._bc is not None
     assert agent._bc.effective_weight(final_update_step) == pytest.approx(0.0)

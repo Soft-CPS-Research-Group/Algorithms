@@ -47,6 +47,7 @@ tracking:
   progress_phase_start_step: 0
   progress_phase_end_step: null
   max_step_seconds: 240.0
+  max_update_seconds: 2400.0
   stall_watchdog_enabled: true
   stall_watchdog_timeout_seconds: 2400.0
   stall_watchdog_exit_on_timeout: true
@@ -141,6 +142,7 @@ pipeline:
       entropy_coeff: 0.03
       value_coeff: 0.5
       max_grad_norm: 1.0
+      require_cuda: true
     behavior_cloning:
       enabled: true
       weight: 0.42
