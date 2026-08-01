@@ -22,6 +22,7 @@ Checkpoint resume across topology changes is out of scope —
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
@@ -468,7 +469,7 @@ class AgentTransformerPPO(BaseAgent):
         return str(path)
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
-        payload = torch.load(checkpoint_path, map_location="cpu")
+        payload = torch.load(checkpoint_path, map_location=self.device)
         agents = payload["agents"]
         if len(agents) != len(self._per_building):
             raise ValueError(
@@ -490,6 +491,10 @@ class AgentTransformerPPO(BaseAgent):
             state.actor.load_state_dict(saved["actor_state"])
             state.critic.load_state_dict(saved["critic_state"])
             state.optimizer.load_state_dict(saved["optimizer_state"])
+            for parameter_state in state.optimizer.state.values():
+                for key, value in parameter_state.items():
+                    if isinstance(value, torch.Tensor):
+                        parameter_state[key] = value.to(self.device)
 
     # ==========================================================================
     # Internal helpers
@@ -961,9 +966,9 @@ class AgentTransformerPPO(BaseAgent):
         sro_types = [s.type_name for s in layout.segments if s.family == "sro"]
         ca_types = [s.type_name for s in layout.segments if s.family == "ca"]
 
-        tokenizer = state.tokenizer
-        backbone = state.backbone
-        actor = state.actor
+        tokenizer = deepcopy(state.tokenizer).to("cpu").eval()
+        backbone = deepcopy(state.backbone).to("cpu").eval()
+        actor = deepcopy(state.actor).to("cpu").eval()
 
         class _ExportWrapper(nn.Module):
             def __init__(self_inner) -> None:
