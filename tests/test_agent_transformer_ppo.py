@@ -65,11 +65,14 @@ def _base_config() -> dict:
     }
 
 
-def _make_agent(n_buildings: int = 1) -> tuple[AgentTransformerPPO, List[List[str]], List[List[str]], int]:
+def _make_agent(
+    n_buildings: int = 1,
+    config: dict | None = None,
+) -> tuple[AgentTransformerPPO, List[List[str]], List[List[str]], int]:
     obs_names = load_sample_observation_names_for_first_building()
     obs_names_per = [list(obs_names) for _ in range(n_buildings)]
     act_names_per = [list(_DEFAULT_ACTIONS) for _ in range(n_buildings)]
-    agent = AgentTransformerPPO(_base_config())
+    agent = AgentTransformerPPO(config or _base_config())
     agent.attach_environment(
         observation_names=obs_names_per,
         action_names=act_names_per,
@@ -109,6 +112,35 @@ def test_supports_dynamic_topology_classvar_true() -> None:
 # ---------------------------------------------------------------------------
 # predict / update
 # ---------------------------------------------------------------------------
+
+
+def test_device_defaults_to_cpu_when_cuda_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    agent = AgentTransformerPPO(_base_config())
+
+    assert agent.device.type == "cpu"
+
+
+def test_require_cuda_raises_when_cuda_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    config = _base_config()
+    config["algorithm"]["hyperparameters"]["require_cuda"] = True
+
+    with pytest.raises(RuntimeError, match="requires CUDA"):
+        AgentTransformerPPO(config)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_places_each_model_on_cuda() -> None:
+    config = _base_config()
+    config["algorithm"]["hyperparameters"]["require_cuda"] = True
+
+    agent, _, _, _ = _make_agent(n_buildings=2, config=config)
+
+    for state in agent._per_building:
+        for module in (state.tokenizer, state.backbone, state.actor, state.critic):
+            assert next(module.parameters()).device.type == "cuda"
 
 
 def test_predict_shape_and_range() -> None:
