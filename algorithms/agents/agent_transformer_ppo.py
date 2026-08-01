@@ -262,7 +262,9 @@ class AgentTransformerPPO(BaseAgent):
         det = bool(deterministic) if deterministic is not None else False
         out: List[List[float]] = []
         for state, obs in zip(self._per_building, observations):
-            obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float).unsqueeze(0)
+            obs_t = torch.as_tensor(
+                np.asarray(obs), dtype=torch.float, device=self.device
+            ).unsqueeze(0)
             with torch.no_grad():
                 tokenized = state.tokenizer(obs_t, state.layout)
                 ca_emb, _ = state.backbone(
@@ -273,7 +275,14 @@ class AgentTransformerPPO(BaseAgent):
                 actions, _, _ = state.actor(ca_emb, deterministic=det)
             # ActorHead returns ``[B, N_ca, 1]``; the wrapper expects a flat
             # per-CA list.
-            out.append(actions.squeeze(0).squeeze(-1).clamp(-1.0, 1.0).tolist())
+            out.append(
+                actions.squeeze(0)
+                .squeeze(-1)
+                .clamp(-1.0, 1.0)
+                .detach()
+                .cpu()
+                .tolist()
+            )
         if self._bc is None:
             return out
         teacher_observations = (
@@ -306,10 +315,10 @@ class AgentTransformerPPO(BaseAgent):
         done = bool(terminated or truncated)
         for b, state in enumerate(self._per_building):
             obs_t = torch.as_tensor(
-                np.asarray(observations[b]), dtype=torch.float
+                np.asarray(observations[b]), dtype=torch.float, device=self.device
             ).unsqueeze(0)
             act_t = torch.as_tensor(
-                np.asarray(actions[b]), dtype=torch.float
+                np.asarray(actions[b]), dtype=torch.float, device=self.device
             )
             # Reshape actions to ``[1, N_ca, 1]`` to match ActorHead output.
             act_t = act_t.view(1, state.layout.n_ca, 1)
@@ -323,11 +332,11 @@ class AgentTransformerPPO(BaseAgent):
                 value = state.critic(pooled).squeeze(-1)  # [1]
                 log_prob = self._compute_log_prob(state.actor, ca_emb, act_t)
             state.buffer.add(
-                observation=obs_t.squeeze(0),
-                action=act_t.squeeze(0),
-                log_prob=log_prob.squeeze(0),
+                observation=obs_t.squeeze(0).detach().cpu(),
+                action=act_t.squeeze(0).detach().cpu(),
+                log_prob=log_prob.squeeze(0).detach().cpu(),
                 reward=max(float(rewards[b]), -self._reward_clip),
-                value=value,
+                value=value.detach().cpu(),
                 done=done,
             )
             if self._bc is not None:
@@ -631,7 +640,7 @@ class AgentTransformerPPO(BaseAgent):
                 # forward through the new layout's critic.
                 self._run_ppo_update_with_last_value(
                     state,
-                    last_value=torch.zeros(1),
+                    last_value=torch.zeros(1, device=self.device),
                     building_idx=building_idx,
                 )
             finally:
@@ -819,7 +828,7 @@ class AgentTransformerPPO(BaseAgent):
         except IndexError:
             next_obs = None
         if next_obs is None:
-            last_value = torch.zeros(1)
+            last_value = torch.zeros(1, device=self.device)
         else:
             last_value = self._critic_value(
                 state, np.asarray(next_obs, dtype=np.float64)
@@ -836,7 +845,9 @@ class AgentTransformerPPO(BaseAgent):
         obs: npt.NDArray[np.float64],
     ) -> torch.Tensor:
         with torch.no_grad():
-            obs_t = torch.as_tensor(obs, dtype=torch.float).unsqueeze(0)
+            obs_t = torch.as_tensor(
+                obs, dtype=torch.float, device=self.device
+            ).unsqueeze(0)
             tokenized = state.tokenizer(obs_t, state.layout)
             _, pooled = state.backbone(
                 tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
@@ -850,13 +861,16 @@ class AgentTransformerPPO(BaseAgent):
         *,
         building_idx: int,
     ) -> None:
-        state.buffer.compute_returns_and_advantages(last_value)
+        state.buffer.compute_returns_and_advantages(last_value.detach().cpu())
         all_metrics: dict = {"policy_loss": [], "value_loss": [], "entropy": []}
         for _epoch in range(self._ppo_epochs):
             for batch in state.buffer.get_batches(self._minibatch_size):
                 state.optimizer.zero_grad()
-                obs_b = batch.observations  # [B, obs_dim]
-                act_b = batch.actions  # [B, N_ca, 1]
+                obs_b = batch.observations.to(self.device)  # [B, obs_dim]
+                act_b = batch.actions.to(self.device)  # [B, N_ca, 1]
+                log_probs_old_b = batch.log_probs.to(self.device)
+                advantages_b = batch.advantages.to(self.device)
+                returns_b = batch.returns.to(self.device)
                 # Forward through tokenizer + backbone with grads on.
                 tokenized = state.tokenizer(obs_b, state.layout)
                 ca_emb, pooled = state.backbone(
@@ -870,14 +884,14 @@ class AgentTransformerPPO(BaseAgent):
                 # Sum over CA actions per step → scalar per step (matches
                 # log_probs_old shape stored in buffer).
                 log_probs_new_sum = log_probs_new.sum(dim=-1)
-                log_probs_old_sum = batch.log_probs.sum(dim=-1)
+                log_probs_old_sum = log_probs_old_b.sum(dim=-1)
                 values = state.critic(pooled).squeeze(-1)  # [B]
                 loss, _metrics = compute_ppo_loss(
                     log_probs_new=log_probs_new_sum,
                     log_probs_old=log_probs_old_sum,
-                    advantages=batch.advantages,
+                    advantages=advantages_b,
                     values=values,
-                    returns=batch.returns,
+                    returns=returns_b,
                     clip_eps=self._clip_eps,
                     value_coeff=self._value_coeff,
                     entropy_coeff=self._entropy_coeff,
