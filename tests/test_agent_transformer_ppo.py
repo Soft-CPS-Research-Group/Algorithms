@@ -86,6 +86,25 @@ def _make_agent(
     return agent, obs_names_per, act_names_per, obs_dim
 
 
+def _run_minimal_ppo_update(agent: AgentTransformerPPO, obs_dim: int) -> None:
+    """Run exactly one PPO update using the configured minibatch size."""
+    state = agent._per_building[0]
+    rng = np.random.default_rng(0)
+    for step in range(agent._minibatch_size):
+        agent.update(
+            observations=[rng.standard_normal(obs_dim)],
+            actions=[rng.uniform(-0.5, 0.5, size=state.layout.n_ca)],
+            rewards=[0.1],
+            next_observations=[rng.standard_normal(obs_dim)],
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=step == agent._minibatch_size - 1,
+            initial_exploration_done=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -435,6 +454,30 @@ def test_checkpoint_signature_mismatch_same_cardinality(tmp_path: Path) -> None:
         fresh.load_checkpoint(path)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_cuda_checkpoint_restores_optimizer_state_on_cuda(tmp_path: Path) -> None:
+    config = _base_config()
+    config["algorithm"]["hyperparameters"].update(
+        require_cuda=True,
+        minibatch_size=2,
+    )
+    agent, _, _, obs_dim = _make_agent(config=config)
+    _run_minimal_ppo_update(agent, obs_dim)
+    path = agent.save_checkpoint(str(tmp_path), step=1)
+    assert path is not None
+
+    restored, _, _, _ = _make_agent(config=config)
+    restored.load_checkpoint(path)
+    state = restored._per_building[0]
+    assert next(state.actor.parameters()).device.type == "cuda"
+    assert all(
+        value.device.type == "cuda"
+        for parameter_state in state.optimizer.state.values()
+        for value in parameter_state.values()
+        if isinstance(value, torch.Tensor)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Artifact export
 # ---------------------------------------------------------------------------
@@ -457,6 +500,17 @@ def test_export_artifacts_writes_files_and_returns_manifest(tmp_path: Path) -> N
         assert "topology_v7" in entry["path"]
         assert entry["config"]["n_ca"] == 2
         assert set(entry["config"]["ca_types"]) <= {"storage", "charger"}
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_cuda_export_keeps_in_memory_actor_on_cuda(tmp_path: Path) -> None:
+    config = _base_config()
+    config["algorithm"]["hyperparameters"]["require_cuda"] = True
+    agent, _, _, _ = _make_agent(config=config)
+
+    agent.export_artifacts(str(tmp_path))
+
+    assert next(agent._per_building[0].actor.parameters()).device.type == "cuda"
 
 
 # ---------------------------------------------------------------------------
