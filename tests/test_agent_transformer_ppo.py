@@ -143,6 +143,56 @@ def test_places_each_model_on_cuda() -> None:
             assert next(module.parameters()).device.type == "cuda"
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_tppo_keeps_rollouts_on_cpu_and_moves_ppo_batches_to_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config()
+    config["algorithm"]["hyperparameters"].update(
+        require_cuda=True,
+        minibatch_size=2,
+        ppo_epochs=1,
+    )
+    agent, _, _, obs_dim = _make_agent(config=config)
+    state = agent._per_building[0]
+    seen_devices: list[str] = []
+    tokenizer_forward = state.tokenizer.forward
+
+    def record_forward(observations: torch.Tensor, layout):
+        seen_devices.append(observations.device.type)
+        return tokenizer_forward(observations, layout)
+
+    monkeypatch.setattr(state.tokenizer, "forward", record_forward)
+    rng = np.random.default_rng(0)
+
+    for step in range(2):
+        agent.update(
+            observations=[rng.standard_normal(obs_dim)],
+            actions=[rng.uniform(-0.5, 0.5, size=state.layout.n_ca)],
+            rewards=[0.1],
+            next_observations=[rng.standard_normal(obs_dim)],
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=step == 1,
+            initial_exploration_done=True,
+        )
+        if step == 0:
+            assert all(
+                tensor.device.type == "cpu"
+                for tensor in (
+                    state.buffer.observations
+                    + state.buffer.actions
+                    + state.buffer.log_probs
+                    + state.buffer.values
+                )
+            )
+
+    assert seen_devices and set(seen_devices) == {"cuda"}
+    assert len(state.buffer) == 0
+
+
 def test_predict_shape_and_range() -> None:
     agent, _, _, obs_dim = _make_agent(n_buildings=2)
     obs = [np.random.rand(obs_dim).astype(np.float64) for _ in range(2)]
