@@ -277,6 +277,46 @@ def test_topology_change_flushes_bc_buffers() -> None:
     assert isinstance(agent._bc.teacher_policy, RBCCommunityPolicy)
 
 
+def test_topology_reattach_clears_cached_teacher_actions() -> None:
+    agent, obs_per, act_per, _ = _make_agent(config=_bc_config())
+    assert agent._bc is not None
+    agent._bc.set_latest_teacher_actions(
+        [[0.25 for _ in range(agent._per_building[0].layout.n_ca)]]
+    )
+
+    original_charger_id = next(
+        name.split("::")[1]
+        for name in obs_per[0]
+        if (
+            name.startswith("charger::")
+            and "::connected_ev::" not in name
+            and "::incoming_ev::" not in name
+        )
+    )
+    replacement_charger_id = "Building_1/charger_BC_CACHE_RESET"
+    new_observations = list(obs_per[0])
+    new_observations.extend(
+        name.replace(
+            f"charger::{original_charger_id}::",
+            f"charger::{replacement_charger_id}::",
+            1,
+        )
+        for name in obs_per[0]
+        if name.startswith(f"charger::{original_charger_id}::")
+    )
+    new_actions = list(act_per[0]) + ["electric_vehicle_storage"]
+
+    agent.attach_environment(
+        observation_names=[new_observations],
+        action_names=[new_actions],
+        action_space=[_DummySpace(len(new_actions))],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+
+    assert agent._bc.latest_teacher_actions is None
+
+
 def test_partial_topology_change_preserves_unchanged_bc_buffer_alignment() -> None:
     agent, obs_per, act_per, obs_dim = _make_agent(config=_bc_config(), n_buildings=2)
     assert agent._bc is not None
