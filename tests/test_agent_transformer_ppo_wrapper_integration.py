@@ -11,10 +11,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+import numpy as np
 import pytest
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
 from tests.test_wrapper_entity_mode import _DummyEntityEnv, _entity_config
+from utils import wrapper_citylearn as wrapper_module
 from utils.wrapper_citylearn import Wrapper_CityLearn
 
 
@@ -180,3 +182,92 @@ def test_non_dynamic_agent_in_entity_dynamic_still_rejected_on_topology_change()
         wrapper._apply_entity_layout(
             env._observation_payload(version=1), force_attach=False
         )
+
+
+def test_wrapper_publishes_training_metrics_with_active_mlflow(monkeypatch) -> None:
+    """Training diagnostics must be consumed and sent through the MLflow path."""
+
+    class _Space:
+        def __init__(self, low: float, high: float) -> None:
+            self.low = np.array([low], dtype=np.float64)
+            self.high = np.array([high], dtype=np.float64)
+
+    class _Env:
+        def __init__(self) -> None:
+            self.observation_names = [["obs_0"]]
+            self.observation_space = [_Space(0.0, 1.0)]
+            self.action_names = [["action_0"]]
+            self.action_space = [_Space(-1.0, 1.0)]
+            self.reward_function = type("Reward", (), {})()
+            self.time_steps = 1
+            self.seconds_per_time_step = 3600
+            self.time_step_ratio = 1.0
+            self.random_seed = 0
+            self.episode_tracker = type("Tracker", (), {"episode_time_steps": 1})()
+            self.unwrapped = self
+
+        def reset(self):
+            return [np.array([0.0], dtype=np.float64)], {}
+
+        def step(self, _actions):
+            return [np.array([0.0], dtype=np.float64)], [1.0], True, False, {}
+
+        def get_metadata(self):
+            return {"buildings": [{}]}
+
+    class _Model:
+        use_raw_observations = True
+
+        def __init__(self) -> None:
+            self.consume_calls = 0
+
+        def attach_environment(self, **_kwargs) -> None:
+            pass
+
+        def predict(self, observations, deterministic=None):
+            return [[0.0] for _ in observations]
+
+        def update(self, **_kwargs) -> None:
+            pass
+
+        def is_initial_exploration_done(self, _global_step: int) -> bool:
+            return True
+
+        def consume_latest_training_metrics(self):
+            self.consume_calls += 1
+            return {
+                "approx_kl": 0.1,
+                "ratio_error_max": 0.2,
+                "explained_variance": 0.3,
+            }
+
+    logged = []
+    monkeypatch.setattr(wrapper_module.mlflow, "active_run", lambda: object())
+    monkeypatch.setattr(
+        wrapper_module.mlflow,
+        "log_metrics",
+        lambda metrics, step=None: logged.append((metrics, step)),
+    )
+    wrapper = Wrapper_CityLearn(
+        env=_Env(),
+        model=_Model(),
+        config={
+            "training": {},
+            "checkpointing": {},
+            "tracking": {
+                "mlflow_enabled": True,
+                "log_frequency": 1,
+                "mlflow_step_sample_interval": 1,
+                "progress_updates_enabled": False,
+            },
+        },
+        job_id="ppo-mlflow-metrics",
+    )
+
+    wrapper.learn(episodes=1)
+
+    step_metrics = next(metrics for metrics, step in logged if step == 1)
+    assert step_metrics["approx_kl"] == 0.1
+    assert step_metrics["ratio_error_max"] == 0.2
+    assert step_metrics["explained_variance"] == 0.3
+    assert wrapper.model.consume_calls == 1

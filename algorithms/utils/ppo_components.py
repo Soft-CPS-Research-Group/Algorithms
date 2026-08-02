@@ -280,6 +280,12 @@ class RolloutBuffer:
         Args:
             last_value: Value estimate for the state after the last transition.
         """
+        if any(self.truncated[:-1]):
+            raise ValueError(
+                "RolloutBuffer must be flushed at a truncation boundary; "
+                "one last_value cannot bootstrap an interior truncation."
+            )
+
         n = len(self.rewards)
         advantages = torch.zeros(n)
         returns = torch.zeros(n)
@@ -292,11 +298,12 @@ class RolloutBuffer:
         next_value = last_value.squeeze()
 
         for t in reversed(range(n)):
-            # Only terminal states prevent value bootstrapping. Truncation
-            # boundaries retain the caller-provided bootstrap value.
-            mask = 1.0 - float(self.terminated[t])
-            delta = self.rewards[t] + self.gamma * next_value * mask - values[t]
-            gae = delta + self.gamma * self.gae_lambda * mask * gae
+            bootstrap_mask = 1.0 - float(self.terminated[t])
+            is_truncated = self.truncated[t]
+            bootstrap_value = last_value.squeeze() if is_truncated else next_value
+            delta = self.rewards[t] + self.gamma * bootstrap_value * bootstrap_mask - values[t]
+            continuation_mask = bootstrap_mask * (1.0 - float(is_truncated))
+            gae = delta + self.gamma * self.gae_lambda * continuation_mask * gae
             advantages[t] = gae
             returns[t] = gae + values[t]
             next_value = values[t]
@@ -389,34 +396,60 @@ def compute_ppo_loss(
                ``clip_fraction``, ``approx_kl``, ``ratio_error_max``, and
                ``explained_variance``.
     """
-    # Probability ratio
-    log_ratio = log_probs_new - log_probs_old
+    # Float64 intermediates keep finite float16 and float32 inputs finite.
+    # The clamp bounds every finite log-ratio before exponentiation.
+    loss_dtype = torch.float64 if log_probs_new.dtype in (torch.float16, torch.float32) else log_probs_new.dtype
+    log_probs_new_loss = log_probs_new.to(dtype=loss_dtype)
+    log_probs_old_loss = log_probs_old.to(dtype=loss_dtype)
+    advantages_loss = advantages.to(dtype=loss_dtype)
+    values_loss = values.to(dtype=loss_dtype)
+    returns_loss = returns.to(dtype=loss_dtype)
+
+    log_ratio = torch.clamp(log_probs_new_loss - log_probs_old_loss, min=-20.0, max=20.0)
     ratio = torch.exp(log_ratio)
 
     # Clipped surrogate objective
-    surr1 = ratio * advantages
-    surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * advantages
+    def surrogate_with_safe_gradient(surrogate_ratio: torch.Tensor) -> torch.Tensor:
+        surrogate = surrogate_ratio * advantages_loss
+        max_source_gradient = torch.finfo(log_probs_new.dtype).max
+        gradient_ratio = torch.minimum(
+            surrogate_ratio,
+            surrogate_ratio.new_tensor(max_source_gradient) / advantages_loss.abs().clamp_min(1.0),
+        )
+        gradient_surrogate = gradient_ratio * advantages_loss
+        return surrogate.detach() + gradient_surrogate - gradient_surrogate.detach()
+
+    surr1 = surrogate_with_safe_gradient(ratio)
+    surr2 = surrogate_with_safe_gradient(torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps))
     policy_loss = -torch.min(surr1, surr2).mean()
 
     # Smooth L1 keeps gradients for large residuals without quadratic growth.
-    value_loss = torch.nn.functional.smooth_l1_loss(values, returns)
+    value_loss = torch.nn.functional.smooth_l1_loss(values_loss, returns_loss)
 
     # Entropy bonus (approximate using log_probs)
     # For squashed Gaussian, entropy is complex; use simple approximation
-    entropy = -log_probs_new.mean()
+    entropy = -log_probs_new_loss.mean()
 
     # Combined loss
     total_loss = policy_loss + value_coeff * value_loss - entropy_coeff * entropy
 
     # Clip fraction: proportion of samples where ratio was clipped
     clip_fraction = ((ratio - 1.0).abs() > clip_eps).float().mean().item()
-    approx_kl = ((ratio - 1.0) - log_ratio).mean()
-    ratio_error_max = (ratio - 1.0).abs().max()
-    returns_variance = returns.var(unbiased=False)
-    explained_variance = 1.0 - (returns - values).var(unbiased=False) / torch.clamp(
+    diagnostic_ratio = torch.nan_to_num(ratio.to(dtype=torch.float64))
+    diagnostic_dtype = torch.float32 if log_probs_new.dtype == torch.float16 else log_probs_new.dtype
+    diagnostic_log_ratio = log_ratio.to(dtype=diagnostic_dtype)
+    diagnostic_ppo_ratio = ratio.to(dtype=diagnostic_dtype)
+    approx_kl = ((diagnostic_ppo_ratio - 1.0) - diagnostic_log_ratio).mean()
+    ratio_error_max = (diagnostic_ratio - 1.0).abs().max()
+    diagnostic_returns = returns_loss.to(dtype=torch.float64)
+    diagnostic_values = values_loss.to(dtype=torch.float64)
+    returns_variance = diagnostic_returns.var(unbiased=False)
+    explained_variance = 1.0 - (diagnostic_returns - diagnostic_values).var(unbiased=False) / torch.clamp(
         returns_variance,
         min=1e-8,
     )
+    if not torch.isfinite(explained_variance):
+        explained_variance = torch.zeros_like(explained_variance)
 
     metrics = {
         "policy_loss": policy_loss.item(),

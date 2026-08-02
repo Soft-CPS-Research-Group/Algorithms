@@ -131,6 +131,26 @@ def test_predict_deterministic_is_repeatable() -> None:
     assert a1 == a2
 
 
+def test_off_cadence_truncation_discards_undersized_rollout() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    state = agent._per_building[0]
+
+    agent.update(
+        observations=[np.zeros(obs_dim, dtype=np.float64)],
+        actions=[np.zeros(state.layout.n_ca, dtype=np.float64)],
+        rewards=[0.1],
+        next_observations=[np.zeros(obs_dim, dtype=np.float64)],
+        terminated=False,
+        truncated=True,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    assert len(state.buffer) == 0
+
+
 def test_update_appends_to_buffer_then_ppo_step_clears() -> None:
     agent, _, _, obs_dim = _make_agent(n_buildings=1)
     state = agent._per_building[0]
@@ -177,6 +197,106 @@ def test_update_appends_to_buffer_then_ppo_step_clears() -> None:
     assert len(state.buffer) == 0  # cleared after PPO step
     p_after = next(state.actor.parameters()).clone().detach()
     assert not torch.allclose(p_before, p_after), "PPO step should update actor weights"
+
+
+def test_off_cadence_truncation_flushes_before_next_episode_update() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    state = agent._per_building[0]
+    rng = np.random.default_rng(1)
+
+    for step in range(4):
+        agent.update(
+            observations=[rng.standard_normal(obs_dim)],
+            actions=[rng.uniform(-0.5, 0.5, size=(state.layout.n_ca,))],
+            rewards=[0.1],
+            next_observations=[rng.standard_normal(obs_dim)],
+            terminated=False,
+            truncated=step == 3,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    assert len(state.buffer) == 0
+
+    agent.update(
+        observations=[rng.standard_normal(obs_dim)],
+        actions=[rng.uniform(-0.5, 0.5, size=(state.layout.n_ca,))],
+        rewards=[0.1],
+        next_observations=[rng.standard_normal(obs_dim)],
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=4,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    assert len(state.buffer) == 0
+
+
+def test_successful_ppo_update_publishes_training_diagnostics() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    state = agent._per_building[0]
+    rng = np.random.default_rng(2)
+
+    for step in range(4):
+        agent.update(
+            observations=[rng.standard_normal(obs_dim)],
+            actions=[rng.uniform(-0.5, 0.5, size=(state.layout.n_ca,))],
+            rewards=[0.1],
+            next_observations=[rng.standard_normal(obs_dim)],
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=step == 3,
+            initial_exploration_done=True,
+        )
+
+    metrics = agent.consume_latest_training_metrics()
+    assert {"approx_kl", "ratio_error_max", "explained_variance"} <= metrics.keys()
+
+
+def test_ppo_update_normalizes_returns_but_keeps_gae_values_in_raw_scale() -> None:
+    """Critic normalizer updates from returns without changing stored raw values."""
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    state = agent._per_building[0]
+    state.value_normalizer.update(torch.tensor([100.0, 104.0]))
+    critic_output = state.critic.mlp[-1]
+    assert isinstance(critic_output, torch.nn.Linear)
+    with torch.no_grad():
+        critic_output.weight.zero_()
+        critic_output.bias.fill_(3.0)
+
+    observed: dict[str, torch.Tensor] = {}
+    original_compute = state.buffer.compute_returns_and_advantages
+
+    def capture_gae_inputs(last_value: torch.Tensor) -> None:
+        observed["values"] = torch.stack(state.buffer.values).clone()
+        observed["last_value"] = last_value.clone()
+        original_compute(last_value)
+
+    state.buffer.compute_returns_and_advantages = capture_gae_inputs  # type: ignore[method-assign]
+    rng = np.random.default_rng(8)
+    for step in range(4):
+        agent.update(
+            observations=[rng.standard_normal(obs_dim)],
+            actions=[rng.uniform(-0.5, 0.5, size=(state.layout.n_ca,))],
+            rewards=[0.1],
+            next_observations=[rng.standard_normal(obs_dim)],
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=step == 3,
+            initial_exploration_done=True,
+        )
+
+    assert torch.allclose(observed["values"], torch.full((4, 1), 108.0))
+    assert torch.allclose(observed["last_value"], torch.tensor([108.0]))
+    assert state.value_normalizer.count == 6
 
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,7 @@ from algorithms.utils.ppo_components import (
     ActorHead,
     CriticHead,
     RolloutBuffer,
+    RunningValueNormalizer,
     compute_ppo_loss,
 )
 from algorithms.utils.transformer_backbone import TransformerBackbone
@@ -69,6 +70,7 @@ class _PerBuildingState:
     critic: CriticHead
     optimizer: torch.optim.Optimizer
     buffer: RolloutBuffer
+    value_normalizer: RunningValueNormalizer
     layout: BuildingTokenLayout
     obs_names_tuple: Tuple[str, ...]
     action_names_tuple: Tuple[str, ...]
@@ -295,7 +297,6 @@ class AgentTransformerPPO(BaseAgent):
         del update_target_step, initial_exploration_done
         self._latest_global_learning_step = int(global_learning_step)
 
-        done = bool(terminated or truncated)
         for b, state in enumerate(self._per_building):
             obs_t = torch.as_tensor(
                 np.asarray(observations[b]), dtype=torch.float
@@ -312,7 +313,9 @@ class AgentTransformerPPO(BaseAgent):
                     tokenized.nfc_token,
                     tokenized.ca_tokens,
                 )
-                value = state.critic(pooled).squeeze(-1)  # [1]
+                value = state.value_normalizer.denormalize(
+                    state.critic(pooled).squeeze(-1)
+                )  # [1] raw scale for GAE
                 log_prob = self._compute_log_prob(state.actor, ca_emb, act_t)
             state.buffer.add(
                 observation=obs_t.squeeze(0),
@@ -320,12 +323,13 @@ class AgentTransformerPPO(BaseAgent):
                 log_prob=log_prob.squeeze(0),
                 reward=max(float(rewards[b]), -self._reward_clip),
                 value=value,
-                done=done,
+                terminated=terminated,
+                truncated=truncated,
             )
             if self._bc is not None:
                 self._bc.record_transition(b)
 
-        if not update_step:
+        if not (update_step or terminated or truncated):
             return
 
         for b, state in enumerate(self._per_building):
@@ -597,6 +601,7 @@ class AgentTransformerPPO(BaseAgent):
             critic=critic,
             optimizer=optimizer,
             buffer=buffer,
+            value_normalizer=RunningValueNormalizer(),
             layout=layout,
             obs_names_tuple=tuple(observation_names),
             action_names_tuple=tuple(action_names),
@@ -795,7 +800,7 @@ class AgentTransformerPPO(BaseAgent):
         # gradients on near-saturated stored actions). Skip with a warning.
         if len(state.buffer) < self._minibatch_size:
             logger.warning(
-                "Skipping PPO update for {}: buffer_size={} < minibatch_size={}. "
+                "Discarding PPO rollout for {}: buffer_size={} < minibatch_size={}. "
                 "Increase `simulator.steps_between_training_updates` (recommended >= 256) "
                 "to give PPO a real trajectory to learn from.",
                 getattr(state, "building_id", "?"),
@@ -831,7 +836,9 @@ class AgentTransformerPPO(BaseAgent):
             _, pooled = state.backbone(
                 tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
             )
-            return state.critic(pooled).squeeze(-1)
+            return state.value_normalizer.denormalize(
+                state.critic(pooled).squeeze(-1)
+            )
 
     def _run_ppo_update_with_last_value(
         self,
@@ -841,6 +848,8 @@ class AgentTransformerPPO(BaseAgent):
         building_idx: int,
     ) -> None:
         state.buffer.compute_returns_and_advantages(last_value)
+        assert state.buffer.returns is not None
+        state.value_normalizer.update(state.buffer.returns)
         all_metrics: dict = {"policy_loss": [], "value_loss": [], "entropy": []}
         for _epoch in range(self._ppo_epochs):
             for batch in state.buffer.get_batches(self._minibatch_size):
@@ -861,13 +870,13 @@ class AgentTransformerPPO(BaseAgent):
                 # log_probs_old shape stored in buffer).
                 log_probs_new_sum = log_probs_new.sum(dim=-1)
                 log_probs_old_sum = batch.log_probs.sum(dim=-1)
-                values = state.critic(pooled).squeeze(-1)  # [B]
+                values = state.critic(pooled).squeeze(-1)  # [B], normalized scale
                 loss, _metrics = compute_ppo_loss(
                     log_probs_new=log_probs_new_sum,
                     log_probs_old=log_probs_old_sum,
                     advantages=batch.advantages,
                     values=values,
-                    returns=batch.returns,
+                    returns=state.value_normalizer.normalize(batch.returns),
                     clip_eps=self._clip_eps,
                     value_coeff=self._value_coeff,
                     entropy_coeff=self._entropy_coeff,
@@ -893,6 +902,7 @@ class AgentTransformerPPO(BaseAgent):
                 for k, v in _metrics.items():
                     all_metrics.setdefault(k, []).append(v)
         averaged = {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
+        self._latest_training_metrics.update(averaged)
         if self._bc is not None:
             self._latest_training_metrics.update(self._bc.snapshot_metrics())
         building_id = getattr(state, "building_id", "?")

@@ -1470,8 +1470,7 @@ class Wrapper_CityLearn(RLC):
                     metrics.update(self._collect_model_status_metrics())
                     metrics.update(self._build_action_diagnostic_metrics(actions, step_observations))
                     metrics.update(self._build_reward_component_metrics())
-                    if not mlflow.active_run():
-                        metrics.update(self._consume_model_training_metrics())
+                    metrics.update(self._consume_model_training_metrics())
                     if should_profile_step:
                         metrics["Runtime/diagnostics_build_seconds"] = (
                             time.perf_counter() - diagnostics_start_time
