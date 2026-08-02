@@ -316,6 +316,10 @@ class AgentTransformerPPO(BaseAgent):
         if self._bc is not None and self._bc.should_skip_ppo_transition():
             # PPO needs actions sampled by its actor. Teacher-controlled actions
             # remain available to the environment but cannot enter this rollout.
+            if bool(terminated or truncated):
+                for building_idx, state in enumerate(self._per_building):
+                    if state.buffer.dones:
+                        state.buffer.dones[-1] = True
             return
 
         done = bool(terminated or truncated)

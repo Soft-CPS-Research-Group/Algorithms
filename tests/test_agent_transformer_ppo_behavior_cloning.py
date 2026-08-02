@@ -200,6 +200,49 @@ def test_update_excludes_phaseout_controlled_actions_from_ppo_rollout() -> None:
     assert agent._bc.teacher_action_buffers == [[]]
 
 
+def test_phaseout_terminal_step_closes_prior_ppo_transition() -> None:
+    agent, _, _, obs_dim = _make_agent(
+        config=_bc_config(phaseout_mode="blend", phaseout_steps=4)
+    )
+    assert agent._bc is not None
+    rng = np.random.default_rng(6)
+    observations, actions, next_observations = _random_transition(agent, obs_dim, rng)
+    teacher_actions = [[0.1 for _ in range(agent._per_building[0].layout.n_ca)]]
+    agent._bc.set_latest_teacher_actions(teacher_actions)
+    agent.update(
+        observations=observations,
+        actions=actions,
+        rewards=[0.1],
+        next_observations=next_observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    agent._bc.set_latest_teacher_actions(
+        [[0.25 for _ in range(agent._per_building[0].layout.n_ca)]]
+    )
+    agent._bc._latest_phaseout_used = True
+    agent.update(
+        observations=observations,
+        actions=actions,
+        rewards=[0.1],
+        next_observations=next_observations,
+        terminated=True,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=1,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    assert agent._per_building[0].buffer.dones == [True]
+    assert agent._bc.teacher_action_buffers == [teacher_actions]
+
+
 def test_update_records_teacher_actions_aligned_with_buffer() -> None:
     agent, _, _, obs_dim = _make_agent(config=_bc_config())
     teacher_actions = [[0.1 for _ in range(agent._per_building[0].layout.n_ca)]]
