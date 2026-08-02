@@ -632,7 +632,15 @@ class TransformerPPOTransformerConfig(BaseModel):
     nhead: int = Field(ge=1)
     num_layers: int = Field(ge=1)
     dim_feedforward: int = Field(ge=1)
-    dropout: float = Field(default=0.1, ge=0.0, le=1.0)
+    dropout: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def require_deterministic_representation(self) -> "TransformerPPOTransformerConfig":
+        if self.dropout != 0.0:
+            raise ValueError(
+                "AgentTransformerPPO requires transformer.dropout=0.0 because PPO old/new probability ratios must use the same representation."
+            )
+        return self
 
 
 class TransformerPPOHyperparameters(BaseModel):
@@ -645,6 +653,8 @@ class TransformerPPOHyperparameters(BaseModel):
     entropy_coeff: float = Field(ge=0)
     value_coeff: float = Field(ge=0)
     max_grad_norm: float = Field(gt=0)
+    actor_log_std_init: float = -0.5
+    require_cuda: bool = False
 
 
 class TransformerPPOWarmStartConfig(BaseModel):

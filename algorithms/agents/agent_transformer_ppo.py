@@ -33,6 +33,7 @@ from loguru import logger
 from torch import nn
 
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.agents.maddpg_agent import _log_torch_runtime, _select_torch_device
 from algorithms.utils.behavior_cloning import BehaviorCloningRegularizer
 from algorithms.utils.entity_observation_tokenizer import (
     EntityObservationTokenizer,
@@ -81,6 +82,16 @@ class _PerBuildingState:
     topology_version: int = 0
 
 
+@dataclass
+class _PendingDecision:
+    """Exact policy statistics collected for one environment decision."""
+
+    observation: torch.Tensor
+    action: torch.Tensor
+    log_prob: torch.Tensor
+    value: torch.Tensor
+
+
 def _atanh_safe(x: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
     """Numerically-safe inverse tanh used to recover the pre-squash sample
     from a stored ``[-1, 1]`` action."""
@@ -108,9 +119,19 @@ class AgentTransformerPPO(BaseAgent):
         self._nhead = int(transformer_cfg["nhead"])
         self._num_layers = int(transformer_cfg["num_layers"])
         self._dim_feedforward = int(transformer_cfg.get("dim_feedforward", 256))
-        self._dropout = float(transformer_cfg.get("dropout", 0.1))
+        self._dropout = float(transformer_cfg.get("dropout", 0.0))
 
         h = dict(algo["hyperparameters"])
+        self.require_cuda = bool(h.get("require_cuda", False))
+        try:
+            self.device = _select_torch_device(require_cuda=self.require_cuda)
+        except RuntimeError as error:
+            raise RuntimeError(
+                "AgentTransformerPPO was configured with require_cuda=true, but "
+                "torch.cuda.is_available() is false."
+            ) from error
+        logger.info("Device selected: {}", self.device)
+        _log_torch_runtime(self.device)
         self._lr = float(h["learning_rate"])
         self._gamma = float(h["gamma"])
         self._gae_lambda = float(h["gae_lambda"])
@@ -127,9 +148,11 @@ class AgentTransformerPPO(BaseAgent):
         self._critic_hidden_dim = int(
             h.get("critic_hidden_dim", max(32, self._d_model * 2))
         )
+        self._actor_log_std_init = float(h.get("actor_log_std_init", -0.5))
 
         self._layout_builder = EntityTokenLayoutBuilder(self._tokenizer_config)
         self._per_building: List[_PerBuildingState] = []
+        self._pending_decisions: List[Optional[_PendingDecision]] = []
         self._bc = BehaviorCloningRegularizer.from_config(algo, self.config)
         self.requires_raw_observation_context = bool(self._bc is not None)
         self._latest_raw_observations: Optional[List[npt.NDArray[np.float64]]] = None
@@ -187,6 +210,7 @@ class AgentTransformerPPO(BaseAgent):
             # Total building-count change is treated as a complete rebuild —
             # cannot resume per-building states across cardinality changes.
             self._per_building = []
+            self._pending_decisions = []
             self._build_all_per_building_states(
                 observation_names, action_names, metadata
             )
@@ -256,15 +280,26 @@ class AgentTransformerPPO(BaseAgent):
         det = bool(deterministic) if deterministic is not None else False
         out: List[List[float]] = []
         for state, obs in zip(self._per_building, observations):
-            obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float).unsqueeze(0)
+            obs_t = torch.as_tensor(
+                np.asarray(obs), dtype=torch.float, device=self.device
+            ).unsqueeze(0)
             with torch.no_grad():
                 tokenized = state.tokenizer(obs_t, state.layout)
-                ca_emb, _ = state.backbone(
+                ca_emb, pooled = state.backbone(
                     tokenized.sro_tokens,
                     tokenized.nfc_token,
                     tokenized.ca_tokens,
                 )
-                actions, _, _ = state.actor(ca_emb, deterministic=det)
+                actions, log_prob, _ = state.actor(ca_emb, deterministic=det)
+                value = state.value_normalizer.denormalize(
+                    state.critic(pooled).squeeze(-1)
+                )
+            self._pending_decisions[len(out)] = _PendingDecision(
+                observation=obs_t.squeeze(0).detach(),
+                action=actions.squeeze(0).detach(),
+                log_prob=log_prob.squeeze(0).detach(),
+                value=value.detach(),
+            )
             # ActorHead returns ``[B, N_ca, 1]``; the wrapper expects a flat
             # per-CA list.
             out.append(actions.squeeze(0).squeeze(-1).clamp(-1.0, 1.0).tolist())
@@ -298,34 +333,31 @@ class AgentTransformerPPO(BaseAgent):
         self._latest_global_learning_step = int(global_learning_step)
 
         for b, state in enumerate(self._per_building):
-            obs_t = torch.as_tensor(
-                np.asarray(observations[b]), dtype=torch.float
-            ).unsqueeze(0)
-            act_t = torch.as_tensor(
-                np.asarray(actions[b]), dtype=torch.float
-            )
-            # Reshape actions to ``[1, N_ca, 1]`` to match ActorHead output.
-            act_t = act_t.view(1, state.layout.n_ca, 1)
-            with torch.no_grad():
-                tokenized = state.tokenizer(obs_t, state.layout)
-                ca_emb, pooled = state.backbone(
-                    tokenized.sro_tokens,
-                    tokenized.nfc_token,
-                    tokenized.ca_tokens,
+            pending = self._pending_decisions[b]
+            if pending is None:
+                raise ValueError(
+                    f"TPPO update for building {state.building_id!r} has no pending "
+                    "decision. Call predict() and pass its returned action before update()."
                 )
-                value = state.value_normalizer.denormalize(
-                    state.critic(pooled).squeeze(-1)
-                )  # [1] raw scale for GAE
-                log_prob = self._compute_log_prob(state.actor, ca_emb, act_t)
+            executed_action = torch.as_tensor(
+                np.asarray(actions[b]), dtype=torch.float, device=self.device
+            ).view(state.layout.n_ca, 1)
+            if not torch.allclose(executed_action, pending.action, rtol=1.0e-6, atol=1.0e-6):
+                raise ValueError(
+                    f"Executed action for building {state.building_id!r} does not match "
+                    "the pending TPPO action from predict(). Pass predict()'s returned "
+                    "action unchanged, or call predict() again before update()."
+                )
             state.buffer.add(
-                observation=obs_t.squeeze(0),
-                action=act_t.squeeze(0),
-                log_prob=log_prob.squeeze(0),
+                observation=pending.observation,
+                action=pending.action,
+                log_prob=pending.log_prob,
                 reward=max(float(rewards[b]), -self._reward_clip),
-                value=value,
+                value=pending.value,
                 terminated=terminated,
                 truncated=truncated,
             )
+            self._pending_decisions[b] = None
             if self._bc is not None:
                 self._bc.record_transition(b)
 
@@ -505,6 +537,7 @@ class AgentTransformerPPO(BaseAgent):
                 building_id, list(obs_n), list(act_n)
             )
             self._per_building.append(state)
+            self._pending_decisions.append(None)
 
     def _attach_bc_environment(
         self,
@@ -581,10 +614,21 @@ class AgentTransformerPPO(BaseAgent):
             dim_feedforward=self._dim_feedforward,
             dropout=self._dropout,
         )
-        actor = ActorHead(d_model=self._d_model, hidden_dim=self._actor_hidden_dim)
+        actor = ActorHead(
+            d_model=self._d_model,
+            hidden_dim=self._actor_hidden_dim,
+            log_std_init=self._actor_log_std_init,
+        )
         critic = CriticHead(
             d_model=self._d_model, hidden_dim=self._critic_hidden_dim
         )
+        tokenizer.to(self.device)
+        backbone.to(self.device)
+        actor.to(self.device)
+        critic.to(self.device)
+        # TPPO requires identical representations for collection and PPO.
+        # Schema rejects dropout, but this also protects direct agent use.
+        backbone.eval()
         params = (
             list(tokenizer.parameters())
             + list(backbone.parameters())
@@ -610,6 +654,7 @@ class AgentTransformerPPO(BaseAgent):
     def _handle_topology_change(self, building_idx: int) -> None:
         """Flush PPO → rebuild layout → re-validate rules."""
         state = self._per_building[building_idx]
+        self._pending_decisions[building_idx] = None
 
         old_n_ca = state.layout.n_ca
         old_n_sro = state.layout.n_sro
@@ -626,7 +671,7 @@ class AgentTransformerPPO(BaseAgent):
                 # forward through the new layout's critic.
                 self._run_ppo_update_with_last_value(
                     state,
-                    last_value=torch.zeros(1),
+                    last_value=torch.zeros(1, device=self.device),
                     building_idx=building_idx,
                 )
             finally:
@@ -814,7 +859,7 @@ class AgentTransformerPPO(BaseAgent):
         except IndexError:
             next_obs = None
         if next_obs is None:
-            last_value = torch.zeros(1)
+            last_value = torch.zeros(1, device=self.device)
         else:
             last_value = self._critic_value(
                 state, np.asarray(next_obs, dtype=np.float64)
@@ -831,7 +876,9 @@ class AgentTransformerPPO(BaseAgent):
         obs: npt.NDArray[np.float64],
     ) -> torch.Tensor:
         with torch.no_grad():
-            obs_t = torch.as_tensor(obs, dtype=torch.float).unsqueeze(0)
+            obs_t = torch.as_tensor(
+                obs, dtype=torch.float, device=self.device
+            ).unsqueeze(0)
             tokenized = state.tokenizer(obs_t, state.layout)
             _, pooled = state.backbone(
                 tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
@@ -847,15 +894,18 @@ class AgentTransformerPPO(BaseAgent):
         *,
         building_idx: int,
     ) -> None:
-        state.buffer.compute_returns_and_advantages(last_value)
+        with torch.device(self.device):
+            state.buffer.compute_returns_and_advantages(last_value)
         assert state.buffer.returns is not None
         state.value_normalizer.update(state.buffer.returns)
         all_metrics: dict = {"policy_loss": [], "value_loss": [], "entropy": []}
         for _epoch in range(self._ppo_epochs):
-            for batch in state.buffer.get_batches(self._minibatch_size):
+            with torch.device(self.device):
+                batches = list(state.buffer.get_batches(self._minibatch_size))
+            for batch in batches:
                 state.optimizer.zero_grad()
-                obs_b = batch.observations  # [B, obs_dim]
-                act_b = batch.actions  # [B, N_ca, 1]
+                obs_b = batch.observations.to(self.device)  # [B, obs_dim]
+                act_b = batch.actions.to(self.device)  # [B, N_ca, 1]
                 # Forward through tokenizer + backbone with grads on.
                 tokenized = state.tokenizer(obs_b, state.layout)
                 ca_emb, pooled = state.backbone(
@@ -874,9 +924,9 @@ class AgentTransformerPPO(BaseAgent):
                 loss, _metrics = compute_ppo_loss(
                     log_probs_new=log_probs_new_sum,
                     log_probs_old=log_probs_old_sum,
-                    advantages=batch.advantages,
+                    advantages=batch.advantages.to(self.device),
                     values=values,
-                    returns=state.value_normalizer.normalize(batch.returns),
+                    returns=state.value_normalizer.normalize(batch.returns.to(self.device)),
                     clip_eps=self._clip_eps,
                     value_coeff=self._value_coeff,
                     entropy_coeff=self._entropy_coeff,

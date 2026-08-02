@@ -66,10 +66,17 @@ def _base_config() -> dict:
 
 
 def _make_agent(n_buildings: int = 1) -> tuple[AgentTransformerPPO, List[List[str]], List[List[str]], int]:
+    return _make_agent_with_config(_base_config(), n_buildings=n_buildings)
+
+
+def _make_agent_with_config(
+    config: dict,
+    n_buildings: int = 1,
+) -> tuple[AgentTransformerPPO, List[List[str]], List[List[str]], int]:
     obs_names = load_sample_observation_names_for_first_building()
     obs_names_per = [list(obs_names) for _ in range(n_buildings)]
     act_names_per = [list(_DEFAULT_ACTIONS) for _ in range(n_buildings)]
-    agent = AgentTransformerPPO(_base_config())
+    agent = AgentTransformerPPO(config)
     agent.attach_environment(
         observation_names=obs_names_per,
         action_names=act_names_per,
@@ -131,13 +138,114 @@ def test_predict_deterministic_is_repeatable() -> None:
     assert a1 == a2
 
 
+def test_predict_caches_exact_decision_for_ppo_update_with_dropout() -> None:
+    config = _base_config()
+    config["algorithm"]["transformer"]["dropout"] = 0.1
+    agent, _, _, obs_dim = _make_agent_with_config(config)
+    state = agent._per_building[0]
+    rng = np.random.default_rng(17)
+
+    for step in range(4):
+        obs = [rng.standard_normal(obs_dim)]
+        actions = agent.predict(obs, deterministic=False)
+        cached = agent._pending_decisions[0]
+        assert cached is not None
+        agent.update(
+            observations=obs,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.1],
+            next_observations=[rng.standard_normal(obs_dim)],
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=step == 3,
+            initial_exploration_done=True,
+        )
+        if step < 3:
+            assert torch.equal(state.buffer.actions[-1], cached.action.cpu())
+            assert torch.equal(state.buffer.log_probs[-1], cached.log_prob.cpu())
+            assert torch.equal(state.buffer.values[-1], cached.value.cpu())
+            assert agent._pending_decisions[0] is None
+
+    metrics = agent.consume_latest_training_metrics()
+    assert metrics["ratio_error_max"] <= 1.0e-5
+
+
+def test_update_rejects_action_that_differs_from_pending_decision() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    obs = [np.zeros(obs_dim, dtype=np.float64)]
+    actions = agent.predict(obs, deterministic=False)
+    actions[0][0] += 0.1
+
+    with pytest.raises(ValueError, match="does not match the pending TPPO action"):
+        agent.update(
+            observations=obs,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.1],
+            next_observations=obs,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=0,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+
+def test_actor_log_std_init_and_cpu_device_are_configured() -> None:
+    config = _base_config()
+    config["algorithm"]["hyperparameters"]["actor_log_std_init"] = -0.25
+    config["algorithm"]["hyperparameters"]["require_cuda"] = False
+    agent, _, _, _ = _make_agent_with_config(config)
+
+    assert agent.device.type == "cpu"
+    assert agent._per_building[0].actor.log_std.item() == pytest.approx(-0.25)
+
+
+def test_require_cuda_rejects_when_cuda_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    config = _base_config()
+    config["algorithm"]["hyperparameters"]["require_cuda"] = True
+
+    with pytest.raises(RuntimeError, match="AgentTransformerPPO.*require_cuda=true"):
+        AgentTransformerPPO(config)
+
+
+def test_transformer_ppo_schema_rejects_nonzero_dropout() -> None:
+    from utils.config_schema import TransformerPPOTransformerConfig
+
+    with pytest.raises(ValueError, match="AgentTransformerPPO requires transformer.dropout=0.0 because PPO old/new probability ratios must use the same representation."):
+        TransformerPPOTransformerConfig(
+            d_model=16,
+            nhead=2,
+            num_layers=1,
+            dim_feedforward=32,
+            dropout=0.1,
+        )
+
+
+def test_transformer_ppo_schema_defaults_dropout_to_zero() -> None:
+    from utils.config_schema import TransformerPPOTransformerConfig
+
+    config = TransformerPPOTransformerConfig(
+        d_model=16,
+        nhead=2,
+        num_layers=1,
+        dim_feedforward=32,
+    )
+
+    assert config.dropout == 0.0
+
+
 def test_off_cadence_truncation_discards_undersized_rollout() -> None:
     agent, _, _, obs_dim = _make_agent(n_buildings=1)
     state = agent._per_building[0]
 
+    observations = [np.zeros(obs_dim, dtype=np.float64)]
     agent.update(
-        observations=[np.zeros(obs_dim, dtype=np.float64)],
-        actions=[np.zeros(state.layout.n_ca, dtype=np.float64)],
+        observations=observations,
+        actions=[np.asarray(agent.predict(observations)[0])],
         rewards=[0.1],
         next_observations=[np.zeros(obs_dim, dtype=np.float64)],
         terminated=False,
@@ -161,7 +269,7 @@ def test_update_appends_to_buffer_then_ppo_step_clears() -> None:
     for _ in range(5):
         obs = [rng.standard_normal(obs_dim)]
         next_obs = [rng.standard_normal(obs_dim)]
-        actions_arr = rng.uniform(-0.5, 0.5, size=(n_ca,))
+        actions_arr = np.asarray(agent.predict(obs)[0])
         agent.update(
             observations=obs,
             actions=[actions_arr],
@@ -181,7 +289,7 @@ def test_update_appends_to_buffer_then_ppo_step_clears() -> None:
 
     obs = [rng.standard_normal(obs_dim)]
     next_obs = [rng.standard_normal(obs_dim)]
-    actions_arr = rng.uniform(-0.5, 0.5, size=(n_ca,))
+    actions_arr = np.asarray(agent.predict(obs)[0])
     agent.update(
         observations=obs,
         actions=[actions_arr],
@@ -205,9 +313,10 @@ def test_off_cadence_truncation_flushes_before_next_episode_update() -> None:
     rng = np.random.default_rng(1)
 
     for step in range(4):
+        observations = [rng.standard_normal(obs_dim)]
         agent.update(
-            observations=[rng.standard_normal(obs_dim)],
-            actions=[rng.uniform(-0.5, 0.5, size=(state.layout.n_ca,))],
+            observations=observations,
+            actions=[np.asarray(agent.predict(observations)[0])],
             rewards=[0.1],
             next_observations=[rng.standard_normal(obs_dim)],
             terminated=False,
@@ -220,9 +329,10 @@ def test_off_cadence_truncation_flushes_before_next_episode_update() -> None:
 
     assert len(state.buffer) == 0
 
+    observations = [rng.standard_normal(obs_dim)]
     agent.update(
-        observations=[rng.standard_normal(obs_dim)],
-        actions=[rng.uniform(-0.5, 0.5, size=(state.layout.n_ca,))],
+        observations=observations,
+        actions=[np.asarray(agent.predict(observations)[0])],
         rewards=[0.1],
         next_observations=[rng.standard_normal(obs_dim)],
         terminated=False,
@@ -242,9 +352,10 @@ def test_successful_ppo_update_publishes_training_diagnostics() -> None:
     rng = np.random.default_rng(2)
 
     for step in range(4):
+        observations = [rng.standard_normal(obs_dim)]
         agent.update(
-            observations=[rng.standard_normal(obs_dim)],
-            actions=[rng.uniform(-0.5, 0.5, size=(state.layout.n_ca,))],
+            observations=observations,
+            actions=[np.asarray(agent.predict(observations)[0])],
             rewards=[0.1],
             next_observations=[rng.standard_normal(obs_dim)],
             terminated=False,
@@ -281,9 +392,10 @@ def test_ppo_update_normalizes_returns_but_keeps_gae_values_in_raw_scale() -> No
     state.buffer.compute_returns_and_advantages = capture_gae_inputs  # type: ignore[method-assign]
     rng = np.random.default_rng(8)
     for step in range(4):
+        observations = [rng.standard_normal(obs_dim)]
         agent.update(
-            observations=[rng.standard_normal(obs_dim)],
-            actions=[rng.uniform(-0.5, 0.5, size=(state.layout.n_ca,))],
+            observations=observations,
+            actions=[np.asarray(agent.predict(observations)[0])],
             rewards=[0.1],
             next_observations=[rng.standard_normal(obs_dim)],
             terminated=False,
