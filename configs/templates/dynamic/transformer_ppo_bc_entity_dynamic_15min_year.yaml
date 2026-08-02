@@ -130,7 +130,7 @@ pipeline:
       nhead: 4
       num_layers: 2
       dim_feedforward: 128
-      dropout: 0.1
+      dropout: 0.0
     hyperparameters:
       learning_rate: 2.0e-4
       gamma: 0.99
@@ -141,6 +141,7 @@ pipeline:
       entropy_coeff: 0.03
       value_coeff: 0.5
       max_grad_norm: 1.0
+      require_cuda: true
     behavior_cloning:
       enabled: true
       weight: 0.42

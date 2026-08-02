@@ -13,6 +13,8 @@ from typing import Any, Dict, List
 
 import numpy as np
 import pytest
+import torch
+from gymnasium import spaces
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
 from tests.test_wrapper_entity_mode import _DummyEntityEnv, _entity_config
@@ -38,6 +40,30 @@ class _DummyEntityEnvForPPO(_DummyEntityEnv):
         return [
             ["electrical_storage", "electric_vehicle_storage"],
             ["electrical_storage", "electric_vehicle_storage"],
+        ]
+
+    @property
+    def flat_action_space(self) -> List[spaces.Box]:  # type: ignore[override]
+        return [
+            spaces.Box(
+                low=np.array([-1.0, -1.0], dtype=np.float32),
+                high=np.array([1.0, 1.0], dtype=np.float32),
+                dtype=np.float32,
+            )
+            for _ in self._building_ids(self._version)
+        ]
+
+
+class _PositiveOnlyChargerEntityEnvForPPO(_DummyEntityEnvForPPO):
+    @property
+    def flat_action_space(self) -> List[spaces.Box]:  # type: ignore[override]
+        return [
+            spaces.Box(
+                low=np.array([-1.0, 0.0], dtype=np.float32),
+                high=np.array([1.0, 1.0], dtype=np.float32),
+                dtype=np.float32,
+            )
+            for _ in self._building_ids(self._version)
         ]
 
 
@@ -149,6 +175,133 @@ def test_wrapper_to_env_actions_round_trips_ppo_output() -> None:
     # storage CA -> building action table; charger CA -> charger action table.
     assert env_payload["tables"]["building"].shape == (1, 1)
     assert env_payload["tables"]["charger"].shape == (1, 1)
+
+
+def test_wrapper_clipped_float64_action_round_trip_validates_exact_ppo_decision() -> None:
+    env = _DummyEntityEnvForPPO()
+    wrapper = Wrapper_CityLearn(
+        env=env, config=_entity_config(), job_id="ppo-entity-action-validation"
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+    wrapper.set_model(agent)
+
+    observations = wrapper._apply_entity_layout(
+        env._observation_payload(version=0), force_attach=False
+    )
+    actions = agent.predict(observations, deterministic=True)
+    clipped_actions = wrapper._clip_actions(actions)
+    env_actions = wrapper._to_env_actions(clipped_actions)
+    received_actions = [
+        [
+            env_actions["tables"]["building"][0, 0],
+            env_actions["tables"]["charger"][0, 0],
+        ]
+    ]
+
+    assert np.asarray(received_actions[0]).dtype == np.float32
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(received_actions[0], dtype=np.float64)],
+        rewards=[0.1],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    altered_actions = [list(received_actions[0])]
+    altered_actions[0][0] += 5.0e-7
+    agent.predict(observations, deterministic=True)
+    with pytest.raises(ValueError, match="does not match the pending TPPO action"):
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(altered_actions[0], dtype=np.float64)],
+            rewards=[0.1],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=1,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+
+def test_positive_only_charger_action_is_cached_as_the_executed_ppo_decision() -> None:
+    env = _PositiveOnlyChargerEntityEnvForPPO()
+    wrapper = Wrapper_CityLearn(
+        env=env, config=_entity_config(), job_id="ppo-positive-only-action"
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+    wrapper.set_model(agent)
+    state = agent._per_building[0]
+
+    # Force the actor's deterministic signed sample below zero for both CAs.
+    for parameter in state.actor.parameters():
+        parameter.data.zero_()
+    state.actor.mlp[-1].bias.data.fill_(-1.0)
+
+    observations = wrapper._apply_entity_layout(
+        env._observation_payload(version=0), force_attach=False
+    )
+    actions = agent.predict(observations, deterministic=True)
+    pending = agent._pending_decisions[0]
+    assert pending is not None
+
+    # The raw signed actor output is negative, but affine mapping puts the
+    # positive-only charger action inside its executable interval.
+    assert actions[0][0] < 0.0
+    assert actions[0][1] == pytest.approx((np.tanh(-1.0) + 1.0) / 2.0)
+    assert torch.equal(
+        pending.action.cpu(),
+        torch.as_tensor(actions[0], dtype=torch.float32).view(2, 1),
+    )
+
+    clipped_actions = wrapper._clip_actions(actions)
+    assert clipped_actions == actions
+    env_actions = wrapper._to_env_actions(clipped_actions)
+    received_actions = [
+        np.asarray(
+            [
+                env_actions["tables"]["building"][0, 0],
+                env_actions["tables"]["charger"][0, 0],
+            ],
+            dtype=np.float64,
+        )
+    ]
+
+    agent.update(
+        observations=observations,
+        actions=received_actions,
+        rewards=[0.1],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    changed_actions = [received_actions[0].copy()]
+    changed_actions[0][1] = 0.1
+    agent.predict(observations, deterministic=True)
+    with pytest.raises(ValueError, match="does not match the pending TPPO action"):
+        agent.update(
+            observations=observations,
+            actions=changed_actions,
+            rewards=[0.1],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=1,
+            update_step=False,
+            initial_exploration_done=True,
+        )
 
 
 def test_non_dynamic_agent_in_entity_dynamic_still_rejected_on_topology_change() -> None:

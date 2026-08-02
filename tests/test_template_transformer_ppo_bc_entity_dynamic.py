@@ -188,8 +188,8 @@ def test_transformer_ppo_bc_smoke_records_bc_metrics_across_topology_change() ->
     training_metrics = agent.consume_latest_training_metrics()
     assert diagnostics["behavior_cloning_teacher_enabled"] == pytest.approx(1.0)
     assert diagnostics["behavior_cloning_latest_teacher_available"] == pytest.approx(1.0)
-    assert diagnostics["behavior_cloning_phaseout_probability"] > 0.0
-    assert diagnostics["behavior_cloning_phaseout_used"] == pytest.approx(1.0)
+    assert diagnostics["behavior_cloning_phaseout_probability"] == pytest.approx(0.0)
+    assert diagnostics["behavior_cloning_phaseout_used"] == pytest.approx(0.0)
     assert training_metrics["behavior_cloning_effective_weight"] > 0.0
     assert np.isfinite(training_metrics["behavior_cloning_effective_weight"])
     assert "behavior_cloning_loss" in training_metrics

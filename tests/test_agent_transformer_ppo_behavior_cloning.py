@@ -5,6 +5,7 @@ from typing import List
 
 import numpy as np
 import pytest
+import torch
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
 from algorithms.agents.baseline_policies import RBCCommunityPolicy
@@ -145,7 +146,125 @@ def test_bc_present_attaches_teacher_policy() -> None:
     assert isinstance(agent._bc.teacher_policy, RBCCommunityPolicy)
 
 
-def test_predict_computes_teacher_actions_and_blends_phaseout() -> None:
+def test_bounds_only_reattach_rebuilds_bc_teacher_with_new_bounds() -> None:
+    agent, obs_per, act_per, _ = _make_agent(config=_bc_config())
+    assert agent._bc is not None
+    previous_teacher = agent._bc.teacher_policy
+    bounds = _DummySpace(len(act_per[0]))
+    bounds.low = np.array([-0.75, -0.5], dtype=np.float64)
+    bounds.high = np.array([0.5, 0.75], dtype=np.float64)
+
+    agent.attach_environment(
+        observation_names=obs_per,
+        action_names=act_per,
+        action_space=[bounds],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+
+    assert agent._bc.teacher_policy is not previous_teacher
+    assert [bound.flatten().tolist() for bound in agent._action_bounds[0]] == [
+        [-0.75, -0.5],
+        [0.5, 0.75],
+    ]
+    assert agent._bc.teacher_policy._action_bounds == [{
+        "low": [-0.75, -0.5],
+        "high": [0.5, 0.75],
+    }]
+
+
+def test_failed_bounds_only_bc_reattach_preserves_state_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, obs_per, act_per, _ = _make_agent(config=_bc_config())
+    assert agent._bc is not None
+    teacher = agent._bc.teacher_policy
+    teacher.mutable_state = {"history": ["before-reattach"]}
+    bounds_before = agent._action_bounds
+    original_prepare = agent._prepare_bc_topology_change
+    bounds = _DummySpace(len(act_per[0]))
+    bounds.low = np.array([-0.75, -0.5], dtype=np.float64)
+    bounds.high = np.array([0.5, 0.75], dtype=np.float64)
+
+    def fail_bc_reattach(**_kwargs):
+        raise RuntimeError("BC reattach failed")
+
+    monkeypatch.setattr(agent, "_prepare_bc_topology_change", fail_bc_reattach)
+    with pytest.raises(RuntimeError, match="BC reattach failed"):
+        agent.attach_environment(
+            observation_names=obs_per,
+            action_names=act_per,
+            action_space=[bounds],
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+        )
+
+    assert agent._action_bounds is bounds_before
+    assert agent._bc.teacher_policy is teacher
+    assert teacher.mutable_state == {"history": ["before-reattach"]}
+
+    monkeypatch.setattr(agent, "_prepare_bc_topology_change", original_prepare)
+    agent.attach_environment(
+        observation_names=obs_per,
+        action_names=act_per,
+        action_space=[bounds],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+
+    assert agent._bc.teacher_policy is not teacher
+    assert [bound.flatten().tolist() for bound in agent._action_bounds[0]] == [
+        [-0.75, -0.5],
+        [0.5, 0.75],
+    ]
+
+
+def test_initial_bc_attach_failure_rolls_back_and_valid_retry_attaches_teacher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = AgentTransformerPPO(_bc_config())
+    assert agent._bc is not None
+    regularizer = agent._bc
+    original_build_teacher = regularizer._build_teacher_policy
+    observation_names = [load_sample_observation_names_for_first_building()]
+    action_names = [list(_DEFAULT_ACTIONS)]
+    action_space = [_DummySpace(len(action_names[0]))]
+
+    def fail_teacher_setup(**_kwargs):
+        raise RuntimeError("teacher setup failed")
+
+    monkeypatch.setattr(regularizer, "_build_teacher_policy", fail_teacher_setup)
+    with pytest.raises(RuntimeError, match="teacher setup failed"):
+        agent.attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+        )
+
+    assert agent._first_attach_done is False
+    assert agent._per_building == []
+    assert agent._pending_decisions == []
+    assert agent._action_bounds == []
+    assert agent._bc is regularizer
+    assert regularizer.teacher_policy is None
+    assert regularizer.teacher_action_buffers == []
+
+    monkeypatch.setattr(regularizer, "_build_teacher_policy", original_build_teacher)
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=action_names,
+        action_space=action_space,
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+
+    assert agent._first_attach_done is True
+    assert isinstance(agent._bc.teacher_policy, RBCCommunityPolicy)
+
+
+def test_predict_with_legacy_blend_phaseout_keeps_exact_actor_decision() -> None:
     agent, _, _, obs_dim = _make_agent(
         config=_bc_config(phaseout_mode="blend", phaseout_steps=4)
     )
@@ -159,13 +278,30 @@ def test_predict_computes_teacher_actions_and_blends_phaseout() -> None:
         encoded_observations=encoded_obs,
     )
     actions = agent.predict(encoded_obs, deterministic=False)
+    cached = agent._pending_decisions[0]
 
     assert agent._bc is not None
+    assert cached is not None
     assert agent._bc.latest_teacher_actions == teacher_actions
-    metrics = agent._bc.snapshot_metrics()
-    assert metrics["behavior_cloning_phaseout_probability"] > 0.0
-    assert metrics["behavior_cloning_phaseout_used"] == pytest.approx(1.0)
-    assert actions != teacher_actions
+    np.testing.assert_array_equal(np.asarray(actions[0]), cached.action.cpu().numpy().squeeze(-1))
+
+    agent.update(
+        observations=encoded_obs,
+        actions=[np.asarray(actions[0])],
+        rewards=[0.1],
+        next_observations=encoded_obs,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    state = agent._per_building[0]
+    assert torch.equal(state.buffer.actions[-1], cached.action.cpu())
+    assert torch.equal(state.buffer.log_probs[-1], cached.log_prob.cpu())
+    assert torch.equal(state.buffer.values[-1], cached.value.cpu())
 
 
 def test_update_records_teacher_actions_aligned_with_buffer() -> None:
@@ -177,7 +313,7 @@ def test_update_records_teacher_actions_aligned_with_buffer() -> None:
     for step in range(3):
         obs, actions, next_obs = _random_transition(agent, obs_dim, rng)
         agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
-        agent.predict(obs, deterministic=bool(step % 2))
+        actions = agent.predict(obs, deterministic=bool(step % 2))
         agent.update(
             observations=obs,
             actions=actions,
@@ -205,7 +341,7 @@ def test_ppo_update_records_bc_metrics_when_teacher_available() -> None:
     for step in range(agent._minibatch_size):
         obs, actions, next_obs = _random_transition(agent, obs_dim, rng)
         agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
-        agent.predict(obs, deterministic=False)
+        actions = agent.predict(obs, deterministic=False)
         agent.update(
             observations=obs,
             actions=actions,
@@ -235,7 +371,7 @@ def test_topology_change_flushes_bc_buffers() -> None:
 
     obs, actions, next_obs = _random_transition(agent, obs_dim, rng)
     agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
-    agent.predict(obs, deterministic=False)
+    actions = agent.predict(obs, deterministic=False)
     agent.update(
         observations=obs,
         actions=actions,
@@ -277,6 +413,81 @@ def test_topology_change_flushes_bc_buffers() -> None:
     assert isinstance(agent._bc.teacher_policy, RBCCommunityPolicy)
 
 
+def test_failed_topology_flush_restores_bc_teacher_identity_and_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(config=_bc_config())
+    assert agent._bc is not None
+    teacher = agent._bc.teacher_policy
+    teacher.mutable_state = {"history": ["before-flush"]}
+    teacher_actions = [[0.2 for _ in range(agent._per_building[0].layout.n_ca)]]
+    _set_fake_teacher(agent, teacher_actions)
+    rng = np.random.default_rng(5)
+
+    obs, _, next_obs = _random_transition(agent, obs_dim, rng)
+    agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
+    actions = agent.predict(obs, deterministic=False)
+    agent.update(
+        observations=obs,
+        actions=actions,
+        rewards=[0.1],
+        next_observations=next_obs,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    orig_id = next(
+        n.split("::")[1]
+        for n in obs_per[0]
+        if n.startswith("charger::") and "::connected_ev::" not in n and "::incoming_ev::" not in n
+    )
+    new_id = "Building_1/charger_BC_FAILURE"
+    new_obs = list(obs_per[0])
+    new_obs.extend(
+        n.replace(f"charger::{orig_id}::", f"charger::{new_id}::", 1)
+        for n in obs_per[0]
+        if n.startswith(f"charger::{orig_id}::")
+    )
+    new_acts = list(act_per[0]) + ["electric_vehicle_storage"]
+    original_update = agent._run_ppo_update_with_last_value
+
+    def fail_flush(state, last_value, *, building_idx):
+        teacher.mutable_state["history"].append("failed-flush")
+        raise RuntimeError("topology flush failed")
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", fail_flush)
+    with pytest.raises(RuntimeError, match="topology flush failed"):
+        agent.attach_environment(
+            observation_names=[new_obs],
+            action_names=[new_acts],
+            action_space=[_DummySpace(len(new_acts))],
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"]},
+        )
+
+    assert agent._bc is not None
+    assert agent._bc.teacher_policy is teacher
+    assert teacher.mutable_state == {"history": ["before-flush"]}
+    assert agent._bc.latest_teacher_actions == teacher_actions
+    assert agent._bc.teacher_action_buffers == [teacher_actions]
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", original_update)
+    agent.attach_environment(
+        observation_names=[new_obs],
+        action_names=[new_acts],
+        action_space=[_DummySpace(len(new_acts))],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+
+    assert agent._per_building[0].action_names_tuple == tuple(new_acts)
+    assert agent._bc.teacher_action_buffers == [[]]
+
+
 def test_partial_topology_change_preserves_unchanged_bc_buffer_alignment() -> None:
     agent, obs_per, act_per, obs_dim = _make_agent(config=_bc_config(), n_buildings=2)
     assert agent._bc is not None
@@ -290,7 +501,7 @@ def test_partial_topology_change_preserves_unchanged_bc_buffer_alignment() -> No
     for step in range(2):
         obs, actions, next_obs = _random_transition_for_all_buildings(agent, obs_dim, rng)
         agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
-        agent.predict(obs, deterministic=bool(step % 2))
+        actions = agent.predict(obs, deterministic=bool(step % 2))
         agent.update(
             observations=obs,
             actions=actions,

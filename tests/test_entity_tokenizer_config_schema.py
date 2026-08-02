@@ -394,7 +394,7 @@ def _make_minimal_transformer_ppo_cfg(
                     "nhead": 4,
                     "num_layers": 2,
                     "dim_feedforward": 128,
-                    "dropout": 0.1,
+                    "dropout": 0.0,
                 },
                 "hyperparameters": {
                     "learning_rate": 3.0e-4,

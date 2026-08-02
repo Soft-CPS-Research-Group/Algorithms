@@ -57,18 +57,25 @@ class ActorHead(nn.Module):
         self,
         ca_embeddings: torch.Tensor,
         deterministic: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        *,
+        return_pre_tanh: bool = False,
+    ) -> Union[
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    ]:
         """Produce actions from CA embeddings.
 
         Args:
             ca_embeddings: [batch, N_ca, d_model] CA token embeddings.
             deterministic: If True, return mean action without sampling.
+            return_pre_tanh: If True, also return the unsquashed sample.
 
         Returns:
             Tuple of:
-                - actions: [batch, N_ca, 1] sampled actions in [-1, 1].
-                - log_probs: [batch, N_ca] log probability of actions.
-                - means: [batch, N_ca, 1] action means (pre-tanh).
+                 - actions: [batch, N_ca, 1] sampled actions in [-1, 1].
+                 - log_probs: [batch, N_ca] log probability of actions.
+                 - means: [batch, N_ca, 1] action means (pre-tanh).
+                 - pre_tanh_actions: [batch, N_ca, 1] when requested.
         """
         # Get action means
         means = self.mlp(ca_embeddings)  # [batch, N_ca, 1]
@@ -90,13 +97,30 @@ class ActorHead(nn.Module):
         # Apply tanh squashing
         actions = torch.tanh(pre_tanh_action)
 
-        # Compute log probability with tanh correction
-        log_probs = dist.log_prob(pre_tanh_action)
-        # Correction for tanh squashing: log(1 - tanh(x)^2)
-        log_probs = log_probs - torch.log(1 - actions.pow(2) + 1e-6)
-        log_probs = log_probs.squeeze(-1)  # [batch, N_ca]
+        log_probs = self._squashed_log_prob(dist, pre_tanh_action)
+
+        if return_pre_tanh:
+            return actions, log_probs, means, pre_tanh_action
 
         return actions, log_probs, means
+
+    def log_prob_from_pre_tanh(
+        self,
+        ca_embeddings: torch.Tensor,
+        pre_tanh_actions: torch.Tensor,
+    ) -> torch.Tensor:
+        """Score retained pre-tanh samples under the current actor policy."""
+        means = self.mlp(ca_embeddings)
+        log_std_clamped = torch.clamp(self.log_std, min=-2.0, max=0.5)
+        std = torch.exp(log_std_clamped).expand_as(means)
+        return self._squashed_log_prob(Normal(means, std), pre_tanh_actions)
+
+    @staticmethod
+    def _squashed_log_prob(dist: Normal, pre_tanh_actions: torch.Tensor) -> torch.Tensor:
+        actions = torch.tanh(pre_tanh_actions)
+        log_probs = dist.log_prob(pre_tanh_actions)
+        log_probs = log_probs - torch.log(1 - actions.pow(2) + 1e-6)
+        return log_probs.squeeze(-1)
 
 
 class CriticHead(nn.Module):
@@ -144,6 +168,7 @@ class Batch:
     """A minibatch of transitions for PPO update."""
     observations: torch.Tensor
     actions: torch.Tensor
+    pre_tanh_actions: torch.Tensor
     log_probs: torch.Tensor
     advantages: torch.Tensor
     returns: torch.Tensor
@@ -234,6 +259,7 @@ class RolloutBuffer:
 
         self.observations: List[torch.Tensor] = []
         self.actions: List[torch.Tensor] = []
+        self.pre_tanh_actions: List[torch.Tensor] = []
         self.log_probs: List[torch.Tensor] = []
         self.rewards: List[float] = []
         self.values: List[torch.Tensor] = []
@@ -253,12 +279,14 @@ class RolloutBuffer:
         value: torch.Tensor,
         terminated: bool,
         truncated: bool,
+        pre_tanh_action: Optional[torch.Tensor] = None,
     ) -> None:
         """Add a transition to the buffer.
 
         Args:
             observation: Encoded observation tensor.
             action: Action tensor.
+            pre_tanh_action: Unsquashed policy sample, when available.
             log_prob: Log probability of the action.
             reward: Reward received.
             value: Value estimate from critic.
@@ -267,6 +295,9 @@ class RolloutBuffer:
         """
         self.observations.append(observation.detach())
         self.actions.append(action.detach())
+        self.pre_tanh_actions.append(
+            (action if pre_tanh_action is None else pre_tanh_action).detach()
+        )
         self.log_probs.append(log_prob.detach())
         self.rewards.append(reward)
         self.values.append(value.detach())
@@ -342,6 +373,9 @@ class RolloutBuffer:
             yield Batch(
                 observations=torch.stack([self.observations[i] for i in batch_indices]),
                 actions=torch.stack([self.actions[i] for i in batch_indices]),
+                pre_tanh_actions=torch.stack(
+                    [self.pre_tanh_actions[i] for i in batch_indices]
+                ),
                 log_probs=torch.stack([self.log_probs[i] for i in batch_indices]),
                 advantages=self.advantages[batch_indices],
                 returns=self.returns[batch_indices],
@@ -353,6 +387,7 @@ class RolloutBuffer:
         """Clear all stored data."""
         self.observations.clear()
         self.actions.clear()
+        self.pre_tanh_actions.clear()
         self.log_probs.clear()
         self.rewards.clear()
         self.values.clear()

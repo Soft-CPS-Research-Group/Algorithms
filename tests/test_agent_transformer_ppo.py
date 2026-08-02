@@ -21,6 +21,7 @@ from typing import List
 import numpy as np
 import pytest
 import torch
+from gymnasium import spaces
 
 from algorithms.agents.agent_transformer_ppo import (
     AgentTransformerPPO,
@@ -138,6 +139,360 @@ def test_predict_deterministic_is_repeatable() -> None:
     assert a1 == a2
 
 
+def test_predict_affinely_maps_tanh_actions_to_declared_bounds_and_preserves_ppo_ratio() -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=1)
+    bounds = spaces.Box(
+        low=np.array([-0.75, -0.25], dtype=np.float32),
+        high=np.array([-0.5, 0.5], dtype=np.float32),
+        dtype=np.float32,
+    )
+    agent.attach_environment(
+        observation_names=obs_per,
+        action_names=act_per,
+        action_space=[bounds],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    state = agent._per_building[0]
+    actor_output = state.actor.mlp[-1]
+    assert isinstance(actor_output, torch.nn.Linear)
+    with torch.no_grad():
+        actor_output.weight.zero_()
+        actor_output.bias.fill_(0.5)
+
+    expected = bounds.low + (np.tanh(0.5) + 1.0) * (bounds.high - bounds.low) / 2.0
+
+    for step in range(agent._minibatch_size):
+        observations = [np.zeros(obs_dim, dtype=np.float64)]
+        actions = agent.predict(observations, deterministic=True)
+        cached = agent._pending_decisions[0]
+        assert cached is not None
+        np.testing.assert_array_equal(
+            np.asarray(actions[0]), cached.action.cpu().numpy().squeeze(-1)
+        )
+        assert np.all(np.asarray(actions[0]) >= bounds.low)
+        assert np.all(np.asarray(actions[0]) <= bounds.high)
+        # The same tanh sample is affinely mapped per dimension. Clamping
+        # would produce [-0.5, tanh(0.5)] instead.
+        np.testing.assert_allclose(actions[0], expected, rtol=1.0e-6, atol=1.0e-6)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.1],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=step == agent._minibatch_size - 1,
+            initial_exploration_done=True,
+        )
+
+    assert agent.consume_latest_training_metrics()["ratio_error_max"] <= 1.0e-5
+
+
+def test_predict_keeps_saturated_actor_log_prob_for_ppo_ratio() -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=1)
+    bounds = spaces.Box(
+        low=np.array([-0.75, -0.25], dtype=np.float32),
+        high=np.array([-0.5, 0.5], dtype=np.float32),
+        dtype=np.float32,
+    )
+    agent.attach_environment(
+        observation_names=obs_per,
+        action_names=act_per,
+        action_space=[bounds],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    state = agent._per_building[0]
+    for parameter in state.actor.parameters():
+        parameter.data.zero_()
+    state.actor.mlp[-1].bias.data.fill_(20.0)
+    observations = [np.zeros(obs_dim, dtype=np.float64)]
+
+    actions = agent.predict(observations, deterministic=True)
+    pending = agent._pending_decisions[0]
+    assert pending is not None
+    low, high = agent._action_bounds[0]
+    with torch.no_grad():
+        observation = pending.observation.unsqueeze(0)
+        tokenized = state.tokenizer(observation, state.layout)
+        ca_embeddings, _ = state.backbone(
+            tokenized.sro_tokens,
+            tokenized.nfc_token,
+            tokenized.ca_tokens,
+        )
+        _, raw_log_probs, _ = state.actor(ca_embeddings, deterministic=True)
+        expected = raw_log_probs - torch.log((high - low) / 2.0).squeeze(-1)
+        tanh_actions = (2.0 * (pending.action.unsqueeze(0) - low) / (high - low)) - 1.0
+        legacy_pre_tanh = torch.atanh(tanh_actions.clamp(-1.0 + 1.0e-6, 1.0 - 1.0e-6))
+        std = torch.exp(state.actor.log_std.clamp(-2.0, 0.5)).expand_as(legacy_pre_tanh)
+        legacy = (
+            torch.distributions.Normal(torch.full_like(legacy_pre_tanh, 20.0), std)
+            .log_prob(legacy_pre_tanh)
+            - torch.log(1.0 - tanh_actions.pow(2) + 1.0e-6)
+            - torch.log((high - low) / 2.0)
+        ).squeeze(-1)
+
+    assert torch.equal(tanh_actions, torch.ones_like(tanh_actions))
+    assert not torch.allclose(legacy, expected)
+    assert torch.allclose(pending.log_prob, expected.squeeze(0), rtol=1.0e-6, atol=1.0e-6)
+
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(actions[0])],
+        rewards=[0.1],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+    assert torch.equal(state.buffer.log_probs[-1], expected.squeeze(0).cpu())
+    with torch.no_grad():
+        recomputed = agent._compute_log_prob(
+            state.actor,
+            ca_embeddings,
+            state.buffer.pre_tanh_actions[-1].unsqueeze(0),
+            low,
+            high,
+        )
+    ratio = torch.exp((recomputed - state.buffer.log_probs[-1].unsqueeze(0)).sum())
+    assert abs(ratio.item() - 1.0) <= 1.0e-5
+
+
+def test_bounds_only_reattach_rejects_nonempty_rollout_transactionally() -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=1)
+    observations = [np.zeros(obs_dim, dtype=np.float64)]
+    actions = agent.predict(observations, deterministic=True)
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(actions[0])],
+        rewards=[0.1],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+    state = agent._per_building[0]
+    bounds_before = agent._action_bounds
+    buffer_before = copy.deepcopy(state.buffer)
+    new_bounds = spaces.Box(
+        low=np.array([0.0, 0.0], dtype=np.float32),
+        high=np.array([1.0, 1.0], dtype=np.float32),
+        dtype=np.float32,
+    )
+
+    with pytest.raises(ValueError, match="cannot change action bounds"):
+        agent.attach_environment(
+            observation_names=obs_per,
+            action_names=act_per,
+            action_space=[new_bounds],
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"]},
+        )
+
+    assert agent._per_building[0] is state
+    assert agent._action_bounds is bounds_before
+    assert state.buffer.rewards == buffer_before.rewards
+    assert state.buffer.terminated == buffer_before.terminated
+    assert state.buffer.truncated == buffer_before.truncated
+    for field in ("observations", "actions", "log_probs", "values"):
+        actual = getattr(state.buffer, field)
+        expected = getattr(buffer_before, field)
+        assert len(actual) == len(expected)
+        assert all(torch.equal(value, expected[idx]) for idx, value in enumerate(actual))
+
+    state.buffer.clear()
+    agent.predict(observations, deterministic=True)
+    pending_before_bounds_change = agent._pending_decisions[0]
+    assert pending_before_bounds_change is not None
+    agent.attach_environment(
+        observation_names=obs_per,
+        action_names=act_per,
+        action_space=[new_bounds],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    low, high = agent._action_bounds[0]
+    assert torch.equal(low.squeeze(-1), torch.tensor([0.0, 0.0]))
+    assert torch.equal(high.squeeze(-1), torch.tensor([1.0, 1.0]))
+    assert agent._pending_decisions[0] is None
+
+
+def test_topology_reattach_rejects_unchanged_building_bound_change_with_rollout() -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    initial_bounds = [
+        spaces.Box(
+            low=np.array([-1.0, -1.0], dtype=np.float32),
+            high=np.array([1.0, 1.0], dtype=np.float32),
+            dtype=np.float32,
+        )
+        for _ in range(2)
+    ]
+    agent.attach_environment(
+        observation_names=obs_per,
+        action_names=act_per,
+        action_space=initial_bounds,
+        observation_space=[None, None],
+        metadata={"building_names": ["Building_1", "Building_2"]},
+    )
+
+    actions = agent.predict(observations, deterministic=True)
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(action) for action in actions],
+        rewards=[0.1, 0.2],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+    agent._per_building[0].buffer.clear()
+    agent.predict(observations, deterministic=True)
+
+    charger_id = next(
+        name.split("::")[1]
+        for name in obs_per[0]
+        if name.startswith("charger::")
+        and "::connected_ev::" not in name
+        and "::incoming_ev::" not in name
+    )
+    replacement_obs_0 = list(obs_per[0]) + [
+        name.replace(
+            f"charger::{charger_id}::", "charger::Building_1/charger_NEW::", 1
+        )
+        for name in obs_per[0]
+        if name.startswith(f"charger::{charger_id}::")
+    ]
+    replacement_actions_0 = list(act_per[0]) + ["electric_vehicle_storage"]
+    replacement_bounds = [
+        spaces.Box(
+            low=np.array([-1.0, -1.0, -1.0], dtype=np.float32),
+            high=np.array([1.0, 1.0, 1.0], dtype=np.float32),
+            dtype=np.float32,
+        ),
+        spaces.Box(
+            low=np.array([-0.5, -0.25], dtype=np.float32),
+            high=np.array([0.5, 0.75], dtype=np.float32),
+            dtype=np.float32,
+        ),
+    ]
+    snapshots = [
+        {
+            "state": state,
+            "names": (state.obs_names_tuple, state.action_names_tuple),
+            "layout": state.layout,
+            "topology_version": state.topology_version,
+            "buffer": copy.deepcopy(state.buffer),
+            "pending": agent._pending_decisions[index],
+        }
+        for index, state in enumerate(agent._per_building)
+    ]
+    bounds_before = agent._action_bounds
+
+    with pytest.raises(ValueError, match="cannot change action bounds"):
+        agent.attach_environment(
+            observation_names=[replacement_obs_0, obs_per[1]],
+            action_names=[replacement_actions_0, act_per[1]],
+            action_space=replacement_bounds,
+            observation_space=[None, None],
+            metadata={"building_names": ["Building_1", "Building_2"]},
+        )
+
+    assert agent._action_bounds is bounds_before
+    for index, snapshot in enumerate(snapshots):
+        state = agent._per_building[index]
+        assert state is snapshot["state"]
+        assert (state.obs_names_tuple, state.action_names_tuple) == snapshot["names"]
+        assert state.layout is snapshot["layout"]
+        assert state.topology_version == snapshot["topology_version"]
+        assert state.buffer.rewards == snapshot["buffer"].rewards
+        assert state.buffer.terminated == snapshot["buffer"].terminated
+        assert state.buffer.truncated == snapshot["buffer"].truncated
+        assert agent._pending_decisions[index] is snapshot["pending"]
+        for field in ("observations", "actions", "log_probs", "values"):
+            actual = getattr(state.buffer, field)
+            expected = getattr(snapshot["buffer"], field)
+            assert len(actual) == len(expected)
+            assert all(torch.equal(value, expected[idx]) for idx, value in enumerate(actual))
+
+    agent._per_building[1].buffer.clear()
+    agent.attach_environment(
+        observation_names=[replacement_obs_0, obs_per[1]],
+        action_names=[replacement_actions_0, act_per[1]],
+        action_space=replacement_bounds,
+        observation_space=[None, None],
+        metadata={"building_names": ["Building_1", "Building_2"]},
+    )
+
+    assert agent._per_building[0].action_names_tuple == tuple(replacement_actions_0)
+    assert agent._per_building[0].topology_version == 1
+    assert agent._per_building[1].action_names_tuple == tuple(act_per[1])
+    assert agent._per_building[1].topology_version == 0
+    assert [bound.flatten().tolist() for bound in agent._action_bounds[1]] == [
+        [-0.5, -0.25],
+        [0.5, 0.75],
+    ]
+    assert agent._pending_decisions == [None, None]
+
+
+def test_predict_rejects_wrong_cardinality_without_replacing_pending_decisions() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    agent.predict(observations, deterministic=True)
+    pending_before = list(agent._pending_decisions)
+
+    for invalid_observations in (observations[:1], observations + [observations[0]]):
+        with pytest.raises(ValueError, match="TPPO predict observations has .* expected 2"):
+            agent.predict(invalid_observations, deterministic=True)
+        assert agent._pending_decisions == pending_before
+        assert all(
+            actual is expected
+            for actual, expected in zip(agent._pending_decisions, pending_before)
+        )
+
+    agent.predict(observations, deterministic=True)
+    assert all(
+        actual is not expected
+        for actual, expected in zip(agent._pending_decisions, pending_before)
+    )
+
+
+def test_predict_later_malformed_row_preserves_pending_decisions_for_valid_retry() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    agent.predict(observations, deterministic=True)
+    pending_before = list(agent._pending_decisions)
+
+    with pytest.raises(RuntimeError, match="out of DATA bounds"):
+        agent.predict(
+            [observations[0], np.zeros(obs_dim - 1, dtype=np.float64)],
+            deterministic=True,
+        )
+
+    assert all(
+        actual is expected
+        for actual, expected in zip(agent._pending_decisions, pending_before)
+    )
+
+    agent.predict(observations, deterministic=True)
+    assert all(
+        actual is not expected
+        for actual, expected in zip(agent._pending_decisions, pending_before)
+    )
+
+
 def test_predict_caches_exact_decision_for_ppo_update_with_dropout() -> None:
     config = _base_config()
     config["algorithm"]["transformer"]["dropout"] = 0.1
@@ -191,6 +546,270 @@ def test_update_rejects_action_that_differs_from_pending_decision() -> None:
             update_step=False,
             initial_exploration_done=True,
         )
+
+
+def test_update_rejects_action_within_previous_allclose_tolerance() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    obs = [np.zeros(obs_dim, dtype=np.float64)]
+    actions = agent.predict(obs, deterministic=False)
+    actions[0][0] += 5.0e-7
+
+    with pytest.raises(ValueError, match="does not match the pending TPPO action"):
+        agent.update(
+            observations=obs,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.1],
+            next_observations=obs,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=0,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+
+def test_update_rejection_preserves_global_step_until_successful_retry() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=2)
+    obs = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    actions = agent.predict(obs, deterministic=False)
+    mismatched_actions = [list(action) for action in actions]
+    mismatched_actions[1][0] += 0.1
+    original_step = agent._latest_global_learning_step
+
+    with pytest.raises(ValueError, match="does not match the pending TPPO action"):
+        agent.update(
+            observations=obs,
+            actions=[np.asarray(action) for action in mismatched_actions],
+            rewards=[0.1, 0.1],
+            next_observations=obs,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=11,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    assert len(agent._per_building[0].buffer) == 0
+    assert agent._pending_decisions[0] is not None
+    assert agent._latest_global_learning_step == original_step
+
+    agent.update(
+        observations=obs,
+        actions=[np.asarray(action) for action in actions],
+        rewards=[0.1, 0.1],
+        next_observations=obs,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=12,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    assert [len(state.buffer) for state in agent._per_building] == [1, 1]
+    assert agent._pending_decisions == [None, None]
+    assert agent._latest_global_learning_step == 12
+
+
+@pytest.mark.parametrize("malformed_field", ["reward", "next_observation"])
+def test_update_later_conversion_failure_preserves_all_state_for_valid_retry(
+    malformed_field: str,
+) -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+
+    # Seed each rollout, then cache the decisions that the rejected update must keep.
+    initial_actions = agent.predict(observations, deterministic=True)
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(action) for action in initial_actions],
+        rewards=[0.1, 0.2],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=3,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+    actions = agent.predict(observations, deterministic=True)
+    buffers_before = [copy.deepcopy(state.buffer) for state in agent._per_building]
+    pending_before = list(agent._pending_decisions)
+    global_step_before = agent._latest_global_learning_step
+    rewards: List[object] = [0.3, 0.4]
+    next_observations: List[object] = list(observations)
+    if malformed_field == "reward":
+        rewards[1] = "not-a-reward"
+    else:
+        next_observations[1] = object()
+
+    with pytest.raises((TypeError, ValueError)):
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(action) for action in actions],
+            rewards=rewards,  # type: ignore[arg-type]
+            next_observations=next_observations,  # type: ignore[arg-type]
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=4,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    for index, state in enumerate(agent._per_building):
+        before = buffers_before[index]
+        assert state.buffer.rewards == before.rewards
+        assert state.buffer.terminated == before.terminated
+        assert state.buffer.truncated == before.truncated
+        for field in ("observations", "actions", "log_probs", "values"):
+            actual = getattr(state.buffer, field)
+            expected = getattr(before, field)
+            assert len(actual) == len(expected)
+            assert all(torch.equal(value, expected[i]) for i, value in enumerate(actual))
+        assert agent._pending_decisions[index] is pending_before[index]
+    assert agent._latest_global_learning_step == global_step_before
+
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(action) for action in actions],
+        rewards=[0.3, 0.4],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=4,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    assert [len(state.buffer) for state in agent._per_building] == [2, 2]
+    assert agent._pending_decisions == [None, None]
+    assert agent._latest_global_learning_step == 4
+
+
+def test_update_step_bootstrap_failure_preserves_state_for_valid_retry() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    observations = [np.zeros(obs_dim, dtype=np.float64)]
+
+    for step in range(agent._minibatch_size - 1):
+        actions = agent.predict(observations, deterministic=True)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.1],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    actions = agent.predict(observations, deterministic=True)
+    state = agent._per_building[0]
+    buffer_before = copy.deepcopy(state.buffer)
+    pending_before = agent._pending_decisions[0]
+    global_step_before = agent._latest_global_learning_step
+    metrics_before = copy.deepcopy(agent._latest_training_metrics)
+
+    with pytest.raises((IndexError, RuntimeError)):
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.1],
+            next_observations=[np.zeros(1, dtype=np.float64)],
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=agent._minibatch_size - 1,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+    assert state.buffer.rewards == buffer_before.rewards
+    assert state.buffer.terminated == buffer_before.terminated
+    assert state.buffer.truncated == buffer_before.truncated
+    for field in ("observations", "actions", "log_probs", "values"):
+        actual = getattr(state.buffer, field)
+        expected = getattr(buffer_before, field)
+        assert len(actual) == len(expected)
+        assert all(torch.equal(value, expected[i]) for i, value in enumerate(actual))
+    assert agent._pending_decisions[0] is pending_before
+    assert agent._latest_global_learning_step == global_step_before
+    assert agent._latest_training_metrics == metrics_before
+
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(actions[0])],
+        rewards=[0.1],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=agent._minibatch_size - 1,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    assert len(state.buffer) == 0
+    assert agent._pending_decisions == [None]
+    assert agent._latest_global_learning_step == agent._minibatch_size - 1
+
+
+def test_update_rejects_extra_action_rows_without_mutating_state() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    actions = agent.predict(observations)
+    pending = list(agent._pending_decisions)
+    global_step = agent._latest_global_learning_step
+
+    with pytest.raises(ValueError, match="actions has 3 rows; expected 2"):
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(action) for action in actions] + [np.zeros(1)],
+            rewards=[0.1, 0.2],
+            next_observations=observations,
+            terminated=[False, False],
+            truncated=[False, False],
+            update_target_step=False,
+            global_learning_step=4,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    assert [len(state.buffer) for state in agent._per_building] == [0, 0]
+    assert agent._pending_decisions == pending
+    assert agent._latest_global_learning_step == global_step
+
+
+def test_update_rejects_later_reward_cardinality_mismatch_without_mutating_state() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    actions = agent.predict(observations)
+    pending = list(agent._pending_decisions)
+    global_step = agent._latest_global_learning_step
+
+    with pytest.raises(ValueError, match="rewards has 1 rows; expected 2"):
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(action) for action in actions],
+            rewards=[0.1],
+            next_observations=observations,
+            terminated=[False, False],
+            truncated=[False, False],
+            update_target_step=False,
+            global_learning_step=5,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    assert [len(state.buffer) for state in agent._per_building] == [0, 0]
+    assert agent._pending_decisions == pending
+    assert agent._latest_global_learning_step == global_step
 
 
 def test_actor_log_std_init_and_cpu_device_are_configured() -> None:
@@ -506,6 +1125,568 @@ def test_topology_change_feature_count_drift_hard_fails() -> None:
         )
 
 
+def test_failed_topology_mutation_preserves_state_for_valid_retry() -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=1)
+    state = agent._per_building[0]
+    agent.predict([np.zeros(obs_dim, dtype=np.float64)])
+    pending_before = agent._pending_decisions[0]
+    assert pending_before is not None
+    names_before = (state.obs_names_tuple, state.action_names_tuple)
+    layout_before = state.layout
+    tokenizer_before = state.tokenizer
+    actor_before = state.actor
+    topology_version_before = state.topology_version
+
+    storage_id = next(
+        name.split("::")[1] for name in obs_per[0] if name.startswith("storage::")
+    )
+    invalid_obs = list(obs_per[0]) + [
+        f"storage::{storage_id}::brand_new_storage_feature"
+    ]
+
+    with pytest.raises(ValueError, match=r"feature count for type 'storage'"):
+        agent.attach_environment(
+            observation_names=[invalid_obs],
+            action_names=copy.deepcopy(act_per),
+            action_space=[None],
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"]},
+        )
+
+    assert state.obs_names_tuple == names_before[0]
+    assert state.action_names_tuple == names_before[1]
+    assert state.layout is layout_before
+    assert state.tokenizer is tokenizer_before
+    assert state.actor is actor_before
+    assert state.topology_version == topology_version_before
+    assert agent._pending_decisions[0] is pending_before
+
+    charger_id = next(
+        name.split("::")[1]
+        for name in obs_per[0]
+        if name.startswith("charger::") and "::connected_ev::" not in name
+        and "::incoming_ev::" not in name
+    )
+    valid_obs = list(obs_per[0]) + [
+        name.replace(
+            f"charger::{charger_id}::", "charger::Building_1/charger_NEW::", 1
+        )
+        for name in obs_per[0]
+        if name.startswith(f"charger::{charger_id}::")
+    ]
+    agent.attach_environment(
+        observation_names=[valid_obs],
+        action_names=[list(act_per[0]) + ["electric_vehicle_storage"]],
+        action_space=[None],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+
+    assert state.obs_names_tuple == tuple(valid_obs)
+    assert state.layout is not layout_before
+    assert state.topology_version == topology_version_before + 1
+    assert agent._pending_decisions[0] is None
+
+
+def test_invalid_replacement_action_bounds_preserve_state_for_valid_retry() -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=1)
+    initial_bounds = spaces.Box(
+        low=np.array([-0.75, -0.5], dtype=np.float32),
+        high=np.array([0.5, 0.75], dtype=np.float32),
+        dtype=np.float32,
+    )
+    agent.attach_environment(
+        observation_names=copy.deepcopy(obs_per),
+        action_names=copy.deepcopy(act_per),
+        action_space=[initial_bounds],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    state = agent._per_building[0]
+    agent.predict([np.zeros(obs_dim, dtype=np.float64)])
+    snapshot = {
+        "bounds": agent._action_bounds,
+        "bounds_values": [
+            (low.clone(), high.clone()) for low, high in agent._action_bounds
+        ],
+        "names": (state.obs_names_tuple, state.action_names_tuple),
+        "layout": state.layout,
+        "topology_version": state.topology_version,
+        "pending": agent._pending_decisions[0],
+    }
+
+    charger_id = next(
+        name.split("::")[1]
+        for name in obs_per[0]
+        if name.startswith("charger::")
+        and "::connected_ev::" not in name
+        and "::incoming_ev::" not in name
+    )
+    replacement_obs = list(obs_per[0]) + [
+        name.replace(
+            f"charger::{charger_id}::", "charger::Building_1/charger_NEW::", 1
+        )
+        for name in obs_per[0]
+        if name.startswith(f"charger::{charger_id}::")
+    ]
+    replacement_actions = list(act_per[0]) + ["electric_vehicle_storage"]
+    invalid_bounds = spaces.Box(
+        low=np.array([-0.75, -0.5, 2.0], dtype=np.float32),
+        high=np.array([0.5, 0.75, 3.0], dtype=np.float32),
+        dtype=np.float32,
+    )
+
+    with pytest.raises(ValueError, match=r"ActorHead supported action domain"):
+        agent.attach_environment(
+            observation_names=[replacement_obs],
+            action_names=[replacement_actions],
+            action_space=[invalid_bounds],
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"]},
+        )
+
+    assert agent._action_bounds is snapshot["bounds"]
+    assert all(
+        torch.equal(actual, expected)
+        for pair, expected_pair in zip(agent._action_bounds, snapshot["bounds_values"])
+        for actual, expected in zip(pair, expected_pair)
+    )
+    assert (state.obs_names_tuple, state.action_names_tuple) == snapshot["names"]
+    assert state.layout is snapshot["layout"]
+    assert state.topology_version == snapshot["topology_version"]
+    assert agent._pending_decisions[0] is snapshot["pending"]
+
+    valid_bounds = spaces.Box(
+        low=np.array([-0.75, -0.5, 0.0], dtype=np.float32),
+        high=np.array([0.5, 0.75, 1.0], dtype=np.float32),
+        dtype=np.float32,
+    )
+    agent.attach_environment(
+        observation_names=[replacement_obs],
+        action_names=[replacement_actions],
+        action_space=[valid_bounds],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+
+    assert state.obs_names_tuple == tuple(replacement_obs)
+    assert state.action_names_tuple == tuple(replacement_actions)
+    assert state.layout is not snapshot["layout"]
+    assert state.topology_version == snapshot["topology_version"] + 1
+    assert agent._pending_decisions[0] is None
+    assert [bound.flatten().tolist() for bound in agent._action_bounds[0]] == [
+        [-0.75, -0.5, 0.0],
+        [0.5, 0.75, 1.0],
+    ]
+
+
+@pytest.mark.parametrize("bound_name", ["low", "high"])
+def test_partial_action_bounds_reject_transactionally_then_valid_retry(
+    bound_name: str,
+) -> None:
+    class _PartialBounds:
+        def __init__(self, bound_name: str) -> None:
+            setattr(self, bound_name, np.array([-0.75, -0.5], dtype=np.float32))
+
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=1)
+    initial_bounds = spaces.Box(
+        low=np.array([-0.75, -0.5], dtype=np.float32),
+        high=np.array([0.5, 0.75], dtype=np.float32),
+        dtype=np.float32,
+    )
+    agent.attach_environment(
+        observation_names=copy.deepcopy(obs_per),
+        action_names=copy.deepcopy(act_per),
+        action_space=[initial_bounds],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    state = agent._per_building[0]
+    agent.predict([np.zeros(obs_dim, dtype=np.float64)])
+    snapshot = {
+        "bounds": agent._action_bounds,
+        "bounds_values": [
+            (low.clone(), high.clone()) for low, high in agent._action_bounds
+        ],
+        "names": (state.obs_names_tuple, state.action_names_tuple),
+        "layout": state.layout,
+        "topology_version": state.topology_version,
+        "pending": agent._pending_decisions[0],
+    }
+
+    with pytest.raises(ValueError, match=r"must expose both low and high"):
+        agent.attach_environment(
+            observation_names=copy.deepcopy(obs_per),
+            action_names=copy.deepcopy(act_per),
+            action_space=[_PartialBounds(bound_name)],
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"]},
+        )
+
+    assert agent._action_bounds is snapshot["bounds"]
+    assert all(
+        torch.equal(actual, expected)
+        for pair, expected_pair in zip(agent._action_bounds, snapshot["bounds_values"])
+        for actual, expected in zip(pair, expected_pair)
+    )
+    assert (state.obs_names_tuple, state.action_names_tuple) == snapshot["names"]
+    assert state.layout is snapshot["layout"]
+    assert state.topology_version == snapshot["topology_version"]
+    assert agent._pending_decisions[0] is snapshot["pending"]
+
+    agent.attach_environment(
+        observation_names=copy.deepcopy(obs_per),
+        action_names=copy.deepcopy(act_per),
+        action_space=[initial_bounds],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+
+    assert agent._action_bounds is not snapshot["bounds"]
+    assert [bound.flatten().tolist() for bound in agent._action_bounds[0]] == [
+        [-0.75, -0.5],
+        [0.5, 0.75],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "expected_message"),
+    [
+        ("observation_names", "observation_names and action_names must have equal counts"),
+        ("action_names", "observation_names and action_names must have equal counts"),
+        ("action_space", "action_space has 1 per-building entries; expected 2"),
+        ("observation_space", "observation_space has 1 per-building entries; expected 2"),
+    ],
+)
+def test_mismatched_environment_metadata_rejects_transactionally_then_valid_retry(
+    field: str,
+    expected_message: str,
+) -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=2)
+    agent.predict([np.zeros(obs_dim, dtype=np.float64) for _ in range(2)])
+    snapshot = {
+        "states": agent._per_building,
+        "bounds": agent._action_bounds,
+        "pending": agent._pending_decisions,
+    }
+    malformed = {
+        "observation_names": copy.deepcopy(obs_per),
+        "action_names": copy.deepcopy(act_per),
+        "action_space": [None, None],
+        "observation_space": [None, None],
+    }
+    malformed[field] = malformed[field][:-1]
+
+    with pytest.raises(ValueError, match=expected_message):
+        agent.attach_environment(
+            **malformed,
+            metadata={"building_names": ["Building_1", "Building_2"]},
+        )
+
+    assert agent._per_building is snapshot["states"]
+    assert agent._action_bounds is snapshot["bounds"]
+    assert agent._pending_decisions is snapshot["pending"]
+    assert all(
+        pending is not None for pending in agent._pending_decisions
+    )
+
+    agent.attach_environment(
+        observation_names=copy.deepcopy(obs_per),
+        action_names=copy.deepcopy(act_per),
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={"building_names": ["Building_1", "Building_2"]},
+    )
+
+    assert agent._per_building is snapshot["states"]
+    assert agent._action_bounds is not snapshot["bounds"]
+
+
+@pytest.mark.parametrize(
+    ("low", "high", "message"),
+    [
+        ([-1.0, np.nan], [1.0, 1.0], "must be finite"),
+        ([-1.0, -1.0], [np.inf, 1.0], "must be finite"),
+        ([0.5, -1.0], [0.25, 1.0], "low < high"),
+        ([-1.0, 0.0], [1.0, 0.0], "low < high"),
+    ],
+)
+def test_invalid_initial_action_bounds_preserve_state_for_valid_retry(
+    low: List[float],
+    high: List[float],
+    message: str,
+) -> None:
+    class _Bounds:
+        def __init__(self, low: List[float], high: List[float]) -> None:
+            self.low = np.asarray(low, dtype=np.float64)
+            self.high = np.asarray(high, dtype=np.float64)
+
+    agent = AgentTransformerPPO(_base_config())
+    observation_names = [load_sample_observation_names_for_first_building()]
+    action_names = [list(_DEFAULT_ACTIONS)]
+
+    with pytest.raises(ValueError, match=message):
+        agent.attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=[_Bounds(low, high)],
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"]},
+        )
+
+    assert agent._first_attach_done is False
+    assert agent._per_building == []
+    assert agent._pending_decisions == []
+    assert agent._action_bounds == []
+
+    agent.attach_environment(
+        observation_names=observation_names,
+        action_names=action_names,
+        action_space=[_Bounds([-0.75, -0.5], [0.5, 0.75])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+
+    assert agent._first_attach_done is True
+    assert len(agent._per_building) == 1
+
+
+def test_multi_building_topology_failure_is_atomic_until_valid_retry() -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+
+    # Keep both an in-flight decision and an old-layout rollout for each
+    # building. A rejected batch must leave both kinds of state intact.
+    first_actions = agent.predict(observations, deterministic=False)
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(actions) for actions in first_actions],
+        rewards=[0.1, 0.1],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+    agent.predict(observations, deterministic=False)
+
+    snapshots = [
+        {
+            "state": state,
+            "names": (state.obs_names_tuple, state.action_names_tuple),
+            "layout": state.layout,
+            "tokenizer": state.tokenizer,
+            "backbone": state.backbone,
+            "actor": state.actor,
+            "critic": state.critic,
+            "buffer": state.buffer,
+            "buffer_observation": state.buffer.observations[0].clone(),
+            "topology_version": state.topology_version,
+            "pending": agent._pending_decisions[index],
+        }
+        for index, state in enumerate(agent._per_building)
+    ]
+
+    def add_charger(building_index: int) -> tuple[List[str], List[str]]:
+        charger_id = next(
+            name.split("::")[1]
+            for name in obs_per[building_index]
+            if name.startswith("charger::")
+            and "::connected_ev::" not in name
+            and "::incoming_ev::" not in name
+        )
+        return (
+            list(obs_per[building_index])
+            + [
+                name.replace(
+                    f"charger::{charger_id}::",
+                    f"charger::Building_{building_index + 1}/charger_NEW::",
+                    1,
+                )
+                for name in obs_per[building_index]
+                if name.startswith(f"charger::{charger_id}::")
+            ],
+            list(act_per[building_index]) + ["electric_vehicle_storage"],
+        )
+
+    valid_obs_0, valid_actions_0 = add_charger(0)
+    valid_obs_1, valid_actions_1 = add_charger(1)
+    storage_id = next(
+        name.split("::")[1] for name in obs_per[1] if name.startswith("storage::")
+    )
+    invalid_obs_1 = valid_obs_1 + [
+        f"storage::{storage_id}::brand_new_storage_feature"
+    ]
+
+    with pytest.raises(ValueError, match=r"feature count for type 'storage'"):
+        agent.attach_environment(
+            observation_names=[valid_obs_0, invalid_obs_1],
+            action_names=[valid_actions_0, valid_actions_1],
+            action_space=[None, None],
+            observation_space=[None, None],
+            metadata={"building_names": ["Building_1", "Building_2"]},
+        )
+
+    for index, snapshot in enumerate(snapshots):
+        state = agent._per_building[index]
+        assert state is snapshot["state"]
+        assert (state.obs_names_tuple, state.action_names_tuple) == snapshot["names"]
+        assert state.layout is snapshot["layout"]
+        assert state.tokenizer is snapshot["tokenizer"]
+        assert state.backbone is snapshot["backbone"]
+        assert state.actor is snapshot["actor"]
+        assert state.critic is snapshot["critic"]
+        assert state.buffer is snapshot["buffer"]
+        assert torch.equal(state.buffer.observations[0], snapshot["buffer_observation"])
+        assert state.topology_version == snapshot["topology_version"]
+        assert agent._pending_decisions[index] is snapshot["pending"]
+
+    agent.attach_environment(
+        observation_names=[valid_obs_0, valid_obs_1],
+        action_names=[valid_actions_0, valid_actions_1],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={"building_names": ["Building_1", "Building_2"]},
+    )
+
+    for index, snapshot in enumerate(snapshots):
+        state = agent._per_building[index]
+        assert state.obs_names_tuple == tuple((valid_obs_0, valid_obs_1)[index])
+        assert state.action_names_tuple == tuple(
+            (valid_actions_0, valid_actions_1)[index]
+        )
+        assert state.layout is not snapshot["layout"]
+        assert len(state.buffer) == 0
+        assert state.topology_version == snapshot["topology_version"] + 1
+        assert agent._pending_decisions[index] is None
+
+
+def test_topology_commit_rolls_back_all_buildings_when_later_flush_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    first_actions = agent.predict(observations, deterministic=False)
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(actions) for actions in first_actions],
+        rewards=[0.1, 0.1],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+    agent.predict(observations, deterministic=False)
+
+    snapshots = [
+        {
+            "state": state,
+            "model": {
+                "tokenizer": copy.deepcopy(state.tokenizer.state_dict()),
+                "backbone": copy.deepcopy(state.backbone.state_dict()),
+                "actor": copy.deepcopy(state.actor.state_dict()),
+                "critic": copy.deepcopy(state.critic.state_dict()),
+                "optimizer": copy.deepcopy(state.optimizer.state_dict()),
+                "normalizer": copy.deepcopy(state.value_normalizer.state_dict()),
+            },
+            "buffer": copy.deepcopy(state.buffer),
+            "layout": state.layout,
+            "names": (state.obs_names_tuple, state.action_names_tuple),
+            "topology_version": state.topology_version,
+            "pending": agent._pending_decisions[index],
+        }
+        for index, state in enumerate(agent._per_building)
+    ]
+    metrics_before = copy.deepcopy(agent._latest_training_metrics)
+
+    def add_charger(building_index: int) -> tuple[List[str], List[str]]:
+        charger_id = next(
+            name.split("::")[1]
+            for name in obs_per[building_index]
+            if name.startswith("charger::")
+            and "::connected_ev::" not in name
+            and "::incoming_ev::" not in name
+        )
+        return (
+            list(obs_per[building_index])
+            + [
+                name.replace(
+                    f"charger::{charger_id}::",
+                    f"charger::Building_{building_index + 1}/charger_NEW::",
+                    1,
+                )
+                for name in obs_per[building_index]
+                if name.startswith(f"charger::{charger_id}::")
+            ],
+            list(act_per[building_index]) + ["electric_vehicle_storage"],
+        )
+
+    new_obs_0, new_actions_0 = add_charger(0)
+    new_obs_1, new_actions_1 = add_charger(1)
+    original_update = agent._run_ppo_update_with_last_value
+
+    def fail_later_flush(state, last_value, *, building_idx):
+        if building_idx == 1:
+            raise RuntimeError("later building flush failed")
+        return original_update(state, last_value, building_idx=building_idx)
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", fail_later_flush)
+    with pytest.raises(RuntimeError, match="later building flush failed"):
+        agent.attach_environment(
+            observation_names=[new_obs_0, new_obs_1],
+            action_names=[new_actions_0, new_actions_1],
+            action_space=[None, None],
+            observation_space=[None, None],
+            metadata={"building_names": ["Building_1", "Building_2"]},
+        )
+
+    assert agent._latest_training_metrics == metrics_before
+    for index, snapshot in enumerate(snapshots):
+        state = agent._per_building[index]
+        assert state is snapshot["state"]
+        assert state.layout is snapshot["layout"]
+        assert (state.obs_names_tuple, state.action_names_tuple) == snapshot["names"]
+        assert state.topology_version == snapshot["topology_version"]
+        assert state.value_normalizer.state_dict() == snapshot["model"]["normalizer"]
+        assert state.optimizer.state_dict() == snapshot["model"]["optimizer"]
+        assert state.buffer.rewards == snapshot["buffer"].rewards
+        assert state.buffer.terminated == snapshot["buffer"].terminated
+        assert state.buffer.truncated == snapshot["buffer"].truncated
+        for field in ("observations", "actions", "log_probs", "values"):
+            actual = getattr(state.buffer, field)
+            expected = getattr(snapshot["buffer"], field)
+            assert len(actual) == len(expected)
+            assert all(torch.equal(value, expected[idx]) for idx, value in enumerate(actual))
+        assert agent._pending_decisions[index] is snapshot["pending"]
+        for module_name in ("tokenizer", "backbone", "actor", "critic"):
+            actual = getattr(state, module_name).state_dict()
+            expected = snapshot["model"][module_name]
+            assert actual.keys() == expected.keys()
+            assert all(torch.equal(value, expected[key]) for key, value in actual.items())
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", original_update)
+    agent.attach_environment(
+        observation_names=[new_obs_0, new_obs_1],
+        action_names=[new_actions_0, new_actions_1],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={"building_names": ["Building_1", "Building_2"]},
+    )
+
+    for index, snapshot in enumerate(snapshots):
+        state = agent._per_building[index]
+        assert state.obs_names_tuple == tuple((new_obs_0, new_obs_1)[index])
+        assert state.action_names_tuple == tuple((new_actions_0, new_actions_1)[index])
+        assert len(state.buffer) == 0
+        assert state.topology_version == snapshot["topology_version"] + 1
+        assert agent._pending_decisions[index] is None
+
+
 # ---------------------------------------------------------------------------
 # Checkpointing
 # ---------------------------------------------------------------------------
@@ -607,6 +1788,97 @@ def test_export_artifacts_writes_files_and_returns_manifest(tmp_path: Path) -> N
         assert "topology_v7" in entry["path"]
         assert entry["config"]["n_ca"] == 2
         assert set(entry["config"]["ca_types"]) <= {"storage", "charger"}
+
+
+def test_onnx_wrapper_affinely_maps_actions_to_positive_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=1)
+    bounds = spaces.Box(
+        low=np.array([0.0, 0.0], dtype=np.float32),
+        high=np.array([1.0, 1.0], dtype=np.float32),
+        dtype=np.float32,
+    )
+    agent.attach_environment(
+        observation_names=obs_per,
+        action_names=act_per,
+        action_space=[bounds],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    state = agent._per_building[0]
+    actor_output = state.actor.mlp[-1]
+    assert isinstance(actor_output, torch.nn.Linear)
+    with torch.no_grad():
+        actor_output.weight.zero_()
+        actor_output.bias.fill_(0.5)
+    exported: dict[str, torch.nn.Module] = {}
+
+    def fake_export(wrapper: torch.nn.Module, *_args: object, **_kwargs: object) -> None:
+        exported["wrapper"] = wrapper
+
+    monkeypatch.setattr(torch.onnx, "export", fake_export)
+    agent._export_onnx(
+        state,
+        tmp_path / "agent.onnx",
+        obs_dim,
+        *agent._action_bounds[0],
+    )
+
+    output = exported["wrapper"](torch.zeros(3, obs_dim)).detach().cpu().numpy()
+    expected = (np.tanh(0.5) + 1.0) / 2.0
+    assert np.all(output >= 0.0)
+    assert np.all(output <= 1.0)
+    np.testing.assert_allclose(output, expected, rtol=1.0e-6, atol=1.0e-6)
+
+
+def test_onnx_export_builds_wrapper_and_input_on_agent_device(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    agent, _, _, _ = _make_agent()
+    state = agent._per_building[0]
+    agent.device = torch.device("cuda")
+    observed: dict[str, object] = {}
+    torch_zeros = torch.zeros
+    torch_tensor = torch.tensor
+
+    def fake_to(module: torch.nn.Module, device: torch.device) -> torch.nn.Module:
+        observed["wrapper_device"] = device
+        return module
+
+    def fake_zeros(*shape: int, **kwargs: object) -> torch.Tensor:
+        observed["input_device"] = kwargs["device"]
+        return torch_zeros(*shape)
+
+    def fake_tensor(data: object, **kwargs: object) -> torch.Tensor:
+        assert kwargs["device"] == torch.device("cuda")
+        return torch_tensor(data, dtype=kwargs.get("dtype"))
+
+    def fake_export(
+        wrapper: torch.nn.Module,
+        inputs: tuple[torch.Tensor],
+        path: str,
+        **kwargs: object,
+    ) -> None:
+        observed["wrapper"] = wrapper
+        observed["input"] = inputs[0]
+
+    monkeypatch.setattr(torch.nn.Module, "to", fake_to)
+    monkeypatch.setattr(torch, "zeros", fake_zeros)
+    monkeypatch.setattr(torch, "tensor", fake_tensor)
+    monkeypatch.setattr(torch.onnx, "export", fake_export)
+
+    agent._export_onnx(
+        state,
+        tmp_path / "agent.onnx",
+        3,
+        *agent._action_bounds[0],
+    )
+
+    assert observed["wrapper_device"] == torch.device("cuda")
+    assert observed["input_device"] == torch.device("cuda")
 
 
 # ---------------------------------------------------------------------------

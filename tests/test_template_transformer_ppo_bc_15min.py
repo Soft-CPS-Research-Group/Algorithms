@@ -275,7 +275,7 @@ def test_server_template_has_full_year_15min_bc_contract(
         "nhead": 4,
         "num_layers": 2,
         "dim_feedforward": 128,
-        "dropout": pytest.approx(0.1),
+        "dropout": pytest.approx(0.0),
     }
     assert hyperparameters == {
         "learning_rate": pytest.approx(2.0e-4),
@@ -287,6 +287,7 @@ def test_server_template_has_full_year_15min_bc_contract(
         "entropy_coeff": pytest.approx(0.03),
         "value_coeff": pytest.approx(0.5),
         "max_grad_norm": pytest.approx(1.0),
+        "require_cuda": True,
     }
 
     assert behavior_cloning["enabled"] is True
@@ -318,7 +319,9 @@ def test_server_template_builds_agent_with_requested_bc_duration(
     phaseout_steps: int,
 ) -> None:
     del duration_name
-    agent = build_execution_unit(_load_yaml(template_path))
+    config = _load_yaml(template_path)
+    config["pipeline"][0]["hyperparameters"]["require_cuda"] = False
+    agent = build_execution_unit(config)
 
     assert isinstance(agent, AgentTransformerPPO)
     assert agent._bc is not None
@@ -375,6 +378,7 @@ def test_year_template_reaches_zero_teacher_influence_within_episode() -> None:
     assert bc["decay_steps"] == final_update_step
     assert bc["warm_start"]["phaseout_steps"] == decision_count
 
+    config["pipeline"][0]["hyperparameters"]["require_cuda"] = False
     agent = build_execution_unit(config)
     assert agent._bc is not None
     assert agent._bc.effective_weight(final_update_step) == pytest.approx(0.0)
