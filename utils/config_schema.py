@@ -810,6 +810,19 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
+        for stage in self.pipeline:
+            if (
+                isinstance(stage, TransformerPPOStageConfig)
+                and (
+                    self.training.steps_between_training_updates <= 1
+                    or self.training.steps_between_training_updates
+                    < stage.hyperparameters.minibatch_size
+                )
+            ):
+                raise ValueError(
+                    "AgentTransformerPPO requires training.steps_between_training_updates >= pipeline[].hyperparameters.minibatch_size."
+                )
+
         if self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
             from algorithms.registry import ALGORITHM_REGISTRY
             for stage in self.pipeline:

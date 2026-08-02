@@ -81,6 +81,8 @@ class _PerBuildingState:
     # exporter records this in ``artifact_manifest.json`` so deployment
     # callers can route to the right artifact bundle for a given mutation.
     topology_version: int = 0
+    last_next_observation: Optional[torch.Tensor] = None
+    last_transition_terminated: bool = False
 
 
 @dataclass
@@ -131,6 +133,8 @@ class _TopologyStateSnapshot:
     observation_names: Tuple[str, ...]
     action_names: Tuple[str, ...]
     topology_version: int
+    last_next_observation: Optional[torch.Tensor]
+    last_transition_terminated: bool
 
 
 @dataclass
@@ -582,11 +586,7 @@ class AgentTransformerPPO(BaseAgent):
                 )
             )
         next_global_learning_step = int(global_learning_step)
-        should_update = (
-            update_step
-            or any(candidate.terminated for candidate in candidates)
-            or any(candidate.truncated for candidate in candidates)
-        )
+        should_update = update_step
         last_values: List[Optional[torch.Tensor]] = [None] * building_count
         if should_update:
             for b, state in enumerate(self._per_building):
@@ -595,7 +595,7 @@ class AgentTransformerPPO(BaseAgent):
                 next_observation = candidates[b].next_observation
                 last_values[b] = (
                     torch.zeros(1, device=self.device)
-                    if next_observation is None
+                    if candidates[b].terminated or next_observation is None
                     else self._critic_value(state, next_observation)
                 )
 
@@ -612,6 +612,8 @@ class AgentTransformerPPO(BaseAgent):
                     terminated=candidate.terminated,
                     truncated=candidate.truncated,
                 )
+                state.last_next_observation = candidate.next_observation
+                state.last_transition_terminated = candidate.terminated
             self._pending_decisions = [None] * building_count
             self._latest_global_learning_step = next_global_learning_step
             if self._bc is not None:
@@ -622,14 +624,27 @@ class AgentTransformerPPO(BaseAgent):
                 return
 
             for b, state in enumerate(self._per_building):
-                self._ppo_update(b, state, last_values[b])
-                state.buffer.clear()
-                if self._bc is not None:
-                    self._bc.on_buffer_flushed(b)
+                if self._ppo_update(b, state, last_values[b]):
+                    self._clear_rollout(b, state)
         except Exception:
             if snapshot is not None:
                 self._restore_topology_state(snapshot)
             raise
+
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        _ = episode, training
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        _ = episode
+        self._pending_decisions = [None] * len(self._per_building)
+        if not training:
+            return
+        for building_idx, state in enumerate(self._per_building):
+            self._flush_rollout_boundary(
+                building_idx,
+                state,
+                boundary="episode_end",
+            )
 
     def get_diagnostic_metrics(self) -> Dict[str, float]:
         if self._bc is None:
@@ -1135,15 +1150,12 @@ class AgentTransformerPPO(BaseAgent):
         # Flush the old rollout only after every candidate validation passed.
         # ``_ppo_update`` swallows empty-buffer no-ops.
         if len(state.buffer) > 0:
-            try:
-                # Treat the final old-layout transition as terminal.
-                self._run_ppo_update_with_last_value(
-                    state,
-                    last_value=torch.zeros(1, device=self.device),
-                    building_idx=building_idx,
-                )
-            finally:
-                state.buffer.clear()
+            self._flush_rollout_boundary(
+                building_idx,
+                state,
+                boundary="topology_change",
+                last_value=torch.zeros(1, device=self.device),
+            )
 
         # Per-building NN weights and optimizer state are retained because
         # stable types share their learned projections across topology changes.
@@ -1191,6 +1203,8 @@ class AgentTransformerPPO(BaseAgent):
                 observation_names=state.obs_names_tuple,
                 action_names=state.action_names_tuple,
                 topology_version=state.topology_version,
+                last_next_observation=state.last_next_observation,
+                last_transition_terminated=state.last_transition_terminated,
             )
             for state in self._per_building
         ]
@@ -1250,6 +1264,8 @@ class AgentTransformerPPO(BaseAgent):
             state.obs_names_tuple = saved.observation_names
             state.action_names_tuple = saved.action_names
             state.topology_version = saved.topology_version
+            state.last_next_observation = saved.last_next_observation
+            state.last_transition_terminated = saved.last_transition_terminated
         self._pending_decisions = pending_decisions
         self._action_bounds = action_bounds
         self._latest_training_metrics = training_metrics
@@ -1341,9 +1357,9 @@ class AgentTransformerPPO(BaseAgent):
         building_idx: int,
         state: _PerBuildingState,
         last_value: Optional[torch.Tensor],
-    ) -> None:
+    ) -> bool:
         if len(state.buffer) == 0:
-            return
+            return False
         # Defensive guard: PPO is on-policy and needs a meaningful trajectory
         # batch before updating. If the wrapper's `update_step` cadence
         # (`simulator.steps_between_training_updates`) is set too low, the
@@ -1352,20 +1368,65 @@ class AgentTransformerPPO(BaseAgent):
         # gradients on near-saturated stored actions). Skip with a warning.
         if len(state.buffer) < self._minibatch_size:
             logger.warning(
-                "Discarding PPO rollout for {}: buffer_size={} < minibatch_size={}. "
-                "Increase `simulator.steps_between_training_updates` (recommended >= 256) "
-                "to give PPO a real trajectory to learn from.",
+                "Retaining PPO rollout for {}: buffer_size={} < minibatch_size={}. "
+                "It will train at the next cadence or episode boundary.",
                 getattr(state, "building_id", "?"),
                 len(state.buffer),
                 self._minibatch_size,
             )
-            return
+            return False
         assert last_value is not None
-        self._run_ppo_update_with_last_value(
+        return self._run_ppo_update_with_last_value(
             state,
             last_value,
             building_idx=building_idx,
         )
+
+    def _clear_rollout(self, building_idx: int, state: _PerBuildingState) -> None:
+        state.buffer.clear()
+        state.last_next_observation = None
+        state.last_transition_terminated = False
+        if self._bc is not None:
+            self._bc.on_buffer_flushed(building_idx)
+
+    def _flush_rollout_boundary(
+        self,
+        building_idx: int,
+        state: _PerBuildingState,
+        *,
+        boundary: str,
+        last_value: Optional[torch.Tensor] = None,
+    ) -> None:
+        rollout_size = len(state.buffer)
+        if rollout_size == 0:
+            return
+        if rollout_size == 1:
+            logger.warning(
+                "Discarding invalid one-sample PPO rollout for {} at "
+                "rollout_boundary={}; on-policy data cannot cross a reset.",
+                state.building_id,
+                boundary,
+            )
+            self._clear_rollout(building_idx, state)
+            return
+        if last_value is None:
+            last_value = (
+                torch.zeros(1, device=self.device)
+                if state.last_transition_terminated or state.last_next_observation is None
+                else self._critic_value(state, state.last_next_observation)
+            )
+        if self._run_ppo_update_with_last_value(
+            state,
+            last_value,
+            building_idx=building_idx,
+        ):
+            logger.info(
+                "PPO rollout flush [{}]: rollout_boundary={}, buffer_size={}",
+                state.building_id,
+                boundary,
+                rollout_size,
+            )
+            self._clear_rollout(building_idx, state)
 
     def _critic_value(
         self,
@@ -1388,7 +1449,10 @@ class AgentTransformerPPO(BaseAgent):
         last_value: torch.Tensor,
         *,
         building_idx: int,
-    ) -> None:
+    ) -> bool:
+        if len(state.buffer) == 0:
+            return False
+        batch_size = min(self._minibatch_size, len(state.buffer))
         with torch.device(self.device):
             state.buffer.compute_returns_and_advantages(last_value)
         assert state.buffer.returns is not None
@@ -1396,7 +1460,7 @@ class AgentTransformerPPO(BaseAgent):
         all_metrics: dict = {"policy_loss": [], "value_loss": [], "entropy": []}
         for _epoch in range(self._ppo_epochs):
             with torch.device(self.device):
-                batches = list(state.buffer.get_batches(self._minibatch_size))
+                batches = list(state.buffer.get_batches(batch_size))
             for batch in batches:
                 state.optimizer.zero_grad()
                 obs_b = batch.observations.to(self.device)  # [B, obs_dim]
@@ -1465,6 +1529,7 @@ class AgentTransformerPPO(BaseAgent):
             averaged.get("entropy", 0.0),
             averaged.get("clip_fraction", 0.0),
         )
+        return True
 
     # ----- ONNX export --------------------------------------------------------
 

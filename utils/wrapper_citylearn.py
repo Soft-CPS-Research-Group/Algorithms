@@ -1126,6 +1126,9 @@ class Wrapper_CityLearn(RLC):
                 )
             else:
                 observations = raw_observations
+            on_episode_start = getattr(self.model, "on_episode_start", None)
+            if callable(on_episode_start):
+                on_episode_start(episode=episode, training=not deterministic)
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             self._write_phase_progress(
@@ -1515,6 +1518,10 @@ class Wrapper_CityLearn(RLC):
                     )
 
                 time_step += 1
+
+            on_episode_end = getattr(self.model, "on_episode_end", None)
+            if callable(on_episode_end):
+                on_episode_end(episode=episode, training=not deterministic)
 
             last_rewards = rewards_list[-1] if rewards_list else None
             self._write_phase_progress(

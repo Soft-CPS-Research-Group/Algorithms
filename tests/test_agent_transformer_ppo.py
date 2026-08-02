@@ -857,7 +857,7 @@ def test_transformer_ppo_schema_defaults_dropout_to_zero() -> None:
     assert config.dropout == 0.0
 
 
-def test_off_cadence_truncation_discards_undersized_rollout() -> None:
+def test_episode_boundary_discards_undersized_truncated_rollout() -> None:
     agent, _, _, obs_dim = _make_agent(n_buildings=1)
     state = agent._per_building[0]
 
@@ -875,7 +875,125 @@ def test_off_cadence_truncation_discards_undersized_rollout() -> None:
         initial_exploration_done=True,
     )
 
+    assert len(state.buffer) == 1
+    agent.on_episode_end(episode=0, training=True)
     assert len(state.buffer) == 0
+
+
+def test_update_step_retains_undersized_nonterminal_rollout() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    state = agent._per_building[0]
+    observations = [np.zeros(obs_dim, dtype=np.float64)]
+    actions = agent.predict(observations, deterministic=True)
+
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(actions[0])],
+        rewards=[0.1],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    assert len(state.buffer) == 1
+
+
+def test_terminal_episode_flushes_partial_rollout_with_two_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    state = agent._per_building[0]
+    observations = [np.zeros(obs_dim, dtype=np.float64)]
+    optimizer_steps = 0
+    original_step = state.optimizer.step
+
+    def count_optimizer_step(*args, **kwargs):
+        nonlocal optimizer_steps
+        optimizer_steps += 1
+        return original_step(*args, **kwargs)
+
+    monkeypatch.setattr(state.optimizer, "step", count_optimizer_step)
+
+    for step in range(2):
+        actions = agent.predict(observations, deterministic=True)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.1],
+            next_observations=observations,
+            terminated=step == 1,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    agent.on_episode_end(episode=0, training=True)
+    assert len(state.buffer) == 0
+    assert optimizer_steps == 1
+
+
+def test_topology_flush_preserves_unaffected_building_weights_and_logs_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    for step in range(2):
+        actions = agent.predict(observations, deterministic=True)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(action) for action in actions],
+            rewards=[0.1, 0.2],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+    unaffected_weights = {
+        name: value.detach().clone()
+        for name, value in agent._per_building[1].actor.state_dict().items()
+    }
+    logged_messages: list[str] = []
+    monkeypatch.setattr(
+        "algorithms.agents.agent_transformer_ppo.logger.info",
+        lambda message, *args: logged_messages.append(message.format(*args)),
+    )
+    charger_id = next(
+        name.split("::")[1]
+        for name in obs_per[0]
+        if name.startswith("charger::")
+        and "::connected_ev::" not in name
+        and "::incoming_ev::" not in name
+    )
+    replacement_obs = list(obs_per[0]) + [
+        name.replace(
+            f"charger::{charger_id}::", "charger::Building_1/charger_new::", 1
+        )
+        for name in obs_per[0]
+        if name.startswith(f"charger::{charger_id}::")
+    ]
+
+    agent.attach_environment(
+        observation_names=[replacement_obs, obs_per[1]],
+        action_names=[act_per[0] + ["electric_vehicle_storage"], act_per[1]],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={"building_names": ["Building_1", "Building_2"]},
+    )
+
+    assert len(agent._per_building[0].buffer) == 0
+    assert len(agent._per_building[1].buffer) == 2
+    for name, value in agent._per_building[1].actor.state_dict().items():
+        assert torch.equal(value, unaffected_weights[name])
+    assert any("rollout_boundary=topology_change" in message for message in logged_messages)
 
 
 def test_update_appends_to_buffer_then_ppo_step_clears() -> None:
@@ -946,6 +1064,7 @@ def test_off_cadence_truncation_flushes_before_next_episode_update() -> None:
             initial_exploration_done=True,
         )
 
+    agent.on_episode_end(episode=0, training=True)
     assert len(state.buffer) == 0
 
     observations = [rng.standard_normal(obs_dim)]
@@ -962,7 +1081,36 @@ def test_off_cadence_truncation_flushes_before_next_episode_update() -> None:
         initial_exploration_done=True,
     )
 
-    assert len(state.buffer) == 0
+    assert len(state.buffer) == 1
+
+
+def test_transformer_ppo_schema_requires_valid_update_cadence() -> None:
+    from utils.config_schema import (
+        ProjectConfig,
+        TrainingConfig,
+        TransformerPPOHyperparameters,
+        TransformerPPOStageConfig,
+    )
+
+    project = ProjectConfig.model_construct(
+        training=TrainingConfig(steps_between_training_updates=1),
+        pipeline=[
+            TransformerPPOStageConfig.model_construct(
+                hyperparameters=TransformerPPOHyperparameters.model_construct(
+                    minibatch_size=4
+                )
+            )
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"AgentTransformerPPO requires training.steps_between_training_updates "
+            r">= pipeline\[\]\.hyperparameters\.minibatch_size\."
+        ),
+    ):
+        project.validate_cross_constraints()
 
 
 def test_successful_ppo_update_publishes_training_diagnostics() -> None:
@@ -1457,19 +1605,20 @@ def test_multi_building_topology_failure_is_atomic_until_valid_retry() -> None:
 
     # Keep both an in-flight decision and an old-layout rollout for each
     # building. A rejected batch must leave both kinds of state intact.
-    first_actions = agent.predict(observations, deterministic=False)
-    agent.update(
-        observations=observations,
-        actions=[np.asarray(actions) for actions in first_actions],
-        rewards=[0.1, 0.1],
-        next_observations=observations,
-        terminated=False,
-        truncated=False,
-        update_target_step=False,
-        global_learning_step=0,
-        update_step=False,
-        initial_exploration_done=True,
-    )
+    for step in range(2):
+        first_actions = agent.predict(observations, deterministic=False)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(actions) for actions in first_actions],
+            rewards=[0.1, 0.1],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
     agent.predict(observations, deterministic=False)
 
     snapshots = [
@@ -1568,19 +1717,20 @@ def test_topology_commit_rolls_back_all_buildings_when_later_flush_fails(
 ) -> None:
     agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=2)
     observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
-    first_actions = agent.predict(observations, deterministic=False)
-    agent.update(
-        observations=observations,
-        actions=[np.asarray(actions) for actions in first_actions],
-        rewards=[0.1, 0.1],
-        next_observations=observations,
-        terminated=False,
-        truncated=False,
-        update_target_step=False,
-        global_learning_step=0,
-        update_step=False,
-        initial_exploration_done=True,
-    )
+    for step in range(2):
+        first_actions = agent.predict(observations, deterministic=False)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(actions) for actions in first_actions],
+            rewards=[0.1, 0.1],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
     agent.predict(observations, deterministic=False)
 
     snapshots = [

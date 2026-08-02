@@ -424,3 +424,74 @@ def test_wrapper_publishes_training_metrics_with_active_mlflow(monkeypatch) -> N
     assert step_metrics["ratio_error_max"] == 0.2
     assert step_metrics["explained_variance"] == 0.3
     assert wrapper.model.consume_calls == 1
+
+
+def test_deterministic_final_episode_calls_lifecycle_without_agent_updates() -> None:
+    class _Env:
+        def __init__(self) -> None:
+            self.observation_names = [["obs_0"]]
+            self.observation_space = [
+                type("Space", (), {"low": np.array([0.0]), "high": np.array([1.0])})()
+            ]
+            self.action_names = [["action_0"]]
+            self.action_space = [type("Space", (), {"low": np.array([-1.0]), "high": np.array([1.0])})()]
+            self.reward_function = type("Reward", (), {})()
+            self.time_steps = 1
+            self.seconds_per_time_step = 3600
+            self.time_step_ratio = 1.0
+            self.random_seed = 0
+            self.episode_tracker = type("Tracker", (), {"episode_time_steps": 1})()
+            self.unwrapped = self
+
+        def reset(self):
+            return [np.array([0.0], dtype=np.float64)], {}
+
+        def step(self, _actions):
+            return [np.array([0.0], dtype=np.float64)], [1.0], True, False, {}
+
+        def get_metadata(self):
+            return {"buildings": [{}]}
+
+    class _LifecycleModel:
+        use_raw_observations = True
+
+        def __init__(self) -> None:
+            self.starts: list[tuple[int, bool]] = []
+            self.ends: list[tuple[int, bool]] = []
+            self.update_calls = 0
+
+        def attach_environment(self, **_kwargs) -> None:
+            pass
+
+        def on_episode_start(self, *, episode: int, training: bool) -> None:
+            self.starts.append((episode, training))
+
+        def on_episode_end(self, *, episode: int, training: bool) -> None:
+            self.ends.append((episode, training))
+
+        def predict(self, observations, deterministic=None):
+            return [[0.0] for _ in observations]
+
+        def update(self, **_kwargs) -> None:
+            self.update_calls += 1
+
+        def is_initial_exploration_done(self, _global_step: int) -> bool:
+            return True
+
+    model = _LifecycleModel()
+    wrapper = Wrapper_CityLearn(
+        env=_Env(),
+        model=model,
+        config={
+            "training": {},
+            "checkpointing": {},
+            "tracking": {"mlflow_enabled": False, "progress_updates_enabled": False},
+        },
+        job_id="ppo-deterministic-final-lifecycle",
+    )
+
+    wrapper.learn(episodes=2, deterministic_finish=True)
+
+    assert model.starts == [(0, True), (1, False)]
+    assert model.ends == [(0, True), (1, False)]
+    assert model.update_calls == 1
