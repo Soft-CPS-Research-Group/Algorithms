@@ -1484,6 +1484,9 @@ controllers. The template enables deterministic teacher actions with no
 noise and a `blend` warm-start phaseout. During phaseout, stochastic PPO
 actions are blended with teacher actions according to the remaining
 phaseout probability; deterministic evaluation is not teacher-replaced.
+Because blended or teacher-replaced actions are not sampled from the PPO
+actor, their transitions are excluded from PPO rollout and BC-loss updates.
+PPO and BC optimization start when the phaseout returns actor actions.
 
 BC weighting is configured independently from PPO hyperparameters:
 

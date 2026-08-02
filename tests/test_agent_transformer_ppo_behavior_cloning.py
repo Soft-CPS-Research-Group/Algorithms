@@ -168,6 +168,38 @@ def test_predict_computes_teacher_actions_and_blends_phaseout() -> None:
     assert actions != teacher_actions
 
 
+def test_update_excludes_phaseout_controlled_actions_from_ppo_rollout() -> None:
+    agent, _, _, obs_dim = _make_agent(
+        config=_bc_config(phaseout_mode="blend", phaseout_steps=4)
+    )
+    teacher_actions = [[0.25 for _ in range(agent._per_building[0].layout.n_ca)]]
+    _set_fake_teacher(agent, teacher_actions)
+    rng = np.random.default_rng(5)
+    observations, actions, next_observations = _random_transition(agent, obs_dim, rng)
+
+    agent.set_observation_context(
+        raw_observations=observations,
+        encoded_observations=observations,
+    )
+    actions = agent.predict(observations, deterministic=False)
+    agent.update(
+        observations=observations,
+        actions=actions,
+        rewards=[0.1],
+        next_observations=next_observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    assert len(agent._per_building[0].buffer) == 0
+    assert agent._bc is not None
+    assert agent._bc.teacher_action_buffers == [[]]
+
+
 def test_update_records_teacher_actions_aligned_with_buffer() -> None:
     agent, _, _, obs_dim = _make_agent(config=_bc_config())
     teacher_actions = [[0.1 for _ in range(agent._per_building[0].layout.n_ca)]]

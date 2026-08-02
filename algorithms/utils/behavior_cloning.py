@@ -282,6 +282,10 @@ class BehaviorCloningRegularizer:
             return actions
         return actor_actions
 
+    def should_skip_ppo_transition(self) -> bool:
+        """Return whether the latest action was not sampled from the PPO actor."""
+        return self._latest_phaseout_used
+
     def record_transition(self, building_idx: int) -> None:
         buffer = self._buffer_for(building_idx)
         if (

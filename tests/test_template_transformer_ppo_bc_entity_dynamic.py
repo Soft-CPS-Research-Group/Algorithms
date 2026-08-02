@@ -74,8 +74,12 @@ def _bc_ppo_algo_config() -> Dict[str, Any]:
     }
 
 
-def _bc_full_config() -> Dict[str, Any]:
-    return {"algorithm": _bc_ppo_algo_config(), "training": {"seed": 7}}
+def _bc_full_config(*, phaseout_steps: int = 6144) -> Dict[str, Any]:
+    config = {"algorithm": _bc_ppo_algo_config(), "training": {"seed": 7}}
+    config["algorithm"]["behavior_cloning"]["warm_start"]["phaseout_steps"] = (
+        phaseout_steps
+    )
+    return config
 
 
 def _rollout_transition(
@@ -163,7 +167,7 @@ def test_transformer_ppo_bc_smoke_records_bc_metrics_across_topology_change() ->
         {"algorithm": "AgentTransformerPPO", "count": 1, "hyperparameters": {}}
     ]
     wrapper = Wrapper_CityLearn(env=env, config=cfg, job_id="ppo-bc-entity-smoke")
-    agent = AgentTransformerPPO(_bc_full_config())
+    agent = AgentTransformerPPO(_bc_full_config(phaseout_steps=0))
     wrapper.set_model(agent)
 
     observations = wrapper._apply_entity_layout(
@@ -188,8 +192,8 @@ def test_transformer_ppo_bc_smoke_records_bc_metrics_across_topology_change() ->
     training_metrics = agent.consume_latest_training_metrics()
     assert diagnostics["behavior_cloning_teacher_enabled"] == pytest.approx(1.0)
     assert diagnostics["behavior_cloning_latest_teacher_available"] == pytest.approx(1.0)
-    assert diagnostics["behavior_cloning_phaseout_probability"] > 0.0
-    assert diagnostics["behavior_cloning_phaseout_used"] == pytest.approx(1.0)
+    assert diagnostics["behavior_cloning_phaseout_probability"] == pytest.approx(0.0)
+    assert diagnostics["behavior_cloning_phaseout_used"] == pytest.approx(0.0)
     assert training_metrics["behavior_cloning_effective_weight"] > 0.0
     assert np.isfinite(training_metrics["behavior_cloning_effective_weight"])
     assert "behavior_cloning_loss" in training_metrics

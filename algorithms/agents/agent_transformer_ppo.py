@@ -313,6 +313,11 @@ class AgentTransformerPPO(BaseAgent):
         del update_target_step, initial_exploration_done
         self._latest_global_learning_step = int(global_learning_step)
 
+        if self._bc is not None and self._bc.should_skip_ppo_transition():
+            # PPO needs actions sampled by its actor. Teacher-controlled actions
+            # remain available to the environment but cannot enter this rollout.
+            return
+
         done = bool(terminated or truncated)
         for b, state in enumerate(self._per_building):
             obs_t = torch.as_tensor(
