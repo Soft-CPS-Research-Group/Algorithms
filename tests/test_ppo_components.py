@@ -1,9 +1,18 @@
 """Tests for PPO components."""
 
+import math
+
+import pytest
 import torch
 import torch.nn as nn
 
-from algorithms.utils.ppo_components import ActorHead, CriticHead, RolloutBuffer, compute_ppo_loss
+from algorithms.utils.ppo_components import (
+    ActorHead,
+    CriticHead,
+    RolloutBuffer,
+    RunningValueNormalizer,
+    compute_ppo_loss,
+)
 
 
 class TestActorHead:
@@ -129,11 +138,15 @@ class TestRolloutBuffer:
             log_prob=torch.tensor(-0.5),
             reward=1.0,
             value=torch.tensor(0.5),
-            done=False,
+            terminated=False,
+            truncated=False,
         )
 
         assert len(buffer.observations) == 1
         assert len(buffer.rewards) == 1
+        assert buffer.terminated == [False]
+        assert buffer.truncated == [False]
+        assert not hasattr(buffer, "dones")
 
     def test_buffer_compute_gae(self) -> None:
         """Buffer should compute GAE advantages."""
@@ -147,7 +160,8 @@ class TestRolloutBuffer:
                 log_prob=torch.tensor(-0.5),
                 reward=1.0,
                 value=torch.tensor(0.5),
-                done=(i == 4),  # Last one is terminal
+                terminated=(i == 4),
+                truncated=False,
             )
 
         buffer.compute_returns_and_advantages(last_value=torch.tensor(0.0))
@@ -167,7 +181,8 @@ class TestRolloutBuffer:
                 log_prob=torch.tensor(-0.5),
                 reward=1.0,
                 value=torch.tensor(0.5),
-                done=False,
+                terminated=False,
+                truncated=False,
             )
 
         buffer.compute_returns_and_advantages(last_value=torch.tensor(0.0))
@@ -185,13 +200,44 @@ class TestRolloutBuffer:
             log_prob=torch.tensor(-0.5),
             reward=1.0,
             value=torch.tensor(0.5),
-            done=False,
+            terminated=False,
+            truncated=False,
         )
 
         buffer.clear()
 
         assert len(buffer.observations) == 0
         assert len(buffer.rewards) == 0
+        assert buffer.terminated == []
+        assert buffer.truncated == []
+
+    @pytest.mark.parametrize(
+        ("terminated", "truncated", "expected_return"),
+        [(True, False, 1.0), (False, True, 2.8)],
+        ids=["terminated", "truncated"],
+    )
+    def test_buffer_uses_termination_but_not_truncation_for_bootstrap(
+        self,
+        terminated: bool,
+        truncated: bool,
+        expected_return: float,
+    ) -> None:
+        """Termination prevents bootstrap, while truncation retains it."""
+        buffer = RolloutBuffer(gamma=0.9, gae_lambda=1.0)
+        buffer.add(
+            observation=torch.tensor([0.0]),
+            action=torch.tensor([0.0]),
+            log_prob=torch.tensor(0.0),
+            reward=1.0,
+            value=torch.tensor(0.0),
+            terminated=terminated,
+            truncated=truncated,
+        )
+
+        buffer.compute_returns_and_advantages(last_value=torch.tensor(2.0))
+
+        assert buffer.returns is not None
+        assert buffer.returns.item() == pytest.approx(expected_return)
 
 
 def test_rollout_buffer_batches_include_original_step_indices():
@@ -206,7 +252,8 @@ def test_rollout_buffer_batches_include_original_step_indices():
             log_prob=torch.tensor([0.0]),
             reward=0.0,
             value=torch.tensor([0.0]),
-            done=False,
+            terminated=False,
+            truncated=False,
         )
     buffer.compute_returns_and_advantages(torch.tensor([0.0]))
 
@@ -250,6 +297,9 @@ class TestPPOLoss:
         assert "policy_loss" in metrics
         assert "value_loss" in metrics
         assert "entropy" in metrics
+        assert "approx_kl" in metrics
+        assert "ratio_error_max" in metrics
+        assert "explained_variance" in metrics
 
     def test_ppo_loss_clipping(self) -> None:
         """PPO loss should clip probability ratios."""
@@ -299,3 +349,105 @@ class TestPPOLoss:
 
         assert log_probs_new.grad is not None
         assert values.grad is not None
+
+    def test_ppo_loss_smooth_l1_value_gradient_for_large_residual(self) -> None:
+        """A large critic residual must retain a finite, nonzero gradient."""
+        values = torch.tensor([20.0], requires_grad=True)
+        loss, _ = compute_ppo_loss(
+            log_probs_new=torch.zeros(1, requires_grad=True),
+            log_probs_old=torch.zeros(1),
+            advantages=torch.zeros(1),
+            values=values,
+            returns=torch.zeros(1),
+            clip_eps=0.2,
+            value_coeff=1.0,
+            entropy_coeff=0.0,
+        )
+
+        loss.backward()
+
+        assert values.grad is not None
+        assert torch.isfinite(values.grad).all()
+        assert values.grad.abs().max().item() > 0.0
+
+    def test_ppo_loss_reports_diagnostics(self) -> None:
+        """PPO diagnostics should report ratio and critic-fit information."""
+        loss, metrics = compute_ppo_loss(
+            log_probs_new=torch.tensor([0.0, math.log(2.0)]),
+            log_probs_old=torch.zeros(2),
+            advantages=torch.ones(2),
+            values=torch.tensor([1.0, 2.0]),
+            returns=torch.tensor([1.0, 3.0]),
+            clip_eps=0.2,
+            value_coeff=0.5,
+            entropy_coeff=0.0,
+        )
+
+        assert torch.isfinite(loss)
+        assert metrics["approx_kl"] == pytest.approx((1.0 - math.log(2.0)) / 2.0)
+        assert metrics["ratio_error_max"] == pytest.approx(1.0)
+        assert metrics["explained_variance"] == pytest.approx(0.75)
+
+    @pytest.mark.parametrize(
+        ("returns", "values"),
+        [
+            (torch.tensor([2.0]), torch.tensor([1.0])),
+            (torch.tensor([2.0, 2.0]), torch.tensor([1.0, 3.0])),
+        ],
+        ids=["one-return", "constant-returns"],
+    )
+    def test_ppo_loss_diagnostics_are_finite_for_degenerate_returns(
+        self,
+        returns: torch.Tensor,
+        values: torch.Tensor,
+    ) -> None:
+        """Diagnostics must remain finite for degenerate return samples."""
+        _, metrics = compute_ppo_loss(
+            log_probs_new=torch.zeros_like(returns),
+            log_probs_old=torch.zeros_like(returns),
+            advantages=torch.ones_like(returns),
+            values=values,
+            returns=returns,
+            clip_eps=0.2,
+            value_coeff=0.5,
+            entropy_coeff=0.0,
+        )
+
+        for metric_name in ("approx_kl", "ratio_error_max", "explained_variance"):
+            assert math.isfinite(metrics[metric_name])
+
+
+class TestRunningValueNormalizer:
+    """Tests for RunningValueNormalizer."""
+
+    def test_normalizer_round_trip_preserves_dtype_and_device(self) -> None:
+        """Normalization and denormalization should restore input values."""
+        normalizer = RunningValueNormalizer()
+        values = torch.tensor([1.0, 3.0], dtype=torch.float64)
+        normalizer.update(values)
+
+        normalized = normalizer.normalize(values)
+        restored = normalizer.denormalize(normalized)
+
+        assert normalized.dtype == values.dtype
+        assert normalized.device == values.device
+        assert restored.dtype == values.dtype
+        assert restored.device == values.device
+        assert torch.allclose(restored, values)
+        assert normalizer.mean == pytest.approx(2.0)
+        assert normalizer.variance == pytest.approx(1.0)
+        assert normalizer.count == 2
+
+    def test_normalizer_state_round_trip_is_device_agnostic(self) -> None:
+        """A saved scalar state should restore equivalent normalization."""
+        normalizer = RunningValueNormalizer()
+        normalizer.update(torch.tensor([1.0, 2.0, 5.0]))
+        state = normalizer.state_dict()
+
+        restored = RunningValueNormalizer()
+        restored.load_state_dict(state)
+        values = torch.tensor([2.0, 8.0], dtype=torch.float64)
+
+        assert all(not isinstance(value, torch.Tensor) for value in state.values())
+        assert restored.state_dict() == state
+        assert torch.allclose(restored.normalize(values), normalizer.normalize(values))

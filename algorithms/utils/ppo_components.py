@@ -7,7 +7,7 @@ share the Transformer backbone but have separate heads.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -151,6 +151,70 @@ class Batch:
     step_indices: torch.Tensor
 
 
+class RunningValueNormalizer:
+    """Maintain scalar running statistics for value normalization."""
+
+    _EPSILON = 1e-8
+
+    def __init__(self) -> None:
+        self.mean = 0.0
+        self.variance = 1.0
+        self.count = 0
+
+    def update(self, values: torch.Tensor) -> None:
+        """Update running population statistics from a tensor of values."""
+        if values.numel() == 0:
+            return
+
+        samples = values.detach().reshape(-1).to(device="cpu", dtype=torch.float64)
+        batch_count = samples.numel()
+        batch_mean = samples.mean().item()
+        batch_variance = samples.var(unbiased=False).item()
+
+        if self.count == 0:
+            self.mean = batch_mean
+            self.variance = batch_variance
+            self.count = batch_count
+            return
+
+        total_count = self.count + batch_count
+        delta = batch_mean - self.mean
+        combined_m2 = (
+            self.variance * self.count
+            + batch_variance * batch_count
+            + delta * delta * self.count * batch_count / total_count
+        )
+        self.mean += delta * batch_count / total_count
+        self.variance = combined_m2 / total_count
+        self.count = total_count
+
+    def normalize(self, values: torch.Tensor) -> torch.Tensor:
+        """Normalize values with the current running statistics."""
+        mean = values.new_tensor(self.mean)
+        scale = values.new_tensor((max(self.variance, 0.0) + self._EPSILON) ** 0.5)
+        return (values - mean) / scale
+
+    def denormalize(self, values: torch.Tensor) -> torch.Tensor:
+        """Restore normalized values to the original scale."""
+        mean = values.new_tensor(self.mean)
+        scale = values.new_tensor((max(self.variance, 0.0) + self._EPSILON) ** 0.5)
+        return values * scale + mean
+
+    def state_dict(self) -> Dict[str, Union[float, int]]:
+        """Return device-agnostic scalar statistics."""
+        return {
+            "mean": self.mean,
+            "variance": self.variance,
+            "count": self.count,
+        }
+
+    def load_state_dict(self, state: Dict[str, Union[float, int]]) -> None:
+        """Restore scalar statistics from :meth:`state_dict`."""
+        self.mean = float(state["mean"])
+        self.variance = float(state["variance"])
+        self.count = int(state["count"])
+
+
 class RolloutBuffer:
     """On-policy rollout buffer for PPO.
 
@@ -173,7 +237,8 @@ class RolloutBuffer:
         self.log_probs: List[torch.Tensor] = []
         self.rewards: List[float] = []
         self.values: List[torch.Tensor] = []
-        self.dones: List[bool] = []
+        self.terminated: List[bool] = []
+        self.truncated: List[bool] = []
 
         self.advantages: Optional[torch.Tensor] = None
         self.returns: Optional[torch.Tensor] = None
@@ -186,7 +251,8 @@ class RolloutBuffer:
         log_prob: torch.Tensor,
         reward: float,
         value: torch.Tensor,
-        done: bool,
+        terminated: bool,
+        truncated: bool,
     ) -> None:
         """Add a transition to the buffer.
 
@@ -196,14 +262,16 @@ class RolloutBuffer:
             log_prob: Log probability of the action.
             reward: Reward received.
             value: Value estimate from critic.
-            done: Whether episode terminated.
+            terminated: Whether the transition ended in a terminal state.
+            truncated: Whether the transition ended due to a time or topology limit.
         """
         self.observations.append(observation.detach())
         self.actions.append(action.detach())
         self.log_probs.append(log_prob.detach())
         self.rewards.append(reward)
         self.values.append(value.detach())
-        self.dones.append(done)
+        self.terminated.append(terminated)
+        self.truncated.append(truncated)
         logger.debug("Added transition to RolloutBuffer (size={})", len(self.observations))
 
     def compute_returns_and_advantages(self, last_value: torch.Tensor) -> None:
@@ -224,7 +292,9 @@ class RolloutBuffer:
         next_value = last_value.squeeze()
 
         for t in reversed(range(n)):
-            mask = 1.0 - float(self.dones[t])
+            # Only terminal states prevent value bootstrapping. Truncation
+            # boundaries retain the caller-provided bootstrap value.
+            mask = 1.0 - float(self.terminated[t])
             delta = self.rewards[t] + self.gamma * next_value * mask - values[t]
             gae = delta + self.gamma * self.gae_lambda * mask * gae
             advantages[t] = gae
@@ -279,7 +349,8 @@ class RolloutBuffer:
         self.log_probs.clear()
         self.rewards.clear()
         self.values.clear()
-        self.dones.clear()
+        self.terminated.clear()
+        self.truncated.clear()
         self.advantages = None
         self.returns = None
         logger.debug("Cleared RolloutBuffer")
@@ -315,19 +386,20 @@ def compute_ppo_loss(
         Tuple of:
             - total_loss: Combined loss for backprop.
             - metrics: Dict with ``policy_loss``, ``value_loss``, ``entropy``,
-              and ``clip_fraction``.
+               ``clip_fraction``, ``approx_kl``, ``ratio_error_max``, and
+               ``explained_variance``.
     """
     # Probability ratio
-    ratio = torch.exp(log_probs_new - log_probs_old)
+    log_ratio = log_probs_new - log_probs_old
+    ratio = torch.exp(log_ratio)
 
     # Clipped surrogate objective
     surr1 = ratio * advantages
     surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * advantages
     policy_loss = -torch.min(surr1, surr2).mean()
 
-    # Value loss (clipped MSE to prevent value function divergence)
-    value_loss_unclipped = (values - returns) ** 2
-    value_loss = torch.clamp(value_loss_unclipped, max=100.0).mean()
+    # Smooth L1 keeps gradients for large residuals without quadratic growth.
+    value_loss = torch.nn.functional.smooth_l1_loss(values, returns)
 
     # Entropy bonus (approximate using log_probs)
     # For squashed Gaussian, entropy is complex; use simple approximation
@@ -338,12 +410,22 @@ def compute_ppo_loss(
 
     # Clip fraction: proportion of samples where ratio was clipped
     clip_fraction = ((ratio - 1.0).abs() > clip_eps).float().mean().item()
+    approx_kl = ((ratio - 1.0) - log_ratio).mean()
+    ratio_error_max = (ratio - 1.0).abs().max()
+    returns_variance = returns.var(unbiased=False)
+    explained_variance = 1.0 - (returns - values).var(unbiased=False) / torch.clamp(
+        returns_variance,
+        min=1e-8,
+    )
 
     metrics = {
         "policy_loss": policy_loss.item(),
         "value_loss": value_loss.item(),
         "entropy": entropy.item(),
         "clip_fraction": clip_fraction,
+        "approx_kl": approx_kl.item(),
+        "ratio_error_max": ratio_error_max.item(),
+        "explained_variance": explained_variance.item(),
     }
 
     logger.debug(
