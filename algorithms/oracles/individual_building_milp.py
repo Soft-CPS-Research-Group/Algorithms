@@ -12,7 +12,9 @@ replay before being called CityLearn-feasible.
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 import math
+import multiprocessing
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
@@ -243,16 +245,45 @@ def _sum_optional(values: Sequence[Optional[float]]) -> Optional[float]:
 def solve_individual_building_oracles(
     problem: PerfectForesightProblem,
     options: Optional[SolveOptions] = None,
+    *,
+    max_workers: int = 1,
 ) -> IndividualBuildingOracleResult:
     """Solve and combine independent fixed-service battery-only building bounds."""
 
     subproblems = split_individual_building_problems(problem)
+    worker_count = int(max_workers)
+    if worker_count < 1:
+        raise ValueError("max_workers must be at least 1.")
+
+    if worker_count == 1 or len(subproblems) == 1:
+        bounded_results = tuple(
+            solve_bounded_oracle(subproblem, options) for subproblem in subproblems
+        )
+    else:
+        # Each building is mathematically independent.  A process pool avoids
+        # serializing the HiGHS solves behind Python's GIL and, unlike solver
+        # threads, keeps one explicit time limit per building/formulation.
+        # HiGHS may already have initialized native thread state in callers
+        # that perform a serial solve before this function.  ``spawn`` keeps
+        # that state out of workers and avoids fork-after-solver deadlocks.
+        with ProcessPoolExecutor(
+            max_workers=min(worker_count, len(subproblems)),
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as pool:
+            bounded_results = tuple(
+                pool.map(
+                    solve_bounded_oracle,
+                    subproblems,
+                    [options] * len(subproblems),
+                )
+            )
+
     building_solutions = tuple(
         IndividualBuildingOracleSolution(
             building_id=subproblem.building_ids[0],
-            result=solve_bounded_oracle(subproblem, options),
+            result=bounded,
         )
-        for subproblem in subproblems
+        for subproblem, bounded in zip(subproblems, bounded_results)
     )
 
     lower = _sum_optional(

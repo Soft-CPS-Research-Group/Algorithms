@@ -61,6 +61,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--episode", type=int, default=1)
     parser.add_argument("--time-limit-seconds", type=float, default=120.0)
     parser.add_argument("--mip-relative-gap", type=float, default=1.0e-4)
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=1,
+        help="Number of independent building solves to run concurrently.",
+    )
     args = parser.parse_args(argv)
 
     built = build_fixed_service_battery_problem(
@@ -76,6 +82,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             time_limit_seconds=args.time_limit_seconds,
             mip_relative_gap=args.mip_relative_gap,
         ),
+        max_workers=args.max_workers,
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "problem.json").write_text(

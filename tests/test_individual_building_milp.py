@@ -101,6 +101,21 @@ def test_changing_one_home_cannot_change_the_other_home_solution():
     assert changed_home_a.conservative.schedule == first_home_a.conservative.schedule
 
 
+def test_parallel_individual_solves_preserve_order_and_result():
+    source = _problem()
+
+    serial = solve_individual_building_oracles(source)
+    parallel = solve_individual_building_oracles(source, max_workers=2)
+
+    assert [item.building_id for item in parallel.buildings] == ["Home_A", "Home_B"]
+    assert parallel.to_dict() == serial.to_dict()
+
+
+def test_individual_solves_reject_invalid_worker_count():
+    with pytest.raises(ValueError, match="max_workers must be at least 1"):
+        solve_individual_building_oracles(_problem(), max_workers=0)
+
+
 def test_individual_objective_does_not_net_exports_between_homes():
     source = PerfectForesightProblem(
         problem_id="opposite-meters",
