@@ -114,6 +114,16 @@ class _NegativeBehaviorTeacher(torch.nn.Module):
         return [[-1.0]]
 
 
+class _ConstantPolicy(torch.nn.Module):
+    def __init__(self, action: float) -> None:
+        super().__init__()
+        self.action = float(action)
+
+    def predict(self, observations, deterministic=None):
+        del deterministic
+        return [[self.action] for _ in observations]
+
+
 def _single_ev_bc_agent(
     *,
     safety_enabled: bool,
@@ -408,6 +418,84 @@ def test_ppo_behavior_teacher_diagnostics_stay_empty_without_teacher() -> None:
     assert metrics["PPO/behavior_teacher_raw_projected_target_available"] == 0.0
     assert metrics["PPO/behavior_teacher_raw_projected_projection_applied"] == 0.0
     assert metrics["PPO/behavior_teacher_raw_projected_disagreement_count"] == 0.0
+
+
+def test_ppo_residual_zero_reproduces_base_action_exactly(monkeypatch) -> None:
+    agent = _agent(
+        residual_policy_enabled=True,
+        residual_base_policy="RandomPolicy",
+        residual_action_scale=0.5,
+        residual_zero_initialization=True,
+        local_action_safety_enabled=True,
+    )
+    agent._residual_base_policy = _ConstantPolicy(0.75)
+    monkeypatch.setattr(
+        agent._local_action_safety_adapters[0],
+        "project",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a neutral residual must not re-project its operational base action"
+        ),
+    )
+    observation = np.asarray([0.1, -0.2, 0.3], dtype=np.float32)
+    agent.set_observation_context(
+        raw_observations=[observation],
+        encoded_observations=[observation],
+    )
+
+    action = agent.predict([observation], deterministic=True)
+
+    assert action[0] == pytest.approx([0.75], abs=1.0e-7)
+    assert agent._last_policy_samples[0]["normalized_action"].tolist() == pytest.approx(
+        [0.0],
+        abs=1.0e-7,
+    )
+    assert agent._last_policy_samples[0]["executed_action"].tolist() == pytest.approx(
+        [0.75],
+        abs=1.0e-7,
+    )
+    metrics = agent.get_diagnostic_metrics()
+    assert metrics["PPO/residual_policy_enabled"] == 1.0
+    assert metrics["PPO/residual_delta_l1_mean"] == pytest.approx(0.0)
+    assert metrics["PPO/residual_neutral_safety_bypass"] == 1.0
+
+
+def test_ppo_residual_bc_target_is_teacher_minus_base() -> None:
+    agent = _agent(
+        residual_policy_enabled=True,
+        residual_base_policy="RandomPolicy",
+        residual_action_scale=0.5,
+        residual_zero_initialization=True,
+        initial_exploration_strategy="policy",
+        warm_start_policy="RandomPolicy",
+        warm_start_policy_deterministic=True,
+        random_exploration_steps=2,
+        end_initial_exploration_time_step=2,
+        actor_behavior_cloning_weight=1.0,
+        actor_behavior_cloning_replay_capacity=4,
+    )
+    # Action range is [-2, 2], so scale=0.5 gives a one-unit maximum delta.
+    agent._residual_base_policy = _ConstantPolicy(0.25)
+    agent._warm_start_policy = _ConstantPolicy(1.25)
+    observation = np.asarray([0.1, -0.2, 0.3], dtype=np.float32)
+    agent.set_observation_context(
+        raw_observations=[observation],
+        encoded_observations=[observation],
+    )
+
+    action = agent.predict([observation], deterministic=False)
+    _transition(agent, observation, action)
+
+    assert action[0] == pytest.approx([1.25])
+    assert agent.rollout[0]["teacher_actions"][0].tolist() == pytest.approx([1.0])
+    assert (
+        agent.behavior_cloning_replay[0]["teacher_actions"][0].tolist()
+        == pytest.approx([1.0])
+    )
+
+
+def test_ppo_residual_requires_explicit_base_policy() -> None:
+    with pytest.raises(ValueError, match="requires residual_base_policy"):
+        PPO(_ppo_config(residual_policy_enabled=True))
 
 
 def test_ppo_rejects_onnx_export_that_omits_enabled_safety(tmp_path) -> None:

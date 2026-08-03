@@ -120,6 +120,57 @@ class _PPOBase(BaseAgent):
         ).strip().lower()
         if self.warm_start_policy_phaseout_mode not in {"probability", "blend"}:
             raise ValueError("PPO warm_start_policy_phaseout_mode must be 'probability' or 'blend'.")
+        self.residual_policy_enabled = bool(
+            exploration_cfg.get("residual_policy_enabled", False)
+        )
+        self.residual_base_policy_name = self._optional_string(
+            exploration_cfg.get("residual_base_policy")
+        )
+        if self.residual_policy_enabled and not self.residual_base_policy_name:
+            raise ValueError(
+                "PPO residual_policy_enabled requires residual_base_policy; "
+                "use an explicit local baseline instead of a silent no-op base."
+            )
+        self.residual_base_policy_deterministic = bool(
+            exploration_cfg.get("residual_base_policy_deterministic", True)
+        )
+        self.residual_action_scale = float(
+            np.clip(
+                float(exploration_cfg.get("residual_action_scale", 0.0) or 0.0),
+                0.0,
+                1.0,
+            )
+        )
+        self.residual_storage_action_scale_multiplier = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "residual_storage_action_scale_multiplier",
+                    1.0,
+                )
+                or 0.0
+            ),
+        )
+        self.residual_ev_action_scale_multiplier = max(
+            0.0,
+            float(
+                exploration_cfg.get("residual_ev_action_scale_multiplier", 1.0)
+                or 0.0
+            ),
+        )
+        self.residual_deferrable_action_scale_multiplier = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "residual_deferrable_action_scale_multiplier",
+                    1.0,
+                )
+                or 0.0
+            ),
+        )
+        self.residual_zero_initialization = bool(
+            exploration_cfg.get("residual_zero_initialization", True)
+        )
         self.actor_behavior_cloning_weight = max(
             0.0,
             float(exploration_cfg.get("actor_behavior_cloning_weight", 0.0) or 0.0),
@@ -372,11 +423,15 @@ class _PPOBase(BaseAgent):
             )
         )
         self._warm_start_policy = None
+        self._residual_base_policy = None
         self._latest_raw_observations: Optional[List[np.ndarray]] = None
         self._latest_encoded_observations: Optional[List[np.ndarray]] = None
         self._episode_clock_is_explicit = False
         self._episode_schedule_step: Optional[int] = None
         self._last_warm_start_policy_actions: Optional[List[List[float]]] = None
+        self._last_residual_base_actions: Optional[List[List[float]]] = None
+        self._last_residual_delta_actions: Optional[List[List[float]]] = None
+        self._last_residual_neutral_safety_bypass = False
         self._last_raw_behavior_teacher_actions: Optional[List[List[float]]] = None
         self._last_projected_behavior_teacher_actions: Optional[List[List[float]]] = None
         self._behavior_teacher_projection_diagnostics = (
@@ -398,7 +453,7 @@ class _PPOBase(BaseAgent):
         self._local_price_adapters: List[PriceMultiplierObservationAdapter] = []
         self._last_local_price_diagnostics: List[Any] = []
         self._last_local_price_context_non_neutral = False
-        if self.local_action_safety_enabled:
+        if self.local_action_safety_enabled or self.residual_policy_enabled:
             self.requires_raw_observation_context = True
 
         actor_layers = network_cfg["actor"]["layers"]
@@ -418,6 +473,11 @@ class _PPOBase(BaseAgent):
             ).to(self.device)
             for agent_idx in range(int(self.num_agents))
         ]
+        if self.residual_policy_enabled and self.residual_zero_initialization:
+            for actor in self.actors:
+                with torch.no_grad():
+                    actor.mean_out.weight.zero_()
+                    actor.mean_out.bias.zero_()
         self.value_nets = [
             ValueNetwork(
                 self._value_input_dimension(agent_idx),
@@ -476,6 +536,13 @@ class _PPOBase(BaseAgent):
         self.action_low = lows
         self.action_high = highs
         self._initialize_warm_start_policy(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+        self._initialize_residual_base_policy(
             observation_names=observation_names,
             action_names=action_names,
             action_space=action_space,
@@ -608,6 +675,75 @@ class _PPOBase(BaseAgent):
         )
         logger.info("{} warm-start policy enabled: {}", self.metric_prefix, self.warm_start_policy_name)
 
+    def _initialize_residual_base_policy(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        if not self.residual_policy_enabled:
+            return
+
+        from algorithms.agents.baseline_policies import (  # Local import avoids registry cycles.
+            NormalNoBatteryPolicy,
+            NormalPolicy,
+            RBCBasicPolicy,
+            RBCSmartLocalPolicy,
+            RBCSmartPolicy,
+            RandomPolicy,
+        )
+        from algorithms.agents.rbc_agent import RuleBasedPolicy
+
+        policy_registry = {
+            "RuleBasedPolicy": RuleBasedPolicy,
+            "RandomPolicy": RandomPolicy,
+            "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
+            "NormalPolicy": NormalPolicy,
+            "RBCBasicPolicy": RBCBasicPolicy,
+            "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
+            "RBCSmartPolicy": RBCSmartPolicy,
+        }
+        policy_cls = policy_registry.get(str(self.residual_base_policy_name))
+        if policy_cls is None:
+            supported = ", ".join(sorted(policy_registry))
+            raise ValueError(
+                f"Unsupported PPO residual_base_policy "
+                f"'{self.residual_base_policy_name}'. Supported policies: {supported}."
+            )
+
+        exploration_cfg = self.config["algorithm"]["exploration"]["params"]
+        policy_hyperparams = (
+            exploration_cfg.get("residual_base_policy_hyperparameters") or {}
+        )
+        if not isinstance(policy_hyperparams, dict):
+            raise ValueError(
+                "PPO residual_base_policy_hyperparameters must be an object "
+                "when provided."
+            )
+
+        policy_config = deepcopy(self.config)
+        policy_config["algorithm"] = {
+            "name": str(self.residual_base_policy_name),
+            "hyperparameters": dict(policy_hyperparams),
+        }
+        self._residual_base_policy = policy_cls(policy_config)
+        self._residual_base_policy.attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+        logger.info(
+            "{} residual policy enabled over {} with scale {}.",
+            self.metric_prefix,
+            self.residual_base_policy_name,
+            self.residual_action_scale,
+        )
+
     def set_observation_context(
         self,
         *,
@@ -625,6 +761,9 @@ class _PPOBase(BaseAgent):
             else None
         )
         self._last_warm_start_policy_actions = None
+        self._last_residual_base_actions = None
+        self._last_residual_delta_actions = None
+        self._last_residual_neutral_safety_bypass = False
         self._reset_behavior_teacher_projection()
 
     def set_episode_context(
@@ -669,6 +808,8 @@ class _PPOBase(BaseAgent):
             # ratio, but the value prediction still belongs to this state and
             # is cached at action-selection time for a coherent rollout.
             self._cache_value_predictions(observations)
+            if self.residual_policy_enabled:
+                self._predict_residual_base_policy()
             if self.initial_exploration_strategy == "policy":
                 actions = self._predict_warm_start_policy()
             else:
@@ -677,6 +818,7 @@ class _PPOBase(BaseAgent):
             return self._apply_local_action_safety(actions)
 
         actions = self._predict_actor(observations, deterministic=deterministic)
+        actions = self._apply_residual_policy(actions)
         if not deterministic:
             actions = self._apply_warm_start_phaseout(actions)
         actions = self._apply_service_teacher(actions, deterministic=deterministic)
@@ -707,6 +849,120 @@ class _PPOBase(BaseAgent):
             self._last_local_price_context_non_neutral |= not diagnostics.neutral_noop
         return transformed
 
+    def _predict_residual_base_policy(self) -> List[List[float]]:
+        if not self.residual_policy_enabled or self._residual_base_policy is None:
+            raise RuntimeError(
+                "PPO residual policy is enabled but the residual base policy "
+                "is not attached."
+            )
+        observations = self._latest_raw_observations
+        if observations is None:
+            raise RuntimeError(
+                "PPO residual policy requires raw observation context before predict."
+            )
+        predict_at_step = getattr(self._residual_base_policy, "predict_at_step", None)
+        if callable(predict_at_step):
+            schedule_step = (
+                self._episode_schedule_step
+                if self._episode_clock_is_explicit
+                else max(int(self.exploration_step) - 1, 0)
+            )
+            actions = predict_at_step(
+                observations,
+                schedule_step=int(schedule_step),
+                deterministic=self.residual_base_policy_deterministic,
+            )
+        else:
+            actions = self._residual_base_policy.predict(
+                observations,
+                deterministic=self.residual_base_policy_deterministic,
+            )
+        copied = self._copy_action_groups(actions)
+        if len(copied) != int(self.num_agents):
+            raise RuntimeError(
+                "PPO residual base policy returned an action count different "
+                "from the attached agent count."
+            )
+        self._last_residual_base_actions = copied
+        return copied
+
+    def _residual_action_scale_mask(
+        self,
+        agent_idx: int,
+        *,
+        action_dim: int,
+    ) -> np.ndarray:
+        values = np.ones(int(action_dim), dtype=np.float32)
+        names = self._action_names_for_agent(agent_idx)
+        for action_idx, action_name in enumerate(names[: int(action_dim)]):
+            if self._is_storage_action_name(action_name):
+                values[action_idx] *= self.residual_storage_action_scale_multiplier
+            if self._is_ev_action_name(action_name):
+                values[action_idx] *= self.residual_ev_action_scale_multiplier
+            if self._is_deferrable_action_name(action_name):
+                values[action_idx] *= self.residual_deferrable_action_scale_multiplier
+        return values
+
+    def _residual_action_denominator(
+        self,
+        agent_idx: int,
+        *,
+        action_dim: int,
+    ) -> np.ndarray:
+        low = self._action_low_for_agent(agent_idx)
+        high = self._action_high_for_agent(agent_idx)
+        span = np.maximum(high - low, 1.0e-6)
+        mask = self._residual_action_scale_mask(
+            agent_idx,
+            action_dim=action_dim,
+        )
+        return 0.5 * span * float(self.residual_action_scale) * mask
+
+    def _apply_residual_policy(
+        self,
+        actor_actions: List[List[float]],
+    ) -> List[List[float]]:
+        if not self.residual_policy_enabled:
+            return actor_actions
+        base_actions = (
+            self._last_residual_base_actions
+            if self._last_residual_base_actions is not None
+            else self._predict_residual_base_policy()
+        )
+        if self._last_policy_samples is None:
+            raise RuntimeError(
+                "PPO residual policy requires the actor's atomic policy sample cache."
+            )
+
+        combined: List[List[float]] = []
+        deltas: List[List[float]] = []
+        for agent_idx, base_action in enumerate(base_actions):
+            normalized = np.asarray(
+                self._last_policy_samples[agent_idx]["normalized_action"],
+                dtype=np.float64,
+            ).reshape(-1)
+            base = np.asarray(base_action, dtype=np.float64).reshape(-1)
+            if normalized.shape != base.shape:
+                raise RuntimeError(
+                    "PPO residual actor and base policy returned incompatible "
+                    "action shapes."
+                )
+            denominator = self._residual_action_denominator(
+                agent_idx,
+                action_dim=int(normalized.size),
+            )
+            delta = denominator * normalized
+            low = self._action_low_for_agent(agent_idx)
+            high = self._action_high_for_agent(agent_idx)
+            executed = np.clip(base + delta, low, high).astype(np.float32)
+            combined.append(executed.tolist())
+            deltas.append(delta.astype(np.float32).tolist())
+            self._last_policy_samples[agent_idx]["executed_action"] = (
+                torch.as_tensor(executed, dtype=torch.float32)
+            )
+        self._last_residual_delta_actions = deltas
+        return combined
+
     def _apply_service_teacher(
         self,
         actions: List[List[float]],
@@ -733,6 +989,7 @@ class _PPOBase(BaseAgent):
         self,
         actions: List[List[float]],
     ) -> List[List[float]]:
+        self._last_residual_neutral_safety_bypass = False
         if not self.local_action_safety_enabled:
             return actions
         if len(self._local_action_safety_adapters) != int(self.num_agents):
@@ -745,6 +1002,34 @@ class _PPOBase(BaseAgent):
             raise RuntimeError(
                 "PPO local action safety requires raw observation context before predict."
             )
+
+        # The residual base is already an operational policy.  Re-projecting
+        # its action when the learned correction is exactly neutral is not an
+        # identity operation for every EV/storage state and would therefore
+        # silently change the baseline that the residual contract promises to
+        # preserve.  Corrections that are not neutral still pass through the
+        # normal safety projector below.
+        residual_is_neutral = (
+            self.residual_policy_enabled
+            and not self._last_service_teacher_applied
+            and self._last_residual_delta_actions is not None
+            and all(
+                np.all(np.asarray(delta, dtype=np.float64) == 0.0)
+                for delta in self._last_residual_delta_actions
+            )
+        )
+        if residual_is_neutral:
+            copied = self._copy_action_groups(actions)
+            self._last_local_action_projections = []
+            self._last_residual_neutral_safety_bypass = True
+            if self._last_policy_samples is not None:
+                for agent_idx, executed in enumerate(copied):
+                    if agent_idx >= len(self._last_policy_samples):
+                        break
+                    self._last_policy_samples[agent_idx]["executed_action"] = (
+                        torch.as_tensor(executed, dtype=torch.float32)
+                    )
+            return copied
 
         projected: List[List[float]] = []
         projections = []
@@ -1236,7 +1521,16 @@ class _PPOBase(BaseAgent):
                         device=self.device,
                     ).view(1, -1)
                     if teacher_tensor.shape[-1] == normalized.shape[-1]:
-                        teacher_action = self._normalize_scaled_action_tensor(agent_idx, teacher_tensor)
+                        if self.residual_policy_enabled:
+                            teacher_action = self._normalize_residual_teacher_action(
+                                agent_idx,
+                                teacher_tensor,
+                            )
+                        else:
+                            teacher_action = self._normalize_scaled_action_tensor(
+                                agent_idx,
+                                teacher_tensor,
+                            )
                 if cache_matches_observation and cached_sample.get("value") is not None:
                     value = cached_sample["value"].to(
                         device=self.device,
@@ -1287,6 +1581,39 @@ class _PPOBase(BaseAgent):
                     "teacher_actions": [action.detach().clone() for action in teacher_actions],
                 }
             )
+
+    def _normalize_residual_teacher_action(
+        self,
+        agent_idx: int,
+        teacher_action: torch.Tensor,
+    ) -> torch.Tensor:
+        if self._last_residual_base_actions is None:
+            raise RuntimeError(
+                "PPO residual behavior cloning requires a base action cached "
+                "for the same observation."
+            )
+        base_action = torch.as_tensor(
+            self._last_residual_base_actions[agent_idx],
+            dtype=teacher_action.dtype,
+            device=teacher_action.device,
+        ).view(1, -1)
+        denominator = torch.as_tensor(
+            self._residual_action_denominator(
+                agent_idx,
+                action_dim=int(teacher_action.shape[-1]),
+            ),
+            dtype=teacher_action.dtype,
+            device=teacher_action.device,
+        ).view(1, -1)
+        usable = denominator.abs() > 1.0e-8
+        safe_denominator = torch.where(
+            usable,
+            denominator,
+            torch.ones_like(denominator),
+        )
+        target = (teacher_action - base_action) / safe_denominator
+        target = torch.where(usable, target, torch.zeros_like(target))
+        return torch.clamp(target, -1.0, 1.0)
 
     def _train_from_rollout(self, *, global_learning_step: int) -> None:
         if not self.rollout:
@@ -1968,6 +2295,29 @@ class _PPOBase(BaseAgent):
                 self._last_warm_start_phaseout_probability
             ),
             f"{self.metric_prefix}/warm_start_policy_phaseout_used": float(self._last_warm_start_phaseout_used),
+            f"{self.metric_prefix}/residual_policy_enabled": float(
+                self.residual_policy_enabled
+            ),
+            f"{self.metric_prefix}/residual_neutral_safety_bypass": float(
+                self._last_residual_neutral_safety_bypass
+            ),
+            f"{self.metric_prefix}/residual_base_policy_enabled": float(
+                self._residual_base_policy is not None
+            ),
+            f"{self.metric_prefix}/residual_action_scale": float(
+                self.residual_action_scale
+            ),
+            f"{self.metric_prefix}/residual_delta_l1_mean": float(
+                np.mean(
+                    [
+                        abs(value)
+                        for action in (self._last_residual_delta_actions or [])
+                        for value in action
+                    ]
+                )
+                if self._last_residual_delta_actions
+                else 0.0
+            ),
             f"{self.metric_prefix}/behavior_cloning_weight": float(self.actor_behavior_cloning_weight),
             f"{self.metric_prefix}/behavior_cloning_min_weight": float(self.actor_behavior_cloning_min_weight),
             f"{self.metric_prefix}/behavior_cloning_replay_size": float(
@@ -2213,6 +2563,16 @@ class _PPOBase(BaseAgent):
                         "local_price_forecast_mode": self.local_price_forecast_mode.value,
                         "local_price_context_scope": "effective_local_price_only",
                         "community_observations_used_by_leaf": False,
+                    }
+                )
+            if self.residual_policy_enabled:
+                metadata["artifacts"][-1].setdefault("config", {}).update(
+                    {
+                        "deployable": False,
+                        "runtime_only_reason": "external_residual_base_policy",
+                        "requires_runtime_residual_base_policy": True,
+                        "residual_base_policy": self.residual_base_policy_name,
+                        "residual_action_scale": self.residual_action_scale,
                     }
                 )
             if mlflow.active_run():
