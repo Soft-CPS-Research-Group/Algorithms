@@ -685,12 +685,19 @@ class TransformerPPOBehaviorCloningConfig(BaseModel):
 
 class TransformerPPOStageConfig(BaseModel):
     algorithm: Literal["AgentTransformerPPO"]
-    count: int = Field(default=1, ge=1)
+    count: int = 1
     frozen: bool = False
     tokenizer_config_path: str = Field(min_length=1)
     transformer: TransformerPPOTransformerConfig
     hyperparameters: TransformerPPOHyperparameters
     behavior_cloning: Optional[TransformerPPOBehaviorCloningConfig] = None
+
+    @field_validator("count")
+    @classmethod
+    def require_single_controller(cls, value: int) -> int:
+        if value != 1:
+            raise ValueError("AgentTransformerPPO pipeline stages require count=1")
+        return value
 
 
 PipelineStageConfig = Union[

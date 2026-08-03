@@ -453,6 +453,7 @@ class Wrapper_CityLearn(RLC):
         force_attach: bool,
         *,
         model_observations: bool = False,
+        attach_model: bool = True,
     ) -> List[np.ndarray]:
         if not self._entity_interface_mode or self._entity_adapter is None:
             return []
@@ -508,7 +509,7 @@ class Wrapper_CityLearn(RLC):
                     "(supports_dynamic_topology=False). Detected topology change during runtime."
                 )
 
-        if topology_changed and self.model is not None:
+        if topology_changed and attach_model and self.model is not None:
             self._attach_model_environment_metadata()
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
@@ -1265,6 +1266,7 @@ class Wrapper_CityLearn(RLC):
                         next_observations_raw,
                         force_attach=False,
                         model_observations=self._entity_model_observations_direct,
+                        attach_model=False,
                     )
                 else:
                     next_observations = next_observations_raw
@@ -1307,11 +1309,52 @@ class Wrapper_CityLearn(RLC):
                 )
                 rewards_list.append(rewards)
 
+                topology_transition_recorded = False
+                if self._topology_changed_during_step:
+                    if not deterministic:
+                        transition_hook = getattr(
+                            self.model, "record_topology_transition", None
+                        )
+                        if callable(transition_hook):
+                            direct_entity_model_observations = bool(
+                                getattr(self, "_entity_model_observations_direct", False)
+                            )
+                            transition_observations = (
+                                [np.asarray(obs, dtype=np.float64) for obs in step_observations]
+                                if direct_entity_model_observations
+                                else self._encode_observations_for_model(step_observations)
+                            )
+                            transition_context_hook = getattr(
+                                self.model, "set_transition_context", None
+                            )
+                            if callable(transition_context_hook):
+                                transition_context_hook(
+                                    raw_observations=None
+                                    if direct_entity_model_observations
+                                    else step_observations,
+                                    raw_next_observations=None,
+                                    encoded_observations=transition_observations,
+                                    encoded_next_observations=None,
+                                )
+                            transition_hook(
+                                observations=transition_observations,
+                                actions=actions,
+                                rewards=rewards,
+                                terminated=terminated,
+                                truncated=truncated,
+                                global_learning_step=self.global_step,
+                            )
+                            topology_transition_recorded = True
+                    # The old-layout transition is recorded before this call.
+                    # TPPO flushes it with zero bootstrap during replacement.
+                    self._attach_model_environment_metadata()
+
                 # Update model if not in deterministic mode
                 if not deterministic:
                     if self._topology_changed_during_step:
                         logger.debug(
-                            "Skipping model.update at global step {} due to mid-step topology change.",
+                            "{} model.update at global step {} due to mid-step topology change.",
+                            "Recorded old-layout transition before" if topology_transition_recorded else "Skipping",
                             self.global_step,
                         )
                         self._topology_changed_during_step = False

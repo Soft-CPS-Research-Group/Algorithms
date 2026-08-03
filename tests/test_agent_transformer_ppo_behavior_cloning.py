@@ -1,6 +1,7 @@
 """Behavior-cloning integration tests for AgentTransformerPPO."""
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import List
 
 import numpy as np
@@ -413,7 +414,7 @@ def test_topology_change_flushes_bc_buffers() -> None:
     assert isinstance(agent._bc.teacher_policy, RBCCommunityPolicy)
 
 
-def test_failed_topology_flush_restores_bc_teacher_identity_and_state(
+def test_one_sample_topology_flush_discards_rollout_and_keeps_bc_aligned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent, obs_per, act_per, obs_dim = _make_agent(config=_bc_config())
@@ -453,29 +454,19 @@ def test_failed_topology_flush_restores_bc_teacher_identity_and_state(
         if n.startswith(f"charger::{orig_id}::")
     )
     new_acts = list(act_per[0]) + ["electric_vehicle_storage"]
-    original_update = agent._run_ppo_update_with_last_value
+    ppo_updates = 0
+    warnings: list[str] = []
 
-    def fail_flush(state, last_value, *, building_idx):
-        teacher.mutable_state["history"].append("failed-flush")
-        raise RuntimeError("topology flush failed")
+    def count_ppo_update(state, last_value, *, building_idx):
+        nonlocal ppo_updates
+        ppo_updates += 1
+        return False
 
-    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", fail_flush)
-    with pytest.raises(RuntimeError, match="topology flush failed"):
-        agent.attach_environment(
-            observation_names=[new_obs],
-            action_names=[new_acts],
-            action_space=[_DummySpace(len(new_acts))],
-            observation_space=[None],
-            metadata={"building_names": ["Building_1"]},
-        )
-
-    assert agent._bc is not None
-    assert agent._bc.teacher_policy is teacher
-    assert teacher.mutable_state == {"history": ["before-flush"]}
-    assert agent._bc.latest_teacher_actions == teacher_actions
-    assert agent._bc.teacher_action_buffers == [teacher_actions]
-
-    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", original_update)
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", count_ppo_update)
+    monkeypatch.setattr(
+        "algorithms.agents.agent_transformer_ppo.logger.warning",
+        lambda message, *args: warnings.append(message.format(*args)),
+    )
     agent.attach_environment(
         observation_names=[new_obs],
         action_names=[new_acts],
@@ -484,8 +475,354 @@ def test_failed_topology_flush_restores_bc_teacher_identity_and_state(
         metadata={"building_names": ["Building_1"]},
     )
 
+    assert agent._bc is not None
+    assert teacher.mutable_state == {"history": ["before-flush"]}
+    assert ppo_updates == 0
+    assert len(agent._per_building[0].buffer) == 0
     assert agent._per_building[0].action_names_tuple == tuple(new_acts)
     assert agent._bc.teacher_action_buffers == [[]]
+    assert agent._bc.latest_teacher_actions is None
+    assert any("Discarding invalid one-sample PPO rollout" in warning for warning in warnings)
+
+
+def test_episode_end_flush_failure_restores_all_state_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, _, _, obs_dim = _make_agent(config=_bc_config(), n_buildings=2)
+    assert agent._bc is not None
+    teacher_actions = [
+        [0.2 for _ in range(state.layout.n_ca)]
+        for state in agent._per_building
+    ]
+    _set_fake_teacher(agent, teacher_actions)
+    rng = np.random.default_rng(8)
+
+    for step in range(agent._minibatch_size):
+        observations, _, next_observations = _random_transition_for_all_buildings(
+            agent, obs_dim, rng
+        )
+        agent.set_observation_context(
+            raw_observations=observations,
+            encoded_observations=observations,
+        )
+        agent.update(
+            observations=observations,
+            actions=agent.predict(observations, deterministic=False),
+            rewards=[0.1, 0.2],
+            next_observations=next_observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    # Keep decisions live so a failed lifecycle boundary must preserve retry input.
+    observations, _, _ = _random_transition_for_all_buildings(agent, obs_dim, rng)
+    agent.set_observation_context(
+        raw_observations=observations,
+        encoded_observations=observations,
+    )
+    agent.predict(observations, deterministic=False)
+
+    states = list(agent._per_building)
+    pending = list(agent._pending_decisions)
+    model_states = [
+        {
+            "tokenizer": {k: v.detach().clone() for k, v in state.tokenizer.state_dict().items()},
+            "backbone": {k: v.detach().clone() for k, v in state.backbone.state_dict().items()},
+            "actor": {k: v.detach().clone() for k, v in state.actor.state_dict().items()},
+            "critic": {k: v.detach().clone() for k, v in state.critic.state_dict().items()},
+        }
+        for state in states
+    ]
+    optimizer_states = [deepcopy(state.optimizer.state_dict()) for state in states]
+    buffer_states = [deepcopy(state.buffer) for state in states]
+    normalizer_states = [state.value_normalizer.state_dict() for state in states]
+    rollout_bookkeeping = [
+        (
+            None
+            if state.last_next_observation is None
+            else state.last_next_observation.detach().clone(),
+            state.last_transition_terminated,
+        )
+        for state in states
+    ]
+    training_metrics = dict(agent._latest_training_metrics)
+    bc = agent._bc
+    teacher = bc.teacher_policy
+    teacher.mutable_state = {"history": ["before-episode-end"]}
+    bc_buffers = [[None if row is None else list(row) for row in buffer] for buffer in bc.teacher_action_buffers]
+    bc_latest_actions = [list(row) for row in bc.latest_teacher_actions or []]
+    bc_diagnostics = (
+        bc.phaseout_step,
+        bc._latest_bc_effective_weight,
+        bc._latest_bc_loss,
+        bc._latest_bc_weighted_loss,
+        bc._latest_bc_valid_samples,
+        bc._latest_phaseout_probability,
+        bc._latest_phaseout_used,
+    )
+
+    original_flush = agent._flush_rollout_boundary
+
+    def fail_second_flush(building_idx, state, *, boundary, last_value=None):
+        if building_idx == 1:
+            raise RuntimeError("episode flush failed")
+        return original_flush(
+            building_idx,
+            state,
+            boundary=boundary,
+            last_value=last_value,
+        )
+
+    monkeypatch.setattr(agent, "_flush_rollout_boundary", fail_second_flush)
+    with pytest.raises(RuntimeError, match="episode flush failed"):
+        agent.on_episode_end(episode=0, training=True)
+
+    assert all(state is expected for state, expected in zip(agent._per_building, states))
+    assert all(current is expected for current, expected in zip(agent._pending_decisions, pending))
+    for state, expected_models, expected_optimizer, expected_buffer, expected_normalizer, expected_bookkeeping in zip(
+        agent._per_building,
+        model_states,
+        optimizer_states,
+        buffer_states,
+        normalizer_states,
+        rollout_bookkeeping,
+    ):
+        for name, module in (
+            ("tokenizer", state.tokenizer),
+            ("backbone", state.backbone),
+            ("actor", state.actor),
+            ("critic", state.critic),
+        ):
+            for key, value in module.state_dict().items():
+                assert torch.equal(value, expected_models[name][key])
+        torch.testing.assert_close(state.optimizer.state_dict(), expected_optimizer)
+        assert state.buffer.gamma == expected_buffer.gamma
+        assert state.buffer.gae_lambda == expected_buffer.gae_lambda
+        assert state.buffer.rewards == expected_buffer.rewards
+        assert state.buffer.terminated == expected_buffer.terminated
+        assert state.buffer.truncated == expected_buffer.truncated
+        for name in (
+            "observations",
+            "actions",
+            "pre_tanh_actions",
+            "log_probs",
+            "values",
+        ):
+            actual = getattr(state.buffer, name)
+            expected = getattr(expected_buffer, name)
+            assert len(actual) == len(expected)
+            assert all(torch.equal(value, saved) for value, saved in zip(actual, expected))
+        for name in ("advantages", "returns"):
+            actual = getattr(state.buffer, name)
+            expected = getattr(expected_buffer, name)
+            assert (actual is None) == (expected is None)
+            if actual is not None:
+                assert torch.equal(actual, expected)
+        assert state.value_normalizer.state_dict() == expected_normalizer
+        expected_observation, expected_terminated = expected_bookkeeping
+        assert state.last_transition_terminated == expected_terminated
+        if expected_observation is None:
+            assert state.last_next_observation is None
+        else:
+            assert state.last_next_observation is not None
+            assert torch.equal(state.last_next_observation, expected_observation)
+    assert agent._latest_training_metrics == training_metrics
+    assert agent._bc is bc
+    assert bc.teacher_policy is teacher
+    assert teacher.mutable_state == {"history": ["before-episode-end"]}
+    assert bc.teacher_action_buffers == bc_buffers
+    assert bc.latest_teacher_actions == bc_latest_actions
+    assert (
+        bc.phaseout_step,
+        bc._latest_bc_effective_weight,
+        bc._latest_bc_loss,
+        bc._latest_bc_weighted_loss,
+        bc._latest_bc_valid_samples,
+        bc._latest_phaseout_probability,
+        bc._latest_phaseout_used,
+    ) == bc_diagnostics
+
+    monkeypatch.setattr(agent, "_flush_rollout_boundary", original_flush)
+    agent.on_episode_end(episode=0, training=True)
+
+    assert [len(state.buffer) for state in agent._per_building] == [0, 0]
+    assert agent._pending_decisions == [None, None]
+    assert agent._bc is bc
+    assert bc.teacher_action_buffers == [[], []]
+
+
+def test_cardinality_change_flushes_old_rollouts_before_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(
+        config=_bc_config(), n_buildings=2
+    )
+    assert agent._bc is not None
+    teacher_actions = [
+        [0.2 for _ in range(state.layout.n_ca)]
+        for state in agent._per_building
+    ]
+    _set_fake_teacher(agent, teacher_actions)
+    rng = np.random.default_rng(6)
+
+    for step in range(2):
+        obs, _, next_obs = _random_transition_for_all_buildings(agent, obs_dim, rng)
+        agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
+        actions = agent.predict(obs, deterministic=False)
+        agent.update(
+            observations=obs,
+            actions=actions,
+            rewards=[0.1, 0.2],
+            next_observations=next_obs,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    old_states = list(agent._per_building)
+    assert [len(state.buffer) for state in old_states] == [2, 2]
+    assert [len(buffer) for buffer in agent._bc.teacher_action_buffers] == [2, 2]
+    updates: list[tuple[object, int, torch.Tensor, int, int]] = []
+    original_update = agent._run_ppo_update_with_last_value
+
+    def record_topology_flush(state, last_value, *, building_idx):
+        updates.append(
+            (
+                state,
+                building_idx,
+                last_value.detach().clone(),
+                len(state.buffer),
+                len(agent._bc.teacher_action_buffers[building_idx]),
+            )
+        )
+        return original_update(state, last_value, building_idx=building_idx)
+
+    monkeypatch.setattr(
+        agent, "_run_ppo_update_with_last_value", record_topology_flush
+    )
+    agent.attach_environment(
+        observation_names=[obs_per[0]],
+        action_names=[act_per[0]],
+        action_space=[_DummySpace(len(act_per[0]))],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+
+    assert [(state, building_idx, size, teacher_size) for state, building_idx, _, size, teacher_size in updates] == [
+        (old_states[0], 0, 2, 2),
+        (old_states[1], 1, 2, 2),
+    ]
+    assert all(torch.equal(last_value, torch.zeros_like(last_value)) for _, _, last_value, _, _ in updates)
+    assert len(agent._per_building) == 1
+    assert agent._per_building[0] is not old_states[0]
+    assert agent._bc.teacher_action_buffers == [[]]
+    metrics = agent.consume_latest_training_metrics()
+    assert metrics["behavior_cloning_valid_samples"] == 2.0
+
+
+def test_cardinality_change_discards_one_sample_rollouts_with_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    actions = agent.predict(observations, deterministic=False)
+    agent.update(
+        observations=observations,
+        actions=actions,
+        rewards=[0.1, 0.2],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    old_states = list(agent._per_building)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "algorithms.agents.agent_transformer_ppo.logger.warning",
+        lambda message, *args: warnings.append(message.format(*args)),
+    )
+    agent.attach_environment(
+        observation_names=[obs_per[0]],
+        action_names=[act_per[0]],
+        action_space=[None],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+
+    assert [len(state.buffer) for state in old_states] == [0, 0]
+    assert sum(
+        "Discarding invalid one-sample PPO rollout" in warning
+        and "rollout_boundary=topology_change" in warning
+        for warning in warnings
+    ) == 2
+
+
+def test_cardinality_change_flush_failure_restores_old_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(
+        config=_bc_config(), n_buildings=2
+    )
+    assert agent._bc is not None
+    teacher_actions = [
+        [0.2 for _ in range(state.layout.n_ca)]
+        for state in agent._per_building
+    ]
+    _set_fake_teacher(agent, teacher_actions)
+    rng = np.random.default_rng(7)
+
+    for step in range(2):
+        obs, _, next_obs = _random_transition_for_all_buildings(agent, obs_dim, rng)
+        agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
+        actions = agent.predict(obs, deterministic=False)
+        agent.update(
+            observations=obs,
+            actions=actions,
+            rewards=[0.1, 0.2],
+            next_observations=next_obs,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    old_states = list(agent._per_building)
+    old_teacher = agent._bc.teacher_policy
+    original_update = agent._run_ppo_update_with_last_value
+
+    def fail_later_flush(state, last_value, *, building_idx):
+        if building_idx == 1:
+            raise RuntimeError("cardinality flush failed")
+        return original_update(state, last_value, building_idx=building_idx)
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", fail_later_flush)
+    with pytest.raises(RuntimeError, match="cardinality flush failed"):
+        agent.attach_environment(
+            observation_names=[obs_per[0]],
+            action_names=[act_per[0]],
+            action_space=[_DummySpace(len(act_per[0]))],
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+        )
+
+    assert agent._per_building == old_states
+    assert [len(state.buffer) for state in agent._per_building] == [2, 2]
+    assert agent._bc is not None
+    assert agent._bc.teacher_policy is old_teacher
+    assert [len(buffer) for buffer in agent._bc.teacher_action_buffers] == [2, 2]
 
 
 def test_partial_topology_change_preserves_unchanged_bc_buffer_alignment() -> None:

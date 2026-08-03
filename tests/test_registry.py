@@ -12,6 +12,29 @@ from algorithms.registry import (
 from algorithms.pipeline import Ensemble, Pipeline
 
 
+def _transformer_ppo_stage(count: int) -> dict:
+    return {
+        "algorithm": "AgentTransformerPPO",
+        "count": count,
+        "tokenizer_config_path": "configs/tokenizers/entity_default.json",
+        "transformer": {
+            "d_model": 16,
+            "nhead": 2,
+            "num_layers": 1,
+            "dim_feedforward": 32,
+            "dropout": 0.0,
+        },
+        "hyperparameters": {
+            "learning_rate": 1.0e-3,
+            "gamma": 0.99,
+            "gae_lambda": 0.95,
+            "clip_eps": 0.2,
+            "ppo_epochs": 1,
+            "minibatch_size": 4,
+        },
+    }
+
+
 def test_registry_marks_single_agent_placeholder_as_unsupported():
     assert is_algorithm_supported("SingleAgentRL") is False
 
@@ -40,6 +63,24 @@ def test_build_execution_unit_error_for_null_algorithm_in_stage():
     with pytest.raises(ValueError) as exc_info:
         build_execution_unit(config)
     assert "Algorithm name is required" in str(exc_info.value)
+
+
+def test_build_execution_unit_requires_single_transformer_ppo_stage():
+    config = {"pipeline": [_transformer_ppo_stage(count=2)]}
+
+    with pytest.raises(
+        ValueError,
+        match="AgentTransformerPPO pipeline stages require count=1",
+    ):
+        build_execution_unit(config)
+
+
+def test_build_execution_unit_supports_single_transformer_ppo_stage():
+    config = {"pipeline": [_transformer_ppo_stage(count=1)]}
+
+    unit = build_execution_unit(config)
+
+    assert unit.__class__.__name__ == "AgentTransformerPPO"
 
 
 def test_build_unsupported_algorithm_message_for_missing_name():

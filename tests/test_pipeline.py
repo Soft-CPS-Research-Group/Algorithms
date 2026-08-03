@@ -35,6 +35,9 @@ class RecordingUnit(ExecutionUnit):
 
         self.predict_calls: List[Dict[str, Any]] = []
         self.update_calls: List[Dict[str, Any]] = []
+        self.topology_transition_calls: List[Dict[str, Any]] = []
+        self.episode_start_calls: List[Dict[str, Any]] = []
+        self.episode_end_calls: List[Dict[str, Any]] = []
         self.attach_calls: List[Dict[str, Any]] = []
         self.save_calls: List[Dict[str, Any]] = []
         self.load_calls: List[str] = []
@@ -81,6 +84,33 @@ class RecordingUnit(ExecutionUnit):
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return self._initial_exploration_done
+
+    def record_topology_transition(
+        self,
+        *,
+        observations,
+        actions,
+        rewards,
+        terminated,
+        truncated,
+        global_learning_step,
+    ) -> None:
+        self.topology_transition_calls.append(
+            {
+                "observations": observations,
+                "actions": actions,
+                "rewards": rewards,
+                "terminated": terminated,
+                "truncated": truncated,
+                "global_learning_step": global_learning_step,
+            }
+        )
+
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        self.episode_start_calls.append({"episode": episode, "training": training})
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        self.episode_end_calls.append({"episode": episode, "training": training})
 
     def attach_environment(self, **kwargs) -> None:
         self.attach_calls.append(kwargs)
@@ -207,8 +237,88 @@ class TestPipelineUpdate:
         assert leaf.update_calls[0]["observations"] is raw_observations
         assert leaf.update_calls[0]["next_observations"] is raw_next_observations
 
+    def test_routes_topology_transition_to_stages_using_observation_context(self) -> None:
+        manager = RecordingUnit("manager", use_raw_observations=False)
+        leaf = RecordingUnit("leaf", use_raw_observations=True)
+        pipeline = Pipeline([manager, leaf])
+        raw_observations = [["raw"]]
+        encoded_observations = [["encoded"]]
+        actions = [[0.5]]
+        rewards = [0.1]
+
+        pipeline.set_transition_context(
+            raw_observations=raw_observations,
+            encoded_observations=encoded_observations,
+        )
+        pipeline.record_topology_transition(
+            observations=encoded_observations,
+            actions=actions,
+            rewards=rewards,
+            terminated=True,
+            truncated=False,
+            global_learning_step=42,
+        )
+
+        assert manager.topology_transition_calls == [
+            {
+                "observations": encoded_observations,
+                "actions": actions,
+                "rewards": rewards,
+                "terminated": True,
+                "truncated": False,
+                "global_learning_step": 42,
+            }
+        ]
+        assert leaf.topology_transition_calls == [
+            {
+                "observations": raw_observations,
+                "actions": actions,
+                "rewards": rewards,
+                "terminated": True,
+                "truncated": False,
+                "global_learning_step": 42,
+            }
+        ]
+
+    def test_skips_frozen_stage_when_recording_topology_transition(self) -> None:
+        active = RecordingUnit("active", use_raw_observations=False)
+        frozen = RecordingUnit("frozen", use_raw_observations=True)
+        frozen.frozen = True
+        pipeline = Pipeline([active, frozen])
+        raw_observations = [["raw"]]
+        encoded_observations = [["encoded"]]
+
+        pipeline.set_transition_context(
+            raw_observations=raw_observations,
+            encoded_observations=encoded_observations,
+        )
+        pipeline.record_topology_transition(
+            observations=encoded_observations,
+            actions=[[0.5]],
+            rewards=[0.1],
+            terminated=False,
+            truncated=True,
+            global_learning_step=42,
+        )
+
+        assert active.topology_transition_calls[0]["observations"] is encoded_observations
+        assert frozen.topology_transition_calls == []
+
 
 class TestPipelineLifecycle:
+    def test_forwards_episode_lifecycle_to_every_stage(self) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+        pipeline = Pipeline([a, b])
+
+        pipeline.on_episode_start(episode=3, training=True)
+        pipeline.on_episode_end(episode=3, training=False)
+
+        assert a.episode_start_calls == [{"episode": 3, "training": True}]
+        assert b.episode_start_calls == [{"episode": 3, "training": True}]
+        assert a.episode_end_calls == [{"episode": 3, "training": False}]
+        assert b.episode_end_calls == [{"episode": 3, "training": False}]
+
     def test_initial_exploration_requires_all_stages(self) -> None:
         ready = RecordingUnit("ready", initial_exploration_done=True)
         warming = RecordingUnit("warming", initial_exploration_done=False)
@@ -375,8 +485,58 @@ class TestEnsembleUpdate:
         assert b.update_calls[0]["actions"] == [[0.2]]
         assert b.update_calls[0]["rewards"] == [0.6]
 
+    def test_routes_topology_transition_to_each_member_slice(self) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+        observations = [[1.0], [2.0]]
+        actions = [[0.1], [0.2]]
+        rewards = [0.5, 0.6]
+
+        Ensemble([a, b]).record_topology_transition(
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            terminated=False,
+            truncated=True,
+            global_learning_step=3,
+        )
+
+        assert a.topology_transition_calls == [
+            {
+                "observations": [[1.0]],
+                "actions": [[0.1]],
+                "rewards": [0.5],
+                "terminated": False,
+                "truncated": True,
+                "global_learning_step": 3,
+            }
+        ]
+        assert b.topology_transition_calls == [
+            {
+                "observations": [[2.0]],
+                "actions": [[0.2]],
+                "rewards": [0.6],
+                "terminated": False,
+                "truncated": True,
+                "global_learning_step": 3,
+            }
+        ]
+
 
 class TestEnsembleLifecycle:
+    def test_forwards_episode_lifecycle_to_every_member(self) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+        ensemble = Ensemble([a, b])
+
+        ensemble.on_episode_start(episode=7, training=False)
+        ensemble.on_episode_end(episode=7, training=True)
+
+        assert a.episode_start_calls == [{"episode": 7, "training": False}]
+        assert b.episode_start_calls == [{"episode": 7, "training": False}]
+        assert a.episode_end_calls == [{"episode": 7, "training": True}]
+        assert b.episode_end_calls == [{"episode": 7, "training": True}]
+
     def test_attach_environment_routes_each_slice(self) -> None:
         a = RecordingUnit("a")
         b = RecordingUnit("b")

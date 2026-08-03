@@ -126,5 +126,13 @@ class BaseAgent(Module, ExecutionUnit):
         _ = global_learning_step
         return True
 
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        """Observe the start of an episode."""
+        _ = episode, training
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        """Observe the end of an episode."""
+        _ = episode, training
+
 
 _base_agent_trace("class definitions loaded")

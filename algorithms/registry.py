@@ -222,6 +222,8 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
             raise ValueError(
                 f"Stage '{algorithm_name}' has count={count}; must be >= 1."
             )
+        if algorithm_name == "AgentTransformerPPO" and count != 1:
+            raise ValueError("AgentTransformerPPO pipeline stages require count=1")
 
         frozen = bool(stage_cfg.get("frozen", False))
 

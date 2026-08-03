@@ -285,20 +285,21 @@ class AgentTransformerPPO(BaseAgent):
                 observation_space=observation_space,
                 metadata=metadata,
             )
-            previous_states = self._per_building
-            previous_pending_decisions = self._pending_decisions
-            previous_bounds = self._action_bounds
-            previous_bc = self._bc
+            snapshot = self._snapshot_topology_state()
             try:
+                for building_idx, state in enumerate(self._per_building):
+                    self._flush_rollout_boundary(
+                        building_idx,
+                        state,
+                        boundary="topology_change",
+                        last_value=torch.zeros(1, device=self.device),
+                    )
                 self._per_building = replacement_states
                 self._pending_decisions = [None] * len(replacement_states)
                 self._set_action_bounds(replacement_bounds)
                 self._bc = replacement_bc
             except Exception:
-                self._per_building = previous_states
-                self._pending_decisions = previous_pending_decisions
-                self._action_bounds = previous_bounds
-                self._bc = previous_bc
+                self._restore_topology_state(snapshot)
                 raise
             return
 
@@ -631,20 +632,60 @@ class AgentTransformerPPO(BaseAgent):
                 self._restore_topology_state(snapshot)
             raise
 
+    def record_topology_transition(
+        self,
+        *,
+        observations: List[npt.NDArray[np.float64]],
+        actions: List[npt.NDArray[np.float64]],
+        rewards: List[float],
+        terminated: bool,
+        truncated: bool,
+        global_learning_step: int,
+    ) -> None:
+        """Record an old-layout transition before a wrapper reattaches.
+
+        The successor observation belongs to a different topology, so it must
+        not enter this rollout. ``attach_environment`` flushes this transition
+        at the topology boundary with a zero bootstrap before replacement.
+        """
+        snapshot = self._snapshot_topology_state()
+        try:
+            self.update(
+                observations=observations,
+                actions=actions,
+                rewards=rewards,
+                next_observations=[None] * len(self._per_building),
+                terminated=terminated,
+                truncated=truncated,
+                update_target_step=False,
+                global_learning_step=global_learning_step,
+                update_step=False,
+                initial_exploration_done=True,
+            )
+        except Exception:
+            self._restore_topology_state(snapshot)
+            raise
+
     def on_episode_start(self, *, episode: int, training: bool) -> None:
         _ = episode, training
 
     def on_episode_end(self, *, episode: int, training: bool) -> None:
         _ = episode
-        self._pending_decisions = [None] * len(self._per_building)
         if not training:
+            self._pending_decisions = [None] * len(self._per_building)
             return
-        for building_idx, state in enumerate(self._per_building):
-            self._flush_rollout_boundary(
-                building_idx,
-                state,
-                boundary="episode_end",
-            )
+        snapshot = self._snapshot_topology_state()
+        try:
+            self._pending_decisions = [None] * len(self._per_building)
+            for building_idx, state in enumerate(self._per_building):
+                self._flush_rollout_boundary(
+                    building_idx,
+                    state,
+                    boundary="episode_end",
+                )
+        except Exception:
+            self._restore_topology_state(snapshot)
+            raise
 
     def get_diagnostic_metrics(self) -> Dict[str, float]:
         if self._bc is None:

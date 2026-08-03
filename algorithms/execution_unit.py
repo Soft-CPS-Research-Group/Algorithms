@@ -133,6 +133,19 @@ class ExecutionUnit(ABC):
         _ = global_learning_step
         return True
 
+    def record_topology_transition(
+        self,
+        *,
+        observations: List[npt.NDArray[np.float64]],
+        actions: List[npt.NDArray[np.float64]],
+        rewards: List[float],
+        terminated: bool,
+        truncated: bool,
+        global_learning_step: int,
+    ) -> None:
+        """Record a transition whose successor has a different topology."""
+        _ = observations, actions, rewards, terminated, truncated, global_learning_step
+
     def attach_environment(
         self,
         *,

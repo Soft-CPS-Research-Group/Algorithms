@@ -9,6 +9,7 @@ the dummy env's feature schema.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict, List
 
 import numpy as np
@@ -65,6 +66,33 @@ class _PositiveOnlyChargerEntityEnvForPPO(_DummyEntityEnvForPPO):
             )
             for _ in self._building_ids(self._version)
         ]
+
+
+class _TerminalTopologyChangeEntityEnvForPPO(_DummyEntityEnvForPPO):
+    """Changes topology on the terminal transition of a two-step episode."""
+
+    def __init__(self, *, truncated: bool) -> None:
+        super().__init__()
+        self._steps = 0
+        self._truncated = truncated
+
+    def reset(self):
+        self._version = 0
+        self._steps = 0
+        return self._observation_payload(version=0), {}
+
+    def step(self, _actions):
+        self._steps += 1
+        if self._steps == 2:
+            self._version = 1
+            return (
+                self._observation_payload(version=1),
+                [0.1],
+                not self._truncated,
+                self._truncated,
+                {},
+            )
+        return self._observation_payload(version=0), [0.1], False, False, {}
 
 
 def _ppo_algo_config() -> Dict[str, Any]:
@@ -154,6 +182,153 @@ def test_wrapper_topology_change_triggers_agent_rebuild() -> None:
     assert len(agent._per_building) == 2
     for state in agent._per_building:
         assert state.layout.n_ca == 2
+
+
+def test_topology_transition_records_encoded_observation_matching_tppo_pending_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO(truncated=False)
+    wrapper_config = _entity_config()
+    wrapper_config["training"]["steps_between_training_updates"] = 4
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-entity-encoded-transition"
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+    wrapper.set_model(agent)
+
+    raw_observations = wrapper._apply_entity_layout(
+        env._observation_payload(version=0), force_attach=False
+    )
+    encoded_observations = wrapper._encode_observations_for_model(raw_observations)
+    assert not np.array_equal(encoded_observations[0], raw_observations[0])
+
+    recorded_observations: list[np.ndarray] = []
+    original_record = agent.record_topology_transition
+
+    def record_transition(*, observations, **kwargs) -> None:
+        pending = agent._pending_decisions[0]
+        assert pending is not None
+        np.testing.assert_allclose(
+            observations[0], pending.observation.detach().cpu().numpy()
+        )
+        recorded_observations.extend(observations)
+        original_record(observations=observations, **kwargs)
+
+    monkeypatch.setattr(agent, "record_topology_transition", record_transition)
+
+    wrapper.learn(episodes=1, deterministic=False)
+
+    assert len(recorded_observations) == 1
+    np.testing.assert_allclose(recorded_observations[0], encoded_observations[0])
+
+
+def test_topology_transition_preserves_raw_observations_for_raw_unit() -> None:
+    class _RawTopologyProbe:
+        supports_dynamic_topology = True
+        use_raw_observations = True
+
+        def __init__(self) -> None:
+            self.predict_observations: list[list[np.ndarray]] = []
+            self.transition_observations: list[list[np.ndarray]] = []
+
+        def attach_environment(self, **_kwargs) -> None:
+            pass
+
+        def predict(self, observations, deterministic=None):
+            _ = deterministic
+            self.predict_observations.append(
+                [np.asarray(obs, dtype=np.float64).copy() for obs in observations]
+            )
+            return [[0.0, 0.0] for _ in observations]
+
+        def update(self, **_kwargs) -> None:
+            pass
+
+        def record_topology_transition(self, *, observations, **_kwargs) -> None:
+            self.transition_observations.append(
+                [np.asarray(obs, dtype=np.float64).copy() for obs in observations]
+            )
+
+        def is_initial_exploration_done(self, _global_step: int) -> bool:
+            return True
+
+    env = _TerminalTopologyChangeEntityEnvForPPO(truncated=False)
+    wrapper = Wrapper_CityLearn(
+        env=env, config=_entity_config(), job_id="raw-entity-transition"
+    )
+    model = _RawTopologyProbe()
+    wrapper.set_model(model)
+
+    wrapper.learn(episodes=1, deterministic=False)
+
+    assert len(model.transition_observations) == 1
+    raw_observations = model.predict_observations[-1]
+    np.testing.assert_allclose(model.transition_observations[0][0], raw_observations[0])
+    assert not np.array_equal(
+        wrapper.get_all_encoded_observations(raw_observations)[0], raw_observations[0]
+    )
+
+
+@pytest.mark.parametrize("truncated", [False, True], ids=["terminal", "truncated"])
+def test_terminal_topology_transition_flushes_old_tppo_and_bc_rollouts(
+    monkeypatch: pytest.MonkeyPatch,
+    truncated: bool,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO(truncated=truncated)
+    wrapper_config = _entity_config()
+    wrapper_config["training"]["steps_between_training_updates"] = 4
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-entity-terminal-topology"
+    )
+    agent_config = deepcopy(_ppo_full_config())
+    agent_config["algorithm"]["hyperparameters"]["minibatch_size"] = 2
+    agent_config["algorithm"]["behavior_cloning"] = {
+        "enabled": True,
+        "weight": 0.4,
+        "min_weight": 0.1,
+        "decay_start_step": 0,
+        "decay_steps": 100,
+        "ev_multiplier": 2.0,
+        "storage_multiplier": 1.0,
+        "warm_start": {
+            "policy": "RBCCommunityPolicy",
+            "deterministic": True,
+            "noise_scale": 0.0,
+            "phaseout_steps": 0,
+            "phaseout_mode": "probability",
+            "hyperparameters": {},
+        },
+    }
+    agent = AgentTransformerPPO(agent_config)
+    wrapper.set_model(agent)
+    assert agent._bc is not None
+
+    flushes: list[tuple[int, int, int, torch.Tensor]] = []
+    original_update = agent._run_ppo_update_with_last_value
+
+    def record_boundary_flush(state, last_value, *, building_idx):
+        flushes.append(
+            (
+                building_idx,
+                len(state.buffer),
+                len(agent._bc.teacher_action_buffers[building_idx]),
+                last_value.detach().clone(),
+            )
+        )
+        return original_update(state, last_value, building_idx=building_idx)
+
+    monkeypatch.setattr(
+        agent, "_run_ppo_update_with_last_value", record_boundary_flush
+    )
+
+    wrapper.learn(episodes=1, deterministic=False)
+
+    assert [(building_idx, rollout_size, bc_size) for building_idx, rollout_size, bc_size, _ in flushes] == [
+        (0, 2, 2)
+    ]
+    assert torch.equal(flushes[0][3], torch.zeros_like(flushes[0][3]))
+    assert len(agent._per_building) == 2
+    assert agent._bc.teacher_action_buffers == [[], []]
 
 
 def test_wrapper_to_env_actions_round_trips_ppo_output() -> None:

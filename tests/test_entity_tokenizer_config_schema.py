@@ -380,7 +380,7 @@ def _make_minimal_transformer_ppo_cfg(
         },
         "training": {
             "seed": 0,
-            "steps_between_training_updates": 1,
+            "steps_between_training_updates": 64,
             "target_update_interval": 0,
         },
         "topology": {},
@@ -417,6 +417,20 @@ def test_validate_config_accepts_transformer_ppo_algorithm():
     from utils.config_schema import validate_config
 
     validate_config(_make_minimal_transformer_ppo_cfg())
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_project_config_rejects_transformer_ppo_stage_count_other_than_one(count: int):
+    from utils.config_schema import ProjectConfig
+
+    config = _make_minimal_transformer_ppo_cfg()
+    config["pipeline"][0]["count"] = count
+
+    with pytest.raises(
+        ValueError,
+        match="AgentTransformerPPO pipeline stages require count=1",
+    ):
+        ProjectConfig.model_validate(config)
 
 
 def test_validate_config_loads_tokenizer_json(tmp_path):

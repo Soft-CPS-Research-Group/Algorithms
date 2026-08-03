@@ -27,6 +27,7 @@ from algorithms.agents.agent_transformer_ppo import (
     AgentTransformerPPO,
     _synthetic_sample_from_obs_names,
 )
+from algorithms.agents.base_agent import BaseAgent
 from algorithms.registry import ALGORITHM_REGISTRY, build_execution_unit
 from tests._entity_sample_obs_names import (
     load_sample_observation_names_for_first_building,
@@ -98,6 +99,14 @@ def _make_agent_with_config(
 
 def test_registered_under_canonical_name() -> None:
     assert ALGORITHM_REGISTRY.get("AgentTransformerPPO") is AgentTransformerPPO
+
+
+def test_base_agent_declares_no_op_episode_lifecycle_hooks() -> None:
+    assert "on_episode_start" in BaseAgent.__dict__
+    assert "on_episode_end" in BaseAgent.__dict__
+
+    BaseAgent.on_episode_start(object(), episode=0, training=True)
+    BaseAgent.on_episode_end(object(), episode=0, training=False)
 
 
 def test_create_agent_via_registry() -> None:
@@ -1085,23 +1094,43 @@ def test_off_cadence_truncation_flushes_before_next_episode_update() -> None:
 
 
 def test_transformer_ppo_schema_requires_valid_update_cadence() -> None:
-    from utils.config_schema import (
-        ProjectConfig,
-        TrainingConfig,
-        TransformerPPOHyperparameters,
-        TransformerPPOStageConfig,
-    )
+    from utils.config_schema import ProjectConfig
 
-    project = ProjectConfig.model_construct(
-        training=TrainingConfig(steps_between_training_updates=1),
-        pipeline=[
-            TransformerPPOStageConfig.model_construct(
-                hyperparameters=TransformerPPOHyperparameters.model_construct(
-                    minibatch_size=4
-                )
-            )
-        ],
-    )
+    def config_with_interval(interval: int) -> dict:
+        return {
+            "metadata": {"experiment_name": "test", "run_name": "test"},
+            "simulator": {
+                "dataset_name": "test",
+                "dataset_path": "test",
+                "reward_function": "test",
+            },
+            "training": {"steps_between_training_updates": interval},
+            "pipeline": [
+                {
+                    "algorithm": "AgentTransformerPPO",
+                    "tokenizer_config_path": _TOKENIZER_CFG,
+                    "transformer": {
+                        "d_model": 16,
+                        "nhead": 2,
+                        "num_layers": 1,
+                        "dim_feedforward": 32,
+                    },
+                    "hyperparameters": {
+                        "learning_rate": 1.0e-3,
+                        "gamma": 0.99,
+                        "gae_lambda": 0.95,
+                        "clip_eps": 0.2,
+                        "ppo_epochs": 1,
+                        "minibatch_size": 4,
+                        "entropy_coeff": 0.0,
+                        "value_coeff": 0.5,
+                        "max_grad_norm": 0.5,
+                    },
+                }
+            ],
+        }
+
+    ProjectConfig.model_validate(config_with_interval(4))
 
     with pytest.raises(
         ValueError,
@@ -1110,7 +1139,7 @@ def test_transformer_ppo_schema_requires_valid_update_cadence() -> None:
             r">= pipeline\[\]\.hyperparameters\.minibatch_size\."
         ),
     ):
-        project.validate_cross_constraints()
+        ProjectConfig.model_validate(config_with_interval(2))
 
 
 def test_successful_ppo_update_publishes_training_diagnostics() -> None:
