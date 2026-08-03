@@ -98,7 +98,11 @@ def test_wave_a_configs_validate_and_share_the_qualified_scenario(configs: dict[
             "export_business_as_usual_timeseries": False,
         }, filename
         assert config["training"]["seed"] == 7, filename
-        assert config["tracking"] == {"enabled": False}, filename
+        assert config["tracking"] == {
+            "mlflow_enabled": False,
+            "log_level": "INFO",
+            "log_frequency": 1,
+        }, filename
         assert config["metadata"]["run_name"].startswith("tppo-recovery-wa-"), filename
         assert config["metadata"]["run_name"].endswith("-s7"), filename
         validate_config(config)

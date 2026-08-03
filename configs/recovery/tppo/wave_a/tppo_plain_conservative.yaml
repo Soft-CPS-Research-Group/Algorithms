@@ -5,7 +5,9 @@ metadata:
   description: Conservative-variance Transformer PPO control for Wave A recovery qualification.
 
 tracking:
-  enabled: false
+  mlflow_enabled: false
+  log_level: "INFO"
+  log_frequency: 1
 
 simulator:
   dataset_name: citylearn_three_phase_dynamic_assets_only_demo_15min_parquet
