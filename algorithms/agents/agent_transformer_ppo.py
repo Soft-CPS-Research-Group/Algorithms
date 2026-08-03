@@ -1691,10 +1691,12 @@ class AgentTransformerPPO(BaseAgent):
                     self._max_grad_norm,
                 )
                 state.optimizer.step()
-                if self._bc is not None:
-                    self._run_auxiliary_bc_update(building_idx, state)
                 for k, v in _metrics.items():
                     all_metrics.setdefault(k, []).append(v)
+        # Auxiliary BC changes the shared actor representation, so it must not
+        # run between PPO passes that score the same collected rollout.
+        if self._bc is not None:
+            self._run_auxiliary_bc_update(building_idx, state)
         averaged = {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
         self._latest_training_metrics.update(averaged)
         if self._bc is not None:

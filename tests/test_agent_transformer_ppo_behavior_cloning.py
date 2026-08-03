@@ -256,3 +256,37 @@ def test_auxiliary_bc_samples_demonstrations_during_ppo_update() -> None:
 
     assert sampled
     assert all(batch_size == agent._bc.batch_size for _, batch_size in sampled)
+
+
+def test_auxiliary_bc_runs_after_all_ppo_epochs() -> None:
+    agent, dimension = _agent(demonstrations=0, weight=1.0)
+    agent._ppo_epochs = 2
+    teacher_actions = _teacher(agent, 0.9)
+    observation = np.ones(dimension, dtype=np.float64)
+    assert agent._bc is not None
+    agent._bc.record_demonstration(
+        0, observation, agent._per_building[0].layout, teacher_actions[0]
+    )
+    update_calls = []
+    original_auxiliary_update = agent._run_auxiliary_bc_update
+
+    def record_auxiliary_update(building_idx, state):
+        update_calls.append((building_idx, state))
+        return original_auxiliary_update(building_idx, state)
+
+    agent._run_auxiliary_bc_update = record_auxiliary_update
+    agent.on_episode_start(episode=1, training=True)
+    for step in range(agent._minibatch_size):
+        agent.set_observation_context(
+            raw_observations=[observation], encoded_observations=[observation]
+        )
+        actions = agent.predict([observation], deterministic=False)
+        agent.update(
+            observations=[observation], actions=actions, rewards=[0.1],
+            next_observations=[observation], terminated=False, truncated=False,
+            update_target_step=False, global_learning_step=step,
+            update_step=step == agent._minibatch_size - 1,
+            initial_exploration_done=True,
+        )
+
+    assert len(update_calls) == 1
