@@ -1073,9 +1073,28 @@ class _PPOBase(BaseAgent):
         # silently change the baseline that the residual contract promises to
         # preserve.  Corrections that are not neutral still pass through the
         # normal safety projector below.
+        service_anchor_matches_residual_base = (
+            not self._last_service_teacher_applied
+            or (
+                self._last_residual_base_actions is not None
+                and len(actions) == len(self._last_residual_base_actions)
+                and all(
+                    np.allclose(
+                        np.asarray(proposed, dtype=np.float64),
+                        np.asarray(base, dtype=np.float64),
+                        atol=1.0e-9,
+                        rtol=0.0,
+                    )
+                    for proposed, base in zip(
+                        actions,
+                        self._last_residual_base_actions,
+                    )
+                )
+            )
+        )
         residual_is_neutral = (
             self.residual_policy_enabled
-            and not self._last_service_teacher_applied
+            and service_anchor_matches_residual_base
             and self._last_residual_delta_actions is not None
             and all(
                 np.all(np.asarray(delta, dtype=np.float64) == 0.0)
