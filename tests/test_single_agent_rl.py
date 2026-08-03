@@ -505,6 +505,52 @@ def test_ppo_behavior_cloning_upweights_active_ev_and_deferrable_targets():
     )
 
 
+def test_ppo_residual_behavior_cloning_upweights_neutral_targets_for_all_actions():
+    unit = build_execution_unit(_distributed_config("PPO"))
+    assert isinstance(unit, Ensemble)
+    agent = unit.agents[0]
+    agent.action_names = [[
+        "electrical_storage",
+        "electric_vehicle_storage_charger_1",
+        "deferrable_appliance_1",
+    ]]
+    agent.residual_policy_enabled = True
+    agent.actor_residual_behavior_cloning_neutral_target_weight = 7.0
+    agent.actor_residual_behavior_cloning_neutral_target_threshold = 0.02
+    target = torch.tensor(
+        [[0.0, 0.01, -0.03], [0.5, -0.5, 0.0]],
+        dtype=torch.float32,
+    )
+
+    weights = agent._actor_behavior_cloning_sample_weights(
+        0,
+        base_weights=torch.ones(3),
+        normalized_target=target,
+    )
+
+    assert torch.allclose(
+        weights,
+        torch.tensor([[8.0, 8.0, 1.0], [1.0, 1.0, 8.0]], dtype=torch.float32),
+    )
+
+
+def test_ppo_non_residual_behavior_cloning_ignores_residual_neutral_weight():
+    unit = build_execution_unit(_distributed_config("PPO"))
+    assert isinstance(unit, Ensemble)
+    agent = unit.agents[0]
+    agent.action_names = [["electrical_storage"]]
+    agent.residual_policy_enabled = False
+    agent.actor_residual_behavior_cloning_neutral_target_weight = 7.0
+
+    weights = agent._actor_behavior_cloning_sample_weights(
+        0,
+        base_weights=torch.ones(1),
+        normalized_target=torch.zeros((2, 1), dtype=torch.float32),
+    )
+
+    assert torch.allclose(weights, torch.ones((2, 1), dtype=torch.float32))
+
+
 @pytest.mark.parametrize(
     "params, expected",
     [

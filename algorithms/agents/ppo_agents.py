@@ -195,6 +195,29 @@ class _PPOBase(BaseAgent):
             0.0,
             float(exploration_cfg.get("actor_behavior_cloning_weight", 0.0) or 0.0),
         )
+        self.actor_residual_behavior_cloning_neutral_target_weight = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_residual_behavior_cloning_neutral_target_weight",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_residual_behavior_cloning_neutral_target_threshold = float(
+            np.clip(
+                float(
+                    exploration_cfg.get(
+                        "actor_residual_behavior_cloning_neutral_target_threshold",
+                        0.02,
+                    )
+                    or 0.02
+                ),
+                0.0,
+                1.0,
+            )
+        )
         self.actor_ev_behavior_cloning_multiplier = max(
             0.0,
             float(exploration_cfg.get("actor_ev_behavior_cloning_multiplier", 1.0) or 0.0),
@@ -2125,14 +2148,39 @@ class _PPOBase(BaseAgent):
             )
             or 0.0
         )
+        residual_neutral_weight = float(
+            getattr(
+                self,
+                "actor_residual_behavior_cloning_neutral_target_weight",
+                0.0,
+            )
+            or 0.0
+        )
         if (
             ev_positive_weight <= 0.0
             and ev_zero_weight <= 0.0
             and deferrable_positive_weight <= 0.0
+            and (
+                not self.residual_policy_enabled
+                or residual_neutral_weight <= 0.0
+            )
         ):
             return sample_weights
 
         multiplier = torch.ones_like(normalized_target)
+        if self.residual_policy_enabled and residual_neutral_weight > 0.0:
+            neutral_threshold = float(
+                getattr(
+                    self,
+                    "actor_residual_behavior_cloning_neutral_target_threshold",
+                    0.02,
+                )
+                or 0.02
+            )
+            neutral_target = (
+                normalized_target.abs() <= neutral_threshold
+            ).to(dtype=normalized_target.dtype)
+            multiplier += residual_neutral_weight * neutral_target
         for action_idx in range(action_dim):
             action_name = names[action_idx] if action_idx < len(names) else ""
             if self._is_ev_action_name(action_name):
@@ -2368,6 +2416,12 @@ class _PPOBase(BaseAgent):
                 else 0.0
             ),
             f"{self.metric_prefix}/behavior_cloning_weight": float(self.actor_behavior_cloning_weight),
+            f"{self.metric_prefix}/behavior_cloning_residual_neutral_target_weight": float(
+                self.actor_residual_behavior_cloning_neutral_target_weight
+            ),
+            f"{self.metric_prefix}/behavior_cloning_residual_neutral_target_threshold": float(
+                self.actor_residual_behavior_cloning_neutral_target_threshold
+            ),
             f"{self.metric_prefix}/behavior_cloning_min_weight": float(self.actor_behavior_cloning_min_weight),
             f"{self.metric_prefix}/behavior_cloning_replay_size": float(
                 len(self.behavior_cloning_replay)
