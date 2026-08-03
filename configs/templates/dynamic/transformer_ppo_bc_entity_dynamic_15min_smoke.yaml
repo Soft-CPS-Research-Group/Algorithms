@@ -67,7 +67,8 @@ simulator:
     clip: true
   reward_function: CostHardConstraintReward
   reward_function_kwargs: {}
-  episodes: 1
+  episodes: 3
+  deterministic_finish: true
   simulation_start_time_step: 5184
   simulation_end_time_step: 5248
   episode_time_steps: 65

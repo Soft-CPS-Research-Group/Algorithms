@@ -1531,6 +1531,12 @@ episode allocation across topology changes, the initial actor log standard
 deviation, and the BC decay horizon. Templates expose the current choices
 explicitly so experiment results remain reproducible.
 
+For PPO correctness, `predict()` caches collection-time action, pre-tanh
+action, log probability, and denormalized value. `update()` transfers them
+without recomputation into the rollout buffer. PPO ratios evaluate the
+deterministic representation recorded at collection time, not a value
+reconstructed from clipped environment actions.
+
 ---
 
 ## 14. Export & Checkpoint Contract (dynamic topology)

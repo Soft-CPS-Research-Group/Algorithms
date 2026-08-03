@@ -6,13 +6,20 @@ from pathlib import Path
 import pytest
 import yaml
 
+from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.registry import build_execution_unit
+from tests.test_agent_transformer_ppo_wrapper_integration import _DummyEntityEnvForPPO
+from tests.test_wrapper_entity_mode import _entity_config
 from utils.config_schema import validate_config
+from utils.wrapper_citylearn import Wrapper_CityLearn
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_PATH = (
     REPO_ROOT / "configs/templates/dynamic/transformer_ppo_bc_entity_dynamic.yaml"
 )
 DOC_PATH = REPO_ROOT / "docs/transformer_ppo_spec.md"
+AGENTS_PATH = REPO_ROOT / "AGENTS.md"
+_TOKENIZER_FIXTURE = "tests/fixtures/tokenizer_dummy_env.json"
 
 
 def _load_template() -> dict:
@@ -80,3 +87,49 @@ def test_docs_define_the_remaining_tppo_correctness_decisions() -> None:
     assert "required diagnostics" in text
     assert "rbcsmartpolicy" in text
     assert "action blending" not in text
+    assert "collection-time action, pre-tanh" in text
+    assert "denormalized value" in text
+    assert "without recomputation" in text
+    assert "deterministic representation" in text
+
+
+def test_dynamic_bc_template_preserves_layout_compatible_demonstrations() -> None:
+    config = _load_template()
+    stage = config["pipeline"][0]
+    stage["tokenizer_config_path"] = _TOKENIZER_FIXTURE
+    stage["transformer"] = {
+        "d_model": 16,
+        "nhead": 2,
+        "num_layers": 1,
+        "dim_feedforward": 32,
+        "dropout": 0.0,
+    }
+    stage["hyperparameters"].update(
+        {"minibatch_size": 4, "actor_hidden_dim": 32, "critic_hidden_dim": 32}
+    )
+    agent = build_execution_unit(config)
+    assert isinstance(agent, AgentTransformerPPO)
+    assert agent._bc is not None
+
+    env = _DummyEntityEnvForPPO()
+    wrapper = Wrapper_CityLearn(env=env, config=_entity_config(), job_id="tppo-bc-template-topology")
+    wrapper.set_model(agent)
+    observations = wrapper._apply_entity_layout(env._observation_payload(version=0), force_attach=False)
+    agent._bc.record_demonstration(0, observations[0], agent._per_building[0].layout, [0.0, 0.0])
+
+    env._version = 1
+    wrapper._apply_entity_layout(env._observation_payload(version=1), force_attach=False)
+
+    assert agent._bc.demonstration_count(0) == 1
+    assert len(agent._bc.sample_demonstrations(agent._per_building[0].layout, batch_size=1)) == 1
+    assert agent._bc.demonstration_count(1) == 0
+
+
+def test_agents_guidance_describes_current_tppo_demonstration_lifecycle() -> None:
+    text = AGENTS_PATH.read_text(encoding="utf-8")
+
+    assert "RBCSmartPolicy" in text
+    assert "separate deterministic" in text
+    assert "optional auxiliary behavior-cloning loss" in text
+    assert "layout-compatible demonstrations" in text
+    assert "RBCCommunityPolicy warm-start" not in text

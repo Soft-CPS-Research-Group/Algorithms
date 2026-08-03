@@ -1,11 +1,14 @@
 """Contracts for 15-minute Transformer-PPO demonstration templates."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
+from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.registry import build_execution_unit
 from utils.config_schema import validate_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +41,11 @@ TEMPLATE_CASES = (
         1,
         34816,
     ),
+)
+SMOKE_TEMPLATE_PATH = TEMPLATE_CASES[0][1]
+DATASET_PATH = (
+    REPO_ROOT
+    / "datasets/citylearn_three_phase_dynamic_assets_only_demo_15min_parquet/schema.json"
 )
 
 
@@ -104,5 +112,33 @@ def test_15min_bc_templates_use_valid_demonstration_contracts(
         "hyperparameters": {},
     }
     _assert_no_legacy_bc_fields(behavior_cloning)
+    assert config["simulator"]["episodes"] == 3
+    assert config["simulator"]["deterministic_finish"] is True
+    assert (
+        config["simulator"]["episodes"]
+        - behavior_cloning["demonstration_episodes"]
+        - int(config["simulator"]["deterministic_finish"])
+    ) == 1
 
     validate_config(config)
+
+
+def test_smoke_template_window_crosses_the_shifted_dynamic_topology_event() -> None:
+    with DATASET_PATH.open("r", encoding="utf-8") as handle:
+        dataset = json.load(handle)
+    simulator = _load_template(SMOKE_TEMPLATE_PATH)["simulator"]
+
+    assert dataset["seconds_per_time_step"] == 900
+    assert dataset["topology_mode"] == "dynamic"
+    event = next(event for event in dataset["topology_events"] if event["time_step"] == 5200)
+    assert simulator["simulation_start_time_step"] == 5184
+    assert simulator["simulation_end_time_step"] == 5248
+    assert event["time_step"] + simulator["topology_event_time_offset"] == 16
+
+
+def test_smoke_template_builds_a_demonstration_enabled_tppo_agent() -> None:
+    agent = build_execution_unit(_load_template(SMOKE_TEMPLATE_PATH))
+
+    assert isinstance(agent, AgentTransformerPPO)
+    assert agent._bc is not None
+    assert agent._bc.policy == "RBCSmartPolicy"
