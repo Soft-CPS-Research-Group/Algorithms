@@ -267,14 +267,20 @@ def test_auxiliary_bc_runs_after_all_ppo_epochs() -> None:
     agent._bc.record_demonstration(
         0, observation, agent._per_building[0].layout, teacher_actions[0]
     )
-    update_calls = []
+    events = []
     original_auxiliary_update = agent._run_auxiliary_bc_update
+    original_optimizer_step = agent._per_building[0].optimizer.step
 
     def record_auxiliary_update(building_idx, state):
-        update_calls.append((building_idx, state))
+        events.append("auxiliary_bc")
         return original_auxiliary_update(building_idx, state)
 
+    def record_optimizer_step():
+        events.append("ppo")
+        return original_optimizer_step()
+
     agent._run_auxiliary_bc_update = record_auxiliary_update
+    agent._per_building[0].optimizer.step = record_optimizer_step
     agent.on_episode_start(episode=1, training=True)
     for step in range(agent._minibatch_size):
         agent.set_observation_context(
@@ -289,4 +295,4 @@ def test_auxiliary_bc_runs_after_all_ppo_epochs() -> None:
             initial_exploration_done=True,
         )
 
-    assert len(update_calls) == 1
+    assert events == ["ppo"] * agent._ppo_epochs + ["auxiliary_bc"]
