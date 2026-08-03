@@ -180,11 +180,12 @@ class AgentTransformerPPO(BaseAgent):
             self.device = _select_torch_device(require_cuda=self.require_cuda)
         except RuntimeError as error:
             raise RuntimeError(
-                "AgentTransformerPPO was configured with require_cuda=true, but "
+                "AgentTransformerPPO requires CUDA when require_cuda=true, but "
                 "torch.cuda.is_available() is false."
             ) from error
         logger.info("Device selected: {}", self.device)
         _log_torch_runtime(self.device)
+        torch.backends.cudnn.benchmark = self.device.type == "cuda"
         self._lr = float(h["learning_rate"])
         self._gamma = float(h["gamma"])
         self._gae_lambda = float(h["gae_lambda"])
@@ -1162,7 +1163,7 @@ class AgentTransformerPPO(BaseAgent):
             tokenizer_config=self._tokenizer_config,
             d_model=self._d_model,
             type_input_dims=type_input_dims,
-        )
+        ).to(self.device)
         backbone = TransformerBackbone(
             d_model=self._d_model,
             nhead=self._nhead,
@@ -1908,9 +1909,9 @@ class AgentTransformerPPO(BaseAgent):
         sro_types = [s.type_name for s in layout.segments if s.family == "sro"]
         ca_types = [s.type_name for s in layout.segments if s.family == "ca"]
 
-        tokenizer = state.tokenizer
-        backbone = state.backbone
-        actor = state.actor
+        tokenizer = deepcopy(state.tokenizer).to("cpu").eval()
+        backbone = deepcopy(state.backbone).to("cpu").eval()
+        actor = deepcopy(state.actor).to("cpu").eval()
 
         class _ExportWrapper(nn.Module):
             def __init__(self_inner) -> None:

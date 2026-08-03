@@ -142,6 +142,11 @@ class TrackingConfig(BaseModel):
         gt=0,
         description="Abort training if a completed environment step exceeds this duration",
     )
+    max_update_seconds: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Abort training if a completed model update exceeds this duration",
+    )
     stall_watchdog_enabled: bool = Field(
         default=False,
         description="Arm a faulthandler watchdog around wrapper phases to diagnose stalled jobs",
@@ -644,6 +649,10 @@ class TransformerPPOTransformerConfig(BaseModel):
 
 
 class TransformerPPOHyperparameters(BaseModel):
+    require_cuda: bool = Field(
+        default=False,
+        description="If true, AgentTransformerPPO fails during initialization unless CUDA is available.",
+    )
     learning_rate: float = Field(gt=0)
     gamma: float = Field(gt=0, le=1.0)
     gae_lambda: float = Field(gt=0, le=1.0)

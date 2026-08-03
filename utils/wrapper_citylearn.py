@@ -300,6 +300,9 @@ class Wrapper_CityLearn(RLC):
         self.max_step_seconds = self._coerce_positive_float(
             tracking_cfg.get("max_step_seconds")
         )
+        self.max_update_seconds = self._coerce_positive_float(
+            tracking_cfg.get("max_update_seconds")
+        )
         self.stall_watchdog_enabled = bool(tracking_cfg.get("stall_watchdog_enabled", False))
         self.stall_watchdog_timeout_seconds = self._coerce_positive_float(
             tracking_cfg.get("stall_watchdog_timeout_seconds")
@@ -1025,6 +1028,48 @@ class Wrapper_CityLearn(RLC):
         self._cancel_stall_watchdog()
         raise TimeoutError(message)
 
+    def _enforce_update_duration_guard(
+        self,
+        *,
+        update_duration: float,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+        rewards: Optional[List[float]],
+    ) -> None:
+        if self.max_update_seconds is None or update_duration <= self.max_update_seconds:
+            return
+
+        message = (
+            f"Update duration {update_duration:.3f}s exceeded configured limit "
+            f"{self.max_update_seconds:.3f}s at global step {self.global_step}."
+        )
+        self._write_phase_progress(
+            phase="update_duration_guard",
+            episode=episode,
+            step=step,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            rewards=rewards,
+            status="failed",
+            force=True,
+            extra={
+                "error_type": "UpdateDurationGuardError",
+                "error_message": message,
+                "update_duration_seconds": round(float(update_duration), 6),
+                "max_update_seconds": round(float(self.max_update_seconds), 6),
+            },
+        )
+        self._cancel_stall_watchdog()
+        raise TimeoutError(message)
+
+    def _synchronize_model_cuda_for_timing(self) -> None:
+        if getattr(getattr(self.model, "device", None), "type", None) == "cuda":
+            torch.cuda.synchronize()
+
     def _configure_episode_exports(self, episode: int, episodes: int) -> bool:
         """Enable KPI export and timeseries rendering independently per episode."""
 
@@ -1154,6 +1199,7 @@ class Wrapper_CityLearn(RLC):
                 )
                 step_profile_start_time = time.perf_counter() if should_profile_step else 0.0
                 runtime_profile_metrics: Dict[str, float] = {}
+                model_update_duration = 0.0
                 logger.debug(
                     "Global step {} (episode {}, timestep {})",
                     self.global_step,
@@ -1368,7 +1414,8 @@ class Wrapper_CityLearn(RLC):
                             global_step_total=global_step_total,
                             rewards=rewards,
                         )
-                        phase_start_time = time.perf_counter() if should_profile_step else 0.0
+                        self._synchronize_model_cuda_for_timing()
+                        phase_start_time = time.perf_counter()
                         self.update(
                             observations,
                             actions,
@@ -1377,9 +1424,21 @@ class Wrapper_CityLearn(RLC):
                             terminated=terminated,
                             truncated=truncated,
                         )
+                        self._synchronize_model_cuda_for_timing()
+                        model_update_duration = time.perf_counter() - phase_start_time
+                        self._last_model_update_seconds = model_update_duration
+                        self._enforce_update_duration_guard(
+                            update_duration=model_update_duration,
+                            episode=episode,
+                            step=time_step,
+                            episode_total=episodes,
+                            step_total=episode_step_total,
+                            global_step_total=global_step_total,
+                            rewards=rewards,
+                        )
                         if should_profile_step:
                             runtime_profile_metrics["Runtime/agent_update_seconds"] = (
-                                time.perf_counter() - phase_start_time
+                                model_update_duration
                             )
                             runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = float(
                                 getattr(self, "_last_model_observation_encoding_seconds", 0.0) or 0.0
@@ -1397,6 +1456,7 @@ class Wrapper_CityLearn(RLC):
                             global_step_total=global_step_total,
                             rewards=rewards,
                         )
+                        self._topology_changed_during_step = False
 
                     self._write_phase_progress(
                         phase="checkpoint_start",
@@ -1466,6 +1526,7 @@ class Wrapper_CityLearn(RLC):
 
                 # Step duration calculation
                 step_duration = time.time() - step_start_time
+                normal_step_duration = max(0.0, step_duration - model_update_duration)
                 self._enforce_resource_guards(
                     phase="step_end",
                     episode=episode,
@@ -1475,7 +1536,7 @@ class Wrapper_CityLearn(RLC):
                     global_step_total=global_step_total,
                 )
                 self._enforce_step_duration_guard(
-                    step_duration=step_duration,
+                    step_duration=normal_step_duration,
                     episode=episode,
                     step=time_step,
                     episode_total=episodes,
@@ -1491,10 +1552,16 @@ class Wrapper_CityLearn(RLC):
                     step_total=episode_step_total,
                     global_step_total=global_step_total,
                     rewards=rewards,
-                    extra={"step_duration_seconds": round(float(step_duration), 6)},
+                    extra={
+                        "step_duration_seconds": round(float(step_duration), 6),
+                        "normal_step_duration_seconds": round(float(normal_step_duration), 6),
+                        "update_duration_seconds": round(float(model_update_duration), 6),
+                    },
                 )
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/step_seconds"] = step_duration
+                    runtime_profile_metrics["Runtime/normal_step_seconds"] = normal_step_duration
+                    runtime_profile_metrics["Runtime/update_seconds"] = model_update_duration
                     runtime_profile_metrics["Runtime/step_perf_seconds"] = (
                         time.perf_counter() - step_profile_start_time
                     )
@@ -1556,6 +1623,8 @@ class Wrapper_CityLearn(RLC):
                         extra={
                             "phase": "step_end",
                             "step_duration_seconds": round(float(step_duration), 6),
+                            "normal_step_duration_seconds": round(float(normal_step_duration), 6),
+                            "update_duration_seconds": round(float(model_update_duration), 6),
                             **self._runtime_resource_snapshot(),
                         },
                     )
@@ -2329,28 +2398,7 @@ class Wrapper_CityLearn(RLC):
             logger.error("Model is not set. Use `set_model` to provide a model.")
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        # Determine whether to update
-        if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
-            self.update_step = True
-        else:
-            self.update_step = self.global_step % self.steps_between_training_updates == 0
-        logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
-
-        # Exploration phase ownership belongs to the algorithm.
-        self.initial_exploration_done = bool(self.model.is_initial_exploration_done(self.global_step))
-        logger.debug(
-            "Initial exploration done: {} (global step={})",
-            self.initial_exploration_done,
-            self.global_step,
-        )
-
-        # Determine whether to update the target networks
-        if not self.target_update_interval:
-            self.update_target_step = False
-        else:
-            self.update_target_step = self.global_step % self.target_update_interval == 0
-        logger.debug(
-            "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
+        self._refresh_update_schedule()
 
         phase_start_time = time.perf_counter()
         direct_entity_model_observations = bool(
@@ -2392,6 +2440,30 @@ class Wrapper_CityLearn(RLC):
         )
         self._last_model_update_seconds = time.perf_counter() - phase_start_time
         return update_result
+
+    def _refresh_update_schedule(self) -> None:
+        """Refresh per-step training and checkpoint scheduling state."""
+        if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
+            self.update_step = True
+        else:
+            self.update_step = self.global_step % self.steps_between_training_updates == 0
+        logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
+
+        # Exploration phase ownership belongs to the algorithm.
+        self.initial_exploration_done = bool(self.model.is_initial_exploration_done(self.global_step))
+        logger.debug(
+            "Initial exploration done: {} (global step={})",
+            self.initial_exploration_done,
+            self.global_step,
+        )
+
+        # Determine whether to update the target networks
+        if not self.target_update_interval:
+            self.update_target_step = False
+        else:
+            self.update_target_step = self.global_step % self.target_update_interval == 0
+        logger.debug(
+            "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
     def _should_log_step(self, step: int) -> bool:
         return step % self.step_metric_interval == 0

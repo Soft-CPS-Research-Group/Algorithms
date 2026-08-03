@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
 import yaml
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.agents import agent_transformer_ppo
 from algorithms.registry import build_execution_unit
 from utils.config_schema import validate_config
 

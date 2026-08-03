@@ -93,6 +93,25 @@ def _make_agent_with_config(
     return agent, obs_names_per, act_names_per, obs_dim
 
 
+def _run_minimal_ppo_update(agent: AgentTransformerPPO, obs_dim: int) -> None:
+    """Run exactly one PPO update using the configured minibatch size."""
+    state = agent._per_building[0]
+    rng = np.random.default_rng(0)
+    for step in range(agent._minibatch_size):
+        agent.update(
+            observations=[rng.standard_normal(obs_dim)],
+            actions=[rng.uniform(-0.5, 0.5, size=state.layout.n_ca)],
+            rewards=[0.1],
+            next_observations=[rng.standard_normal(obs_dim)],
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=step == agent._minibatch_size - 1,
+            initial_exploration_done=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -127,6 +146,85 @@ def test_supports_dynamic_topology_classvar_true() -> None:
 # ---------------------------------------------------------------------------
 # predict / update
 # ---------------------------------------------------------------------------
+
+
+def test_device_defaults_to_cpu_when_cuda_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    agent = AgentTransformerPPO(_base_config())
+
+    assert agent.device.type == "cpu"
+
+
+def test_require_cuda_raises_when_cuda_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    config = _base_config()
+    config["algorithm"]["hyperparameters"]["require_cuda"] = True
+
+    with pytest.raises(RuntimeError, match="requires CUDA"):
+        AgentTransformerPPO(config)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_places_each_model_on_cuda() -> None:
+    config = _base_config()
+    config["algorithm"]["hyperparameters"]["require_cuda"] = True
+
+    agent, _, _, _ = _make_agent(n_buildings=2, config=config)
+
+    for state in agent._per_building:
+        for module in (state.tokenizer, state.backbone, state.actor, state.critic):
+            assert next(module.parameters()).device.type == "cuda"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_tppo_keeps_rollouts_on_cpu_and_moves_ppo_batches_to_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config()
+    config["algorithm"]["hyperparameters"].update(
+        require_cuda=True,
+        minibatch_size=2,
+        ppo_epochs=1,
+    )
+    agent, _, _, obs_dim = _make_agent(config=config)
+    state = agent._per_building[0]
+    seen_devices: list[str] = []
+    tokenizer_forward = state.tokenizer.forward
+
+    def record_forward(observations: torch.Tensor, layout):
+        seen_devices.append(observations.device.type)
+        return tokenizer_forward(observations, layout)
+
+    monkeypatch.setattr(state.tokenizer, "forward", record_forward)
+    rng = np.random.default_rng(0)
+
+    for step in range(2):
+        agent.update(
+            observations=[rng.standard_normal(obs_dim)],
+            actions=[rng.uniform(-0.5, 0.5, size=state.layout.n_ca)],
+            rewards=[0.1],
+            next_observations=[rng.standard_normal(obs_dim)],
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=step == 1,
+            initial_exploration_done=True,
+        )
+        if step == 0:
+            assert all(
+                tensor.device.type == "cpu"
+                for tensor in (
+                    state.buffer.observations
+                    + state.buffer.actions
+                    + state.buffer.log_probs
+                    + state.buffer.values
+                )
+            )
+
+    assert seen_devices and set(seen_devices) == {"cuda"}
+    assert len(state.buffer) == 0
 
 
 def test_predict_shape_and_range() -> None:
@@ -2212,6 +2310,30 @@ def test_checkpoint_signature_mismatch_same_cardinality(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match=r"layout_signature mismatch"):
         fresh.load_checkpoint(path)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_cuda_checkpoint_restores_optimizer_state_on_cuda(tmp_path: Path) -> None:
+    config = _base_config()
+    config["algorithm"]["hyperparameters"].update(
+        require_cuda=True,
+        minibatch_size=2,
+    )
+    agent, _, _, obs_dim = _make_agent(config=config)
+    _run_minimal_ppo_update(agent, obs_dim)
+    path = agent.save_checkpoint(str(tmp_path), step=1)
+    assert path is not None
+
+    restored, _, _, _ = _make_agent(config=config)
+    restored.load_checkpoint(path)
+    state = restored._per_building[0]
+    assert next(state.actor.parameters()).device.type == "cuda"
+    assert all(
+        value.device.type == "cuda"
+        for parameter_state in state.optimizer.state.values()
+        for value in parameter_state.values()
+        if isinstance(value, torch.Tensor)
+    )
 
 
 # ---------------------------------------------------------------------------
