@@ -291,6 +291,36 @@ class BehaviorCloningRegularizer:
             ),
         }
 
+    def state_dict(self) -> Dict[str, Any]:
+        """Return training state without serializing the live teacher policy."""
+        return {
+            "demonstrations": deepcopy(self._demonstrations),
+            "seen_per_building": dict(self._seen_per_building),
+            "rng_state": self._rng.getstate(),
+            "latest_bc_effective_weight": self._latest_bc_effective_weight,
+            "latest_bc_loss": self._latest_bc_loss,
+            "latest_bc_weighted_loss": self._latest_bc_weighted_loss,
+            "latest_bc_valid_samples": self._latest_bc_valid_samples,
+            "latest_pretraining_epochs": self._latest_pretraining_epochs,
+            "latest_incompatible_demonstration_samples": (
+                self._latest_incompatible_demonstration_samples
+            ),
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        """Restore training state after the attached teacher has been rebuilt."""
+        self._demonstrations = deepcopy(state["demonstrations"])
+        self._seen_per_building = dict(state["seen_per_building"])
+        self._rng.setstate(state["rng_state"])
+        self._latest_bc_effective_weight = float(state["latest_bc_effective_weight"])
+        self._latest_bc_loss = float(state["latest_bc_loss"])
+        self._latest_bc_weighted_loss = float(state["latest_bc_weighted_loss"])
+        self._latest_bc_valid_samples = float(state["latest_bc_valid_samples"])
+        self._latest_pretraining_epochs = float(state["latest_pretraining_epochs"])
+        self._latest_incompatible_demonstration_samples = float(
+            state["latest_incompatible_demonstration_samples"]
+        )
+
     def _build_teacher_policy(self, observation_names, action_names, action_space, observation_space, metadata):
         return build_warm_start_policy(
             owner_name="AgentTransformerPPO",

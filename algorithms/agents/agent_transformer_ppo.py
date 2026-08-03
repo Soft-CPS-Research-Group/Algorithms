@@ -23,7 +23,7 @@ Checkpoint resume across topology changes is out of scope —
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
@@ -84,6 +84,7 @@ class _PerBuildingState:
     topology_version: int = 0
     last_next_observation: Optional[torch.Tensor] = None
     last_transition_terminated: bool = False
+    raw_rewards: List[float] = field(default_factory=list)
 
 
 @dataclass
@@ -102,6 +103,7 @@ class _TransitionCandidate:
     """Validated transition ready to commit to one rollout buffer."""
 
     pending: _PendingDecision
+    raw_reward: float
     reward: float
     terminated: bool
     truncated: bool
@@ -137,6 +139,7 @@ class _TopologyStateSnapshot:
     topology_version: int
     last_next_observation: Optional[torch.Tensor]
     last_transition_terminated: bool
+    raw_rewards: List[float]
 
 
 @dataclass
@@ -210,6 +213,7 @@ class AgentTransformerPPO(BaseAgent):
         self._latest_global_learning_step = 0
         self._latest_training_metrics: Dict[str, float] = {}
         self._current_episode = 0
+        self._ppo_update_count = 0
 
         # Tracks whether ``attach_environment`` has ever been called. The
         # very first call is not a topology change.
@@ -552,6 +556,12 @@ class AgentTransformerPPO(BaseAgent):
                 )
             self._pending_decisions = [None] * building_count
             self._latest_global_learning_step = int(global_learning_step)
+            self._latest_training_metrics.update(
+                {
+                    "episode_training": 1.0,
+                    "teacher_action_execution": 1.0,
+                }
+            )
             return
 
         # Validate every cached decision before changing any rollout state.
@@ -595,6 +605,7 @@ class AgentTransformerPPO(BaseAgent):
             candidates.append(
                 _TransitionCandidate(
                     pending=pending,
+                    raw_reward=float(rewards[b]),
                     reward=max(float(rewards[b]), -self._reward_clip),
                     terminated=(
                         bool(terminated)
@@ -638,6 +649,7 @@ class AgentTransformerPPO(BaseAgent):
                 )
                 state.last_next_observation = candidate.next_observation
                 state.last_transition_terminated = candidate.terminated
+                state.raw_rewards.append(candidate.raw_reward)
             self._pending_decisions = [None] * building_count
             self._latest_global_learning_step = next_global_learning_step
             if not should_update:
@@ -810,12 +822,29 @@ class AgentTransformerPPO(BaseAgent):
         }
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
+        if any(len(state.buffer) > 0 for state in self._per_building):
+            raise ValueError(
+                "TPPO cannot save a checkpoint with a nonempty rollout. Save at a "
+                "completed optimizer or episode boundary."
+            )
         out = Path(output_dir) / "checkpoints"
         out.mkdir(parents=True, exist_ok=True)
         path = out / f"transformer_ppo_step{step}.pt"
         payload = {
+            "checkpoint_format_version": 1,
             "step": int(step),
             "config": dict(self.config["algorithm"]),
+            "global_learning_step": self._latest_global_learning_step,
+            "ppo_update_count": self._ppo_update_count,
+            "current_episode": self._current_episode,
+            "latest_training_metrics": dict(self._latest_training_metrics),
+            "action_bounds": [
+                (low.detach().cpu(), high.detach().cpu())
+                for low, high in self._action_bounds
+            ],
+            "behavior_cloning_state": (
+                self._bc.state_dict() if self._bc is not None else None
+            ),
             "agents": [
                 {
                     "building_id": s.building_id,
@@ -824,8 +853,11 @@ class AgentTransformerPPO(BaseAgent):
                     "actor_state": s.actor.state_dict(),
                     "critic_state": s.critic.state_dict(),
                     "optimizer_state": s.optimizer.state_dict(),
+                    "bc_optimizer_state": s.bc_optimizer.state_dict(),
+                    "value_normalizer_state": s.value_normalizer.state_dict(),
                     "layout_signature": tuple(sorted(s.obs_names_tuple)),
                     "action_names": list(s.action_names_tuple),
+                    "topology_version": s.topology_version,
                 }
                 for s in self._per_building
             ],
@@ -834,7 +866,11 @@ class AgentTransformerPPO(BaseAgent):
         return str(path)
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
-        payload = torch.load(checkpoint_path, map_location="cpu")
+        payload = torch.load(
+            checkpoint_path, map_location=self.device, weights_only=False
+        )
+        if payload.get("checkpoint_format_version") != 1:
+            raise ValueError("Unsupported TPPO checkpoint format.")
         agents = payload["agents"]
         if len(agents) != len(self._per_building):
             raise ValueError(
@@ -851,11 +887,38 @@ class AgentTransformerPPO(BaseAgent):
                     f"{state.building_id!r}: cannot resume across topology "
                     "changes."
                 )
+            if state.action_names_tuple != tuple(saved["action_names"]):
+                raise ValueError(
+                    "Checkpoint action_names mismatch for building "
+                    f"{state.building_id!r}: cannot resume across topology changes."
+                )
             state.tokenizer.load_state_dict(saved["tokenizer_state"])
             state.backbone.load_state_dict(saved["backbone_state"])
             state.actor.load_state_dict(saved["actor_state"])
             state.critic.load_state_dict(saved["critic_state"])
             state.optimizer.load_state_dict(saved["optimizer_state"])
+            state.bc_optimizer.load_state_dict(saved["bc_optimizer_state"])
+            self._move_optimizer_state_to_device(state.optimizer)
+            self._move_optimizer_state_to_device(state.bc_optimizer)
+            state.value_normalizer.load_state_dict(saved["value_normalizer_state"])
+            state.topology_version = int(saved["topology_version"])
+        self._action_bounds = [
+            (low.to(self.device), high.to(self.device))
+            for low, high in payload["action_bounds"]
+        ]
+        self._latest_global_learning_step = int(payload["global_learning_step"])
+        self._ppo_update_count = int(payload["ppo_update_count"])
+        self._current_episode = int(payload["current_episode"])
+        self._latest_training_metrics = dict(payload["latest_training_metrics"])
+        if self._bc is not None and payload["behavior_cloning_state"] is not None:
+            self._bc.load_state_dict(payload["behavior_cloning_state"])
+        self._pending_decisions = [None] * len(self._per_building)
+
+    def _move_optimizer_state_to_device(self, optimizer: torch.optim.Optimizer) -> None:
+        for parameter_state in optimizer.state.values():
+            for name, value in parameter_state.items():
+                if isinstance(value, torch.Tensor):
+                    parameter_state[name] = value.to(self.device)
 
     # ==========================================================================
     # Internal helpers
@@ -1279,6 +1342,7 @@ class AgentTransformerPPO(BaseAgent):
                 topology_version=state.topology_version,
                 last_next_observation=state.last_next_observation,
                 last_transition_terminated=state.last_transition_terminated,
+                raw_rewards=list(state.raw_rewards),
             )
             for state in self._per_building
         ]
@@ -1341,6 +1405,7 @@ class AgentTransformerPPO(BaseAgent):
             state.topology_version = saved.topology_version
             state.last_next_observation = saved.last_next_observation
             state.last_transition_terminated = saved.last_transition_terminated
+            state.raw_rewards = saved.raw_rewards
         self._pending_decisions = pending_decisions
         self._action_bounds = action_bounds
         self._latest_training_metrics = training_metrics
@@ -1577,6 +1642,7 @@ class AgentTransformerPPO(BaseAgent):
         state.buffer.clear()
         state.last_next_observation = None
         state.last_transition_terminated = False
+        state.raw_rewards.clear()
 
     def _flush_rollout_boundary(
         self,
@@ -1641,12 +1707,21 @@ class AgentTransformerPPO(BaseAgent):
     ) -> bool:
         if len(state.buffer) == 0:
             return False
+        rollout_size = len(state.buffer)
+        raw_rewards = np.asarray(state.raw_rewards, dtype=np.float64)
+        clipped_rewards = np.asarray(state.buffer.rewards, dtype=np.float64)
         batch_size = min(self._minibatch_size, len(state.buffer))
         with torch.device(self.device):
             state.buffer.compute_returns_and_advantages(last_value)
         assert state.buffer.returns is not None
         state.value_normalizer.update(state.buffer.returns)
-        all_metrics: dict = {"policy_loss": [], "value_loss": [], "entropy": []}
+        all_metrics: dict = {
+            "policy_loss": [],
+            "value_loss": [],
+            "entropy": [],
+            "actor_grad_norm": [],
+            "critic_grad_norm": [],
+        }
         for _epoch in range(self._ppo_epochs):
             with torch.device(self.device):
                 batches = list(state.buffer.get_batches(batch_size))
@@ -1683,11 +1758,20 @@ class AgentTransformerPPO(BaseAgent):
                     entropy_coeff=self._entropy_coeff,
                 )
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(
+                actor_parameters = (
                     list(state.tokenizer.parameters())
                     + list(state.backbone.parameters())
                     + list(state.actor.parameters())
-                    + list(state.critic.parameters()),
+                )
+                critic_parameters = list(state.critic.parameters())
+                all_metrics["actor_grad_norm"].append(
+                    self._gradient_norm(actor_parameters)
+                )
+                all_metrics["critic_grad_norm"].append(
+                    self._gradient_norm(critic_parameters)
+                )
+                torch.nn.utils.clip_grad_norm_(
+                    actor_parameters + critic_parameters,
                     self._max_grad_norm,
                 )
                 state.optimizer.step()
@@ -1698,19 +1782,62 @@ class AgentTransformerPPO(BaseAgent):
         if self._bc is not None:
             self._run_auxiliary_bc_update(building_idx, state)
         averaged = {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
+        returns = state.buffer.returns.detach().cpu().numpy()
+        values = torch.stack(state.buffer.values).squeeze(-1).cpu().numpy()
+        residuals = np.abs(returns - values)
+        averaged.update(
+            {
+                "update_count": float(self._ppo_update_count + 1),
+                "rollout_size": float(rollout_size),
+                "raw_reward_mean": float(raw_rewards.mean()),
+                "raw_reward_min": float(raw_rewards.min()),
+                "raw_reward_max": float(raw_rewards.max()),
+                "clipped_reward_mean": float(clipped_rewards.mean()),
+                "clipped_reward_min": float(clipped_rewards.min()),
+                "clipped_reward_max": float(clipped_rewards.max()),
+                "value_residual_p50": float(np.percentile(residuals, 50)),
+                "value_residual_p90": float(np.percentile(residuals, 90)),
+                "value_residual_p99": float(np.percentile(residuals, 99)),
+                "episode_training": 1.0,
+                "teacher_action_execution": 0.0,
+            }
+        )
+        self._ppo_update_count += 1
         self._latest_training_metrics.update(averaged)
         if self._bc is not None:
             self._latest_training_metrics.update(self._bc.snapshot_metrics())
         building_id = getattr(state, "building_id", "?")
         logger.info(
-            "PPO update [{}]: policy_loss={:.4f}, value_loss={:.4f}, entropy={:.4f}, clip_frac={:.3f}",
+            "PPO update [{}]: update_count={}, rollout_size={}, policy_loss={:.4f}, "
+            "value_loss={:.4f}, entropy={:.4f}, clip_frac={:.3f}, raw_reward_mean={:.4f}",
             building_id,
+            int(averaged["update_count"]),
+            rollout_size,
             averaged.get("policy_loss", 0.0),
             averaged.get("value_loss", 0.0),
             averaged.get("entropy", 0.0),
             averaged.get("clip_fraction", 0.0),
+            averaged["raw_reward_mean"],
         )
+        if building_id.replace("_", " ") == "Building 15":
+            logger.info(
+                "Building 15 TPPO diagnostics: update_count={}, rollout_size={}, "
+                "policy_loss={:.4f}, value_loss={:.4f}",
+                int(averaged["update_count"]),
+                rollout_size,
+                averaged.get("policy_loss", 0.0),
+                averaged.get("value_loss", 0.0),
+            )
         return True
+
+    @staticmethod
+    def _gradient_norm(parameters: List[torch.nn.Parameter]) -> float:
+        squared_norm = sum(
+            parameter.grad.detach().pow(2).sum()
+            for parameter in parameters
+            if parameter.grad is not None
+        )
+        return float(squared_norm.sqrt().cpu()) if isinstance(squared_norm, torch.Tensor) else 0.0
 
     # ----- ONNX export --------------------------------------------------------
 

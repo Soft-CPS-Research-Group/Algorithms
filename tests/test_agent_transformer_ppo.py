@@ -1163,7 +1163,34 @@ def test_successful_ppo_update_publishes_training_diagnostics() -> None:
         )
 
     metrics = agent.consume_latest_training_metrics()
-    assert {"approx_kl", "ratio_error_max", "explained_variance"} <= metrics.keys()
+    assert {
+        "update_count",
+        "rollout_size",
+        "policy_loss",
+        "value_loss",
+        "entropy",
+        "clip_fraction",
+        "approx_kl",
+        "ratio_error_max",
+        "explained_variance",
+        "actor_grad_norm",
+        "critic_grad_norm",
+        "raw_reward_mean",
+        "raw_reward_min",
+        "raw_reward_max",
+        "clipped_reward_mean",
+        "clipped_reward_min",
+        "clipped_reward_max",
+        "value_residual_p50",
+        "value_residual_p90",
+        "value_residual_p99",
+        "episode_training",
+        "teacher_action_execution",
+    } <= metrics.keys()
+    assert metrics["update_count"] == 1.0
+    assert metrics["rollout_size"] == 4.0
+    assert metrics["episode_training"] == 1.0
+    assert metrics["teacher_action_execution"] == 0.0
 
 
 def test_ppo_update_normalizes_returns_but_keeps_gae_values_in_raw_scale() -> None:
@@ -1896,6 +1923,121 @@ def test_checkpoint_round_trip(tmp_path: Path) -> None:
     fresh.load_checkpoint(path)
     actor_w_loaded = next(fresh._per_building[0].actor.parameters()).detach()
     assert torch.allclose(actor_w, actor_w_loaded)
+
+
+def test_checkpoint_rejects_active_rollout(tmp_path: Path) -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    observations = [np.zeros(obs_dim, dtype=np.float64)]
+    actions = agent.predict(observations, deterministic=True)
+    agent.update(
+        observations=observations,
+        actions=[np.asarray(actions[0])],
+        rewards=[0.1],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=3,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    with pytest.raises(ValueError, match="nonempty rollout"):
+        agent.save_checkpoint(str(tmp_path), step=3)
+
+
+def test_checkpoint_restores_campaign_state_after_completed_ppo_update(
+    tmp_path: Path,
+) -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=1)
+    state = agent._per_building[0]
+    rng = np.random.default_rng(41)
+    for step in range(agent._minibatch_size):
+        observations = [rng.standard_normal(obs_dim)]
+        actions = agent.predict(observations, deterministic=False)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.25],
+            next_observations=[rng.standard_normal(obs_dim)],
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=17 + step,
+            update_step=step == agent._minibatch_size - 1,
+            initial_exploration_done=True,
+        )
+
+    charger_id = next(
+        name.split("::")[1]
+        for name in obs_per[0]
+        if name.startswith("charger::")
+        and "::connected_ev::" not in name
+        and "::incoming_ev::" not in name
+    )
+    expanded_obs = list(obs_per[0]) + [
+        name.replace(
+            f"charger::{charger_id}::", "charger::Building_1/checkpoint_charger::", 1
+        )
+        for name in obs_per[0]
+        if name.startswith(f"charger::{charger_id}::")
+    ]
+    expanded_actions = list(act_per[0]) + ["electric_vehicle_storage"]
+    agent.attach_environment(
+        observation_names=[expanded_obs],
+        action_names=[expanded_actions],
+        action_space=[None],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    state = agent._per_building[0]
+    expected_models = {
+        name: copy.deepcopy(getattr(state, name).state_dict())
+        for name in ("tokenizer", "backbone", "actor", "critic")
+    }
+    expected_optimizer = copy.deepcopy(state.optimizer.state_dict())
+    expected_bc_optimizer = copy.deepcopy(state.bc_optimizer.state_dict())
+    expected_normalizer = state.value_normalizer.state_dict()
+    path = agent.save_checkpoint(str(tmp_path), step=20)
+    assert path is not None
+
+    fresh = AgentTransformerPPO(_base_config())
+    fresh.attach_environment(
+        observation_names=[expanded_obs],
+        action_names=[expanded_actions],
+        action_space=[None],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    fresh.load_checkpoint(path)
+    restored = fresh._per_building[0]
+
+    assert torch.load(path, weights_only=False)["checkpoint_format_version"] >= 1
+    assert restored.topology_version == state.topology_version == 1
+    assert restored.action_names_tuple == tuple(expanded_actions)
+    assert restored.value_normalizer.state_dict() == expected_normalizer
+    assert fresh._latest_global_learning_step == agent._latest_global_learning_step == 20
+    assert fresh._ppo_update_count == agent._ppo_update_count == 1
+    for name, expected_model in expected_models.items():
+        actual_model = getattr(restored, name).state_dict()
+        assert all(
+            torch.equal(value, expected_model[key])
+            for key, value in actual_model.items()
+        )
+    for actual, expected in (
+        (restored.optimizer.state_dict(), expected_optimizer),
+        (restored.bc_optimizer.state_dict(), expected_bc_optimizer),
+    ):
+        assert actual["param_groups"] == expected["param_groups"]
+        assert actual["state"].keys() == expected["state"].keys()
+        for index, optimizer_state in actual["state"].items():
+            for key, value in optimizer_state.items():
+                expected_value = expected["state"][index][key]
+                if isinstance(value, torch.Tensor):
+                    assert value.device == fresh.device
+                    assert torch.equal(value, expected_value)
+                else:
+                    assert value == expected_value
 
 
 def test_checkpoint_layout_signature_mismatch_rejected(tmp_path: Path) -> None:

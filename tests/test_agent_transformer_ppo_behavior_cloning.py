@@ -1,6 +1,8 @@
 """Separate demonstration and PPO phase tests for AgentTransformerPPO."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import torch
 
@@ -296,3 +298,34 @@ def test_auxiliary_bc_runs_after_all_ppo_epochs() -> None:
         )
 
     assert events == ["ppo"] * agent._ppo_epochs + ["auxiliary_bc"]
+
+
+def test_checkpoint_restores_bc_demonstrations_phase_and_decay_progress(
+    tmp_path: Path,
+) -> None:
+    agent, dimension = _agent(demonstrations=2, weight=1.0)
+    observation = np.ones(dimension, dtype=np.float64)
+    _teacher(agent, 0.5)
+    agent.on_episode_start(episode=0, training=True)
+    agent.set_observation_context(
+        raw_observations=[observation], encoded_observations=[observation]
+    )
+    _update(agent, observation, agent.predict([observation]), step=7)
+    assert agent._bc is not None
+    expected_count = agent._bc.demonstration_count()
+    expected_weight = agent._bc.effective_weight(agent._latest_global_learning_step)
+    path = agent.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    fresh, _ = _agent(demonstrations=2, weight=1.0)
+    fresh.load_checkpoint(path)
+
+    assert fresh._bc is not None
+    assert fresh._bc.demonstration_count() == expected_count == 1
+    assert fresh._current_episode == 0
+    assert fresh._in_demonstration_phase()
+    assert fresh._latest_global_learning_step == 7
+    assert fresh._bc.effective_weight(fresh._latest_global_learning_step) == expected_weight
+    expected_actions = fresh._bc.compute_teacher_actions([observation])
+    assert fresh.predict([observation]) == expected_actions
+    assert fresh._pending_decisions == [None]
