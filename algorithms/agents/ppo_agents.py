@@ -1126,10 +1126,17 @@ class _PPOBase(BaseAgent):
             result = adapter.project(raw_observation, proposed)
             executed = list(result.executed_actions)
             if self._last_service_teacher_applied:
+                storage_fallback = (
+                    None
+                    if self._last_residual_base_actions is None
+                    or agent_idx >= len(self._last_residual_base_actions)
+                    else self._last_residual_base_actions[agent_idx]
+                )
                 executed = preserve_teacher_service_with_storage_fallback(
                     action_names=self.action_names[agent_idx],
                     teacher_merged_actions=proposed,
                     projected_actions=executed,
+                    storage_fallback_actions=storage_fallback,
                 )
             projected.append(executed)
             projections.append(result)

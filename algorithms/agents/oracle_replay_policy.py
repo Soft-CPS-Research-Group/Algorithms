@@ -133,7 +133,12 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
     ) -> List[List[float]]:
         """Replay an explicit step without mutating the standalone counter."""
 
-        actions = super().predict(observations, deterministic=deterministic, context=context)
+        rbc_actions = super().predict(
+            observations,
+            deterministic=deterministic,
+            context=context,
+        )
+        actions = [list(values) for values in rbc_actions]
         schedule_step = int(schedule_step) % self.schedule.horizon
         for agent_index, (building_id, names, observation) in enumerate(
             zip(self._building_names, self._action_labels, observations)
@@ -159,11 +164,12 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
 
         if self.local_action_safety_enabled:
             projected: List[List[float]] = []
-            for labels, adapter, observation, proposed in zip(
+            for labels, adapter, observation, proposed, rbc_fallback in zip(
                 self._action_labels,
                 self._safety_adapters,
                 observations,
                 actions,
+                rbc_actions,
             ):
                 result = adapter.project(observation, proposed)
                 projected.append(
@@ -171,6 +177,7 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
                         action_names=labels,
                         teacher_merged_actions=proposed,
                         projected_actions=result.executed_actions,
+                        storage_fallback_actions=rbc_fallback,
                     )
                 )
             actions = projected

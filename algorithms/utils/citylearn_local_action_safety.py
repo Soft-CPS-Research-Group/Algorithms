@@ -53,19 +53,27 @@ def preserve_teacher_service_with_storage_fallback(
     action_names: Sequence[str],
     teacher_merged_actions: Sequence[float],
     projected_actions: Sequence[float],
+    storage_fallback_actions: Sequence[float] | None = None,
 ) -> list[float]:
     """Never trade a teacher service command for learned storage dispatch.
 
     If the approximate local projector changes any EV/deferrable command, all
-    stationary-storage control for that building is dropped for the step and
-    the service command is restored.  This conservative fallback prevents a
-    modelled headroom mismatch from causing a hard service-gate failure.
+    stationary-storage control for that building falls back to the supplied
+    operational base-policy command (or zero when none is available) and the
+    service command is restored.  This conservative fallback prevents a
+    modelled headroom mismatch from causing a hard service-gate failure while
+    preserving base-policy discharge that may be required for electrical
+    headroom.
     """
 
     if not (
         len(action_names) == len(teacher_merged_actions) == len(projected_actions)
     ):
         raise ValueError("Service preservation requires aligned action vectors.")
+    if storage_fallback_actions is not None and len(storage_fallback_actions) != len(
+        action_names
+    ):
+        raise ValueError("Storage fallback requires an aligned action vector.")
     service_changed = any(
         str(name).startswith(("electric_vehicle", "deferrable_appliance"))
         and not np.isclose(float(proposed), float(projected), atol=1.0e-9, rtol=0.0)
@@ -75,18 +83,25 @@ def preserve_teacher_service_with_storage_fallback(
     )
     if not service_changed:
         return [float(value) for value in projected_actions]
-    return [
-        (
-            0.0
-            if str(name) == "electrical_storage"
-            else float(proposed)
-            if str(name).startswith(("electric_vehicle", "deferrable_appliance"))
-            else float(projected)
-        )
-        for name, proposed, projected in zip(
-            action_names, teacher_merged_actions, projected_actions
-        )
-    ]
+    executed: list[float] = []
+    for index, (name, proposed, projected) in enumerate(
+        zip(action_names, teacher_merged_actions, projected_actions)
+    ):
+        normalized_name = str(name)
+        if normalized_name == "electrical_storage":
+            value = (
+                0.0
+                if storage_fallback_actions is None
+                else float(storage_fallback_actions[index])
+            )
+        elif normalized_name.startswith(
+            ("electric_vehicle", "deferrable_appliance")
+        ):
+            value = float(proposed)
+        else:
+            value = float(projected)
+        executed.append(value)
+    return executed
 
 
 def _finite(value: Any, default: float = 0.0) -> float:

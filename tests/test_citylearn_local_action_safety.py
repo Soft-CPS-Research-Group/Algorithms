@@ -668,3 +668,18 @@ def test_teacher_service_change_restores_service_and_idles_storage() -> None:
     )
 
     assert executed == [0.0, 0.5, 0.4]
+
+
+def test_teacher_service_change_can_restore_safe_base_storage() -> None:
+    executed = preserve_teacher_service_with_storage_fallback(
+        action_names=[
+            "electrical_storage",
+            "electric_vehicle_storage_charger_15_1",
+            "electric_vehicle_storage_charger_15_2",
+        ],
+        teacher_merged_actions=[0.8, 0.5, 0.4],
+        projected_actions=[0.2, 0.3, 0.4],
+        storage_fallback_actions=[-0.15, 0.5, 0.4],
+    )
+
+    assert executed == [-0.15, 0.5, 0.4]
