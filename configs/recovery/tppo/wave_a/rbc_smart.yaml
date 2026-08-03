@@ -4,6 +4,9 @@ metadata:
   community_name: citylearn_dynamic_15min
   description: Tuned Smart rule-based control for Wave A recovery qualification.
 
+tracking:
+  enabled: false
+
 simulator:
   dataset_name: citylearn_three_phase_dynamic_assets_only_demo_15min_parquet
   dataset_path: ./datasets/citylearn_three_phase_dynamic_assets_only_demo_15min_parquet/schema.json
