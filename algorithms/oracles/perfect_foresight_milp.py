@@ -27,8 +27,15 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
-from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.optimize import Bounds, LinearConstraint, OptimizeResult, milp
 from scipy.sparse import coo_array
+
+try:  # SciPy 1.15.x exposes its bundled HiGHS bindings here.
+    from scipy.optimize._highspy import _core as _highs_core
+    from scipy.optimize._milp import _milp_iv
+except ImportError:  # pragma: no cover - compatibility fallback for other SciPy builds.
+    _highs_core = None
+    _milp_iv = None
 
 
 _NUMERICAL_TOLERANCE = 1.0e-8
@@ -555,6 +562,153 @@ def _solver_options(options: SolveOptions) -> dict[str, Any]:
     return payload
 
 
+def _milp_primal_only(
+    *,
+    c: np.ndarray,
+    integrality: np.ndarray,
+    bounds: Bounds,
+    constraints: LinearConstraint,
+    options: Mapping[str, Any],
+) -> OptimizeResult:
+    """Run bundled HiGHS without extracting unused LP basis marginals.
+
+    SciPy 1.15.1's public :func:`scipy.optimize.milp` wrapper iterates over
+    every column through pybind after HiGHS has solved the model in order to
+    construct bound marginals.  ``milp`` does not expose those marginals, and
+    on an annual 15-minute oracle that conversion takes hours even though the
+    LP itself takes seconds.  The oracle only needs the primal solution,
+    objective and MIP certificate, so use the same bundled solver while
+    intentionally omitting that discarded basis conversion.
+
+    Builds of SciPy without the bundled private bindings retain the public
+    fallback.  The project pins SciPy 1.15.1 on the x86 experiment workers.
+    """
+
+    if _highs_core is None or _milp_iv is None:
+        return milp(
+            c=c,
+            integrality=integrality,
+            bounds=bounds,
+            constraints=constraints,
+            options=dict(options),
+        )
+
+    prepared = _milp_iv(
+        c,
+        integrality,
+        bounds,
+        constraints,
+        dict(options),
+    )
+    (
+        objective,
+        variable_types,
+        lower_bounds,
+        upper_bounds,
+        indptr,
+        indices,
+        data,
+        constraint_lower,
+        constraint_upper,
+        highs_option_values,
+    ) = prepared
+
+    model = _highs_core.HighsLp()
+    model.num_col_ = int(objective.size)
+    model.num_row_ = int(constraint_upper.size)
+    model.a_matrix_.num_col_ = model.num_col_
+    model.a_matrix_.num_row_ = model.num_row_
+    model.a_matrix_.format_ = _highs_core.MatrixFormat.kColwise
+    model.col_cost_ = objective
+    model.col_lower_ = lower_bounds
+    model.col_upper_ = upper_bounds
+    model.row_lower_ = constraint_lower
+    model.row_upper_ = constraint_upper
+    model.a_matrix_.start_ = indptr
+    model.a_matrix_.index_ = indices
+    model.a_matrix_.value_ = data
+
+    is_mip = bool(np.any(variable_types))
+    if is_mip:
+        model.integrality_ = [
+            _highs_core.HighsVarType(int(value)) for value in variable_types
+        ]
+
+    solver = _highs_core._Highs()
+    highs_options = _highs_core.HighsOptions()
+    for key, value in highs_option_values.items():
+        if value is None:
+            continue
+        if key in {"presolve", "parallel"} and isinstance(value, bool):
+            value = "on" if value else "off"
+        setattr(highs_options, key, value)
+
+    option_status = solver.passOptions(highs_options)
+    if option_status == _highs_core.HighsStatus.kError:
+        return OptimizeResult(
+            status=4,
+            message="HiGHS rejected solver options.",
+            x=None,
+            fun=None,
+            mip_dual_bound=None,
+            mip_gap=None,
+        )
+    if solver.passModel(model) == _highs_core.HighsStatus.kError:
+        return OptimizeResult(
+            status=4,
+            message="HiGHS rejected the oracle model.",
+            x=None,
+            fun=None,
+            mip_dual_bound=None,
+            mip_gap=None,
+        )
+    if solver.run() == _highs_core.HighsStatus.kError:
+        return OptimizeResult(
+            status=4,
+            message="HiGHS failed while solving the oracle model.",
+            x=None,
+            fun=None,
+            mip_dual_bound=None,
+            mip_gap=None,
+        )
+
+    model_status = solver.getModelStatus()
+    message = solver.modelStatusToString(model_status)
+    if model_status == _highs_core.HighsModelStatus.kOptimal:
+        status = 0
+    elif model_status in {
+        _highs_core.HighsModelStatus.kTimeLimit,
+        _highs_core.HighsModelStatus.kIterationLimit,
+        _highs_core.HighsModelStatus.kSolutionLimit,
+        _highs_core.HighsModelStatus.kObjectiveBound,
+        _highs_core.HighsModelStatus.kObjectiveTarget,
+    }:
+        status = 1
+    elif model_status == _highs_core.HighsModelStatus.kInfeasible:
+        status = 2
+    elif model_status == _highs_core.HighsModelStatus.kUnbounded:
+        status = 3
+    else:
+        status = 4
+
+    info = solver.getInfo()
+    objective_value = _optional_finite(info.objective_function_value)
+    acceptable_limit = status == 1 and is_mip and objective_value is not None
+    has_solution = status == 0 or acceptable_limit
+    solution = solver.getSolution() if has_solution else None
+    x = None if solution is None else np.asarray(solution.col_value, dtype=np.float64)
+    return OptimizeResult(
+        status=status,
+        message=message,
+        x=x,
+        fun=objective_value,
+        mip_dual_bound=(
+            _optional_finite(info.mip_dual_bound) if is_mip else None
+        ),
+        mip_gap=_optional_finite(info.mip_gap) if is_mip else None,
+    )
+
+
 def _build_and_solve(
     problem: PerfectForesightProblem,
     *,
@@ -668,7 +822,7 @@ def _build_and_solve(
         np.asarray(constraint_upper, dtype=np.float64),
     )
 
-    raw_result = milp(
+    raw_result = _milp_primal_only(
         c=objective,
         integrality=integrality,
         bounds=Bounds(lower_bounds, upper_bounds),
