@@ -144,6 +144,7 @@ def test_plain_tppo_controls_have_two_deterministic_episodes(configs: dict[str, 
 def test_bc_tppo_configs_have_demo_ppo_eval_phases(configs: dict[str, dict]) -> None:
     pretrain = configs["tppo_bc_pretrain.yaml"]
     auxiliary = configs["tppo_bc_auxiliary.yaml"]
+    smart_hyperparameters = configs["rbc_smart.yaml"]["pipeline"][0]["hyperparameters"]
 
     for config in (pretrain, auxiliary):
         assert config["simulator"]["episodes"] == 3
@@ -159,7 +160,7 @@ def test_bc_tppo_configs_have_demo_ppo_eval_phases(configs: dict[str, dict]) -> 
         assert bc["teacher"] == {
             "policy": "RBCSmartPolicy",
             "deterministic": True,
-            "hyperparameters": {},
+            "hyperparameters": smart_hyperparameters,
         }
 
     assert pretrain["pipeline"][0]["behavior_cloning"]["weight"] == pytest.approx(0.0)
