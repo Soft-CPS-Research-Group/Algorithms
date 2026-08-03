@@ -166,10 +166,10 @@ def test_bc_tppo_configs_have_demo_ppo_eval_phases(configs: dict[str, dict]) -> 
     auxiliary_bc = auxiliary["pipeline"][0]["behavior_cloning"]
     assert auxiliary_bc["weight"] > 0.0
     assert auxiliary_bc["min_weight"] == pytest.approx(0.0)
-    assert auxiliary_bc["decay_start_step"] == 0
+    assert auxiliary_bc["decay_start_step"] == auxiliary["simulator"]["episode_time_steps"]
     ppo_start_step = auxiliary["simulator"]["episode_time_steps"] + 1
     ppo_end_step = auxiliary["simulator"]["episode_time_steps"] * 2
-    assert auxiliary_bc["decay_steps"] == ppo_end_step
+    assert auxiliary_bc["decay_steps"] == auxiliary["simulator"]["episode_time_steps"]
     assert auxiliary_bc["ev_multiplier"] == auxiliary_bc["storage_multiplier"]
     assert auxiliary_bc["ev_multiplier"] != pytest.approx(24.0)
 
@@ -190,5 +190,8 @@ def test_bc_tppo_configs_have_demo_ppo_eval_phases(configs: dict[str, dict]) -> 
         agent_config_template={},
         config_dict=auxiliary_bc,
     )
-    assert regularizer.effective_weight(ppo_start_step) > 0.0
+    assert regularizer.effective_weight(ppo_start_step) == pytest.approx(
+        auxiliary_bc["weight"],
+        abs=auxiliary_bc["weight"] / auxiliary_bc["decay_steps"],
+    )
     assert regularizer.effective_weight(ppo_end_step) == pytest.approx(0.0)
