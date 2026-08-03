@@ -92,8 +92,8 @@ pipeline:
       batch_size: 64
       weight: 0.42
       min_weight: 0.0
-      decay_start_step: 35040
-      decay_steps: 35040
+      decay_start_step: 35041
+      decay_steps: 35039
       ev_multiplier: 1.0
       storage_multiplier: 1.0
       teacher:
