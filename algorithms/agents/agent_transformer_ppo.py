@@ -207,6 +207,7 @@ class AgentTransformerPPO(BaseAgent):
         self._latest_encoded_observations: Optional[List[npt.NDArray[np.float64]]] = None
         self._latest_global_learning_step = 0
         self._latest_training_metrics: Dict[str, float] = {}
+        self._current_episode = 0
 
         # Tracks whether ``attach_environment`` has ever been called. The
         # very first call is not a topology change.
@@ -446,6 +447,15 @@ class AgentTransformerPPO(BaseAgent):
                 f"{building_count}."
         )
         det = bool(deterministic) if deterministic is not None else False
+        if self._in_demonstration_phase():
+            teacher_observations = (
+                self._latest_raw_observations
+                if self._latest_raw_observations is not None
+                else observations
+            )
+            assert self._bc is not None
+            self._pending_decisions = [None] * building_count
+            return self._bc.compute_teacher_actions(teacher_observations)
         out: List[List[float]] = []
         pending_decisions: List[_PendingDecision] = []
         for state, obs in zip(self._per_building, observations):
@@ -482,13 +492,6 @@ class AgentTransformerPPO(BaseAgent):
             # ActorHead returns ``[B, N_ca, 1]``; the wrapper expects a flat
             # per-CA list.
             out.append(actions.squeeze(0).squeeze(-1).tolist())
-        if self._bc is not None:
-            teacher_observations = (
-                self._latest_raw_observations
-                if self._latest_raw_observations is not None
-                else observations
-            )
-            self._bc.compute_teacher_actions(teacher_observations)
         self._pending_decisions = pending_decisions
         return out
 
@@ -530,6 +533,24 @@ class AgentTransformerPPO(BaseAgent):
                     f"TPPO update {name} has {len(value)} rows; expected "
                     f"{building_count}."
                 )
+
+        if self._in_demonstration_phase():
+            assert self._bc is not None
+            for building_idx, state in enumerate(self._per_building):
+                teacher_action = np.asarray(actions[building_idx], dtype=np.float32)
+                if teacher_action.shape != (state.layout.n_ca,):
+                    raise ValueError(
+                        f"Teacher action for building {state.building_id!r} has invalid shape."
+                    )
+                self._bc.record_demonstration(
+                    building_idx,
+                    np.asarray(observations[building_idx]),
+                    state.layout,
+                    teacher_action.tolist(),
+                )
+            self._pending_decisions = [None] * building_count
+            self._latest_global_learning_step = int(global_learning_step)
+            return
 
         # Validate every cached decision before changing any rollout state.
         # PPO must use exactly the action returned by predict().
@@ -617,10 +638,6 @@ class AgentTransformerPPO(BaseAgent):
                 state.last_transition_terminated = candidate.terminated
             self._pending_decisions = [None] * building_count
             self._latest_global_learning_step = next_global_learning_step
-            if self._bc is not None:
-                for b in range(building_count):
-                    self._bc.record_transition(b)
-
             if not should_update:
                 return
 
@@ -667,11 +684,17 @@ class AgentTransformerPPO(BaseAgent):
             raise
 
     def on_episode_start(self, *, episode: int, training: bool) -> None:
-        _ = episode, training
+        _ = training
+        self._current_episode = episode
 
     def on_episode_end(self, *, episode: int, training: bool) -> None:
-        _ = episode
+        self._current_episode = episode
         if not training:
+            self._pending_decisions = [None] * len(self._per_building)
+            return
+        if self._in_demonstration_phase():
+            if self._bc is not None and episode + 1 == self._bc.demonstration_episodes:
+                self._run_bc_pretraining()
             self._pending_decisions = [None] * len(self._per_building)
             return
         snapshot = self._snapshot_topology_state()
@@ -1366,6 +1389,51 @@ class AgentTransformerPPO(BaseAgent):
             dims.setdefault(tname, int(sro_cfg.input_dim_fallback))
         return dims
 
+    def _in_demonstration_phase(self) -> bool:
+        return self._bc is not None and self._current_episode < self._bc.demonstration_episodes
+
+    def _run_bc_pretraining(self) -> None:
+        """Fit representation and actor to frozen teacher demonstrations only."""
+        assert self._bc is not None
+        trained_epochs = 0
+        for building_idx, state in enumerate(self._per_building):
+            for demonstrations in self._bc.demonstrations_for_building_by_signature(
+                building_idx
+            ).values():
+                layout = demonstrations[0].layout
+                for _ in range(self._bc.pretraining_epochs):
+                    for start in range(0, len(demonstrations), self._bc.batch_size):
+                        batch = demonstrations[start : start + self._bc.batch_size]
+                        observations = torch.as_tensor(
+                            np.stack([demo.observation for demo in batch]),
+                            dtype=torch.float,
+                            device=self.device,
+                        )
+                        state.optimizer.zero_grad()
+                        tokenized = state.tokenizer(observations, layout)
+                        ca_embeddings, _ = state.backbone(
+                            tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
+                        )
+                        means = torch.tanh(state.actor.mlp(ca_embeddings))
+                        loss = self._bc.demonstration_loss(
+                            layout=layout,
+                            demonstrations=batch,
+                            predicted_means=means,
+                            global_learning_step=0,
+                            apply_weight=False,
+                        )
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(
+                            list(state.tokenizer.parameters())
+                            + list(state.backbone.parameters())
+                            + list(state.actor.parameters()),
+                            self._max_grad_norm,
+                        )
+                        state.optimizer.step()
+                trained_epochs = max(trained_epochs, self._bc.pretraining_epochs)
+        self._bc.set_pretraining_epochs(trained_epochs)
+        self._latest_training_metrics.update(self._bc.snapshot_metrics())
+
     @staticmethod
     def _infer_obs_dim(layout: BuildingTokenLayout) -> int:
         return max(max(seg.feature_indices) for seg in layout.segments) + 1
@@ -1424,11 +1492,10 @@ class AgentTransformerPPO(BaseAgent):
         )
 
     def _clear_rollout(self, building_idx: int, state: _PerBuildingState) -> None:
+        del building_idx
         state.buffer.clear()
         state.last_next_observation = None
         state.last_transition_terminated = False
-        if self._bc is not None:
-            self._bc.on_buffer_flushed(building_idx)
 
     def _flush_rollout_boundary(
         self,
@@ -1535,17 +1602,28 @@ class AgentTransformerPPO(BaseAgent):
                     entropy_coeff=self._entropy_coeff,
                 )
                 if self._bc is not None:
-                    means = self._affine_action(
-                        torch.tanh(state.actor.mlp(ca_emb)),
-                        *self._action_bounds[building_idx],
-                    )
-                    loss = loss + self._bc.bc_loss_term(
-                        building_idx=building_idx,
+                    demonstrations = self._bc.sample_demonstrations(
                         layout=state.layout,
-                        predicted_means=means,
-                        step_indices=batch.step_indices,
-                        global_learning_step=self._latest_global_learning_step,
+                        batch_size=self._bc.batch_size,
                     )
+                    if demonstrations:
+                        demo_observations = torch.as_tensor(
+                            np.stack([demo.observation for demo in demonstrations]),
+                            dtype=torch.float,
+                            device=self.device,
+                        )
+                        demo_tokens = state.tokenizer(demo_observations, state.layout)
+                        demo_ca_embeddings, _ = state.backbone(
+                            demo_tokens.sro_tokens,
+                            demo_tokens.nfc_token,
+                            demo_tokens.ca_tokens,
+                        )
+                        loss = loss + self._bc.demonstration_loss(
+                            layout=state.layout,
+                            demonstrations=demonstrations,
+                            predicted_means=torch.tanh(state.actor.mlp(demo_ca_embeddings)),
+                            global_learning_step=self._latest_global_learning_step,
+                        )
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     list(state.tokenizer.parameters())

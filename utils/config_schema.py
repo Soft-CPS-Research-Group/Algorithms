@@ -657,30 +657,31 @@ class TransformerPPOHyperparameters(BaseModel):
     require_cuda: bool = False
 
 
-class TransformerPPOWarmStartConfig(BaseModel):
-    policy: str = Field(min_length=1)
+class TransformerPPOBehaviorCloningTeacherConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy: Literal["RBCSmartPolicy"] = "RBCSmartPolicy"
     deterministic: bool = True
-    noise_scale: float = Field(default=0.0, ge=0.0)
-    phaseout_steps: int = Field(default=0, ge=0)
-    phaseout_mode: Literal["probability", "blend"] = "blend"
     hyperparameters: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TransformerPPOBehaviorCloningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = True
+    demonstration_episodes: int = Field(default=1, ge=0)
+    max_samples_per_building: int = Field(default=4096, ge=1)
+    pretraining_epochs: int = Field(default=4, ge=1)
+    batch_size: int = Field(default=64, ge=1)
     weight: float = Field(default=0.0, ge=0.0)
     min_weight: float = Field(default=0.0, ge=0.0)
     decay_start_step: int = Field(default=0, ge=0)
     decay_steps: int = Field(default=0, ge=0)
     ev_multiplier: float = Field(default=1.0, ge=0.0)
     storage_multiplier: float = Field(default=1.0, ge=0.0)
-    warm_start: Optional[TransformerPPOWarmStartConfig] = None
-
-    @model_validator(mode="after")
-    def validate_enabled_has_warm_start(self) -> "TransformerPPOBehaviorCloningConfig":
-        if self.enabled and self.warm_start is None:
-            raise ValueError("TransformerPPO behavior_cloning.enabled requires warm_start.")
-        return self
+    teacher: TransformerPPOBehaviorCloningTeacherConfig = Field(
+        default_factory=TransformerPPOBehaviorCloningTeacherConfig
+    )
 
 
 class TransformerPPOStageConfig(BaseModel):
