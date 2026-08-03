@@ -1,10 +1,10 @@
-# Full-server 15-minute AgentTransformerPPO training with one year of RBC guidance.
+# Full-server 15-minute AgentTransformerPPO training with one year of RBC demonstrations.
 
 metadata:
   experiment_name: "transformer_ppo_bc_entity_dynamic_15min_year"
   run_name: "Transformer PPO BC Entity Dynamic 15min Year"
   community_name: "citylearn_15min"
-  description: "Full-year Transformer PPO behavior-cloning training over the dynamic 15-minute dataset"
+  description: "Full-year Transformer PPO demonstration-regularization training over the dynamic 15-minute dataset"
 
 runtime:
   log_dir: null
@@ -24,8 +24,8 @@ tracking:
     recipe: transformer_ppo_bc_entity_dynamic_15min_year
     dataset_granularity: 15min
     topology_mode: dynamic
-    teacher_policy: RBCCommunityPolicy
-    teacher_duration: year
+    teacher_policy: RBCSmartPolicy
+    demonstration_duration: year
   log_level: "INFO"
   log_frequency: 512
   mlflow_step_sample_interval: 512
@@ -142,8 +142,13 @@ pipeline:
       value_coeff: 0.5
       max_grad_norm: 1.0
       require_cuda: true
+      actor_log_std_init: -0.5
     behavior_cloning:
       enabled: true
+      demonstration_episodes: 1
+      max_samples_per_building: 34816
+      pretraining_epochs: 4
+      batch_size: 64
       weight: 0.42
       min_weight: 0.0
       decay_start_step: 0
@@ -151,13 +156,9 @@ pipeline:
       decay_steps: 34816
       ev_multiplier: 24.0
       storage_multiplier: 0.18
-      warm_start:
-        policy: RBCCommunityPolicy
+      teacher:
+        policy: RBCSmartPolicy
         deterministic: true
-        noise_scale: 0.0
-        # A 35,040-point episode produces 35,039 action decisions.
-        phaseout_steps: 35039
-        phaseout_mode: blend
         hyperparameters: {}
 
 execution: null

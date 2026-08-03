@@ -1469,63 +1469,67 @@ Validation is performed in a single authoritative place
 
 ## 13. Behavior Cloning
 
-`AgentTransformerPPO` can optionally add a behavior-cloning (BC)
-regularizer and warm-start controller through the pipeline stage's
-`behavior_cloning` block. When enabled, the agent still learns with PPO,
-but each rollout step also records teacher actions from a configured RBC
-teacher and adds a weighted mean-squared action loss during PPO updates.
-The teacher path uses raw entity-adapter observations through
-`set_observation_context(...)`, while the Transformer policy continues to
-consume encoded observations.
+`AgentTransformerPPO` can add a behavior-cloning (BC) regularizer through
+the pipeline stage's `behavior_cloning` block. Separate demonstration episodes
+are collected before PPO rollouts: deterministic `RBCSmartPolicy` episodes populate
+a bounded per-building demonstration set before training. PPO rollout
+transitions always come from the Transformer actor. The teacher never
+changes an environment action during PPO collection or evaluation.
 
-The shipped BC template uses `RBCCommunityPolicy` as the teacher because it
-shares the operational community-aware dispatch rules used by the baseline
-controllers. The template enables deterministic teacher actions with no
-noise and a `blend` warm-start phaseout. During phaseout, stochastic PPO
-actions are blended with teacher actions according to the remaining
-phaseout probability; deterministic evaluation is not teacher-replaced.
+The BC loss is an auxiliary actor-only PPO loss. The critic uses only PPO value
+targets and receives no demonstration loss. The per-CA imitation residual
+uses Huber loss, weighted by `ev_multiplier` or `storage_multiplier`, then
+the scheduled BC weight is added to the actor PPO objective. Value targets
+and advantages use the configured value normalization path; demonstrations
+do not update its statistics.
 
-BC weighting is configured independently from PPO hyperparameters:
+BC configuration is independent from PPO hyperparameters:
 
 ```yaml
 behavior_cloning:
   enabled: true
+  demonstration_episodes: 1
+  max_samples_per_building: 3400
+  pretraining_epochs: 4
+  batch_size: 64
   weight: 0.42
   min_weight: 0.24
   decay_start_step: 512
   decay_steps: 3584
   ev_multiplier: 24.0
   storage_multiplier: 0.18
-  warm_start:
-    policy: RBCCommunityPolicy
+  teacher:
+    policy: RBCSmartPolicy
     deterministic: true
-    noise_scale: 0.0
-    phaseout_steps: 6144
-    phaseout_mode: blend
     hyperparameters: {}
 ```
 
 `weight` decays linearly toward `min_weight` after `decay_start_step` for
-`decay_steps`. `ev_multiplier` and `storage_multiplier` scale BC error per
-CA type before the weighted loss is added, so EV charger imitation can be
-made more important than stationary storage imitation without changing the
-policy output contract.
+`decay_steps`. `demonstration_episodes` controls separate deterministic
+teacher episodes, while `max_samples_per_building` bounds retained examples.
+`pretraining_epochs` and `batch_size` control actor-only pretraining before
+the first PPO rollout.
 
 On topology changes, the wrapper rebuilds the entity layout and reattaches
-the agent. BC rebuilds the `RBCCommunityPolicy` teacher against the new
-observation/action names and clears teacher-action buffers for changed
-buildings so rollout steps and teacher rows stay aligned. For building-count
-changes, the full BC buffer set is recreated to match the new per-building
-layout. BC diagnostics are exposed through `get_diagnostic_metrics()` and
-`consume_latest_training_metrics()` with keys such as
-`behavior_cloning_effective_weight`, `behavior_cloning_loss`,
-`behavior_cloning_valid_samples`, `behavior_cloning_phaseout_probability`,
-and `behavior_cloning_phaseout_used`.
+the agent. BC rebuilds the `RBCSmartPolicy` teacher and demonstration store
+for affected buildings. Demonstrations from an obsolete layout are discarded.
 
-The deferred residual policy support is intentionally not implemented in this
-version. A future residual policy can be added as a separate teacher or
-action-correction module after the BC template and topology-safe buffer
-alignment have proven stable.
+### 13.1 Required diagnostics
+
+Every BC run records demonstration samples collected and retained per
+building, pretraining loss, Huber BC loss, effective BC weight, PPO actor
+loss, PPO critic loss, entropy, explained variance, normalized value-target
+statistics, gradient norms, and skipped or invalid batches. Final reporting
+includes a final deterministic evaluation with the trained actor only, using no
+teacher actions.
+
+### 13.2 Pending decisions
+
+The exact decisions pending before production tuning are the Huber delta,
+whether value normalization is per-building or shared, the demonstration
+episode allocation across topology changes, the initial actor log standard
+deviation, and the BC decay horizon. Templates expose the current choices
+explicitly so experiment results remain reproducible.
 
 ---
 

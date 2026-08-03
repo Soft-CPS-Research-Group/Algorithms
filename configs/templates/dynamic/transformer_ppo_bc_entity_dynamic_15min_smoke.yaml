@@ -5,7 +5,7 @@ metadata:
   experiment_name: "transformer_ppo_bc_entity_dynamic_15min_smoke"
   run_name: "Transformer PPO BC Entity Dynamic 15min Smoke"
   community_name: "default_community"
-  description: "Fast Transformer PPO behavior-cloning smoke over the real dynamic 15-minute dataset"
+  description: "Fast Transformer PPO demonstration-regularization smoke over the real dynamic 15-minute dataset"
 
 runtime:
   log_dir: null
@@ -89,7 +89,7 @@ simulator:
 
 training:
   seed: 7
-  steps_between_training_updates: 16
+  steps_between_training_updates: 256
   target_update_interval: 0
 
 topology:
@@ -118,20 +118,22 @@ pipeline:
       entropy_coeff: 0.03
       value_coeff: 0.5
       max_grad_norm: 1.0
+      actor_log_std_init: -0.5
     behavior_cloning:
       enabled: true
+      demonstration_episodes: 1
+      max_samples_per_building: 64
+      pretraining_epochs: 4
+      batch_size: 64
       weight: 0.42
       min_weight: 0.0
       decay_start_step: 0
       decay_steps: 64
       ev_multiplier: 24.0
       storage_multiplier: 0.18
-      warm_start:
-        policy: RBCCommunityPolicy
+      teacher:
+        policy: RBCSmartPolicy
         deterministic: true
-        noise_scale: 0.0
-        phaseout_steps: 64
-        phaseout_mode: blend
         hyperparameters: {}
 
 execution: null
