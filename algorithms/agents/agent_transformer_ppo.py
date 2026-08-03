@@ -935,8 +935,8 @@ class AgentTransformerPPO(BaseAgent):
         if self._bc is not None and payload["behavior_cloning_state"] is not None:
             self._bc.load_state_dict(payload["behavior_cloning_state"])
         self._pending_decisions = [None] * len(self._per_building)
-        if checkpoint_format_version == 2:
-            rng_state = payload["rng_state"]
+        rng_state = payload.get("rng_state")
+        if rng_state is not None:
             random.setstate(rng_state["python"])
             np.random.set_state(rng_state["numpy"])
             torch.set_rng_state(rng_state["torch_cpu"].cpu())

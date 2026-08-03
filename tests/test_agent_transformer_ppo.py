@@ -2141,6 +2141,32 @@ def test_checkpoint_load_accepts_v1_payload_without_rng_state(tmp_path: Path) ->
     fresh.load_checkpoint(path)
 
 
+def test_checkpoint_load_restores_rng_from_v1_payload_when_present(tmp_path: Path) -> None:
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.get_rng_state()
+    try:
+        torch.manual_seed(581)
+        agent, _, _, obs_dim = _make_agent(n_buildings=1)
+        path = agent.save_checkpoint(str(tmp_path), step=1)
+        assert path is not None
+        payload = torch.load(path, weights_only=False)
+        payload["checkpoint_format_version"] = 1
+        torch.save(payload, path)
+        observations = [np.zeros(obs_dim, dtype=np.float64)]
+        expected = agent.predict(observations, deterministic=False)
+
+        torch.rand(10)
+        fresh, _, _, _ = _make_agent(n_buildings=1)
+        fresh.load_checkpoint(path)
+
+        assert fresh.predict(observations, deterministic=False) == expected
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+        torch.set_rng_state(torch_state)
+
+
 def test_checkpoint_layout_signature_mismatch_rejected(tmp_path: Path) -> None:
     """Save a 1-building checkpoint, then try to load into a 2-building agent.
     Cardinality mismatch is rejected before signature check, exercising the
