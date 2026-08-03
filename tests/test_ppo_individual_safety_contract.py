@@ -493,6 +493,62 @@ def test_ppo_residual_bc_target_is_teacher_minus_base() -> None:
     )
 
 
+def test_ppo_residual_building_gain_scales_the_learned_correction() -> None:
+    agent = _agent(
+        residual_policy_enabled=True,
+        residual_base_policy="RandomPolicy",
+        residual_action_scale=0.5,
+        residual_building_gain_multipliers={"Building_1": 0.25},
+        residual_zero_initialization=True,
+    )
+    agent._residual_base_policy = _ConstantPolicy(0.75)
+    with torch.no_grad():
+        agent.actors[0].mean_out.bias.fill_(torch.atanh(torch.tensor(0.5)))
+    observation = np.asarray([0.1, -0.2, 0.3], dtype=np.float32)
+    agent.set_observation_context(
+        raw_observations=[observation],
+        encoded_observations=[observation],
+    )
+
+    action = agent.predict([observation], deterministic=True)
+
+    # [-2, 2] gives a unit residual denominator at scale=0.5. The
+    # Building_1 gain reduces it to 0.25, then the actor contributes 0.5.
+    assert action[0] == pytest.approx([0.875], abs=1.0e-7)
+    assert agent.get_diagnostic_metrics()["PPO/residual_building_gain"] == 0.25
+
+
+def test_ppo_zero_building_gain_is_exact_safe_baseline_fallback(monkeypatch) -> None:
+    agent = _agent(
+        residual_policy_enabled=True,
+        residual_base_policy="RandomPolicy",
+        residual_action_scale=1.0,
+        residual_building_gain_multipliers={"Building_1": 0.0},
+        residual_zero_initialization=True,
+        local_action_safety_enabled=True,
+    )
+    agent._residual_base_policy = _ConstantPolicy(0.75)
+    with torch.no_grad():
+        agent.actors[0].mean_out.bias.fill_(1.0)
+    monkeypatch.setattr(
+        agent._local_action_safety_adapters[0],
+        "project",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a zero building gain must preserve the operational base action"
+        ),
+    )
+    observation = np.asarray([0.1, -0.2, 0.3], dtype=np.float32)
+    agent.set_observation_context(
+        raw_observations=[observation],
+        encoded_observations=[observation],
+    )
+
+    action = agent.predict([observation], deterministic=True)
+
+    assert action[0] == pytest.approx([0.75], abs=1.0e-7)
+    assert agent.get_diagnostic_metrics()["PPO/residual_neutral_safety_bypass"] == 1.0
+
+
 def test_ppo_residual_requires_explicit_base_policy() -> None:
     with pytest.raises(ValueError, match="requires residual_base_policy"):
         PPO(_ppo_config(residual_policy_enabled=True))

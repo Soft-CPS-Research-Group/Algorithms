@@ -168,6 +168,26 @@ class _PPOBase(BaseAgent):
                 or 0.0
             ),
         )
+        raw_building_gains = exploration_cfg.get(
+            "residual_building_gain_multipliers",
+            {},
+        ) or {}
+        if not isinstance(raw_building_gains, dict):
+            raise ValueError(
+                "PPO residual_building_gain_multipliers must be an object "
+                "mapping building names to gains."
+            )
+        self.residual_building_gain_multipliers: Dict[str, float] = {}
+        for raw_name, raw_gain in raw_building_gains.items():
+            try:
+                gain = float(raw_gain)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "PPO residual building gains must be numeric."
+                ) from exc
+            self.residual_building_gain_multipliers[str(raw_name)] = float(
+                np.clip(gain, 0.0, 1.0)
+            )
         self.residual_zero_initialization = bool(
             exploration_cfg.get("residual_zero_initialization", True)
         )
@@ -432,6 +452,7 @@ class _PPOBase(BaseAgent):
         self._last_residual_base_actions: Optional[List[List[float]]] = None
         self._last_residual_delta_actions: Optional[List[List[float]]] = None
         self._last_residual_neutral_safety_bypass = False
+        self._residual_building_names: List[str] = []
         self._last_raw_behavior_teacher_actions: Optional[List[List[float]]] = None
         self._last_projected_behavior_teacher_actions: Optional[List[List[float]]] = None
         self._behavior_teacher_projection_diagnostics = (
@@ -524,6 +545,16 @@ class _PPOBase(BaseAgent):
         self.observation_names = [list(names) for names in observation_names]
         self.action_names = [list(names) for names in action_names]
         self.observation_space = list(observation_space)
+        metadata_building_names = (
+            (metadata or {}).get("building_names")
+            if isinstance(metadata, dict)
+            else None
+        )
+        self._residual_building_names = (
+            [str(name) for name in metadata_building_names]
+            if isinstance(metadata_building_names, list)
+            else []
+        )
         lows, highs = self._default_action_bounds()
         for agent_idx, space in enumerate(action_space[: int(self.num_agents)]):
             if not hasattr(space, "low") or not hasattr(space, "high"):
@@ -892,7 +923,17 @@ class _PPOBase(BaseAgent):
         *,
         action_dim: int,
     ) -> np.ndarray:
-        values = np.ones(int(action_dim), dtype=np.float32)
+        building_gain = 1.0
+        if agent_idx < len(self._residual_building_names):
+            building_gain = self.residual_building_gain_multipliers.get(
+                self._residual_building_names[agent_idx],
+                1.0,
+            )
+        values = np.full(
+            int(action_dim),
+            float(building_gain),
+            dtype=np.float32,
+        )
         names = self._action_names_for_agent(agent_idx)
         for action_idx, action_name in enumerate(names[: int(action_dim)]):
             if self._is_storage_action_name(action_name):
@@ -2307,6 +2348,14 @@ class _PPOBase(BaseAgent):
             f"{self.metric_prefix}/residual_action_scale": float(
                 self.residual_action_scale
             ),
+            f"{self.metric_prefix}/residual_building_gain": float(
+                self.residual_building_gain_multipliers.get(
+                    self._residual_building_names[0],
+                    1.0,
+                )
+                if self._residual_building_names
+                else 1.0
+            ),
             f"{self.metric_prefix}/residual_delta_l1_mean": float(
                 np.mean(
                     [
@@ -2573,6 +2622,9 @@ class _PPOBase(BaseAgent):
                         "requires_runtime_residual_base_policy": True,
                         "residual_base_policy": self.residual_base_policy_name,
                         "residual_action_scale": self.residual_action_scale,
+                        "residual_building_gain_multipliers": dict(
+                            self.residual_building_gain_multipliers
+                        ),
                     }
                 )
             if mlflow.active_run():
