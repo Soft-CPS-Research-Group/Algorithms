@@ -47,6 +47,15 @@ class CheckpointManager:
             return None
         return self.save(agent, step)
 
+    def save_final(self, agent: ExecutionUnit, step: int) -> Optional[Path]:
+        """Persist the final trainable state when periodic checkpointing is enabled."""
+
+        if not self.interval or not self.base_dir:
+            return None
+        if step <= 0:
+            return None
+        return self.save(agent, step)
+
     def save(self, agent: ExecutionUnit, step: int) -> Optional[Path]:
         if not self.base_dir:
             logger.debug("Checkpoint directory is not set; skipping save.")

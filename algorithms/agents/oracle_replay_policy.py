@@ -40,6 +40,7 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
             (series.building_id, series.action_name): np.asarray(series.values, dtype=np.float64)
             for series in self.schedule.series
         }
+        self.schedule_step_offset = int(hyper.get("schedule_step_offset", 0) or 0)
         self._schedule_call_count = 0
         self.local_action_safety_enabled = bool(
             hyper.get("local_action_safety_enabled", True)
@@ -139,7 +140,9 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
             context=context,
         )
         actions = [list(values) for values in rbc_actions]
-        schedule_step = int(schedule_step) % self.schedule.horizon
+        schedule_step = (
+            int(schedule_step) + self.schedule_step_offset
+        ) % self.schedule.horizon
         for agent_index, (building_id, names, observation) in enumerate(
             zip(self._building_names, self._action_labels, observations)
         ):
@@ -195,6 +198,7 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
             "path": str(self.schedule_path),
             "sha256": self.schedule_sha256,
             "horizon": self.schedule.horizon,
+            "schedule_step_offset": self.schedule_step_offset,
             "perfect_foresight": True,
             "deployable": False,
         }

@@ -56,3 +56,22 @@ def test_checkpoint_manager_can_skip_initial_exploration_gate(tmp_path):
     path = manager.maybe_save(agent, step=5, initial_exploration_done=False, update_step=True)
     assert path is not None
     assert Path(path).exists()
+
+
+def test_checkpoint_manager_saves_final_unaligned_step(tmp_path):
+    manager = CheckpointManager(base_dir=str(tmp_path), interval=5)
+    agent = DummyAgent()
+
+    path = manager.save_final(agent, step=7)
+
+    assert path is not None
+    assert Path(path).exists()
+    assert agent.saved_steps == [7]
+
+
+def test_checkpoint_manager_skips_final_when_disabled(tmp_path):
+    manager = CheckpointManager(base_dir=str(tmp_path), interval=None)
+    agent = DummyAgent()
+
+    assert manager.save_final(agent, step=7) is None
+    assert agent.saved_steps == []

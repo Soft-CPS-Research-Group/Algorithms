@@ -817,6 +817,18 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             deterministic_finish=bool(simulator_cfg.get("deterministic_finish", False)),
         )
 
+        # A completed training run must leave a reusable representation of its
+        # final state even when the horizon is not an exact checkpoint interval.
+        # Without this, a successful run can silently expose an older periodic
+        # checkpoint as ``latest_checkpoint.pth``.
+        checkpoint_manager = getattr(wrapper, "checkpoint_manager", None)
+        save_final_checkpoint = getattr(checkpoint_manager, "save_final", None)
+        if callable(save_final_checkpoint):
+            save_final_checkpoint(
+                agent=agent,
+                step=max(0, int(getattr(wrapper, "global_step", 0) or 0)),
+            )
+
         # Ensure progress file reaches terminal state with 100% completion.
         completed_episodes = int(simulator_cfg.get("episodes", 1) or 1)
         final_step_total = int(getattr(wrapper, "episode_time_steps", 0) or 0)
