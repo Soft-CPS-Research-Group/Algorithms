@@ -2026,7 +2026,7 @@ def test_checkpoint_restores_campaign_state_after_completed_ppo_update(
     fresh.load_checkpoint(path)
     restored = fresh._per_building[0]
 
-    assert torch.load(path, weights_only=False)["checkpoint_format_version"] >= 1
+    assert torch.load(path, weights_only=False)["checkpoint_format_version"] == 2
     assert restored.topology_version == state.topology_version == 1
     assert restored.action_names_tuple == tuple(expanded_actions)
     assert restored.value_normalizer.state_dict() == expected_normalizer
@@ -2091,6 +2091,54 @@ def test_checkpoint_restores_cpu_torch_rng_for_next_stochastic_action(
         random.setstate(python_state)
         np.random.set_state(numpy_state)
         torch.set_rng_state(torch_state)
+
+
+def test_checkpoint_load_restores_rng_tensors_on_cpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, _, _, _ = _make_agent(n_buildings=1)
+    path = agent.save_checkpoint(str(tmp_path), step=1)
+    assert path is not None
+    fresh, _, _, _ = _make_agent(n_buildings=1)
+    payload = torch.load(path, weights_only=False)
+
+    class _MappedRngTensor:
+        def __init__(self, tensor: torch.Tensor) -> None:
+            self.tensor = tensor
+            self.cpu_calls = 0
+
+        def cpu(self) -> torch.Tensor:
+            self.cpu_calls += 1
+            return self.tensor
+
+    cpu_rng = _MappedRngTensor(payload["rng_state"]["torch_cpu"])
+    cuda_rng = _MappedRngTensor(payload["rng_state"]["torch_cpu"])
+    payload["rng_state"]["torch_cpu"] = cpu_rng
+    payload["rng_state"]["torch_cuda"] = [cuda_rng]
+    monkeypatch.setattr(
+        "algorithms.agents.agent_transformer_ppo.torch.load",
+        lambda *args, **kwargs: payload,
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "set_rng_state_all", lambda states: None)
+
+    fresh.load_checkpoint(path)
+
+    assert cpu_rng.cpu_calls == 1
+    assert cuda_rng.cpu_calls == 1
+
+
+def test_checkpoint_load_accepts_v1_payload_without_rng_state(tmp_path: Path) -> None:
+    agent, _, _, _ = _make_agent(n_buildings=1)
+    path = agent.save_checkpoint(str(tmp_path), step=1)
+    assert path is not None
+    payload = torch.load(path, weights_only=False)
+    payload["checkpoint_format_version"] = 1
+    del payload["rng_state"]
+    torch.save(payload, path)
+
+    fresh, _, _, _ = _make_agent(n_buildings=1)
+    fresh.load_checkpoint(path)
 
 
 def test_checkpoint_layout_signature_mismatch_rejected(tmp_path: Path) -> None:

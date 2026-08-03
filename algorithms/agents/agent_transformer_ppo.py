@@ -839,7 +839,7 @@ class AgentTransformerPPO(BaseAgent):
         path = Path(output_dir) / artifact
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "checkpoint_format_version": 1,
+            "checkpoint_format_version": 2,
             "step": int(step),
             "config": dict(self.config["algorithm"]),
             "global_learning_step": self._latest_global_learning_step,
@@ -885,7 +885,8 @@ class AgentTransformerPPO(BaseAgent):
         payload = torch.load(
             checkpoint_path, map_location=self.device, weights_only=False
         )
-        if payload.get("checkpoint_format_version") != 1:
+        checkpoint_format_version = payload.get("checkpoint_format_version")
+        if checkpoint_format_version not in (1, 2):
             raise ValueError("Unsupported TPPO checkpoint format.")
         agents = payload["agents"]
         if len(agents) != len(self._per_building):
@@ -934,12 +935,15 @@ class AgentTransformerPPO(BaseAgent):
         if self._bc is not None and payload["behavior_cloning_state"] is not None:
             self._bc.load_state_dict(payload["behavior_cloning_state"])
         self._pending_decisions = [None] * len(self._per_building)
-        rng_state = payload["rng_state"]
-        random.setstate(rng_state["python"])
-        np.random.set_state(rng_state["numpy"])
-        torch.set_rng_state(rng_state["torch_cpu"])
-        if rng_state["torch_cuda"] is not None and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+        if checkpoint_format_version == 2:
+            rng_state = payload["rng_state"]
+            random.setstate(rng_state["python"])
+            np.random.set_state(rng_state["numpy"])
+            torch.set_rng_state(rng_state["torch_cpu"].cpu())
+            if rng_state["torch_cuda"] is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all(
+                    [state.cpu() for state in rng_state["torch_cuda"]]
+                )
 
     def _move_optimizer_state_to_device(self, optimizer: torch.optim.Optimizer) -> None:
         for parameter_state in optimizer.state.values():
