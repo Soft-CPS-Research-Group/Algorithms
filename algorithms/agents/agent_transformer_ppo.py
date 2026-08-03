@@ -25,6 +25,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+import random
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -730,7 +731,10 @@ class AgentTransformerPPO(BaseAgent):
         return self._bc.snapshot_metrics()
 
     def consume_latest_training_metrics(self) -> Dict[str, float]:
-        metrics = dict(self._latest_training_metrics)
+        metrics = {
+            f"TPPO/{name}": value
+            for name, value in self._latest_training_metrics.items()
+        }
         self._latest_training_metrics = {}
         return metrics
 
@@ -827,9 +831,13 @@ class AgentTransformerPPO(BaseAgent):
                 "TPPO cannot save a checkpoint with a nonempty rollout. Save at a "
                 "completed optimizer or episode boundary."
             )
-        out = Path(output_dir) / "checkpoints"
-        out.mkdir(parents=True, exist_ok=True)
-        path = out / f"transformer_ppo_step{step}.pt"
+        artifact = str(
+            self.config.get("checkpointing", {}).get(
+                "checkpoint_artifact", "latest_checkpoint.pth"
+            )
+        )
+        path = Path(output_dir) / artifact
+        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "checkpoint_format_version": 1,
             "step": int(step),
@@ -845,6 +853,14 @@ class AgentTransformerPPO(BaseAgent):
             "behavior_cloning_state": (
                 self._bc.state_dict() if self._bc is not None else None
             ),
+            "rng_state": {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch_cpu": torch.get_rng_state(),
+                "torch_cuda": torch.cuda.get_rng_state_all()
+                if torch.cuda.is_available()
+                else None,
+            },
             "agents": [
                 {
                     "building_id": s.building_id,
@@ -879,6 +895,11 @@ class AgentTransformerPPO(BaseAgent):
                 "resume is not supported."
             )
         for state, saved in zip(self._per_building, agents):
+            if state.building_id != saved["building_id"]:
+                raise ValueError(
+                    "Checkpoint building_id mismatch: saved "
+                    f"{saved['building_id']!r}, current {state.building_id!r}."
+                )
             sig_now = tuple(sorted(state.obs_names_tuple))
             sig_saved = tuple(saved["layout_signature"])
             if sig_now != sig_saved:
@@ -913,6 +934,12 @@ class AgentTransformerPPO(BaseAgent):
         if self._bc is not None and payload["behavior_cloning_state"] is not None:
             self._bc.load_state_dict(payload["behavior_cloning_state"])
         self._pending_decisions = [None] * len(self._per_building)
+        rng_state = payload["rng_state"]
+        random.setstate(rng_state["python"])
+        np.random.set_state(rng_state["numpy"])
+        torch.set_rng_state(rng_state["torch_cpu"])
+        if rng_state["torch_cuda"] is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
 
     def _move_optimizer_state_to_device(self, optimizer: torch.optim.Optimizer) -> None:
         for parameter_state in optimizer.state.values():

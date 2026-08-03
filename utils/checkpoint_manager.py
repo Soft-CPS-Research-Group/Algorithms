@@ -59,6 +59,13 @@ class CheckpointManager:
         except NotImplementedError:
             logger.debug("Agent does not implement checkpoint saving; skipping.")
             return None
+        except ValueError as error:
+            if str(error).startswith(
+                "TPPO cannot save a checkpoint with a nonempty rollout."
+            ):
+                logger.info("Deferring TPPO checkpoint at step {}: {}", step, error)
+                return None
+            raise
 
         if checkpoint_path and self.log_to_mlflow and mlflow.active_run():
             mlflow.log_artifact(checkpoint_path, artifact_path="checkpoints")

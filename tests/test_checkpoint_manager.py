@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from utils.checkpoint_manager import CheckpointManager
 
 
@@ -56,3 +58,33 @@ def test_checkpoint_manager_can_skip_initial_exploration_gate(tmp_path):
     path = manager.maybe_save(agent, step=5, initial_exploration_done=False, update_step=True)
     assert path is not None
     assert Path(path).exists()
+
+
+class _TPPORolloutAgent:
+    def save_checkpoint(self, output_dir: str, step: int):
+        raise ValueError(
+            "TPPO cannot save a checkpoint with a nonempty rollout. Save at a "
+            "completed optimizer or episode boundary."
+        )
+
+
+class _BrokenAgent:
+    def save_checkpoint(self, output_dir: str, step: int):
+        raise ValueError("checkpoint storage is unavailable")
+
+
+def test_checkpoint_manager_defers_only_nonempty_tppo_rollout(tmp_path):
+    manager = CheckpointManager(base_dir=str(tmp_path), interval=1)
+
+    assert manager.maybe_save(
+        _TPPORolloutAgent(), step=1, initial_exploration_done=True, update_step=True
+    ) is None
+
+
+def test_checkpoint_manager_propagates_unrelated_value_error(tmp_path):
+    manager = CheckpointManager(base_dir=str(tmp_path), interval=1)
+
+    with pytest.raises(ValueError, match="checkpoint storage is unavailable"):
+        manager.maybe_save(
+            _BrokenAgent(), step=1, initial_exploration_done=True, update_step=True
+        )

@@ -131,8 +131,8 @@ def test_final_demo_end_pretrains_actor_then_ppo_uses_only_actor_actions() -> No
     after = list(agent._per_building[0].actor.parameters())
     assert any(not torch.equal(old, new) for old, new in zip(before, after))
     metrics = agent.consume_latest_training_metrics()
-    assert metrics["behavior_cloning_pretraining_epochs"] == 2.0
-    assert metrics["behavior_cloning_demonstration_samples"] == 1.0
+    assert metrics["TPPO/behavior_cloning_pretraining_epochs"] == 2.0
+    assert metrics["TPPO/behavior_cloning_demonstration_samples"] == 1.0
 
     agent.on_episode_start(episode=1, training=True)
     agent.set_observation_context(raw_observations=[observation], encoded_observations=[observation])
@@ -179,7 +179,7 @@ def test_final_demo_boundary_skips_old_layout_demos_and_trains_current_group() -
 
     assert trained_signatures == [current_signature] * agent._bc.pretraining_epochs
     metrics = agent.consume_latest_training_metrics()
-    assert metrics["behavior_cloning_incompatible_demonstration_samples"] == 1.0
+    assert metrics["TPPO/behavior_cloning_incompatible_demonstration_samples"] == 1.0
     assert len(expanded_names) == current_dimension
 
 

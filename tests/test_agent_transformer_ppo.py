@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+import random
 from typing import List
 
 import numpy as np
@@ -197,7 +198,7 @@ def test_predict_affinely_maps_tanh_actions_to_declared_bounds_and_preserves_ppo
             initial_exploration_done=True,
         )
 
-    assert agent.consume_latest_training_metrics()["ratio_error_max"] <= 1.0e-5
+    assert agent.consume_latest_training_metrics()["TPPO/ratio_error_max"] <= 1.0e-5
 
 
 def test_predict_keeps_saturated_actor_log_prob_for_ppo_ratio() -> None:
@@ -533,7 +534,7 @@ def test_predict_caches_exact_decision_for_ppo_update_with_dropout() -> None:
             assert agent._pending_decisions[0] is None
 
     metrics = agent.consume_latest_training_metrics()
-    assert metrics["ratio_error_max"] <= 1.0e-5
+    assert metrics["TPPO/ratio_error_max"] <= 1.0e-5
 
 
 def test_update_rejects_action_that_differs_from_pending_decision() -> None:
@@ -1186,11 +1187,12 @@ def test_successful_ppo_update_publishes_training_diagnostics() -> None:
         "value_residual_p99",
         "episode_training",
         "teacher_action_execution",
-    } <= metrics.keys()
-    assert metrics["update_count"] == 1.0
-    assert metrics["rollout_size"] == 4.0
-    assert metrics["episode_training"] == 1.0
-    assert metrics["teacher_action_execution"] == 0.0
+    } <= {key.removeprefix("TPPO/") for key in metrics}
+    assert all(key.startswith("TPPO/") for key in metrics)
+    assert metrics["TPPO/update_count"] == 1.0
+    assert metrics["TPPO/rollout_size"] == 4.0
+    assert metrics["TPPO/episode_training"] == 1.0
+    assert metrics["TPPO/teacher_action_execution"] == 0.0
 
 
 def test_ppo_update_normalizes_returns_but_keeps_gae_values_in_raw_scale() -> None:
@@ -1925,6 +1927,18 @@ def test_checkpoint_round_trip(tmp_path: Path) -> None:
     assert torch.allclose(actor_w, actor_w_loaded)
 
 
+def test_checkpoint_uses_configured_artifact_path_without_nested_directory(
+    tmp_path: Path,
+) -> None:
+    config = _base_config()
+    config["checkpointing"] = {"checkpoint_artifact": "campaign_resume.pt"}
+    agent, _, _, _ = _make_agent_with_config(config)
+
+    path = agent.save_checkpoint(str(tmp_path / "checkpoints"), step=42)
+
+    assert path == str(tmp_path / "checkpoints" / "campaign_resume.pt")
+
+
 def test_checkpoint_rejects_active_rollout(tmp_path: Path) -> None:
     agent, _, _, obs_dim = _make_agent(n_buildings=1)
     observations = [np.zeros(obs_dim, dtype=np.float64)]
@@ -2038,6 +2052,45 @@ def test_checkpoint_restores_campaign_state_after_completed_ppo_update(
                     assert torch.equal(value, expected_value)
                 else:
                     assert value == expected_value
+
+
+def test_checkpoint_rejects_reordered_building_identities(tmp_path: Path) -> None:
+    agent, _, _, _ = _make_agent(n_buildings=2)
+    path = agent.save_checkpoint(str(tmp_path), step=1)
+    assert path is not None
+    payload = torch.load(path, weights_only=False)
+    payload["agents"][0]["building_id"] = "Building_2"
+    torch.save(payload, path)
+
+    fresh, _, _, _ = _make_agent(n_buildings=2)
+    with pytest.raises(ValueError, match="building_id mismatch"):
+        fresh.load_checkpoint(path)
+
+
+def test_checkpoint_restores_cpu_torch_rng_for_next_stochastic_action(
+    tmp_path: Path,
+) -> None:
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.get_rng_state()
+    try:
+        torch.manual_seed(912)
+        agent, _, _, obs_dim = _make_agent(n_buildings=1)
+        path = agent.save_checkpoint(str(tmp_path), step=1)
+        assert path is not None
+        observations = [np.zeros(obs_dim, dtype=np.float64)]
+        expected = agent.predict(observations, deterministic=False)
+
+        torch.rand(10)
+        fresh, _, _, _ = _make_agent(n_buildings=1)
+        fresh.load_checkpoint(path)
+        actual = fresh.predict(observations, deterministic=False)
+
+        assert actual == expected
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+        torch.set_rng_state(torch_state)
 
 
 def test_checkpoint_layout_signature_mismatch_rejected(tmp_path: Path) -> None:

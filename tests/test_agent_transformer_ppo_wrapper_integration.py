@@ -598,9 +598,9 @@ def test_wrapper_publishes_training_metrics_with_active_mlflow(monkeypatch) -> N
         def consume_latest_training_metrics(self):
             self.consume_calls += 1
             return {
-                "approx_kl": 0.1,
-                "ratio_error_max": 0.2,
-                "explained_variance": 0.3,
+                "TPPO/approx_kl": 0.1,
+                "TPPO/ratio_error_max": 0.2,
+                "TPPO/explained_variance": 0.3,
             }
 
     logged = []
@@ -629,9 +629,9 @@ def test_wrapper_publishes_training_metrics_with_active_mlflow(monkeypatch) -> N
     wrapper.learn(episodes=1)
 
     step_metrics = next(metrics for metrics, step in logged if step == 1)
-    assert step_metrics["approx_kl"] == 0.1
-    assert step_metrics["ratio_error_max"] == 0.2
-    assert step_metrics["explained_variance"] == 0.3
+    assert step_metrics["TPPO/approx_kl"] == 0.1
+    assert step_metrics["TPPO/ratio_error_max"] == 0.2
+    assert step_metrics["TPPO/explained_variance"] == 0.3
     assert wrapper.model.consume_calls == 1
 
 
