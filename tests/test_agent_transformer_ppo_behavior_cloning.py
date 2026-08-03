@@ -63,6 +63,39 @@ def _update(agent: AgentTransformerPPO, observation: np.ndarray, actions, step: 
     )
 
 
+def _expand_charger_topology(
+    agent: AgentTransformerPPO,
+    observation_names: list[str],
+) -> tuple[list[str], list[str]]:
+    original_charger_id = next(
+        name.split("::")[1]
+        for name in observation_names
+        if name.startswith("charger::")
+        and "::connected_ev::" not in name
+        and "::incoming_ev::" not in name
+    )
+    new_charger_id = "Building_1/charger_dynamic"
+    expanded_names = list(observation_names)
+    expanded_names.extend(
+        name.replace(
+            f"charger::{original_charger_id}::",
+            f"charger::{new_charger_id}::",
+            1,
+        )
+        for name in observation_names
+        if name.startswith(f"charger::{original_charger_id}::")
+    )
+    expanded_actions = list(_DEFAULT_ACTIONS) + ["electric_vehicle_storage"]
+    agent.attach_environment(
+        observation_names=[expanded_names],
+        action_names=[expanded_actions],
+        action_space=[_DummySpace(len(expanded_actions))],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+    return expanded_names, expanded_actions
+
+
 def test_demo_episode_executes_teacher_only_records_immutable_demo_and_no_ppo() -> None:
     agent, dimension = _agent()
     teacher_actions = _teacher(agent, 0.25)
@@ -107,6 +140,47 @@ def test_final_demo_end_pretrains_actor_then_ppo_uses_only_actor_actions() -> No
     assert len(agent._per_building[0].buffer) == 1
 
 
+def test_final_demo_boundary_skips_old_layout_demos_and_trains_current_group() -> None:
+    agent, old_dimension = _agent()
+    old_observation = np.ones(old_dimension, dtype=np.float64)
+    agent.on_episode_start(episode=0, training=True)
+    agent.set_observation_context(
+        raw_observations=[old_observation], encoded_observations=[old_observation]
+    )
+    _update(agent, old_observation, agent.predict([old_observation]), 0)
+
+    expanded_names, _ = _expand_charger_topology(
+        agent, load_sample_observation_names_for_first_building()
+    )
+    current_dimension = max(
+        max(segment.feature_indices) for segment in agent._per_building[0].layout.segments
+    ) + 1
+    assert current_dimension > old_dimension
+    current_observation = np.ones(current_dimension, dtype=np.float64)
+    agent.set_observation_context(
+        raw_observations=[current_observation],
+        encoded_observations=[current_observation],
+    )
+    _update(agent, current_observation, agent.predict([current_observation]), 1)
+
+    assert agent._bc is not None
+    trained_signatures = []
+    original_loss = agent._bc.demonstration_loss
+
+    def record_training_group(**kwargs):
+        trained_signatures.append(agent._bc.layout_signature(kwargs["layout"]))
+        return original_loss(**kwargs)
+
+    agent._bc.demonstration_loss = record_training_group
+    current_signature = agent._bc.layout_signature(agent._per_building[0].layout)
+    agent.on_episode_end(episode=0, training=True)
+
+    assert trained_signatures == [current_signature] * agent._bc.pretraining_epochs
+    metrics = agent.consume_latest_training_metrics()
+    assert metrics["behavior_cloning_incompatible_demonstration_samples"] == 1.0
+    assert len(expanded_names) == current_dimension
+
+
 def test_auxiliary_bc_never_changes_ppo_actions() -> None:
     agent, dimension = _agent(demonstrations=0, weight=1.0)
     teacher_actions = _teacher(agent, 0.9)
@@ -117,6 +191,39 @@ def test_auxiliary_bc_never_changes_ppo_actions() -> None:
     agent.set_observation_context(raw_observations=[observation], encoded_observations=[observation])
     actor_actions = agent.predict([observation], deterministic=True)
     assert actor_actions != teacher_actions
+
+
+def test_auxiliary_bc_update_changes_actor_and_tokenizer_but_not_critic() -> None:
+    agent, dimension = _agent(demonstrations=0, weight=1.0)
+    observation = np.ones(dimension, dtype=np.float64)
+    state = agent._per_building[0]
+    assert agent._bc is not None
+    agent._bc.record_demonstration(
+        0,
+        observation,
+        state.layout,
+        [0.9] * state.layout.n_ca,
+    )
+    actor_before = [parameter.detach().clone() for parameter in state.actor.parameters()]
+    tokenizer_before = [
+        parameter.detach().clone() for parameter in state.tokenizer.parameters()
+    ]
+    critic_before = [parameter.detach().clone() for parameter in state.critic.parameters()]
+
+    agent._run_auxiliary_bc_update(0, state)
+
+    assert any(
+        not torch.equal(before, after)
+        for before, after in zip(actor_before, state.actor.parameters())
+    )
+    assert any(
+        not torch.equal(before, after)
+        for before, after in zip(tokenizer_before, state.tokenizer.parameters())
+    )
+    assert all(
+        torch.equal(before, after)
+        for before, after in zip(critic_before, state.critic.parameters())
+    )
 
 
 def test_auxiliary_bc_samples_demonstrations_during_ppo_update() -> None:

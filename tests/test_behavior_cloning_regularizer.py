@@ -89,6 +89,24 @@ def test_demonstration_is_frozen_and_groups_by_layout_signature() -> None:
     assert len(regularizer.demonstrations_for_building_by_signature(0)) == 2
 
 
+def test_demonstration_accessors_return_immutable_group_snapshots() -> None:
+    regularizer = _regularizer()
+    layout = _layout()
+    regularizer.record_demonstration(0, np.zeros(3), layout, [0.25])
+
+    signature = regularizer.layout_signature(layout)
+    grouped = regularizer.demonstrations_by_signature
+    building_grouped = regularizer.demonstrations_for_building_by_signature(0)
+
+    assert isinstance(grouped[signature], tuple)
+    assert isinstance(building_grouped[signature], tuple)
+    with pytest.raises(AttributeError):
+        grouped[signature].append(grouped[signature][0])
+    with pytest.raises(AttributeError):
+        building_grouped[signature].append(building_grouped[signature][0])
+    assert regularizer.demonstration_count(0) == 1
+
+
 def test_reservoir_sampling_is_bounded_per_building_and_auxiliary_loss_uses_demos() -> None:
     regularizer = _regularizer(max_samples_per_building=2, weight=1.0)
     layout = _layout()

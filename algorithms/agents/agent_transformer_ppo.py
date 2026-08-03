@@ -71,6 +71,7 @@ class _PerBuildingState:
     actor: ActorHead
     critic: CriticHead
     optimizer: torch.optim.Optimizer
+    bc_optimizer: torch.optim.Optimizer
     buffer: RolloutBuffer
     value_normalizer: RunningValueNormalizer
     layout: BuildingTokenLayout
@@ -127,6 +128,7 @@ class _TopologyStateSnapshot:
     actor_state: Dict[str, Any]
     critic_state: Dict[str, Any]
     optimizer_state: Dict[str, Any]
+    bc_optimizer_state: Dict[str, Any]
     buffer: RolloutBuffer
     value_normalizer_state: Dict[str, Any]
     layout: BuildingTokenLayout
@@ -1096,6 +1098,12 @@ class AgentTransformerPPO(BaseAgent):
             + list(critic.parameters())
         )
         optimizer = torch.optim.Adam(params, lr=self._lr)
+        bc_optimizer = torch.optim.Adam(
+            list(tokenizer.parameters())
+            + list(backbone.parameters())
+            + list(actor.parameters()),
+            lr=self._lr,
+        )
         buffer = RolloutBuffer(gamma=self._gamma, gae_lambda=self._gae_lambda)
         return _PerBuildingState(
             building_id=building_id,
@@ -1104,6 +1112,7 @@ class AgentTransformerPPO(BaseAgent):
             actor=actor,
             critic=critic,
             optimizer=optimizer,
+            bc_optimizer=bc_optimizer,
             buffer=buffer,
             value_normalizer=RunningValueNormalizer(),
             layout=layout,
@@ -1261,6 +1270,7 @@ class AgentTransformerPPO(BaseAgent):
                 actor_state=deepcopy(state.actor.state_dict()),
                 critic_state=deepcopy(state.critic.state_dict()),
                 optimizer_state=deepcopy(state.optimizer.state_dict()),
+                bc_optimizer_state=deepcopy(state.bc_optimizer.state_dict()),
                 buffer=deepcopy(state.buffer),
                 value_normalizer_state=deepcopy(state.value_normalizer.state_dict()),
                 layout=state.layout,
@@ -1321,6 +1331,7 @@ class AgentTransformerPPO(BaseAgent):
             state.actor.load_state_dict(saved.actor_state)
             state.critic.load_state_dict(saved.critic_state)
             state.optimizer.load_state_dict(saved.optimizer_state)
+            state.bc_optimizer.load_state_dict(saved.bc_optimizer_state)
             state.buffer.__dict__.clear()
             state.buffer.__dict__.update(deepcopy(saved.buffer.__dict__))
             state.value_normalizer.load_state_dict(saved.value_normalizer_state)
@@ -1396,43 +1407,113 @@ class AgentTransformerPPO(BaseAgent):
         """Fit representation and actor to frozen teacher demonstrations only."""
         assert self._bc is not None
         trained_epochs = 0
+        incompatible_samples = 0
         for building_idx, state in enumerate(self._per_building):
-            for demonstrations in self._bc.demonstrations_for_building_by_signature(
-                building_idx
-            ).values():
-                layout = demonstrations[0].layout
-                for _ in range(self._bc.pretraining_epochs):
-                    for start in range(0, len(demonstrations), self._bc.batch_size):
-                        batch = demonstrations[start : start + self._bc.batch_size]
-                        observations = torch.as_tensor(
-                            np.stack([demo.observation for demo in batch]),
-                            dtype=torch.float,
-                            device=self.device,
-                        )
-                        state.optimizer.zero_grad()
-                        tokenized = state.tokenizer(observations, layout)
-                        ca_embeddings, _ = state.backbone(
-                            tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
-                        )
-                        means = torch.tanh(state.actor.mlp(ca_embeddings))
-                        loss = self._bc.demonstration_loss(
-                            layout=layout,
-                            demonstrations=batch,
-                            predicted_means=means,
-                            global_learning_step=0,
-                            apply_weight=False,
-                        )
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(
-                            list(state.tokenizer.parameters())
-                            + list(state.backbone.parameters())
-                            + list(state.actor.parameters()),
-                            self._max_grad_norm,
-                        )
-                        state.optimizer.step()
+            grouped = self._bc.demonstrations_for_building_by_signature(building_idx)
+            current_signature = self._bc.layout_signature(state.layout)
+            expected_observation_shape = (self._infer_obs_dim(state.layout),)
+            current_demos = grouped.get(current_signature, ())
+            historical_samples = sum(
+                len(demos)
+                for signature, demos in grouped.items()
+                if signature != current_signature
+            )
+            incompatible_samples += historical_samples
+            if historical_samples:
+                logger.warning(
+                    "Skipping {} behavior-cloning demonstrations for {} from "
+                    "historical topologies incompatible with the current layout.",
+                    historical_samples,
+                    state.building_id,
+                )
+            demonstrations = tuple(
+                demo
+                for demo in current_demos
+                if demo.observation.shape == expected_observation_shape
+            )
+            incompatible_samples += len(current_demos) - len(demonstrations)
+            if current_demos and not demonstrations:
+                logger.warning(
+                    "Skipping behavior-cloning demonstrations for {} with an "
+                    "observation shape incompatible with the current topology.",
+                    state.building_id,
+                )
+            for _ in range(self._bc.pretraining_epochs):
+                for start in range(0, len(demonstrations), self._bc.batch_size):
+                    batch = demonstrations[start : start + self._bc.batch_size]
+                    observations = torch.as_tensor(
+                        np.stack([demo.observation for demo in batch]),
+                        dtype=torch.float,
+                        device=self.device,
+                    )
+                    state.bc_optimizer.zero_grad()
+                    tokenized = state.tokenizer(observations, state.layout)
+                    ca_embeddings, _ = state.backbone(
+                        tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
+                    )
+                    loss = self._bc.demonstration_loss(
+                        layout=state.layout,
+                        demonstrations=list(batch),
+                        predicted_means=torch.tanh(state.actor.mlp(ca_embeddings)),
+                        global_learning_step=0,
+                        apply_weight=False,
+                    )
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        list(state.tokenizer.parameters())
+                        + list(state.backbone.parameters())
+                        + list(state.actor.parameters()),
+                        self._max_grad_norm,
+                    )
+                    state.bc_optimizer.step()
+            if demonstrations:
                 trained_epochs = max(trained_epochs, self._bc.pretraining_epochs)
         self._bc.set_pretraining_epochs(trained_epochs)
+        self._bc.set_incompatible_demonstration_samples(incompatible_samples)
         self._latest_training_metrics.update(self._bc.snapshot_metrics())
+
+    def _run_auxiliary_bc_update(
+        self,
+        building_idx: int,
+        state: _PerBuildingState,
+    ) -> None:
+        """Optimize auxiliary BC without updating the PPO critic."""
+        del building_idx
+        assert self._bc is not None
+        demonstrations = self._bc.sample_demonstrations(
+            layout=state.layout,
+            batch_size=self._bc.batch_size,
+        )
+        if not demonstrations:
+            return
+        observations = torch.as_tensor(
+            np.stack([demo.observation for demo in demonstrations]),
+            dtype=torch.float,
+            device=self.device,
+        )
+        state.bc_optimizer.zero_grad()
+        tokenized = state.tokenizer(observations, state.layout)
+        ca_embeddings, _ = state.backbone(
+            tokenized.sro_tokens,
+            tokenized.nfc_token,
+            tokenized.ca_tokens,
+        )
+        loss = self._bc.demonstration_loss(
+            layout=state.layout,
+            demonstrations=demonstrations,
+            predicted_means=torch.tanh(state.actor.mlp(ca_embeddings)),
+            global_learning_step=self._latest_global_learning_step,
+        )
+        if not loss.requires_grad:
+            return
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            list(state.tokenizer.parameters())
+            + list(state.backbone.parameters())
+            + list(state.actor.parameters()),
+            self._max_grad_norm,
+        )
+        state.bc_optimizer.step()
 
     @staticmethod
     def _infer_obs_dim(layout: BuildingTokenLayout) -> int:
@@ -1601,29 +1682,6 @@ class AgentTransformerPPO(BaseAgent):
                     value_coeff=self._value_coeff,
                     entropy_coeff=self._entropy_coeff,
                 )
-                if self._bc is not None:
-                    demonstrations = self._bc.sample_demonstrations(
-                        layout=state.layout,
-                        batch_size=self._bc.batch_size,
-                    )
-                    if demonstrations:
-                        demo_observations = torch.as_tensor(
-                            np.stack([demo.observation for demo in demonstrations]),
-                            dtype=torch.float,
-                            device=self.device,
-                        )
-                        demo_tokens = state.tokenizer(demo_observations, state.layout)
-                        demo_ca_embeddings, _ = state.backbone(
-                            demo_tokens.sro_tokens,
-                            demo_tokens.nfc_token,
-                            demo_tokens.ca_tokens,
-                        )
-                        loss = loss + self._bc.demonstration_loss(
-                            layout=state.layout,
-                            demonstrations=demonstrations,
-                            predicted_means=torch.tanh(state.actor.mlp(demo_ca_embeddings)),
-                            global_learning_step=self._latest_global_learning_step,
-                        )
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     list(state.tokenizer.parameters())
@@ -1633,6 +1691,8 @@ class AgentTransformerPPO(BaseAgent):
                     self._max_grad_norm,
                 )
                 state.optimizer.step()
+                if self._bc is not None:
+                    self._run_auxiliary_bc_update(building_idx, state)
                 for k, v in _metrics.items():
                     all_metrics.setdefault(k, []).append(v)
         averaged = {k: sum(v) / len(v) for k, v in all_metrics.items() if v}

@@ -70,6 +70,7 @@ class BehaviorCloningRegularizer:
         self._latest_bc_weighted_loss = 0.0
         self._latest_bc_valid_samples = 0.0
         self._latest_pretraining_epochs = 0.0
+        self._latest_incompatible_demonstration_samples = 0.0
 
     @classmethod
     def from_config(
@@ -162,20 +163,22 @@ class BehaviorCloningRegularizer:
         )
 
     @property
-    def demonstrations_by_signature(self) -> Dict[Tuple[Any, ...], List[Demonstration]]:
+    def demonstrations_by_signature(
+        self,
+    ) -> Dict[Tuple[Any, ...], Tuple[Demonstration, ...]]:
         grouped: Dict[Tuple[Any, ...], List[Demonstration]] = {}
         for demos in self._demonstrations.values():
             for demo in demos:
                 grouped.setdefault(demo.layout_signature, []).append(demo)
-        return grouped
+        return {signature: tuple(demos) for signature, demos in grouped.items()}
 
     def demonstrations_for_building_by_signature(
         self, building_idx: int
-    ) -> Dict[Tuple[Any, ...], List[Demonstration]]:
+    ) -> Dict[Tuple[Any, ...], Tuple[Demonstration, ...]]:
         grouped: Dict[Tuple[Any, ...], List[Demonstration]] = {}
         for demo in self._demonstrations.get(building_idx, []):
             grouped.setdefault(demo.layout_signature, []).append(demo)
-        return grouped
+        return {signature: tuple(demos) for signature, demos in grouped.items()}
 
     def record_demonstration(
         self,
@@ -214,7 +217,9 @@ class BehaviorCloningRegularizer:
     def sample_demonstrations(
         self, layout: BuildingTokenLayout, batch_size: int
     ) -> List[Demonstration]:
-        compatible = self.demonstrations_by_signature.get(self.layout_signature(layout), [])
+        compatible = self.demonstrations_by_signature.get(
+            self.layout_signature(layout), ()
+        )
         if len(compatible) <= batch_size:
             return list(compatible)
         return self._rng.sample(compatible, batch_size)
@@ -269,6 +274,9 @@ class BehaviorCloningRegularizer:
     def set_pretraining_epochs(self, epochs: int) -> None:
         self._latest_pretraining_epochs = float(epochs)
 
+    def set_incompatible_demonstration_samples(self, samples: int) -> None:
+        self._latest_incompatible_demonstration_samples = float(samples)
+
     def snapshot_metrics(self) -> Dict[str, float]:
         return {
             "behavior_cloning_teacher_enabled": float(self.teacher_policy is not None),
@@ -278,6 +286,9 @@ class BehaviorCloningRegularizer:
             "behavior_cloning_weighted_loss": self._latest_bc_weighted_loss,
             "behavior_cloning_valid_samples": self._latest_bc_valid_samples,
             "behavior_cloning_pretraining_epochs": self._latest_pretraining_epochs,
+            "behavior_cloning_incompatible_demonstration_samples": (
+                self._latest_incompatible_demonstration_samples
+            ),
         }
 
     def _build_teacher_policy(self, observation_names, action_names, action_space, observation_space, metadata):

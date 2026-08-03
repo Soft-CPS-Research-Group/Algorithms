@@ -270,7 +270,7 @@ def test_topology_transition_preserves_raw_observations_for_raw_unit() -> None:
 
 
 @pytest.mark.parametrize("truncated", [False, True], ids=["terminal", "truncated"])
-def test_terminal_topology_transition_flushes_old_tppo_and_bc_rollouts(
+def test_demo_topology_transition_records_teacher_demos_pretrains_and_runs_no_ppo(
     monkeypatch: pytest.MonkeyPatch,
     truncated: bool,
 ) -> None:
@@ -284,18 +284,19 @@ def test_terminal_topology_transition_flushes_old_tppo_and_bc_rollouts(
     agent_config["algorithm"]["hyperparameters"]["minibatch_size"] = 2
     agent_config["algorithm"]["behavior_cloning"] = {
         "enabled": True,
+        "demonstration_episodes": 1,
+        "max_samples_per_building": 8,
+        "pretraining_epochs": 2,
+        "batch_size": 2,
         "weight": 0.4,
         "min_weight": 0.1,
         "decay_start_step": 0,
         "decay_steps": 100,
         "ev_multiplier": 2.0,
         "storage_multiplier": 1.0,
-        "warm_start": {
-            "policy": "RBCCommunityPolicy",
+        "teacher": {
+            "policy": "RBCSmartPolicy",
             "deterministic": True,
-            "noise_scale": 0.0,
-            "phaseout_steps": 0,
-            "phaseout_mode": "probability",
             "hyperparameters": {},
         },
     }
@@ -303,32 +304,65 @@ def test_terminal_topology_transition_flushes_old_tppo_and_bc_rollouts(
     wrapper.set_model(agent)
     assert agent._bc is not None
 
-    flushes: list[tuple[int, int, int, torch.Tensor]] = []
+    ppo_updates: list[tuple[int, int, int, torch.Tensor]] = []
     original_update = agent._run_ppo_update_with_last_value
 
-    def record_boundary_flush(state, last_value, *, building_idx):
-        flushes.append(
-            (
-                building_idx,
-                len(state.buffer),
-                len(agent._bc.teacher_action_buffers[building_idx]),
-                last_value.detach().clone(),
-            )
+    def record_ppo_update(state, last_value, *, building_idx):
+        ppo_updates.append(
+            (agent._current_episode, building_idx, len(state.buffer), last_value.detach().clone())
         )
         return original_update(state, last_value, building_idx=building_idx)
 
     monkeypatch.setattr(
-        agent, "_run_ppo_update_with_last_value", record_boundary_flush
+        agent, "_run_ppo_update_with_last_value", record_ppo_update
     )
+    pretraining_calls = 0
+    pretraining_metrics: list[dict[str, float]] = []
+    original_pretraining = agent._run_bc_pretraining
 
-    wrapper.learn(episodes=1, deterministic=False)
+    def record_pretraining() -> None:
+        nonlocal pretraining_calls
+        pretraining_calls += 1
+        original_pretraining()
+        pretraining_metrics.append(agent._bc.snapshot_metrics())
 
-    assert [(building_idx, rollout_size, bc_size) for building_idx, rollout_size, bc_size, _ in flushes] == [
-        (0, 2, 2)
+    monkeypatch.setattr(agent, "_run_bc_pretraining", record_pretraining)
+    teacher_calls: list[int] = []
+
+    def teacher_actions(observations):
+        teacher_calls.append(agent._current_episode)
+        return [
+            [0.9] * state.layout.n_ca
+            for state in agent._per_building[: len(observations)]
+        ]
+
+    agent._bc.compute_teacher_actions = teacher_actions
+    actor_decisions: list[tuple[int, bool]] = []
+    original_predict = agent.predict
+
+    def record_actor_decision(observations, deterministic=None):
+        actions = original_predict(observations, deterministic=deterministic)
+        if agent._current_episode == 1:
+            actor_decisions.append((agent._current_episode, agent._pending_decisions[0] is not None))
+        return actions
+
+    monkeypatch.setattr(agent, "predict", record_actor_decision)
+
+    wrapper.learn(episodes=2, deterministic=False)
+
+    assert pretraining_calls == 1
+    assert teacher_calls == [0, 0]
+    assert pretraining_metrics[0]["behavior_cloning_demonstration_samples"] == 2.0
+    assert pretraining_metrics[0]["behavior_cloning_pretraining_epochs"] == 0.0
+    assert pretraining_metrics[0]["behavior_cloning_incompatible_demonstration_samples"] == 2.0
+    assert actor_decisions == [(1, True), (1, True)]
+    assert [(episode, building_idx, rollout_size) for episode, building_idx, rollout_size, _ in ppo_updates] == [
+        (1, 0, 2)
     ]
-    assert torch.equal(flushes[0][3], torch.zeros_like(flushes[0][3]))
+    assert torch.equal(ppo_updates[0][3], torch.zeros_like(ppo_updates[0][3]))
     assert len(agent._per_building) == 2
-    assert agent._bc.teacher_action_buffers == [[], []]
+    assert agent._bc.demonstration_count(0) == 2
+    assert agent._bc.demonstration_count(1) == 0
 
 
 def test_wrapper_to_env_actions_round_trips_ppo_output() -> None:
