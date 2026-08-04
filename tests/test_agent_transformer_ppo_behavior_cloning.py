@@ -733,3 +733,73 @@ def test_checkpoint_rejects_out_of_bounds_demo_layout_before_mutating_agent(
         torch.equal(value, actor_before[key])
         for key, value in state.actor.state_dict().items()
     )
+
+
+@pytest.mark.parametrize("corruption", ["unknown_type", "feature_width"])
+def test_checkpoint_rejects_tokenizer_incompatible_demo_layout_before_mutating_agent(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    source, dimension = _agent(demonstrations=2, weight=1.0)
+    assert source._bc is not None
+    observation = np.ones(dimension, dtype=np.float64)
+    source._bc.record_demonstration(
+        0, observation, source._per_building[0].layout,
+        [0.25] * source._per_building[0].layout.n_ca,
+    )
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    target, _ = _agent(demonstrations=2, weight=1.0)
+    state = target._per_building[0]
+    actor_before = {
+        key: value.detach().clone() for key, value in state.actor.state_dict().items()
+    }
+    payload = torch.load(path, weights_only=False)
+    demo = payload["behavior_cloning_state"]["demonstrations"][0][0]
+    segment_idx = next(
+        index for index, segment in enumerate(demo.layout.segments)
+        if segment.family == "sro"
+    )
+    segment = demo.layout.segments[segment_idx]
+    if corruption == "unknown_type":
+        bad_segment = replace(segment, type_name="unknown_stored_type")
+        bad_layout = replace(
+            demo.layout,
+            segments=(
+                demo.layout.segments[:segment_idx]
+                + (bad_segment,)
+                + demo.layout.segments[segment_idx + 1:]
+            ),
+        )
+    else:
+        bad_segment = replace(
+            segment,
+            feature_indices=segment.feature_indices[:-1],
+            feature_names=segment.feature_names[:-1],
+        )
+        bad_layout = replace(
+            demo.layout,
+            segments=(
+                demo.layout.segments[:segment_idx]
+                + (bad_segment,)
+                + demo.layout.segments[segment_idx + 1:]
+            ),
+            excluded_feature_names=demo.layout.excluded_feature_names + ("preserved_width",),
+        )
+    payload["behavior_cloning_state"]["demonstrations"][0][0] = Demonstration(
+        observation=demo.observation,
+        encoded_length=demo.encoded_length,
+        layout=bad_layout,
+        layout_signature=source._bc.layout_signature(bad_layout),
+        target=demo.target,
+    )
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match="BC layout/tokenizer compatibility"):
+        target.load_checkpoint(path)
+
+    assert all(
+        torch.equal(value, actor_before[key])
+        for key, value in state.actor.state_dict().items()
+    )

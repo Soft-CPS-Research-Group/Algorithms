@@ -900,6 +900,9 @@ class AgentTransformerPPO(BaseAgent):
             BehaviorCloningRegularizer.validate_state_dict(
                 payload["behavior_cloning_state"]
             )
+            self._validate_checkpoint_bc_tokenizer_compatibility(
+                payload["behavior_cloning_state"]
+            )
         for state, saved in zip(self._per_building, agents):
             if state.building_id != saved["building_id"]:
                 raise ValueError(
@@ -949,6 +952,42 @@ class AgentTransformerPPO(BaseAgent):
                 torch.cuda.set_rng_state_all(
                     [state.cpu() for state in rng_state["torch_cuda"]]
                 )
+
+    def _validate_checkpoint_bc_tokenizer_compatibility(
+        self, behavior_cloning_state: Dict[str, Any]
+    ) -> None:
+        """Ensure stored demonstrations can use their receiving tokenizer."""
+        for building_idx, demonstrations in behavior_cloning_state[
+            "demonstrations"
+        ].items():
+            if not isinstance(building_idx, int) or not 0 <= building_idx < len(
+                self._per_building
+            ):
+                raise RuntimeError(
+                    "Checkpoint BC layout/tokenizer compatibility failed: invalid "
+                    f"building index {building_idx!r}."
+                )
+            projections = self._per_building[building_idx].tokenizer.projections
+            for demonstration in demonstrations:
+                for segment in demonstration.layout.segments:
+                    if segment.family == "nfc":
+                        expected_width = 1
+                    else:
+                        expected_width = len(segment.feature_indices)
+                    if segment.type_name not in projections:
+                        raise RuntimeError(
+                            "Checkpoint BC layout/tokenizer compatibility failed: "
+                            f"building {building_idx} has no projection for type "
+                            f"{segment.type_name!r}."
+                        )
+                    actual_width = int(projections[segment.type_name].in_features)
+                    if actual_width != expected_width:
+                        raise RuntimeError(
+                            "Checkpoint BC layout/tokenizer compatibility failed: "
+                            f"building {building_idx} projection for type "
+                            f"{segment.type_name!r} expects {actual_width} features, "
+                            f"but stored layout provides {expected_width}."
+                        )
 
     def _move_optimizer_state_to_device(self, optimizer: torch.optim.Optimizer) -> None:
         for parameter_state in optimizer.state.values():
