@@ -149,6 +149,26 @@ class CommunityMarketMakerNet(nn.Module):
         return action, log_prob, dist.entropy(), value
 
 
+class DeterministicMultiplierPolicy(nn.Module):
+    """Deployable deterministic CC policy including the price-range mapping."""
+
+    def __init__(
+        self,
+        policy: CommunityMarketMakerNet,
+        price_min: float,
+        price_max: float,
+    ) -> None:
+        super().__init__()
+        self.encoder = policy.encoder
+        self.mean_head = policy.mean_head
+        self.register_buffer("price_min", torch.tensor(float(price_min)))
+        self.register_buffer("price_span", torch.tensor(float(price_max - price_min)))
+
+    def forward(self, community: torch.Tensor) -> torch.Tensor:
+        raw = self.mean_head(self.encoder(community)).squeeze(-1)
+        return self.price_min + self.price_span * (torch.tanh(raw) + 1.0) / 2.0
+
+
 class RolloutBuffer:
     """Fixed-size rollout buffer for continuous single-action PPO."""
 
@@ -182,7 +202,7 @@ class RolloutBuffer:
             if t == self.num_steps - 1:
                 next_nt, next_value = 1.0 - float(last_done), last_value
             else:
-                next_nt, next_value = 1.0 - self.dones[t + 1], self.values[t + 1]
+                next_nt, next_value = 1.0 - self.dones[t], self.values[t + 1]
             delta = self.rewards[t] + gamma * next_value * next_nt - self.values[t]
             gae = delta + gamma * gae_lambda * next_nt * gae
             self.advantages[t] = gae
@@ -210,6 +230,7 @@ class CCLevel1Agent(BaseAgent):
     # (time_of_day_sin/cos, day_type_sin/cos, month_sin/cos, is_weekend),
     # leaving them silently zero — so we MUST use encoded observations.
     _use_raw_observations: bool = False
+    observation_encoding_profile: str = "cc_level1"
 
     # ──────────────────────────── Construction ──────────────────────────────
 
@@ -258,6 +279,8 @@ class CCLevel1Agent(BaseAgent):
         # Temporal abstraction
         self._cc_action_interval = int(hyper.get("cc_action_interval", 4))
         self._step_in_interval = 0
+        self._decision_interval_complete = False
+        self._episode_step_context: Optional[int] = None
 
         # Cached decision
         self._cached_multiplier: float = 1.0
@@ -276,6 +299,7 @@ class CCLevel1Agent(BaseAgent):
         self._bc_lr            = float(hyper.get("bc_lr",           1e-3))
         self._bc_pretrain_done: bool = not self._bc_enabled  # skip if disabled
         self._bc_contexts: List[np.ndarray] = []
+        self._bc_teacher_contexts: List[np.ndarray] = []
         # Sample buffers for auto-calibration of reference values.
         # Populated during BC collection; cleared after pretraining.
         self._bc_import_samples: List[float] = []
@@ -320,6 +344,9 @@ class CCLevel1Agent(BaseAgent):
         self._episode_count = 0
         self._global_cc_step = 0
         self._decision_trace: List[dict] = []
+        self._completed_decision_traces: List[dict] = []
+        self._latest_raw_observations: Optional[List[np.ndarray]] = None
+        self._raw_obs_index: Dict[str, int] = {}
 
     def attach_environment(
         self,
@@ -333,6 +360,29 @@ class CCLevel1Agent(BaseAgent):
         # Only the first building's vector is needed — district features are
         # identical across buildings in entity mode.
         self._obs_index = {n: i for i, n in enumerate(observation_names[0])}
+        raw_observation_names = (
+            (metadata or {}).get("raw_observation_names")
+            if isinstance(metadata, dict)
+            else None
+        )
+        if isinstance(raw_observation_names, list) and raw_observation_names:
+            self._raw_obs_index = {
+                str(name): index
+                for index, name in enumerate(raw_observation_names[0])
+            }
+
+    def set_observation_context(
+        self,
+        *,
+        raw_observations: Optional[List[np.ndarray]] = None,
+        encoded_observations: Optional[List[np.ndarray]] = None,
+    ) -> None:
+        _ = encoded_observations
+        self._latest_raw_observations = (
+            [np.asarray(observation, dtype=np.float64) for observation in raw_observations]
+            if raw_observations is not None
+            else None
+        )
 
     # ───────────────────────── Per-step interaction ──────────────────────────
 
@@ -348,28 +398,42 @@ class CCLevel1Agent(BaseAgent):
             if not self._bc_pretrain_done:
                 # BC collection phase: store context, act with teacher.
                 ctx = self._build_context(observations)
+                teacher_ctx = self._build_teacher_context(ctx)
                 self._bc_contexts.append(ctx.copy())
+                self._bc_teacher_contexts.append(teacher_ctx.copy())
                 # Accumulate import/export samples for auto-calibration of reference values.
                 _idx = _CC_LEVEL1_FEATURES.index
-                imp_kwh = float(ctx[_idx("district__community_import_power_kw")]) * self._bc_dt_hours
+                imp_kwh = float(teacher_ctx[_idx("district__community_import_power_kw")]) * self._bc_dt_hours
                 self._bc_import_samples.append(imp_kwh)
                 self._bc_export_samples.append(
-                    float(ctx[_idx("district__community_export_power_kw")]) * self._bc_dt_hours
+                    float(teacher_ctx[_idx("district__community_export_power_kw")]) * self._bc_dt_hours
                 )
                 self._bc_price_samples.append(
-                    float(ctx[_idx("district__electricity_pricing")])
+                    float(teacher_ctx[_idx("district__electricity_pricing")])
                 )
                 # Ramp: step-to-step change in community import.
                 ramp_kwh = abs(imp_kwh - self._bc_prev_import_kwh)
                 self._bc_ramp_samples.append(ramp_kwh)
                 self._bc_prev_import_kwh = imp_kwh
                 # Violation: sum charging_constraint_violation_kwh across buildings.
-                viol_idx = self._obs_index.get("charging_constraint_violation_kwh")
-                total_viol = sum(float(obs[viol_idx]) for obs in observations) if viol_idx is not None else 0.0
+                viol_idx = self._raw_obs_index.get("charging_constraint_violation_kwh")
+                total_viol = (
+                    sum(
+                        float(obs[viol_idx])
+                        for obs in (self._latest_raw_observations or [])
+                        if viol_idx < len(obs)
+                    )
+                    if viol_idx is not None
+                    else 0.0
+                )
                 self._bc_violation_samples.append(total_viol)
                 # Compute teacher multiplier using full context (5-term logic).
                 price_feat = float(ctx[_CC_LEVEL1_FEATURES.index(_PRICE_FEATURE)])  # kept for diagnostics
-                self._cached_multiplier = self._bc_teacher_multiplier(ctx, ramp_kwh=ramp_kwh, violation_kwh=total_viol)
+                self._cached_multiplier = self._bc_teacher_multiplier(
+                    teacher_ctx,
+                    ramp_kwh=ramp_kwh,
+                    violation_kwh=total_viol,
+                )
                 self._cached_community  = ctx
                 self._cached_price      = price_feat
                 # Dummy PPO fields — not used in rollout buffer during BC.
@@ -383,7 +447,26 @@ class CCLevel1Agent(BaseAgent):
                     self._bc_pretrain_done = True
             else:
                 self._sample_new_decision(observations, deterministic)
+        self._step_in_interval = (
+            self._step_in_interval + 1
+        ) % self._cc_action_interval
+        self._decision_interval_complete = self._step_in_interval == 0
         return self._cached_multiplier
+
+    def set_episode_context(
+        self,
+        *,
+        episode_step: Optional[int] = None,
+        next_episode_step: Optional[int] = None,
+    ) -> None:
+        _ = next_episode_step
+        normalized_step = None if episode_step is None else int(episode_step)
+        if normalized_step == 0 and self._episode_step_context != 0:
+            self._step_in_interval = 0
+            self._decision_interval_complete = False
+            self._accumulated_reward = 0.0
+            self._prev_multiplier = 1.0
+        self._episode_step_context = normalized_step
 
     def update(
         self,
@@ -402,18 +485,18 @@ class CCLevel1Agent(BaseAgent):
         """Accumulate community reward over the interval, then push a transition."""
         done = terminated or truncated
         self._accumulated_reward += float(sum(rewards))
-        self._step_in_interval += 1
 
-        if not ((self._step_in_interval >= self._cc_action_interval) or done):
+        if not (self._decision_interval_complete or done):
             return
 
         assert self._cached_community is not None, "predict() must run before update()"
 
         # BC collection phase: flush interval state but do NOT add to rollout buffer.
         if not self._bc_pretrain_done:
-            self._step_in_interval = 0
+            self._decision_interval_complete = False
             self._accumulated_reward = 0.0
             if done:
+                self._step_in_interval = 0
                 self._prev_multiplier = 1.0
                 self._flush_decision_trace()
             return
@@ -444,9 +527,10 @@ class CCLevel1Agent(BaseAgent):
             value=self._cached_value,
         )
 
-        self._step_in_interval = 0
+        self._decision_interval_complete = False
         self._accumulated_reward = 0.0
         if done:
+            self._step_in_interval = 0
             self._prev_multiplier = 1.0
             self._flush_decision_trace()
 
@@ -552,9 +636,10 @@ class CCLevel1Agent(BaseAgent):
         Mirrors MADDPG._maybe_run_actor_offline_bc_pretraining: same Adam +
         grad-clip-1.0 pattern, same MLflow metric keys (prefixed CC/bc_*).
         """
-        X = np.stack(self._bc_contexts)                        # [N, feat_dim]
+        X = np.stack(self._bc_contexts)                        # encoded policy inputs
+        teacher_X = np.stack(self._bc_teacher_contexts)        # raw physical teacher inputs
         price_idx = _CC_LEVEL1_FEATURES.index(_PRICE_FEATURE)
-        prices = X[:, price_idx]                               # kept for corr diagnostic
+        prices = teacher_X[:, price_idx]                       # kept for corr diagnostic
 
         # Auto-calibrate reference values from the collected distribution.
         # This makes the teacher community-agnostic: thresholds are derived from
@@ -595,7 +680,12 @@ class CCLevel1Agent(BaseAgent):
         def _teacher_raw(ctx_row: np.ndarray, i: int) -> float:
             ramp_kwh    = self._bc_ramp_samples[i]      if i < len(self._bc_ramp_samples)      else 0.0
             viol_kwh    = self._bc_violation_samples[i] if i < len(self._bc_violation_samples) else 0.0
-            mult = self._bc_teacher_multiplier(ctx_row, ramp_kwh=ramp_kwh, violation_kwh=viol_kwh)
+            teacher_row = teacher_X[i]
+            mult = self._bc_teacher_multiplier(
+                teacher_row,
+                ramp_kwh=ramp_kwh,
+                violation_kwh=viol_kwh,
+            )
             t = (mult - self._price_min) / (self._price_max - self._price_min) * 2.0 - 1.0
             return float(np.arctanh(np.clip(t, -0.999, 0.999)))
 
@@ -661,6 +751,7 @@ class CCLevel1Agent(BaseAgent):
 
         # Free collected data.
         self._bc_contexts.clear()
+        self._bc_teacher_contexts.clear()
         self._bc_import_samples.clear()
         self._bc_export_samples.clear()
         self._bc_ramp_samples.clear()
@@ -678,6 +769,27 @@ class CCLevel1Agent(BaseAgent):
             [float(obs0[idx[name]]) if name in idx else 0.0 for name in _CC_LEVEL1_FEATURES],
             dtype=np.float32,
         )
+
+    def _build_teacher_context(self, encoded_context: np.ndarray) -> np.ndarray:
+        """Return physical raw features for the BC teacher when available."""
+        if not self._latest_raw_observations or not self._raw_obs_index:
+            return np.asarray(encoded_context, dtype=np.float32).copy()
+
+        raw = self._latest_raw_observations[0]
+        aliases = {
+            "district__time_of_day_sin": "district__seconds_of_day_sin",
+            "district__time_of_day_cos": "district__seconds_of_day_cos",
+        }
+        values: List[float] = []
+        for index, name in enumerate(_CC_LEVEL1_FEATURES):
+            raw_name = aliases.get(name, name)
+            raw_index = self._raw_obs_index.get(raw_name)
+            if raw_index is None or raw_index >= len(raw):
+                values.append(float(encoded_context[index]))
+            else:
+                value = float(raw[raw_index])
+                values.append(value if np.isfinite(value) else float(encoded_context[index]))
+        return np.asarray(values, dtype=np.float32)
 
     def _sample_new_decision(self, observations, deterministic: bool | None) -> None:
         ctx = self._build_context(observations)
@@ -736,8 +848,9 @@ class CCLevel1Agent(BaseAgent):
         for _ in range(self._num_epochs):
             if kl_stop:
                 break
+            permutation = np.random.permutation(num_steps)
             for start in range(0, num_steps, self._mini_batch_size):
-                mb = np.random.permutation(num_steps)[start : start + self._mini_batch_size]
+                mb = permutation[start : start + self._mini_batch_size]
 
                 _, new_logprobs, entropy, new_values = self.policy.get_action_and_value(
                     community[mb], actions[mb]
@@ -816,6 +929,11 @@ class CCLevel1Agent(BaseAgent):
         self._episode_count += 1
         ep = self._episode_count
         fields = list(self._decision_trace[0].keys())
+        completed_rows = [
+            {"episode": ep, **row}
+            for row in self._decision_trace
+        ]
+        self._completed_decision_traces.extend(completed_rows)
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".csv", prefix=f"cc_ep{ep}_", delete=False
@@ -865,20 +983,54 @@ class CCLevel1Agent(BaseAgent):
         onnx_dir = export_root / "onnx_models"
         onnx_dir.mkdir(parents=True, exist_ok=True)
         export_path = onnx_dir / "cc_market_maker.onnx"
+        deterministic_policy = DeterministicMultiplierPolicy(
+            self.policy,
+            self._price_min,
+            self._price_max,
+        ).eval()
         torch.onnx.export(
-            self.policy.encoder,
+            deterministic_policy,
             torch.randn(1, self._c_dim),
             str(export_path),
             export_params=True,
             opset_version=DEFAULT_ONNX_OPSET,
             do_constant_folding=True,
             input_names=["community_context"],
-            output_names=["hidden"],
-            dynamic_axes={"community_context": {0: "batch"}, "hidden": {0: "batch"}},
+            output_names=["price_multiplier"],
+            dynamic_axes={
+                "community_context": {0: "batch"},
+                "price_multiplier": {0: "batch"},
+            },
         )
+        self._flush_decision_trace()
+        artifacts = [
+            {
+                "agent_index": 0,
+                "path": str(export_path.relative_to(export_root)),
+                "format": "onnx",
+            }
+        ]
+        diagnostic_artifacts: List[Dict[str, Any]] = []
+        if self._completed_decision_traces:
+            trace_path = export_root / "decision_trace.csv"
+            fields = list(self._completed_decision_traces[0].keys())
+            with trace_path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(self._completed_decision_traces)
+            diagnostic_artifacts.append(
+                {
+                    "path": str(trace_path.relative_to(export_root)),
+                    "format": "csv",
+                }
+            )
         return {
             "format": "onnx",
-            "artifacts": [{"agent_index": 0, "path": str(export_path.relative_to(export_root)), "format": "onnx"}],
+            "output_contract": "deterministic_global_price_multiplier",
+            "price_min": self._price_min,
+            "price_max": self._price_max,
+            "artifacts": artifacts,
+            "diagnostic_artifacts": diagnostic_artifacts,
         }
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:

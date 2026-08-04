@@ -167,6 +167,9 @@ class Wrapper_CityLearn(RLC):
         self._entity_topology_version: Optional[int] = None
         self._topology_changed_during_step: bool = False
         self._entity_adapter: Optional[EntityContractAdapter] = None
+        self._entity_profile_adapters: Dict[str, EntityContractAdapter] = {}
+        self._profiled_observation_cache_key: Optional[tuple[int, ...]] = None
+        self._profiled_observation_cache_value: Dict[str, List[np.ndarray]] = {}
         self.model = model
 
         entity_encoding_cfg = simulator_cfg.get("entity_encoding", {}) or {}
@@ -551,6 +554,10 @@ class Wrapper_CityLearn(RLC):
             if self._entity_interface_mode and self._entity_adapter is not None
             else raw_observation_names
         )
+        profiled_encoded_observation_names = {
+            profile: adapter.encoded_observation_names(raw_observation_names)
+            for profile, adapter in self._entity_profile_adapters.items()
+        }
         metadata = {
             "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "building_names": building_names,
@@ -559,6 +566,7 @@ class Wrapper_CityLearn(RLC):
             "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
             "raw_observation_names": raw_observation_names,
             "encoded_observation_names": encoded_observation_names,
+            "profiled_encoded_observation_names": profiled_encoded_observation_names,
             "raw_observation_bounds": [
                 {
                     "low": np.asarray(space.low, dtype=np.float64).reshape(-1).tolist(),
@@ -1095,7 +1103,62 @@ class Wrapper_CityLearn(RLC):
     def set_model(self, model: ExecutionUnit):
         """Set the model (any :class:`ExecutionUnit`) after initialization."""
         self.model = model
+        self._configure_model_observation_profiles()
         self._attach_model_environment_metadata()
+
+    def _configure_model_observation_profiles(self) -> None:
+        """Build auxiliary entity encoders requested by hierarchical stages."""
+        self._entity_profile_adapters = {}
+        self._profiled_observation_cache_key = None
+        self._profiled_observation_cache_value = {}
+        if not self._entity_interface_mode or self.model is None:
+            return
+        profile_hook = getattr(self.model, "required_observation_encoding_profiles", None)
+        if not callable(profile_hook):
+            return
+        for raw_profile in profile_hook() or []:
+            profile = str(raw_profile or "").strip().lower()
+            if not profile or profile == self._entity_encoding_profile:
+                continue
+            self._entity_profile_adapters[profile] = EntityContractAdapter(
+                self.env,
+                normalization_enabled=(
+                    self._entity_encoding_enabled
+                    and self._entity_encoding_policy == "minmax_space"
+                ),
+                clip=self._entity_encoding_clip,
+                encoding_profile=profile,
+            )
+
+    def _encode_profiled_observations(
+        self,
+        observations: List[Any],
+    ) -> Dict[str, List[np.ndarray]]:
+        """Encode one raw observation batch for every stage-specific profile."""
+        cache_key = tuple(id(observation) for observation in observations)
+        if (
+            cache_key == self._profiled_observation_cache_key
+            and self._profiled_observation_cache_value
+        ):
+            return self._profiled_observation_cache_value
+        encoded: Dict[str, List[np.ndarray]] = {}
+        for profile, adapter in self._entity_profile_adapters.items():
+            encoded[profile] = [
+                adapter.normalize_observation(
+                    agent_index=index,
+                    observation=observation,
+                    observation_names=(
+                        self.observation_names[index]
+                        if index < len(self.observation_names)
+                        else []
+                    ),
+                    observation_space=self.observation_space[index],
+                ).astype(np.float64)
+                for index, observation in enumerate(observations)
+            ]
+        self._profiled_observation_cache_key = cache_key
+        self._profiled_observation_cache_value = encoded
+        return encoded
 
 
     def learn(self, episodes=None, deterministic=None, deterministic_finish=None):
@@ -1729,6 +1792,17 @@ class Wrapper_CityLearn(RLC):
             )
 
         observation_context_hook = getattr(self.model, "set_observation_context", None)
+        profiled_observation_context_hook = getattr(
+            self.model,
+            "set_profiled_observation_context",
+            None,
+        )
+        if callable(profiled_observation_context_hook):
+            profiled_observation_context_hook(
+                self._encode_profiled_observations(observations)
+                if not direct_entity_model_observations
+                else {}
+            )
         if callable(observation_context_hook):
             observation_context_hook(
                 raw_observations=None
@@ -2343,6 +2417,11 @@ class Wrapper_CityLearn(RLC):
             self._last_model_observation_encoding_seconds = time.perf_counter() - phase_start_time
 
         transition_context_hook = getattr(self.model, "set_transition_context", None)
+        profiled_transition_context_hook = getattr(
+            self.model,
+            "set_profiled_transition_context",
+            None,
+        )
         episode_context_hook = getattr(self.model, "set_episode_context", None)
         current_episode_step = getattr(self, "_current_model_episode_step", None)
         if callable(episode_context_hook):
@@ -2364,6 +2443,19 @@ class Wrapper_CityLearn(RLC):
                 else next_observations,
                 encoded_observations=encoded_observations,
                 encoded_next_observations=encoded_next_observations,
+            )
+        if callable(profiled_transition_context_hook):
+            profiled_transition_context_hook(
+                profiled_encoded_observations=(
+                    self._encode_profiled_observations(observations)
+                    if not direct_entity_model_observations
+                    else {}
+                ),
+                profiled_encoded_next_observations=(
+                    self._encode_profiled_observations(next_observations)
+                    if not direct_entity_model_observations
+                    else {}
+                ),
             )
 
         # Pass updated parameters to model.update()
@@ -2455,6 +2547,10 @@ class Wrapper_CityLearn(RLC):
             if self._entity_interface_mode and self._entity_adapter is not None
             else raw_observation_names
         )
+        profiled_encoded_observation_names = {
+            profile: adapter.encoded_observation_names(raw_observation_names)
+            for profile, adapter in self._entity_profile_adapters.items()
+        }
         serves_encoded_observations = (
             self._entity_interface_mode
             and self._entity_adapter is not None
@@ -2526,6 +2622,7 @@ class Wrapper_CityLearn(RLC):
             "observation_names": serving_observation_names,
             "raw_observation_names": raw_observation_names,
             "encoded_observation_names": encoded_observation_names,
+            "profiled_encoded_observation_names": profiled_encoded_observation_names,
             "encoders": encoders_metadata,
             "action_bounds": action_bounds,
             "action_names": flat_action_names,

@@ -47,6 +47,8 @@ class Pipeline(ExecutionUnit):
         self._encoded_observations: Optional[Any] = None
         self._raw_next_observations: Optional[Any] = None
         self._encoded_next_observations: Optional[Any] = None
+        self._profiled_encoded_observations: Dict[str, Any] = {}
+        self._profiled_encoded_next_observations: Dict[str, Any] = {}
 
     @property
     def use_raw_observations(self) -> bool:
@@ -65,6 +67,9 @@ class Pipeline(ExecutionUnit):
     def _observations_for_stage(self, stage: ExecutionUnit, fallback: Any) -> Any:
         if stage.use_raw_observations and self._raw_observations is not None:
             return self._raw_observations
+        profile = str(getattr(stage, "observation_encoding_profile", "") or "").strip().lower()
+        if profile and profile in self._profiled_encoded_observations:
+            return self._profiled_encoded_observations[profile]
         if not stage.use_raw_observations and self._encoded_observations is not None:
             return self._encoded_observations
         return fallback
@@ -72,9 +77,37 @@ class Pipeline(ExecutionUnit):
     def _next_observations_for_stage(self, stage: ExecutionUnit, fallback: Any) -> Any:
         if stage.use_raw_observations and self._raw_next_observations is not None:
             return self._raw_next_observations
+        profile = str(getattr(stage, "observation_encoding_profile", "") or "").strip().lower()
+        if profile and profile in self._profiled_encoded_next_observations:
+            return self._profiled_encoded_next_observations[profile]
         if not stage.use_raw_observations and self._encoded_next_observations is not None:
             return self._encoded_next_observations
         return fallback
+
+    def required_observation_encoding_profiles(self) -> List[str]:
+        """Return non-default entity encodings requested by pipeline stages."""
+        profiles = {
+            str(getattr(stage, "observation_encoding_profile", "") or "").strip().lower()
+            for stage in self.stages
+        }
+        return sorted(profile for profile in profiles if profile)
+
+    def set_profiled_observation_context(
+        self,
+        profiled_encoded_observations: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._profiled_encoded_observations = dict(profiled_encoded_observations or {})
+
+    def set_profiled_transition_context(
+        self,
+        *,
+        profiled_encoded_observations: Optional[Dict[str, Any]] = None,
+        profiled_encoded_next_observations: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._profiled_encoded_observations = dict(profiled_encoded_observations or {})
+        self._profiled_encoded_next_observations = dict(
+            profiled_encoded_next_observations or {}
+        )
 
     def set_observation_context(
         self,
@@ -197,10 +230,20 @@ class Pipeline(ExecutionUnit):
         metadata = kwargs.get("metadata") or {}
         raw_observation_names = metadata.get("raw_observation_names")
         encoded_observation_names = metadata.get("encoded_observation_names")
+        profiled_encoded_observation_names = (
+            metadata.get("profiled_encoded_observation_names") or {}
+        )
 
         for stage in self.stages:
             stage_kwargs = dict(kwargs)
-            if (
+            profile = str(
+                getattr(stage, "observation_encoding_profile", "") or ""
+            ).strip().lower()
+            if profile and profile in profiled_encoded_observation_names:
+                stage_kwargs["observation_names"] = profiled_encoded_observation_names[
+                    profile
+                ]
+            elif (
                 stage.use_raw_observations
                 or bool(getattr(stage, "requires_raw_observation_context", False))
             ) and raw_observation_names is not None:
@@ -216,6 +259,13 @@ class Pipeline(ExecutionUnit):
         root = Path(output_dir)
         root.mkdir(parents=True, exist_ok=True)
         for index, stage in enumerate(self.stages):
+            if getattr(stage, "frozen", False):
+                logger.debug(
+                    "Pipeline stage {} ({}) is frozen; skipping checkpoint save.",
+                    index,
+                    type(stage).__name__,
+                )
+                continue
             stage_dir = root / f"stage_{index}"
             stage_dir.mkdir(parents=True, exist_ok=True)
             try:

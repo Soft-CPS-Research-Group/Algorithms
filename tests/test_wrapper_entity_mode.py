@@ -432,3 +432,54 @@ def test_wrapper_entity_pipeline_routes_encoded_manager_and_raw_leaf():
     for actual, expected in zip(leaf_observations, raw_observations):
         np.testing.assert_allclose(actual, expected, atol=1e-9)
     assert leaf.predict_calls[0]["context"] == 1.1
+
+
+def test_wrapper_entity_pipeline_routes_distinct_manager_and_leaf_profiles():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["simulator"]["topology_mode"] = "static"
+    config["simulator"]["entity_encoding"]["profile"] = "building_local_v1"
+    config["pipeline"] = [
+        {"algorithm": "CCLevel1", "count": 1, "hyperparameters": {}},
+        {"algorithm": "PPO", "count": 1, "hyperparameters": {}},
+    ]
+    config["tracking"]["action_diagnostics_enabled"] = False
+
+    wrapper = Wrapper_CityLearn(env=env, config=config, job_id="entity-profiled-pipeline")
+    manager = _PipelineProbe(use_raw_observations=False, output=1.0)
+    manager.observation_encoding_profile = "cc_level1"
+    leaf = _PipelineProbe(
+        use_raw_observations=False,
+        output=[[0.0, 0.0, 0.0]],
+    )
+    model = Pipeline([manager, leaf])
+    wrapper.set_model(model)
+
+    manager_names = manager.attach_calls[0]["observation_names"][0]
+    leaf_names = leaf.attach_calls[0]["observation_names"][0]
+    assert "district__time_of_day_sin" in manager_names
+    assert "load_power_kw" not in manager_names
+    assert "load_power_kw" in leaf_names
+
+    payload, _ = env.reset()
+    raw_observations = wrapper._apply_entity_layout(
+        payload,
+        force_attach=True,
+        model_observations=False,
+    )
+    default_encoded = wrapper.get_all_encoded_observations(raw_observations)
+    profiled_encoded = wrapper._encode_profiled_observations(raw_observations)
+
+    wrapper.predict(raw_observations)
+
+    for actual, expected in zip(
+        manager.predict_calls[0]["observations"],
+        profiled_encoded["cc_level1"],
+    ):
+        np.testing.assert_allclose(actual, expected, atol=1e-9)
+    for actual, expected in zip(
+        leaf.predict_calls[0]["observations"],
+        default_encoded,
+    ):
+        np.testing.assert_allclose(actual, expected, atol=1e-9)
+    assert leaf.predict_calls[0]["context"] == 1.0
