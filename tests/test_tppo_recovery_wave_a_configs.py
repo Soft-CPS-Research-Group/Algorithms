@@ -98,7 +98,10 @@ def test_wave_a_configs_validate_and_share_the_qualified_scenario(configs: dict[
             "export_business_as_usual_timeseries": False,
         }, filename
         assert config["training"]["seed"] == 7, filename
-        assert config["tracking"] == {
+        assert {
+            key: config["tracking"][key]
+            for key in ("mlflow_enabled", "log_level", "log_frequency")
+        } == {
             "mlflow_enabled": False,
             "log_level": "INFO",
             "log_frequency": 1,
@@ -162,6 +165,12 @@ def test_bc_tppo_configs_have_demo_ppo_eval_phases(configs: dict[str, dict]) -> 
         bc = stage["behavior_cloning"]
         assert bc["enabled"] is True
         assert bc["demonstration_episodes"] == 1
+        assert bc["max_samples_per_building"] == 4096
+        assert bc["pretraining_epochs"] == 2
+        assert bc["batch_size"] == 64
+        tracking = config["tracking"]
+        assert tracking["stall_watchdog_enabled"] is True
+        assert tracking["stall_watchdog_timeout_seconds"] > 0.0
         assert bc["teacher"] == {
             "policy": "RBCSmartPolicy",
             "deterministic": True,

@@ -8,6 +8,8 @@ tracking:
   mlflow_enabled: false
   log_level: "INFO"
   log_frequency: 1
+  stall_watchdog_enabled: true
+  stall_watchdog_timeout_seconds: 600.0
 
 simulator:
   dataset_name: citylearn_three_phase_dynamic_assets_only_demo_15min_parquet
@@ -92,8 +94,8 @@ pipeline:
     behavior_cloning:
       enabled: true
       demonstration_episodes: 1
-      max_samples_per_building: 35040
-      pretraining_epochs: 4
+      max_samples_per_building: 4096
+      pretraining_epochs: 2
       batch_size: 64
       weight: 0.42
       min_weight: 0.0
