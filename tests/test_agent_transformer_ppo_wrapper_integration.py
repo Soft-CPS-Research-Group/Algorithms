@@ -217,6 +217,72 @@ def test_watchdog_progress_brackets_tppo_lifecycle_callbacks(
         assert positions == sorted(positions)
 
 
+def test_watchdog_brackets_out_of_loop_model_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO(truncated=False)
+    wrapper_config = _entity_config()
+    wrapper_config["runtime"]["log_dir"] = str(tmp_path)
+    wrapper_config["tracking"].update(
+        {
+            "progress_updates_enabled": False,
+            "stall_watchdog_enabled": True,
+            "stall_watchdog_timeout_seconds": 1.0,
+            "stall_watchdog_exit_on_timeout": False,
+        }
+    )
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-model-attach-watchdog"
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+
+    attachment_events: list[tuple[str, str]] = []
+    watchdog_phases: list[str] = []
+    attachment_phases: list[str | None] = []
+    original_write_phase_progress = wrapper._write_phase_progress
+    original_watchdog_update = wrapper._update_stall_watchdog_for_phase
+    original_attach_environment = agent.attach_environment
+
+    def collect_phase(*, phase: str, extra=None, **kwargs: Any) -> None:
+        source = (extra or {}).get("attach_source")
+        if source is not None:
+            attachment_events.append(("phase", f"{phase}:{source}"))
+        original_write_phase_progress(phase=phase, extra=extra, **kwargs)
+
+    def collect_watchdog_phase(*, phase: str, **kwargs: Any) -> None:
+        watchdog_phases.append(phase)
+        original_watchdog_update(phase=phase, **kwargs)
+
+    def collect_attach_environment(**kwargs: Any) -> None:
+        attachment_phases.append(wrapper._stall_watchdog_armed_phase)
+        if wrapper._stall_watchdog_armed_phase == "model_attach_start":
+            attachment_events.append(("attach", "model_attach_start"))
+        original_attach_environment(**kwargs)
+
+    monkeypatch.setattr(wrapper, "_write_phase_progress", collect_phase)
+    monkeypatch.setattr(wrapper, "_update_stall_watchdog_for_phase", collect_watchdog_phase)
+    monkeypatch.setattr(agent, "attach_environment", collect_attach_environment)
+    monkeypatch.setattr(wrapper_module.faulthandler, "dump_traceback_later", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wrapper_module.faulthandler, "cancel_dump_traceback_later", lambda: None)
+
+    wrapper.set_model(agent)
+    wrapper.learn(episodes=1, deterministic=False)
+
+    assert attachment_events == [
+        ("phase", "model_attach_start:set_model"),
+        ("attach", "model_attach_start"),
+        ("phase", "model_attach_end:set_model"),
+        ("phase", "model_attach_start:topology_refresh"),
+        ("attach", "model_attach_start"),
+        ("phase", "model_attach_end:topology_refresh"),
+    ]
+    assert attachment_phases == ["model_attach_start", "episode_reset_start", "model_attach_start"]
+    assert watchdog_phases.count("model_attach_start") == 2
+    assert watchdog_phases.count("model_attach_end") == 2
+    assert len(agent._per_building) == 2
+
+
 def test_watchdog_keeps_start_phase_when_tppo_lifecycle_callback_raises(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

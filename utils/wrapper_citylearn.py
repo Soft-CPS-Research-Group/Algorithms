@@ -575,6 +575,37 @@ class Wrapper_CityLearn(RLC):
         except AttributeError:
             pass
 
+    def _attach_model_environment_metadata_with_watchdog(
+        self,
+        *,
+        attach_source: str,
+        episode: int = 0,
+        step: int = 0,
+        episode_total: Optional[int] = None,
+        step_total: Optional[int] = None,
+        global_step_total: Optional[int] = None,
+    ) -> None:
+        phase_extra = {"attach_source": attach_source}
+        self._write_phase_progress(
+            phase="model_attach_start",
+            episode=episode,
+            step=step,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            extra=phase_extra,
+        )
+        self._attach_model_environment_metadata()
+        self._write_phase_progress(
+            phase="model_attach_end",
+            episode=episode,
+            step=step,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            extra=phase_extra,
+        )
+
     def _resolve_building_names(self) -> Optional[List[str]]:
         raw_building_names = getattr(self.env, "building_names", None)
         if isinstance(raw_building_names, list):
@@ -1133,7 +1164,7 @@ class Wrapper_CityLearn(RLC):
     def set_model(self, model: ExecutionUnit):
         """Set the model (any :class:`ExecutionUnit`) after initialization."""
         self.model = model
-        self._attach_model_environment_metadata()
+        self._attach_model_environment_metadata_with_watchdog(attach_source="set_model")
 
 
     def learn(self, episodes=None, deterministic=None, deterministic_finish=None):
@@ -1409,7 +1440,14 @@ class Wrapper_CityLearn(RLC):
                             topology_transition_recorded = True
                     # The old-layout transition is recorded before this call.
                     # TPPO flushes it with zero bootstrap during replacement.
-                    self._attach_model_environment_metadata()
+                    self._attach_model_environment_metadata_with_watchdog(
+                        attach_source="topology_refresh",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                    )
 
                 # Update model if not in deterministic mode
                 if not deterministic:
