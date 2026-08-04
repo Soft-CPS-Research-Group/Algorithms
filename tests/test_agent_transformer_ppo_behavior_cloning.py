@@ -269,6 +269,52 @@ def test_pretraining_uses_full_width_demo_with_trailing_excluded_features() -> N
     assert agent._bc.snapshot_metrics()["behavior_cloning_incompatible_demonstration_samples"] == 0.0
 
 
+def test_pretraining_distinguishes_layouts_with_different_excluded_features() -> None:
+    agent, dimension = _agent()
+    state = agent._per_building[0]
+    assert agent._bc is not None
+    base_layout = state.layout
+    extended_layout = type(base_layout)(
+        building_id=base_layout.building_id,
+        segments=base_layout.segments,
+        n_sro=base_layout.n_sro,
+        n_ca=base_layout.n_ca,
+        ca_action_names=base_layout.ca_action_names,
+        excluded_feature_names=base_layout.excluded_feature_names + ("trailing_excluded",),
+    )
+    extended_dimension = BehaviorCloningRegularizer.full_representation_width(
+        extended_layout
+    )
+    assert extended_dimension == dimension + 1
+    agent._bc.record_demonstration(
+        0, np.ones(dimension), base_layout, [0.25] * base_layout.n_ca
+    )
+    agent._bc.record_demonstration(
+        0, np.ones(extended_dimension), extended_layout,
+        [0.5] * extended_layout.n_ca,
+    )
+
+    groups = agent._bc.demonstrations_for_building_by_signature(0)
+    assert len(groups) == 2
+
+    trained_signatures = []
+    original_loss = agent._bc.demonstration_loss
+
+    def record_training_group(**kwargs):
+        trained_signatures.append(agent._bc.layout_signature(kwargs["layout"]))
+        return original_loss(**kwargs)
+
+    agent._bc.demonstration_loss = record_training_group
+    agent._run_bc_pretraining()
+
+    assert trained_signatures == [
+        agent._bc.layout_signature(base_layout)
+    ] * agent._bc.pretraining_epochs + [
+        agent._bc.layout_signature(extended_layout)
+    ] * agent._bc.pretraining_epochs
+    assert agent._bc.snapshot_metrics()["behavior_cloning_incompatible_demonstration_samples"] == 0.0
+
+
 def test_auxiliary_bc_never_changes_ppo_actions() -> None:
     agent, dimension = _agent(demonstrations=0, weight=1.0)
     teacher_actions = _teacher(agent, 0.9)

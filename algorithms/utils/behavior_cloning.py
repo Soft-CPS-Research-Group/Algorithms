@@ -162,6 +162,7 @@ class BehaviorCloningRegularizer:
                 )
                 for segment in layout.segments
             ),
+            layout.excluded_feature_names,
         )
 
     @property
