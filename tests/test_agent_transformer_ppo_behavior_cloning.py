@@ -635,6 +635,7 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     )
     object.__setattr__(legacy_demo, "target", np.zeros(layout.n_ca, dtype=np.float32))
     payload["behavior_cloning_state"]["demonstrations"] = {0: [legacy_demo]}
+    payload["behavior_cloning_state"]["seen_per_building"] = {0: 1}
     saved = payload["agents"][0]
     for name, before in model_states_before.items():
         saved_state = saved[f"{name}_state"]
@@ -952,6 +953,39 @@ def test_checkpoint_rejects_incomplete_bc_state_before_mutating_agent(
     torch.save(payload, path)
 
     with pytest.raises(RuntimeError, match="missing required key.*seen_per_building"):
+        target.load_checkpoint(path)
+
+    _assert_restore_state_unchanged(target, snapshot)
+
+
+def test_checkpoint_rejects_inconsistent_bc_reservoir_before_mutating_agent(
+    tmp_path: Path,
+) -> None:
+    source, dimension = _agent(demonstrations=2, weight=1.0)
+    assert source._bc is not None
+    source._bc.record_demonstration(
+        0, np.ones(dimension), source._per_building[0].layout,
+        [0.25] * source._per_building[0].layout.n_ca,
+    )
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    target, _ = _agent(demonstrations=2, weight=1.0)
+    state = target._per_building[0]
+    assert target._bc is not None
+    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
+    target._bc.record_demonstration(
+        0, np.ones(dimension), state.layout, [0.5] * state.layout.n_ca
+    )
+    target.on_episode_start(episode=2, training=True)
+    target.predict([np.ones(dimension)], deterministic=True)
+    snapshot = _snapshot_restore_state(target)
+
+    payload = torch.load(path, weights_only=False)
+    payload["behavior_cloning_state"]["seen_per_building"].pop(0)
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match="reservoir building keys"):
         target.load_checkpoint(path)
 
     _assert_restore_state_unchanged(target, snapshot)

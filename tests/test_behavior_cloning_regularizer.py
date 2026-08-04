@@ -9,7 +9,11 @@ from algorithms.utils.behavior_cloning import (
     BehaviorCloningRegularizer,
     Demonstration,
 )
-from algorithms.utils.entity_token_layout import BuildingTokenLayout, TokenSegment
+from algorithms.utils.entity_token_layout import (
+    BuildingTokenLayout,
+    NfcExpression,
+    TokenSegment,
+)
 from utils.config_schema import TransformerPPOBehaviorCloningConfig
 
 
@@ -17,7 +21,10 @@ def _layout(instance_id: str = "charger_1") -> BuildingTokenLayout:
     return BuildingTokenLayout(
         building_id="Building_1",
         segments=(
-            TokenSegment("nfc", "building_nfc", None, (0, 1), ("hour", "month")),
+            TokenSegment(
+                "nfc", "building_nfc", None, (0, 1), ("hour", "month"),
+                NfcExpression("subtract", 0, 1),
+            ),
             TokenSegment("ca", "charger", instance_id, (2,), ("soc",)),
         ),
         n_sro=0,
@@ -174,6 +181,26 @@ def test_load_state_dict_rejects_missing_required_state_key() -> None:
         regularizer.load_state_dict(state)
 
 
+def test_load_state_dict_rejects_mismatched_reservoir_building_keys() -> None:
+    regularizer = _regularizer()
+    state = regularizer.state_dict()
+    state["seen_per_building"][0] = 0
+
+    with pytest.raises(RuntimeError, match="reservoir building keys"):
+        _regularizer().load_state_dict(state)
+
+
+def test_load_state_dict_rejects_seen_count_below_stored_demonstrations() -> None:
+    regularizer = _regularizer()
+    layout = _layout()
+    regularizer.record_demonstration(0, np.zeros(3), layout, [0.25])
+    state = regularizer.state_dict()
+    state["seen_per_building"][0] = 0
+
+    with pytest.raises(RuntimeError, match="reservoir seen count"):
+        _regularizer().load_state_dict(state)
+
+
 def test_record_demonstration_accepts_full_width_with_trailing_excluded_features() -> None:
     regularizer = _regularizer()
     layout = _layout_with_trailing_excluded_features()
@@ -198,6 +225,7 @@ def test_load_state_dict_rejects_legacy_demonstrations_without_encoded_length() 
     object.__setattr__(legacy_demo, "target", np.array([0.25], dtype=np.float32))
     state = regularizer.state_dict()
     state["demonstrations"] = {0: [legacy_demo]}
+    state["seen_per_building"] = {0: 1}
 
     with pytest.raises(RuntimeError, match="predates BC data contract"):
         regularizer.load_state_dict(state)

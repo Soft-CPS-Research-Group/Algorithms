@@ -323,7 +323,9 @@ class BehaviorCloningRegularizer:
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         """Restore training state after the attached teacher has been rebuilt."""
-        self.validate_state_dict(state)
+        self.validate_state_dict(
+            state, max_samples_per_building=self.max_samples_per_building
+        )
         self._demonstrations = deepcopy(state["demonstrations"])
         self._seen_per_building = dict(state["seen_per_building"])
         self._rng.setstate(state["rng_state"])
@@ -338,7 +340,9 @@ class BehaviorCloningRegularizer:
         self._rejected_at_record = int(state.get("rejected_at_record", 0))
 
     @staticmethod
-    def validate_state_dict(state: Mapping[str, Any]) -> None:
+    def validate_state_dict(
+        state: Mapping[str, Any], *, max_samples_per_building: Optional[int] = None
+    ) -> None:
         """Reject persisted state incompatible with the BC restore contract."""
         if not isinstance(state, Mapping):
             raise RuntimeError("Checkpoint BC state must be a mapping.")
@@ -362,6 +366,10 @@ class BehaviorCloningRegularizer:
             raise RuntimeError("Checkpoint BC state has invalid demonstrations mapping.")
         if not isinstance(seen_per_building, Mapping):
             raise RuntimeError("Checkpoint BC state has invalid seen_per_building mapping.")
+        if set(demonstrations_by_building) != set(seen_per_building):
+            raise RuntimeError(
+                "Checkpoint BC state has inconsistent reservoir building keys."
+            )
         for building_idx, demonstrations in demonstrations_by_building.items():
             if (
                 not isinstance(building_idx, Integral)
@@ -370,6 +378,13 @@ class BehaviorCloningRegularizer:
                 or not isinstance(demonstrations, list)
             ):
                 raise RuntimeError("Checkpoint BC state has invalid demonstrations entry.")
+            if (
+                max_samples_per_building is not None
+                and len(demonstrations) > max_samples_per_building
+            ):
+                raise RuntimeError(
+                    "Checkpoint BC state exceeds the reservoir sample capacity."
+                )
             for demonstration in demonstrations:
                 if not hasattr(demonstration, "encoded_length"):
                     raise RuntimeError(
@@ -433,6 +448,11 @@ class BehaviorCloningRegularizer:
                 or seen < 0
             ):
                 raise RuntimeError("Checkpoint BC state has invalid seen_per_building entry.")
+            if seen < len(demonstrations_by_building[building_idx]):
+                raise RuntimeError(
+                    "Checkpoint BC state has reservoir seen count below stored "
+                    "demonstrations."
+                )
         try:
             Random().setstate(state["rng_state"])
         except (TypeError, ValueError) as exc:
