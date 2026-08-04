@@ -39,6 +39,20 @@ def _six_feature_layout() -> BuildingTokenLayout:
     )
 
 
+def _layout_with_trailing_excluded_features() -> BuildingTokenLayout:
+    return BuildingTokenLayout(
+        building_id="Building_1",
+        segments=(
+            TokenSegment("nfc", "building_nfc", None, (0, 2), ("hour", "month")),
+            TokenSegment("ca", "charger", "charger_1", (3,), ("soc",)),
+        ),
+        n_sro=0,
+        n_ca=1,
+        ca_action_names=("electric_vehicle_storage",),
+        excluded_feature_names=("excluded_after_selected", "another_excluded"),
+    )
+
+
 def _regularizer(**overrides) -> BehaviorCloningRegularizer:
     behavior_cloning = {
         "enabled": True,
@@ -125,6 +139,16 @@ def test_record_demonstration_rejects_shape_mismatch() -> None:
 
     assert regularizer.demonstration_count(0) == 1
     assert regularizer.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 1.0
+
+
+def test_record_demonstration_accepts_full_width_with_trailing_excluded_features() -> None:
+    regularizer = _regularizer()
+    layout = _layout_with_trailing_excluded_features()
+
+    regularizer.record_demonstration(0, np.zeros(5), layout, [0.25])
+
+    assert regularizer.demonstration_count(0) == 1
+    assert regularizer.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 0.0
 
 
 def test_load_state_dict_rejects_legacy_demonstrations_without_encoded_length() -> None:

@@ -190,7 +190,7 @@ class BehaviorCloningRegularizer:
         target: List[float],
     ) -> None:
         copied_observation = np.asarray(observation, dtype=np.float32).copy()
-        if copied_observation.shape != (self._expected_encoded_length(layout),):
+        if copied_observation.shape != (self._full_representation_width(layout),):
             self._rejected_at_record += 1
             return
         copied_target = np.asarray(target, dtype=np.float32).copy()
@@ -359,12 +359,16 @@ class BehaviorCloningRegularizer:
         self._latest_bc_valid_samples = samples
 
     @staticmethod
-    def _expected_encoded_length(layout: BuildingTokenLayout) -> int:
-        return max(
-            feature_index
-            for segment in layout.segments
-            for feature_index in segment.feature_indices
-        ) + 1
+    def _full_representation_width(layout: BuildingTokenLayout) -> int:
+        """Return full encoded width, not the last tokenizer-selected index.
+
+        The wrapper preserves excluded features in the encoded observation, so
+        selected indices can have gaps and excluded names can follow all tokens.
+        """
+        selected_feature_count = sum(
+            len(segment.feature_indices) for segment in layout.segments
+        )
+        return selected_feature_count + len(layout.excluded_feature_names)
 
     @staticmethod
     def _copy_actions(actions: List[List[float]]) -> List[List[float]]:
