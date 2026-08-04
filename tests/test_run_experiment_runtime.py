@@ -48,6 +48,30 @@ def test_resume_supports_explicit_local_checkpoint_root(tmp_path):
     assert agent.loaded_checkpoint_paths == [str(checkpoint_root.resolve())]
 
 
+def test_resume_supports_selected_pipeline_stage_checkpoint(tmp_path):
+    checkpoint_root = tmp_path / "previous-leaf" / "checkpoints"
+    checkpoint_root.mkdir(parents=True)
+    manager = _DummyResumeAgent()
+    leaf = _DummyResumeAgent()
+    pipeline = Pipeline([manager, leaf])
+
+    resolved = runner._resume_agent_from_checkpoint(
+        agent=pipeline,
+        config={
+            "checkpointing": {
+                "resume_training": True,
+                "stage_checkpoint_local_paths": {1: str(checkpoint_root)},
+            }
+        },
+        tracking_uri="",
+        checkpoints_dir=tmp_path / "new-job" / "checkpoints",
+    )
+
+    assert resolved is None
+    assert manager.loaded_checkpoint_paths == []
+    assert leaf.loaded_checkpoint_paths == [str(checkpoint_root.resolve())]
+
+
 class _DummyConfigModel:
     def __init__(self, payload: dict):
         self._payload = payload

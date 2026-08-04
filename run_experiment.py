@@ -54,6 +54,7 @@ _startup_trace("after base agent import")
 _startup_trace("before execution unit import")
 from algorithms.execution_unit import ExecutionUnit
 _startup_trace("after execution unit import")
+from algorithms.pipeline import Pipeline
 _startup_trace("before algorithms registry import")
 from algorithms.registry import (
     ENCODED_OBSERVATION_ALGORITHMS,
@@ -504,6 +505,30 @@ def _resume_agent_from_checkpoint(
         raise RuntimeError(
             f"resume_training=true but agent '{agent.__class__.__name__}' does not implement load_checkpoint()."
         )
+
+    stage_checkpoint_paths = checkpoint_cfg.get("stage_checkpoint_local_paths") or {}
+    if stage_checkpoint_paths:
+        if not isinstance(agent, Pipeline):
+            raise RuntimeError(
+                "checkpointing.stage_checkpoint_local_paths requires a Pipeline execution unit."
+            )
+        for raw_index, raw_path in sorted(
+            stage_checkpoint_paths.items(), key=lambda item: int(item[0])
+        ):
+            stage_index = int(raw_index)
+            checkpoint_path = Path(str(raw_path)).expanduser().resolve()
+            if not checkpoint_path.exists():
+                raise RuntimeError(
+                    "Configured stage checkpoint path does not exist for "
+                    f"stage {stage_index}: {checkpoint_path}"
+                )
+            agent.load_stage_checkpoint(stage_index, str(checkpoint_path))
+            logger.info(
+                "Pipeline stage {} resumed from checkpoint {}",
+                stage_index,
+                checkpoint_path,
+            )
+        return None
 
     checkpoint_artifact = str(checkpoint_cfg.get("checkpoint_artifact", "latest_checkpoint.pth"))
     checkpoint_run_id = checkpoint_cfg.get("checkpoint_run_id")

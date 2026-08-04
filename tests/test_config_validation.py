@@ -186,6 +186,55 @@ def test_validate_config_accepts_bundle_section(base_config):
     validate_config(config)
 
 
+def test_validate_config_accepts_selected_pipeline_stage_checkpoint(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "CCLevel1",
+            "count": 1,
+            "hyperparameters": {},
+        },
+    )
+    config["checkpointing"].update(
+        {
+            "resume_training": True,
+            "checkpoint_local_path": None,
+            "checkpoint_run_id": None,
+            "stage_checkpoint_local_paths": {1: "runs/jobs/local-ppo/checkpoints"},
+        }
+    )
+
+    parsed = validate_config(config)
+
+    assert parsed.checkpointing.stage_checkpoint_local_paths == {
+        1: "runs/jobs/local-ppo/checkpoints"
+    }
+
+
+def test_validate_config_rejects_out_of_range_pipeline_stage_checkpoint(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "CCLevel1",
+            "count": 1,
+            "hyperparameters": {},
+        },
+    )
+    config["checkpointing"].update(
+        {
+            "resume_training": True,
+            "checkpoint_local_path": None,
+            "checkpoint_run_id": None,
+            "stage_checkpoint_local_paths": {2: "runs/jobs/missing/checkpoints"},
+        }
+    )
+
+    with pytest.raises(Exception, match="outside pipeline range"):
+        validate_config(config)
+
+
 def test_validate_config_rejects_invalid_per_agent_artifact_config(base_config):
     config = copy.deepcopy(base_config)
     config["bundle"]["per_agent_artifact_config"] = {"0": ["invalid"]}

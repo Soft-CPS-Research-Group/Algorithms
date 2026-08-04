@@ -296,6 +296,26 @@ class TestPipelinePersistence:
         assert len(a.load_calls) == 1
         assert b.load_calls == []
 
+    def test_load_stage_checkpoint_routes_only_selected_stage(self, tmp_path: Path) -> None:
+        manager = RecordingUnit("manager")
+        leaf = RecordingUnit("leaf")
+        checkpoint_root = tmp_path / "standalone-leaf"
+        checkpoint_root.mkdir()
+
+        Pipeline([manager, leaf]).load_stage_checkpoint(1, str(checkpoint_root))
+
+        assert manager.load_calls == []
+        assert leaf.load_calls == [str(checkpoint_root)]
+
+    def test_load_stage_checkpoint_rejects_invalid_index(self, tmp_path: Path) -> None:
+        checkpoint_root = tmp_path / "checkpoint"
+        checkpoint_root.mkdir()
+
+        with pytest.raises(IndexError, match="outside range"):
+            Pipeline([RecordingUnit("only")]).load_stage_checkpoint(
+                1, str(checkpoint_root)
+            )
+
     def test_export_aggregates_metadata(self, tmp_path: Path) -> None:
         a = RecordingUnit("a")
         b = RecordingUnit("b")

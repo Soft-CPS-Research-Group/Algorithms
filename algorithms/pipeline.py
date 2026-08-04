@@ -271,6 +271,39 @@ class Pipeline(ExecutionUnit):
                 checkpoint_path,
             )
 
+    def load_stage_checkpoint(self, stage_index: int, checkpoint_path: str) -> None:
+        """Restore exactly one stage from a standalone checkpoint root.
+
+        This supports hierarchical composition where a new manager starts from
+        scratch while a previously trained leaf is loaded and frozen. The path
+        is passed directly to the selected stage, so an ``Ensemble`` can route
+        its ``agent_<index>`` children exactly as in a standalone run.
+        """
+        index = int(stage_index)
+        if index < 0 or index >= len(self.stages):
+            raise IndexError(
+                f"Pipeline stage index {index} is outside range 0:{len(self.stages) - 1}."
+            )
+
+        root = Path(checkpoint_path)
+        if not root.exists():
+            raise FileNotFoundError(f"Pipeline stage checkpoint root not found: {root}")
+
+        stage = self.stages[index]
+        try:
+            stage.load_checkpoint(str(root))
+        except NotImplementedError as exc:
+            raise RuntimeError(
+                f"Pipeline stage {index} ({type(stage).__name__}) does not support checkpoint loading."
+            ) from exc
+
+        logger.info(
+            "Pipeline stage {} ({}) loaded from standalone checkpoint root {}",
+            index,
+            type(stage).__name__,
+            root,
+        )
+
     def export_artifacts(
         self,
         output_dir: str,

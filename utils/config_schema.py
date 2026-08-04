@@ -200,6 +200,14 @@ class CheckpointingConfig(BaseModel):
     resume_training: bool = False
     checkpoint_run_id: Optional[str] = None
     checkpoint_local_path: Optional[str] = None
+    stage_checkpoint_local_paths: Dict[int, str] = Field(
+        default_factory=dict,
+        description=(
+            "Optional pipeline-stage checkpoint roots keyed by zero-based stage "
+            "index. Use this to initialise selected stages without restoring the "
+            "entire pipeline."
+        ),
+    )
     checkpoint_artifact: str = Field(default="latest_checkpoint.pth")
     use_best_checkpoint_artifact: bool = False
     reset_replay_buffer: bool = False
@@ -212,6 +220,40 @@ class CheckpointingConfig(BaseModel):
     checkpoint_interval: Optional[int] = Field(default=None, ge=1)
     require_update_step: bool = True
     require_initial_exploration_done: bool = True
+
+    @field_validator("stage_checkpoint_local_paths")
+    @classmethod
+    def validate_stage_checkpoint_local_paths(
+        cls, value: Dict[int, str]
+    ) -> Dict[int, str]:
+        normalized: Dict[int, str] = {}
+        for raw_index, raw_path in value.items():
+            index = int(raw_index)
+            path = str(raw_path or "").strip()
+            if index < 0:
+                raise ValueError("checkpointing.stage_checkpoint_local_paths indices must be >= 0")
+            if not path:
+                raise ValueError(
+                    "checkpointing.stage_checkpoint_local_paths values must be non-empty paths"
+                )
+            normalized[index] = path
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_checkpoint_source(self) -> "CheckpointingConfig":
+        if not self.stage_checkpoint_local_paths:
+            return self
+        if not self.resume_training:
+            raise ValueError(
+                "checkpointing.resume_training must be true when "
+                "stage_checkpoint_local_paths is configured"
+            )
+        if self.checkpoint_run_id or self.checkpoint_local_path or self.use_best_checkpoint_artifact:
+            raise ValueError(
+                "checkpointing.stage_checkpoint_local_paths cannot be combined with "
+                "checkpoint_run_id, checkpoint_local_path, or use_best_checkpoint_artifact"
+            )
+        return self
 
 
 class SimulatorExportConfig(BaseModel):
@@ -800,6 +842,21 @@ class ProjectConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
+        stage_checkpoint_paths = self.checkpointing.stage_checkpoint_local_paths
+        if stage_checkpoint_paths:
+            if len(self.pipeline) < 2:
+                raise ValueError(
+                    "checkpointing.stage_checkpoint_local_paths requires a multi-stage pipeline"
+                )
+            invalid_indices = sorted(
+                index for index in stage_checkpoint_paths if index >= len(self.pipeline)
+            )
+            if invalid_indices:
+                raise ValueError(
+                    "checkpointing.stage_checkpoint_local_paths contains stage indices "
+                    f"outside pipeline range 0:{len(self.pipeline) - 1}: {invalid_indices}"
+                )
+
         if self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":
             from algorithms.registry import ALGORITHM_REGISTRY
             for stage in self.pipeline:
