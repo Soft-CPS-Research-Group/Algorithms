@@ -94,6 +94,38 @@ def test_cc_level1_zero_residual_scale_is_exact_reference() -> None:
     assert output == 0.975
 
 
+def test_cc_level1_deterministic_policy_starts_at_non_midpoint_reference() -> None:
+    agent = CCLevel1Agent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "c_dim": len(_CC_LEVEL1_FEATURES),
+                    "hidden_dims": [8],
+                    "price_min": 0.85,
+                    "price_max": 1.15,
+                    "reference_multiplier": 1.025,
+                    "policy_residual_scale": 0.05,
+                    "bc_pretrain_enabled": False,
+                }
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=[list(_CC_LEVEL1_FEATURES)],
+        action_names=[[]],
+        action_space=[None],
+        observation_space=[None],
+        metadata={},
+    )
+
+    output = agent.predict(
+        [np.zeros(len(_CC_LEVEL1_FEATURES), dtype=np.float32)],
+        deterministic=True,
+    )
+
+    assert np.isclose(output, 1.025)
+
+
 def test_market_maker_honors_initial_log_standard_deviation() -> None:
     policy = CommunityMarketMakerNet(c_dim=2, hidden_dims=[4], initial_log_std=-1.5)
 

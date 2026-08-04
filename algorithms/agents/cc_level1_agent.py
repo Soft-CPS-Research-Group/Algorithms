@@ -305,6 +305,16 @@ class CCLevel1Agent(BaseAgent):
             hidden_dims,
             initial_log_std=float(hyper.get("initial_log_std", 0.0)),
         )
+        # Start the deterministic policy exactly at the audited incumbent,
+        # including when the reference is not the midpoint of the price range.
+        reference_unit = (
+            (self._reference_multiplier - self._price_min)
+            / (self._price_max - self._price_min)
+        )
+        reference_raw = float(
+            np.arctanh(np.clip(reference_unit * 2.0 - 1.0, -0.999, 0.999))
+        )
+        nn.init.constant_(self.policy.mean_head.bias, reference_raw)
         self.ppo_optim = Adam(self.policy.parameters(), lr=float(hyper.get("lr", 1e-4)))
 
         # Reward normalisation: track mean + std of RAW step rewards (not returns).
