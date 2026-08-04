@@ -692,6 +692,15 @@ class TransformerPPOBehaviorCloningConfig(BaseModel):
         default_factory=TransformerPPOBehaviorCloningTeacherConfig
     )
 
+    @model_validator(mode="after")
+    def require_demonstration_episode_when_enabled(self) -> "TransformerPPOBehaviorCloningConfig":
+        if self.enabled and self.demonstration_episodes < 1:
+            raise ValueError(
+                "behavior_cloning.demonstration_episodes must be at least 1 "
+                "when behavior_cloning.enabled=true."
+            )
+        return self
+
 
 class TransformerPPOStageConfig(BaseModel):
     algorithm: Literal["AgentTransformerPPO"]
