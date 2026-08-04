@@ -103,7 +103,7 @@ def test_neutral_and_learned_pairs_share_the_exact_same_frozen_leaf():
         assert manager["algorithm"] == "CCLevel1"
         assert manager["frozen"] is False
         assert params["price_min"] == 0.5
-        assert params["price_max"] == 1.5
+        assert params["price_max"] == 1.3
         assert params["reference_multiplier"] == 1.0
         assert params["policy_residual_scale"] == 1.0
         assert params["cc_action_interval"] == 4

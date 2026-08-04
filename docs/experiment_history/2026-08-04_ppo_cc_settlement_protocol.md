@@ -113,7 +113,7 @@ settlement; PPO exige replay dos checkpoints; CC-PPO é uma nova experiência.
 - Decisão a cada 4 passos, isto é, uma vez por hora.
 - `c_dim: 17`.
 - `price_min: 0.5`.
-- `price_max: 1.5`.
+- `price_max: 1.3`, alinhado com o `CC-TD3` anual comparável do Pedro.
 - `reference_multiplier: 1.0`.
 - `policy_residual_scale: 1.0`, para não reduzir artificialmente a gama.
 - Quatro passagens anuais nos jobs aprendidos.
@@ -181,7 +181,9 @@ uma redução produzida apenas pelo settlement não seja atribuída ao CC.
 - As quatro passagens repetem o mesmo ano; esta campanha mede desempenho
   anual in-sample e robustez a seeds, não generalização temporal.
 - O resolved config/commit do SMART standalone do Pedro continua em falta.
-- O `CC-TD3` histórico usa 0,5--1,3 e não é reclassificado como 0,5--1,5.
+- O protocolo novo adota a gama 0,5--1,3 do `CC-TD3` histórico. Esta decisão
+  foi tomada antes dos primeiros treinos remotos de `CC-SMART` e `CC-PPO`;
+  não altera os replays neutros SMART/PPO já concluídos.
 - `SignalAwareRBC` deriva de `RBCSmartPolicy`, enquanto o PPO residual usa uma
   base estritamente local `RBCSmartLocalPolicy`; esta diferença é parte dos
   controladores comparados e fica visível no protocolo.
@@ -208,15 +210,40 @@ Os quatro schemas validam e os quatro pipelines constroem o ambiente real com
 17 agentes e 26 ações. PPO e CC-PPO carregam o pack compacto e completam um
 passo determinístico de inferência.
 
-## Validação local e próxima ação
+## Validação local e execução remota
 
 Os quatro caminhos passaram um smoke local end-to-end com settlement, export
 do scorecard e checkpoint PPO compacto. CC-SMART e CC-PPO completaram BC, uma
 atualização PPO real e avaliação determinística final. A evidência e as
 limitações estão em `2026-08-04_ppo_cc_settlement_local_smoke.md`.
 
-O próximo passo é fazer push do commit que contém o protocolo e o smoke,
-esperar pela imagem commit-specific, escolher o host com evidência live e
-executar preflight estrito. A primeira campanha remota anual continua limitada
-às quatro linhas iniciais; a expansão de seeds só acontece depois desse gate.
-Nenhum job remoto foi preparado ou submetido durante a validação local.
+Os replays anuais neutros da primeira wave terminaram com sucesso na imagem
+`test-validate-ppo-cc-settlement-pipeline-0133d85`:
+
+| Linha | Job | Custo settled | EV mínimo | Rede |
+|---|---|---:|---:|---:|
+| SMART | `b0747ffe-5a62-4e68-8218-765deffd4c78` | EUR 21 964,67 | 0,99818 | 0 kWh |
+| PPO seed 789 | `18649307-5dbf-4bee-96a5-47fb5ca3531a` | EUR 20 850,00 | 0,99927 | 0 kWh |
+
+O PPO melhora o SMART emparelhado em EUR 1 114,67 (5,08%). A evidência bruta
+está em `runs/remote_results/ppo_cc_settlement_annual_v1_wave1_20260804/`.
+
+Antes da primeira wave aprendida, a gama do CC foi alinhada com o `CC-TD3`
+anual comparável do Pedro e alterada de 0,5--1,5 para 0,5--1,3. Os testes
+contratuais passaram (`16 passed`) e os dois smokes reais repetidos com 1,3
+confirmaram `bc_pretrain_done=true` e `ppo_update_count=1`.
+
+Em 2026-08-04 foram submetidos os dois primeiros treinos anuais, ambos com
+quatro passagens, settlement ligado e apenas o CC treinável:
+
+| Linha | Job | Destino | Seed | Estado inicial |
+|---|---|---|---:|---|
+| CC-SMART | `dba92ef6-cfcd-4fbf-81c0-c394cc3baf54` | `server` | 123 | `running` |
+| CC-PPO | `ee53bfda-c7f3-4870-bf1a-dc3b3fee45f0` | `deucalion` CPU | 789 | `setup` |
+
+Os configs foram enviados inline e os resolved configs preservam a gama
+0,5--1,3. O preflight confirmou workers `0.5.3` livres e a imagem pronta nos
+dois destinos. Manifest e monitorização ficam em
+`runs/remote_configs/ppo_cc_settlement_annual_v1_wave2_cc_pmax13_20260804/`.
+A expansão de seeds só acontece depois de avaliar esta wave contra os replays
+neutros emparelhados.

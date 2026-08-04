@@ -11,8 +11,8 @@ Runnable canonical templates for the first paired annual comparison:
 
 All four use the same dataset, full annual window, settlement contract and
 final-only export policy. The two neutral/learned pairs contain byte-equivalent
-leaf configuration blocks. Learned coordinators use the full `0.5--1.5`
-multiplier range.
+leaf configuration blocks. Learned coordinators use the `0.5--1.3`
+multiplier range used by Pedro's comparable annual CC-TD3 run.
 
 The PPO templates load the compact tracked checkpoint pack at
 `artifacts/frozen_ppo/annual_v1/seed789`. It contains actor/value weights only;
