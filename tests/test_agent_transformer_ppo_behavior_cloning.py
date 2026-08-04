@@ -339,6 +339,35 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     source, _ = _agent(demonstrations=2, weight=1.0)
     path = source.save_checkpoint(str(tmp_path), step=7)
     assert path is not None
+    target, _ = _agent(demonstrations=2, weight=1.0)
+    state = target._per_building[0]
+    target._latest_training_metrics = {"target_metric": 1.0}
+    model_states_before = {
+        name: {
+            key: value.detach().clone()
+            for key, value in getattr(state, name).state_dict().items()
+        }
+        for name in ("tokenizer", "backbone", "actor", "critic")
+    }
+    optimizer_lrs_before = [
+        group["lr"] for group in state.optimizer.state_dict()["param_groups"]
+    ]
+    bc_optimizer_lrs_before = [
+        group["lr"] for group in state.bc_optimizer.state_dict()["param_groups"]
+    ]
+    normalizer_before = state.value_normalizer.state_dict()
+    action_bounds_before = [
+        (low.detach().clone(), high.detach().clone())
+        for low, high in target._action_bounds
+    ]
+    counters_before = (
+        target._latest_global_learning_step,
+        target._ppo_update_count,
+        target._current_episode,
+    )
+    topology_before = state.topology_version
+    metrics_before = dict(target._latest_training_metrics)
+
     payload = torch.load(path, weights_only=False)
     assert source._bc is not None
     layout = source._per_building[0].layout
@@ -352,30 +381,48 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     )
     object.__setattr__(legacy_demo, "target", np.zeros(layout.n_ca, dtype=np.float32))
     payload["behavior_cloning_state"]["demonstrations"] = {0: [legacy_demo]}
-    payload["global_learning_step"] = 99
-    payload["current_episode"] = 4
-    torch.save(payload, path)
-
-    target, _ = _agent(demonstrations=2, weight=1.0)
-    state = target._per_building[0]
-    actor_before = [parameter.detach().clone() for parameter in state.actor.parameters()]
-    action_bounds_before = [
-        (low.detach().clone(), high.detach().clone())
-        for low, high in target._action_bounds
+    saved = payload["agents"][0]
+    for name, before in model_states_before.items():
+        saved_state = saved[f"{name}_state"]
+        for key, value in before.items():
+            saved_state[key] = value + torch.ones_like(value)
+    for saved_group, before_lr in zip(
+        saved["optimizer_state"]["param_groups"], optimizer_lrs_before
+    ):
+        saved_group["lr"] = before_lr + 1.0
+    for saved_group, before_lr in zip(
+        saved["bc_optimizer_state"]["param_groups"], bc_optimizer_lrs_before
+    ):
+        saved_group["lr"] = before_lr + 1.0
+    saved["value_normalizer_state"] = {
+        "mean": normalizer_before["mean"] + 1.0,
+        "variance": normalizer_before["variance"] + 1.0,
+        "count": normalizer_before["count"] + 1,
+    }
+    saved["topology_version"] = topology_before + 1
+    payload["action_bounds"] = [
+        (low + 1.0, high + 1.0) for low, high in action_bounds_before
     ]
-    counters_before = (
-        target._latest_global_learning_step,
-        target._ppo_update_count,
-        target._current_episode,
-    )
+    payload["global_learning_step"] = counters_before[0] + 1
+    payload["ppo_update_count"] = counters_before[1] + 1
+    payload["current_episode"] = counters_before[2] + 1
+    payload["latest_training_metrics"] = {"checkpoint_metric": 1.0}
+    torch.save(payload, path)
 
     with pytest.raises(RuntimeError, match="predates BC data contract"):
         target.load_checkpoint(path)
 
-    assert all(
-        torch.equal(before, after)
-        for before, after in zip(actor_before, state.actor.parameters())
-    )
+    for name, before in model_states_before.items():
+        actual = getattr(state, name).state_dict()
+        assert all(torch.equal(value, before[key]) for key, value in actual.items())
+    assert [
+        group["lr"] for group in state.optimizer.state_dict()["param_groups"]
+    ] == optimizer_lrs_before
+    assert [
+        group["lr"] for group in state.bc_optimizer.state_dict()["param_groups"]
+    ] == bc_optimizer_lrs_before
+    assert state.value_normalizer.state_dict() == normalizer_before
+    assert state.topology_version == topology_before
     assert all(
         torch.equal(low_before, low_after)
         and torch.equal(high_before, high_after)
@@ -388,3 +435,4 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
         target._ppo_update_count,
         target._current_episode,
     ) == counters_before
+    assert target._latest_training_metrics == metrics_before
