@@ -170,7 +170,7 @@ def test_bc_tppo_configs_have_demo_ppo_eval_phases(configs: dict[str, dict]) -> 
         assert bc["batch_size"] == 64
         tracking = config["tracking"]
         assert tracking["stall_watchdog_enabled"] is True
-        assert tracking["stall_watchdog_timeout_seconds"] > 0.0
+        assert tracking["stall_watchdog_timeout_seconds"] == pytest.approx(600.0)
         assert bc["teacher"] == {
             "policy": "RBCSmartPolicy",
             "deterministic": True,
