@@ -134,7 +134,7 @@ Dynamic topology notes:
 - Current guardrail: `MADDPG` in `entity+dynamic` raises fail-fast on runtime topology mutation.
   Use `RuleBasedPolicy` (or another dynamic-ready agent) for dynamic topology scenarios.
 - `AgentTransformerPPO` supports `entity+dynamic`. Optional behavior cloning collects separate deterministic `RBCSmartPolicy` demonstrations before PPO rollouts and applies an auxiliary actor-only loss; it never changes actor environment actions.
-- On topology changes, TPPO rebuilds the Smart teacher. BC pretraining groups demonstrations by their stored layout signature and trains each group with its stored layout, including historical topologies.
+- On topology changes, TPPO rebuilds the Smart teacher. Demonstrations retain their encoded representation and layout signature. BC pretraining groups layout-compatible demonstrations by stored signature and trains every stored compatible signature group with its stored layout, including historical topologies. TPPO fails before PPO when no usable demonstrations exist.
 
 ## Tokenizer Fixture (Entity Interface)
 
