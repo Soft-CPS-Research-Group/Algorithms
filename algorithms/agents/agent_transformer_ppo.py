@@ -1601,9 +1601,14 @@ class AgentTransformerPPO(BaseAgent):
                 f"building(s): {', '.join(missing_buildings)}."
             )
         trained_epochs = 0
+        pretraining_metrics: Dict[str, float] = {}
+        total_trained_batches = 0
         for state, grouped in zip(self._per_building, grouped_by_building):
+            usable_samples = 0
+            trained_batches = 0
             for demonstrations in grouped.values():
                 layout = demonstrations[0].layout
+                usable_samples += len(demonstrations)
                 for _ in range(self._bc.pretraining_epochs):
                     for start in range(0, len(demonstrations), self._bc.batch_size):
                         batch = demonstrations[start : start + self._bc.batch_size]
@@ -1632,10 +1637,20 @@ class AgentTransformerPPO(BaseAgent):
                             self._max_grad_norm,
                         )
                         state.bc_optimizer.step()
-                trained_epochs = max(trained_epochs, self._bc.pretraining_epochs)
+                        trained_batches += 1
+            pretraining_metrics[
+                f"behavior_cloning_building_{state.building_id}_usable_samples"
+            ] = float(usable_samples)
+            pretraining_metrics[
+                f"behavior_cloning_building_{state.building_id}_trained_batches"
+            ] = float(trained_batches)
+            total_trained_batches += trained_batches
+            trained_epochs = max(trained_epochs, self._bc.pretraining_epochs)
         self._bc.set_pretraining_epochs(trained_epochs)
         self._bc.set_incompatible_demonstration_samples(0)
         self._latest_training_metrics.update(self._bc.snapshot_metrics())
+        pretraining_metrics["behavior_cloning_pretraining_batches"] = float(total_trained_batches)
+        self._latest_training_metrics.update(pretraining_metrics)
 
     def _run_auxiliary_bc_update(
         self,

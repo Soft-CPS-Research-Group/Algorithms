@@ -27,13 +27,14 @@ a Wave A server run if either local gate fails.
 For each configuration, the experiment log and local metrics must show:
 
 - completed episode `3/3`;
-- every BC building has usable samples greater than zero;
-- the total number of trained batches is greater than zero;
+- every BC building has positive usable samples and trained batches, recorded as
+  `TPPO/behavior_cloning_building_<building>_usable_samples` and
+  `TPPO/behavior_cloning_building_<building>_trained_batches` metrics;
+- the total `TPPO/behavior_cloning_pretraining_batches` metric is positive;
 - no `Skipping behavior-cloning demonstrations` warning;
-- no watchdog activation or traceback.
+- the known `logs/<job_id>_stall_watchdog.log` artifact is absent or empty.
 
-The runner fails closed when the log lacks per-building usable-sample evidence or
-the positive trained-batch total. This branch currently records aggregate BC
-demonstration samples and pretraining epochs, but does not emit the required
-per-building usable-sample or trained-batch metrics. The real runs can complete,
-but the validation gate will remain blocked until that instrumentation is added.
+The runner reads these metrics from each job's `logs/metrics.jsonl` file. It
+fails closed when any metric is missing or zero, or when the watchdog artifact
+contains output. An empty watchdog artifact is valid: the wrapper creates it
+when it arms the watchdog, even if no timeout occurs.

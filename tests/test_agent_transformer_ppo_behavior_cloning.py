@@ -252,6 +252,9 @@ def test_final_demo_end_pretrains_actor_then_ppo_uses_only_actor_actions() -> No
     metrics = agent.consume_latest_training_metrics()
     assert metrics["TPPO/behavior_cloning_pretraining_epochs"] == 2.0
     assert metrics["TPPO/behavior_cloning_demonstration_samples"] == 1.0
+    assert metrics["TPPO/behavior_cloning_building_Building_1_usable_samples"] == 1.0
+    assert metrics["TPPO/behavior_cloning_building_Building_1_trained_batches"] == 2.0
+    assert metrics["TPPO/behavior_cloning_pretraining_batches"] == 2.0
 
     agent.on_episode_start(episode=1, training=True)
     agent.set_observation_context(raw_observations=[observation], encoded_observations=[observation])
@@ -289,6 +292,26 @@ def test_pretraining_rejects_each_building_without_usable_demonstrations() -> No
         torch.equal(before_parameter, after_parameter)
         for before_parameter, after_parameter in zip(before, first_state.actor.parameters())
     )
+
+
+def test_pretraining_reports_positive_evidence_for_every_building() -> None:
+    agent, dimension = _agent(building_count=2)
+    assert agent._bc is not None
+    for building_idx, state in enumerate(agent._per_building):
+        agent._bc.record_demonstration(
+            building_idx,
+            np.ones(dimension),
+            state.layout,
+            [0.25] * state.layout.n_ca,
+        )
+
+    agent._run_bc_pretraining()
+
+    metrics = agent.consume_latest_training_metrics()
+    for building in ("Building_1", "Building_2"):
+        assert metrics[f"TPPO/behavior_cloning_building_{building}_usable_samples"] == 1.0
+        assert metrics[f"TPPO/behavior_cloning_building_{building}_trained_batches"] == 2.0
+    assert metrics["TPPO/behavior_cloning_pretraining_batches"] == 4.0
 
 
 def test_record_rejection_is_reported_without_incompatible_skip_metric() -> None:
@@ -350,6 +373,9 @@ def test_final_demo_boundary_pretrains_every_stored_topology_group() -> None:
     )
     metrics = agent.consume_latest_training_metrics()
     assert metrics["TPPO/behavior_cloning_rejected_at_record"] == 0.0
+    assert metrics["TPPO/behavior_cloning_building_Building_1_usable_samples"] == 2.0
+    assert metrics["TPPO/behavior_cloning_building_Building_1_trained_batches"] == 4.0
+    assert metrics["TPPO/behavior_cloning_pretraining_batches"] == 4.0
     assert len(expanded_names) == current_dimension
 
 
