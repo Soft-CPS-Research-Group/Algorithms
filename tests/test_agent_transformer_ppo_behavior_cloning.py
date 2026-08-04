@@ -114,6 +114,69 @@ def _assert_structured_equal(actual, expected) -> None:
         assert actual == expected
 
 
+def _snapshot_restore_state(agent: AgentTransformerPPO) -> dict:
+    state = agent._per_building[0]
+    assert agent._bc is not None
+    return {
+        "model_states": {
+            name: {
+                key: value.detach().clone()
+                for key, value in getattr(state, name).state_dict().items()
+            }
+            for name in ("tokenizer", "backbone", "actor", "critic")
+        },
+        "optimizer": deepcopy(state.optimizer.state_dict()),
+        "bc_optimizer": deepcopy(state.bc_optimizer.state_dict()),
+        "normalizer": deepcopy(state.value_normalizer.state_dict()),
+        "action_bounds": [
+            (low.detach().clone(), high.detach().clone())
+            for low, high in agent._action_bounds
+        ],
+        "counters": (
+            agent._latest_global_learning_step,
+            agent._ppo_update_count,
+            agent._current_episode,
+        ),
+        "topology": state.topology_version,
+        "metrics": dict(agent._latest_training_metrics),
+        "pending": agent._pending_decisions[0],
+        "bc_state": agent._bc.state_dict(),
+        "python_rng": random.getstate(),
+        "numpy_rng": np.random.get_state(),
+        "torch_rng": torch.get_rng_state(),
+    }
+
+
+def _assert_restore_state_unchanged(agent: AgentTransformerPPO, snapshot: dict) -> None:
+    state = agent._per_building[0]
+    for name, before in snapshot["model_states"].items():
+        actual = getattr(state, name).state_dict()
+        assert all(torch.equal(value, before[key]) for key, value in actual.items())
+    _assert_structured_equal(state.optimizer.state_dict(), snapshot["optimizer"])
+    _assert_structured_equal(state.bc_optimizer.state_dict(), snapshot["bc_optimizer"])
+    assert state.value_normalizer.state_dict() == snapshot["normalizer"]
+    assert state.topology_version == snapshot["topology"]
+    assert all(
+        torch.equal(low_before, low_after)
+        and torch.equal(high_before, high_after)
+        for (low_before, high_before), (low_after, high_after) in zip(
+            snapshot["action_bounds"], agent._action_bounds
+        )
+    )
+    assert (
+        agent._latest_global_learning_step,
+        agent._ppo_update_count,
+        agent._current_episode,
+    ) == snapshot["counters"]
+    assert agent._latest_training_metrics == snapshot["metrics"]
+    assert agent._pending_decisions[0] is snapshot["pending"]
+    assert agent._bc is not None
+    _assert_structured_equal(agent._bc.state_dict(), snapshot["bc_state"])
+    _assert_structured_equal(random.getstate(), snapshot["python_rng"])
+    _assert_structured_equal(np.random.get_state(), snapshot["numpy_rng"])
+    assert torch.equal(torch.get_rng_state(), snapshot["torch_rng"])
+
+
 def _expand_charger_topology(
     agent: AgentTransformerPPO,
     observation_names: list[str],
@@ -463,6 +526,44 @@ def test_checkpoint_restores_bc_demonstrations_phase_and_decay_progress(
     assert fresh._pending_decisions == [None]
 
 
+def test_checkpoint_restores_historical_layout_demonstrations_after_topology_change(
+    tmp_path: Path,
+) -> None:
+    source, old_dimension = _agent(demonstrations=2, weight=1.0)
+    assert source._bc is not None
+    old_layout = source._per_building[0].layout
+    source._bc.record_demonstration(
+        0, np.ones(old_dimension), old_layout, [0.25] * old_layout.n_ca
+    )
+    expanded_names, expanded_actions = _expand_charger_topology(
+        source, load_sample_observation_names_for_first_building()
+    )
+    current_layout = source._per_building[0].layout
+    current_dimension = BehaviorCloningRegularizer.full_representation_width(
+        current_layout
+    )
+    source._bc.record_demonstration(
+        0, np.ones(current_dimension), current_layout,
+        [0.5] * current_layout.n_ca,
+    )
+    expected_groups = source._bc.demonstrations_for_building_by_signature(0)
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    fresh, _ = _agent(demonstrations=2, weight=1.0)
+    fresh.attach_environment(
+        observation_names=[expanded_names], action_names=[expanded_actions],
+        action_space=[_DummySpace(len(expanded_actions))], observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+    fresh.load_checkpoint(path)
+
+    assert fresh._bc is not None
+    restored_groups = fresh._bc.demonstrations_for_building_by_signature(0)
+    assert restored_groups.keys() == expected_groups.keys()
+    assert [len(group) for group in restored_groups.values()] == [1, 1]
+
+
 def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     tmp_path: Path,
 ) -> None:
@@ -752,9 +853,27 @@ def test_checkpoint_rejects_tokenizer_incompatible_demo_layout_before_mutating_a
 
     target, _ = _agent(demonstrations=2, weight=1.0)
     state = target._per_building[0]
-    actor_before = {
-        key: value.detach().clone() for key, value in state.actor.state_dict().items()
-    }
+    assert target._bc is not None
+    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
+    target._latest_training_metrics = {"target_metric": 1.0}
+    target._bc.record_demonstration(
+        0, np.ones(dimension), state.layout, [0.25] * state.layout.n_ca
+    )
+    target._bc.record_demonstration(
+        0, np.full(dimension, 2.0), state.layout, [0.5] * state.layout.n_ca
+    )
+    target._bc.demonstration_loss(
+        layout=state.layout,
+        demonstrations=target._bc.sample_demonstrations(state.layout, batch_size=1),
+        predicted_means=torch.full((1, state.layout.n_ca, 1), 0.75),
+        global_learning_step=0,
+    )
+    target._bc.set_pretraining_epochs(3)
+    target._bc.set_incompatible_demonstration_samples(2)
+    target.on_episode_start(episode=2, training=True)
+    target.predict([np.ones(dimension)], deterministic=True)
+    assert target._pending_decisions[0] is not None
+    snapshot = _snapshot_restore_state(target)
     payload = torch.load(path, weights_only=False)
     demo = payload["behavior_cloning_state"]["demonstrations"][0][0]
     segment_idx = next(
@@ -799,7 +918,4 @@ def test_checkpoint_rejects_tokenizer_incompatible_demo_layout_before_mutating_a
     with pytest.raises(RuntimeError, match="BC layout/tokenizer compatibility"):
         target.load_checkpoint(path)
 
-    assert all(
-        torch.equal(value, actor_before[key])
-        for key, value in state.actor.state_dict().items()
-    )
+    _assert_restore_state_unchanged(target, snapshot)
