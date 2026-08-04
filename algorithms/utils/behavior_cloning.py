@@ -19,6 +19,7 @@ class Demonstration:
     """One immutable encoded observation and its teacher action target."""
 
     observation: np.ndarray
+    encoded_length: int
     layout: BuildingTokenLayout
     layout_signature: Tuple[Any, ...]
     target: np.ndarray
@@ -195,6 +196,7 @@ class BehaviorCloningRegularizer:
         copied_target.setflags(write=False)
         demo = Demonstration(
             observation=copied_observation,
+            encoded_length=int(copied_observation.shape[0]),
             layout=deepcopy(layout),
             layout_signature=self.layout_signature(layout),
             target=copied_target,

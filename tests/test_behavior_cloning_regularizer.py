@@ -89,6 +89,19 @@ def test_demonstration_is_frozen_and_groups_by_layout_signature() -> None:
     assert len(regularizer.demonstrations_for_building_by_signature(0)) == 2
 
 
+def test_demonstration_stores_encoded_length() -> None:
+    regularizer = _regularizer()
+    layout = _layout()
+
+    regularizer.record_demonstration(
+        0, np.arange(6, dtype=np.float32), layout, [0.25]
+    )
+
+    signature = regularizer.layout_signature(layout)
+    demo = regularizer.demonstrations_for_building_by_signature(0)[signature][0]
+    assert demo.encoded_length == 6
+
+
 def test_demonstration_accessors_return_immutable_group_snapshots() -> None:
     regularizer = _regularizer()
     layout = _layout()
