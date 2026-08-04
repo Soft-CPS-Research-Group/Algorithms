@@ -967,6 +967,9 @@ class AgentTransformerPPO(BaseAgent):
         self, behavior_cloning_state: Dict[str, Any]
     ) -> None:
         """Ensure stored demonstrations can use their receiving tokenizer."""
+        nfc_type = self._tokenizer_config.nfc.type_name
+        sro_types = set(self._tokenizer_config.sro_types)
+        ca_types = set(self._tokenizer_config.ca_types)
         for building_idx, demonstrations in behavior_cloning_state[
             "demonstrations"
         ].items():
@@ -980,6 +983,33 @@ class AgentTransformerPPO(BaseAgent):
             projections = self._per_building[building_idx].tokenizer.projections
             for demonstration in demonstrations:
                 for segment in demonstration.layout.segments:
+                    if (
+                        segment.family == "nfc"
+                        and segment.type_name != nfc_type
+                    ):
+                        raise RuntimeError(
+                            "Checkpoint BC layout/tokenizer compatibility failed: "
+                            f"building {building_idx} NFC segment has type "
+                            f"{segment.type_name!r}, expected {nfc_type!r}."
+                        )
+                    if (
+                        segment.family == "sro"
+                        and segment.type_name not in sro_types
+                    ):
+                        raise RuntimeError(
+                            "Checkpoint BC layout/tokenizer compatibility failed: "
+                            f"building {building_idx} SRO segment type "
+                            f"{segment.type_name!r} is not declared as SRO."
+                        )
+                    if (
+                        segment.family == "ca"
+                        and segment.type_name not in ca_types
+                    ):
+                        raise RuntimeError(
+                            "Checkpoint BC layout/tokenizer compatibility failed: "
+                            f"building {building_idx} CA segment type "
+                            f"{segment.type_name!r} is not declared as CA."
+                        )
                     if segment.family == "nfc":
                         expected_width = 1
                     else:

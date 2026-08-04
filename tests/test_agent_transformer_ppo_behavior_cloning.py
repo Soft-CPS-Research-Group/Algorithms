@@ -922,6 +922,85 @@ def test_checkpoint_rejects_tokenizer_incompatible_demo_layout_before_mutating_a
     _assert_restore_state_unchanged(target, snapshot)
 
 
+@pytest.mark.parametrize(
+    ("source_family", "target_family"),
+    [("sro", "ca"), ("ca", "sro")],
+)
+def test_checkpoint_rejects_demo_segment_in_wrong_tokenizer_family_before_mutating_agent(
+    tmp_path: Path,
+    source_family: str,
+    target_family: str,
+) -> None:
+    source, dimension = _agent(demonstrations=2, weight=1.0)
+    assert source._bc is not None
+    source._bc.record_demonstration(
+        0, np.ones(dimension), source._per_building[0].layout,
+        [0.25] * source._per_building[0].layout.n_ca,
+    )
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    target, _ = _agent(demonstrations=2, weight=1.0)
+    state = target._per_building[0]
+    assert target._bc is not None
+    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
+    target._bc.record_demonstration(
+        0, np.ones(dimension), state.layout, [0.5] * state.layout.n_ca
+    )
+    target.on_episode_start(episode=2, training=True)
+    target.predict([np.ones(dimension)], deterministic=True)
+    snapshot = _snapshot_restore_state(target)
+
+    payload = torch.load(path, weights_only=False)
+    assert payload["checkpoint_format_version"] == 2
+    demo = payload["behavior_cloning_state"]["demonstrations"][0][0]
+    segment_idx = next(
+        index for index, segment in enumerate(demo.layout.segments)
+        if segment.family == source_family
+    )
+    segment = demo.layout.segments[segment_idx]
+    bad_segment = replace(segment, family=target_family)
+    remaining_segments = (
+        demo.layout.segments[:segment_idx] + demo.layout.segments[segment_idx + 1:]
+    )
+    nfc_idx = next(
+        index for index, item in enumerate(remaining_segments)
+        if item.family == "nfc"
+    )
+    if target_family == "sro":
+        bad_segments = (
+            remaining_segments[:nfc_idx]
+            + (bad_segment,)
+            + remaining_segments[nfc_idx:]
+        )
+        ca_action_names = demo.layout.ca_action_names[:-1]
+        bad_target = demo.target[:-1]
+    else:
+        bad_segments = remaining_segments + (bad_segment,)
+        ca_action_names = demo.layout.ca_action_names + ("tampered_action",)
+        bad_target = np.append(demo.target, 0.0).astype(np.float32)
+    bad_layout = replace(
+        demo.layout,
+        segments=bad_segments,
+        n_sro=demo.layout.n_sro + (1 if target_family == "sro" else -1),
+        n_ca=demo.layout.n_ca + (1 if target_family == "ca" else -1),
+        ca_action_names=ca_action_names,
+    )
+    payload["behavior_cloning_state"]["demonstrations"][0][0] = Demonstration(
+        observation=demo.observation,
+        encoded_length=demo.encoded_length,
+        layout=bad_layout,
+        layout_signature=source._bc.layout_signature(bad_layout),
+        target=bad_target,
+    )
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match="BC layout/tokenizer compatibility"):
+        target.load_checkpoint(path)
+
+    _assert_restore_state_unchanged(target, snapshot)
+
+
 def test_checkpoint_rejects_incomplete_bc_state_before_mutating_agent(
     tmp_path: Path,
 ) -> None:
