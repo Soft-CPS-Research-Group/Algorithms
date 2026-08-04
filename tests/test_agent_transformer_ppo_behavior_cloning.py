@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 import random
 
@@ -94,6 +95,12 @@ def _assert_structured_equal(actual, expected) -> None:
         assert len(actual) == len(expected)
         for actual_item, expected_item in zip(actual, expected):
             _assert_structured_equal(actual_item, expected_item)
+    elif is_dataclass(expected):
+        assert type(actual) is type(expected)
+        for field in fields(expected):
+            _assert_structured_equal(
+                getattr(actual, field.name), getattr(expected, field.name)
+            )
     else:
         assert actual == expected
 
@@ -383,6 +390,8 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     target._bc.record_demonstration(
         0, observation, state.layout, [0.25] * state.layout.n_ca
     )
+    target._bc.set_pretraining_epochs(3)
+    target._bc.set_incompatible_demonstration_samples(2)
     target.on_episode_start(episode=2, training=True)
     target.predict([observation], deterministic=True)
     pending_before = target._pending_decisions[0]
@@ -408,8 +417,7 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     )
     topology_before = state.topology_version
     metrics_before = dict(target._latest_training_metrics)
-    demo_before = next(iter(target._bc.demonstrations_by_signature.values()))[0]
-    bc_count_before = target._bc.demonstration_count()
+    bc_state_before = target._bc.state_dict()
 
     payload = torch.load(path, weights_only=False)
     assert source._bc is not None
@@ -484,11 +492,8 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     ) == counters_before
     assert target._latest_training_metrics == metrics_before
     assert target._pending_decisions[0] is pending_before
-    assert target._bc.demonstration_count() == bc_count_before
-    demo_after = next(iter(target._bc.demonstrations_by_signature.values()))[0]
-    assert demo_after is demo_before
-    assert demo_after.observation.tolist() == observation.tolist()
-    assert demo_after.target.tolist() == [0.25] * state.layout.n_ca
+    assert target._bc is not None
+    _assert_structured_equal(target._bc.state_dict(), bc_state_before)
     _assert_structured_equal(random.getstate(), python_rng_before)
     _assert_structured_equal(np.random.get_state(), numpy_rng_before)
     assert torch.equal(torch.get_rng_state(), torch_rng_before)
