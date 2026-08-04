@@ -237,16 +237,29 @@ class DeterministicVectorMultiplierPolicy(nn.Module):
         policy: CommunityMarketMakerNetV2,
         price_min: float,
         price_max: float,
+        reference_multipliers: np.ndarray,
+        policy_residual_scale: float,
     ) -> None:
         super().__init__()
         self.encoder = policy.encoder
         self.mean_head = policy.mean_head
         self.register_buffer("price_min", torch.tensor(float(price_min)))
         self.register_buffer("price_span", torch.tensor(float(price_max - price_min)))
+        self.register_buffer(
+            "reference_multipliers",
+            torch.tensor(reference_multipliers, dtype=torch.float32),
+        )
+        self.register_buffer(
+            "policy_residual_scale",
+            torch.tensor(float(policy_residual_scale)),
+        )
 
     def forward(self, community: torch.Tensor) -> torch.Tensor:
         raw = self.mean_head(self.encoder(community))
-        return self.price_min + self.price_span * (torch.tanh(raw) + 1.0) / 2.0
+        full = self.price_min + self.price_span * (torch.tanh(raw) + 1.0) / 2.0
+        return self.reference_multipliers + self.policy_residual_scale * (
+            full - self.reference_multipliers
+        )
 
 
 # ── Rollout buffer (N-dim actions) ───────────────────────────────────────────
@@ -361,6 +374,9 @@ class CCLevel2Agent(BaseAgent):
             raise ValueError(
                 "CCLevel2 reference_multipliers must lie within the configured price range"
             )
+        self._policy_residual_scale = float(hyper.get("policy_residual_scale", 1.0))
+        if not 0.0 <= self._policy_residual_scale <= 1.0:
+            raise ValueError("CCLevel2 policy_residual_scale must be within [0, 1]")
 
         # Context dimension: 16 district + 6 per-building × N = 118 for N=17
         self._n_district = _N_DISTRICT
@@ -463,6 +479,14 @@ class CCLevel2Agent(BaseAgent):
         with torch.no_grad():
             self.policy.mean_head.weight.zero_()
             self.policy.mean_head.bias.copy_(torch.from_numpy(raw_reference))
+
+    def _raw_to_multipliers(self, raw: np.ndarray) -> np.ndarray:
+        full = self._price_min + (
+            (self._price_max - self._price_min) * (np.tanh(raw) + 1.0) / 2.0
+        )
+        return self._reference_multipliers + self._policy_residual_scale * (
+            full - self._reference_multipliers
+        )
 
     def attach_environment(
         self,
@@ -909,8 +933,7 @@ class CCLevel2Agent(BaseAgent):
                 raw, logprob, _, value = self.policy.get_action_and_value(ctx_t)
 
         raw_np   = raw.squeeze(0).numpy()                 # (N,)
-        squashed = np.tanh(raw_np)
-        mults    = self._price_min + (self._price_max - self._price_min) * (squashed + 1.0) / 2.0
+        mults = self._raw_to_multipliers(raw_np)
 
         self._cached_action      = raw_np.astype(np.float32)
         self._cached_multipliers = mults.astype(np.float32)
@@ -1156,6 +1179,8 @@ class CCLevel2Agent(BaseAgent):
             self.policy,
             self._price_min,
             self._price_max,
+            self._reference_multipliers,
+            self._policy_residual_scale,
         ).eval()
         torch.onnx.export(
             deterministic_policy,
@@ -1200,6 +1225,7 @@ class CCLevel2Agent(BaseAgent):
             "price_min": self._price_min,
             "price_max": self._price_max,
             "reference_multipliers": self._reference_multipliers.tolist(),
+            "policy_residual_scale": self._policy_residual_scale,
             "artifacts": artifacts,
             "diagnostic_artifacts": diagnostic_artifacts,
         }

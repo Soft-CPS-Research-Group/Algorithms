@@ -601,6 +601,7 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
     price_max: float = Field(default=1.5, gt=0)
     initial_log_std: float = Field(default=-2.5, ge=-5.0, le=1.0)
     reference_multipliers: Optional[List[float]] = None
+    policy_residual_scale: float = Field(default=1.0, ge=0.0, le=1.0)
     w_factor: float = Field(default=0.3, ge=0)
     w_smoothness: float = Field(default=0.02, ge=0)
 

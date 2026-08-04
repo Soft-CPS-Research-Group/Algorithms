@@ -101,6 +101,8 @@ def test_deterministic_vector_policy_exports_price_mapping() -> None:
         agent.policy,
         agent._price_min,
         agent._price_max,
+        agent._reference_multipliers,
+        agent._policy_residual_scale,
     )
 
     output = inference(torch.zeros((3, agent._c_dim), dtype=torch.float32))
@@ -112,6 +114,24 @@ def test_deterministic_vector_policy_exports_price_mapping() -> None:
         atol=1e-6,
         rtol=0.0,
     )
+
+
+def test_cc_level2_can_conservatively_scale_policy_away_from_reference() -> None:
+    agent = _attached_agent()
+    agent._policy_residual_scale = 0.5
+    with torch.no_grad():
+        agent.policy.mean_head.weight.zero_()
+        agent.policy.mean_head.bias.zero_()
+    observations = [
+        np.zeros(len(_observation_names(1)), dtype=np.float32),
+        np.zeros(len(_observation_names(2)), dtype=np.float32),
+    ]
+
+    output = agent.predict(observations, deterministic=True)
+
+    # Full policy output is the midpoint 0.95; blend halfway from each
+    # building's measured reference [0.90, 1.05].
+    np.testing.assert_allclose(output, [0.925, 1.0], atol=1e-6)
 
 
 def test_cc_level2_temporal_abstraction_adds_one_joint_transition() -> None:
@@ -191,6 +211,7 @@ def test_cc_level2_export_persists_vector_contract_and_trace(tmp_path) -> None:
 
     assert metadata["output_contract"] == "deterministic_per_building_price_multiplier_vector"
     assert metadata["reference_multipliers"] == pytest.approx([0.9, 1.05])
+    assert metadata["policy_residual_scale"] == 1.0
     assert (tmp_path / "onnx_models" / "cc2_market_maker.onnx").is_file()
     with (tmp_path / "decision_trace.csv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
@@ -203,3 +224,8 @@ def test_cc_level2_schema_rejects_reference_vector_mismatch() -> None:
         CCLevel2Hyperparameters.model_validate(
             {"num_buildings": 2, "reference_multipliers": [1.0]}
         )
+
+
+def test_cc_level2_schema_rejects_policy_residual_scale_outside_unit_interval() -> None:
+    with pytest.raises(ValueError):
+        CCLevel2Hyperparameters.model_validate({"policy_residual_scale": 1.1})
