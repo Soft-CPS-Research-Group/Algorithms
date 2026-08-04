@@ -1,10 +1,10 @@
 metadata:
-  experiment_name: ppo_cc_scalar_safe_annual_eval_20260804
-  run_name: Frozen safe residual CCLevel1 annual evaluation
+  experiment_name: ppo_cc_scalar_deterministic_leaf_annual_eval_20260804
+  run_name: Frozen CCLevel1 robust-incumbent annual evaluation
   community_name: citylearn_static_15min
   description: >-
-    Evaluate the trained scalar CC deterministically for one exact year; the CC
-    and all seventeen PPO seed 789 leaves are frozen.
+    Evaluate the retrained scalar CC deterministically for one exact year; the
+    CC and all seventeen PPO seed 789 leaves are frozen and community-blind.
   bundle_version: null
   alias_mapping_path: null
 runtime:
@@ -20,13 +20,13 @@ runtime:
 tracking:
   mlflow_enabled: false
   tags:
-    evidence_horizon: cclevel1_safe_residual_frozen_evaluation_annual_exact
+    evidence_horizon: cclevel1_deterministic_leaf_frozen_evaluation_annual_exact
     benchmark_track: building_local_retail
     controller_scope: frozen_cc_plus_seventeen_frozen_local_ppo_actors
     runtime_service_teacher: RBCSmartLocalPolicy
     local_price_conditioning_ready: true
     ppo_seed: 789
-    source_commit: 8c0b87d
+    source_commit: fb49301
   log_level: INFO
   log_frequency: 256
   mlflow_step_sample_interval: 10
@@ -64,7 +64,7 @@ checkpointing:
   checkpoint_run_id: null
   checkpoint_local_path: null
   stage_checkpoint_local_paths:
-    0: ./runs/jobs/cclevel1-safe-residual-frozen-ppo-seed789-annual-train-f4a3e8f/checkpoints/stage_0
+    0: ./runs/jobs/cclevel1-deterministic-leaf-frozen-ppo-seed789-annual-train-v2-fb49301/checkpoints/stage_0
     1: ./runs/jobs/ppo-residual-battery-annual-dagger-s789-876293a/checkpoints
   checkpoint_artifact: latest_checkpoint.pth
   use_best_checkpoint_artifact: false
@@ -106,7 +106,7 @@ simulator:
     include_business_as_usual: true
     export_business_as_usual_timeseries: false
     kpi_round_decimals: null
-    session_name: cclevel1-safe-residual-frozen-ppo-seed789-annual-eval
+    session_name: cclevel1-deterministic-leaf-frozen-ppo-seed789-annual-eval
   wrapper_reward:
     enabled: false
     profile: cost_limits_v1
@@ -176,15 +176,15 @@ pipeline:
   count: 1
   frozen: true
   hyperparameters:
-    num_steps: 672
-    lr: 0.00003
+    num_steps: 336
+    lr: 0.0001
     gamma: 0.99
     gae_lambda: 0.95
     num_epochs: 4
     mini_batch_size: 96
     clip_coef: 0.2
     vf_coef: 0.5
-    ent_coef: 0.0001
+    ent_coef: 0.001
     max_grad_norm: 0.5
     target_kl: 0.05
     hidden_dims:
@@ -192,13 +192,13 @@ pipeline:
     - 64
     c_dim: 17
     cc_action_interval: 4
-    price_min: 0.85
-    price_max: 1.15
-    initial_log_std: -3.0
-    reference_multiplier: 1.025
-    policy_residual_scale: 0.05
+    price_min: 1.0
+    price_max: 1.075
+    initial_log_std: -1.5
+    reference_multiplier: 1.05
+    policy_residual_scale: 1.0
     w_factor: 0.0
-    w_smoothness: 0.02
+    w_smoothness: 0.005
     bc_pretrain_enabled: false
 - algorithm: PPO
   count: 17
