@@ -144,6 +144,40 @@ def test_wrapper_attaches_transformer_ppo_with_entity_dynamic() -> None:
     assert state.layout.n_ca == 2  # storage + charger
 
 
+def test_watchdog_progress_brackets_tppo_lifecycle_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO(truncated=False)
+    wrapper_config = _entity_config()
+    wrapper_config["tracking"].update(
+        {
+            "progress_updates_enabled": False,
+            "stall_watchdog_enabled": True,
+            "stall_watchdog_timeout_seconds": 1.0,
+        }
+    )
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-lifecycle-watchdog"
+    )
+    wrapper.set_model(AgentTransformerPPO(_ppo_full_config()))
+
+    phases: list[str] = []
+
+    def record_phase(*, phase: str, **_kwargs: Any) -> None:
+        phases.append(phase)
+
+    monkeypatch.setattr(wrapper, "_write_phase_progress", record_phase)
+
+    wrapper.learn(episodes=1, deterministic=False)
+
+    assert {
+        "episode_start_callback_start",
+        "episode_start_callback_end",
+        "episode_end_callback_start",
+        "episode_end_callback_end",
+    }.issubset(phases)
+
+
 def test_wrapper_predict_returns_per_building_per_ca_actions() -> None:
     env = _DummyEntityEnvForPPO()
     wrapper = Wrapper_CityLearn(

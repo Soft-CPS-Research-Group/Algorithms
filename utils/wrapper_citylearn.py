@@ -1174,7 +1174,23 @@ class Wrapper_CityLearn(RLC):
                 observations = raw_observations
             on_episode_start = getattr(self.model, "on_episode_start", None)
             if callable(on_episode_start):
+                self._write_phase_progress(
+                    phase="episode_start_callback_start",
+                    episode=episode,
+                    step=0,
+                    episode_total=episodes,
+                    step_total=None,
+                    global_step_total=None,
+                )
                 on_episode_start(episode=episode, training=not deterministic)
+                self._write_phase_progress(
+                    phase="episode_start_callback_end",
+                    episode=episode,
+                    step=0,
+                    episode_total=episodes,
+                    step_total=None,
+                    global_step_total=None,
+                )
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             self._write_phase_progress(
@@ -1633,7 +1649,25 @@ class Wrapper_CityLearn(RLC):
 
             on_episode_end = getattr(self.model, "on_episode_end", None)
             if callable(on_episode_end):
+                self._write_phase_progress(
+                    phase="episode_end_callback_start",
+                    episode=episode,
+                    step=max(time_step - 1, 0),
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards_list[-1] if rewards_list else None,
+                )
                 on_episode_end(episode=episode, training=not deterministic)
+                self._write_phase_progress(
+                    phase="episode_end_callback_end",
+                    episode=episode,
+                    step=max(time_step - 1, 0),
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards_list[-1] if rewards_list else None,
+                )
 
             last_rewards = rewards_list[-1] if rewards_list else None
             self._write_phase_progress(
