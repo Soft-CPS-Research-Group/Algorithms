@@ -518,6 +518,51 @@ def test_ppo_residual_building_gain_scales_the_learned_correction() -> None:
     assert agent.get_diagnostic_metrics()["PPO/residual_building_gain"] == 0.25
 
 
+def test_ppo_residual_building_deadband_suppresses_small_correction() -> None:
+    agent = _agent(
+        residual_policy_enabled=True,
+        residual_base_policy="RandomPolicy",
+        residual_action_scale=0.5,
+        residual_building_deadbands={"Building_1": 0.3},
+        residual_zero_initialization=True,
+    )
+    agent._residual_base_policy = _ConstantPolicy(0.75)
+    with torch.no_grad():
+        agent.actors[0].mean_out.bias.fill_(torch.atanh(torch.tensor(0.2)))
+    observation = np.asarray([0.1, -0.2, 0.3], dtype=np.float32)
+    agent.set_observation_context(
+        raw_observations=[observation],
+        encoded_observations=[observation],
+    )
+
+    action = agent.predict([observation], deterministic=True)
+
+    assert action[0] == pytest.approx([0.75], abs=1.0e-7)
+    assert agent.get_diagnostic_metrics()["PPO/residual_deadband"] == 0.3
+
+
+def test_ppo_residual_building_deadband_preserves_large_correction() -> None:
+    agent = _agent(
+        residual_policy_enabled=True,
+        residual_base_policy="RandomPolicy",
+        residual_action_scale=0.5,
+        residual_building_deadbands={"Building_1": 0.3},
+        residual_zero_initialization=True,
+    )
+    agent._residual_base_policy = _ConstantPolicy(0.75)
+    with torch.no_grad():
+        agent.actors[0].mean_out.bias.fill_(torch.atanh(torch.tensor(0.5)))
+    observation = np.asarray([0.1, -0.2, 0.3], dtype=np.float32)
+    agent.set_observation_context(
+        raw_observations=[observation],
+        encoded_observations=[observation],
+    )
+
+    action = agent.predict([observation], deterministic=True)
+
+    assert action[0] == pytest.approx([1.25], abs=1.0e-7)
+
+
 def test_ppo_zero_building_gain_is_exact_safe_baseline_fallback(monkeypatch) -> None:
     agent = _agent(
         residual_policy_enabled=True,

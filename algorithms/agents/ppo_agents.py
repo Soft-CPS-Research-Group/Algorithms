@@ -188,6 +188,33 @@ class _PPOBase(BaseAgent):
             self.residual_building_gain_multipliers[str(raw_name)] = float(
                 np.clip(gain, 0.0, 1.0)
             )
+        self.residual_action_deadband = float(
+            np.clip(
+                float(exploration_cfg.get("residual_action_deadband", 0.0) or 0.0),
+                0.0,
+                1.0,
+            )
+        )
+        raw_building_deadbands = exploration_cfg.get(
+            "residual_building_deadbands",
+            {},
+        ) or {}
+        if not isinstance(raw_building_deadbands, dict):
+            raise ValueError(
+                "PPO residual_building_deadbands must be an object mapping "
+                "building names to normalized-action thresholds."
+            )
+        self.residual_building_deadbands: Dict[str, float] = {}
+        for raw_name, raw_deadband in raw_building_deadbands.items():
+            try:
+                deadband = float(raw_deadband)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "PPO residual building deadbands must be numeric."
+                ) from exc
+            self.residual_building_deadbands[str(raw_name)] = float(
+                np.clip(deadband, 0.0, 1.0)
+            )
         self.residual_zero_initialization = bool(
             exploration_cfg.get("residual_zero_initialization", True)
         )
@@ -982,6 +1009,14 @@ class _PPOBase(BaseAgent):
         )
         return 0.5 * span * float(self.residual_action_scale) * mask
 
+    def _residual_deadband_for_agent(self, agent_idx: int) -> float:
+        if agent_idx < len(self._residual_building_names):
+            return self.residual_building_deadbands.get(
+                self._residual_building_names[agent_idx],
+                self.residual_action_deadband,
+            )
+        return self.residual_action_deadband
+
     def _apply_residual_policy(
         self,
         actor_actions: List[List[float]],
@@ -1015,7 +1050,13 @@ class _PPOBase(BaseAgent):
                 agent_idx,
                 action_dim=int(normalized.size),
             )
-            delta = denominator * normalized
+            deadband = self._residual_deadband_for_agent(agent_idx)
+            gated_normalized = np.where(
+                np.abs(normalized) <= deadband,
+                0.0,
+                normalized,
+            )
+            delta = denominator * gated_normalized
             low = self._action_low_for_agent(agent_idx)
             high = self._action_high_for_agent(agent_idx)
             executed = np.clip(base + delta, low, high).astype(np.float32)
@@ -2430,6 +2471,9 @@ class _PPOBase(BaseAgent):
                 if self._residual_building_names
                 else 1.0
             ),
+            f"{self.metric_prefix}/residual_deadband": float(
+                self._residual_deadband_for_agent(0)
+            ),
             f"{self.metric_prefix}/residual_delta_l1_mean": float(
                 np.mean(
                     [
@@ -2704,6 +2748,10 @@ class _PPOBase(BaseAgent):
                         "residual_action_scale": self.residual_action_scale,
                         "residual_building_gain_multipliers": dict(
                             self.residual_building_gain_multipliers
+                        ),
+                        "residual_action_deadband": self.residual_action_deadband,
+                        "residual_building_deadbands": dict(
+                            self.residual_building_deadbands
                         ),
                     }
                 )
