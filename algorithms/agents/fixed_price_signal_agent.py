@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -30,6 +31,23 @@ class FixedPriceSignalAgent(BaseAgent):
             if configured_vector is None
             else [float(value) for value in configured_vector]
         )
+        configured_schedule = hyperparameters.get("schedule") or []
+        self.schedule = [
+            (int(entry["start_step"]), float(entry["multiplier"]))
+            for entry in configured_schedule
+        ]
+        self._schedule_starts = [entry[0] for entry in self.schedule]
+        self._episode_step = 0
+
+    def set_episode_context(
+        self,
+        *,
+        episode_step: Optional[int] = None,
+        next_episode_step: Optional[int] = None,
+    ) -> None:
+        _ = next_episode_step
+        if episode_step is not None:
+            self._episode_step = int(episode_step)
 
     def predict(
         self,
@@ -41,6 +59,9 @@ class FixedPriceSignalAgent(BaseAgent):
         _ = observations, deterministic, context
         if self.multipliers is not None:
             return list(self.multipliers)
+        if self.schedule:
+            index = bisect_right(self._schedule_starts, self._episode_step) - 1
+            return self.schedule[max(index, 0)][1]
         return self.multiplier
 
     def update(
@@ -84,6 +105,12 @@ class FixedPriceSignalAgent(BaseAgent):
         if self.multipliers is not None:
             manifest["multipliers"] = list(self.multipliers)
             manifest["output_contract"] = "per_member_price_multiplier_vector"
+        elif self.schedule:
+            manifest["schedule"] = [
+                {"start_step": start_step, "multiplier": multiplier}
+                for start_step, multiplier in self.schedule
+            ]
+            manifest["output_contract"] = "scheduled_global_price_multiplier"
         else:
             manifest["output_contract"] = "global_price_multiplier"
         return manifest

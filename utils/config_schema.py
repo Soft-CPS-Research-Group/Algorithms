@@ -631,9 +631,15 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
         return self
 
 
+class FixedPriceScheduleEntry(BaseModel):
+    start_step: int = Field(ge=0)
+    multiplier: float = Field(gt=0)
+
+
 class FixedPriceSignalHyperparameters(BaseModel):
     multiplier: float = Field(default=1.0, gt=0)
     multipliers: Optional[List[float]] = None
+    schedule: Optional[List[FixedPriceScheduleEntry]] = None
 
     @field_validator("multipliers")
     @classmethod
@@ -645,6 +651,25 @@ class FixedPriceSignalHyperparameters(BaseModel):
         if any(value <= 0 for value in values):
             raise ValueError("FixedPriceSignal multipliers must all be positive")
         return values
+
+    @model_validator(mode="after")
+    def validate_schedule(self) -> "FixedPriceSignalHyperparameters":
+        if self.schedule is None:
+            return self
+        if self.multipliers is not None:
+            raise ValueError(
+                "FixedPriceSignal schedule and per-member multipliers are mutually exclusive"
+            )
+        if not self.schedule:
+            raise ValueError("FixedPriceSignal schedule must not be empty")
+        starts = [entry.start_step for entry in self.schedule]
+        if starts[0] != 0:
+            raise ValueError("FixedPriceSignal schedule must start at step 0")
+        if starts != sorted(set(starts)):
+            raise ValueError(
+                "FixedPriceSignal schedule start_step values must be strictly increasing"
+            )
+        return self
 
 
 class BuildingAgentHyperparameters(BaseModel):

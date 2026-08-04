@@ -76,6 +76,32 @@ def test_fixed_price_signal_can_emit_one_multiplier_per_pipeline_member():
     assert artifact["output_contract"] == "per_member_price_multiplier_vector"
 
 
+def test_fixed_price_signal_can_emit_a_step_schedule():
+    unit = ALGORITHM_REGISTRY["FixedPriceSignal"](
+        config={
+            "algorithm": {
+                "hyperparameters": {
+                    "schedule": [
+                        {"start_step": 0, "multiplier": 1.05},
+                        {"start_step": 96, "multiplier": 1.025},
+                    ]
+                }
+            }
+        }
+    )
+
+    unit.set_episode_context(episode_step=95)
+    assert unit.predict([], deterministic=True) == 1.05
+    unit.set_episode_context(episode_step=96)
+    assert unit.predict([], deterministic=True) == 1.025
+    artifact = unit.export_artifacts("unused")
+    assert artifact["schedule"][1] == {
+        "start_step": 96,
+        "multiplier": 1.025,
+    }
+    assert artifact["output_contract"] == "scheduled_global_price_multiplier"
+
+
 def test_hierarchical_raw_observation_agents_are_registered():
     for name in ("BuildingAgent", "CommunityCoordinator", "SignalAwareRBC"):
         assert is_algorithm_supported(name)

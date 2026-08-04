@@ -145,6 +145,32 @@ def test_cc_level1_bc_collection_matches_complete_annual_horizon():
     assert config["pipeline"][0]["hyperparameters"]["bc_collect_steps"] == 8760
 
 
+def test_fixed_price_schedule_requires_ordered_entries_from_step_zero():
+    from utils.config_schema import FixedPriceSignalHyperparameters
+
+    valid = FixedPriceSignalHyperparameters(
+        schedule=[
+            {"start_step": 0, "multiplier": 1.05},
+            {"start_step": 96, "multiplier": 1.025},
+        ]
+    )
+    assert valid.schedule is not None
+    assert valid.schedule[1].start_step == 96
+
+    with pytest.raises(ValueError, match="start at step 0"):
+        FixedPriceSignalHyperparameters(
+            schedule=[{"start_step": 96, "multiplier": 1.025}]
+        )
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        FixedPriceSignalHyperparameters(
+            schedule=[
+                {"start_step": 0, "multiplier": 1.05},
+                {"start_step": 0, "multiplier": 1.025},
+            ]
+        )
+
+
 def test_to_dict_removes_none_network_optional_layers_from_pipeline(base_config):
     config = copy.deepcopy(base_config)
     config["pipeline"][0]["networks"]["critic"] = {
