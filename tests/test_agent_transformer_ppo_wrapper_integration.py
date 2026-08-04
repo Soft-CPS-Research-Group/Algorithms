@@ -10,6 +10,7 @@ the dummy env's feature schema.
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from typing import Any, Dict, List
 
 import numpy as np
@@ -146,36 +147,126 @@ def test_wrapper_attaches_transformer_ppo_with_entity_dynamic() -> None:
 
 def test_watchdog_progress_brackets_tppo_lifecycle_callbacks(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     env = _TerminalTopologyChangeEntityEnvForPPO(truncated=False)
     wrapper_config = _entity_config()
+    wrapper_config["runtime"]["log_dir"] = str(tmp_path)
     wrapper_config["tracking"].update(
         {
             "progress_updates_enabled": False,
             "stall_watchdog_enabled": True,
             "stall_watchdog_timeout_seconds": 1.0,
+            "stall_watchdog_exit_on_timeout": False,
         }
     )
     wrapper = Wrapper_CityLearn(
         env=env, config=wrapper_config, job_id="ppo-lifecycle-watchdog"
     )
-    wrapper.set_model(AgentTransformerPPO(_ppo_full_config()))
+    agent = AgentTransformerPPO(_ppo_full_config())
+    wrapper.set_model(agent)
 
-    phases: list[str] = []
+    events: list[tuple[str, str | None]] = []
+    context_path = tmp_path / "ppo-lifecycle-watchdog_stall_watchdog.log.context.json"
+    original_watchdog_update = wrapper._update_stall_watchdog_for_phase
+    original_start = agent.on_episode_start
+    original_end = agent.on_episode_end
 
-    def record_phase(*, phase: str, **_kwargs: Any) -> None:
-        phases.append(phase)
+    def record_watchdog_update(*, phase: str, **kwargs: Any) -> None:
+        events.append(("watchdog_phase", phase))
+        original_watchdog_update(phase=phase, **kwargs)
 
-    monkeypatch.setattr(wrapper, "_write_phase_progress", record_phase)
+    def record_arm(_timeout, *, repeat=False, file=None, exit=False) -> None:
+        _ = repeat, file, exit
+        events.append(("watchdog_arm", json.loads(context_path.read_text())["phase"]))
+
+    def record_cancel() -> None:
+        events.append(("watchdog_cancel", wrapper._stall_watchdog_armed_phase))
+
+    def record_start(*, episode: int, training: bool) -> None:
+        events.append(("callback", "episode_start"))
+        original_start(episode=episode, training=training)
+
+    def record_end(*, episode: int, training: bool) -> None:
+        events.append(("callback", "episode_end"))
+        original_end(episode=episode, training=training)
+
+    monkeypatch.setattr(wrapper, "_update_stall_watchdog_for_phase", record_watchdog_update)
+    monkeypatch.setattr(wrapper_module.faulthandler, "dump_traceback_later", record_arm)
+    monkeypatch.setattr(wrapper_module.faulthandler, "cancel_dump_traceback_later", record_cancel)
+    monkeypatch.setattr(agent, "on_episode_start", record_start)
+    monkeypatch.setattr(agent, "on_episode_end", record_end)
 
     wrapper.learn(episodes=1, deterministic=False)
 
-    assert {
-        "episode_start_callback_start",
-        "episode_start_callback_end",
-        "episode_end_callback_start",
-        "episode_end_callback_end",
-    }.issubset(phases)
+    for callback in ("episode_start", "episode_end"):
+        phase_prefix = f"{callback}_callback"
+        expected = [
+            ("watchdog_phase", f"{phase_prefix}_start"),
+            ("watchdog_arm", f"{phase_prefix}_start"),
+            ("callback", callback),
+            ("watchdog_phase", f"{phase_prefix}_end"),
+            ("watchdog_cancel", f"{phase_prefix}_start"),
+        ]
+        positions = []
+        next_position = 0
+        for event in expected:
+            next_position = events.index(event, next_position)
+            positions.append(next_position)
+            next_position += 1
+        assert positions == sorted(positions)
+
+
+def test_watchdog_keeps_start_phase_when_tppo_lifecycle_callback_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO(truncated=False)
+    wrapper_config = _entity_config()
+    wrapper_config["runtime"]["log_dir"] = str(tmp_path)
+    wrapper_config["tracking"].update(
+        {
+            "progress_updates_enabled": False,
+            "stall_watchdog_enabled": True,
+            "stall_watchdog_timeout_seconds": 1.0,
+            "stall_watchdog_exit_on_timeout": False,
+        }
+    )
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-lifecycle-watchdog-error"
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+    wrapper.set_model(agent)
+
+    phases: list[str] = []
+    armed_phases: list[str] = []
+    context_path = tmp_path / "ppo-lifecycle-watchdog-error_stall_watchdog.log.context.json"
+    original_watchdog_update = wrapper._update_stall_watchdog_for_phase
+
+    def record_watchdog_update(*, phase: str, **kwargs: Any) -> None:
+        phases.append(phase)
+        original_watchdog_update(phase=phase, **kwargs)
+
+    def record_arm(_timeout, *, repeat=False, file=None, exit=False) -> None:
+        _ = repeat, file, exit
+        armed_phases.append(json.loads(context_path.read_text())["phase"])
+
+    def raise_on_start(*, episode: int, training: bool) -> None:
+        _ = episode, training
+        raise RuntimeError("lifecycle start failure")
+
+    monkeypatch.setattr(wrapper, "_update_stall_watchdog_for_phase", record_watchdog_update)
+    monkeypatch.setattr(wrapper_module.faulthandler, "dump_traceback_later", record_arm)
+    monkeypatch.setattr(wrapper_module.faulthandler, "cancel_dump_traceback_later", lambda: None)
+    monkeypatch.setattr(agent, "on_episode_start", raise_on_start)
+
+    with pytest.raises(RuntimeError, match="lifecycle start failure"):
+        wrapper.learn(episodes=1, deterministic=False)
+
+    assert "episode_start_callback_start" in phases
+    assert "episode_start_callback_end" not in phases
+    assert "episode_start_callback_start" in armed_phases
+    assert wrapper._stall_watchdog_armed_phase == "episode_start_callback_start"
 
 
 def test_wrapper_predict_returns_per_building_per_ca_actions() -> None:
