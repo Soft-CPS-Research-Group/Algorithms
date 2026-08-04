@@ -578,7 +578,7 @@ class CommunityCoordinatorHyperparameters(ExperimentalPPOHyperparameters):
 
 class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
     # Phase-1 market maker: emits a global price multiplier.
-    c_dim: int = Field(default=16, gt=0)                # cc_level1 encoding width
+    c_dim: int = Field(default=17, gt=0)                # cc_level1 encoding width
     cc_action_interval: int = Field(default=4, gt=0)    # 4 × 15min = hourly
     price_min: float = Field(default=0.5, gt=0)         # min price multiplier
     price_max: float = Field(default=1.5, gt=0)         # max price multiplier

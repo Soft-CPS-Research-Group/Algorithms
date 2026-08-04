@@ -12,6 +12,11 @@ from algorithms.agents.cc_level1_agent import (
     RolloutBuffer,
     _CC_LEVEL1_FEATURES,
 )
+from utils.config_schema import CCLevel1Hyperparameters
+
+
+def test_cc_level1_schema_width_matches_runtime_feature_contract() -> None:
+    assert CCLevel1Hyperparameters().c_dim == len(_CC_LEVEL1_FEATURES)
 
 
 def test_rollout_gae_stops_at_episode_boundary() -> None:
