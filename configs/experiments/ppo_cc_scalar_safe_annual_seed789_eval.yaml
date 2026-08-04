@@ -1,10 +1,10 @@
 metadata:
-  experiment_name: ppo_cc_robust_seasonal_oracle_annual_20260804
-  run_name: Robust seasonal price oracle with frozen PPO seed 789
+  experiment_name: ppo_cc_upper_bound_seasonal_oracle_annual_20260804
+  run_name: Upper-bound seasonal price oracle with frozen PPO seed 789
   community_name: citylearn_static_15min
   description: >-
-    Diagnose the value of slow temporal adaptation using only neutral, 1.025
-    and the strict-gate annual incumbent 1.05; this is an in-sample seasonal
+    Diagnose the upper bound of slow temporal adaptation using the best monthly
+    choice among neutral, 1.025, 1.05 and 1.075; this is an in-sample seasonal
     oracle, not a deployable learned coordinator.
   bundle_version: null
   alias_mapping_path: null
@@ -21,7 +21,7 @@ runtime:
 tracking:
   mlflow_enabled: false
   tags:
-    evidence_horizon: seasonal_oracle_annual_exact_in_sample_diagnostic
+    evidence_horizon: seasonal_upper_bound_annual_exact_in_sample_diagnostic
     benchmark_track: building_local_retail
     controller_scope: frozen_scheduled_cc_plus_seventeen_frozen_local_ppo_actors
     runtime_service_teacher: RBCSmartLocalPolicy
@@ -106,7 +106,7 @@ simulator:
     include_business_as_usual: true
     export_business_as_usual_timeseries: false
     kpi_round_decimals: null
-    session_name: fixed-price-robust-seasonal-oracle-frozen-ppo-seed789-annual
+    session_name: fixed-price-upper-bound-seasonal-oracle-frozen-ppo-seed789-annual
   wrapper_reward:
     enabled: false
     profile: cost_limits_v1
@@ -176,13 +176,15 @@ pipeline:
   count: 1
   frozen: true
   hyperparameters:
-    multiplier: 1.05
+    multiplier: 1.075
     schedule:
-    - {start_step: 0, multiplier: 1.05}
-    - {start_step: 8736, multiplier: 1.025}
+    - {start_step: 0, multiplier: 1.075}
     - {start_step: 11616, multiplier: 1.0}
     - {start_step: 14592, multiplier: 1.025}
-    - {start_step: 17472, multiplier: 1.05}
+    - {start_step: 17472, multiplier: 1.075}
+    - {start_step: 20448, multiplier: 1.05}
+    - {start_step: 23424, multiplier: 1.075}
+    - {start_step: 32160, multiplier: 1.05}
 - algorithm: PPO
   count: 17
   frozen: true
