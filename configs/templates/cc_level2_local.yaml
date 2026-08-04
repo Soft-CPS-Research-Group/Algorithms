@@ -76,7 +76,7 @@ simulator:
   episodes: 70
   simulation_start_time_step: null
   simulation_end_time_step: null
-  episode_time_steps: 34944     # full year per ep (dataset total = 34944 steps)
+  episode_time_steps: 35040     # full year per ep (dataset total = 35040 steps)
   export:
     mode: end
     export_kpis_on_episode_end: true
