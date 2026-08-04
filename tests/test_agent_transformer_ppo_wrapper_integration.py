@@ -273,14 +273,107 @@ def test_watchdog_brackets_out_of_loop_model_attachment(
         ("phase", "model_attach_start:set_model"),
         ("attach", "model_attach_start"),
         ("phase", "model_attach_end:set_model"),
+        ("phase", "model_attach_start:episode_reset"),
+        ("attach", "model_attach_start"),
+        ("phase", "model_attach_end:episode_reset"),
         ("phase", "model_attach_start:topology_refresh"),
         ("attach", "model_attach_start"),
         ("phase", "model_attach_end:topology_refresh"),
     ]
-    assert attachment_phases == ["model_attach_start", "episode_reset_start", "model_attach_start"]
-    assert watchdog_phases.count("model_attach_start") == 2
-    assert watchdog_phases.count("model_attach_end") == 2
+    assert attachment_phases == ["model_attach_start"] * 3
+    assert watchdog_phases.count("model_attach_start") == 3
+    assert watchdog_phases.count("model_attach_end") == 3
     assert len(agent._per_building) == 2
+
+
+def test_watchdog_keeps_start_phase_when_set_model_attachment_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    wrapper_config = _entity_config()
+    wrapper_config["runtime"]["log_dir"] = str(tmp_path)
+    wrapper_config["tracking"].update(
+        {
+            "progress_updates_enabled": False,
+            "stall_watchdog_enabled": True,
+            "stall_watchdog_timeout_seconds": 1.0,
+            "stall_watchdog_exit_on_timeout": False,
+        }
+    )
+    wrapper = Wrapper_CityLearn(
+        env=_DummyEntityEnvForPPO(), config=wrapper_config, job_id="ppo-model-attach-set-error"
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+    phases: list[tuple[str, str | None]] = []
+    original_watchdog_update = wrapper._update_stall_watchdog_for_phase
+
+    def collect_watchdog_phase(*, phase: str, **kwargs: Any) -> None:
+        phases.append((phase, kwargs.get("extra", {}).get("attach_source")))
+        original_watchdog_update(phase=phase, **kwargs)
+
+    def raise_attach_environment(**_kwargs: Any) -> None:
+        raise AttributeError("set-model attachment failure")
+
+    monkeypatch.setattr(wrapper, "_update_stall_watchdog_for_phase", collect_watchdog_phase)
+    monkeypatch.setattr(agent, "attach_environment", raise_attach_environment)
+    monkeypatch.setattr(wrapper_module.faulthandler, "dump_traceback_later", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wrapper_module.faulthandler, "cancel_dump_traceback_later", lambda: None)
+
+    with pytest.raises(AttributeError, match="set-model attachment failure"):
+        wrapper.set_model(agent)
+
+    assert phases == [("model_attach_start", None)]
+    assert wrapper._stall_watchdog_armed_phase == "model_attach_start"
+
+
+def test_watchdog_keeps_start_phase_when_topology_refresh_attachment_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    wrapper_config = _entity_config()
+    wrapper_config["runtime"]["log_dir"] = str(tmp_path)
+    wrapper_config["tracking"].update(
+        {
+            "progress_updates_enabled": False,
+            "stall_watchdog_enabled": True,
+            "stall_watchdog_timeout_seconds": 1.0,
+            "stall_watchdog_exit_on_timeout": False,
+        }
+    )
+    wrapper = Wrapper_CityLearn(
+        env=_TerminalTopologyChangeEntityEnvForPPO(truncated=False),
+        config=wrapper_config,
+        job_id="ppo-model-attach-refresh-error",
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+    phases: list[str] = []
+    attach_calls = 0
+    original_watchdog_update = wrapper._update_stall_watchdog_for_phase
+    original_attach_environment = agent.attach_environment
+
+    def collect_watchdog_phase(*, phase: str, **kwargs: Any) -> None:
+        phases.append(phase)
+        original_watchdog_update(phase=phase, **kwargs)
+
+    def raise_on_refresh(**kwargs: Any) -> None:
+        nonlocal attach_calls
+        attach_calls += 1
+        if attach_calls == 3:
+            raise AttributeError("topology-refresh attachment failure")
+        original_attach_environment(**kwargs)
+
+    monkeypatch.setattr(wrapper, "_update_stall_watchdog_for_phase", collect_watchdog_phase)
+    monkeypatch.setattr(agent, "attach_environment", raise_on_refresh)
+    monkeypatch.setattr(wrapper_module.faulthandler, "dump_traceback_later", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wrapper_module.faulthandler, "cancel_dump_traceback_later", lambda: None)
+
+    wrapper.set_model(agent)
+    with pytest.raises(AttributeError, match="topology-refresh attachment failure"):
+        wrapper.learn(episodes=1, deterministic=False)
+
+    assert phases.count("model_attach_start") == 3
+    assert phases.count("model_attach_end") == 2
+    assert wrapper._stall_watchdog_armed_phase == "model_attach_start"
 
 
 def test_watchdog_keeps_start_phase_when_tppo_lifecycle_callback_raises(

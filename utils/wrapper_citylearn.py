@@ -513,7 +513,9 @@ class Wrapper_CityLearn(RLC):
                 )
 
         if topology_changed and attach_model and self.model is not None:
-            self._attach_model_environment_metadata()
+            self._attach_model_environment_metadata_with_watchdog(
+                attach_source="episode_reset" if force_attach else "entity_layout",
+            )
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
 
@@ -564,16 +566,13 @@ class Wrapper_CityLearn(RLC):
             "encoded_observation_names": encoded_observation_names,
         }
 
-        try:
-            self.model.attach_environment(
-                observation_names=self.observation_names,
-                action_names=self.action_names,
-                action_space=self.action_space,
-                observation_space=self.observation_space,
-                metadata=metadata,
-            )
-        except AttributeError:
-            pass
+        self.model.attach_environment(
+            observation_names=self.observation_names,
+            action_names=self.action_names,
+            action_space=self.action_space,
+            observation_space=self.observation_space,
+            metadata=metadata,
+        )
 
     def _attach_model_environment_metadata_with_watchdog(
         self,
