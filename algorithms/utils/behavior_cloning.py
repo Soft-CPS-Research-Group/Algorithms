@@ -72,6 +72,7 @@ class BehaviorCloningRegularizer:
         self._latest_bc_valid_samples = 0.0
         self._latest_pretraining_epochs = 0.0
         self._latest_incompatible_demonstration_samples = 0.0
+        self._rejected_at_record = 0
 
     @classmethod
     def from_config(
@@ -189,6 +190,9 @@ class BehaviorCloningRegularizer:
         target: List[float],
     ) -> None:
         copied_observation = np.asarray(observation, dtype=np.float32).copy()
+        if copied_observation.shape != (self._expected_encoded_length(layout),):
+            self._rejected_at_record += 1
+            return
         copied_target = np.asarray(target, dtype=np.float32).copy()
         if copied_target.shape != (layout.n_ca,) or not np.isfinite(copied_target).all():
             return
@@ -291,6 +295,7 @@ class BehaviorCloningRegularizer:
             "behavior_cloning_incompatible_demonstration_samples": (
                 self._latest_incompatible_demonstration_samples
             ),
+            "behavior_cloning_rejected_at_record": float(self._rejected_at_record),
         }
 
     def state_dict(self) -> Dict[str, Any]:
@@ -352,6 +357,14 @@ class BehaviorCloningRegularizer:
         self._latest_bc_loss = raw_loss
         self._latest_bc_weighted_loss = weighted_loss
         self._latest_bc_valid_samples = samples
+
+    @staticmethod
+    def _expected_encoded_length(layout: BuildingTokenLayout) -> int:
+        return max(
+            feature_index
+            for segment in layout.segments
+            for feature_index in segment.feature_indices
+        ) + 1
 
     @staticmethod
     def _copy_actions(actions: List[List[float]]) -> List[List[float]]:

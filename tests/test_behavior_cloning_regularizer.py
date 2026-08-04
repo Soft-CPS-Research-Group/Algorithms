@@ -25,6 +25,20 @@ def _layout(instance_id: str = "charger_1") -> BuildingTokenLayout:
     )
 
 
+def _six_feature_layout() -> BuildingTokenLayout:
+    return BuildingTokenLayout(
+        building_id="Building_1",
+        segments=(
+            TokenSegment("nfc", "building_nfc", None, (0, 1, 2), ("hour", "month", "day")),
+            TokenSegment("ca", "charger", "charger_1", (3, 4, 5), ("soc", "demand", "power")),
+        ),
+        n_sro=0,
+        n_ca=1,
+        ca_action_names=("electric_vehicle_storage",),
+        excluded_feature_names=(),
+    )
+
+
 def _regularizer(**overrides) -> BehaviorCloningRegularizer:
     behavior_cloning = {
         "enabled": True,
@@ -91,7 +105,7 @@ def test_demonstration_is_frozen_and_groups_by_layout_signature() -> None:
 
 def test_demonstration_stores_encoded_length() -> None:
     regularizer = _regularizer()
-    layout = _layout()
+    layout = _six_feature_layout()
 
     regularizer.record_demonstration(
         0, np.arange(6, dtype=np.float32), layout, [0.25]
@@ -100,6 +114,17 @@ def test_demonstration_stores_encoded_length() -> None:
     signature = regularizer.layout_signature(layout)
     demo = regularizer.demonstrations_for_building_by_signature(0)[signature][0]
     assert demo.encoded_length == 6
+
+
+def test_record_demonstration_rejects_shape_mismatch() -> None:
+    regularizer = _regularizer()
+    layout = _six_feature_layout()
+
+    regularizer.record_demonstration(0, np.zeros(6), layout, [0.25])
+    regularizer.record_demonstration(0, np.zeros(7), layout, [0.25])
+
+    assert regularizer.demonstration_count(0) == 1
+    assert regularizer.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 1.0
 
 
 def test_load_state_dict_rejects_legacy_demonstrations_without_encoded_length() -> None:
