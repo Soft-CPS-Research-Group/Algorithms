@@ -36,6 +36,23 @@ except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
 SCORECARD_PROFILE = "cc_frozen_leaf_scorecard_v1"
 PASS_GATE_DECISIONS = {"PASS_HARD_GATES", "PASS_WITH_SAFETY_PROJECTION"}
 
+GATE_METRICS = (
+    "ev_min_acceptable_feasible_rate",
+    "ev_within_tolerance_feasible_rate",
+    "electrical_violation_kwh",
+    "electrical_violation_events",
+    "deferrable_completed_cycles_count",
+    "deferrable_missed_cycles_count",
+    "deferrable_unserved_energy_kwh",
+    "deferrable_service_level_rate",
+    "storage_soc_min",
+    "storage_soc_max",
+    "storage_soc_violation_count",
+    "outage_unserved_energy_normalized_rate",
+    "executed_electrical_safety_certified",
+    "projection_request_within_tolerance",
+)
+
 # Secondary metrics are explicit rather than collapsed into one opaque reward.
 # Cost remains the primary objective; these metrics identify material trade-offs.
 SECONDARY_METRICS: tuple[tuple[str, str], ...] = (
@@ -114,6 +131,9 @@ def build_scorecard(
             "cost_delta_to_baseline_eur": cost_delta,
             "cost_delta_to_baseline_ratio": cost_delta_ratio,
         }
+
+        for metric in GATE_METRICS:
+            row[metric] = aggregate.get(metric)
 
         for metric, direction in SECONDARY_METRICS:
             candidate_value = _number(aggregate.get(metric))
@@ -201,16 +221,17 @@ def _write_markdown(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "",
         f"Profile: `{SCORECARD_PROFILE}`.",
         "",
-        "| Run | Decision | Cost EUR | Delta EUR | Buildings better | Secondary regressions |",
-        "|---|---|---:|---:|---:|---|",
+        "| Run | Decision | Hard gates | Cost EUR | Delta EUR | Buildings better | Secondary regressions |",
+        "|---|---|---|---:|---:|---:|---|",
     ]
     for row in rows:
         cost = _number(row.get("community_cost_eur"))
         delta = _number(row.get("cost_delta_to_baseline_eur"))
         lines.append(
-            "| {run} | {decision} | {cost} | {delta} | {better} | {regressions} |".format(
+            "| {run} | {decision} | {gates} | {cost} | {delta} | {better} | {regressions} |".format(
                 run=row.get("run", ""),
                 decision=row.get("decision", ""),
+                gates=row.get("hard_gate_decision", ""),
                 cost="" if cost is None else f"{cost:.4f}",
                 delta="" if delta is None else f"{delta:+.4f}",
                 better=row.get("buildings_beating_baseline_projection_tolerant_count", ""),

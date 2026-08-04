@@ -15,6 +15,18 @@ def _aggregate(run: str, *, cost: float, gate: str = "PASS_WITH_SAFETY_PROJECTIO
         "load_factor_penalty_daily_ratio_to_bau": 1.0,
         "emissions_kgco2": 100.0,
         "community_solar_self_consumption_rate": 0.8,
+        "ev_min_acceptable_feasible_rate": 1.0,
+        "ev_within_tolerance_feasible_rate": 0.95,
+        "electrical_violation_kwh": 0.0,
+        "electrical_violation_events": 0,
+        "deferrable_completed_cycles_count": 10,
+        "deferrable_missed_cycles_count": 0,
+        "deferrable_unserved_energy_kwh": 0.0,
+        "deferrable_service_level_rate": 1.0,
+        "storage_soc_min": 0.0,
+        "storage_soc_max": 1.0,
+        "storage_soc_violation_count": 0,
+        "outage_unserved_energy_normalized_rate": 0.0,
         "community_export_kwh": 20.0,
         "community_net_exchange_kwh": 80.0,
         "battery_throughput_kwh": 40.0,
@@ -48,6 +60,10 @@ def test_cc_scorecard_passes_cost_candidate_without_material_secondary_regressio
     candidate = rows[1]
     assert candidate["decision"] == "PASS_CC_SCORECARD"
     assert candidate["cost_delta_to_baseline_eur"] == pytest.approx(-1.0)
+    assert candidate["ev_min_acceptable_feasible_rate"] == 1.0
+    assert candidate["electrical_violation_kwh"] == 0.0
+    assert candidate["deferrable_missed_cycles_count"] == 0
+    assert candidate["storage_soc_violation_count"] == 0
     assert "ramping_ratio_to_bau" in candidate["secondary_improvements"]
 
 
