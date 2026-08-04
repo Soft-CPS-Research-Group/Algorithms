@@ -89,6 +89,8 @@ metrics = {{
 }}
 if os.environ.get('FAKE_OMIT_USABLE_SAMPLES') == '1':
     metrics.pop('TPPO/behavior_cloning_building_Building_1_usable_samples')
+if os.environ.get('FAKE_OMIT_BUILDING_BATCHES') == '1':
+    metrics.pop('TPPO/behavior_cloning_building_Building_1_trained_batches')
 if os.environ.get('FAKE_OMIT_TOTAL_BATCHES') == '1':
     metrics.pop('TPPO/behavior_cloning_pretraining_batches')
 (logs / 'metrics.jsonl').write_text(json.dumps({{'metrics': metrics}}) + '\\n', encoding='utf-8')
@@ -111,6 +113,7 @@ def _run_fake_local_runner(
     usable_samples: int = 1,
     total_batches: int = 2,
     omit_usable_samples: bool = False,
+    omit_building_batches: bool = False,
     omit_total_batches: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     repo_root, script_path = _write_fake_local_runner_repo(tmp_path)
@@ -122,6 +125,7 @@ def _run_fake_local_runner(
         "FAKE_USABLE_SAMPLES": str(usable_samples),
         "FAKE_TOTAL_BATCHES": str(total_batches),
         "FAKE_OMIT_USABLE_SAMPLES": "1" if omit_usable_samples else "0",
+        "FAKE_OMIT_BUILDING_BATCHES": "1" if omit_building_batches else "0",
         "FAKE_OMIT_TOTAL_BATCHES": "1" if omit_total_batches else "0",
     }
     return subprocess.run(
@@ -161,6 +165,13 @@ def test_local_bc_runner_rejects_nonempty_watchdog_artifact(tmp_path: Path, watc
 
 def test_local_bc_runner_rejects_zero_trained_batches_for_a_building(tmp_path: Path) -> None:
     result = _run_fake_local_runner(tmp_path, building_batches=0)
+
+    assert result.returncode != 0
+    assert "trained batches for Building_1" in result.stderr
+
+
+def test_local_bc_runner_rejects_missing_trained_batches_for_a_building(tmp_path: Path) -> None:
+    result = _run_fake_local_runner(tmp_path, omit_building_batches=True)
 
     assert result.returncode != 0
     assert "trained batches for Building_1" in result.stderr
