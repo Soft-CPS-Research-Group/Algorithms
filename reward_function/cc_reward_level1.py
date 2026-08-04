@@ -36,6 +36,12 @@ to the CC's action.
 
 Return value
 ------------
+``cost_aggregation="community_net"`` preserves the historical formula above.
+When the community market is disabled, ``cost_aggregation="member_retail"``
+instead uses the sum of each member's positive grid import at its retail
+price.  This matches ``district_cost_total_control_eur``, which is the cost
+used by the frozen-leaf CC scorecard.
+
 Same scalar split equally across buildings so CC.sum(rewards) = scalar.
 """
 
@@ -74,6 +80,7 @@ class CCRewardLevel1(RewardFunction):
         reference_ramping:   float = 1.878,  # p90 step-to-step import change
         reference_export:    float = 7.52,   # kWh — p90 community export
         reference_violation: float = 1.0,    # kWh — 1 kWh of violation = full w_violation
+        cost_aggregation: str = "community_net",
         **kwargs,
     ) -> None:
         super().__init__(env_metadata, **kwargs)
@@ -89,6 +96,12 @@ class CCRewardLevel1(RewardFunction):
         self._ref_ramping       = max(float(reference_ramping),   1e-8)
         self._ref_export        = max(float(reference_export),    1e-8)
         self._ref_violation     = max(float(reference_violation), 1e-8)
+        self._cost_aggregation = str(cost_aggregation).strip().lower()
+        if self._cost_aggregation not in {"community_net", "member_retail"}:
+            raise ValueError(
+                "CCRewardLevel1 cost_aggregation must be 'community_net' or "
+                "'member_retail'"
+            )
         self._prev_import       = 0.0
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -125,10 +138,16 @@ class CCRewardLevel1(RewardFunction):
         import_t = max(community_net, 0.0)
         export_t = max(-community_net, 0.0)
 
-        price = max(self._safe(observations[0].get("electricity_pricing")), 0.0)
-
         # ── Cost term ────────────────────────────────────────────────────────
-        community_cost = import_t * price
+        if self._cost_aggregation == "member_retail":
+            community_cost = sum(
+                max(self._safe(obs.get("net_electricity_consumption")), 0.0)
+                * max(self._safe(obs.get("electricity_pricing")), 0.0)
+                for obs in observations
+            )
+        else:
+            price = max(self._safe(observations[0].get("electricity_pricing")), 0.0)
+            community_cost = import_t * price
         cost_norm = community_cost / self._ref_cost
 
         # ── Peak penalty (squared excess above target) ───────────────────────
