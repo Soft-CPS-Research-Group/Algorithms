@@ -230,6 +230,40 @@ def test_validate_config_accepts_fixed_neutral_price_signal_manager(base_config)
     assert parsed.pipeline[0].hyperparameters.multiplier == 1.0
 
 
+def test_validate_config_accepts_fixed_per_member_price_signal_manager(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "FixedPriceSignal",
+            "count": 1,
+            "frozen": True,
+            "hyperparameters": {"multipliers": [0.9, 1.05]},
+        },
+    )
+
+    parsed = validate_config(config)
+
+    assert parsed.pipeline[0].hyperparameters.multipliers == [0.9, 1.05]
+
+
+@pytest.mark.parametrize("multipliers", [[], [0.9, 0.0], [-1.0, 0.9]])
+def test_validate_config_rejects_invalid_fixed_price_signal_vector(base_config, multipliers):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "FixedPriceSignal",
+            "count": 1,
+            "frozen": True,
+            "hyperparameters": {"multipliers": multipliers},
+        },
+    )
+
+    with pytest.raises(Exception, match="multipliers"):
+        validate_config(config)
+
+
 def test_validate_config_rejects_invalid_cc_price_range(base_config):
     config = copy.deepcopy(base_config)
     config["pipeline"].insert(

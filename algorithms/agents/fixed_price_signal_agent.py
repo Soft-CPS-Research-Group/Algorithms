@@ -24,6 +24,12 @@ class FixedPriceSignalAgent(BaseAgent):
         self.use_raw_observations = True
         hyperparameters = config.get("algorithm", {}).get("hyperparameters") or {}
         self.multiplier = float(hyperparameters.get("multiplier", 1.0))
+        configured_vector = hyperparameters.get("multipliers")
+        self.multipliers = (
+            None
+            if configured_vector is None
+            else [float(value) for value in configured_vector]
+        )
 
     def predict(
         self,
@@ -31,8 +37,10 @@ class FixedPriceSignalAgent(BaseAgent):
         deterministic: bool | None = None,
         *,
         context: Any = None,
-    ) -> float:
+    ) -> float | List[float]:
         _ = observations, deterministic, context
+        if self.multipliers is not None:
+            return list(self.multipliers)
         return self.multiplier
 
     def update(
@@ -68,8 +76,14 @@ class FixedPriceSignalAgent(BaseAgent):
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         _ = output_dir, context
-        return {
+        manifest: Dict[str, Any] = {
             "format": "fixed_price_signal",
             "multiplier": self.multiplier,
             "artifacts": [],
         }
+        if self.multipliers is not None:
+            manifest["multipliers"] = list(self.multipliers)
+            manifest["output_contract"] = "per_member_price_multiplier_vector"
+        else:
+            manifest["output_contract"] = "global_price_multiplier"
+        return manifest

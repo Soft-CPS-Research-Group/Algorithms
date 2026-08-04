@@ -593,6 +593,18 @@ class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
 
 class FixedPriceSignalHyperparameters(BaseModel):
     multiplier: float = Field(default=1.0, gt=0)
+    multipliers: Optional[List[float]] = None
+
+    @field_validator("multipliers")
+    @classmethod
+    def validate_multiplier_vector(cls, values: Optional[List[float]]) -> Optional[List[float]]:
+        if values is None:
+            return None
+        if not values:
+            raise ValueError("FixedPriceSignal multipliers must not be empty")
+        if any(value <= 0 for value in values):
+            raise ValueError("FixedPriceSignal multipliers must all be positive")
+        return values
 
 
 class BuildingAgentHyperparameters(BaseModel):

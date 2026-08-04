@@ -65,6 +65,17 @@ def test_fixed_price_signal_is_registered_and_emits_configured_multiplier():
     assert unit.predict([], deterministic=True) == 1.0
 
 
+def test_fixed_price_signal_can_emit_one_multiplier_per_pipeline_member():
+    unit = ALGORITHM_REGISTRY["FixedPriceSignal"](
+        config={"algorithm": {"hyperparameters": {"multipliers": [0.9, 1.05]}}}
+    )
+
+    assert unit.predict([], deterministic=True) == [0.9, 1.05]
+    artifact = unit.export_artifacts("unused")
+    assert artifact["multipliers"] == [0.9, 1.05]
+    assert artifact["output_contract"] == "per_member_price_multiplier_vector"
+
+
 def test_hierarchical_raw_observation_agents_are_registered():
     for name in ("BuildingAgent", "CommunityCoordinator", "SignalAwareRBC"):
         assert is_algorithm_supported(name)
