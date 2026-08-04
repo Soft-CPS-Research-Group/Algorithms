@@ -1,10 +1,11 @@
 metadata:
-  experiment_name: ppo_cc_scalar_deterministic_leaf_annual_eval_20260804
-  run_name: Frozen CCLevel1 robust-incumbent annual evaluation
+  experiment_name: ppo_cc_robust_seasonal_oracle_annual_20260804
+  run_name: Robust seasonal price oracle with frozen PPO seed 789
   community_name: citylearn_static_15min
   description: >-
-    Evaluate the retrained scalar CC deterministically for one exact year; the
-    CC and all seventeen PPO seed 789 leaves are frozen and community-blind.
+    Diagnose the value of slow temporal adaptation using only neutral, 1.025
+    and the strict-gate annual incumbent 1.05; this is an in-sample seasonal
+    oracle, not a deployable learned coordinator.
   bundle_version: null
   alias_mapping_path: null
 runtime:
@@ -20,13 +21,13 @@ runtime:
 tracking:
   mlflow_enabled: false
   tags:
-    evidence_horizon: cclevel1_deterministic_leaf_frozen_evaluation_annual_exact
+    evidence_horizon: seasonal_oracle_annual_exact_in_sample_diagnostic
     benchmark_track: building_local_retail
-    controller_scope: frozen_cc_plus_seventeen_frozen_local_ppo_actors
+    controller_scope: frozen_scheduled_cc_plus_seventeen_frozen_local_ppo_actors
     runtime_service_teacher: RBCSmartLocalPolicy
     local_price_conditioning_ready: true
     ppo_seed: 789
-    source_commit: fb49301
+    source_commit: ee0cbc9
   log_level: INFO
   log_frequency: 256
   mlflow_step_sample_interval: 10
@@ -64,7 +65,6 @@ checkpointing:
   checkpoint_run_id: null
   checkpoint_local_path: null
   stage_checkpoint_local_paths:
-    0: ./runs/jobs/cclevel1-deterministic-leaf-frozen-ppo-seed789-annual-train-v2-fb49301/checkpoints/stage_0
     1: ./runs/jobs/ppo-residual-battery-annual-dagger-s789-876293a/checkpoints
   checkpoint_artifact: latest_checkpoint.pth
   use_best_checkpoint_artifact: false
@@ -106,7 +106,7 @@ simulator:
     include_business_as_usual: true
     export_business_as_usual_timeseries: false
     kpi_round_decimals: null
-    session_name: cclevel1-deterministic-leaf-frozen-ppo-seed789-annual-eval
+    session_name: fixed-price-robust-seasonal-oracle-frozen-ppo-seed789-annual
   wrapper_reward:
     enabled: false
     profile: cost_limits_v1
@@ -172,34 +172,17 @@ topology:
   - 1
   action_space: null
 pipeline:
-- algorithm: CCLevel1
+- algorithm: FixedPriceSignal
   count: 1
   frozen: true
   hyperparameters:
-    num_steps: 336
-    lr: 0.0001
-    gamma: 0.99
-    gae_lambda: 0.95
-    num_epochs: 4
-    mini_batch_size: 96
-    clip_coef: 0.2
-    vf_coef: 0.5
-    ent_coef: 0.001
-    max_grad_norm: 0.5
-    target_kl: 0.05
-    hidden_dims:
-    - 64
-    - 64
-    c_dim: 17
-    cc_action_interval: 4
-    price_min: 1.0
-    price_max: 1.075
-    initial_log_std: -1.5
-    reference_multiplier: 1.05
-    policy_residual_scale: 1.0
-    w_factor: 0.0
-    w_smoothness: 0.005
-    bc_pretrain_enabled: false
+    multiplier: 1.05
+    schedule:
+    - {start_step: 0, multiplier: 1.05}
+    - {start_step: 8736, multiplier: 1.025}
+    - {start_step: 11616, multiplier: 1.0}
+    - {start_step: 14592, multiplier: 1.025}
+    - {start_step: 17472, multiplier: 1.05}
 - algorithm: PPO
   count: 17
   frozen: true
