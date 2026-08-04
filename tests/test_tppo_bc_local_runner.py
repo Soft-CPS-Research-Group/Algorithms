@@ -48,7 +48,10 @@ def test_local_bc_readme_documents_real_dataset_gates_and_pass_criteria() -> Non
 
 
 def _write_fake_local_runner_repo(
-    tmp_path: Path, *, mixed_building_schema: bool = False
+    tmp_path: Path,
+    *,
+    mixed_building_schema: bool = False,
+    schema_mode: str = "valid",
 ) -> tuple[Path, Path]:
     repo_root = tmp_path / "repo"
     script_path = repo_root / "scripts/run_tppo_bc_local_checks.sh"
@@ -60,12 +63,24 @@ def _write_fake_local_runner_repo(
     config_dir.mkdir(parents=True)
     dataset_path = repo_root / "datasets/schema.json"
     dataset_path.parent.mkdir(parents=True)
-    buildings = (
-        '{"Building_1": {"include": true}, "Building_2": {"include": false}}'
-        if mixed_building_schema
-        else '{"Building_1": {}}'
-    )
-    dataset_path.write_text(f'{{"buildings": {buildings}}}', encoding="utf-8")
+    if schema_mode == "malformed":
+        dataset_path.write_text('{"buildings":', encoding="utf-8")
+    else:
+        buildings = (
+            '{"Building_1": {"include": true}, "Building_2": {"include": false}}'
+            if mixed_building_schema
+            else '{"Building_1": {}}'
+        )
+        if schema_mode == "invalid_include":
+            buildings = '{"Building_1": {"include": "invalid"}}'
+        elif schema_mode == "all_inactive":
+            buildings = '{"Building_1": {"include": false}}'
+        dataset_path.write_text(f'{{"buildings": {buildings}}}', encoding="utf-8")
+    if schema_mode == "missing":
+        dataset_path.unlink()
+    elif schema_mode == "unreadable":
+        dataset_path.unlink()
+        dataset_path.mkdir()
     for name in ("canary", "smoke"):
         (config_dir / f"tppo_bc_pretrain_{name}.yaml").write_text(
             "simulator:\n  dataset_path: datasets/schema.json\n",
@@ -125,9 +140,12 @@ def _run_fake_local_runner(
     omit_total_batches: bool = False,
     omit_watchdog: bool = False,
     mixed_building_schema: bool = False,
+    schema_mode: str = "valid",
 ) -> subprocess.CompletedProcess[str]:
     repo_root, script_path = _write_fake_local_runner_repo(
-        tmp_path, mixed_building_schema=mixed_building_schema
+        tmp_path,
+        mixed_building_schema=mixed_building_schema,
+        schema_mode=schema_mode,
     )
     environment = os.environ | {
         "LOG_DIR": str(tmp_path / "logs"),
@@ -185,6 +203,30 @@ def test_local_bc_runner_rejects_missing_evidence_for_active_building_in_mixed_s
 
     assert result.returncode != 0
     assert "usable BC samples for Building_1" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("schema_mode", "error"),
+    [
+        ("missing", "Failed to discover active buildings"),
+        ("unreadable", "Failed to discover active buildings"),
+        ("malformed", "Failed to discover active buildings"),
+        ("invalid_include", "Failed to discover active buildings"),
+        ("all_inactive", "No active buildings found"),
+    ],
+)
+def test_local_bc_runner_rejects_invalid_active_building_discovery_before_metric_checks(
+    tmp_path: Path, schema_mode: str, error: str
+) -> None:
+    result = _run_fake_local_runner(
+        tmp_path,
+        schema_mode=schema_mode,
+        omit_usable_samples=True,
+    )
+
+    assert result.returncode != 0
+    assert error in result.stderr
+    assert "usable BC samples" not in result.stderr
 
 
 @pytest.mark.parametrize("watchdog", ["Current thread 0x1\n", "Traceback (most recent call last)\n"])
