@@ -350,14 +350,14 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             )
             if value is not None
         ]
-        savings = [
-            value
-            for value in (
-                _to_float(row.get("baseline_to_candidate_savings_eur"))
-                for row in selected
-            )
-            if value is not None
-        ]
+        savings: list[float] = []
+        for row in selected:
+            value = _to_float(row.get("baseline_to_candidate_savings_eur"))
+            if value is None:
+                delta = _to_float(row.get("local_cost_delta_to_baseline_eur"))
+                value = None if delta is None else -delta
+            if value is not None:
+                savings.append(value)
         cost_sum = sum(
             value
             for value in (_to_float(row.get("local_cost_eur")) for row in selected)

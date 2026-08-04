@@ -88,6 +88,7 @@ def test_building_audit_applies_gates_and_baseline_per_building(tmp_path):
     assert summary["ppo"]["local_cost_delta_to_baseline_eur_median"] == -1.5
     assert summary["ppo"]["local_cost_delta_to_baseline_eur_worst"] == -1.0
     assert summary["ppo"]["all_buildings_pass_local_gates"] == 0
+    assert summary["ppo"]["jain_nonnegative_building_savings_index"] == 0.9
 
 
 def test_building_audit_exposes_raw_ev_service_and_infeasible_departures_without_changing_gate(
