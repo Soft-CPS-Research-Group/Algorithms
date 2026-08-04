@@ -312,6 +312,7 @@ class BehaviorCloningRegularizer:
             "latest_incompatible_demonstration_samples": (
                 self._latest_incompatible_demonstration_samples
             ),
+            "rejected_at_record": self._rejected_at_record,
         }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
@@ -328,6 +329,7 @@ class BehaviorCloningRegularizer:
         self._latest_incompatible_demonstration_samples = float(
             state["latest_incompatible_demonstration_samples"]
         )
+        self._rejected_at_record = int(state.get("rejected_at_record", 0))
 
     @staticmethod
     def validate_state_dict(state: Mapping[str, Any]) -> None:

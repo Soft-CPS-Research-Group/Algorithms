@@ -141,6 +141,28 @@ def test_record_demonstration_rejects_shape_mismatch() -> None:
     assert regularizer.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 1.0
 
 
+def test_rejected_record_metric_survives_state_round_trip() -> None:
+    regularizer = _regularizer()
+    layout = _six_feature_layout()
+    regularizer.record_demonstration(0, np.zeros(7), layout, [0.25])
+
+    restored = _regularizer()
+    restored.load_state_dict(regularizer.state_dict())
+
+    assert restored.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 1.0
+
+
+def test_load_state_dict_defaults_missing_rejected_record_metric_to_zero() -> None:
+    regularizer = _regularizer()
+    state = regularizer.state_dict()
+    state.pop("rejected_at_record", None)
+
+    restored = _regularizer()
+    restored.load_state_dict(state)
+
+    assert restored.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 0.0
+
+
 def test_record_demonstration_accepts_full_width_with_trailing_excluded_features() -> None:
     regularizer = _regularizer()
     layout = _layout_with_trailing_excluded_features()
