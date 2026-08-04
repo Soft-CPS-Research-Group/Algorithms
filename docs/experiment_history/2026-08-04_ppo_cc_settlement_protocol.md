@@ -186,8 +186,31 @@ uma redução produzida apenas pelo settlement não seja atribuída ao CC.
   base estritamente local `RBCSmartLocalPolicy`; esta diferença é parte dos
   controladores comparados e fica visível no protocolo.
 
+## Templates executáveis
+
+Os quatro templates iniciais ficaram congelados em
+`configs/experiments/ppo_cc_settlement_annual_v1/`:
+
+- `smart_settlement_annual.yaml`;
+- `cc_smart_settlement_annual_seed123.yaml`;
+- `ppo_settlement_annual_seed789.yaml`;
+- `cc_ppo_settlement_annual_seed789.yaml`.
+
+O checkpoint PPO seed 789 foi reduzido de aproximadamente 809 MB para um pack
+frozen de aproximadamente 5,1 MB em
+`artifacts/frozen_ppo/annual_v1/seed789`. Os tensores dos 17 atores e value
+nets mantêm paridade exata com os checkpoints de origem; replay, optimizers e
+estado de exploração foram removidos porque o leaf não aprende nesta campanha.
+Isto torna o checkpoint parte da imagem e elimina a dependência remota de
+`runs/`, que é ignorado no build.
+
+Os quatro schemas validam e os quatro pipelines constroem o ambiente real com
+17 agentes e 26 ações. PPO e CC-PPO carregam o pack compacto e completam um
+passo determinístico de inferência.
+
 ## Próxima ação autorizável
 
-Construir e validar os quatro templates da matriz. Depois executar primeiro o
-SMART neutral settled e o smoke de paridade PPO neutral settled. Nenhum job
-foi preparado ou submetido durante esta auditoria.
+Executar primeiro o SMART neutral settled e o smoke/paridade PPO neutral
+settled. Se ambos passarem, lançar CC-SMART seed 123 e CC-PPO seed 789. A
+expansão para as restantes seeds só acontece depois destes gates. Nenhum job
+foi preparado ou submetido durante a criação dos templates.
