@@ -11,7 +11,10 @@ import pytest
 import torch
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
-from algorithms.utils.behavior_cloning import Demonstration
+from algorithms.utils.behavior_cloning import (
+    BehaviorCloningRegularizer,
+    Demonstration,
+)
 from tests.test_agent_transformer_ppo import _DEFAULT_ACTIONS, _base_config
 from tests._entity_sample_obs_names import load_sample_observation_names_for_first_building
 
@@ -50,7 +53,9 @@ def _agent(*, demonstrations: int = 1, weight: float = 0.0) -> tuple[AgentTransf
         action_space=[_DummySpace(len(actions))], observation_space=[None],
         metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
     )
-    dimension = max(max(segment.feature_indices) for segment in agent._per_building[0].layout.segments) + 1
+    dimension = BehaviorCloningRegularizer.full_representation_width(
+        agent._per_building[0].layout
+    )
     return agent, dimension
 
 
@@ -186,7 +191,7 @@ def test_final_demo_end_pretrains_actor_then_ppo_uses_only_actor_actions() -> No
     assert len(agent._per_building[0].buffer) == 1
 
 
-def test_final_demo_boundary_skips_old_layout_demos_and_trains_current_group() -> None:
+def test_final_demo_boundary_pretrains_every_stored_topology_group() -> None:
     agent, old_dimension = _agent()
     old_observation = np.ones(old_dimension, dtype=np.float64)
     agent.on_episode_start(episode=0, training=True)
@@ -198,9 +203,9 @@ def test_final_demo_boundary_skips_old_layout_demos_and_trains_current_group() -
     expanded_names, _ = _expand_charger_topology(
         agent, load_sample_observation_names_for_first_building()
     )
-    current_dimension = max(
-        max(segment.feature_indices) for segment in agent._per_building[0].layout.segments
-    ) + 1
+    current_dimension = BehaviorCloningRegularizer.full_representation_width(
+        agent._per_building[0].layout
+    )
     assert current_dimension > old_dimension
     current_observation = np.ones(current_dimension, dtype=np.float64)
     agent.set_observation_context(
@@ -221,10 +226,47 @@ def test_final_demo_boundary_skips_old_layout_demos_and_trains_current_group() -
     current_signature = agent._bc.layout_signature(agent._per_building[0].layout)
     agent.on_episode_end(episode=0, training=True)
 
-    assert trained_signatures == [current_signature] * agent._bc.pretraining_epochs
+    old_signature = agent._bc.layout_signature(
+        next(iter(agent._bc.demonstrations_by_signature.values()))[0].layout
+    )
+    assert trained_signatures == (
+        [old_signature] * agent._bc.pretraining_epochs
+        + [current_signature] * agent._bc.pretraining_epochs
+    )
     metrics = agent.consume_latest_training_metrics()
-    assert metrics["TPPO/behavior_cloning_incompatible_demonstration_samples"] == 1.0
+    assert metrics["TPPO/behavior_cloning_incompatible_demonstration_samples"] == 0.0
     assert len(expanded_names) == current_dimension
+
+
+def test_pretraining_uses_full_width_demo_with_trailing_excluded_features() -> None:
+    agent, dimension = _agent()
+    state = agent._per_building[0]
+    assert agent._bc is not None
+    layout = state.layout
+    layout = type(layout)(
+        building_id=layout.building_id,
+        segments=layout.segments,
+        n_sro=layout.n_sro,
+        n_ca=layout.n_ca,
+        ca_action_names=layout.ca_action_names,
+        excluded_feature_names=layout.excluded_feature_names + ("trailing_excluded",),
+    )
+    full_width = BehaviorCloningRegularizer.full_representation_width(layout)
+    assert full_width == dimension + 1
+    agent._bc.record_demonstration(0, np.ones(full_width), layout, [0.25] * layout.n_ca)
+
+    trained_layouts = []
+    original_loss = agent._bc.demonstration_loss
+
+    def record_training_layout(**kwargs):
+        trained_layouts.append(kwargs["layout"])
+        return original_loss(**kwargs)
+
+    agent._bc.demonstration_loss = record_training_layout
+    agent._run_bc_pretraining()
+
+    assert trained_layouts == [layout] * agent._bc.pretraining_epochs
+    assert agent._bc.snapshot_metrics()["behavior_cloning_incompatible_demonstration_samples"] == 0.0
 
 
 def test_auxiliary_bc_never_changes_ppo_actions() -> None:
@@ -511,3 +553,47 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     _assert_structured_equal(random.getstate(), python_rng_before)
     _assert_structured_equal(np.random.get_state(), numpy_rng_before)
     assert torch.equal(torch.get_rng_state(), torch_rng_before)
+
+
+def test_checkpoint_rejects_corrupt_modern_demo_before_mutating_agent(
+    tmp_path: Path,
+) -> None:
+    source, dimension = _agent(demonstrations=2, weight=1.0)
+    assert source._bc is not None
+    observation = np.ones(dimension, dtype=np.float64)
+    source._bc.record_demonstration(
+        0, observation, source._per_building[0].layout,
+        [0.25] * source._per_building[0].layout.n_ca,
+    )
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    target, _ = _agent(demonstrations=2, weight=1.0)
+    assert target._bc is not None
+    state = target._per_building[0]
+    model_before = {
+        name: {
+            key: value.detach().clone()
+            for key, value in getattr(state, name).state_dict().items()
+        }
+        for name in ("tokenizer", "backbone", "actor", "critic")
+    }
+    bc_before = target._bc.state_dict()
+    payload = torch.load(path, weights_only=False)
+    demo = payload["behavior_cloning_state"]["demonstrations"][0][0]
+    payload["behavior_cloning_state"]["demonstrations"][0][0] = Demonstration(
+        observation=demo.observation,
+        encoded_length=demo.encoded_length + 1,
+        layout=demo.layout,
+        layout_signature=demo.layout_signature,
+        target=demo.target,
+    )
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match="encoded_length"):
+        target.load_checkpoint(path)
+
+    for name, before in model_before.items():
+        actual = getattr(state, name).state_dict()
+        assert all(torch.equal(value, before[key]) for key, value in actual.items())
+    _assert_structured_equal(target._bc.state_dict(), bc_before)

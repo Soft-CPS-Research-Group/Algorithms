@@ -353,8 +353,8 @@ def test_demo_topology_transition_records_teacher_demos_pretrains_and_runs_no_pp
     assert pretraining_calls == 1
     assert teacher_calls == [0, 0]
     assert pretraining_metrics[0]["behavior_cloning_demonstration_samples"] == 2.0
-    assert pretraining_metrics[0]["behavior_cloning_pretraining_epochs"] == 0.0
-    assert pretraining_metrics[0]["behavior_cloning_incompatible_demonstration_samples"] == 2.0
+    assert pretraining_metrics[0]["behavior_cloning_pretraining_epochs"] == 2.0
+    assert pretraining_metrics[0]["behavior_cloning_incompatible_demonstration_samples"] == 0.0
     assert actor_decisions == [(1, True), (1, True)]
     assert [(episode, building_idx, rollout_size) for episode, building_idx, rollout_size, _ in ppo_updates] == [
         (1, 0, 2)

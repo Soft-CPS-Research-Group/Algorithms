@@ -190,7 +190,7 @@ class BehaviorCloningRegularizer:
         target: List[float],
     ) -> None:
         copied_observation = np.asarray(observation, dtype=np.float32).copy()
-        if copied_observation.shape != (self._full_representation_width(layout),):
+        if copied_observation.shape != (self.full_representation_width(layout),):
             self._rejected_at_record += 1
             return
         copied_target = np.asarray(target, dtype=np.float32).copy()
@@ -333,13 +333,57 @@ class BehaviorCloningRegularizer:
 
     @staticmethod
     def validate_state_dict(state: Mapping[str, Any]) -> None:
-        """Reject stored demonstrations from before the encoded-length contract."""
+        """Reject demonstrations incompatible with the encoded-layout contract."""
         for demonstrations in state["demonstrations"].values():
             for demonstration in demonstrations:
                 if not hasattr(demonstration, "encoded_length"):
                     raise RuntimeError(
                         "Checkpoint predates BC data contract. Re-collect demonstrations "
                         "under the current representation before resuming."
+                    )
+                if demonstration.observation.shape != (demonstration.encoded_length,):
+                    raise RuntimeError(
+                        "Checkpoint behavior-cloning demonstration observation shape "
+                        f"{demonstration.observation.shape} does not match "
+                        f"encoded_length {demonstration.encoded_length}."
+                    )
+                expected_observation_shape = (
+                    BehaviorCloningRegularizer.full_representation_width(
+                        demonstration.layout
+                    ),
+                )
+                if demonstration.observation.shape != expected_observation_shape:
+                    raise RuntimeError(
+                        "Checkpoint behavior-cloning demonstration observation shape "
+                        f"{demonstration.observation.shape} does not match stored "
+                        f"layout width {expected_observation_shape}."
+                    )
+                if demonstration.encoded_length != expected_observation_shape[0]:
+                    raise RuntimeError(
+                        "Checkpoint behavior-cloning demonstration encoded_length "
+                        f"{demonstration.encoded_length} does not match stored layout "
+                        f"width {expected_observation_shape[0]}."
+                    )
+                if demonstration.target.shape != (demonstration.layout.n_ca,):
+                    raise RuntimeError(
+                        "Checkpoint behavior-cloning demonstration target shape "
+                        f"{demonstration.target.shape} does not match stored layout "
+                        f"CA count {(demonstration.layout.n_ca,)}."
+                    )
+                if not (
+                    np.isfinite(demonstration.observation).all()
+                    and np.isfinite(demonstration.target).all()
+                ):
+                    raise RuntimeError(
+                        "Checkpoint behavior-cloning demonstration contains non-finite "
+                        "observation or target values."
+                    )
+                if demonstration.layout_signature != BehaviorCloningRegularizer.layout_signature(
+                    demonstration.layout
+                ):
+                    raise RuntimeError(
+                        "Checkpoint behavior-cloning demonstration layout_signature "
+                        "does not match its stored layout."
                     )
 
     def _build_teacher_policy(self, observation_names, action_names, action_space, observation_space, metadata):
@@ -361,7 +405,7 @@ class BehaviorCloningRegularizer:
         self._latest_bc_valid_samples = samples
 
     @staticmethod
-    def _full_representation_width(layout: BuildingTokenLayout) -> int:
+    def full_representation_width(layout: BuildingTokenLayout) -> int:
         """Return full encoded width, not the last tokenizer-selected index.
 
         The wrapper preserves excluded features in the encoded observation, so
