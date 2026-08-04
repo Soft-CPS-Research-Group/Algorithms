@@ -919,3 +919,39 @@ def test_checkpoint_rejects_tokenizer_incompatible_demo_layout_before_mutating_a
         target.load_checkpoint(path)
 
     _assert_restore_state_unchanged(target, snapshot)
+
+
+def test_checkpoint_rejects_incomplete_bc_state_before_mutating_agent(
+    tmp_path: Path,
+) -> None:
+    source, dimension = _agent(demonstrations=2, weight=1.0)
+    assert source._bc is not None
+    source._bc.record_demonstration(
+        0, np.ones(dimension), source._per_building[0].layout,
+        [0.25] * source._per_building[0].layout.n_ca,
+    )
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    target, _ = _agent(demonstrations=2, weight=1.0)
+    state = target._per_building[0]
+    assert target._bc is not None
+    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
+    target._bc.record_demonstration(
+        0, np.ones(dimension), state.layout, [0.5] * state.layout.n_ca
+    )
+    target.on_episode_start(episode=2, training=True)
+    target.predict([np.ones(dimension)], deterministic=True)
+    snapshot = _snapshot_restore_state(target)
+
+    payload = torch.load(path, weights_only=False)
+    payload["behavior_cloning_state"].pop("seen_per_building")
+    saved_actor = payload["agents"][0]["actor_state"]
+    for key, value in saved_actor.items():
+        saved_actor[key] = value + torch.ones_like(value)
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match="missing required key.*seen_per_building"):
+        target.load_checkpoint(path)
+
+    _assert_restore_state_unchanged(target, snapshot)

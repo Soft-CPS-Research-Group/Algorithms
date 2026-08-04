@@ -339,8 +339,37 @@ class BehaviorCloningRegularizer:
 
     @staticmethod
     def validate_state_dict(state: Mapping[str, Any]) -> None:
-        """Reject demonstrations incompatible with the encoded-layout contract."""
-        for demonstrations in state["demonstrations"].values():
+        """Reject persisted state incompatible with the BC restore contract."""
+        if not isinstance(state, Mapping):
+            raise RuntimeError("Checkpoint BC state must be a mapping.")
+        required_keys = (
+            "demonstrations",
+            "seen_per_building",
+            "rng_state",
+            "latest_bc_effective_weight",
+            "latest_bc_loss",
+            "latest_bc_weighted_loss",
+            "latest_bc_valid_samples",
+            "latest_pretraining_epochs",
+            "latest_incompatible_demonstration_samples",
+        )
+        for key in required_keys:
+            if key not in state:
+                raise RuntimeError(f"Checkpoint BC state missing required key {key!r}.")
+        demonstrations_by_building = state["demonstrations"]
+        seen_per_building = state["seen_per_building"]
+        if not isinstance(demonstrations_by_building, Mapping):
+            raise RuntimeError("Checkpoint BC state has invalid demonstrations mapping.")
+        if not isinstance(seen_per_building, Mapping):
+            raise RuntimeError("Checkpoint BC state has invalid seen_per_building mapping.")
+        for building_idx, demonstrations in demonstrations_by_building.items():
+            if (
+                not isinstance(building_idx, Integral)
+                or isinstance(building_idx, bool)
+                or building_idx < 0
+                or not isinstance(demonstrations, list)
+            ):
+                raise RuntimeError("Checkpoint BC state has invalid demonstrations entry.")
             for demonstration in demonstrations:
                 if not hasattr(demonstration, "encoded_length"):
                     raise RuntimeError(
@@ -394,6 +423,46 @@ class BehaviorCloningRegularizer:
                         "Checkpoint behavior-cloning demonstration layout_signature "
                         "does not match its stored layout."
                     )
+        for building_idx, seen in seen_per_building.items():
+            if (
+                not isinstance(building_idx, Integral)
+                or isinstance(building_idx, bool)
+                or building_idx < 0
+                or not isinstance(seen, Integral)
+                or isinstance(seen, bool)
+                or seen < 0
+            ):
+                raise RuntimeError("Checkpoint BC state has invalid seen_per_building entry.")
+        try:
+            Random().setstate(state["rng_state"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Checkpoint BC state has invalid sampler RNG state.") from exc
+        numeric_keys = (
+            "latest_bc_effective_weight",
+            "latest_bc_loss",
+            "latest_bc_weighted_loss",
+            "latest_bc_valid_samples",
+            "latest_pretraining_epochs",
+            "latest_incompatible_demonstration_samples",
+        )
+        for key in numeric_keys:
+            value = state[key]
+            if (
+                not isinstance(value, (Integral, float, np.floating))
+                or isinstance(value, bool)
+                or not np.isfinite(value)
+            ):
+                raise RuntimeError(f"Checkpoint BC state has invalid numeric field {key!r}.")
+        if "rejected_at_record" in state:
+            rejected_at_record = state["rejected_at_record"]
+            if (
+                not isinstance(rejected_at_record, Integral)
+                or isinstance(rejected_at_record, bool)
+                or rejected_at_record < 0
+            ):
+                raise RuntimeError(
+                    "Checkpoint BC state has invalid rejection counter."
+                )
 
     @staticmethod
     def _validate_layout(layout: BuildingTokenLayout, encoded_length: int) -> None:

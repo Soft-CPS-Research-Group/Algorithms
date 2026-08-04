@@ -165,6 +165,15 @@ def test_load_state_dict_defaults_missing_rejected_record_metric_to_zero() -> No
     assert restored.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 0.0
 
 
+def test_load_state_dict_rejects_missing_required_state_key() -> None:
+    regularizer = _regularizer()
+    state = regularizer.state_dict()
+    state.pop("seen_per_building")
+
+    with pytest.raises(RuntimeError, match="missing required key.*seen_per_building"):
+        regularizer.load_state_dict(state)
+
+
 def test_record_demonstration_accepts_full_width_with_trailing_excluded_features() -> None:
     regularizer = _regularizer()
     layout = _layout_with_trailing_excluded_features()
