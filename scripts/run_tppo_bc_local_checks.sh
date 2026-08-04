@@ -106,6 +106,11 @@ PY
         return 1
     fi
 
+    if [[ ! -f "$watchdog_file" ]]; then
+        printf 'Missing watchdog artifact: %s\n' "$watchdog_file" >&2
+        return 1
+    fi
+
     if [[ -s "$watchdog_file" ]]; then
         printf 'Run %s has nonempty watchdog artifact: %s\n' "$name" "$watchdog_file" >&2
         return 1

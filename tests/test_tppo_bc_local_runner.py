@@ -95,7 +95,8 @@ if os.environ.get('FAKE_OMIT_TOTAL_BATCHES') == '1':
     metrics.pop('TPPO/behavior_cloning_pretraining_batches')
 (logs / 'metrics.jsonl').write_text(json.dumps({{'metrics': metrics}}) + '\\n', encoding='utf-8')
 watchdog = logs / f'{{job_id}}_stall_watchdog.log'
-watchdog.write_text(os.environ.get('FAKE_WATCHDOG', ''), encoding='utf-8')
+if os.environ.get('FAKE_OMIT_WATCHDOG') != '1':
+    watchdog.write_text(os.environ.get('FAKE_WATCHDOG', ''), encoding='utf-8')
 with (base_dir / 'calls.log').open('a', encoding='utf-8') as handle:
     handle.write(config + '\\n')
 """,
@@ -115,6 +116,7 @@ def _run_fake_local_runner(
     omit_usable_samples: bool = False,
     omit_building_batches: bool = False,
     omit_total_batches: bool = False,
+    omit_watchdog: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     repo_root, script_path = _write_fake_local_runner_repo(tmp_path)
     environment = os.environ | {
@@ -127,6 +129,7 @@ def _run_fake_local_runner(
         "FAKE_OMIT_USABLE_SAMPLES": "1" if omit_usable_samples else "0",
         "FAKE_OMIT_BUILDING_BATCHES": "1" if omit_building_batches else "0",
         "FAKE_OMIT_TOTAL_BATCHES": "1" if omit_total_batches else "0",
+        "FAKE_OMIT_WATCHDOG": "1" if omit_watchdog else "0",
     }
     return subprocess.run(
         ["bash", str(script_path)],
@@ -161,6 +164,13 @@ def test_local_bc_runner_rejects_nonempty_watchdog_artifact(tmp_path: Path, watc
 
     assert result.returncode != 0
     assert "watchdog artifact" in result.stderr
+
+
+def test_local_bc_runner_rejects_missing_watchdog_artifact(tmp_path: Path) -> None:
+    result = _run_fake_local_runner(tmp_path, omit_watchdog=True)
+
+    assert result.returncode != 0
+    assert "Missing watchdog artifact" in result.stderr
 
 
 def test_local_bc_runner_rejects_zero_trained_batches_for_a_building(tmp_path: Path) -> None:

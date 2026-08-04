@@ -32,9 +32,9 @@ For each configuration, the experiment log and local metrics must show:
   `TPPO/behavior_cloning_building_<building>_trained_batches` metrics;
 - the total `TPPO/behavior_cloning_pretraining_batches` metric is positive;
 - no `Skipping behavior-cloning demonstrations` warning;
-- the known `logs/<job_id>_stall_watchdog.log` artifact is absent or empty.
+- the required `logs/<job_id>_stall_watchdog.log` artifact exists and is empty.
 
 The runner reads these metrics from each job's `logs/metrics.jsonl` file. It
-fails closed when any metric is missing or zero, or when the watchdog artifact
-contains output. An empty watchdog artifact is valid: the wrapper creates it
-when it arms the watchdog, even if no timeout occurs.
+fails closed when any metric is missing or zero, or when the required watchdog
+artifact is missing or contains output. The empty artifact confirms the wrapper
+armed the watchdog without a timeout.
