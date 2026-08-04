@@ -4,7 +4,25 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${LOG_DIR:-runs/local_bc_checks}"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+    if [[ "$PYTHON_BIN" == */* ]]; then
+        if [[ ! -x "$PYTHON_BIN" ]]; then
+            printf 'Configured PYTHON_BIN is not executable: %s\n' "$PYTHON_BIN" >&2
+            exit 1
+        fi
+    elif ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+        printf 'Configured PYTHON_BIN is unavailable: %s\n' "$PYTHON_BIN" >&2
+        exit 1
+    fi
+elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+else
+    printf 'No usable Python interpreter found. Set PYTHON_BIN or create .venv/bin/python.\n' >&2
+    exit 1
+fi
 
 if [[ "$LOG_DIR" = /* ]]; then
     BASE_DIR="$LOG_DIR"
@@ -24,8 +42,8 @@ run_check() {
     local transcript="$BASE_DIR/${job_id}.stdout.log"
     local active_buildings_file="$job_dir/active_buildings.txt"
 
-    printf 'Running %s: python run_experiment.py --config %s --job_id %s\n' \
-        "$name" "$config" "$job_id"
+    printf 'Running %s: %s run_experiment.py --config %s --job_id %s\n' \
+        "$name" "$PYTHON_BIN" "$config" "$job_id"
     (
         cd "$REPO_ROOT"
         "$PYTHON_BIN" run_experiment.py \

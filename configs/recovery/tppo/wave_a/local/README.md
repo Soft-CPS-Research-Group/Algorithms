@@ -7,8 +7,10 @@ scripts/run_tppo_bc_local_checks.sh
 ```
 
 Set `LOG_DIR` to store local jobs and transcripts elsewhere. Its default is
-`runs/local_bc_checks`. Set `PYTHON_BIN` when the project virtual environment
-does not provide `python` on `PATH`.
+`runs/local_bc_checks`. The runner uses an explicit `PYTHON_BIN` when set;
+otherwise it uses executable `.venv/bin/python`, then `python` on `PATH`.
+It fails before running either gate if none is available. Do not substitute
+`python3`: it may not have the project dependencies.
 
 The runner invokes the current experiment entrypoint, `python run_experiment.py`,
 with unique canary and smoke job IDs. It runs the canary first, then the smoke.

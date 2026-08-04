@@ -18,7 +18,7 @@ def test_local_bc_runner_declares_required_checks() -> None:
 
     assert "set -euo pipefail" in script
     assert 'LOG_DIR="${LOG_DIR:-runs/local_bc_checks}"' in script
-    assert "python run_experiment.py" in script
+    assert '"$PYTHON_BIN" run_experiment.py' in script
     assert "tppo_bc_pretrain_canary.yaml" in script
     assert "tppo_bc_pretrain_smoke.yaml" in script
     assert "--job_id" in script
@@ -104,6 +104,8 @@ config = args[args.index('--config') + 1]
 logs = base_dir / 'jobs' / job_id / 'logs'
 logs.mkdir(parents=True)
 (logs / f'{{job_id}}.log').write_text('Completed episode 3/3\\n', encoding='utf-8')
+with (base_dir / 'interpreters.log').open('a', encoding='utf-8') as handle:
+    handle.write(str(Path(__file__).resolve()) + '\\n')
 metrics = {{
     'TPPO/behavior_cloning_building_Building_1_usable_samples': float(os.environ.get('FAKE_USABLE_SAMPLES', '1')),
     'TPPO/behavior_cloning_building_Building_1_trained_batches': float(os.environ.get('FAKE_BUILDING_BATCHES', '2')),
@@ -141,15 +143,26 @@ def _run_fake_local_runner(
     omit_watchdog: bool = False,
     mixed_building_schema: bool = False,
     schema_mode: str = "valid",
+    python_bin: Path | None = None,
+    project_venv_python: bool = False,
+    use_fake_python_bin: bool = True,
+    path: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     repo_root, script_path = _write_fake_local_runner_repo(
         tmp_path,
         mixed_building_schema=mixed_building_schema,
         schema_mode=schema_mode,
     )
-    environment = os.environ | {
+    fake_python = repo_root / "fake_python.py"
+    if project_venv_python:
+        project_python = repo_root / ".venv/bin/python"
+        project_python.parent.mkdir(parents=True)
+        project_python.write_text(fake_python.read_text(encoding="utf-8"), encoding="utf-8")
+        project_python.chmod(project_python.stat().st_mode | stat.S_IXUSR)
+    environment = {
+        key: value for key, value in os.environ.items() if key != "PYTHON_BIN"
+    } | {
         "LOG_DIR": str(tmp_path / "logs"),
-        "PYTHON_BIN": str(repo_root / "fake_python.py"),
         "FAKE_WATCHDOG": watchdog,
         "FAKE_BUILDING_BATCHES": str(building_batches),
         "FAKE_USABLE_SAMPLES": str(usable_samples),
@@ -159,8 +172,14 @@ def _run_fake_local_runner(
         "FAKE_OMIT_TOTAL_BATCHES": "1" if omit_total_batches else "0",
         "FAKE_OMIT_WATCHDOG": "1" if omit_watchdog else "0",
     }
+    if python_bin is not None:
+        environment["PYTHON_BIN"] = str(python_bin)
+    elif use_fake_python_bin and not project_venv_python:
+        environment["PYTHON_BIN"] = str(fake_python)
+    if path is not None:
+        environment["PATH"] = path
     return subprocess.run(
-        ["bash", str(script_path)],
+        ["/bin/bash", str(script_path)],
         cwd=repo_root,
         env=environment,
         text=True,
@@ -172,6 +191,40 @@ def _run_fake_local_runner(
 def test_local_bc_runner_is_executable_and_bash_syntax_is_valid() -> None:
     assert RUNNER_PATH.stat().st_mode & stat.S_IXUSR
     subprocess.run(["bash", "-n", str(RUNNER_PATH)], check=True)
+
+
+def test_local_bc_runner_prefers_explicit_python_bin_over_project_virtualenv(tmp_path: Path) -> None:
+    repo_root, _ = _write_fake_local_runner_repo(tmp_path)
+    explicit_python = repo_root / "fake_python.py"
+    result = _run_fake_local_runner(
+        tmp_path / "run",
+        python_bin=explicit_python,
+        project_venv_python=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    interpreters = (tmp_path / "run/logs/interpreters.log").read_text(encoding="utf-8").splitlines()
+    assert interpreters == [str(explicit_python.resolve())] * 2
+
+
+def test_local_bc_runner_uses_project_virtualenv_python_when_not_overridden(tmp_path: Path) -> None:
+    result = _run_fake_local_runner(tmp_path, project_venv_python=True)
+
+    assert result.returncode == 0, result.stderr
+    project_python = tmp_path / "repo/.venv/bin/python"
+    interpreters = (tmp_path / "logs/interpreters.log").read_text(encoding="utf-8").splitlines()
+    assert interpreters == [str(project_python.resolve())] * 2
+
+
+def test_local_bc_runner_fails_clearly_when_no_interpreter_is_available(tmp_path: Path) -> None:
+    result = _run_fake_local_runner(
+        tmp_path,
+        use_fake_python_bin=False,
+        path="/nonexistent",
+    )
+
+    assert result.returncode != 0
+    assert "No usable Python interpreter found" in result.stderr
 
 
 def test_local_bc_runner_runs_canary_then_smoke_and_keeps_empty_watchdog_artifacts(tmp_path: Path) -> None:
