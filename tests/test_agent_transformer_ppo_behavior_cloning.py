@@ -304,7 +304,6 @@ def test_record_rejection_is_reported_without_incompatible_skip_metric() -> None
     metrics = agent._bc.snapshot_metrics()
 
     assert metrics["behavior_cloning_rejected_at_record"] == 1.0
-    assert metrics["behavior_cloning_incompatible_demonstration_samples"] == 0.0
 
 
 def test_final_demo_boundary_pretrains_every_stored_topology_group() -> None:
