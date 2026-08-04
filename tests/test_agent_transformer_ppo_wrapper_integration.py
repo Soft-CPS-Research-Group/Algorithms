@@ -239,10 +239,12 @@ def test_watchdog_brackets_out_of_loop_model_attachment(
 
     attachment_events: list[tuple[str, str]] = []
     watchdog_phases: list[str] = []
+    watchdog_attach_sources: list[str | None] = []
     attachment_phases: list[str | None] = []
     original_write_phase_progress = wrapper._write_phase_progress
     original_watchdog_update = wrapper._update_stall_watchdog_for_phase
     original_attach_environment = agent.attach_environment
+    context_path = tmp_path / "ppo-model-attach-watchdog_stall_watchdog.log.context.json"
 
     def collect_phase(*, phase: str, extra=None, **kwargs: Any) -> None:
         source = (extra or {}).get("attach_source")
@@ -258,6 +260,9 @@ def test_watchdog_brackets_out_of_loop_model_attachment(
         attachment_phases.append(wrapper._stall_watchdog_armed_phase)
         if wrapper._stall_watchdog_armed_phase == "model_attach_start":
             attachment_events.append(("attach", "model_attach_start"))
+            watchdog_attach_sources.append(
+                json.loads(context_path.read_text(encoding="utf-8")).get("attach_source")
+            )
         original_attach_environment(**kwargs)
 
     monkeypatch.setattr(wrapper, "_write_phase_progress", collect_phase)
@@ -281,6 +286,7 @@ def test_watchdog_brackets_out_of_loop_model_attachment(
         ("phase", "model_attach_end:topology_refresh"),
     ]
     assert attachment_phases == ["model_attach_start"] * 3
+    assert watchdog_attach_sources == ["set_model", "episode_reset", "topology_refresh"]
     assert watchdog_phases.count("model_attach_start") == 3
     assert watchdog_phases.count("model_attach_end") == 3
     assert len(agent._per_building) == 2
@@ -322,7 +328,7 @@ def test_watchdog_keeps_start_phase_when_set_model_attachment_raises(
     with pytest.raises(AttributeError, match="set-model attachment failure"):
         wrapper.set_model(agent)
 
-    assert phases == [("model_attach_start", None)]
+    assert phases == [("model_attach_start", "set_model")]
     assert wrapper._stall_watchdog_armed_phase == "model_attach_start"
 
 

@@ -765,6 +765,7 @@ class Wrapper_CityLearn(RLC):
             global_step_total=global_step_total,
             status=status,
             rewards=rewards,
+            extra=extra,
         )
 
         if not force and not self._progress_phase_in_window():
@@ -804,6 +805,7 @@ class Wrapper_CityLearn(RLC):
         global_step_total: Optional[int],
         status: str,
         rewards: Optional[List[float]],
+        extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
         if not self.stall_watchdog_enabled:
             return
@@ -818,6 +820,7 @@ class Wrapper_CityLearn(RLC):
                 global_step_total=global_step_total,
                 status=status,
                 rewards=rewards,
+                extra=extra,
             )
             return
 
@@ -904,6 +907,7 @@ class Wrapper_CityLearn(RLC):
         global_step_total: Optional[int],
         status: str,
         rewards: Optional[List[float]],
+        extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
         timeout = self.stall_watchdog_timeout_seconds
         if timeout is None or timeout <= 0:
@@ -932,6 +936,8 @@ class Wrapper_CityLearn(RLC):
         }
         if rewards is not None:
             context["rewards"] = list(rewards)
+        if extra:
+            context.update(dict(extra))
         self._write_stall_watchdog_context(context, force=phase != "step_start")
 
         try:
