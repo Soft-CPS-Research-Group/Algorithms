@@ -236,10 +236,10 @@ confirmaram `bc_pretrain_done=true` e `ppo_update_count=1`.
 Em 2026-08-04 foram submetidos os dois primeiros treinos anuais, ambos com
 quatro passagens, settlement ligado e apenas o CC treinável:
 
-| Linha | Job | Destino | Seed | Estado inicial |
+| Linha | Job | Destino | Seed | Estado em 2026-08-04 22:11 UTC |
 |---|---|---|---:|---|
-| CC-SMART | `dba92ef6-cfcd-4fbf-81c0-c394cc3baf54` | `server` | 123 | `running` |
-| CC-PPO | `ee53bfda-c7f3-4870-bf1a-dc3b3fee45f0` | `deucalion` CPU | 789 | `setup` |
+| CC-SMART | `dba92ef6-cfcd-4fbf-81c0-c394cc3baf54` | `server` | 123 | `finished`, exit 0 |
+| CC-PPO | `ee53bfda-c7f3-4870-bf1a-dc3b3fee45f0` | `deucalion` CPU | 789 | `running` |
 
 Os configs foram enviados inline e os resolved configs preservam a gama
 0,5--1,3. O preflight confirmou workers `0.5.3` livres e a imagem pronta nos
@@ -247,3 +247,33 @@ dois destinos. Manifest e monitorização ficam em
 `runs/remote_configs/ppo_cc_settlement_annual_v1_wave2_cc_pmax13_20260804/`.
 A expansão de seeds só acontece depois de avaliar esta wave contra os replays
 neutros emparelhados.
+
+## Tabela canónica anual com settlement (parcial)
+
+Perfil: `cc_frozen_leaf_scorecard_v1`. A decisão exige EV mínimo >= 0,99,
+EV dentro da tolerância >= 0,40, zero violações elétricas, deferrables sem
+falhas, SOC em `[0, 1]` e zero outage não servido antes de comparar custo.
+
+| Linha | Custo settled | Delta emparelhado | Hard gates | Decisão |
+|---|---:|---:|---|---|
+| SMART | EUR 21 964,67 | referência | `PASS_HARD_GATES` | `REFERENCE` |
+| CC-SMART | EUR 21 937,95 | EUR -26,72 (-0,12%) | `PASS_HARD_GATES` | `PASS_CC_SCORECARD`, marginal |
+| PPO seed 789 | EUR 20 850,00 | EUR -1 114,67 vs SMART (-5,08%) | gates anuais disponíveis passam | referência PPO |
+| CC-PPO seed 789 | pendente | pendente vs PPO | pendente | `running` |
+
+O CC-SMART preserva serviço e segurança: EV mínimo 0,99818, EV dentro da
+tolerância 0,97928, zero violações elétricas, zero falhas deferrable, SOC
+`0,0:0,99983` sem violações e zero outage. Reduz importação em 164,81 kWh,
+exportação em 235,55 kWh, pico diário em 0,47% e ramping em 0,67%; o pico
+absoluto fica igual. Emissões pioram 0,22%, abaixo do limiar de regressão de
+1%, e throughput de bateria cresce 5,82%.
+
+A melhoria settled não corresponde a uma melhoria física líquida do mesmo
+tamanho: o custo contrafactual sem settlement piora EUR 27,80, enquanto a
+poupança atribuída ao mercado local aumenta EUR 54,52. O saldo é a redução de
+EUR 26,72. Quinze dos 17 edifícios reduzem custo local; `Building_10` piora
+EUR 12,96 e `Building_15` EUR 17,12. Por isso esta linha passa formalmente mas
+não é ainda evidência de um ganho robusto do CC.
+
+Scorecard e séries finais completas:
+`runs/remote_results/ppo_cc_settlement_annual_v1_wave2_cc_pmax13_20260804/scorecards/cc_smart/`.
