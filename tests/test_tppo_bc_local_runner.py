@@ -83,10 +83,14 @@ logs = base_dir / 'jobs' / job_id / 'logs'
 logs.mkdir(parents=True)
 (logs / f'{{job_id}}.log').write_text('Completed episode 3/3\\n', encoding='utf-8')
 metrics = {{
-    'TPPO/behavior_cloning_building_Building_1_usable_samples': 1.0,
+    'TPPO/behavior_cloning_building_Building_1_usable_samples': float(os.environ.get('FAKE_USABLE_SAMPLES', '1')),
     'TPPO/behavior_cloning_building_Building_1_trained_batches': float(os.environ.get('FAKE_BUILDING_BATCHES', '2')),
-    'TPPO/behavior_cloning_pretraining_batches': 2.0,
+    'TPPO/behavior_cloning_pretraining_batches': float(os.environ.get('FAKE_TOTAL_BATCHES', '2')),
 }}
+if os.environ.get('FAKE_OMIT_USABLE_SAMPLES') == '1':
+    metrics.pop('TPPO/behavior_cloning_building_Building_1_usable_samples')
+if os.environ.get('FAKE_OMIT_TOTAL_BATCHES') == '1':
+    metrics.pop('TPPO/behavior_cloning_pretraining_batches')
 (logs / 'metrics.jsonl').write_text(json.dumps({{'metrics': metrics}}) + '\\n', encoding='utf-8')
 watchdog = logs / f'{{job_id}}_stall_watchdog.log'
 watchdog.write_text(os.environ.get('FAKE_WATCHDOG', ''), encoding='utf-8')
@@ -100,7 +104,14 @@ with (base_dir / 'calls.log').open('a', encoding='utf-8') as handle:
 
 
 def _run_fake_local_runner(
-    tmp_path: Path, *, watchdog: str = "", building_batches: int = 2
+    tmp_path: Path,
+    *,
+    watchdog: str = "",
+    building_batches: int = 2,
+    usable_samples: int = 1,
+    total_batches: int = 2,
+    omit_usable_samples: bool = False,
+    omit_total_batches: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     repo_root, script_path = _write_fake_local_runner_repo(tmp_path)
     environment = os.environ | {
@@ -108,6 +119,10 @@ def _run_fake_local_runner(
         "PYTHON_BIN": str(repo_root / "fake_python.py"),
         "FAKE_WATCHDOG": watchdog,
         "FAKE_BUILDING_BATCHES": str(building_batches),
+        "FAKE_USABLE_SAMPLES": str(usable_samples),
+        "FAKE_TOTAL_BATCHES": str(total_batches),
+        "FAKE_OMIT_USABLE_SAMPLES": "1" if omit_usable_samples else "0",
+        "FAKE_OMIT_TOTAL_BATCHES": "1" if omit_total_batches else "0",
     }
     return subprocess.run(
         ["bash", str(script_path)],
@@ -149,3 +164,39 @@ def test_local_bc_runner_rejects_zero_trained_batches_for_a_building(tmp_path: P
 
     assert result.returncode != 0
     assert "trained batches for Building_1" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("usable_samples", "omit_usable_samples"),
+    [(0, False), (1, True)],
+    ids=["zero", "missing"],
+)
+def test_local_bc_runner_rejects_zero_or_missing_usable_samples(
+    tmp_path: Path, usable_samples: int, omit_usable_samples: bool
+) -> None:
+    result = _run_fake_local_runner(
+        tmp_path,
+        usable_samples=usable_samples,
+        omit_usable_samples=omit_usable_samples,
+    )
+
+    assert result.returncode != 0
+    assert "usable BC samples for Building_1" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("total_batches", "omit_total_batches"),
+    [(0, False), (2, True)],
+    ids=["zero", "missing"],
+)
+def test_local_bc_runner_rejects_zero_or_missing_total_pretraining_batches(
+    tmp_path: Path, total_batches: int, omit_total_batches: bool
+) -> None:
+    result = _run_fake_local_runner(
+        tmp_path,
+        total_batches=total_batches,
+        omit_total_batches=omit_total_batches,
+    )
+
+    assert result.returncode != 0
+    assert "positive BC trained-batch total" in result.stderr
