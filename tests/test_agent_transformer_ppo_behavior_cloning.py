@@ -82,9 +82,13 @@ def _materialize_optimizer_state(*optimizers: torch.optim.Optimizer) -> None:
 def _assert_structured_equal(actual, expected) -> None:
     if isinstance(expected, torch.Tensor):
         assert isinstance(actual, torch.Tensor)
+        assert actual.dtype == expected.dtype
+        assert actual.shape == expected.shape
         assert torch.equal(actual, expected)
     elif isinstance(expected, np.ndarray):
         assert isinstance(actual, np.ndarray)
+        assert actual.dtype == expected.dtype
+        assert actual.shape == expected.shape
         assert np.array_equal(actual, expected)
     elif isinstance(expected, dict):
         assert actual.keys() == expected.keys()
@@ -389,6 +393,16 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     observation = np.ones(dimension, dtype=np.float64)
     target._bc.record_demonstration(
         0, observation, state.layout, [0.25] * state.layout.n_ca
+    )
+    target._bc.record_demonstration(
+        0, observation + 1.0, state.layout, [0.5] * state.layout.n_ca
+    )
+    sampled_demos = target._bc.sample_demonstrations(state.layout, batch_size=1)
+    target._bc.demonstration_loss(
+        layout=state.layout,
+        demonstrations=sampled_demos,
+        predicted_means=torch.full((1, state.layout.n_ca, 1), 0.75),
+        global_learning_step=0,
     )
     target._bc.set_pretraining_epochs(3)
     target._bc.set_incompatible_demonstration_samples(2)
