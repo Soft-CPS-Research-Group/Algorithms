@@ -200,7 +200,10 @@ class Pipeline(ExecutionUnit):
 
         for stage in self.stages:
             stage_kwargs = dict(kwargs)
-            if stage.use_raw_observations and raw_observation_names is not None:
+            if (
+                stage.use_raw_observations
+                or bool(getattr(stage, "requires_raw_observation_context", False))
+            ) and raw_observation_names is not None:
                 stage_kwargs["observation_names"] = raw_observation_names
             elif not stage.use_raw_observations and encoded_observation_names is not None:
                 stage_kwargs["observation_names"] = encoded_observation_names

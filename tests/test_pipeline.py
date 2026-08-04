@@ -262,6 +262,27 @@ class TestPipelineLifecycle:
         assert manager.attach_calls[0]["observation_names"] == encoded_names
         assert leaf.attach_calls[0]["observation_names"] == raw_names
 
+    def test_attach_environment_preserves_raw_name_contract_for_encoded_leaf(self) -> None:
+        manager = RecordingUnit("manager", use_raw_observations=True)
+        leaf_member = RecordingUnit("leaf", use_raw_observations=False)
+        leaf_member.requires_raw_observation_context = True
+        leaf = Ensemble([leaf_member])
+        raw_names = [["raw_a"]]
+        encoded_names = [["encoded_a"]]
+
+        Pipeline([manager, leaf]).attach_environment(
+            observation_names=raw_names,
+            action_names=[["act_a"]],
+            action_space=["space_a"],
+            observation_space=["obs_space_a"],
+            metadata={
+                "raw_observation_names": raw_names,
+                "encoded_observation_names": encoded_names,
+            },
+        )
+
+        assert leaf_member.attach_calls[0]["observation_names"] == raw_names
+
 
 class TestPipelinePersistence:
     def test_save_creates_subdir_per_stage(self, tmp_path: Path) -> None:
