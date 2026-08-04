@@ -44,14 +44,21 @@ def _config(*, demonstrations: int = 1, weight: float = 0.0) -> dict:
     return config
 
 
-def _agent(*, demonstrations: int = 1, weight: float = 0.0) -> tuple[AgentTransformerPPO, int]:
+def _agent(
+    *, demonstrations: int = 1, weight: float = 0.0, building_count: int = 1
+) -> tuple[AgentTransformerPPO, int]:
     names = load_sample_observation_names_for_first_building()
     actions = list(_DEFAULT_ACTIONS)
     agent = AgentTransformerPPO(_config(demonstrations=demonstrations, weight=weight))
     agent.attach_environment(
-        observation_names=[names], action_names=[actions],
-        action_space=[_DummySpace(len(actions))], observation_space=[None],
-        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+        observation_names=[names] * building_count,
+        action_names=[actions] * building_count,
+        action_space=[_DummySpace(len(actions)) for _ in range(building_count)],
+        observation_space=[None] * building_count,
+        metadata={
+            "building_names": [f"Building_{idx + 1}" for idx in range(building_count)],
+            "seconds_per_time_step": 3600,
+        },
     )
     dimension = BehaviorCloningRegularizer.full_representation_width(
         agent._per_building[0].layout
@@ -254,6 +261,52 @@ def test_final_demo_end_pretrains_actor_then_ppo_uses_only_actor_actions() -> No
     assert len(agent._per_building[0].buffer) == 1
 
 
+def test_final_demo_lifecycle_rejects_zero_usable_demonstrations() -> None:
+    agent, _ = _agent()
+
+    agent.on_episode_start(episode=0, training=True)
+
+    with pytest.raises(RuntimeError, match=r"zero compatible demonstrations.*Building_1"):
+        agent.on_episode_end(episode=0, training=True)
+
+
+def test_pretraining_rejects_each_building_without_usable_demonstrations() -> None:
+    agent, dimension = _agent(building_count=2)
+    assert agent._bc is not None
+    first_state = agent._per_building[0]
+    before = [parameter.detach().clone() for parameter in first_state.actor.parameters()]
+    agent._bc.record_demonstration(
+        0,
+        np.ones(dimension),
+        first_state.layout,
+        [0.25] * first_state.layout.n_ca,
+    )
+
+    with pytest.raises(RuntimeError, match=r"zero compatible demonstrations.*Building_2"):
+        agent._run_bc_pretraining()
+
+    assert all(
+        torch.equal(before_parameter, after_parameter)
+        for before_parameter, after_parameter in zip(before, first_state.actor.parameters())
+    )
+
+
+def test_record_rejection_is_reported_without_incompatible_skip_metric() -> None:
+    agent, dimension = _agent()
+    assert agent._bc is not None
+    agent._bc.record_demonstration(
+        0,
+        np.ones(dimension + 1),
+        agent._per_building[0].layout,
+        [0.25] * agent._per_building[0].layout.n_ca,
+    )
+
+    metrics = agent._bc.snapshot_metrics()
+
+    assert metrics["behavior_cloning_rejected_at_record"] == 1.0
+    assert metrics["behavior_cloning_incompatible_demonstration_samples"] == 0.0
+
+
 def test_final_demo_boundary_pretrains_every_stored_topology_group() -> None:
     agent, old_dimension = _agent()
     old_observation = np.ones(old_dimension, dtype=np.float64)
@@ -297,7 +350,7 @@ def test_final_demo_boundary_pretrains_every_stored_topology_group() -> None:
         + [current_signature] * agent._bc.pretraining_epochs
     )
     metrics = agent.consume_latest_training_metrics()
-    assert metrics["TPPO/behavior_cloning_incompatible_demonstration_samples"] == 0.0
+    assert metrics["TPPO/behavior_cloning_rejected_at_record"] == 0.0
     assert len(expanded_names) == current_dimension
 
 
@@ -329,7 +382,7 @@ def test_pretraining_uses_full_width_demo_with_trailing_excluded_features() -> N
     agent._run_bc_pretraining()
 
     assert trained_layouts == [layout] * agent._bc.pretraining_epochs
-    assert agent._bc.snapshot_metrics()["behavior_cloning_incompatible_demonstration_samples"] == 0.0
+    assert agent._bc.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 0.0
 
 
 def test_pretraining_distinguishes_layouts_with_different_excluded_features() -> None:
@@ -375,7 +428,7 @@ def test_pretraining_distinguishes_layouts_with_different_excluded_features() ->
     ] * agent._bc.pretraining_epochs + [
         agent._bc.layout_signature(extended_layout)
     ] * agent._bc.pretraining_epochs
-    assert agent._bc.snapshot_metrics()["behavior_cloning_incompatible_demonstration_samples"] == 0.0
+    assert agent._bc.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 0.0
 
 
 def test_auxiliary_bc_never_changes_ppo_actions() -> None:

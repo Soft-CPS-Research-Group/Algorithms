@@ -270,7 +270,7 @@ def test_topology_transition_preserves_raw_observations_for_raw_unit() -> None:
 
 
 @pytest.mark.parametrize("truncated", [False, True], ids=["terminal", "truncated"])
-def test_demo_topology_transition_records_teacher_demos_pretrains_and_runs_no_ppo(
+def test_demo_topology_transition_rejects_building_without_demonstrations(
     monkeypatch: pytest.MonkeyPatch,
     truncated: bool,
 ) -> None:
@@ -337,29 +337,13 @@ def test_demo_topology_transition_records_teacher_demos_pretrains_and_runs_no_pp
         ]
 
     agent._bc.compute_teacher_actions = teacher_actions
-    actor_decisions: list[tuple[int, bool]] = []
-    original_predict = agent.predict
-
-    def record_actor_decision(observations, deterministic=None):
-        actions = original_predict(observations, deterministic=deterministic)
-        if agent._current_episode == 1:
-            actor_decisions.append((agent._current_episode, agent._pending_decisions[0] is not None))
-        return actions
-
-    monkeypatch.setattr(agent, "predict", record_actor_decision)
-
-    wrapper.learn(episodes=2, deterministic=False)
+    with pytest.raises(RuntimeError, match=r"zero compatible demonstrations.*B2"):
+        wrapper.learn(episodes=2, deterministic=False)
 
     assert pretraining_calls == 1
     assert teacher_calls == [0, 0]
-    assert pretraining_metrics[0]["behavior_cloning_demonstration_samples"] == 2.0
-    assert pretraining_metrics[0]["behavior_cloning_pretraining_epochs"] == 2.0
-    assert pretraining_metrics[0]["behavior_cloning_incompatible_demonstration_samples"] == 0.0
-    assert actor_decisions == [(1, True), (1, True)]
-    assert [(episode, building_idx, rollout_size) for episode, building_idx, rollout_size, _ in ppo_updates] == [
-        (1, 0, 2)
-    ]
-    assert torch.equal(ppo_updates[0][3], torch.zeros_like(ppo_updates[0][3]))
+    assert pretraining_metrics == []
+    assert ppo_updates == []
     assert len(agent._per_building) == 2
     assert agent._bc.demonstration_count(0) == 2
     assert agent._bc.demonstration_count(1) == 0

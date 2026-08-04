@@ -1586,9 +1586,22 @@ class AgentTransformerPPO(BaseAgent):
     def _run_bc_pretraining(self) -> None:
         """Fit representation and actor to frozen teacher demonstrations only."""
         assert self._bc is not None
+        grouped_by_building = [
+            self._bc.demonstrations_for_building_by_signature(building_idx)
+            for building_idx in range(len(self._per_building))
+        ]
+        missing_buildings = [
+            state.building_id
+            for state, grouped in zip(self._per_building, grouped_by_building)
+            if not grouped
+        ]
+        if missing_buildings:
+            raise RuntimeError(
+                "Behavior-cloning pretraining has zero compatible demonstrations for "
+                f"building(s): {', '.join(missing_buildings)}."
+            )
         trained_epochs = 0
-        for building_idx, state in enumerate(self._per_building):
-            grouped = self._bc.demonstrations_for_building_by_signature(building_idx)
+        for state, grouped in zip(self._per_building, grouped_by_building):
             for demonstrations in grouped.values():
                 layout = demonstrations[0].layout
                 for _ in range(self._bc.pretraining_epochs):
