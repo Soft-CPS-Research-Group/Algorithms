@@ -208,9 +208,15 @@ Os quatro schemas validam e os quatro pipelines constroem o ambiente real com
 17 agentes e 26 ações. PPO e CC-PPO carregam o pack compacto e completam um
 passo determinístico de inferência.
 
-## Próxima ação autorizável
+## Validação local e próxima ação
 
-Executar primeiro o SMART neutral settled e o smoke/paridade PPO neutral
-settled. Se ambos passarem, lançar CC-SMART seed 123 e CC-PPO seed 789. A
-expansão para as restantes seeds só acontece depois destes gates. Nenhum job
-foi preparado ou submetido durante a criação dos templates.
+Os quatro caminhos passaram um smoke local end-to-end com settlement, export
+do scorecard e checkpoint PPO compacto. CC-SMART e CC-PPO completaram BC, uma
+atualização PPO real e avaliação determinística final. A evidência e as
+limitações estão em `2026-08-04_ppo_cc_settlement_local_smoke.md`.
+
+O próximo passo é fazer push do commit que contém o protocolo e o smoke,
+esperar pela imagem commit-specific, escolher o host com evidência live e
+executar preflight estrito. A primeira campanha remota anual continua limitada
+às quatro linhas iniciais; a expansão de seeds só acontece depois desse gate.
+Nenhum job remoto foi preparado ou submetido durante a validação local.
