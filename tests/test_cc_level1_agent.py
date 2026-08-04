@@ -184,3 +184,46 @@ def test_cc_bc_teacher_uses_raw_physical_values_not_policy_encoding() -> None:
     assert agent._bc_price_samples == [0.20000000298023224]
     assert agent._bc_import_samples == [2.0]
     assert agent._bc_violation_samples == [0.5]
+
+
+def test_cc_does_not_mix_final_bc_teacher_action_into_ppo_rollout() -> None:
+    agent = CCLevel1Agent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "c_dim": len(_CC_LEVEL1_FEATURES),
+                    "hidden_dims": [8],
+                    "cc_action_interval": 1,
+                    "num_steps": 8,
+                    "bc_pretrain_enabled": True,
+                    "bc_collect_steps": 1,
+                    "bc_train_steps": 1,
+                }
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=[list(_CC_LEVEL1_FEATURES)],
+        action_names=[[]],
+        action_space=[None],
+        observation_space=[None],
+        metadata={},
+    )
+    observations = [np.zeros(len(_CC_LEVEL1_FEATURES), dtype=np.float32)]
+
+    agent.predict(observations, deterministic=False)
+    agent.update(
+        observations,
+        [[]],
+        [-1.0],
+        observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    assert agent._bc_pretrain_done is True
+    assert agent.rollout_buffer._ptr == 0

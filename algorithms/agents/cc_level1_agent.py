@@ -309,6 +309,7 @@ class CCLevel1Agent(BaseAgent):
         self._bc_train_steps   = int(hyper.get("bc_train_steps",   2000))
         self._bc_lr            = float(hyper.get("bc_lr",           1e-3))
         self._bc_pretrain_done: bool = not self._bc_enabled  # skip if disabled
+        self._bc_completed_this_decision: bool = False
         self._bc_contexts: List[np.ndarray] = []
         self._bc_teacher_contexts: List[np.ndarray] = []
         # Sample buffers for auto-calibration of reference values.
@@ -456,6 +457,7 @@ class CCLevel1Agent(BaseAgent):
                 if len(self._bc_contexts) >= self._bc_collect_steps:
                     self._run_bc_pretraining()
                     self._bc_pretrain_done = True
+                    self._bc_completed_this_decision = True
             else:
                 self._sample_new_decision(observations, deterministic)
         self._step_in_interval = (
@@ -503,9 +505,10 @@ class CCLevel1Agent(BaseAgent):
         assert self._cached_community is not None, "predict() must run before update()"
 
         # BC collection phase: flush interval state but do NOT add to rollout buffer.
-        if not self._bc_pretrain_done:
+        if not self._bc_pretrain_done or self._bc_completed_this_decision:
             self._decision_interval_complete = False
             self._accumulated_reward = 0.0
+            self._bc_completed_this_decision = False
             if done:
                 self._step_in_interval = 0
                 self._prev_multiplier = 1.0
