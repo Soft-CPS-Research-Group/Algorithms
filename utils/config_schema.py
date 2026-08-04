@@ -591,6 +591,36 @@ class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
         return self
 
 
+class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
+    """Per-building market maker with an auditable reference policy."""
+
+    c_dim: int = Field(default=118, gt=0)
+    num_buildings: int = Field(default=17, gt=0)
+    cc_action_interval: int = Field(default=4, gt=0)
+    price_min: float = Field(default=0.5, gt=0)
+    price_max: float = Field(default=1.5, gt=0)
+    initial_log_std: float = Field(default=-2.5, ge=-5.0, le=1.0)
+    reference_multipliers: Optional[List[float]] = None
+    w_factor: float = Field(default=0.3, ge=0)
+    w_smoothness: float = Field(default=0.02, ge=0)
+
+    @model_validator(mode="after")
+    def validate_price_contract(self) -> "CCLevel2Hyperparameters":
+        if self.price_max <= self.price_min:
+            raise ValueError("CCLevel2 price_max must be greater than price_min")
+        values = self.reference_multipliers
+        if values is not None:
+            if len(values) != self.num_buildings:
+                raise ValueError(
+                    "CCLevel2 reference_multipliers length must equal num_buildings"
+                )
+            if any(value < self.price_min or value > self.price_max for value in values):
+                raise ValueError(
+                    "CCLevel2 reference_multipliers must lie within the configured price range"
+                )
+        return self
+
+
 class FixedPriceSignalHyperparameters(BaseModel):
     multiplier: float = Field(default=1.0, gt=0)
     multipliers: Optional[List[float]] = None
@@ -658,7 +688,7 @@ class CCLevel2AlgorithmConfig(BaseModel):
     algorithm: Literal["CCLevel2"]
     count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
     frozen: bool = False
-    hyperparameters: Any = Field(default_factory=dict)
+    hyperparameters: CCLevel2Hyperparameters = Field(default_factory=CCLevel2Hyperparameters)
 
 
 class BuildingAgentStageConfig(BaseModel):
