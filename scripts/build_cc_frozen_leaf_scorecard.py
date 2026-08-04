@@ -66,6 +66,11 @@ SECONDARY_METRICS: tuple[tuple[str, str], ...] = (
 )
 
 MONITORING_METRICS = (
+    "community_market_counterfactual_eur",
+    "community_market_savings_eur",
+    "community_local_import_kwh",
+    "community_local_export_kwh",
+    "community_market_import_share_rate",
     "community_export_kwh",
     "community_net_exchange_kwh",
     "battery_throughput_kwh",

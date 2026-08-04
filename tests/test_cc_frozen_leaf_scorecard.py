@@ -27,6 +27,11 @@ def _aggregate(run: str, *, cost: float, gate: str = "PASS_WITH_SAFETY_PROJECTIO
         "storage_soc_max": 1.0,
         "storage_soc_violation_count": 0,
         "outage_unserved_energy_normalized_rate": 0.0,
+        "community_market_counterfactual_eur": 110.0,
+        "community_market_savings_eur": 10.0,
+        "community_local_import_kwh": 25.0,
+        "community_local_export_kwh": 25.0,
+        "community_market_import_share_rate": 0.2,
         "community_export_kwh": 20.0,
         "community_net_exchange_kwh": 80.0,
         "battery_throughput_kwh": 40.0,
@@ -64,6 +69,11 @@ def test_cc_scorecard_passes_cost_candidate_without_material_secondary_regressio
     assert candidate["electrical_violation_kwh"] == 0.0
     assert candidate["deferrable_missed_cycles_count"] == 0
     assert candidate["storage_soc_violation_count"] == 0
+    assert candidate["community_market_counterfactual_eur"] == pytest.approx(110.0)
+    assert candidate["community_market_savings_eur"] == pytest.approx(10.0)
+    assert candidate["community_local_import_kwh"] == pytest.approx(25.0)
+    assert candidate["community_local_export_kwh"] == pytest.approx(25.0)
+    assert candidate["community_market_import_share_rate"] == pytest.approx(0.2)
     assert "ramping_ratio_to_bau" in candidate["secondary_improvements"]
 
 
