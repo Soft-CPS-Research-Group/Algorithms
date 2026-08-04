@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 import random
 
@@ -682,6 +682,51 @@ def test_checkpoint_validates_corrupt_bc_state_before_mutating_bc_disabled_agent
     torch.save(payload, path)
 
     with pytest.raises(RuntimeError, match="encoded_length"):
+        target.load_checkpoint(path)
+
+    assert all(
+        torch.equal(value, actor_before[key])
+        for key, value in state.actor.state_dict().items()
+    )
+
+
+def test_checkpoint_rejects_out_of_bounds_demo_layout_before_mutating_agent(
+    tmp_path: Path,
+) -> None:
+    source, dimension = _agent(demonstrations=2, weight=1.0)
+    assert source._bc is not None
+    observation = np.ones(dimension, dtype=np.float64)
+    source._bc.record_demonstration(
+        0, observation, source._per_building[0].layout,
+        [0.25] * source._per_building[0].layout.n_ca,
+    )
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    target, _ = _agent(demonstrations=2, weight=1.0)
+    state = target._per_building[0]
+    actor_before = {
+        key: value.detach().clone() for key, value in state.actor.state_dict().items()
+    }
+    payload = torch.load(path, weights_only=False)
+    demo = payload["behavior_cloning_state"]["demonstrations"][0][0]
+    bad_segment = replace(
+        demo.layout.segments[0],
+        feature_indices=(demo.encoded_length,) + demo.layout.segments[0].feature_indices[1:],
+    )
+    bad_layout = replace(
+        demo.layout, segments=(bad_segment,) + demo.layout.segments[1:]
+    )
+    payload["behavior_cloning_state"]["demonstrations"][0][0] = Demonstration(
+        observation=demo.observation,
+        encoded_length=demo.encoded_length,
+        layout=bad_layout,
+        layout_signature=source._bc.layout_signature(bad_layout),
+        target=demo.target,
+    )
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match="invalid BC layout"):
         target.load_checkpoint(path)
 
     assert all(

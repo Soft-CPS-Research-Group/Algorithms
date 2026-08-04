@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from numbers import Integral
 from random import Random
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 import torch
 
-from algorithms.utils.entity_token_layout import BuildingTokenLayout
+from algorithms.utils.entity_token_layout import (
+    BuildingTokenLayout,
+    NfcExpression,
+    TokenSegment,
+)
 from algorithms.utils.warm_start_policy import build_warm_start_policy
 
 
@@ -348,6 +353,9 @@ class BehaviorCloningRegularizer:
                         f"{demonstration.observation.shape} does not match "
                         f"encoded_length {demonstration.encoded_length}."
                     )
+                BehaviorCloningRegularizer._validate_layout(
+                    demonstration.layout, demonstration.encoded_length
+                )
                 expected_observation_shape = (
                     BehaviorCloningRegularizer.full_representation_width(
                         demonstration.layout
@@ -386,6 +394,104 @@ class BehaviorCloningRegularizer:
                         "Checkpoint behavior-cloning demonstration layout_signature "
                         "does not match its stored layout."
                     )
+
+    @staticmethod
+    def _validate_layout(layout: BuildingTokenLayout, encoded_length: int) -> None:
+        """Reject serialized layouts that would fail during tokenizer use."""
+        if not isinstance(layout, BuildingTokenLayout):
+            raise RuntimeError("Checkpoint contains invalid BC layout: wrong layout type.")
+        if not isinstance(layout.building_id, str) or not layout.building_id:
+            raise RuntimeError("Checkpoint contains invalid BC layout: invalid building_id.")
+        if (
+            not isinstance(layout.n_sro, Integral)
+            or isinstance(layout.n_sro, bool)
+            or layout.n_sro < 0
+            or not isinstance(layout.n_ca, Integral)
+            or isinstance(layout.n_ca, bool)
+            or layout.n_ca < 0
+        ):
+            raise RuntimeError("Checkpoint contains invalid BC layout: invalid token counts.")
+        if not isinstance(layout.segments, tuple):
+            raise RuntimeError("Checkpoint contains invalid BC layout: segments must be a tuple.")
+        if (
+            not isinstance(layout.ca_action_names, tuple)
+            or len(layout.ca_action_names) != layout.n_ca
+            or any(not isinstance(name, str) or not name for name in layout.ca_action_names)
+        ):
+            raise RuntimeError("Checkpoint contains invalid BC layout: invalid CA action names.")
+        if (
+            not isinstance(layout.excluded_feature_names, tuple)
+            or any(not isinstance(name, str) for name in layout.excluded_feature_names)
+        ):
+            raise RuntimeError("Checkpoint contains invalid BC layout: invalid excluded features.")
+
+        seen_indices = set()
+        n_sro = 0
+        n_ca = 0
+        n_nfc = 0
+        before_nfc = True
+        for segment in layout.segments:
+            if not isinstance(segment, TokenSegment):
+                raise RuntimeError("Checkpoint contains invalid BC layout: invalid segment.")
+            if segment.family not in {"sro", "nfc", "ca"}:
+                raise RuntimeError("Checkpoint contains invalid BC layout: invalid segment family.")
+            if segment.family == "sro" and not before_nfc:
+                raise RuntimeError("Checkpoint contains invalid BC layout: invalid segment order.")
+            if segment.family == "nfc" and not before_nfc:
+                raise RuntimeError("Checkpoint contains invalid BC layout: invalid segment order.")
+            if segment.family == "ca" and before_nfc:
+                raise RuntimeError("Checkpoint contains invalid BC layout: invalid segment order.")
+            if not isinstance(segment.type_name, str) or not segment.type_name:
+                raise RuntimeError("Checkpoint contains invalid BC layout: invalid segment type.")
+            if segment.instance_id is not None and not isinstance(segment.instance_id, str):
+                raise RuntimeError("Checkpoint contains invalid BC layout: invalid segment instance.")
+            if (
+                not isinstance(segment.feature_indices, tuple)
+                or not segment.feature_indices
+                or not isinstance(segment.feature_names, tuple)
+                or len(segment.feature_names) != len(segment.feature_indices)
+                or any(not isinstance(name, str) for name in segment.feature_names)
+            ):
+                raise RuntimeError("Checkpoint contains invalid BC layout: invalid segment features.")
+            for index in segment.feature_indices:
+                if (
+                    not isinstance(index, Integral)
+                    or isinstance(index, bool)
+                    or index < 0
+                    or index >= encoded_length
+                    or index in seen_indices
+                ):
+                    raise RuntimeError(
+                        "Checkpoint contains invalid BC layout: feature index is out of bounds "
+                        "or duplicated."
+                    )
+                seen_indices.add(index)
+            if segment.family == "nfc":
+                n_nfc += 1
+                before_nfc = False
+                expression = segment.derived
+                if (
+                    not isinstance(expression, NfcExpression)
+                    or expression.op != "subtract"
+                    or len(segment.feature_indices) != 2
+                    or not isinstance(expression.left_index_in_segment, Integral)
+                    or isinstance(expression.left_index_in_segment, bool)
+                    or not isinstance(expression.right_index_in_segment, Integral)
+                    or isinstance(expression.right_index_in_segment, bool)
+                    or expression.left_index_in_segment != 0
+                    or expression.right_index_in_segment != 1
+                ):
+                    raise RuntimeError("Checkpoint contains invalid BC layout: invalid NFC segment.")
+            elif segment.family == "sro":
+                n_sro += 1
+                if segment.derived is not None:
+                    raise RuntimeError("Checkpoint contains invalid BC layout: invalid SRO segment.")
+            else:
+                n_ca += 1
+                if segment.derived is not None:
+                    raise RuntimeError("Checkpoint contains invalid BC layout: invalid CA segment.")
+        if n_nfc != 1 or n_sro != layout.n_sro or n_ca != layout.n_ca:
+            raise RuntimeError("Checkpoint contains invalid BC layout: segment counts disagree.")
 
     def _build_teacher_policy(self, observation_names, action_names, action_space, observation_space, metadata):
         return build_warm_start_policy(

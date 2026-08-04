@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 import torch
@@ -190,6 +192,26 @@ def test_load_state_dict_rejects_legacy_demonstrations_without_encoded_length() 
 
     with pytest.raises(RuntimeError, match="predates BC data contract"):
         regularizer.load_state_dict(state)
+
+
+def test_load_state_dict_rejects_out_of_bounds_demonstration_layout() -> None:
+    regularizer = _regularizer()
+    layout = _layout()
+    regularizer.record_demonstration(0, np.zeros(3), layout, [0.25])
+    state = regularizer.state_dict()
+    demo = state["demonstrations"][0][0]
+    bad_segment = replace(demo.layout.segments[0], feature_indices=(3, 1))
+    bad_layout = replace(demo.layout, segments=(bad_segment,) + demo.layout.segments[1:])
+    state["demonstrations"][0][0] = Demonstration(
+        observation=demo.observation,
+        encoded_length=demo.encoded_length,
+        layout=bad_layout,
+        layout_signature=regularizer.layout_signature(bad_layout),
+        target=demo.target,
+    )
+
+    with pytest.raises(RuntimeError, match="invalid BC layout"):
+        _regularizer().load_state_dict(state)
 
 
 def test_demonstration_accessors_return_immutable_group_snapshots() -> None:
