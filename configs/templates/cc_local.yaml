@@ -65,6 +65,10 @@ simulator:
     profile: cc_level1
     clip: true
   reward_function: CCRewardLevel1
+  reward_function_kwargs:
+    # Community market is disabled in this template, so optimize the same
+    # sum of member retail costs reported by district_cost_total_control_eur.
+    cost_aggregation: member_retail
   episodes: 10
   simulation_start_time_step: null
   simulation_end_time_step: null

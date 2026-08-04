@@ -32,6 +32,8 @@ Design notes
 Return value
 ------------
 Same scalar split equally across buildings (same pattern as CCRewardLevel1).
+Set ``cost_aggregation="member_retail"`` while the community market is
+disabled to align the cost term with ``district_cost_total_control_eur``.
 """
 
 from __future__ import annotations
@@ -62,6 +64,7 @@ class CCRewardLevel2(RewardFunction):
         reference_export: float = 7.52,   # kWh — p90 community export
         # EV urgency horizon in hours
         urgency_horizon:  float = 4.0,    # harm starts H hours before departure
+        cost_aggregation: str = "community_net",
         **kwargs,
     ) -> None:
         super().__init__(env_metadata, **kwargs)
@@ -74,6 +77,12 @@ class CCRewardLevel2(RewardFunction):
         self._ref_cost         = max(float(reference_cost),   1e-8)
         self._ref_peak         = max(float(reference_peak),   1e-8)
         self._ref_export       = max(float(reference_export), 1e-8)
+        self._cost_aggregation = str(cost_aggregation).strip().lower()
+        if self._cost_aggregation not in {"community_net", "member_retail"}:
+            raise ValueError(
+                "CCRewardLevel2 cost_aggregation must be 'community_net' or "
+                "'member_retail'"
+            )
 
         self._urgency_horizon  = max(float(urgency_horizon), 1e-6)
 
@@ -136,10 +145,17 @@ class CCRewardLevel2(RewardFunction):
         import_t = max(community_net, 0.0)
         export_t = max(-community_net, 0.0)
 
-        price = max(self._safe(observations[0].get("electricity_pricing")), 0.0)
-
         # ── Community term (identical to CCRewardLevel1) ─────────────────────
-        cost_norm   = (import_t * price) / self._ref_cost
+        if self._cost_aggregation == "member_retail":
+            community_cost = sum(
+                max(self._safe(obs.get("net_electricity_consumption")), 0.0)
+                * max(self._safe(obs.get("electricity_pricing")), 0.0)
+                for obs in observations
+            )
+        else:
+            price = max(self._safe(observations[0].get("electricity_pricing")), 0.0)
+            community_cost = import_t * price
+        cost_norm   = community_cost / self._ref_cost
         peak_norm   = (max(import_t - self._target_import, 0.0) ** 2) / self._ref_peak
         export_norm = export_t / self._ref_export
 

@@ -69,6 +69,10 @@ simulator:
     profile: cc_level2          # 6 per-building feats: soc, pv, net, ev_conn, soc_def, urgency
     clip: true
   reward_function: CCRewardLevel2
+  reward_function_kwargs:
+    # Community market is disabled in this template, so optimize the same
+    # sum of member retail costs reported by district_cost_total_control_eur.
+    cost_aggregation: member_retail
   episodes: 70
   simulation_start_time_step: null
   simulation_end_time_step: null

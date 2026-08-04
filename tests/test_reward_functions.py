@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from reward_function.cc_reward_level1 import CCRewardLevel1
+from reward_function.cc_reward_level2 import CCRewardLevel2
 from reward_function.cost_hard_constraint_reward import (
     CostHardConstraintReward,
     CostServiceCostBalancedRewardV3,
@@ -72,6 +73,23 @@ def test_cc_reward_rejects_unknown_cost_aggregation():
             env_metadata={"central_agent": False},
             cost_aggregation="not-a-cost-contract",
         )
+
+
+def test_cc_level2_reward_can_match_member_retail_cost():
+    reward = CCRewardLevel2(
+        env_metadata={"central_agent": False},
+        cost_aggregation="member_retail",
+        reference_cost=1.0,
+        w_peak=0.0,
+        w_export=0.0,
+        w_ev=0.0,
+    )
+    observations = [
+        {"net_electricity_consumption": 2.0, "electricity_pricing": 0.5},
+        {"net_electricity_consumption": -1.0, "electricity_pricing": 0.5},
+    ]
+
+    assert sum(reward.calculate(observations)) == pytest.approx(-1.0)
 
 
 def test_cost_reward_prefers_storing_pv_export_to_avoid_later_import():
