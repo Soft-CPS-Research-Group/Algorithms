@@ -47,7 +47,9 @@ def test_local_bc_readme_documents_real_dataset_gates_and_pass_criteria() -> Non
     assert "behavior_cloning_pretraining_batches" in readme
 
 
-def _write_fake_local_runner_repo(tmp_path: Path) -> tuple[Path, Path]:
+def _write_fake_local_runner_repo(
+    tmp_path: Path, *, mixed_building_schema: bool = False
+) -> tuple[Path, Path]:
     repo_root = tmp_path / "repo"
     script_path = repo_root / "scripts/run_tppo_bc_local_checks.sh"
     script_path.parent.mkdir(parents=True)
@@ -58,7 +60,12 @@ def _write_fake_local_runner_repo(tmp_path: Path) -> tuple[Path, Path]:
     config_dir.mkdir(parents=True)
     dataset_path = repo_root / "datasets/schema.json"
     dataset_path.parent.mkdir(parents=True)
-    dataset_path.write_text('{"buildings": {"Building_1": {}}}', encoding="utf-8")
+    buildings = (
+        '{"Building_1": {"include": true}, "Building_2": {"include": false}}'
+        if mixed_building_schema
+        else '{"Building_1": {}}'
+    )
+    dataset_path.write_text(f'{{"buildings": {buildings}}}', encoding="utf-8")
     for name in ("canary", "smoke"):
         (config_dir / f"tppo_bc_pretrain_{name}.yaml").write_text(
             "simulator:\n  dataset_path: datasets/schema.json\n",
@@ -117,8 +124,11 @@ def _run_fake_local_runner(
     omit_building_batches: bool = False,
     omit_total_batches: bool = False,
     omit_watchdog: bool = False,
+    mixed_building_schema: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    repo_root, script_path = _write_fake_local_runner_repo(tmp_path)
+    repo_root, script_path = _write_fake_local_runner_repo(
+        tmp_path, mixed_building_schema=mixed_building_schema
+    )
     environment = os.environ | {
         "LOG_DIR": str(tmp_path / "logs"),
         "PYTHON_BIN": str(repo_root / "fake_python.py"),
@@ -156,6 +166,25 @@ def test_local_bc_runner_runs_canary_then_smoke_and_keeps_empty_watchdog_artifac
         "configs/recovery/tppo/wave_a/local/tppo_bc_pretrain_smoke.yaml",
     ]
     assert len(list((tmp_path / "logs").glob("*.stdout.log"))) == 2
+
+
+def test_local_bc_runner_requires_evidence_for_active_buildings_only(tmp_path: Path) -> None:
+    result = _run_fake_local_runner(tmp_path, mixed_building_schema=True)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_local_bc_runner_rejects_missing_evidence_for_active_building_in_mixed_schema(
+    tmp_path: Path,
+) -> None:
+    result = _run_fake_local_runner(
+        tmp_path,
+        mixed_building_schema=True,
+        omit_usable_samples=True,
+    )
+
+    assert result.returncode != 0
+    assert "usable BC samples for Building_1" in result.stderr
 
 
 @pytest.mark.parametrize("watchdog", ["Current thread 0x1\n", "Traceback (most recent call last)\n"])

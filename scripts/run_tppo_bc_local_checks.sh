@@ -58,6 +58,7 @@ import sys
 from pathlib import Path
 
 import yaml
+from citylearn.utilities import parse_bool
 
 config_path = Path(sys.argv[1])
 repo_root = Path(sys.argv[2])
@@ -66,7 +67,15 @@ dataset_path = Path(config["simulator"]["dataset_path"])
 if not dataset_path.is_absolute():
     dataset_path = repo_root / dataset_path
 schema = json.loads(dataset_path.read_text(encoding="utf-8"))
-print("\n".join(schema["buildings"]))
+print("\n".join(
+    name
+    for name, building in schema["buildings"].items()
+    if parse_bool(
+        building.get("include", True),
+        default=True,
+        path=f"buildings.{name}.include",
+    )
+))
 PY
     )
 
@@ -84,6 +93,7 @@ import sys
 from pathlib import Path
 
 import yaml
+from citylearn.utilities import parse_bool
 
 config_path = Path(sys.argv[1])
 repo_root = Path(sys.argv[2])
@@ -92,7 +102,15 @@ dataset_path = Path(config["simulator"]["dataset_path"])
 if not dataset_path.is_absolute():
     dataset_path = repo_root / dataset_path
 schema = json.loads(dataset_path.read_text(encoding="utf-8"))
-print("\n".join(schema["buildings"]))
+print("\n".join(
+    name
+    for name, building in schema["buildings"].items()
+    if parse_bool(
+        building.get("include", True),
+        default=True,
+        path=f"buildings.{name}.include",
+    )
+))
 PY
     )
 

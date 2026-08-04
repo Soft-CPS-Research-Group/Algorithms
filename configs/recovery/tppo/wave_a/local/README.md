@@ -27,7 +27,7 @@ a Wave A server run if either local gate fails.
 For each configuration, the experiment log and local metrics must show:
 
 - completed episode `3/3`;
-- every BC building has positive usable samples and trained batches, recorded as
+- every active BC building has positive usable samples and trained batches, recorded as
   `TPPO/behavior_cloning_building_<building>_usable_samples` and
   `TPPO/behavior_cloning_building_<building>_trained_batches` metrics;
 - the total `TPPO/behavior_cloning_pretraining_batches` metric is positive;
