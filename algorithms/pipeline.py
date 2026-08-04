@@ -178,7 +178,20 @@ class Pipeline(ExecutionUnit):
         result: Any = None
         for stage in self.stages:
             stage_observations = self._observations_for_stage(stage, observations)
-            result = stage.predict(stage_observations, deterministic, context=ctx)
+            # A frozen stage is an immutable behavioural dependency of the
+            # trainable stages around it.  Letting it keep sampling actions
+            # would inject leaf-policy noise into the manager's transition and
+            # reward even though its parameters cannot adapt.  In particular,
+            # a trainable CC must explore against the exact deterministic PPO
+            # policy that will be used at evaluation/deployment time.
+            stage_deterministic = (
+                True if getattr(stage, "frozen", False) else deterministic
+            )
+            result = stage.predict(
+                stage_observations,
+                stage_deterministic,
+                context=ctx,
+            )
             ctx = result
         return result
 

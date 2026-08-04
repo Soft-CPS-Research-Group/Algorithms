@@ -126,6 +126,17 @@ class TestPipelinePredict:
 
         assert first.predict_calls[0]["context"] == "from_outside"
 
+    def test_frozen_stage_is_deterministic_while_trainable_stage_explores(self) -> None:
+        manager = RecordingUnit("manager", predict_output="price")
+        leaf = RecordingUnit("leaf", predict_output=[[0.5]])
+        leaf.frozen = True
+        pipeline = Pipeline([manager, leaf])
+
+        pipeline.predict([[1.0]], deterministic=False)
+
+        assert manager.predict_calls[0]["deterministic"] is False
+        assert leaf.predict_calls[0]["deterministic"] is True
+
     def test_passes_observations_unchanged_to_each_stage(self) -> None:
         first = RecordingUnit("first", predict_output="ctx")
         second = RecordingUnit("second", predict_output=[[0.1]])
