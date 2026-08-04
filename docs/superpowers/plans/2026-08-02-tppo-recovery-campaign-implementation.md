@@ -1,5 +1,7 @@
 # Transformer PPO Recovery Campaign Implementation Plan
 
+> **Preflight:** Before any Wave A BC server submission, complete the canonical source-checkout plan at `docs/superpowers/plans/2026-08-04-tppo-bc-data-contract-implementation.md` and both local canary and smoke runs. Do not submit until both runs pass.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produce a mathematically valid TPPO implementation and six committed Wave A configurations for remote baseline, plain TPPO, and Smart-teacher BC screening.
