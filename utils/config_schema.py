@@ -584,6 +584,10 @@ class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
     price_max: float = Field(default=1.5, gt=0)         # max price multiplier
 
 
+class FixedPriceSignalHyperparameters(BaseModel):
+    multiplier: float = Field(default=1.0, gt=0)
+
+
 class BuildingAgentHyperparameters(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -620,6 +624,15 @@ class CCLevel1AlgorithmConfig(BaseModel):
     count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
     frozen: bool = False
     hyperparameters: CCLevel1Hyperparameters = Field(default_factory=CCLevel1Hyperparameters)
+
+
+class FixedPriceSignalAlgorithmConfig(BaseModel):
+    algorithm: Literal["FixedPriceSignal"]
+    count: Literal[1] = 1
+    frozen: bool = True
+    hyperparameters: FixedPriceSignalHyperparameters = Field(
+        default_factory=FixedPriceSignalHyperparameters
+    )
 
 
 class CCLevel2AlgorithmConfig(BaseModel):
@@ -728,6 +741,7 @@ class TransformerPPOStageConfig(BaseModel):
 PipelineStageConfig = Union[
     BuildingAgentStageConfig,
     CCLevel1AlgorithmConfig,
+    FixedPriceSignalAlgorithmConfig,
     CCLevel2AlgorithmConfig,
     CommunityCoordinatorAlgorithmConfig,
     ActorCriticAlgorithmConfig,

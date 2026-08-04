@@ -212,6 +212,24 @@ def test_validate_config_accepts_selected_pipeline_stage_checkpoint(base_config)
     }
 
 
+def test_validate_config_accepts_fixed_neutral_price_signal_manager(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "FixedPriceSignal",
+            "count": 1,
+            "frozen": True,
+            "hyperparameters": {"multiplier": 1.0},
+        },
+    )
+
+    parsed = validate_config(config)
+
+    assert parsed.pipeline[0].algorithm == "FixedPriceSignal"
+    assert parsed.pipeline[0].hyperparameters.multiplier == 1.0
+
+
 def test_validate_config_rejects_out_of_range_pipeline_stage_checkpoint(base_config):
     config = copy.deepcopy(base_config)
     config["pipeline"].insert(

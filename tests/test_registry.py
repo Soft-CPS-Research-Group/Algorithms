@@ -56,6 +56,15 @@ def test_registered_agents_accept_predict_context_keyword():
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
+def test_fixed_price_signal_is_registered_and_emits_configured_multiplier():
+    unit = ALGORITHM_REGISTRY["FixedPriceSignal"](
+        config={"algorithm": {"hyperparameters": {"multiplier": 1.0}}}
+    )
+
+    assert unit.use_raw_observations is True
+    assert unit.predict([], deterministic=True) == 1.0
+
+
 def test_hierarchical_raw_observation_agents_are_registered():
     for name in ("BuildingAgent", "CommunityCoordinator", "SignalAwareRBC"):
         assert is_algorithm_supported(name)
