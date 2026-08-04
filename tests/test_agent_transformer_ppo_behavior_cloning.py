@@ -989,3 +989,38 @@ def test_checkpoint_rejects_inconsistent_bc_reservoir_before_mutating_agent(
         target.load_checkpoint(path)
 
     _assert_restore_state_unchanged(target, snapshot)
+
+
+def test_checkpoint_rejects_bc_buffer_above_receiver_capacity_before_mutating_agent(
+    tmp_path: Path,
+) -> None:
+    source, dimension = _agent(demonstrations=2, weight=1.0)
+    assert source._bc is not None
+    source._bc.max_samples_per_building = 2
+    source._bc.record_demonstration(
+        0, np.ones(dimension), source._per_building[0].layout,
+        [0.25] * source._per_building[0].layout.n_ca,
+    )
+    source._bc.record_demonstration(
+        0, np.full(dimension, 2.0), source._per_building[0].layout,
+        [0.5] * source._per_building[0].layout.n_ca,
+    )
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    target, _ = _agent(demonstrations=2, weight=1.0)
+    state = target._per_building[0]
+    assert target._bc is not None
+    target._bc.max_samples_per_building = 1
+    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
+    target._bc.record_demonstration(
+        0, np.ones(dimension), state.layout, [0.75] * state.layout.n_ca
+    )
+    target.on_episode_start(episode=2, training=True)
+    target.predict([np.ones(dimension)], deterministic=True)
+    snapshot = _snapshot_restore_state(target)
+
+    with pytest.raises(RuntimeError, match="BC capacity incompatibility"):
+        target.load_checkpoint(path)
+
+    _assert_restore_state_unchanged(target, snapshot)

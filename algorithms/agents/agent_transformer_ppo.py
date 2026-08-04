@@ -899,10 +899,12 @@ class AgentTransformerPPO(BaseAgent):
         if payload["behavior_cloning_state"] is not None:
             checkpoint_bc_config = payload["config"].get("behavior_cloning")
             max_samples_per_building = (
-                int(checkpoint_bc_config["max_samples_per_building"])
+                self._bc.max_samples_per_building
+                if self._bc is not None
+                else int(checkpoint_bc_config["max_samples_per_building"])
                 if isinstance(checkpoint_bc_config, dict)
                 and "max_samples_per_building" in checkpoint_bc_config
-                else self._bc.max_samples_per_building if self._bc is not None else None
+                else None
             )
             BehaviorCloningRegularizer.validate_state_dict(
                 payload["behavior_cloning_state"],

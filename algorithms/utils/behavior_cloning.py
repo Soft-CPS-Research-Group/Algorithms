@@ -383,7 +383,8 @@ class BehaviorCloningRegularizer:
                 and len(demonstrations) > max_samples_per_building
             ):
                 raise RuntimeError(
-                    "Checkpoint BC state exceeds the reservoir sample capacity."
+                    "Checkpoint BC capacity incompatibility: state exceeds the "
+                    "reservoir sample capacity."
                 )
             for demonstration in demonstrations:
                 if not hasattr(demonstration, "encoded_length"):
