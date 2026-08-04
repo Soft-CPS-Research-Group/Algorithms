@@ -102,6 +102,25 @@ def test_demonstration_stores_encoded_length() -> None:
     assert demo.encoded_length == 6
 
 
+def test_load_state_dict_rejects_legacy_demonstrations_without_encoded_length() -> None:
+    regularizer = _regularizer()
+    layout = _layout()
+    legacy_demo = Demonstration.__new__(Demonstration)
+    object.__setattr__(legacy_demo, "observation", np.zeros(3, dtype=np.float32))
+    object.__setattr__(legacy_demo, "layout", layout)
+    object.__setattr__(
+        legacy_demo,
+        "layout_signature",
+        regularizer.layout_signature(layout),
+    )
+    object.__setattr__(legacy_demo, "target", np.array([0.25], dtype=np.float32))
+    state = regularizer.state_dict()
+    state["demonstrations"] = {0: [legacy_demo]}
+
+    with pytest.raises(RuntimeError, match="predates BC data contract"):
+        regularizer.load_state_dict(state)
+
+
 def test_demonstration_accessors_return_immutable_group_snapshots() -> None:
     regularizer = _regularizer()
     layout = _layout()

@@ -311,6 +311,13 @@ class BehaviorCloningRegularizer:
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         """Restore training state after the attached teacher has been rebuilt."""
+        for demonstrations in state["demonstrations"].values():
+            for demonstration in demonstrations:
+                if not hasattr(demonstration, "encoded_length"):
+                    raise RuntimeError(
+                        "Checkpoint predates BC data contract. Re-collect demonstrations "
+                        "under the current representation before resuming."
+                    )
         self._demonstrations = deepcopy(state["demonstrations"])
         self._seen_per_building = dict(state["seen_per_building"])
         self._rng.setstate(state["rng_state"])
