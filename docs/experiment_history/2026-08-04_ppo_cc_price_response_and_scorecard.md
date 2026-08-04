@@ -143,6 +143,43 @@ o melhor mês foi setembro, com EUR 3,8913 de poupança. O `1.075` venceu em
 10/12 meses e regrediu EUR 0,18597 em junho e EUR 0,66088 em maio. Isto reforça
 a escolha conservadora de `1.05` apesar da diferença anual de nove cêntimos.
 
+## Comparação anual com o RBC Community
+
+Para não misturar o dataset atual com a campanha antiga de custos próximos de
+EUR 32 mil, foi executado um novo `RBCCommunityPolicy` no mesmo dataset e no
+mesmo horizonte anual. O resultado expõe duas contabilidades diferentes:
+
+| Controlador | Mercado | Custo retail/contrafactual | Custo comunitário liquidado |
+|---|---|---:|---:|
+| RBC Smart local | desligado | EUR 24 569,0692 | n/a |
+| RBC Community | ligado | EUR 26 278,3000 | EUR 22 839,3124 |
+| PPO seed 789 | desligado | EUR 23 826,7980 | n/a |
+| CCLevel1 v2 + PPO | desligado | EUR 23 804,4761 | n/a |
+
+O valor liquidado do RBC Community incorpora EUR 3 438,9876 de poupança de
+mercado/netting relativamente ao contrafactual retail dos membros. Não deve ser
+comparado diretamente com PPO ou CC+PPO enquanto estes forem avaliados com
+`community_market: false`. Na base retail comum, o RBC Community é EUR
+1 709,2308 mais caro que o RBC Smart local; o PPO é EUR 742,2711 mais barato e
+o CC+PPO é EUR 764,5931 mais barato.
+
+O scorecard físico confirma que o custo liquidado, sozinho, esconderia uma
+troca desfavorável:
+
+| Métrica anual | RBC Smart local | RBC Community | PPO | CC+PPO |
+|---|---:|---:|---:|---:|
+| Importação (kWh) | 132 812,128 | 136 608,339 | 129 871,287 | 129 595,295 |
+| Pico diário / BAU | 1,070850 | 1,180207 | 1,080662 | 1,078961 |
+| Pico máximo / BAU | 1,134396 | 1,321582 | 1,148736 | 1,148758 |
+| Ramping / BAU | 2,403322 | 2,910526 | 1,361981 | 1,367858 |
+| Emissões (kgCO2) | 22 425,307 | 24 092,282 | 22 423,065 | 22 379,792 |
+| Autoconsumo solar | 0,697469 | 0,668097 | 0,726217 | 0,727927 |
+| Hard gates | 17/17 estritos | 17/17 estritos | 17/17 estritos | 17/17 estritos |
+
+O próximo confronto justo é executar PPO e CC+PPO congelados com exatamente o
+mesmo mercado/settlement do RBC Community, reportando em paralelo custo
+liquidado, contrafactual retail e todo o scorecard físico.
+
 ## Contrato de scorecard daqui para a frente
 
 1. Hard gates primeiro: serviço EV/deferrables, segurança elétrica, SoC e
@@ -298,6 +335,8 @@ quantifica somente a margem in-sample ainda disponível na família discreta.
   `runs/analysis/ppo_cc_scorecard_v1_annual_price_surface_complete_20260804`
 - Scorecard anual final (fixos, adaptativos e schedules contínuos):
   `runs/analysis/ppo_cc_scorecard_v1_annual_cc_final_20260804`
+- Auditoria anual matching do RBC Community:
+  `runs/analysis/rbccommunity_matching_annual_20260804`
 - Scorecard do schedule robusto contínuo:
   `runs/analysis/ppo_cc_scorecard_v1_annual_robust_seasonal_20260804`
 - Scorecard de escalas CCLevel2:
