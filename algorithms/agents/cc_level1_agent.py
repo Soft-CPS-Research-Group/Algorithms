@@ -164,16 +164,31 @@ class DeterministicMultiplierPolicy(nn.Module):
         policy: CommunityMarketMakerNet,
         price_min: float,
         price_max: float,
+        reference_multiplier: float | None = None,
+        policy_residual_scale: float = 1.0,
     ) -> None:
         super().__init__()
         self.encoder = policy.encoder
         self.mean_head = policy.mean_head
         self.register_buffer("price_min", torch.tensor(float(price_min)))
         self.register_buffer("price_span", torch.tensor(float(price_max - price_min)))
+        reference = (
+            (float(price_min) + float(price_max)) / 2.0
+            if reference_multiplier is None
+            else float(reference_multiplier)
+        )
+        self.register_buffer("reference_multiplier", torch.tensor(reference))
+        self.register_buffer(
+            "policy_residual_scale",
+            torch.tensor(float(policy_residual_scale)),
+        )
 
     def forward(self, community: torch.Tensor) -> torch.Tensor:
         raw = self.mean_head(self.encoder(community)).squeeze(-1)
-        return self.price_min + self.price_span * (torch.tanh(raw) + 1.0) / 2.0
+        full = self.price_min + self.price_span * (torch.tanh(raw) + 1.0) / 2.0
+        return self.reference_multiplier + self.policy_residual_scale * (
+            full - self.reference_multiplier
+        )
 
 
 class RolloutBuffer:
@@ -232,7 +247,7 @@ class RolloutBuffer:
 class CCLevel1Agent(BaseAgent):
     """Phase-1 Community Coordinator: emits a global price multiplier."""
 
-    # Consume the pre-encoded cc_level1 vector (16 features incl. cyclic time).
+    # Consume the pre-encoded cc_level1 vector (17 features incl. cyclic time).
     # Raw observations would omit the encoder-derived cyclic features
     # (time_of_day_sin/cos, day_type_sin/cos, month_sin/cos, is_weekend),
     # leaving them silently zero — so we MUST use encoded observations.
@@ -261,11 +276,26 @@ class CCLevel1Agent(BaseAgent):
         # Price-multiplier bounds (market-maker action range)
         self._price_min = float(hyper.get("price_min", 0.5))
         self._price_max = float(hyper.get("price_max", 1.5))
+        configured_reference = hyper.get("reference_multiplier")
+        self._reference_multiplier = float(
+            (self._price_min + self._price_max) / 2.0
+            if configured_reference is None
+            else configured_reference
+        )
+        if not np.isfinite(self._reference_multiplier):
+            raise ValueError("CCLevel1 reference_multiplier must be finite")
+        if not self._price_min <= self._reference_multiplier <= self._price_max:
+            raise ValueError(
+                "CCLevel1 reference_multiplier must lie within the configured price range"
+            )
+        self._policy_residual_scale = float(hyper.get("policy_residual_scale", 1.0))
+        if not 0.0 <= self._policy_residual_scale <= 1.0:
+            raise ValueError("CCLevel1 policy_residual_scale must be within [0, 1]")
 
         # Auxiliary reward weights (supervisor Phase 1 design)
         self._w_factor     = float(hyper.get("w_factor",     0.3))
         self._w_smoothness = float(hyper.get("w_smoothness", 0.02))
-        self._prev_multiplier: float = 1.0
+        self._prev_multiplier: float = self._reference_multiplier
 
         # Network
         self._c_dim = int(hyper.get("c_dim", len(_CC_LEVEL1_FEATURES)))
@@ -294,7 +324,7 @@ class CCLevel1Agent(BaseAgent):
         self._episode_step_context: Optional[int] = None
 
         # Cached decision
-        self._cached_multiplier: float = 1.0
+        self._cached_multiplier: float = self._reference_multiplier
         self._cached_action:     float = 0.0          # PPO latent (raw Gaussian sample)
         self._cached_community:  Optional[np.ndarray] = None
         self._cached_price:      float = 0.0
@@ -478,7 +508,7 @@ class CCLevel1Agent(BaseAgent):
             self._step_in_interval = 0
             self._decision_interval_complete = False
             self._accumulated_reward = 0.0
-            self._prev_multiplier = 1.0
+            self._prev_multiplier = self._reference_multiplier
         self._episode_step_context = normalized_step
 
     def update(
@@ -511,13 +541,15 @@ class CCLevel1Agent(BaseAgent):
             self._bc_completed_this_decision = False
             if done:
                 self._step_in_interval = 0
-                self._prev_multiplier = 1.0
+                self._prev_multiplier = self._reference_multiplier
                 self._flush_decision_trace()
             return
 
         # Auxiliary penalties on the CC action (supervisor Phase 1 design).
         # Applied once per decision interval, not per env step.
-        factor_penalty     = (self._cached_multiplier - 1.0) ** 2
+        factor_penalty = (
+            self._cached_multiplier - self._reference_multiplier
+        ) ** 2
         smoothness_penalty = (self._cached_multiplier - self._prev_multiplier) ** 2
         aux = (
             - self._w_factor     * factor_penalty
@@ -545,7 +577,7 @@ class CCLevel1Agent(BaseAgent):
         self._accumulated_reward = 0.0
         if done:
             self._step_in_interval = 0
-            self._prev_multiplier = 1.0
+            self._prev_multiplier = self._reference_multiplier
             self._flush_decision_trace()
 
         if self.rollout_buffer.full:
@@ -634,15 +666,22 @@ class CCLevel1Agent(BaseAgent):
                + self._bc_w_violation * violation_signal
                + self._bc_w_headroom  * headroom_signal)
 
-        mult = 1.0 + float(np.clip(raw * self._bc_mult_scale, -0.8, 0.8))
+        full_multiplier = float(
+            np.clip(
+                1.0 + float(np.clip(raw * self._bc_mult_scale, -0.8, 0.8)),
+                self._price_min,
+                self._price_max,
+            )
+        )
+        mult = self._apply_residual_scale(full_multiplier)
         logger.debug(
             "BC teacher | price={:.3f} ref={:.3f} imp_kWh={:.3f} exp_kWh={:.3f} headroom_kW={:.3f} "
             "cost={:.3f} peak={:.3f} ramp={:.3f} exp_sig={:.3f} viol={:.3f} headroom_sig={:.3f} raw={:.3f} mult={:.3f}",
             price, ref_price, imp_kwh, exp_kwh, headroom_kw,
             cost_signal, peak_signal, ramp_signal, export_signal, violation_signal, headroom_signal, raw,
-            float(np.clip(mult, self._price_min, self._price_max)),
+            mult,
         )
-        return float(np.clip(mult, self._price_min, self._price_max))
+        return mult
 
     def _run_bc_pretraining(self) -> None:
         """Supervised pretraining of encoder + mean_head against teacher targets.
@@ -700,8 +739,7 @@ class CCLevel1Agent(BaseAgent):
                 ramp_kwh=ramp_kwh,
                 violation_kwh=viol_kwh,
             )
-            t = (mult - self._price_min) / (self._price_max - self._price_min) * 2.0 - 1.0
-            return float(np.arctanh(np.clip(t, -0.999, 0.999)))
+            return self._multiplier_to_raw(mult)
 
         targets = np.array([_teacher_raw(X[i], i) for i in range(len(X))], dtype=np.float32)
 
@@ -824,15 +862,36 @@ class CCLevel1Agent(BaseAgent):
         # the gradient is always non-zero — preventing the one-way drift.
         squashed = float(np.tanh(raw_f))
         self._cached_action     = raw_f   # store pre-tanh for PPO re-evaluation
-        self._cached_multiplier = float(
+        full_multiplier = float(
             self._price_min + (self._price_max - self._price_min) * (squashed + 1.0) / 2.0
         )
+        self._cached_multiplier = self._apply_residual_scale(full_multiplier)
         self._cached_community  = ctx
         self._cached_price      = float(ctx[_CC_LEVEL1_FEATURES.index(_PRICE_FEATURE)])
         self._cached_logprob    = float(logprob.item())
         self._cached_value      = float(value.item())
 
         self._log_decision()
+
+    def _apply_residual_scale(self, full_multiplier: float) -> float:
+        """Limit a policy/teacher proposal around the auditable incumbent."""
+        return float(
+            self._reference_multiplier
+            + self._policy_residual_scale
+            * (float(full_multiplier) - self._reference_multiplier)
+        )
+
+    def _multiplier_to_raw(self, multiplier: float) -> float:
+        """Invert the residual-scale and tanh mappings for BC targets."""
+        if self._policy_residual_scale <= 1.0e-12:
+            return 0.0
+        full_multiplier = self._reference_multiplier + (
+            float(multiplier) - self._reference_multiplier
+        ) / self._policy_residual_scale
+        unit = (full_multiplier - self._price_min) / (
+            self._price_max - self._price_min
+        )
+        return float(np.arctanh(np.clip(unit * 2.0 - 1.0, -0.999, 0.999)))
 
     # ───────────────────────── Internal: learning ────────────────────────────
 
@@ -1001,6 +1060,8 @@ class CCLevel1Agent(BaseAgent):
             self.policy,
             self._price_min,
             self._price_max,
+            self._reference_multiplier,
+            self._policy_residual_scale,
         ).eval()
         torch.onnx.export(
             deterministic_policy,
@@ -1043,6 +1104,8 @@ class CCLevel1Agent(BaseAgent):
             "output_contract": "deterministic_global_price_multiplier",
             "price_min": self._price_min,
             "price_max": self._price_max,
+            "reference_multiplier": self._reference_multiplier,
+            "policy_residual_scale": self._policy_residual_scale,
             "artifacts": artifacts,
             "diagnostic_artifacts": diagnostic_artifacts,
         }
@@ -1060,6 +1123,8 @@ class CCLevel1Agent(BaseAgent):
                 "ppo_update_count":   self._ppo_update_count,
                 "global_cc_step":     self._global_cc_step,
                 "bc_pretrain_done":   self._bc_pretrain_done,
+                "reference_multiplier": self._reference_multiplier,
+                "policy_residual_scale": self._policy_residual_scale,
             },
             path,
         )
@@ -1076,6 +1141,22 @@ class CCLevel1Agent(BaseAgent):
         else:
             path = root
         ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
+        checkpoint_reference = ckpt.get("reference_multiplier")
+        if (
+            checkpoint_reference is not None
+            and not np.isclose(float(checkpoint_reference), self._reference_multiplier)
+        ):
+            raise ValueError(
+                "CC-L1 checkpoint reference_multiplier does not match the current config"
+            )
+        checkpoint_scale = ckpt.get("policy_residual_scale")
+        if (
+            checkpoint_scale is not None
+            and not np.isclose(float(checkpoint_scale), self._policy_residual_scale)
+        ):
+            raise ValueError(
+                "CC-L1 checkpoint policy_residual_scale does not match the current config"
+            )
         self.policy.load_state_dict(ckpt["policy"])
         self.ppo_optim.load_state_dict(ckpt["optimizer"])
         self._reward_rms._n    = ckpt.get("reward_rms_n",    0)

@@ -583,11 +583,20 @@ class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
     price_min: float = Field(default=0.5, gt=0)         # min price multiplier
     price_max: float = Field(default=1.5, gt=0)         # max price multiplier
     initial_log_std: float = Field(default=0.0, ge=-5.0, le=1.0)
+    reference_multiplier: Optional[float] = None
+    policy_residual_scale: float = Field(default=1.0, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def validate_price_range(self) -> "CCLevel1Hyperparameters":
         if self.price_max <= self.price_min:
             raise ValueError("CCLevel1 price_max must be greater than price_min")
+        if (
+            self.reference_multiplier is not None
+            and not self.price_min <= self.reference_multiplier <= self.price_max
+        ):
+            raise ValueError(
+                "CCLevel1 reference_multiplier must lie within the configured price range"
+            )
         return self
 
 

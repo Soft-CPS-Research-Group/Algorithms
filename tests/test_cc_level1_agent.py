@@ -42,6 +42,58 @@ def test_deterministic_multiplier_policy_includes_price_mapping() -> None:
     torch.testing.assert_close(output, torch.ones(3))
 
 
+def test_deterministic_multiplier_policy_scales_residual_from_reference() -> None:
+    policy = CommunityMarketMakerNet(c_dim=2, hidden_dims=[4])
+    with torch.no_grad():
+        for parameter in policy.parameters():
+            parameter.zero_()
+        policy.mean_head.bias.fill_(float(np.arctanh(0.5)))
+    inference = DeterministicMultiplierPolicy(
+        policy,
+        price_min=0.8,
+        price_max=1.2,
+        reference_multiplier=0.95,
+        policy_residual_scale=0.25,
+    )
+
+    output = inference(torch.zeros((1, 2), dtype=torch.float32))
+
+    # Full policy output is 1.10; retain only 25% of its deviation from 0.95.
+    torch.testing.assert_close(output, torch.tensor([0.9875]))
+
+
+def test_cc_level1_zero_residual_scale_is_exact_reference() -> None:
+    agent = CCLevel1Agent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "c_dim": len(_CC_LEVEL1_FEATURES),
+                    "hidden_dims": [8],
+                    "price_min": 0.8,
+                    "price_max": 1.2,
+                    "reference_multiplier": 0.975,
+                    "policy_residual_scale": 0.0,
+                    "bc_pretrain_enabled": False,
+                }
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=[list(_CC_LEVEL1_FEATURES)],
+        action_names=[[]],
+        action_space=[None],
+        observation_space=[None],
+        metadata={},
+    )
+
+    output = agent.predict(
+        [np.zeros(len(_CC_LEVEL1_FEATURES), dtype=np.float32)],
+        deterministic=False,
+    )
+
+    assert output == 0.975
+
+
 def test_market_maker_honors_initial_log_standard_deviation() -> None:
     policy = CommunityMarketMakerNet(c_dim=2, hidden_dims=[4], initial_log_std=-1.5)
 
