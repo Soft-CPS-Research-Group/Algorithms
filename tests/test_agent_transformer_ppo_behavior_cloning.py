@@ -4,9 +4,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.utils.behavior_cloning import Demonstration
 from tests.test_agent_transformer_ppo import _DEFAULT_ACTIONS, _base_config
 from tests._entity_sample_obs_names import load_sample_observation_names_for_first_building
 
@@ -329,3 +331,60 @@ def test_checkpoint_restores_bc_demonstrations_phase_and_decay_progress(
     expected_actions = fresh._bc.compute_teacher_actions([observation])
     assert fresh.predict([observation]) == expected_actions
     assert fresh._pending_decisions == [None]
+
+
+def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
+    tmp_path: Path,
+) -> None:
+    source, _ = _agent(demonstrations=2, weight=1.0)
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+    payload = torch.load(path, weights_only=False)
+    assert source._bc is not None
+    layout = source._per_building[0].layout
+    legacy_demo = Demonstration.__new__(Demonstration)
+    object.__setattr__(legacy_demo, "observation", np.zeros(3, dtype=np.float32))
+    object.__setattr__(legacy_demo, "layout", layout)
+    object.__setattr__(
+        legacy_demo,
+        "layout_signature",
+        source._bc.layout_signature(layout),
+    )
+    object.__setattr__(legacy_demo, "target", np.zeros(layout.n_ca, dtype=np.float32))
+    payload["behavior_cloning_state"]["demonstrations"] = {0: [legacy_demo]}
+    payload["global_learning_step"] = 99
+    payload["current_episode"] = 4
+    torch.save(payload, path)
+
+    target, _ = _agent(demonstrations=2, weight=1.0)
+    state = target._per_building[0]
+    actor_before = [parameter.detach().clone() for parameter in state.actor.parameters()]
+    action_bounds_before = [
+        (low.detach().clone(), high.detach().clone())
+        for low, high in target._action_bounds
+    ]
+    counters_before = (
+        target._latest_global_learning_step,
+        target._ppo_update_count,
+        target._current_episode,
+    )
+
+    with pytest.raises(RuntimeError, match="predates BC data contract"):
+        target.load_checkpoint(path)
+
+    assert all(
+        torch.equal(before, after)
+        for before, after in zip(actor_before, state.actor.parameters())
+    )
+    assert all(
+        torch.equal(low_before, low_after)
+        and torch.equal(high_before, high_after)
+        for (low_before, high_before), (low_after, high_after) in zip(
+            action_bounds_before, target._action_bounds
+        )
+    )
+    assert (
+        target._latest_global_learning_step,
+        target._ppo_update_count,
+        target._current_episode,
+    ) == counters_before

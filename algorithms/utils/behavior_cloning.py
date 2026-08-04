@@ -311,13 +311,7 @@ class BehaviorCloningRegularizer:
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         """Restore training state after the attached teacher has been rebuilt."""
-        for demonstrations in state["demonstrations"].values():
-            for demonstration in demonstrations:
-                if not hasattr(demonstration, "encoded_length"):
-                    raise RuntimeError(
-                        "Checkpoint predates BC data contract. Re-collect demonstrations "
-                        "under the current representation before resuming."
-                    )
+        self.validate_state_dict(state)
         self._demonstrations = deepcopy(state["demonstrations"])
         self._seen_per_building = dict(state["seen_per_building"])
         self._rng.setstate(state["rng_state"])
@@ -329,6 +323,17 @@ class BehaviorCloningRegularizer:
         self._latest_incompatible_demonstration_samples = float(
             state["latest_incompatible_demonstration_samples"]
         )
+
+    @staticmethod
+    def validate_state_dict(state: Mapping[str, Any]) -> None:
+        """Reject stored demonstrations from before the encoded-length contract."""
+        for demonstrations in state["demonstrations"].values():
+            for demonstration in demonstrations:
+                if not hasattr(demonstration, "encoded_length"):
+                    raise RuntimeError(
+                        "Checkpoint predates BC data contract. Re-collect demonstrations "
+                        "under the current representation before resuming."
+                    )
 
     def _build_teacher_policy(self, observation_names, action_names, action_space, observation_space, metadata):
         return build_warm_start_policy(

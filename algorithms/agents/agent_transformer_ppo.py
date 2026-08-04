@@ -896,6 +896,8 @@ class AgentTransformerPPO(BaseAgent):
                 f"agent has {len(self._per_building)}. Cross-cardinality "
                 "resume is not supported."
             )
+        if self._bc is not None and payload["behavior_cloning_state"] is not None:
+            self._bc.validate_state_dict(payload["behavior_cloning_state"])
         for state, saved in zip(self._per_building, agents):
             if state.building_id != saved["building_id"]:
                 raise ValueError(
