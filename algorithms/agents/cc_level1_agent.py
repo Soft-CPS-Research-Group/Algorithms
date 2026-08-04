@@ -112,7 +112,12 @@ class RunningMeanStd:
 class CommunityMarketMakerNet(nn.Module):
     """MLP: community context → Gaussian(price latent) + scalar value."""
 
-    def __init__(self, c_dim: int, hidden_dims: List[int]) -> None:
+    def __init__(
+        self,
+        c_dim: int,
+        hidden_dims: List[int],
+        initial_log_std: float = 0.0,
+    ) -> None:
         super().__init__()
         layers: List[nn.Module] = []
         in_d = c_dim
@@ -122,7 +127,9 @@ class CommunityMarketMakerNet(nn.Module):
         self.encoder     = nn.Sequential(*layers)
         self.mean_head   = nn.Linear(in_d, 1)
         self.critic_head = nn.Linear(in_d, 1)
-        self.log_std     = nn.Parameter(torch.zeros(1))  # state-independent std
+        self.log_std     = nn.Parameter(
+            torch.full((1,), float(initial_log_std))
+        )  # state-independent std
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -263,7 +270,11 @@ class CCLevel1Agent(BaseAgent):
         # Network
         self._c_dim = int(hyper.get("c_dim", len(_CC_LEVEL1_FEATURES)))
         hidden_dims = hyper.get("hidden_dims", [128, 128])
-        self.policy = CommunityMarketMakerNet(self._c_dim, hidden_dims)
+        self.policy = CommunityMarketMakerNet(
+            self._c_dim,
+            hidden_dims,
+            initial_log_std=float(hyper.get("initial_log_std", 0.0)),
+        )
         self.ppo_optim = Adam(self.policy.parameters(), lr=float(hyper.get("lr", 1e-4)))
 
         # Reward normalisation: track mean + std of RAW step rewards (not returns).

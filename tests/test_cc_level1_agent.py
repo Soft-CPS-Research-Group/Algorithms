@@ -37,6 +37,12 @@ def test_deterministic_multiplier_policy_includes_price_mapping() -> None:
     torch.testing.assert_close(output, torch.ones(3))
 
 
+def test_market_maker_honors_initial_log_standard_deviation() -> None:
+    policy = CommunityMarketMakerNet(c_dim=2, hidden_dims=[4], initial_log_std=-1.5)
+
+    torch.testing.assert_close(policy.log_std, torch.tensor([-1.5]))
+
+
 def test_cc_export_persists_complete_multiplier_trace(tmp_path) -> None:
     agent = CCLevel1Agent(
         {

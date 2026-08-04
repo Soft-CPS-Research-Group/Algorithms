@@ -230,6 +230,21 @@ def test_validate_config_accepts_fixed_neutral_price_signal_manager(base_config)
     assert parsed.pipeline[0].hyperparameters.multiplier == 1.0
 
 
+def test_validate_config_rejects_invalid_cc_price_range(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "CCLevel1",
+            "count": 1,
+            "hyperparameters": {"price_min": 1.0, "price_max": 1.0},
+        },
+    )
+
+    with pytest.raises(Exception, match="price_max must be greater"):
+        validate_config(config)
+
+
 def test_validate_config_rejects_out_of_range_pipeline_stage_checkpoint(base_config):
     config = copy.deepcopy(base_config)
     config["pipeline"].insert(

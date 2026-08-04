@@ -582,6 +582,13 @@ class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
     cc_action_interval: int = Field(default=4, gt=0)    # 4 × 15min = hourly
     price_min: float = Field(default=0.5, gt=0)         # min price multiplier
     price_max: float = Field(default=1.5, gt=0)         # max price multiplier
+    initial_log_std: float = Field(default=0.0, ge=-5.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_price_range(self) -> "CCLevel1Hyperparameters":
+        if self.price_max <= self.price_min:
+            raise ValueError("CCLevel1 price_max must be greater than price_min")
+        return self
 
 
 class FixedPriceSignalHyperparameters(BaseModel):
