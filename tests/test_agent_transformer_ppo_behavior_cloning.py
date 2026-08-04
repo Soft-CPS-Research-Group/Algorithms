@@ -1,7 +1,9 @@
 """Separate demonstration and PPO phase tests for AgentTransformerPPO."""
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
+import random
 
 import numpy as np
 import pytest
@@ -65,6 +67,35 @@ def _update(agent: AgentTransformerPPO, observation: np.ndarray, actions, step: 
         update_target_step=False, global_learning_step=step, update_step=False,
         initial_exploration_done=True,
     )
+
+
+def _materialize_optimizer_state(*optimizers: torch.optim.Optimizer) -> None:
+    for optimizer in optimizers:
+        optimizer.zero_grad(set_to_none=True)
+        for group in optimizer.param_groups:
+            for parameter in group["params"]:
+                parameter.grad = torch.zeros_like(parameter)
+        optimizer.step()
+
+
+def _assert_structured_equal(actual, expected) -> None:
+    if isinstance(expected, torch.Tensor):
+        assert isinstance(actual, torch.Tensor)
+        assert torch.equal(actual, expected)
+    elif isinstance(expected, np.ndarray):
+        assert isinstance(actual, np.ndarray)
+        assert np.array_equal(actual, expected)
+    elif isinstance(expected, dict):
+        assert actual.keys() == expected.keys()
+        for key in expected:
+            _assert_structured_equal(actual[key], expected[key])
+    elif isinstance(expected, (list, tuple)):
+        assert isinstance(actual, type(expected))
+        assert len(actual) == len(expected)
+        for actual_item, expected_item in zip(actual, expected):
+            _assert_structured_equal(actual_item, expected_item)
+    else:
+        assert actual == expected
 
 
 def _expand_charger_topology(
@@ -337,11 +368,25 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     tmp_path: Path,
 ) -> None:
     source, _ = _agent(demonstrations=2, weight=1.0)
+    _materialize_optimizer_state(
+        source._per_building[0].optimizer,
+        source._per_building[0].bc_optimizer,
+    )
     path = source.save_checkpoint(str(tmp_path), step=7)
     assert path is not None
-    target, _ = _agent(demonstrations=2, weight=1.0)
+    target, dimension = _agent(demonstrations=2, weight=1.0)
     state = target._per_building[0]
     target._latest_training_metrics = {"target_metric": 1.0}
+    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
+    assert target._bc is not None
+    observation = np.ones(dimension, dtype=np.float64)
+    target._bc.record_demonstration(
+        0, observation, state.layout, [0.25] * state.layout.n_ca
+    )
+    target.on_episode_start(episode=2, training=True)
+    target.predict([observation], deterministic=True)
+    pending_before = target._pending_decisions[0]
+    assert pending_before is not None
     model_states_before = {
         name: {
             key: value.detach().clone()
@@ -349,12 +394,8 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
         }
         for name in ("tokenizer", "backbone", "actor", "critic")
     }
-    optimizer_lrs_before = [
-        group["lr"] for group in state.optimizer.state_dict()["param_groups"]
-    ]
-    bc_optimizer_lrs_before = [
-        group["lr"] for group in state.bc_optimizer.state_dict()["param_groups"]
-    ]
+    optimizer_before = deepcopy(state.optimizer.state_dict())
+    bc_optimizer_before = deepcopy(state.bc_optimizer.state_dict())
     normalizer_before = state.value_normalizer.state_dict()
     action_bounds_before = [
         (low.detach().clone(), high.detach().clone())
@@ -367,6 +408,8 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     )
     topology_before = state.topology_version
     metrics_before = dict(target._latest_training_metrics)
+    demo_before = next(iter(target._bc.demonstrations_by_signature.values()))[0]
+    bc_count_before = target._bc.demonstration_count()
 
     payload = torch.load(path, weights_only=False)
     assert source._bc is not None
@@ -386,14 +429,19 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
         saved_state = saved[f"{name}_state"]
         for key, value in before.items():
             saved_state[key] = value + torch.ones_like(value)
-    for saved_group, before_lr in zip(
-        saved["optimizer_state"]["param_groups"], optimizer_lrs_before
+    for optimizer_name, expected in (
+        ("optimizer_state", optimizer_before),
+        ("bc_optimizer_state", bc_optimizer_before),
     ):
-        saved_group["lr"] = before_lr + 1.0
-    for saved_group, before_lr in zip(
-        saved["bc_optimizer_state"]["param_groups"], bc_optimizer_lrs_before
-    ):
-        saved_group["lr"] = before_lr + 1.0
+        saved_optimizer = saved[optimizer_name]
+        for parameter_state in saved_optimizer["state"].values():
+            for key, value in parameter_state.items():
+                if isinstance(value, torch.Tensor):
+                    parameter_state[key] = value + torch.ones_like(value)
+        for saved_group, before_group in zip(
+            saved_optimizer["param_groups"], expected["param_groups"]
+        ):
+            saved_group["lr"] = before_group["lr"] + 1.0
     saved["value_normalizer_state"] = {
         "mean": normalizer_before["mean"] + 1.0,
         "variance": normalizer_before["variance"] + 1.0,
@@ -408,6 +456,9 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     payload["current_episode"] = counters_before[2] + 1
     payload["latest_training_metrics"] = {"checkpoint_metric": 1.0}
     torch.save(payload, path)
+    python_rng_before = random.getstate()
+    numpy_rng_before = np.random.get_state()
+    torch_rng_before = torch.get_rng_state()
 
     with pytest.raises(RuntimeError, match="predates BC data contract"):
         target.load_checkpoint(path)
@@ -415,12 +466,8 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     for name, before in model_states_before.items():
         actual = getattr(state, name).state_dict()
         assert all(torch.equal(value, before[key]) for key, value in actual.items())
-    assert [
-        group["lr"] for group in state.optimizer.state_dict()["param_groups"]
-    ] == optimizer_lrs_before
-    assert [
-        group["lr"] for group in state.bc_optimizer.state_dict()["param_groups"]
-    ] == bc_optimizer_lrs_before
+    _assert_structured_equal(state.optimizer.state_dict(), optimizer_before)
+    _assert_structured_equal(state.bc_optimizer.state_dict(), bc_optimizer_before)
     assert state.value_normalizer.state_dict() == normalizer_before
     assert state.topology_version == topology_before
     assert all(
@@ -436,3 +483,12 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
         target._current_episode,
     ) == counters_before
     assert target._latest_training_metrics == metrics_before
+    assert target._pending_decisions[0] is pending_before
+    assert target._bc.demonstration_count() == bc_count_before
+    demo_after = next(iter(target._bc.demonstrations_by_signature.values()))[0]
+    assert demo_after is demo_before
+    assert demo_after.observation.tolist() == observation.tolist()
+    assert demo_after.target.tolist() == [0.25] * state.layout.n_ca
+    _assert_structured_equal(random.getstate(), python_rng_before)
+    _assert_structured_equal(np.random.get_state(), numpy_rng_before)
+    assert torch.equal(torch.get_rng_state(), torch_rng_before)
