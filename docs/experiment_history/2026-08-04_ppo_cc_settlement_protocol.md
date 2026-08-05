@@ -344,3 +344,60 @@ evidência aponta para estado de lifecycle órfão entre worker, Slurm e
 orquestrador, e não para uma simulação apenas lenta. Como o worker aceita um
 único job CPU em simultâneo, este estado mantém os dois jobs V2 de Deucalion
 em fila. O job não foi parado ou ressubmetido sem autorização explícita.
+
+### Recuperação autorizada e relançamentos em 2026-08-05
+
+Depois de autorização explícita, o `stop` normal do job CC-PPO bloqueado foi
+aceite mas permaneceu sem confirmação do worker. O job foi então reconciliado
+operacionalmente para `failed` com o motivo
+`ops_reconcile_stalled_deucalion_no_progress`. Esta transição libertou o slot
+CPU do Deucalion sem apagar a evidência do job incompleto.
+
+O `hybrid_physical_adaptive` entrou em execução no Deucalion. A reposição
+`settled_focus_regularized` foi reencaminhada, ainda em fila, para o `server`
+depois de preflight estrito da mesma imagem e começou a executar com progresso
+real. A reposição anual da CC-PPO, sem alterações ao PPO congelado ou ao CC,
+foi lançada no Union-INESCTEC:
+
+| Linha | Job | Destino | Estado às 07:48 UTC |
+|---|---|---|---|
+| V2 `hybrid_physical_adaptive` | `3330e778-4da4-4d1c-81d4-e28555e071cd` | Deucalion CPU | `running` |
+| V2 `settled_focus_regularized` | `4a0c38f9-0a94-422a-a660-c6958240e8f2` | `server` | `running` |
+| CC-PPO reposição R1 | `2d79643a-967e-48ca-823c-234821bf2976` | Union-INESCTEC | `running` |
+
+O preflight Union confirmou worker `0.5.3` online, autenticação recente e a
+imagem `test-validate-ppo-cc-settlement-pipeline-0133d85` pronta. Evidência
+operacional:
+`runs/remote_configs/ppo_cc_settlement_annual_v1_wave2_cc_pmax13_20260804/`.
+
+### Campanha de identificação CC-SMART V3
+
+Os resultados V2 sugerem duas causas diferentes que precisam de ser
+separadas. Primeiro, um único multiplicador global só altera os limiares
+`cheap`/`expensive` do SMART; não tem a autoridade contínua e por edifício do
+PPO. Segundo, o rollout V2 de 336 decisões produziu menos atualizações PPO e
+as políticas finais ficaram enviesadas para multiplicadores altos.
+
+A campanha `cc_smart_price_response_v3_annual_20260805` foi definida antes de
+observar qualquer resultado e mede estas hipóteses diretamente:
+
+| Receita | Job | Objetivo |
+|---|---|---|
+| fixo 0,7 | `ba61937c-c811-4272-ac1f-02c5e922bd19` | limite inferior da resposta SMART |
+| fixo 0,9 | `ac59fcc0-3973-435f-9187-8b796c4071d2` | resposta conservadora abaixo do neutro |
+| fixo 1,1 | `7f62487e-5748-4294-8057-cde3654fd20d` | resposta conservadora acima do neutro |
+| fixo 1,3 | `da5f5f3e-560d-40ab-bb84-2a7cb9f33bf3` | limite superior da resposta SMART |
+| `legacy_update_dense` | `1c1d7be4-49fc-4e90-ba7c-36e4c0e254fc` | V1 exata com aproximadamente 547 atualizações PPO |
+
+O replay SMART neutro 1,0 existente continua a referência. Os quatro fixos
+medem a margem alcançável pelo canal escalar e impedem que uma melhoria por
+mero bias constante seja atribuída a coordenação aprendida. A receita densa
+mantém reward, BC, regularização, gamma e rollout V1, aumentando apenas os
+episódios de treino; compara aproximadamente 547 atualizações com 182 na V1 e
+156 nas V2 longas.
+
+Todos os configs validaram e os testes contratuais relacionados passaram
+(`28 passed`). A imagem `experiment-add-cc-smart-cost-focus-v2-9f64c22` já
+contém todo o código necessário; os configs foram enviados inline depois de
+preflight Union estrito. Evidência operacional:
+`runs/remote_configs/cc_smart_price_response_v3_annual_20260805/`.
