@@ -24,6 +24,7 @@ from algorithms.utils.replay_buffer import (
     RewardWeightedMultiAgentReplayBuffer,
 )
 from algorithms.utils.torch_amp import GradScaler, autocast
+from algorithms.utils.torch_runtime import log_torch_runtime, select_torch_device
 from utils.artifact_config_builder import build_auto_artifact_config
 
 REPLAY_BUFFER_REGISTRY = {
@@ -31,33 +32,6 @@ REPLAY_BUFFER_REGISTRY = {
     "RewardWeightedMultiAgentReplayBuffer": RewardWeightedMultiAgentReplayBuffer,
     "PrioritizedReplayBuffer": PrioritizedReplayBuffer,
 }
-
-
-def _select_torch_device(
-    *, require_cuda: bool = False, algorithm_name: str = "MADDPG"
-) -> torch.device:
-    """Select the torch device and fail early when CUDA was explicitly required."""
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if require_cuda:
-        raise RuntimeError(
-            f"{algorithm_name} requires CUDA, but torch.cuda.is_available() is false."
-        )
-    return torch.device("cpu")
-
-
-def _log_torch_runtime(device: torch.device) -> None:
-    cuda_available = torch.cuda.is_available()
-    cuda_device_count = torch.cuda.device_count() if cuda_available else 0
-    logger.info(
-        "Torch runtime: torch_version={}, torch_cuda_version={}, cuda_available={}, cuda_device_count={}",
-        torch.__version__,
-        torch.version.cuda,
-        cuda_available,
-        cuda_device_count,
-    )
-    if cuda_available:
-        logger.info("CUDA device selected: {}", torch.cuda.get_device_name(device))
 
 
 class ActionScaledActor(torch.nn.Module):
@@ -87,9 +61,9 @@ class MADDPG(BaseAgent):
 
         hyperparams = self.config["algorithm"]["hyperparameters"]
         self.require_cuda = bool(exploration_cfg.get("require_cuda", hyperparams.get("require_cuda", False)))
-        self.device = _select_torch_device(require_cuda=self.require_cuda)
+        self.device = select_torch_device(require_cuda=self.require_cuda)
         logger.info("Device selected: {}", self.device)
-        _log_torch_runtime(self.device)
+        log_torch_runtime(self.device)
         torch.backends.cudnn.benchmark = self.device.type == "cuda"
 
         self.gamma = float(hyperparams.get("gamma", exploration_cfg.get("gamma", 0.99)))

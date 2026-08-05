@@ -14,7 +14,7 @@ from torch.nn.functional import mse_loss
 from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.base_agent import BaseAgent
-from algorithms.agents.maddpg_agent import ActionScaledActor, _log_torch_runtime, _select_torch_device
+from algorithms.agents.maddpg_agent import ActionScaledActor
 from algorithms.constants import DEFAULT_ONNX_OPSET
 from algorithms.utils.citylearn_local_action_safety import (
     CityLearnLocalSafetyAdapter,
@@ -23,6 +23,7 @@ from algorithms.utils.citylearn_local_action_safety import (
     replace_service_actions_with_teacher,
 )
 from algorithms.utils.networks import GaussianActor, ValueNetwork
+from algorithms.utils.torch_runtime import log_torch_runtime, select_torch_device
 from algorithms.utils.warm_start_policy import build_warm_start_policy
 from algorithms.utils.price_multiplier_adapter import (
     ForecastMode,
@@ -62,8 +63,8 @@ class _PPOBase(BaseAgent):
         topology = self.config.get("topology", {})
 
         self.require_cuda = bool(exploration_cfg.get("require_cuda", hyperparams.get("require_cuda", False)))
-        self.device = _select_torch_device(require_cuda=self.require_cuda)
-        _log_torch_runtime(self.device)
+        self.device = select_torch_device(require_cuda=self.require_cuda)
+        log_torch_runtime(self.device)
         torch.backends.cudnn.benchmark = self.device.type == "cuda"
 
         self.gamma = float(hyperparams.get("gamma", exploration_cfg.get("gamma", 0.99)))

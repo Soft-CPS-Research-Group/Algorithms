@@ -28,6 +28,7 @@ from algorithms.agents.agent_transformer_ppo import (
     AgentTransformerPPO,
     _synthetic_sample_from_obs_names,
 )
+import algorithms.agents.agent_transformer_ppo as transformer_ppo_module
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.registry import ALGORITHM_REGISTRY, build_execution_unit
 from tests._entity_sample_obs_names import (
@@ -1150,6 +1151,38 @@ def test_update_appends_to_buffer_then_ppo_step_clears() -> None:
     assert len(state.buffer) == 0  # cleared after PPO step
     p_after = next(state.actor.parameters()).clone().detach()
     assert not torch.allclose(p_before, p_after), "PPO step should update actor weights"
+
+
+def test_ordinary_ppo_update_does_not_snapshot_topology_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    observations = [np.zeros(obs_dim, dtype=np.float64)]
+
+    def reject_topology_snapshot() -> None:
+        raise AssertionError("ordinary PPO update must not snapshot topology state")
+
+    def reject_deepcopy(*args, **kwargs):
+        raise AssertionError("ordinary PPO update must not deepcopy topology state")
+
+    monkeypatch.setattr(agent, "_snapshot_topology_state", reject_topology_snapshot)
+    monkeypatch.setattr(transformer_ppo_module, "deepcopy", reject_deepcopy)
+    for step in range(agent._minibatch_size):
+        actions = agent.predict(observations, deterministic=True)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.1],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=step == agent._minibatch_size - 1,
+            initial_exploration_done=True,
+        )
+
+    assert len(agent._per_building[0].buffer) == 0
 
 
 def test_off_cadence_truncation_flushes_before_next_episode_update() -> None:

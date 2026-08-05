@@ -35,7 +35,7 @@ from loguru import logger
 from torch import nn
 
 from algorithms.agents.base_agent import BaseAgent
-from algorithms.agents.maddpg_agent import _log_torch_runtime, _select_torch_device
+from algorithms.exceptions import DeferredCheckpointError
 from algorithms.utils.behavior_cloning import BehaviorCloningRegularizer
 from algorithms.utils.entity_observation_tokenizer import (
     EntityObservationTokenizer,
@@ -51,6 +51,7 @@ from algorithms.utils.ppo_components import (
     RunningValueNormalizer,
     compute_ppo_loss,
 )
+from algorithms.utils.torch_runtime import log_torch_runtime, select_torch_device
 from algorithms.utils.transformer_backbone import TransformerBackbone
 from utils.entity_tokenizer_schema import (
     EntityPayloadSample,
@@ -177,14 +178,14 @@ class AgentTransformerPPO(BaseAgent):
         h = dict(algo["hyperparameters"])
         self.require_cuda = bool(h.get("require_cuda", False))
         try:
-            self.device = _select_torch_device(require_cuda=self.require_cuda)
+            self.device = select_torch_device(require_cuda=self.require_cuda)
         except RuntimeError as error:
             raise RuntimeError(
                 "AgentTransformerPPO requires CUDA when require_cuda=true, but "
                 "torch.cuda.is_available() is false."
             ) from error
         logger.info("Device selected: {}", self.device)
-        _log_torch_runtime(self.device)
+        log_torch_runtime(self.device)
         torch.backends.cudnn.benchmark = self.device.type == "cuda"
         self._lr = float(h["learning_rate"])
         self._gamma = float(h["gamma"])
@@ -643,34 +644,28 @@ class AgentTransformerPPO(BaseAgent):
                     else self._critic_value(state, next_observation)
                 )
 
-        snapshot = self._snapshot_topology_state() if should_update else None
-        try:
-            for state, candidate in zip(self._per_building, candidates):
-                state.buffer.add(
-                    observation=candidate.pending.observation,
-                    action=candidate.pending.action,
-                    pre_tanh_action=candidate.pending.pre_tanh_action,
-                    log_prob=candidate.pending.log_prob,
-                    reward=candidate.reward,
-                    value=candidate.pending.value,
-                    terminated=candidate.terminated,
-                    truncated=candidate.truncated,
-                )
-                state.last_next_observation = candidate.next_observation
-                state.last_transition_terminated = candidate.terminated
-                state.raw_rewards.append(candidate.raw_reward)
-            self._pending_decisions = [None] * building_count
-            self._latest_global_learning_step = next_global_learning_step
-            if not should_update:
-                return
+        for state, candidate in zip(self._per_building, candidates):
+            state.buffer.add(
+                observation=candidate.pending.observation,
+                action=candidate.pending.action,
+                pre_tanh_action=candidate.pending.pre_tanh_action,
+                log_prob=candidate.pending.log_prob,
+                reward=candidate.reward,
+                value=candidate.pending.value,
+                terminated=candidate.terminated,
+                truncated=candidate.truncated,
+            )
+            state.last_next_observation = candidate.next_observation
+            state.last_transition_terminated = candidate.terminated
+            state.raw_rewards.append(candidate.raw_reward)
+        self._pending_decisions = [None] * building_count
+        self._latest_global_learning_step = next_global_learning_step
+        if not should_update:
+            return
 
-            for b, state in enumerate(self._per_building):
-                if self._ppo_update(b, state, last_values[b]):
-                    self._clear_rollout(b, state)
-        except Exception:
-            if snapshot is not None:
-                self._restore_topology_state(snapshot)
-            raise
+        for b, state in enumerate(self._per_building):
+            if self._ppo_update(b, state, last_values[b]):
+                self._clear_rollout(b, state)
 
     def record_topology_transition(
         self,
@@ -835,7 +830,7 @@ class AgentTransformerPPO(BaseAgent):
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
         if any(len(state.buffer) > 0 for state in self._per_building):
-            raise ValueError(
+            raise DeferredCheckpointError(
                 "TPPO cannot save a checkpoint with a nonempty rollout. Save at a "
                 "completed optimizer or episode boundary."
             )
