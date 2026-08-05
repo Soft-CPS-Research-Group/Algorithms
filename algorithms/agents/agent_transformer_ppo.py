@@ -1656,8 +1656,10 @@ class AgentTransformerPPO(BaseAgent):
             ]
             if missing_buildings:
                 logger.info(
-                    "event=bc_pretraining_failure reason=zero_usable_demonstrations buildings={}",
+                    "event=bc_pretraining_failure reason=zero_usable_demonstrations "
+                    "missing_buildings={} total_buildings={}",
                     len(missing_buildings),
+                    len(self._per_building),
                 )
                 failure_logged = True
                 raise RuntimeError(

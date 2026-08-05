@@ -220,6 +220,7 @@ def test_record_demonstration_logs_nonfinite_target_rejection() -> None:
 def test_valid_record_and_reservoir_replacement_do_not_log_warning() -> None:
     regularizer = _regularizer(max_samples_per_building=1)
     layout = _six_feature_layout()
+    regularizer._rng.randrange = lambda _seen: 0
     messages = []
     sink_id = logger.add(
         lambda message: messages.append(str(message).strip()),
@@ -234,6 +235,9 @@ def test_valid_record_and_reservoir_replacement_do_not_log_warning() -> None:
 
     assert messages == []
     assert regularizer.demonstration_count(0) == 1
+    stored_demo = next(iter(regularizer.demonstrations_for_building_by_signature(0).values()))[0]
+    assert stored_demo.observation.tolist() == [1.0] * 6
+    assert stored_demo.target.tolist() == [0.5]
 
 
 def test_rejected_record_metric_survives_state_round_trip() -> None:

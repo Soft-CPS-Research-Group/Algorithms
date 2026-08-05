@@ -404,8 +404,16 @@ def test_pretraining_logs_start_group_and_complete_events() -> None:
     )
 
 
-def test_pretraining_logs_failure_before_zero_demo_error() -> None:
-    agent, _ = _agent()
+def test_pretraining_logs_missing_and_total_buildings_before_zero_demo_error() -> None:
+    agent, dimension = _agent(building_count=2)
+    assert agent._bc is not None
+    first_state = agent._per_building[0]
+    agent._bc.record_demonstration(
+        0,
+        np.ones(dimension),
+        first_state.layout,
+        [0.25] * first_state.layout.n_ca,
+    )
 
     messages = []
     sink_id = logger.add(
@@ -414,14 +422,15 @@ def test_pretraining_logs_failure_before_zero_demo_error() -> None:
         level="INFO",
     )
     try:
-        with pytest.raises(RuntimeError, match=r"zero compatible demonstrations.*Building_1"):
+        with pytest.raises(RuntimeError, match=r"zero compatible demonstrations.*Building_2"):
             agent._run_bc_pretraining()
     finally:
         logger.remove(sink_id)
 
     assert messages == [
-        "event=bc_pretraining_start buildings=1",
-        "event=bc_pretraining_failure reason=zero_usable_demonstrations buildings=1",
+        "event=bc_pretraining_start buildings=2",
+        "event=bc_pretraining_failure reason=zero_usable_demonstrations "
+        "missing_buildings=1 total_buildings=2",
     ]
 
 
