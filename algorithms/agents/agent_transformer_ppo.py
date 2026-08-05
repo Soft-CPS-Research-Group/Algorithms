@@ -145,6 +145,7 @@ class _UpdateRuntimeSnapshot:
     actor_states: List[Dict[str, torch.Tensor]]
     critic_states: List[Dict[str, torch.Tensor]]
     optimizer_states: List[Dict[str, Any]]
+    bc_optimizer_states: List[Optional[Dict[str, Any]]]
     value_normalizer_states: List[Dict[str, Any]]
     torch_rng_state: torch.Tensor
     cuda_rng_state: Optional[List[torch.Tensor]]
@@ -1562,6 +1563,14 @@ class AgentTransformerPPO(BaseAgent):
                 self._clone_training_state(state.optimizer.state_dict())
                 for state in self._per_building
             ],
+            bc_optimizer_states=[
+                (
+                    self._clone_training_state(state.bc_optimizer.state_dict())
+                    if state.bc_optimizer is not None
+                    else None
+                )
+                for state in self._per_building
+            ],
             value_normalizer_states=[
                 self._clone_training_state(state.value_normalizer.state_dict())
                 for state in self._per_building
@@ -1615,6 +1624,10 @@ class AgentTransformerPPO(BaseAgent):
             state.critic.load_state_dict(snapshot.critic_states[index])
             state.optimizer.load_state_dict(snapshot.optimizer_states[index])
             self._move_optimizer_state_to_device(state.optimizer)
+            saved_bc_optimizer = snapshot.bc_optimizer_states[index]
+            if saved_bc_optimizer is not None and state.bc_optimizer is not None:
+                state.bc_optimizer.load_state_dict(saved_bc_optimizer)
+                self._move_optimizer_state_to_device(state.bc_optimizer)
             state.value_normalizer.load_state_dict(
                 snapshot.value_normalizer_states[index]
             )

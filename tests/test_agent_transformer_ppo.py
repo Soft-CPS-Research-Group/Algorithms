@@ -28,6 +28,7 @@ from algorithms.agents.agent_transformer_ppo import (
     AgentTransformerPPO,
     _synthetic_sample_from_obs_names,
 )
+from algorithms.utils.behavior_cloning import BehaviorCloningRegularizer
 import algorithms.agents.agent_transformer_ppo as transformer_ppo_module
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.registry import ALGORITHM_REGISTRY, build_execution_unit
@@ -1341,6 +1342,111 @@ def test_ordinary_ppo_update_failure_restores_model_state_for_all_buildings(
             state.optimizer,
             state.layout,
         ) == identities_before[index]
+
+
+def test_ordinary_ppo_update_failure_restores_auxiliary_bc_optimizer_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config()
+    config["algorithm"]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 0,
+        "max_samples_per_building": 4,
+        "pretraining_epochs": 1,
+        "batch_size": 1,
+        "weight": 1.0,
+        "min_weight": 1.0,
+        "decay_start_step": 0,
+        "decay_steps": 1,
+        "ev_multiplier": 1.0,
+        "storage_multiplier": 1.0,
+        "teacher": {
+            "policy": "RBCSmartPolicy",
+            "deterministic": True,
+            "hyperparameters": {},
+        },
+    }
+    agent, _, _, obs_dim = _make_agent_with_config(config, n_buildings=2)
+    state = agent._per_building[0]
+    assert agent._bc is not None
+    bc_obs_dim = BehaviorCloningRegularizer.full_representation_width(state.layout)
+    agent._bc.record_demonstration(
+        0,
+        np.ones(bc_obs_dim, dtype=np.float64),
+        state.layout,
+        [0.9] * state.layout.n_ca,
+    )
+    assert agent._bc.demonstration_count(0) == 1
+    assert agent._bc.sample_demonstrations(0, state.layout, batch_size=1)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    for step in range(agent._minibatch_size - 1):
+        actions = agent.predict(observations, deterministic=True)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(action) for action in actions],
+            rewards=[0.1, 0.2],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    actions = agent.predict(observations, deterministic=True)
+    bc_optimizer = state.bc_optimizer
+    agent._run_auxiliary_bc_update(0, state)
+    bc_optimizer_before = copy.deepcopy(bc_optimizer.state_dict())
+    bc_optimizer_states_after_step = []
+    original_bc_step = bc_optimizer.step
+
+    def record_bc_step(*args, **kwargs):
+        result = original_bc_step(*args, **kwargs)
+        bc_optimizer_states_after_step.append(copy.deepcopy(bc_optimizer.state_dict()))
+        return result
+
+    bc_optimizer.step = record_bc_step
+    original_update = agent._run_ppo_update_with_last_value
+
+    def fail_second_update(state, last_value, *, building_idx):
+        if building_idx == 1:
+            raise RuntimeError("second PPO update failed")
+        return original_update(state, last_value, building_idx=building_idx)
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", fail_second_update)
+    with pytest.raises(RuntimeError, match="second PPO update failed"):
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(action) for action in actions],
+            rewards=[0.3, 0.4],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=99,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+    assert bc_optimizer_states_after_step
+    assert any(
+        after["state"][parameter_id]["step"]
+        != bc_optimizer_before["state"][parameter_id]["step"]
+        for after in bc_optimizer_states_after_step
+        for parameter_id in bc_optimizer_before["state"]
+    )
+    assert bc_optimizer is state.bc_optimizer
+    restored = bc_optimizer.state_dict()
+    assert restored["param_groups"] == bc_optimizer_before["param_groups"]
+    assert restored["state"].keys() == bc_optimizer_before["state"].keys()
+    for parameter_id, parameter_state in restored["state"].items():
+        for name, value in parameter_state.items():
+            expected = bc_optimizer_before["state"][parameter_id][name]
+            if isinstance(value, torch.Tensor):
+                assert torch.equal(value, expected)
+            else:
+                assert value == expected
 
 
 def test_ordinary_ppo_snapshot_restores_cuda_rng_state_without_cuda_device(
