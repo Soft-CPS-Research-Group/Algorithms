@@ -277,3 +277,70 @@ não é ainda evidência de um ganho robusto do CC.
 
 Scorecard e séries finais completas:
 `runs/remote_results/ppo_cc_settlement_annual_v1_wave2_cc_pmax13_20260804/scorecards/cc_smart/`.
+
+## Atualização de 2026-08-05: campanha CC-SMART cost-focus V2 (parcial)
+
+A imagem `experiment-add-cc-smart-cost-focus-v2-9f64c22` lançou quatro
+receitas anuais com settlement, SMART congelado e gama do CC 0,5--1,3. A
+campanha ainda não está encerrada, pelo que não foi adicionada ao ledger
+canónico; este é o registo intermédio dos resultados efetivamente recolhidos.
+
+| Receita | Job | Destino | Estado observado em 2026-08-05 06:55 UTC |
+|---|---|---|---|
+| `settled_focus_adaptive` | `d15d201c-ad30-47de-b0c4-7d504c6bd68c` | `server` | `finished`, exit 0 |
+| `legacy_long_control` | `fe0bfedd-56fe-4617-a0f4-c544db477c82` | `server` | `finished`, exit 0 |
+| `hybrid_physical_adaptive` | `3330e778-4da4-4d1c-81d4-e28555e071cd` | Deucalion CPU | `queued` |
+| `settled_focus_regularized` | `8ca52657-4f16-4618-9be5-31b14fe9a447` | `tiago-laptop` | falha de infraestrutura em `setup:image_pull`, sem simulação |
+| `settled_focus_regularized` (reposição) | `4a0c38f9-0a94-422a-a660-c6958240e8f2` | Deucalion CPU | `queued` |
+
+Os dois jobs terminados têm os 53 ficheiros de simulação, trace de decisão e
+manifest recolhidos. Depois de restaurar esses ficheiros, ambos passam os
+hard gates anuais: EV mínimo e dentro da tolerância, rede, deferrables, SOC e
+outage. A comparação emparelhada é:
+
+| Linha | Custo settled | Delta vs SMART | Custo contrafactual vs SMART | Edifícios melhores | Decisão |
+|---|---:|---:|---:|---:|---|
+| SMART | EUR 21 964,67 | referência | referência | 0/17 | `REFERENCE` |
+| CC-SMART V1 | EUR 21 937,95 | EUR -26,72 (-0,122%) | EUR +27,80 | 15/17 | `PASS_CC_SCORECARD` |
+| `settled_focus_adaptive` | EUR 21 960,20 | EUR -4,46 (-0,020%) | EUR -94,99 | 2/17 | `PASS_CC_SCORECARD` |
+| `legacy_long_control` | EUR 21 955,74 | EUR -8,92 (-0,041%) | EUR -103,89 | 3/17 | `PASS_CC_SCORECARD` |
+
+As V2 produzem melhoria física real: `settled_focus_adaptive` reduz importação
+em 82,47 kWh, pico diário em 0,22%, ramping em 2,80% e emissões em 0,40%; a
+receita `legacy_long_control` reduz importação em 135,36 kWh, pico diário em
+0,36%, ramping em 3,50% e emissões em 0,49%. Não há regressões secundárias
+acima dos limiares do scorecard.
+
+Contudo, a melhoria física não se converte integralmente em custo settled.
+Face ao SMART, as duas V2 perdem respetivamente EUR 90,52 e EUR 94,97 de
+poupança do mercado local. O saldo oficial fica assim limitado a EUR 4,46 e
+EUR 8,92; a V1 continua a melhor versão por custo settled. Nos traces finais,
+as V2 convergem para multiplicadores altos e sobretudo correlacionados com a
+tarifa: a mediana fica perto de 1,29 e a sensibilidade a importação/PV cai
+fortemente. Isto é consistente com menor coordenação física local e menor
+benefício do settlement.
+
+O horizonte de rollout V2 também mudou de 96 para 336 passos. Apesar de seis
+episódios de treino em vez de dois, isto dá aproximadamente 156 atualizações
+PPO (`6 * 8760 / 336`), contra aproximadamente 182 na V1
+(`2 * 8760 / 96`). Houve mais interação total, mas não mais passos de
+otimização; por isso estes resultados não demonstram que simplesmente treinar
+durante mais episódios melhora o CC.
+
+Scorecards parciais e comparação conjunta V1/V2:
+`runs/remote_results/cc_smart_cost_focus_v2_annual_20260805/scorecards/`.
+
+### Run CC-PPO bloqueada no Deucalion
+
+O job anterior `ee53bfda-c7f3-4870-bf1a-dc3b3fee45f0` continua oficialmente
+`running`, mas não mostra progresso desde `2026-08-04 23:49:34 UTC`. Ficou no
+episódio 4/4, passo 7 779/35 040, `global_step=112896/140160` e 80,55%. O fim
+do log contém passos normais e nenhum erro Python.
+
+Às 06:55 UTC, o worker Deucalion permanecia online mas reportava o job em
+`active_job_ids` e simultaneamente uma lista `active_jobs` vazia. O estado
+Slurm `RUNNING` e o detalhe de execução também deixaram de atualizar. A
+evidência aponta para estado de lifecycle órfão entre worker, Slurm e
+orquestrador, e não para uma simulação apenas lenta. Como o worker aceita um
+único job CPU em simultâneo, este estado mantém os dois jobs V2 de Deucalion
+em fila. O job não foi parado ou ressubmetido sem autorização explícita.
