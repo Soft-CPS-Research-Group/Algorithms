@@ -1255,6 +1255,84 @@ def test_ordinary_ppo_update_failure_restores_runtime_state(
     assert state.tokenizer is tokenizer_before
 
 
+def test_ordinary_ppo_update_failure_restores_model_state_for_all_buildings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+
+    for step in range(agent._minibatch_size - 1):
+        actions = agent.predict(observations, deterministic=True)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(action) for action in actions],
+            rewards=[0.1, 0.2],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    actions = agent.predict(observations, deterministic=True)
+    states = list(agent._per_building)
+    model_before = [
+        {
+            "actor": copy.deepcopy(state.actor.state_dict()),
+            "critic": copy.deepcopy(state.critic.state_dict()),
+            "optimizer": copy.deepcopy(state.optimizer.state_dict()),
+            "normalizer": copy.deepcopy(state.value_normalizer.state_dict()),
+        }
+        for state in states
+    ]
+    identities_before = [
+        (state.actor, state.critic, state.optimizer, state.layout, state.tokenizer)
+        for state in states
+    ]
+    original_update = agent._run_ppo_update_with_last_value
+
+    def fail_second_update(state, last_value, *, building_idx):
+        if building_idx == 1:
+            raise RuntimeError("second PPO update failed")
+        return original_update(state, last_value, building_idx=building_idx)
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", fail_second_update)
+    with pytest.raises(RuntimeError, match="second PPO update failed"):
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(action) for action in actions],
+            rewards=[0.3, 0.4],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=99,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+    for index, state in enumerate(agent._per_building):
+        expected = model_before[index]
+        for module_name in ("actor", "critic"):
+            actual = getattr(state, module_name).state_dict()
+            assert actual.keys() == expected[module_name].keys()
+            assert all(
+                torch.equal(value, expected[module_name][key])
+                for key, value in actual.items()
+            )
+        assert state.optimizer.state_dict() == expected["optimizer"]
+        assert state.value_normalizer.state_dict() == expected["normalizer"]
+        assert (
+            state.actor,
+            state.critic,
+            state.optimizer,
+            state.layout,
+            state.tokenizer,
+        ) == identities_before[index]
+
+
 def test_off_cadence_truncation_flushes_before_next_episode_update() -> None:
     agent, _, _, obs_dim = _make_agent(n_buildings=1)
     state = agent._per_building[0]
