@@ -1280,6 +1280,8 @@ def test_ordinary_ppo_update_failure_restores_model_state_for_all_buildings(
     states = list(agent._per_building)
     model_before = [
         {
+            "tokenizer": copy.deepcopy(state.tokenizer.state_dict()),
+            "backbone": copy.deepcopy(state.backbone.state_dict()),
             "actor": copy.deepcopy(state.actor.state_dict()),
             "critic": copy.deepcopy(state.critic.state_dict()),
             "optimizer": copy.deepcopy(state.optimizer.state_dict()),
@@ -1288,7 +1290,14 @@ def test_ordinary_ppo_update_failure_restores_model_state_for_all_buildings(
         for state in states
     ]
     identities_before = [
-        (state.actor, state.critic, state.optimizer, state.layout, state.tokenizer)
+        (
+            state.tokenizer,
+            state.backbone,
+            state.actor,
+            state.critic,
+            state.optimizer,
+            state.layout,
+        )
         for state in states
     ]
     original_update = agent._run_ppo_update_with_last_value
@@ -1315,7 +1324,7 @@ def test_ordinary_ppo_update_failure_restores_model_state_for_all_buildings(
 
     for index, state in enumerate(agent._per_building):
         expected = model_before[index]
-        for module_name in ("actor", "critic"):
+        for module_name in ("tokenizer", "backbone", "actor", "critic"):
             actual = getattr(state, module_name).state_dict()
             assert actual.keys() == expected[module_name].keys()
             assert all(
@@ -1325,12 +1334,49 @@ def test_ordinary_ppo_update_failure_restores_model_state_for_all_buildings(
         assert state.optimizer.state_dict() == expected["optimizer"]
         assert state.value_normalizer.state_dict() == expected["normalizer"]
         assert (
+            state.tokenizer,
+            state.backbone,
             state.actor,
             state.critic,
             state.optimizer,
             state.layout,
-            state.tokenizer,
         ) == identities_before[index]
+
+
+def test_ordinary_ppo_snapshot_restores_cuda_rng_state_without_cuda_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, _, _, _ = _make_agent(n_buildings=1)
+    saved_cuda_rng = [torch.tensor([1, 2, 3], dtype=torch.uint8)]
+    restored_cuda_rng: list[list[torch.Tensor]] = []
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_rng_state_all",
+        lambda: [state.clone() for state in saved_cuda_rng],
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "set_rng_state_all",
+        lambda states: restored_cuda_rng.append(list(states)),
+    )
+
+    snapshot = agent._snapshot_update_runtime_state()
+
+    assert snapshot.cuda_rng_state is not None
+    assert all(
+        torch.equal(actual, expected)
+        for actual, expected in zip(snapshot.cuda_rng_state, saved_cuda_rng)
+    )
+
+    agent._restore_update_runtime_state(snapshot)
+
+    assert len(restored_cuda_rng) == 1
+    assert all(
+        torch.equal(actual, expected)
+        for actual, expected in zip(restored_cuda_rng[0], saved_cuda_rng)
+    )
 
 
 def test_off_cadence_truncation_flushes_before_next_episode_update() -> None:

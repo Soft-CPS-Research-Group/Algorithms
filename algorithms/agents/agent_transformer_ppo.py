@@ -140,11 +140,14 @@ class _UpdateRuntimeSnapshot:
     latest_global_learning_step: int
     latest_training_metrics: Dict[str, float]
     ppo_update_count: int
+    tokenizer_states: List[Dict[str, torch.Tensor]]
+    backbone_states: List[Dict[str, torch.Tensor]]
     actor_states: List[Dict[str, torch.Tensor]]
     critic_states: List[Dict[str, torch.Tensor]]
     optimizer_states: List[Dict[str, Any]]
     value_normalizer_states: List[Dict[str, Any]]
     torch_rng_state: torch.Tensor
+    cuda_rng_state: Optional[List[torch.Tensor]]
 
 
 @dataclass(frozen=True)
@@ -1539,6 +1542,14 @@ class AgentTransformerPPO(BaseAgent):
             latest_global_learning_step=self._latest_global_learning_step,
             latest_training_metrics=dict(self._latest_training_metrics),
             ppo_update_count=self._ppo_update_count,
+            tokenizer_states=[
+                self._clone_training_state(state.tokenizer.state_dict())
+                for state in self._per_building
+            ],
+            backbone_states=[
+                self._clone_training_state(state.backbone.state_dict())
+                for state in self._per_building
+            ],
             actor_states=[
                 self._clone_training_state(state.actor.state_dict())
                 for state in self._per_building
@@ -1556,6 +1567,11 @@ class AgentTransformerPPO(BaseAgent):
                 for state in self._per_building
             ],
             torch_rng_state=torch.get_rng_state().clone(),
+            cuda_rng_state=(
+                [state.clone() for state in torch.cuda.get_rng_state_all()]
+                if torch.cuda.is_available()
+                else None
+            ),
         )
 
     @staticmethod
@@ -1593,9 +1609,12 @@ class AgentTransformerPPO(BaseAgent):
             state.last_next_observation = snapshot.last_next_observations[index]
             state.last_transition_terminated = snapshot.last_transition_terminated[index]
             state.raw_rewards[:] = snapshot.raw_rewards[index]
+            state.tokenizer.load_state_dict(snapshot.tokenizer_states[index])
+            state.backbone.load_state_dict(snapshot.backbone_states[index])
             state.actor.load_state_dict(snapshot.actor_states[index])
             state.critic.load_state_dict(snapshot.critic_states[index])
             state.optimizer.load_state_dict(snapshot.optimizer_states[index])
+            self._move_optimizer_state_to_device(state.optimizer)
             state.value_normalizer.load_state_dict(
                 snapshot.value_normalizer_states[index]
             )
@@ -1605,6 +1624,8 @@ class AgentTransformerPPO(BaseAgent):
         self._latest_training_metrics.update(snapshot.latest_training_metrics)
         self._ppo_update_count = snapshot.ppo_update_count
         torch.set_rng_state(snapshot.torch_rng_state)
+        if snapshot.cuda_rng_state is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(snapshot.cuda_rng_state)
 
     def _snapshot_topology_state(
         self,
