@@ -2472,3 +2472,69 @@ class SignalAwareRBC(RBCSmartPolicy):
             "expensive":         effective_price >= forecast_mean + 0.20 * spread or effective_price >= forecast_max - 0.10 * spread,
             "near_forecast_peak": effective_price >= forecast_max - max(0.10 * spread, 0.005),
         }
+
+
+class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
+    """Strict-local SMART leaf controlled only through the virtual price.
+
+    The existing :class:`SignalAwareRBC` predates the strict building-local
+    information contract and may use community fallbacks inherited from
+    :class:`RBCSmartPolicy`.  This multiple-inheritance composition keeps its
+    price response while reusing :class:`RBCSmartLocalPolicy`'s filtered raw
+    observation layout.  At multiplier ``1.0`` its behaviour is therefore the
+    exact strict-local SMART policy used underneath the individual PPOs.
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        hyper = config.get("algorithm", {}).get("hyperparameters") or {}
+        self.signal_price_charge_rate = max(
+            0.0,
+            float(hyper.get("signal_price_charge_rate", 0.0) or 0.0),
+        )
+
+    def _policy_type(self) -> str:
+        return "signal_aware_rbc_smart_local_policy"
+
+    def _compute_storage_action(
+        self,
+        agent_idx: int,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        action_name: str,
+        bounds: Sequence[float],
+    ) -> float:
+        """Optionally enable price charging only under an explicit discount.
+
+        ``RBCSmartPolicy`` deliberately defaults ``price_charge_rate`` to zero.
+        That is preserved at neutral context, so multiplier 1.0 remains an
+        exact no-op for frozen PPO residual bases.  A CC experiment can opt in
+        to a separate signal rate, which is active only for multipliers below
+        one and therefore gives the virtual-price channel bidirectional storage
+        authority without modifying actor observations.
+        """
+        if (
+            self.price_charge_rate > self.energy_epsilon
+            or self.signal_price_charge_rate <= self.energy_epsilon
+            or self._price_multiplier >= 1.0
+        ):
+            return super()._compute_storage_action(
+                agent_idx,
+                obs,
+                obs_map,
+                action_name,
+                bounds,
+            )
+
+        configured_rate = self.price_charge_rate
+        self.price_charge_rate = self.signal_price_charge_rate
+        try:
+            return super()._compute_storage_action(
+                agent_idx,
+                obs,
+                obs_map,
+                action_name,
+                bounds,
+            )
+        finally:
+            self.price_charge_rate = configured_rate

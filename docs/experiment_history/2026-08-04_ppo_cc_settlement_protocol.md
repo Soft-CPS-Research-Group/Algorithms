@@ -277,3 +277,271 @@ não é ainda evidência de um ganho robusto do CC.
 
 Scorecard e séries finais completas:
 `runs/remote_results/ppo_cc_settlement_annual_v1_wave2_cc_pmax13_20260804/scorecards/cc_smart/`.
+
+## Atualização de 2026-08-05: campanha CC-SMART cost-focus V2 (parcial)
+
+A imagem `experiment-add-cc-smart-cost-focus-v2-9f64c22` lançou quatro
+receitas anuais com settlement, SMART congelado e gama do CC 0,5--1,3. A
+campanha ainda não está encerrada, pelo que não foi adicionada ao ledger
+canónico; este é o registo intermédio dos resultados efetivamente recolhidos.
+
+| Receita | Job | Destino | Estado observado em 2026-08-05 06:55 UTC |
+|---|---|---|---|
+| `settled_focus_adaptive` | `d15d201c-ad30-47de-b0c4-7d504c6bd68c` | `server` | `finished`, exit 0 |
+| `legacy_long_control` | `fe0bfedd-56fe-4617-a0f4-c544db477c82` | `server` | `finished`, exit 0 |
+| `hybrid_physical_adaptive` | `3330e778-4da4-4d1c-81d4-e28555e071cd` | Deucalion CPU | `queued` |
+| `settled_focus_regularized` | `8ca52657-4f16-4618-9be5-31b14fe9a447` | `tiago-laptop` | falha de infraestrutura em `setup:image_pull`, sem simulação |
+| `settled_focus_regularized` (reposição) | `4a0c38f9-0a94-422a-a660-c6958240e8f2` | Deucalion CPU | `queued` |
+
+Os dois jobs terminados têm os 53 ficheiros de simulação, trace de decisão e
+manifest recolhidos. Depois de restaurar esses ficheiros, ambos passam os
+hard gates anuais: EV mínimo e dentro da tolerância, rede, deferrables, SOC e
+outage. A comparação emparelhada é:
+
+| Linha | Custo settled | Delta vs SMART | Custo contrafactual vs SMART | Edifícios melhores | Decisão |
+|---|---:|---:|---:|---:|---|
+| SMART | EUR 21 964,67 | referência | referência | 0/17 | `REFERENCE` |
+| CC-SMART V1 | EUR 21 937,95 | EUR -26,72 (-0,122%) | EUR +27,80 | 15/17 | `PASS_CC_SCORECARD` |
+| `settled_focus_adaptive` | EUR 21 960,20 | EUR -4,46 (-0,020%) | EUR -94,99 | 2/17 | `PASS_CC_SCORECARD` |
+| `legacy_long_control` | EUR 21 955,74 | EUR -8,92 (-0,041%) | EUR -103,89 | 3/17 | `PASS_CC_SCORECARD` |
+
+As V2 produzem melhoria física real: `settled_focus_adaptive` reduz importação
+em 82,47 kWh, pico diário em 0,22%, ramping em 2,80% e emissões em 0,40%; a
+receita `legacy_long_control` reduz importação em 135,36 kWh, pico diário em
+0,36%, ramping em 3,50% e emissões em 0,49%. Não há regressões secundárias
+acima dos limiares do scorecard.
+
+Contudo, a melhoria física não se converte integralmente em custo settled.
+Face ao SMART, as duas V2 perdem respetivamente EUR 90,52 e EUR 94,97 de
+poupança do mercado local. O saldo oficial fica assim limitado a EUR 4,46 e
+EUR 8,92; a V1 continua a melhor versão por custo settled. Nos traces finais,
+as V2 convergem para multiplicadores altos e sobretudo correlacionados com a
+tarifa: a mediana fica perto de 1,29 e a sensibilidade a importação/PV cai
+fortemente. Isto é consistente com menor coordenação física local e menor
+benefício do settlement.
+
+O horizonte de rollout V2 também mudou de 96 para 336 passos. Apesar de seis
+episódios de treino em vez de dois, isto dá aproximadamente 156 atualizações
+PPO (`6 * 8760 / 336`), contra aproximadamente 182 na V1
+(`2 * 8760 / 96`). Houve mais interação total, mas não mais passos de
+otimização; por isso estes resultados não demonstram que simplesmente treinar
+durante mais episódios melhora o CC.
+
+Scorecards parciais e comparação conjunta V1/V2:
+`runs/remote_results/cc_smart_cost_focus_v2_annual_20260805/scorecards/`.
+
+### Run CC-PPO bloqueada no Deucalion
+
+O job anterior `ee53bfda-c7f3-4870-bf1a-dc3b3fee45f0` continua oficialmente
+`running`, mas não mostra progresso desde `2026-08-04 23:49:34 UTC`. Ficou no
+episódio 4/4, passo 7 779/35 040, `global_step=112896/140160` e 80,55%. O fim
+do log contém passos normais e nenhum erro Python.
+
+Às 06:55 UTC, o worker Deucalion permanecia online mas reportava o job em
+`active_job_ids` e simultaneamente uma lista `active_jobs` vazia. O estado
+Slurm `RUNNING` e o detalhe de execução também deixaram de atualizar. A
+evidência aponta para estado de lifecycle órfão entre worker, Slurm e
+orquestrador, e não para uma simulação apenas lenta. Como o worker aceita um
+único job CPU em simultâneo, este estado mantém os dois jobs V2 de Deucalion
+em fila. O job não foi parado ou ressubmetido sem autorização explícita.
+
+### Recuperação autorizada e relançamentos em 2026-08-05
+
+Depois de autorização explícita, o `stop` normal do job CC-PPO bloqueado foi
+aceite mas permaneceu sem confirmação do worker. O job foi então reconciliado
+operacionalmente para `failed` com o motivo
+`ops_reconcile_stalled_deucalion_no_progress`. Esta transição libertou o slot
+CPU do Deucalion sem apagar a evidência do job incompleto.
+
+O `hybrid_physical_adaptive` entrou em execução no Deucalion. A reposição
+`settled_focus_regularized` foi reencaminhada, ainda em fila, para o `server`
+depois de preflight estrito da mesma imagem e começou a executar com progresso
+real. A reposição anual da CC-PPO, sem alterações ao PPO congelado ou ao CC,
+foi lançada no Union-INESCTEC:
+
+| Linha | Job | Destino | Estado às 07:48 UTC |
+|---|---|---|---|
+| V2 `hybrid_physical_adaptive` | `3330e778-4da4-4d1c-81d4-e28555e071cd` | Deucalion CPU | `running` |
+| V2 `settled_focus_regularized` | `4a0c38f9-0a94-422a-a660-c6958240e8f2` | `server` | `running` |
+| CC-PPO reposição R1 | `2d79643a-967e-48ca-823c-234821bf2976` | Union-INESCTEC | `running` |
+
+O preflight Union confirmou worker `0.5.3` online, autenticação recente e a
+imagem `test-validate-ppo-cc-settlement-pipeline-0133d85` pronta. Evidência
+operacional:
+`runs/remote_configs/ppo_cc_settlement_annual_v1_wave2_cc_pmax13_20260804/`.
+
+### Campanha de identificação CC-SMART V3
+
+Os resultados V2 sugerem duas causas diferentes que precisam de ser
+separadas. Primeiro, um único multiplicador global só altera os limiares
+`cheap`/`expensive` do SMART; não tem a autoridade contínua e por edifício do
+PPO. Segundo, o rollout V2 de 336 decisões produziu menos atualizações PPO e
+as políticas finais ficaram enviesadas para multiplicadores altos.
+
+A campanha `cc_smart_price_response_v3_annual_20260805` foi definida antes de
+observar qualquer resultado e mede estas hipóteses diretamente:
+
+| Receita | Job | Objetivo |
+|---|---|---|
+| fixo 0,7 | `ba61937c-c811-4272-ac1f-02c5e922bd19` | limite inferior da resposta SMART |
+| fixo 0,9 | `ac59fcc0-3973-435f-9187-8b796c4071d2` | resposta conservadora abaixo do neutro |
+| fixo 1,1 | `7f62487e-5748-4294-8057-cde3654fd20d` | resposta conservadora acima do neutro |
+| fixo 1,3 | `da5f5f3e-560d-40ab-bb84-2a7cb9f33bf3` | limite superior da resposta SMART |
+| `legacy_update_dense` | `1c1d7be4-49fc-4e90-ba7c-36e4c0e254fc` | V1 exata com aproximadamente 547 atualizações PPO |
+
+O replay SMART neutro 1,0 existente continua a referência. Os quatro fixos
+medem a margem alcançável pelo canal escalar e impedem que uma melhoria por
+mero bias constante seja atribuída a coordenação aprendida. A receita densa
+mantém reward, BC, regularização, gamma e rollout V1, aumentando apenas os
+episódios de treino; compara aproximadamente 547 atualizações com 182 na V1 e
+156 nas V2 longas.
+
+Todos os configs validaram e os testes contratuais relacionados passaram
+(`28 passed`). A imagem `experiment-add-cc-smart-cost-focus-v2-9f64c22` já
+contém todo o código necessário; os configs foram enviados inline depois de
+preflight Union estrito. Evidência operacional:
+`runs/remote_configs/cc_smart_price_response_v3_annual_20260805/`.
+
+#### Resultado anual dos probes fixos
+
+Os quatro probes terminaram com exit 0 e os 53 ficheiros de simulação por job
+foram recolhidos. Todos passam os hard gates estritos. O scorecard emparelhado
+com o SMART neutro é:
+
+| Multiplicador | Custo settled | Delta vs SMART | Importação | Edifícios melhores | Decisão |
+|---:|---:|---:|---:|---:|---|
+| 0,7 | EUR 22 043,94 | EUR +79,27 (+0,361%) | 133 077,96 kWh | 16/17 | `REJECT_COST` |
+| 0,9 | EUR 21 990,68 | EUR +26,01 (+0,118%) | 132 915,69 kWh | 16/17 | `REJECT_COST` |
+| 1,1 | EUR 21 957,65 | EUR -7,02 (-0,032%) | 132 683,01 kWh | 1/17 | `PASS_CC_SCORECARD` |
+| 1,3 | EUR 21 950,76 | EUR -13,91 (-0,063%) | 132 584,24 kWh | 1/17 | `PASS_CC_SCORECARD` |
+
+Na gama medida, preço mais alto produz menor custo comunitário. O fixo 1,3
+também reduz importação em 195,89 kWh, pico diário em 0,29%, ramping em 6,07%
+e emissões em 0,79%, sem regressões secundárias materiais. Contudo, reduz a
+poupança do mercado local em EUR 131,88 e só um edifício baixa a conta; o pior
+edifício aumenta EUR 4,83.
+
+O CC-SMART V1 continua EUR 12,81 melhor que o fixo 1,3 e beneficia 15/17
+edifícios. Assim, uma parte do ganho V1 é adaptação temporal real e não apenas
+um bias constante: multiplicadores altos melhoram o custo físico, enquanto
+descontos seletivos preservam matching e distribuição do settlement. O ganho
+continua pequeno em valor absoluto, mas o canal global tem autoridade medida.
+
+Scorecard e séries completas:
+`runs/remote_results/cc_smart_price_response_v3_annual_20260805/scorecards/fixed_response/`.
+
+#### Follow-up adaptativo pós-sweep
+
+Depois de observar o sweep, foi criada — e explicitamente marcada como
+evidência de desenvolvimento pós-sweep — a receita
+`incumbent_residual_update_dense`. Ela começa no melhor fixo 1,3, mantém o
+rollout V1 de 96 decisões e aproximadamente 547 updates, e aplica residual
+0,5 ao output original 0,5--1,3. O multiplicador efetivo fica limitado a
+0,9--1,3: a política pode conservar 1,3 ou dar descontos seletivos, mas não
+explorar a região baixa que o sweep mostrou prejudicial.
+
+O config validou, os testes relacionados passaram (`29 passed`) e o job
+`de3025f1-4800-4003-b2e3-4290c403eb8a` começou a executar no Union-INESCTEC.
+Para promoção, terá de bater SMART, fixo 1,3 e CC-SMART V1 com hard gates, e
+depois ser confirmado noutra seed ou superfície temporal porque os bounds
+foram escolhidos após observar este ano.
+
+## Atualização de 2026-08-05 10:56 UTC: quatro resultados adicionais
+
+Terminaram com exit 0 o V2 `settled_focus_regularized`, o V3
+`legacy_update_dense`, o V3 `incumbent_residual_update_dense` e a reposição
+CC-PPO no Union. Foram recolhidos os 53 ficheiros de simulação de cada job e
+recalculados os scorecards anuais completos. Todos os quatro passam os hard
+gates comunitários de EV, rede, deferrables, SOC e outage.
+
+O único job ainda ativo é o V2 `hybrid_physical_adaptive`,
+`3330e778-4da4-4d1c-81d4-e28555e071cd`. Às 10:56 UTC estava no Deucalion em
+`running`, episódio 6/8, progresso global 68,68% e ETA aproximada de 12:23
+UTC. A campanha continua fora do ledger canónico até este job terminar.
+
+### Tabela CC-SMART anual consolidada, ainda sem o híbrido
+
+Todos os deltas são contra o SMART neutro com settlement, EUR 21 964,67. O
+delta contrafactual mede o custo físico sem o benefício do mercado local; o
+delta de poupança mede a parte atribuída ao settlement.
+
+| Linha | Custo settled | Delta settled | Delta contrafactual | Delta poupança mercado | Edifícios melhores | Pico diário | Ramping | Decisão |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| SMART neutro | EUR 21 964,67 | referência | referência | referência | 0/17 | referência | referência | `REFERENCE` |
+| CC-SMART V1 | EUR 21 937,95 | EUR -26,72 | EUR +27,80 | EUR +54,52 | 15/17 | -0,47% | -0,67% | `PASS_CC_SCORECARD` |
+| V2 `settled_focus_adaptive` | EUR 21 960,20 | EUR -4,46 | EUR -94,99 | EUR -90,52 | 2/17 | -0,22% | -2,80% | `PASS_CC_SCORECARD` |
+| V2 `legacy_long_control` | EUR 21 955,74 | EUR -8,92 | EUR -103,89 | EUR -94,97 | 3/17 | -0,36% | -3,50% | `PASS_CC_SCORECARD` |
+| V2 `settled_focus_regularized` | EUR 21 953,82 | EUR -10,84 | EUR -105,28 | EUR -94,44 | 4/17 | -0,38% | -3,17% | `PASS_CC_SCORECARD` |
+| Fixo 0,7 | EUR 22 043,94 | EUR +79,27 | EUR +392,51 | EUR +313,24 | 16/17 | -0,53% | +3,68% | `REJECT_COST` |
+| Fixo 0,9 | EUR 21 990,68 | EUR +26,01 | EUR +182,12 | EUR +156,11 | 16/17 | +0,01% | +3,20% | `REJECT_COST` |
+| Fixo 1,1 | EUR 21 957,65 | EUR -7,02 | EUR -80,19 | EUR -73,18 | 1/17 | -0,11% | -3,06% | `PASS_CC_SCORECARD` |
+| Fixo 1,3 | EUR 21 950,76 | EUR -13,91 | EUR -145,79 | EUR -131,88 | 1/17 | -0,29% | -6,07% | `PASS_CC_SCORECARD` |
+| V3 `legacy_update_dense` | EUR 21 953,18 | EUR -11,48 | EUR +120,53 | EUR +132,02 | 15/17 | -0,57% | -0,38% | `PASS_CC_SCORECARD` |
+| V3 `incumbent_residual` | **EUR 21 936,93** | **EUR -27,74** | **EUR -11,22** | **EUR +16,52** | 14/17 | -0,40% | -1,38% | `PASS_CC_SCORECARD` |
+
+O `incumbent_residual` é o novo campeão de desenvolvimento por custo settled.
+É também a primeira política aprendida desta campanha que combina melhoria
+física líquida com aumento da poupança do mercado: reduz importação em 178,85
+kWh, melhora o load-factor penalty em 0,18%, aumenta autoconsumo solar em
+0,146 pontos percentuais e mantém o pico absoluto. As emissões aumentam só
+0,038%, abaixo da tolerância material do scorecard.
+
+A margem contra o CC-SMART V1 é, contudo, apenas EUR 1,02 no ano. Não é
+suficiente para declarar superioridade estatística, sobretudo porque a gama
+0,9--1,3 foi escolhida depois do sweep deste mesmo ano. O resultado é um
+candidato de promoção, não uma política já promovida. O
+`legacy_update_dense` também mostra que aumentar o número de updates, por si
+só, não resolve o problema: fica EUR 15,46 atrás do residual, tem um edifício
+fora dos gates locais tolerantes e depende sobretudo de settlement para
+compensar um contrafactual físico EUR 120,53 pior.
+
+Scorecard consolidado e séries completas:
+`runs/remote_results/cc_smart_price_response_v3_annual_20260805/scorecards/all_finished_cc_smart/`.
+
+### Resultado anual CC-PPO
+
+| Linha | Custo settled | Delta vs PPO | Importação | Pico diário | Ramping | Autoconsumo solar | Edifícios melhores | Decisão |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| PPO neutro seed 789 | EUR 20 850,00 | referência | 129 871,29 kWh | referência | referência | 72,62% | 0/17 | `REFERENCE` |
+| CC-PPO seed 789 | EUR 21 075,18 | EUR +225,18 (+1,08%) | 130 951,44 kWh | +0,01% | +8,64% | 71,54% | 3/17 | `REJECT_COST` |
+
+O CC-PPO mantém os hard gates, mas não passa o scorecard. Aumenta importação
+em 1 080,15 kWh, emissões em 0,90%, pico absoluto em 0,15% e reduz
+autoconsumo solar em 1,083 pontos percentuais. A poupança do mercado local
+aumenta EUR 116,85, mas o contrafactual físico piora EUR 342,03; o saldo é a
+regressão settled de EUR 225,18. A evidência é consistente com um PPO forte,
+treinado para a distribuição de preço nominal, a ser empurrado para fora
+dessa distribuição por um multiplicador global. A receita atual é rejeitada
+e não deve ser repetida apenas com mais episódios.
+
+Scorecard e séries completas:
+`runs/remote_results/ppo_cc_settlement_annual_v1_wave2_cc_pmax13_20260804/scorecards/cc_ppo_s789_r1/`.
+
+### Leitura executiva e sequência recomendada
+
+Na tabela grande, o PPO neutro continua claramente melhor que SMART e que
+qualquer CC-SMART: EUR 20 850,00 contra EUR 21 964,67 do SMART e EUR 21 936,93
+do melhor CC-SMART. O CC melhora o SMART de forma pequena mas agora também
+fisicamente defensável; a primeira tentativa de pôr o mesmo CC sobre o PPO
+prejudica um leaf que já era muito melhor.
+
+1. Recolher o `hybrid_physical_adaptive` e fechar a tabela V2 sem mudar
+   receitas enquanto ele corre.
+2. Tratar o `incumbent_residual` como campeão de desenvolvimento CC-SMART e
+   confirmá-lo em três seeds, com um replay final congelado sem updates. O
+   CC-SMART V1 deve acompanhar como comparador porque a diferença é só EUR
+   1,02.
+3. Antes de voltar a treinar CC-PPO, medir a resposta anual do PPO congelado a
+   multiplicadores fixos, incluindo 1,0 como controlo. Uma grelha curta
+   0,9/0,95/1,0/1,05/1,1/1,2/1,3 determina se o canal escalar tem sequer uma
+   região melhor que o PPO neutro.
+4. Se existir um fixo melhor, treinar um CC residual numa janela estreita em
+   torno desse incumbente, tal como funcionou no SMART. Se nenhum fixo
+   melhorar, não forçar a narrativa: treinar uma nova versão do PPO local com
+   perturbação aleatória do preço efetivo, mantendo-o sem observações da
+   comunidade, verificar que continua bom a 1,0 e só depois congelá-lo para o
+   CC. Assim o PPO entregue ao coordenador continua local e community-blind,
+   mas aprende a ser controlável pelo preço.
+5. Só se o multiplicador global continuar sem autoridade suficiente avançar
+   para preços por edifício (`CCLevel2`), registando-o como uma segunda fase e
+   não como substituição retroativa deste protocolo Level 1.

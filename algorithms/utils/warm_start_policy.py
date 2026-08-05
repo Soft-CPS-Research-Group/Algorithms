@@ -28,6 +28,7 @@ def build_warm_start_policy(
         RBCCommunityPolicy,
         RBCSmartLocalPolicy,
         RBCSmartPolicy,
+        SignalAwareRBCSmartLocal,
         RandomPolicy,
     )
     from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolicy
@@ -44,6 +45,7 @@ def build_warm_start_policy(
         "RBCCommunityPolicy": RBCCommunityPolicy,
         "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
         "RBCSmartPolicy": RBCSmartPolicy,
+        "SignalAwareRBCSmartLocal": SignalAwareRBCSmartLocal,
         "FixedServiceOracleReplayPolicy": FixedServiceOracleReplayPolicy,
         "TotalHomeOracleReplayPolicy": TotalHomeOracleReplayPolicy,
         "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
