@@ -9,6 +9,7 @@ import random
 import numpy as np
 import pytest
 import torch
+from loguru import logger
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
 from algorithms.utils.behavior_cloning import (
@@ -365,6 +366,90 @@ def test_pretraining_reports_positive_evidence_for_every_building() -> None:
         assert metrics[f"TPPO/behavior_cloning_building_{building}_usable_samples"] == 1.0
         assert metrics[f"TPPO/behavior_cloning_building_{building}_trained_batches"] == 2.0
     assert metrics["TPPO/behavior_cloning_pretraining_batches"] == 4.0
+
+
+def test_pretraining_logs_start_group_and_complete_events() -> None:
+    agent, dimension = _agent(building_count=2)
+    assert agent._bc is not None
+    for building_idx, state in enumerate(agent._per_building):
+        agent._bc.record_demonstration(
+            building_idx,
+            np.ones(dimension),
+            state.layout,
+            [0.25] * state.layout.n_ca,
+        )
+
+    messages = []
+    sink_id = logger.add(
+        lambda message: messages.append(str(message).strip()),
+        format="{message}",
+        level="INFO",
+    )
+    try:
+        agent._run_bc_pretraining()
+    finally:
+        logger.remove(sink_id)
+
+    assert messages[0] == "event=bc_pretraining_start buildings=2"
+    assert messages[1] == (
+        "event=bc_pretraining_group building_id=Building_1 group_index=1 "
+        "group_count=1 group_samples=1 usable_samples=1 trained_batches=2"
+    )
+    assert messages[2] == (
+        "event=bc_pretraining_group building_id=Building_2 group_index=1 "
+        "group_count=1 group_samples=1 usable_samples=1 trained_batches=2"
+    )
+    assert messages[3] == (
+        "event=bc_pretraining_complete buildings=2 usable_samples=2 trained_batches=4"
+    )
+
+
+def test_pretraining_logs_failure_before_zero_demo_error() -> None:
+    agent, _ = _agent()
+
+    messages = []
+    sink_id = logger.add(
+        lambda message: messages.append(str(message).strip()),
+        format="{message}",
+        level="INFO",
+    )
+    try:
+        with pytest.raises(RuntimeError, match=r"zero compatible demonstrations.*Building_1"):
+            agent._run_bc_pretraining()
+    finally:
+        logger.remove(sink_id)
+
+    assert messages == [
+        "event=bc_pretraining_start buildings=1",
+        "event=bc_pretraining_failure reason=zero_usable_demonstrations buildings=1",
+    ]
+
+
+def test_pretraining_logs_failure_before_unexpected_error() -> None:
+    agent, dimension = _agent()
+    assert agent._bc is not None
+    state = agent._per_building[0]
+    agent._bc.record_demonstration(
+        0, np.ones(dimension), state.layout, [0.25] * state.layout.n_ca
+    )
+    agent._bc.demonstration_loss = lambda **_kwargs: (_ for _ in ()).throw(ValueError())
+
+    messages = []
+    sink_id = logger.add(
+        lambda message: messages.append(str(message).strip()),
+        format="{message}",
+        level="INFO",
+    )
+    try:
+        with pytest.raises(ValueError):
+            agent._run_bc_pretraining()
+    finally:
+        logger.remove(sink_id)
+
+    assert messages == [
+        "event=bc_pretraining_start buildings=1",
+        "event=bc_pretraining_failure reason=pretraining_error error_type=ValueError",
+    ]
 
 
 def test_record_rejection_is_reported_without_incompatible_skip_metric() -> None:

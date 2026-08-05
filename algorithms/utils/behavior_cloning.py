@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 import torch
+from loguru import logger
 
 from algorithms.utils.entity_token_layout import (
     BuildingTokenLayout,
@@ -196,11 +197,46 @@ class BehaviorCloningRegularizer:
         target: List[float],
     ) -> None:
         copied_observation = np.asarray(observation, dtype=np.float32).copy()
-        if copied_observation.shape != (self.full_representation_width(layout),):
+        expected_observation_length = self.full_representation_width(layout)
+        expected_observation_shape = (expected_observation_length,)
+        if copied_observation.shape != expected_observation_shape:
             self._rejected_at_record += 1
+            logger.warning(
+                "event=bc_demonstration_rejected building_idx={} "
+                "reason=observation_shape_mismatch expected_shape={} actual_shape={} "
+                "expected_length={} actual_length={}",
+                building_idx,
+                expected_observation_shape,
+                copied_observation.shape,
+                expected_observation_length,
+                copied_observation.size,
+            )
             return
         copied_target = np.asarray(target, dtype=np.float32).copy()
-        if copied_target.shape != (layout.n_ca,) or not np.isfinite(copied_target).all():
+        expected_target_shape = (layout.n_ca,)
+        if copied_target.shape != expected_target_shape:
+            logger.warning(
+                "event=bc_demonstration_rejected building_idx={} "
+                "reason=target_shape_mismatch expected_shape={} actual_shape={} "
+                "expected_length={} actual_length={}",
+                building_idx,
+                expected_target_shape,
+                copied_target.shape,
+                layout.n_ca,
+                copied_target.size,
+            )
+            return
+        if not np.isfinite(copied_target).all():
+            logger.warning(
+                "event=bc_demonstration_rejected building_idx={} "
+                "reason=target_nonfinite expected_shape={} actual_shape={} "
+                "expected_length={} actual_length={}",
+                building_idx,
+                expected_target_shape,
+                copied_target.shape,
+                layout.n_ca,
+                copied_target.size,
+            )
             return
         copied_observation.setflags(write=False)
         copied_target.setflags(write=False)

@@ -1642,71 +1642,108 @@ class AgentTransformerPPO(BaseAgent):
     def _run_bc_pretraining(self) -> None:
         """Fit representation and actor to frozen teacher demonstrations only."""
         assert self._bc is not None
-        grouped_by_building = [
-            self._bc.demonstrations_for_building_by_signature(building_idx)
-            for building_idx in range(len(self._per_building))
-        ]
-        missing_buildings = [
-            state.building_id
-            for state, grouped in zip(self._per_building, grouped_by_building)
-            if not grouped
-        ]
-        if missing_buildings:
-            raise RuntimeError(
-                "Behavior-cloning pretraining has zero compatible demonstrations for "
-                f"building(s): {', '.join(missing_buildings)}."
+        logger.info("event=bc_pretraining_start buildings={}", len(self._per_building))
+        failure_logged = False
+        try:
+            grouped_by_building = [
+                self._bc.demonstrations_for_building_by_signature(building_idx)
+                for building_idx in range(len(self._per_building))
+            ]
+            missing_buildings = [
+                state.building_id
+                for state, grouped in zip(self._per_building, grouped_by_building)
+                if not grouped
+            ]
+            if missing_buildings:
+                logger.info(
+                    "event=bc_pretraining_failure reason=zero_usable_demonstrations buildings={}",
+                    len(missing_buildings),
+                )
+                failure_logged = True
+                raise RuntimeError(
+                    "Behavior-cloning pretraining has zero compatible demonstrations for "
+                    f"building(s): {', '.join(missing_buildings)}."
+                )
+            trained_epochs = 0
+            pretraining_metrics: Dict[str, float] = {}
+            total_usable_samples = 0
+            total_trained_batches = 0
+            for state, grouped in zip(self._per_building, grouped_by_building):
+                usable_samples = 0
+                trained_batches = 0
+                group_count = len(grouped)
+                for group_index, demonstrations in enumerate(grouped.values(), start=1):
+                    layout = demonstrations[0].layout
+                    group_samples = len(demonstrations)
+                    group_trained_batches = 0
+                    usable_samples += group_samples
+                    for _ in range(self._bc.pretraining_epochs):
+                        for start in range(0, group_samples, self._bc.batch_size):
+                            batch = demonstrations[start : start + self._bc.batch_size]
+                            observations = torch.as_tensor(
+                                np.stack([demo.observation for demo in batch]),
+                                dtype=torch.float,
+                                device=self.device,
+                            )
+                            state.bc_optimizer.zero_grad()
+                            tokenized = state.tokenizer(observations, layout)
+                            ca_embeddings, _ = state.backbone(
+                                tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
+                            )
+                            loss = self._bc.demonstration_loss(
+                                layout=layout,
+                                demonstrations=list(batch),
+                                predicted_means=torch.tanh(state.actor.mlp(ca_embeddings)),
+                                global_learning_step=0,
+                                apply_weight=False,
+                            )
+                            loss.backward()
+                            torch.nn.utils.clip_grad_norm_(
+                                list(state.tokenizer.parameters())
+                                + list(state.backbone.parameters())
+                                + list(state.actor.parameters()),
+                                self._max_grad_norm,
+                            )
+                            state.bc_optimizer.step()
+                            trained_batches += 1
+                            group_trained_batches += 1
+                    logger.info(
+                        "event=bc_pretraining_group building_id={} group_index={} "
+                        "group_count={} group_samples={} usable_samples={} trained_batches={}",
+                        state.building_id,
+                        group_index,
+                        group_count,
+                        group_samples,
+                        group_samples,
+                        group_trained_batches,
+                    )
+                pretraining_metrics[
+                    f"behavior_cloning_building_{state.building_id}_usable_samples"
+                ] = float(usable_samples)
+                pretraining_metrics[
+                    f"behavior_cloning_building_{state.building_id}_trained_batches"
+                ] = float(trained_batches)
+                total_usable_samples += usable_samples
+                total_trained_batches += trained_batches
+                trained_epochs = max(trained_epochs, self._bc.pretraining_epochs)
+            self._bc.set_pretraining_epochs(trained_epochs)
+            self._bc.set_incompatible_demonstration_samples(0)
+            self._latest_training_metrics.update(self._bc.snapshot_metrics())
+            pretraining_metrics["behavior_cloning_pretraining_batches"] = float(total_trained_batches)
+            self._latest_training_metrics.update(pretraining_metrics)
+            logger.info(
+                "event=bc_pretraining_complete buildings={} usable_samples={} trained_batches={}",
+                len(self._per_building),
+                total_usable_samples,
+                total_trained_batches,
             )
-        trained_epochs = 0
-        pretraining_metrics: Dict[str, float] = {}
-        total_trained_batches = 0
-        for state, grouped in zip(self._per_building, grouped_by_building):
-            usable_samples = 0
-            trained_batches = 0
-            for demonstrations in grouped.values():
-                layout = demonstrations[0].layout
-                usable_samples += len(demonstrations)
-                for _ in range(self._bc.pretraining_epochs):
-                    for start in range(0, len(demonstrations), self._bc.batch_size):
-                        batch = demonstrations[start : start + self._bc.batch_size]
-                        observations = torch.as_tensor(
-                            np.stack([demo.observation for demo in batch]),
-                            dtype=torch.float,
-                            device=self.device,
-                        )
-                        state.bc_optimizer.zero_grad()
-                        tokenized = state.tokenizer(observations, layout)
-                        ca_embeddings, _ = state.backbone(
-                            tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
-                        )
-                        loss = self._bc.demonstration_loss(
-                            layout=layout,
-                            demonstrations=list(batch),
-                            predicted_means=torch.tanh(state.actor.mlp(ca_embeddings)),
-                            global_learning_step=0,
-                            apply_weight=False,
-                        )
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(
-                            list(state.tokenizer.parameters())
-                            + list(state.backbone.parameters())
-                            + list(state.actor.parameters()),
-                            self._max_grad_norm,
-                        )
-                        state.bc_optimizer.step()
-                        trained_batches += 1
-            pretraining_metrics[
-                f"behavior_cloning_building_{state.building_id}_usable_samples"
-            ] = float(usable_samples)
-            pretraining_metrics[
-                f"behavior_cloning_building_{state.building_id}_trained_batches"
-            ] = float(trained_batches)
-            total_trained_batches += trained_batches
-            trained_epochs = max(trained_epochs, self._bc.pretraining_epochs)
-        self._bc.set_pretraining_epochs(trained_epochs)
-        self._bc.set_incompatible_demonstration_samples(0)
-        self._latest_training_metrics.update(self._bc.snapshot_metrics())
-        pretraining_metrics["behavior_cloning_pretraining_batches"] = float(total_trained_batches)
-        self._latest_training_metrics.update(pretraining_metrics)
+        except Exception as error:
+            if not failure_logged:
+                logger.info(
+                    "event=bc_pretraining_failure reason=pretraining_error error_type={}",
+                    type(error).__name__,
+                )
+            raise
 
     def _run_auxiliary_bc_update(
         self,
