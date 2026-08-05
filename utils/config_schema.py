@@ -759,6 +759,7 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "RBCSmartLocalPolicy",
         "RBCSmartPolicy",
         "SignalAwareRBC",
+        "SignalAwareRBCSmartLocal",
         "FixedServiceOracleReplayPolicy",
         "TotalHomeOracleReplayPolicy",
         "TotalOracleReplayPolicy",
@@ -788,6 +789,7 @@ class SingleAgentRLStageConfig(BaseModel):
             "Algorithm 'SingleAgentRL' is a schema placeholder and has no runtime "
             "implementation yet. Use one of: MADDPG, MATD3, MASAC, IPPO, MAPPO, HAPPO, "
             "RuleBasedPolicy, RBCBasicPolicy, RBCSmartLocalPolicy, RBCSmartPolicy, SignalAwareRBC, "
+            "SignalAwareRBCSmartLocal, "
             "RandomPolicy, NormalPolicy, NormalNoBatteryPolicy."
         )
         return self  # unreachable; satisfies type checker

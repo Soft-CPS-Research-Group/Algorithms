@@ -3,7 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from algorithms.agents.baseline_policies import SignalAwareRBC
+from algorithms.agents.baseline_policies import (
+    RBCSmartLocalPolicy,
+    SignalAwareRBC,
+    SignalAwareRBCSmartLocal,
+)
 
 
 class _Box:
@@ -85,3 +89,96 @@ def test_signal_aware_rbc_multiplier_changes_storage_action():
 
     assert agent.predict(cheap_observations, context=0.5) == [[0.6]]
     assert agent.predict(expensive_observations, context=2.0)[0][0] < 0.0
+
+
+def _strict_local_agent(policy_cls):
+    agent = policy_cls(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "control_evs": False,
+                    "control_deferrables": False,
+                    "price_charge_rate": 0.6,
+                    "price_discharge_rate": 0.45,
+                }
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=[
+            [
+                "community_net_electricity_consumption",
+                "electrical_storage_soc_ratio",
+                "electricity_pricing",
+                "electricity_pricing_predicted_1",
+                "electricity_pricing_predicted_2",
+                "electricity_pricing_predicted_3",
+                "import_power_kw",
+            ]
+        ],
+        action_names=[["electrical_storage"]],
+        action_space=[_Box(low=[-1.0], high=[1.0])],
+        observation_space=[],
+        metadata={"seconds_per_time_step": 3600},
+    )
+    return agent
+
+
+def test_signal_aware_strict_local_neutral_is_exact_local_smart_control():
+    signal_aware = _strict_local_agent(SignalAwareRBCSmartLocal)
+    control = _strict_local_agent(RBCSmartLocalPolicy)
+    observations = [
+        np.asarray([999.0, 0.5, 0.10, 0.08, 0.10, 0.12, 0.0], dtype=np.float32)
+    ]
+
+    assert "community_net_electricity_consumption" not in signal_aware._obs_index[0]
+    assert signal_aware.predict(observations, context=1.0) == control.predict(observations)
+    assert signal_aware.predict(observations, context=None) == control.predict(observations)
+
+
+def test_signal_aware_strict_local_price_changes_storage_without_community_input():
+    agent = _strict_local_agent(SignalAwareRBCSmartLocal)
+    observations = [
+        np.asarray([999.0, 0.5, 0.10, 0.08, 0.10, 0.12, 0.0], dtype=np.float32)
+    ]
+
+    assert agent.predict(observations, context=1.0) == [[0.0]]
+    assert agent.predict(observations, context=0.5) == [[0.6]]
+
+
+def test_signal_aware_strict_local_optional_discount_charge_is_neutral_at_one():
+    agent = SignalAwareRBCSmartLocal(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "control_evs": False,
+                    "control_deferrables": False,
+                    "signal_price_charge_rate": 0.6,
+                }
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=[
+            [
+                "electrical_storage_soc_ratio",
+                "electricity_pricing",
+                "electricity_pricing_predicted_1",
+                "electricity_pricing_predicted_2",
+                "electricity_pricing_predicted_3",
+                "import_power_kw",
+            ]
+        ],
+        action_names=[["electrical_storage"]],
+        action_space=[_Box(low=[-1.0], high=[1.0])],
+        observation_space=[],
+        metadata={"seconds_per_time_step": 3600},
+    )
+    observations = [
+        np.asarray([0.5, 0.10, 0.08, 0.10, 0.12, 0.0], dtype=np.float32)
+    ]
+
+    assert agent.price_charge_rate == 0.0
+    assert agent.predict(observations, context=1.0) == [[0.0]]
+    assert agent.predict(observations, context=0.5) == [[0.6]]
+    assert agent.price_charge_rate == 0.0

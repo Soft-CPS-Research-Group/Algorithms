@@ -637,6 +637,79 @@ def test_ppo_residual_requires_explicit_base_policy() -> None:
         PPO(_ppo_config(residual_policy_enabled=True))
 
 
+def test_ppo_residual_base_price_context_requires_residual_mode() -> None:
+    with pytest.raises(ValueError, match="requires residual_policy_enabled=true"):
+        PPO(_ppo_config(residual_base_price_conditioning_enabled=True))
+
+
+def test_ppo_residual_base_price_context_requires_strict_local_signal_policy() -> None:
+    with pytest.raises(ValueError, match="SignalAwareRBCSmartLocal"):
+        PPO(
+            _ppo_config(
+                residual_policy_enabled=True,
+                residual_base_policy="RBCSmartLocalPolicy",
+                residual_base_price_conditioning_enabled=True,
+            )
+        )
+
+
+def test_ppo_cc_price_controls_only_strict_local_residual_base(monkeypatch) -> None:
+    names = [
+        "electrical_storage_soc_ratio",
+        CURRENT_PRICE_NAME,
+        *PREDICTED_PRICE_NAMES,
+        "import_power_kw",
+    ]
+    config = _ppo_config(
+        residual_policy_enabled=True,
+        residual_base_policy="SignalAwareRBCSmartLocal",
+        residual_base_policy_hyperparameters={
+            "control_evs": False,
+            "control_deferrables": False,
+            "signal_price_charge_rate": 0.6,
+        },
+        residual_base_policy_deterministic=True,
+        residual_action_scale=1.0,
+        residual_zero_initialization=True,
+        residual_base_price_conditioning_enabled=True,
+        local_price_conditioning_enabled=False,
+    )
+    config["topology"]["observation_dimensions"] = [len(names)]
+    agent = PPO(config)
+    agent.attach_environment(
+        observation_names=[names],
+        action_names=[["electrical_storage"]],
+        action_space=[_Box([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    observation = np.asarray([0.5, 0.10, 0.08, 0.10, 0.12, 0.0], dtype=np.float32)
+    captured = []
+    original_predict_actor = agent._predict_actor
+
+    def capture_actor(observations, *, deterministic):
+        captured.append(np.asarray(observations[0]).copy())
+        return original_predict_actor(observations, deterministic=deterministic)
+
+    monkeypatch.setattr(agent, "_predict_actor", capture_actor)
+    agent.set_observation_context(
+        raw_observations=[observation],
+        encoded_observations=[observation],
+    )
+    neutral = agent.predict([observation], deterministic=True, context=1.0)
+    agent.set_observation_context(
+        raw_observations=[observation],
+        encoded_observations=[observation],
+    )
+    cheap = agent.predict([observation], deterministic=True, context=0.5)
+
+    assert neutral == [[0.0]]
+    assert cheap[0] == pytest.approx([0.6])
+    assert np.array_equal(captured[0], observation)
+    assert np.array_equal(captured[1], observation)
+    assert agent._last_local_price_context_non_neutral is False
+
+
 def test_ppo_rejects_onnx_export_that_omits_enabled_safety(tmp_path) -> None:
     agent = _agent(local_action_safety_enabled=True)
 

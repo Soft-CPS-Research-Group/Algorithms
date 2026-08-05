@@ -368,6 +368,29 @@ class _PPOBase(BaseAgent):
         self.local_price_conditioning_enabled = bool(
             exploration_cfg.get("local_price_conditioning_enabled", False)
         )
+        self.residual_base_price_conditioning_enabled = bool(
+            exploration_cfg.get(
+                "residual_base_price_conditioning_enabled",
+                False,
+            )
+        )
+        if (
+            self.residual_base_price_conditioning_enabled
+            and not self.residual_policy_enabled
+        ):
+            raise ValueError(
+                "PPO residual_base_price_conditioning_enabled requires "
+                "residual_policy_enabled=true."
+            )
+        if (
+            self.residual_base_price_conditioning_enabled
+            and self.residual_base_policy_name != "SignalAwareRBCSmartLocal"
+        ):
+            raise ValueError(
+                "PPO residual base price conditioning requires "
+                "residual_base_policy='SignalAwareRBCSmartLocal' so the CC "
+                "signal remains strict-local and auditable."
+            )
         self.local_price_forecast_mode = ForecastMode(
             str(
                 exploration_cfg.get(
@@ -705,6 +728,7 @@ class _PPOBase(BaseAgent):
             RBCBasicPolicy,
             RBCSmartLocalPolicy,
             RBCSmartPolicy,
+            SignalAwareRBCSmartLocal,
             RandomPolicy,
         )
         from algorithms.agents.rbc_agent import RuleBasedPolicy
@@ -724,6 +748,7 @@ class _PPOBase(BaseAgent):
             "RBCBasicPolicy": RBCBasicPolicy,
             "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
             "RBCSmartPolicy": RBCSmartPolicy,
+            "SignalAwareRBCSmartLocal": SignalAwareRBCSmartLocal,
             "FixedServiceOracleReplayPolicy": FixedServiceOracleReplayPolicy,
             "TotalHomeOracleReplayPolicy": TotalHomeOracleReplayPolicy,
             "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
@@ -775,6 +800,7 @@ class _PPOBase(BaseAgent):
             RBCSmartLocalPolicy,
             RBCSmartPolicy,
             RandomPolicy,
+            SignalAwareRBCSmartLocal,
         )
         from algorithms.agents.rbc_agent import RuleBasedPolicy
 
@@ -786,6 +812,7 @@ class _PPOBase(BaseAgent):
             "RBCBasicPolicy": RBCBasicPolicy,
             "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
             "RBCSmartPolicy": RBCSmartPolicy,
+            "SignalAwareRBCSmartLocal": SignalAwareRBCSmartLocal,
         }
         policy_cls = policy_registry.get(str(self.residual_base_policy_name))
         if policy_cls is None:
@@ -890,7 +917,13 @@ class _PPOBase(BaseAgent):
             # is cached at action-selection time for a coherent rollout.
             self._cache_value_predictions(observations)
             if self.residual_policy_enabled:
-                self._predict_residual_base_policy()
+                self._predict_residual_base_policy(
+                    context=(
+                        context
+                        if self.residual_base_price_conditioning_enabled
+                        else None
+                    )
+                )
             if self.initial_exploration_strategy == "policy":
                 actions = self._predict_warm_start_policy()
             else:
@@ -898,6 +931,14 @@ class _PPOBase(BaseAgent):
             actions = self._apply_service_teacher(actions, deterministic=deterministic)
             return self._apply_local_action_safety(actions)
 
+        if self.residual_policy_enabled:
+            self._predict_residual_base_policy(
+                context=(
+                    context
+                    if self.residual_base_price_conditioning_enabled
+                    else None
+                )
+            )
         actions = self._predict_actor(observations, deterministic=deterministic)
         actions = self._apply_residual_policy(actions)
         if not deterministic:
@@ -930,7 +971,11 @@ class _PPOBase(BaseAgent):
             self._last_local_price_context_non_neutral |= not diagnostics.neutral_noop
         return transformed
 
-    def _predict_residual_base_policy(self) -> List[List[float]]:
+    def _predict_residual_base_policy(
+        self,
+        *,
+        context: Any = None,
+    ) -> List[List[float]]:
         if not self.residual_policy_enabled or self._residual_base_policy is None:
             raise RuntimeError(
                 "PPO residual policy is enabled but the residual base policy "
@@ -948,16 +993,20 @@ class _PPOBase(BaseAgent):
                 if self._episode_clock_is_explicit
                 else max(int(self.exploration_step) - 1, 0)
             )
-            actions = predict_at_step(
-                observations,
-                schedule_step=int(schedule_step),
-                deterministic=self.residual_base_policy_deterministic,
-            )
+            predict_kwargs = {
+                "schedule_step": int(schedule_step),
+                "deterministic": self.residual_base_policy_deterministic,
+            }
+            if self.residual_base_price_conditioning_enabled:
+                predict_kwargs["context"] = context
+            actions = predict_at_step(observations, **predict_kwargs)
         else:
-            actions = self._residual_base_policy.predict(
-                observations,
-                deterministic=self.residual_base_policy_deterministic,
-            )
+            predict_kwargs = {
+                "deterministic": self.residual_base_policy_deterministic,
+            }
+            if self.residual_base_price_conditioning_enabled:
+                predict_kwargs["context"] = context
+            actions = self._residual_base_policy.predict(observations, **predict_kwargs)
         copied = self._copy_action_groups(actions)
         if len(copied) != int(self.num_agents):
             raise RuntimeError(
@@ -2735,6 +2784,14 @@ class _PPOBase(BaseAgent):
                         "requires_runtime_local_price_adapter": True,
                         "local_price_forecast_mode": self.local_price_forecast_mode.value,
                         "local_price_context_scope": "effective_local_price_only",
+                        "community_observations_used_by_leaf": False,
+                    }
+                )
+            if self.residual_base_price_conditioning_enabled:
+                metadata["artifacts"][-1].setdefault("config", {}).update(
+                    {
+                        "requires_runtime_residual_base_price_context": True,
+                        "residual_base_price_context_scope": "strict_local_smart_base_only",
                         "community_observations_used_by_leaf": False,
                     }
                 )
