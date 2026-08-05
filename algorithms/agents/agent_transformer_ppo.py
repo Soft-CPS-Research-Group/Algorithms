@@ -903,7 +903,21 @@ class AgentTransformerPPO(BaseAgent):
                 f"agent has {len(self._per_building)}. Cross-cardinality "
                 "resume is not supported."
             )
-        if payload["behavior_cloning_state"] is not None:
+        behavior_cloning_state = payload["behavior_cloning_state"]
+        if behavior_cloning_state is not None and self._bc is None:
+            raise RuntimeError(
+                "Checkpoint contains behavior-cloning state but the BC-disabled "
+                "target cannot restore it."
+            )
+        checkpoint_bounds = [
+            (low.to(self.device), high.to(self.device))
+            for low, high in payload["action_bounds"]
+        ]
+        if len(checkpoint_bounds) != len(self._action_bounds):
+            raise RuntimeError(
+                "Checkpoint action bounds count does not match the attached environment."
+            )
+        if behavior_cloning_state is not None:
             checkpoint_bc_config = payload["config"].get("behavior_cloning")
             max_samples_per_building = (
                 self._bc.max_samples_per_building
@@ -914,11 +928,11 @@ class AgentTransformerPPO(BaseAgent):
                 else None
             )
             BehaviorCloningRegularizer.validate_state_dict(
-                payload["behavior_cloning_state"],
+                behavior_cloning_state,
                 max_samples_per_building=max_samples_per_building,
             )
             self._validate_checkpoint_bc_tokenizer_compatibility(
-                payload["behavior_cloning_state"]
+                behavior_cloning_state
             )
         for state, saved in zip(self._per_building, agents):
             if state.building_id != saved["building_id"]:
@@ -939,6 +953,18 @@ class AgentTransformerPPO(BaseAgent):
                     "Checkpoint action_names mismatch for building "
                     f"{state.building_id!r}: cannot resume across topology changes."
                 )
+        for building_idx, (saved, current) in enumerate(
+            zip(checkpoint_bounds, self._action_bounds)
+        ):
+            if not (
+                torch.equal(saved[0], current[0])
+                and torch.equal(saved[1], current[1])
+            ):
+                raise RuntimeError(
+                    "Checkpoint action bounds mismatch for building "
+                    f"{self._per_building[building_idx].building_id!r}."
+                )
+        for state, saved in zip(self._per_building, agents):
             state.tokenizer.load_state_dict(saved["tokenizer_state"])
             state.backbone.load_state_dict(saved["backbone_state"])
             state.actor.load_state_dict(saved["actor_state"])
@@ -949,16 +975,13 @@ class AgentTransformerPPO(BaseAgent):
             self._move_optimizer_state_to_device(state.bc_optimizer)
             state.value_normalizer.load_state_dict(saved["value_normalizer_state"])
             state.topology_version = int(saved["topology_version"])
-        self._action_bounds = [
-            (low.to(self.device), high.to(self.device))
-            for low, high in payload["action_bounds"]
-        ]
+        self._action_bounds = checkpoint_bounds
         self._latest_global_learning_step = int(payload["global_learning_step"])
         self._ppo_update_count = int(payload["ppo_update_count"])
         self._current_episode = int(payload["current_episode"])
         self._latest_training_metrics = dict(payload["latest_training_metrics"])
-        if self._bc is not None and payload["behavior_cloning_state"] is not None:
-            self._bc.load_state_dict(payload["behavior_cloning_state"])
+        if self._bc is not None and behavior_cloning_state is not None:
+            self._bc.load_state_dict(behavior_cloning_state)
         self._pending_decisions = [None] * len(self._per_building)
         rng_state = payload.get("rng_state")
         if rng_state is not None:
@@ -1446,6 +1469,11 @@ class AgentTransformerPPO(BaseAgent):
         Dict[str, float],
         int,
         Optional[_BehaviorCloningStateSnapshot],
+        int,
+        object,
+        tuple,
+        torch.Tensor,
+        Optional[List[torch.Tensor]],
     ]:
         snapshots = [
             _TopologyStateSnapshot(
@@ -1475,6 +1503,11 @@ class AgentTransformerPPO(BaseAgent):
             deepcopy(self._latest_training_metrics),
             self._latest_global_learning_step,
             self._snapshot_behavior_cloning_state(),
+            self._ppo_update_count,
+            random.getstate(),
+            np.random.get_state(),
+            torch.get_rng_state(),
+            torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
         )
 
     def _snapshot_behavior_cloning_state(
@@ -1500,6 +1533,11 @@ class AgentTransformerPPO(BaseAgent):
             Dict[str, float],
             int,
             Optional[_BehaviorCloningStateSnapshot],
+            int,
+            object,
+            tuple,
+            torch.Tensor,
+            Optional[List[torch.Tensor]],
         ],
     ) -> None:
         (
@@ -1509,6 +1547,11 @@ class AgentTransformerPPO(BaseAgent):
             training_metrics,
             global_learning_step,
             behavior_cloning,
+            ppo_update_count,
+            python_rng_state,
+            numpy_rng_state,
+            torch_rng_state,
+            cuda_rng_state,
         ) = snapshot
         for saved in snapshots:
             state = saved.state
@@ -1532,6 +1575,12 @@ class AgentTransformerPPO(BaseAgent):
         self._action_bounds = action_bounds
         self._latest_training_metrics = training_metrics
         self._latest_global_learning_step = global_learning_step
+        self._ppo_update_count = ppo_update_count
+        random.setstate(python_rng_state)
+        np.random.set_state(numpy_rng_state)
+        torch.set_rng_state(torch_rng_state)
+        if cuda_rng_state is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(cuda_rng_state)
         if self._bc is None or behavior_cloning is None:
             self._bc = (
                 None

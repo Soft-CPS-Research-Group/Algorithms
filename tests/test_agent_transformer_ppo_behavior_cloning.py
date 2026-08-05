@@ -912,7 +912,7 @@ def test_checkpoint_rejects_corrupt_modern_demo_before_mutating_agent(
     _assert_structured_equal(target._bc.state_dict(), bc_before)
 
 
-def test_checkpoint_validates_corrupt_bc_state_before_mutating_bc_disabled_agent(
+def test_checkpoint_rejects_bc_state_before_mutating_bc_disabled_agent(
     tmp_path: Path,
 ) -> None:
     source, dimension = _agent(demonstrations=2, weight=1.0)
@@ -948,13 +948,70 @@ def test_checkpoint_validates_corrupt_bc_state_before_mutating_bc_disabled_agent
     )
     torch.save(payload, path)
 
-    with pytest.raises(RuntimeError, match="encoded_length"):
+    with pytest.raises(RuntimeError, match="BC-disabled target"):
         target.load_checkpoint(path)
 
     assert all(
         torch.equal(value, actor_before[key])
         for key, value in state.actor.state_dict().items()
     )
+
+
+@pytest.mark.parametrize("with_demonstration", [False, True])
+def test_checkpoint_rejects_bc_state_for_bc_disabled_target_before_mutating_agent(
+    tmp_path: Path,
+    with_demonstration: bool,
+) -> None:
+    source, dimension = _agent(demonstrations=2, weight=1.0)
+    assert source._bc is not None
+    if with_demonstration:
+        source._bc.record_demonstration(
+            0,
+            np.ones(dimension),
+            source._per_building[0].layout,
+            [0.25] * source._per_building[0].layout.n_ca,
+        )
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    names = load_sample_observation_names_for_first_building()
+    target = AgentTransformerPPO(_base_config())
+    target.attach_environment(
+        observation_names=[names],
+        action_names=[list(_DEFAULT_ACTIONS)],
+        action_space=[_DummySpace(len(_DEFAULT_ACTIONS))],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+    state = target._per_building[0]
+    actor_before = {
+        key: value.detach().clone() for key, value in state.actor.state_dict().items()
+    }
+    bounds_before = [(low.clone(), high.clone()) for low, high in target._action_bounds]
+    counters_before = (
+        target._latest_global_learning_step,
+        target._ppo_update_count,
+        target._current_episode,
+    )
+
+    with pytest.raises(RuntimeError, match="BC-disabled target"):
+        target.load_checkpoint(path)
+
+    assert all(
+        torch.equal(value, actor_before[key])
+        for key, value in state.actor.state_dict().items()
+    )
+    assert all(
+        torch.equal(low, expected_low) and torch.equal(high, expected_high)
+        for (low, high), (expected_low, expected_high) in zip(
+            target._action_bounds, bounds_before
+        )
+    )
+    assert (
+        target._latest_global_learning_step,
+        target._ppo_update_count,
+        target._current_episode,
+    ) == counters_before
 
 
 def test_checkpoint_rejects_out_of_bounds_demo_layout_before_mutating_agent(

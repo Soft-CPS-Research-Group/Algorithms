@@ -1909,6 +1909,11 @@ def test_topology_commit_rolls_back_all_buildings_when_later_flush_fails(
         for index, state in enumerate(agent._per_building)
     ]
     metrics_before = copy.deepcopy(agent._latest_training_metrics)
+    ppo_update_count_before = agent._ppo_update_count
+    python_rng_before = random.getstate()
+    numpy_rng_before = np.random.get_state()
+    torch_rng_before = torch.get_rng_state()
+    cuda_rng_before = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
 
     def add_charger(building_index: int) -> tuple[List[str], List[str]]:
         charger_id = next(
@@ -1939,6 +1944,9 @@ def test_topology_commit_rolls_back_all_buildings_when_later_flush_fails(
     def fail_later_flush(state, last_value, *, building_idx):
         if building_idx == 1:
             raise RuntimeError("later building flush failed")
+        random.random()
+        np.random.random()
+        torch.rand(1)
         return original_update(state, last_value, building_idx=building_idx)
 
     monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", fail_later_flush)
@@ -1952,6 +1960,18 @@ def test_topology_commit_rolls_back_all_buildings_when_later_flush_fails(
         )
 
     assert agent._latest_training_metrics == metrics_before
+    assert agent._ppo_update_count == ppo_update_count_before
+    assert random.getstate() == python_rng_before
+    numpy_rng_after = np.random.get_state()
+    assert numpy_rng_after[0] == numpy_rng_before[0]
+    assert np.array_equal(numpy_rng_after[1], numpy_rng_before[1])
+    assert numpy_rng_after[2:] == numpy_rng_before[2:]
+    assert torch.equal(torch.get_rng_state(), torch_rng_before)
+    if cuda_rng_before is not None:
+        assert all(
+            torch.equal(actual, expected)
+            for actual, expected in zip(torch.cuda.get_rng_state_all(), cuda_rng_before)
+        )
     for index, snapshot in enumerate(snapshots):
         state = agent._per_building[index]
         assert state is snapshot["state"]
@@ -2163,6 +2183,54 @@ def test_checkpoint_rejects_reordered_building_identities(tmp_path: Path) -> Non
     fresh, _, _, _ = _make_agent(n_buildings=2)
     with pytest.raises(ValueError, match="building_id mismatch"):
         fresh.load_checkpoint(path)
+
+
+def test_checkpoint_rejects_changed_action_bounds_before_mutating_agent(
+    tmp_path: Path,
+) -> None:
+    source, _, _, _ = _make_agent(n_buildings=1)
+    path = source.save_checkpoint(str(tmp_path), step=1)
+    assert path is not None
+
+    target = AgentTransformerPPO(_base_config())
+    observation_names = [load_sample_observation_names_for_first_building()]
+    target.attach_environment(
+        observation_names=observation_names,
+        action_names=[list(_DEFAULT_ACTIONS)],
+        action_space=[spaces.Box(
+            low=np.array([-0.75, -0.5], dtype=np.float32),
+            high=np.array([0.5, 0.75], dtype=np.float32),
+        )],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    state = target._per_building[0]
+    actor_before = copy.deepcopy(state.actor.state_dict())
+    bounds_before = [(low.clone(), high.clone()) for low, high in target._action_bounds]
+    counters_before = (
+        target._latest_global_learning_step,
+        target._ppo_update_count,
+        target._current_episode,
+    )
+
+    with pytest.raises(RuntimeError, match="action bounds mismatch"):
+        target.load_checkpoint(path)
+
+    assert all(
+        torch.equal(value, actor_before[key])
+        for key, value in state.actor.state_dict().items()
+    )
+    assert all(
+        torch.equal(low, expected_low) and torch.equal(high, expected_high)
+        for (low, high), (expected_low, expected_high) in zip(
+            target._action_bounds, bounds_before
+        )
+    )
+    assert (
+        target._latest_global_learning_step,
+        target._ppo_update_count,
+        target._current_episode,
+    ) == counters_before
 
 
 def test_checkpoint_restores_cpu_torch_rng_for_next_stochastic_action(
