@@ -1185,6 +1185,76 @@ def test_ordinary_ppo_update_does_not_snapshot_topology_state(
     assert len(agent._per_building[0].buffer) == 0
 
 
+def test_ordinary_ppo_update_failure_restores_runtime_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    state = agent._per_building[0]
+    observations = [np.zeros(obs_dim, dtype=np.float64)]
+
+    for step in range(agent._minibatch_size - 1):
+        actions = agent.predict(observations, deterministic=True)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.1],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    actions = agent.predict(observations, deterministic=True)
+    buffer_before = copy.deepcopy(state.buffer)
+    pending_before = list(agent._pending_decisions)
+    last_next_observation_before = state.last_next_observation
+    last_transition_terminated_before = state.last_transition_terminated
+    raw_rewards_before = list(state.raw_rewards)
+    global_step_before = agent._latest_global_learning_step
+    actor_before = state.actor
+    layout_before = state.layout
+    tokenizer_before = state.tokenizer
+
+    def fail_ppo_update(*args, **kwargs) -> bool:
+        raise RuntimeError("forced PPO update failure")
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", fail_ppo_update)
+
+    with pytest.raises(RuntimeError, match="forced PPO update failure"):
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(actions[0])],
+            rewards=[0.2],
+            next_observations=observations,
+            terminated=True,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=99,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+    assert state.buffer.rewards == buffer_before.rewards
+    assert state.buffer.terminated == buffer_before.terminated
+    assert state.buffer.truncated == buffer_before.truncated
+    for field in ("observations", "actions", "pre_tanh_actions", "log_probs", "values"):
+        actual = getattr(state.buffer, field)
+        expected = getattr(buffer_before, field)
+        assert len(actual) == len(expected)
+        assert all(torch.equal(value, expected[i]) for i, value in enumerate(actual))
+    assert state.last_next_observation is last_next_observation_before
+    assert state.last_transition_terminated == last_transition_terminated_before
+    assert state.raw_rewards == raw_rewards_before
+    assert agent._pending_decisions == pending_before
+    assert agent._latest_global_learning_step == global_step_before
+    assert state.actor is actor_before
+    assert state.layout is layout_before
+    assert state.tokenizer is tokenizer_before
+
+
 def test_off_cadence_truncation_flushes_before_next_episode_update() -> None:
     agent, _, _, obs_dim = _make_agent(n_buildings=1)
     state = agent._per_building[0]

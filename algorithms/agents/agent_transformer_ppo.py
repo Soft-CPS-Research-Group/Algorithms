@@ -112,6 +112,36 @@ class _TransitionCandidate:
     next_observation: Optional[torch.Tensor]
 
 
+@dataclass
+class _RolloutBufferSnapshot:
+    """Runtime-only rollback state for one rollout buffer."""
+
+    observations: List[torch.Tensor]
+    actions: List[torch.Tensor]
+    pre_tanh_actions: List[torch.Tensor]
+    log_probs: List[torch.Tensor]
+    rewards: List[float]
+    values: List[torch.Tensor]
+    terminated: List[bool]
+    truncated: List[bool]
+    advantages: Optional[torch.Tensor]
+    returns: Optional[torch.Tensor]
+
+
+@dataclass
+class _UpdateRuntimeSnapshot:
+    """Mutable runtime state consumed by an ordinary PPO update."""
+
+    buffers: List[_RolloutBufferSnapshot]
+    last_next_observations: List[Optional[torch.Tensor]]
+    last_transition_terminated: List[bool]
+    raw_rewards: List[List[float]]
+    pending_decisions: List[Optional[_PendingDecision]]
+    latest_global_learning_step: int
+    latest_training_metrics: Dict[str, float]
+    ppo_update_count: int
+
+
 @dataclass(frozen=True)
 class _TopologyChange:
     """Validated replacement layout for one existing building."""
@@ -644,28 +674,49 @@ class AgentTransformerPPO(BaseAgent):
                     else self._critic_value(state, next_observation)
                 )
 
-        for state, candidate in zip(self._per_building, candidates):
-            state.buffer.add(
-                observation=candidate.pending.observation,
-                action=candidate.pending.action,
-                pre_tanh_action=candidate.pending.pre_tanh_action,
-                log_prob=candidate.pending.log_prob,
-                reward=candidate.reward,
-                value=candidate.pending.value,
-                terminated=candidate.terminated,
-                truncated=candidate.truncated,
-            )
-            state.last_next_observation = candidate.next_observation
-            state.last_transition_terminated = candidate.terminated
-            state.raw_rewards.append(candidate.raw_reward)
-        self._pending_decisions = [None] * building_count
-        self._latest_global_learning_step = next_global_learning_step
         if not should_update:
+            for state, candidate in zip(self._per_building, candidates):
+                state.buffer.add(
+                    observation=candidate.pending.observation,
+                    action=candidate.pending.action,
+                    pre_tanh_action=candidate.pending.pre_tanh_action,
+                    log_prob=candidate.pending.log_prob,
+                    reward=candidate.reward,
+                    value=candidate.pending.value,
+                    terminated=candidate.terminated,
+                    truncated=candidate.truncated,
+                )
+                state.last_next_observation = candidate.next_observation
+                state.last_transition_terminated = candidate.terminated
+                state.raw_rewards.append(candidate.raw_reward)
+            self._pending_decisions = [None] * building_count
+            self._latest_global_learning_step = next_global_learning_step
             return
 
-        for b, state in enumerate(self._per_building):
-            if self._ppo_update(b, state, last_values[b]):
-                self._clear_rollout(b, state)
+        runtime_snapshot = self._snapshot_update_runtime_state()
+        try:
+            for state, candidate in zip(self._per_building, candidates):
+                state.buffer.add(
+                    observation=candidate.pending.observation,
+                    action=candidate.pending.action,
+                    pre_tanh_action=candidate.pending.pre_tanh_action,
+                    log_prob=candidate.pending.log_prob,
+                    reward=candidate.reward,
+                    value=candidate.pending.value,
+                    terminated=candidate.terminated,
+                    truncated=candidate.truncated,
+                )
+                state.last_next_observation = candidate.next_observation
+                state.last_transition_terminated = candidate.terminated
+                state.raw_rewards.append(candidate.raw_reward)
+            self._pending_decisions = [None] * building_count
+            self._latest_global_learning_step = next_global_learning_step
+            for b, state in enumerate(self._per_building):
+                if self._ppo_update(b, state, last_values[b]):
+                    self._clear_rollout(b, state)
+        except Exception:
+            self._restore_update_runtime_state(runtime_snapshot)
+            raise
 
     def record_topology_transition(
         self,
@@ -1454,6 +1505,60 @@ class AgentTransformerPPO(BaseAgent):
             old_actions,
             list(new_layout.ca_action_names),
         )
+
+    def _snapshot_update_runtime_state(self) -> _UpdateRuntimeSnapshot:
+        return _UpdateRuntimeSnapshot(
+            buffers=[
+                _RolloutBufferSnapshot(
+                    observations=list(state.buffer.observations),
+                    actions=list(state.buffer.actions),
+                    pre_tanh_actions=list(state.buffer.pre_tanh_actions),
+                    log_probs=list(state.buffer.log_probs),
+                    rewards=list(state.buffer.rewards),
+                    values=list(state.buffer.values),
+                    terminated=list(state.buffer.terminated),
+                    truncated=list(state.buffer.truncated),
+                    advantages=state.buffer.advantages,
+                    returns=state.buffer.returns,
+                )
+                for state in self._per_building
+            ],
+            last_next_observations=[
+                state.last_next_observation for state in self._per_building
+            ],
+            last_transition_terminated=[
+                state.last_transition_terminated for state in self._per_building
+            ],
+            raw_rewards=[list(state.raw_rewards) for state in self._per_building],
+            pending_decisions=list(self._pending_decisions),
+            latest_global_learning_step=self._latest_global_learning_step,
+            latest_training_metrics=dict(self._latest_training_metrics),
+            ppo_update_count=self._ppo_update_count,
+        )
+
+    def _restore_update_runtime_state(
+        self, snapshot: _UpdateRuntimeSnapshot
+    ) -> None:
+        for index, (state, saved) in enumerate(zip(self._per_building, snapshot.buffers)):
+            buffer = state.buffer
+            buffer.observations[:] = saved.observations
+            buffer.actions[:] = saved.actions
+            buffer.pre_tanh_actions[:] = saved.pre_tanh_actions
+            buffer.log_probs[:] = saved.log_probs
+            buffer.rewards[:] = saved.rewards
+            buffer.values[:] = saved.values
+            buffer.terminated[:] = saved.terminated
+            buffer.truncated[:] = saved.truncated
+            buffer.advantages = saved.advantages
+            buffer.returns = saved.returns
+            state.last_next_observation = snapshot.last_next_observations[index]
+            state.last_transition_terminated = snapshot.last_transition_terminated[index]
+            state.raw_rewards[:] = snapshot.raw_rewards[index]
+        self._pending_decisions[:] = snapshot.pending_decisions
+        self._latest_global_learning_step = snapshot.latest_global_learning_step
+        self._latest_training_metrics.clear()
+        self._latest_training_metrics.update(snapshot.latest_training_metrics)
+        self._ppo_update_count = snapshot.ppo_update_count
 
     def _snapshot_topology_state(
         self,
