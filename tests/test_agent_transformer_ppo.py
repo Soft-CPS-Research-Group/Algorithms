@@ -2013,6 +2013,80 @@ def test_topology_commit_rolls_back_all_buildings_when_later_flush_fails(
         assert agent._pending_decisions[index] is None
 
 
+def test_cardinality_change_rolls_back_rng_and_state_when_later_flush_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    for step in range(2):
+        actions = agent.predict(observations, deterministic=False)
+        agent.update(
+            observations=observations,
+            actions=[np.asarray(action) for action in actions],
+            rewards=[0.1, 0.1],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    states_before = list(agent._per_building)
+    buffers_before = [copy.deepcopy(state.buffer) for state in states_before]
+    ppo_update_count_before = agent._ppo_update_count
+    python_rng_before = random.getstate()
+    numpy_rng_before = np.random.get_state()
+    torch_rng_before = torch.get_rng_state()
+    cuda_rng_before = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    original_update = agent._run_ppo_update_with_last_value
+
+    def fail_second_flush(state, last_value, *, building_idx):
+        if building_idx == 1:
+            raise RuntimeError("second cardinality flush failed")
+        return original_update(state, last_value, building_idx=building_idx)
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", fail_second_flush)
+    with pytest.raises(RuntimeError, match="second cardinality flush failed"):
+        agent.attach_environment(
+            observation_names=obs_per + [list(obs_per[0])],
+            action_names=act_per + [list(act_per[0])],
+            action_space=[None, None, None],
+            observation_space=[None, None, None],
+            metadata={"building_names": ["Building_1", "Building_2", "Building_3"]},
+        )
+
+    assert agent._per_building == states_before
+    assert [state.buffer.rewards for state in agent._per_building] == [
+        buffer.rewards for buffer in buffers_before
+    ]
+    assert agent._ppo_update_count == ppo_update_count_before
+    assert random.getstate() == python_rng_before
+    numpy_rng_after = np.random.get_state()
+    assert numpy_rng_after[0] == numpy_rng_before[0]
+    assert np.array_equal(numpy_rng_after[1], numpy_rng_before[1])
+    assert numpy_rng_after[2:] == numpy_rng_before[2:]
+    assert torch.equal(torch.get_rng_state(), torch_rng_before)
+    if cuda_rng_before is not None:
+        assert all(
+            torch.equal(actual, expected)
+            for actual, expected in zip(torch.cuda.get_rng_state_all(), cuda_rng_before)
+        )
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", original_update)
+    agent.attach_environment(
+        observation_names=obs_per + [list(obs_per[0])],
+        action_names=act_per + [list(act_per[0])],
+        action_space=[None, None, None],
+        observation_space=[None, None, None],
+        metadata={"building_names": ["Building_1", "Building_2", "Building_3"]},
+    )
+
+    assert len(agent._per_building) == 3
+    assert all(len(state.buffer) == 0 for state in agent._per_building)
+
+
 # ---------------------------------------------------------------------------
 # Checkpointing
 # ---------------------------------------------------------------------------
