@@ -20,6 +20,7 @@ EXPERIMENT_NAME = "cc_smart_price_response_v3"
 SEED = 123
 FIXED_MULTIPLIERS = (0.7, 0.9, 1.1, 1.3)
 DENSE_RECIPE = "legacy_update_dense"
+ADAPTIVE_RECIPE = "incumbent_residual_update_dense"
 
 
 def _tagged(config: dict[str, Any], *, recipe: str) -> dict[str, Any]:
@@ -88,6 +89,47 @@ def dense_recipe() -> dict[str, Any]:
     return config
 
 
+def incumbent_residual_recipe() -> dict[str, Any]:
+    """Learn discounts around the best fixed 1.3 incumbent.
+
+    This is a post-sweep follow-up, not a pre-registered response probe.  The
+    residual map constrains the effective multiplier to [0.9, 1.3], so the
+    learned policy starts from the best fixed control and can only introduce
+    selective discounts for cheap/PV/local-matching periods.
+    """
+    config = dense_recipe()
+    config["metadata"].update(
+        {
+            "run_name": f"CC-SMART incumbent residual update-dense seed {SEED}",
+            "description": (
+                "Post-sweep adaptive follow-up: learn selective discounts "
+                "around the best fixed 1.3 incumbent with effective range 0.9--1.3."
+            ),
+        }
+    )
+    config["tracking"]["tags"].update(
+        {
+            "recipe": ADAPTIVE_RECIPE,
+            "selection_basis": "post_fixed_sweep",
+            "effective_price_min": "0.9",
+            "effective_price_max": "1.3",
+        }
+    )
+    config["simulator"]["export"]["session_name"] = (
+        "cc-smart-price-response-v3-incumbent-residual-update-dense-seed123"
+    )
+    params = config["pipeline"][0]["hyperparameters"]
+    params.update(
+        {
+            "reference_multiplier": 1.3,
+            "policy_residual_scale": 0.5,
+            "w_factor": 0.10,
+            "w_smoothness": 0.05,
+        }
+    )
+    return config
+
+
 def generate(output_dir: Path) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     configs: list[tuple[str, dict[str, Any]]] = [
@@ -95,6 +137,9 @@ def generate(output_dir: Path) -> list[Path]:
         for value in FIXED_MULTIPLIERS
     ]
     configs.append((f"cc_smart_{DENSE_RECIPE}_seed{SEED}", dense_recipe()))
+    configs.append(
+        (f"cc_smart_{ADAPTIVE_RECIPE}_seed{SEED}", incumbent_residual_recipe())
+    )
 
     paths: list[Path] = []
     for name, config in configs:

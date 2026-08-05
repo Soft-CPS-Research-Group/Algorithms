@@ -401,3 +401,47 @@ Todos os configs validaram e os testes contratuais relacionados passaram
 contém todo o código necessário; os configs foram enviados inline depois de
 preflight Union estrito. Evidência operacional:
 `runs/remote_configs/cc_smart_price_response_v3_annual_20260805/`.
+
+#### Resultado anual dos probes fixos
+
+Os quatro probes terminaram com exit 0 e os 53 ficheiros de simulação por job
+foram recolhidos. Todos passam os hard gates estritos. O scorecard emparelhado
+com o SMART neutro é:
+
+| Multiplicador | Custo settled | Delta vs SMART | Importação | Edifícios melhores | Decisão |
+|---:|---:|---:|---:|---:|---|
+| 0,7 | EUR 22 043,94 | EUR +79,27 (+0,361%) | 133 077,96 kWh | 16/17 | `REJECT_COST` |
+| 0,9 | EUR 21 990,68 | EUR +26,01 (+0,118%) | 132 915,69 kWh | 16/17 | `REJECT_COST` |
+| 1,1 | EUR 21 957,65 | EUR -7,02 (-0,032%) | 132 683,01 kWh | 1/17 | `PASS_CC_SCORECARD` |
+| 1,3 | EUR 21 950,76 | EUR -13,91 (-0,063%) | 132 584,24 kWh | 1/17 | `PASS_CC_SCORECARD` |
+
+Na gama medida, preço mais alto produz menor custo comunitário. O fixo 1,3
+também reduz importação em 195,89 kWh, pico diário em 0,29%, ramping em 6,07%
+e emissões em 0,79%, sem regressões secundárias materiais. Contudo, reduz a
+poupança do mercado local em EUR 131,88 e só um edifício baixa a conta; o pior
+edifício aumenta EUR 4,83.
+
+O CC-SMART V1 continua EUR 12,81 melhor que o fixo 1,3 e beneficia 15/17
+edifícios. Assim, uma parte do ganho V1 é adaptação temporal real e não apenas
+um bias constante: multiplicadores altos melhoram o custo físico, enquanto
+descontos seletivos preservam matching e distribuição do settlement. O ganho
+continua pequeno em valor absoluto, mas o canal global tem autoridade medida.
+
+Scorecard e séries completas:
+`runs/remote_results/cc_smart_price_response_v3_annual_20260805/scorecards/fixed_response/`.
+
+#### Follow-up adaptativo pós-sweep
+
+Depois de observar o sweep, foi criada — e explicitamente marcada como
+evidência de desenvolvimento pós-sweep — a receita
+`incumbent_residual_update_dense`. Ela começa no melhor fixo 1,3, mantém o
+rollout V1 de 96 decisões e aproximadamente 547 updates, e aplica residual
+0,5 ao output original 0,5--1,3. O multiplicador efetivo fica limitado a
+0,9--1,3: a política pode conservar 1,3 ou dar descontos seletivos, mas não
+explorar a região baixa que o sweep mostrou prejudicial.
+
+O config validou, os testes relacionados passaram (`29 passed`) e o job
+`de3025f1-4800-4003-b2e3-4290c403eb8a` começou a executar no Union-INESCTEC.
+Para promoção, terá de bater SMART, fixo 1,3 e CC-SMART V1 com hard gates, e
+depois ser confirmado noutra seed ou superfície temporal porque os bounds
+foram escolhidos após observar este ano.

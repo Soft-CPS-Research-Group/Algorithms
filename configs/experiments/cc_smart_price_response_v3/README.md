@@ -23,3 +23,18 @@ leaf, price range 0.5--1.3 and hard-gate scorecard.  A learned policy must be
 compared both with neutral SMART and with the best fixed probe; otherwise a
 gain caused by a constant bias would be misattributed to state-dependent CC
 coordination.
+
+## Post-sweep adaptive follow-up
+
+The fixed sweep selected 1.3 as the best constant multiplier on the annual
+development surface.  `incumbent_residual_update_dense` is therefore labelled
+post-sweep rather than a pre-registered probe.  It starts from 1.3 and maps the
+policy's original 0.5--1.3 output through a residual scale of 0.5, giving an
+effective range of 0.9--1.3.  The policy can retain the best fixed action or
+apply selective discounts during cheap, PV-surplus and local-matching periods;
+it cannot explore the clearly harmful low-price region below 0.9.
+
+Promotion requires beating both neutral SMART and fixed 1.3 with hard gates,
+then confirmation on another seed or a held-out temporal surface.  The first
+annual run is development evidence because its bounds were chosen after the
+fixed sweep.

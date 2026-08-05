@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from scripts.generate_cc_smart_price_response_v3 import (
+    ADAPTIVE_RECIPE,
     DENSE_RECIPE,
     FIXED_MULTIPLIERS,
     SEED,
@@ -66,6 +67,29 @@ def test_update_dense_probe_preserves_v1_but_increases_real_updates():
     assert params["w_factor"] == pytest.approx(0.3)
     assert params["w_smoothness"] == pytest.approx(0.1)
     assert config["tracking"]["tags"]["planned_ppo_update_count_approx"] == "547"
+
+
+def test_post_sweep_incumbent_residual_is_bounded_around_fixed_1p3():
+    config = _load(f"cc_smart_{ADAPTIVE_RECIPE}_seed{SEED}.yaml")
+    params = config["pipeline"][0]["hyperparameters"]
+
+    assert config["tracking"]["tags"]["selection_basis"] == "post_fixed_sweep"
+    assert params["price_min"] == pytest.approx(0.5)
+    assert params["price_max"] == pytest.approx(1.3)
+    assert params["reference_multiplier"] == pytest.approx(1.3)
+    assert params["policy_residual_scale"] == pytest.approx(0.5)
+    assert params["w_factor"] == pytest.approx(0.10)
+    assert params["w_smoothness"] == pytest.approx(0.05)
+    assert params["num_steps"] == 96
+
+    effective_min = params["reference_multiplier"] + params["policy_residual_scale"] * (
+        params["price_min"] - params["reference_multiplier"]
+    )
+    effective_max = params["reference_multiplier"] + params["policy_residual_scale"] * (
+        params["price_max"] - params["reference_multiplier"]
+    )
+    assert effective_min == pytest.approx(0.9)
+    assert effective_max == pytest.approx(1.3)
 
 
 def test_generated_templates_match_committed_templates(tmp_path: Path):
