@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from copy import deepcopy
 from typing import Any, Dict, List, Type
 
 
@@ -34,6 +35,7 @@ from algorithms.agents.baseline_policies import (
     NormalPolicy,
     RBCBasicPolicy,
     RBCCommunityPolicy,
+    RBCSmartLocalPolicy,
     RBCSmartPolicy,
     RandomPolicy,
     SignalAwareRBC,
@@ -42,6 +44,7 @@ _registry_trace("after baseline policies import")
 _registry_trace("before base agent import")
 from algorithms.agents.base_agent import BaseAgent
 _registry_trace("after base agent import")
+from algorithms.agents.fixed_price_signal_agent import FixedPriceSignalAgent
 _registry_trace("before building agent import")
 from algorithms.agents.building_agent import BuildingAgent
 _registry_trace("after building agent import")
@@ -64,8 +67,14 @@ _registry_trace("before MATD3 import")
 from algorithms.agents.matd3_agent import MATD3
 _registry_trace("after MATD3 import")
 _registry_trace("before PPO agents import")
-from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO
+from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO, PPO
 _registry_trace("after PPO agents import")
+_registry_trace("before TD3 import")
+from algorithms.agents.td3_agent import TD3
+_registry_trace("after TD3 import")
+from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolicy
+from algorithms.agents.total_home_oracle_replay_policy import TotalHomeOracleReplayPolicy
+from algorithms.agents.total_oracle_replay_policy import TotalOracleReplayPolicy
 _registry_trace("before AgentTransformerPPO agents import")
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
 _registry_trace("after AgentTransformerPPO agents import")
@@ -94,10 +103,17 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "NormalPolicy": NormalPolicy,
     "RBCBasicPolicy": RBCBasicPolicy,
     "RBCCommunityPolicy": RBCCommunityPolicy,
+    "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
     "RBCSmartPolicy": RBCSmartPolicy,
     "RandomPolicy": RandomPolicy,
     "RuleBasedPolicy": RuleBasedPolicy,
     "SignalAwareRBC": SignalAwareRBC,
+    "PPO": PPO,
+    "TD3": TD3,
+    "FixedServiceOracleReplayPolicy": FixedServiceOracleReplayPolicy,
+    "FixedPriceSignal": FixedPriceSignalAgent,
+    "TotalHomeOracleReplayPolicy": TotalHomeOracleReplayPolicy,
+    "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
     "AgentTransformerPPO": AgentTransformerPPO,
 }
 
@@ -185,6 +201,51 @@ def _stage_to_agent_view(global_config: Dict[str, Any], stage_cfg: Dict[str, Any
     return agent_view
 
 
+def _single_agent_member_view(
+    agent_view: Dict[str, Any],
+    *,
+    member_index: int,
+) -> Dict[str, Any]:
+    """Return a one-slot config view for a strict single-agent ensemble member.
+
+    Runtime topology is derived for the complete CityLearn environment before
+    execution units are built.  A strict single-agent implementation must not
+    accidentally construct one actor/critic per building from that global
+    topology.  This helper slices the derived dimensions to the member's slot
+    and gives every learner a stable seed offset.
+    """
+    member_view = deepcopy(agent_view)
+    topology = dict(member_view.get("topology") or {})
+
+    for key in ("observation_dimensions", "action_dimensions", "action_space"):
+        values = topology.get(key)
+        if values is None:
+            continue
+        if not isinstance(values, (list, tuple)):
+            raise ValueError(
+                f"topology.{key} must be a list when building a strict single-agent ensemble."
+            )
+        if member_index >= len(values):
+            raise ValueError(
+                f"Cannot build single-agent member {member_index}: topology.{key} "
+                f"contains only {len(values)} slot(s)."
+            )
+        topology[key] = [deepcopy(values[member_index])]
+
+    topology["num_agents"] = 1
+    member_view["topology"] = topology
+
+    training = dict(member_view.get("training") or {})
+    base_seed = int(training.get("seed", 22) or 22)
+    training["seed"] = base_seed + int(member_index)
+    member_view["training"] = training
+
+    runtime = dict(member_view.get("runtime") or {})
+    runtime["member_index"] = int(member_index)
+    member_view["runtime"] = runtime
+    return member_view
+
+
 def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
     """Instantiate the model the wrapper drives.
 
@@ -232,7 +293,18 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
             unit.frozen = frozen
             stages.append(unit)
         else:
-            members = [agent_cls(config=agent_view) for _ in range(count)]
+            if bool(getattr(agent_cls, "single_agent_only", False)):
+                members = [
+                    agent_cls(
+                        config=_single_agent_member_view(
+                            agent_view,
+                            member_index=member_index,
+                        )
+                    )
+                    for member_index in range(count)
+                ]
+            else:
+                members = [agent_cls(config=agent_view) for _ in range(count)]
             ensemble = Ensemble(members)
             ensemble.frozen = frozen
             stages.append(ensemble)

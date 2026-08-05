@@ -59,7 +59,7 @@ Sections:
   `episode_time_steps`), and export controls under `simulator.export`.
 - `training`: global update cadence knobs.
 - `topology`: **derived** environment dimensions (num agents, observation/action shapes). These remain null in version-controlled configs and are filled by the wrapper.
-- `algorithm`: algorithm name and its parameters. Runtime-supported algorithms include `MADDPG`, `MATD3`, `MASAC`, `IPPO`, `MAPPO`, `HAPPO`, `RuleBasedPolicy`, `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `RBCSmartPolicy` and `RBCCommunityPolicy`. Neural fixed-layout algorithms are intentionally rejected for `entity + dynamic` topology; use rule-based policies there until a dynamic-ready neural agent exists.
+- `algorithm`: algorithm name and its parameters. Runtime-supported algorithms include `PPO`, `TD3`, `MADDPG`, `MATD3`, `MASAC`, `IPPO`, `MAPPO`, `HAPPO`, `RuleBasedPolicy`, `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `RBCSmartPolicy`, `RBCSmartLocalPolicy` and `RBCCommunityPolicy`. `RBCSmartLocalPolicy` masks all raw community observations and is the admissible RBC baseline/teacher for strict building-local experiments. `PPO` and `TD3` are strict single-agent implementations and use an `Ensemble` with one learner per building for distributed control. Neural fixed-layout algorithms are intentionally rejected for `entity + dynamic` topology; use rule-based policies there until a dynamic-ready neural agent exists.
 - `bundle`: manifest/export options shared by all algorithms (`bundle_version`, `description`, alias map hint, artifact config defaults).
 
 ### Validation

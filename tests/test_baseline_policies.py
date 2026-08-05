@@ -6,6 +6,7 @@ from algorithms.agents.baseline_policies import (
     NormalPolicy,
     RBCBasicPolicy,
     RBCCommunityPolicy,
+    RBCSmartLocalPolicy,
     RBCSmartPolicy,
     RandomPolicy,
 )
@@ -69,6 +70,69 @@ def _action_names():
         "electric_vehicle_storage_charger_1_1",
         "deferrable_appliance_deferrable_appliance_1",
     ]
+
+
+def test_rbc_smart_local_actions_are_invariant_to_community_only_signals():
+    names = _base_observation_names() + [
+        "district__community_import_power_kw",
+        "district__community_export_power_kw",
+        "district__community_pv_power_kw",
+        "district__community_building_headroom_kw",
+        "forecast_community_pv_predicted_1",
+        "forecast_community_import_predicted_1",
+    ]
+    agent = RBCSmartLocalPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartLocalPolicy",
+                "hyperparameters": {
+                    "deferrable_import_block_threshold_kw": 4.0,
+                    "deferrable_community_import_block_threshold_kw": 4.0,
+                },
+            }
+        }
+    )
+    _attach(agent, names, _action_names())
+    assert all("community" not in name.casefold() for name in agent._obs_index[0])
+    assert agent._obs_index[0]["charging_building_headroom_kw"] == 7
+
+    local = np.array(
+        [
+            0.20,
+            0.30,
+            0.35,
+            0.40,
+            0.0,
+            2.0,
+            2.0,
+            np.nan,
+            0.50,
+            1.0,
+            0.30,
+            0.80,
+            60.0,
+            10.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.20,
+            0.80,
+        ],
+        dtype=float,
+    )
+    quiet_community = np.concatenate((local, np.array([0.0, 0.0, 0.0, 100.0, 0.0, 0.0])))
+    stressed_community = np.concatenate((local, np.array([100.0, 0.0, 100.0, 0.0, 100.0, 100.0])))
+
+    quiet_actions = agent.predict([quiet_community])
+    stressed_actions = agent.predict([stressed_community])
+
+    np.testing.assert_allclose(stressed_actions, quiet_actions)
+    obs_map = agent._obs_index[0]
+    assert agent._get_community_import_power(stressed_community, obs_map) == pytest.approx(0.0)
+    assert agent._get_community_pv_power(stressed_community, obs_map) == pytest.approx(0.0)
+    assert agent._get_community_headroom_kw(stressed_community, obs_map) == float("inf")
+    assert agent._forecast_community_import_peak_kw(stressed_community, obs_map) == pytest.approx(0.0)
 
 
 def test_random_policy_samples_every_action_within_bounds():
@@ -2206,6 +2270,57 @@ def test_rbc_smart_policy_blocks_v2g_inside_subhour_guard_window():
     assert actions[0][1] >= 0.0
 
 
+def test_rbc_smart_policy_actions_are_invariant_to_community_aggregates_when_local_signals_exist():
+    agent = RBCSmartPolicy(
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {"allow_v2g": True},
+            }
+        }
+    )
+    observation_names = _base_observation_names() + [
+        "district__community_export_power_kw",
+        "district__community_import_power_kw",
+        "district__community_pv_power_kw",
+        "district__community_building_headroom_kw",
+        "district__forecast_community_net_next_1h_kw",
+    ]
+    _attach(agent, observation_names, _action_names())
+    local = np.array(
+        [
+            0.20,
+            0.10,
+            0.20,
+            0.30,
+            0.0,
+            2.0,
+            2.0,
+            10.0,
+            0.5,
+            1.0,
+            0.7,
+            0.8,
+            60.0,
+            10.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.1,
+            0.9,
+        ],
+        dtype=float,
+    )
+    quiet_community = np.concatenate([local, [0.0, 0.0, 0.0, 100.0, 0.0]])
+    stressed_community = np.concatenate([local, [50.0, 500.0, 50.0, 0.0, 500.0]])
+
+    quiet_actions = agent.predict([quiet_community])
+    stressed_actions = agent.predict([stressed_community])
+
+    assert np.asarray(stressed_actions) == pytest.approx(np.asarray(quiet_actions))
+
+
 def test_rbc_community_policy_uses_community_surplus_for_storage_ev_and_deferrable():
     agent = RBCCommunityPolicy(
         {
@@ -2768,7 +2883,7 @@ def test_rbc_community_policy_does_not_discharge_storage_without_current_import_
 
 @pytest.mark.parametrize(
     "policy_cls",
-    [NormalPolicy, RBCBasicPolicy, RBCSmartPolicy, RBCCommunityPolicy],
+    [NormalPolicy, RBCBasicPolicy, RBCSmartLocalPolicy, RBCSmartPolicy, RBCCommunityPolicy],
 )
 def test_baseline_deferrable_actions_are_binary_start_commands(policy_cls):
     agent = policy_cls({"algorithm": {"name": policy_cls.__name__, "hyperparameters": {}}})

@@ -88,3 +88,22 @@ def test_checkpoint_manager_propagates_unrelated_value_error(tmp_path):
         manager.maybe_save(
             _BrokenAgent(), step=1, initial_exploration_done=True, update_step=True
         )
+
+
+def test_checkpoint_manager_saves_final_unaligned_step(tmp_path):
+    manager = CheckpointManager(base_dir=str(tmp_path), interval=5)
+    agent = DummyAgent()
+
+    path = manager.save_final(agent, step=7)
+
+    assert path is not None
+    assert Path(path).exists()
+    assert agent.saved_steps == [7]
+
+
+def test_checkpoint_manager_skips_final_when_disabled(tmp_path):
+    manager = CheckpointManager(base_dir=str(tmp_path), interval=None)
+    agent = DummyAgent()
+
+    assert manager.save_final(agent, step=7) is None
+    assert agent.saved_steps == []

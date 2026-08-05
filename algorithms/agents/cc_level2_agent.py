@@ -43,9 +43,10 @@ Reward:
     The CC sums per-building rewards into one community scalar.
 
 Training:
-    PPO with factorized diagonal Gaussian.  Log-prob of the joint action is
-    the sum of per-building log-probs (independent actions, shared state).
-    GAE, reward scaling, and all Phase 1 hyperparameters are preserved.
+    PPO with a factorized diagonal Gaussian.  Each per-building factor is
+    clipped independently using the shared community advantage.  This avoids
+    an unstable product of 17 likelihood ratios while retaining one shared
+    encoder, one community critic and one community reward.
 
 Pipeline integration:
     predict() returns List[float] of length N.
@@ -166,7 +167,13 @@ class CommunityMarketMakerNetV2(nn.Module):
     exploration independently of the input.
     """
 
-    def __init__(self, c_dim: int, num_buildings: int, hidden_dims: List[int]) -> None:
+    def __init__(
+        self,
+        c_dim: int,
+        num_buildings: int,
+        hidden_dims: List[int],
+        initial_log_std: float = -2.5,
+    ) -> None:
         super().__init__()
         self.num_buildings = num_buildings
         layers: List[nn.Module] = []
@@ -178,7 +185,9 @@ class CommunityMarketMakerNetV2(nn.Module):
         self.mean_head   = nn.Linear(in_d, num_buildings)
         self.critic_head = nn.Linear(in_d, 1)
         # One learnable log_std per building, state-independent.
-        self.log_std = nn.Parameter(torch.zeros(num_buildings))
+        self.log_std = nn.Parameter(
+            torch.full((num_buildings,), float(initial_log_std))
+        )
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -200,8 +209,8 @@ class CommunityMarketMakerNetV2(nn.Module):
 
         Returns:
             action:    (batch, N) raw samples (pre-tanh, stored in buffer)
-            log_prob:  (batch,)   joint log-prob summed over N buildings
-            entropy:   (batch,)   joint entropy summed over N buildings
+            log_prob:  (batch, N) per-building corrected log-probabilities
+            entropy:   (batch, N) per-building entropies
             value:     (batch,)   state value estimate
         """
         h     = self.encoder(community)                          # (batch, hidden)
@@ -212,11 +221,45 @@ class CommunityMarketMakerNetV2(nn.Module):
         dist  = torch.distributions.Normal(means, stds)
         if action is None:
             action = dist.sample()                               # (batch, N)
-        # Tanh correction; sum over building dimension for joint log-prob.
+        # Keep the factor log-probabilities separate.  PPO clips each factor
+        # independently with the same centralized community advantage.
         tanh_correction = torch.log(1.0 - torch.tanh(action) ** 2 + 1e-6)
-        log_prob = (dist.log_prob(action) - tanh_correction).sum(dim=-1)  # (batch,)
-        entropy  = dist.entropy().sum(dim=-1)                    # (batch,)
+        log_prob = dist.log_prob(action) - tanh_correction       # (batch, N)
+        entropy  = dist.entropy()                                # (batch, N)
         return action, log_prob, entropy, value
+
+
+class DeterministicVectorMultiplierPolicy(nn.Module):
+    """Deployable CC-L2 policy including the price-range mapping."""
+
+    def __init__(
+        self,
+        policy: CommunityMarketMakerNetV2,
+        price_min: float,
+        price_max: float,
+        reference_multipliers: np.ndarray,
+        policy_residual_scale: float,
+    ) -> None:
+        super().__init__()
+        self.encoder = policy.encoder
+        self.mean_head = policy.mean_head
+        self.register_buffer("price_min", torch.tensor(float(price_min)))
+        self.register_buffer("price_span", torch.tensor(float(price_max - price_min)))
+        self.register_buffer(
+            "reference_multipliers",
+            torch.tensor(reference_multipliers, dtype=torch.float32),
+        )
+        self.register_buffer(
+            "policy_residual_scale",
+            torch.tensor(float(policy_residual_scale)),
+        )
+
+    def forward(self, community: torch.Tensor) -> torch.Tensor:
+        raw = self.mean_head(self.encoder(community))
+        full = self.price_min + self.price_span * (torch.tanh(raw) + 1.0) / 2.0
+        return self.reference_multipliers + self.policy_residual_scale * (
+            full - self.reference_multipliers
+        )
 
 
 # ── Rollout buffer (N-dim actions) ───────────────────────────────────────────
@@ -231,7 +274,7 @@ class RolloutBufferV2:
         self.full  = False
         self.communities = np.zeros((num_steps, c_dim),           dtype=np.float32)
         self.actions     = np.zeros((num_steps, num_buildings),   dtype=np.float32)
-        self.logprobs    = np.zeros(num_steps,                    dtype=np.float32)
+        self.logprobs    = np.zeros((num_steps, num_buildings),  dtype=np.float32)
         self.rewards     = np.zeros(num_steps,                    dtype=np.float32)
         self.dones       = np.zeros(num_steps,                    dtype=np.float32)
         self.values      = np.zeros(num_steps,                    dtype=np.float32)
@@ -241,7 +284,7 @@ class RolloutBufferV2:
     def add(self, community, action, logprob, reward, done, value) -> None:
         self.communities[self._ptr] = community
         self.actions[self._ptr]     = action          # (N,)
-        self.logprobs[self._ptr]    = logprob         # scalar (summed over N)
+        self.logprobs[self._ptr]    = logprob         # (N,)
         self.rewards[self._ptr]     = reward
         self.dones[self._ptr]       = float(done)
         self.values[self._ptr]      = value
@@ -255,7 +298,7 @@ class RolloutBufferV2:
             if t == self.num_steps - 1:
                 next_nt, next_value = 1.0 - float(last_done), last_value
             else:
-                next_nt, next_value = 1.0 - self.dones[t + 1], self.values[t + 1]
+                next_nt, next_value = 1.0 - self.dones[t], self.values[t + 1]
             delta = self.rewards[t] + gamma * next_value * next_nt - self.values[t]
             gae = delta + gamma * gae_lambda * next_nt * gae
             self.advantages[t] = gae
@@ -281,6 +324,7 @@ class CCLevel2Agent(BaseAgent):
     """Phase-2 Community Coordinator: emits one price multiplier per building."""
 
     _use_raw_observations: bool = False
+    observation_encoding_profile: str = "cc_level2"
 
     # ──────────────────────────── Construction ──────────────────────────────
 
@@ -304,6 +348,8 @@ class CCLevel2Agent(BaseAgent):
         # Price-multiplier bounds
         self._price_min = float(hyper.get("price_min", 0.5))
         self._price_max = float(hyper.get("price_max", 1.5))
+        if self._price_max <= self._price_min:
+            raise ValueError("CCLevel2 price_max must be greater than price_min")
 
         # Auxiliary reward weights
         self._w_factor     = float(hyper.get("w_factor",     0.3))
@@ -312,6 +358,25 @@ class CCLevel2Agent(BaseAgent):
 
         # Community size — must be set before rollout buffer is created.
         self._num_buildings = int(hyper.get("num_buildings", 17))
+        reference = hyper.get("reference_multipliers")
+        if reference is None:
+            reference = [1.0] * self._num_buildings
+        if len(reference) != self._num_buildings:
+            raise ValueError(
+                "CCLevel2 reference_multipliers length must equal num_buildings"
+            )
+        self._reference_multipliers = np.asarray(reference, dtype=np.float32)
+        if not np.all(np.isfinite(self._reference_multipliers)):
+            raise ValueError("CCLevel2 reference_multipliers must be finite")
+        if np.any(self._reference_multipliers < self._price_min) or np.any(
+            self._reference_multipliers > self._price_max
+        ):
+            raise ValueError(
+                "CCLevel2 reference_multipliers must lie within the configured price range"
+            )
+        self._policy_residual_scale = float(hyper.get("policy_residual_scale", 1.0))
+        if not 0.0 <= self._policy_residual_scale <= 1.0:
+            raise ValueError("CCLevel2 policy_residual_scale must be within [0, 1]")
 
         # Context dimension: 16 district + 6 per-building × N = 118 for N=17
         self._n_district = _N_DISTRICT
@@ -325,9 +390,14 @@ class CCLevel2Agent(BaseAgent):
 
         self._hidden_dims = list(hyper.get("hidden_dims", [256, 256]))
         self._lr = float(hyper.get("lr", 1e-4))
+        self._initial_log_std = float(hyper.get("initial_log_std", -2.5))
         self.policy = CommunityMarketMakerNetV2(
-            self._c_dim, self._num_buildings, self._hidden_dims
+            self._c_dim,
+            self._num_buildings,
+            self._hidden_dims,
+            initial_log_std=self._initial_log_std,
         )
+        self._initialize_policy_at_reference()
         self.ppo_optim = Adam(self.policy.parameters(), lr=self._lr)
 
         self._reward_rms = RunningMeanStd()
@@ -340,12 +410,18 @@ class CCLevel2Agent(BaseAgent):
         # Temporal abstraction
         self._cc_action_interval = int(hyper.get("cc_action_interval", 4))
         self._step_in_interval = 0
+        self._decision_interval_complete = False
+        self._episode_step_context: Optional[int] = None
 
         # Cached decision (arrays instead of scalars)
-        self._cached_multipliers: np.ndarray = np.ones(self._num_buildings, dtype=np.float32)
-        self._cached_action:      np.ndarray = np.zeros(self._num_buildings, dtype=np.float32)
+        self._cached_multipliers: np.ndarray = self._reference_multipliers.copy()
+        self._cached_action:      np.ndarray = self._multipliers_to_raw(
+            self._reference_multipliers
+        )
         self._cached_community:   Optional[np.ndarray] = None
-        self._cached_logprob:     float = 0.0
+        self._cached_logprob:     np.ndarray = np.zeros(
+            self._num_buildings, dtype=np.float32
+        )
         self._cached_value:       float = 0.0
         self._accumulated_reward: float = 0.0
 
@@ -386,6 +462,31 @@ class CCLevel2Agent(BaseAgent):
         self._episode_count = 0
         self._global_cc_step = 0
         self._decision_trace: List[dict] = []
+        self._completed_decision_traces: List[dict] = []
+
+    def _multipliers_to_raw(self, multipliers: np.ndarray) -> np.ndarray:
+        unit = (
+            (np.asarray(multipliers, dtype=np.float64) - self._price_min)
+            / (self._price_max - self._price_min)
+            * 2.0
+            - 1.0
+        )
+        return np.arctanh(np.clip(unit, -0.999, 0.999)).astype(np.float32)
+
+    def _initialize_policy_at_reference(self) -> None:
+        """Start deterministic inference at a measured safe/reference signal."""
+        raw_reference = self._multipliers_to_raw(self._reference_multipliers)
+        with torch.no_grad():
+            self.policy.mean_head.weight.zero_()
+            self.policy.mean_head.bias.copy_(torch.from_numpy(raw_reference))
+
+    def _raw_to_multipliers(self, raw: np.ndarray) -> np.ndarray:
+        full = self._price_min + (
+            (self._price_max - self._price_min) * (np.tanh(raw) + 1.0) / 2.0
+        )
+        return self._reference_multipliers + self._policy_residual_scale * (
+            full - self._reference_multipliers
+        )
 
     def attach_environment(
         self,
@@ -453,13 +554,22 @@ class CCLevel2Agent(BaseAgent):
             self._c_dim,
             self._num_buildings,
             self._hidden_dims,
+            initial_log_std=self._initial_log_std,
         )
+        if len(self._reference_multipliers) != self._num_buildings:
+            raise ValueError(
+                "CCLevel2 environment building count does not match reference_multipliers"
+            )
+        self._initialize_policy_at_reference()
         self.ppo_optim = Adam(self.policy.parameters(), lr=self._lr)
         self.rollout_buffer = RolloutBufferV2(
             self.rollout_buffer.num_steps, self._c_dim, self._num_buildings
         )
-        self._cached_multipliers = np.ones(self._num_buildings, dtype=np.float32)
-        self._cached_action      = np.zeros(self._num_buildings, dtype=np.float32)
+        self._cached_multipliers = self._reference_multipliers.copy()
+        self._cached_action      = self._multipliers_to_raw(self._reference_multipliers)
+        self._cached_logprob     = np.zeros(
+            self._num_buildings, dtype=np.float32
+        )
 
     # ───────────────────────── Per-step interaction ──────────────────────────
 
@@ -481,8 +591,10 @@ class CCLevel2Agent(BaseAgent):
                 # Use per-building teacher as cached output.
                 self._cached_multipliers = teacher_targets.copy()
                 self._cached_community   = ctx
-                self._cached_action      = teacher_targets - 1.0
-                self._cached_logprob     = 0.0
+                self._cached_action      = self._multipliers_to_raw(teacher_targets)
+                self._cached_logprob     = np.zeros(
+                    self._num_buildings, dtype=np.float32
+                )
                 self._cached_value       = 0.0
                 # Accumulate community import/export for BC calibration.
                 _idx = _CC_LEVEL2_DISTRICT_FEATURES.index
@@ -498,7 +610,26 @@ class CCLevel2Agent(BaseAgent):
                     self._bc_pretrain_done = True
             else:
                 self._sample_new_decision(observations, deterministic)
+        self._step_in_interval = (
+            self._step_in_interval + 1
+        ) % self._cc_action_interval
+        self._decision_interval_complete = self._step_in_interval == 0
         return self._cached_multipliers.tolist()
+
+    def set_episode_context(
+        self,
+        *,
+        episode_step: Optional[int] = None,
+        next_episode_step: Optional[int] = None,
+    ) -> None:
+        _ = next_episode_step
+        normalized_step = None if episode_step is None else int(episode_step)
+        if normalized_step == 0 and self._episode_step_context != 0:
+            self._step_in_interval = 0
+            self._decision_interval_complete = False
+            self._accumulated_reward = 0.0
+            self._prev_multipliers = None
+        self._episode_step_context = normalized_step
 
     def update(
         self,
@@ -516,26 +647,28 @@ class CCLevel2Agent(BaseAgent):
     ) -> None:
         done = terminated or truncated
         self._accumulated_reward += float(sum(rewards))
-        self._step_in_interval   += 1
 
-        if not ((self._step_in_interval >= self._cc_action_interval) or done):
+        if not (self._decision_interval_complete or done):
             return
 
         assert self._cached_community is not None, "predict() must run before update()"
 
         if not self._bc_pretrain_done:
-            self._step_in_interval   = 0
+            self._decision_interval_complete = False
             self._accumulated_reward = 0.0
             if done:
+                self._step_in_interval = 0
                 self._prev_multipliers = None
                 self._flush_decision_trace()
             return
 
         if self._prev_multipliers is None:
-            self._prev_multipliers = np.ones(self._num_buildings, dtype=np.float32)
+            self._prev_multipliers = self._reference_multipliers.copy()
 
         # Factor and smoothness penalties averaged over buildings.
-        factor_penalty     = float(np.mean((self._cached_multipliers - 1.0) ** 2))
+        factor_penalty     = float(
+            np.mean((self._cached_multipliers - self._reference_multipliers) ** 2)
+        )
         smoothness_penalty = float(np.mean((self._cached_multipliers - self._prev_multipliers) ** 2))
         aux = (
             - self._w_factor     * factor_penalty
@@ -556,9 +689,10 @@ class CCLevel2Agent(BaseAgent):
             value=self._cached_value,
         )
 
-        self._step_in_interval   = 0
+        self._decision_interval_complete = False
         self._accumulated_reward = 0.0
         if done:
+            self._step_in_interval = 0
             self._prev_multipliers = None
             self._flush_decision_trace()
 
@@ -799,13 +933,12 @@ class CCLevel2Agent(BaseAgent):
                 raw, logprob, _, value = self.policy.get_action_and_value(ctx_t)
 
         raw_np   = raw.squeeze(0).numpy()                 # (N,)
-        squashed = np.tanh(raw_np)
-        mults    = self._price_min + (self._price_max - self._price_min) * (squashed + 1.0) / 2.0
+        mults = self._raw_to_multipliers(raw_np)
 
         self._cached_action      = raw_np.astype(np.float32)
         self._cached_multipliers = mults.astype(np.float32)
         self._cached_community   = ctx
-        self._cached_logprob     = float(logprob.item())
+        self._cached_logprob     = logprob.squeeze(0).numpy().astype(np.float32)
         self._cached_value       = float(value.item())
 
         self._log_decision()
@@ -828,7 +961,7 @@ class CCLevel2Agent(BaseAgent):
         data = self.rollout_buffer.get()
         community    = data["community"]   # (T, c_dim)
         actions      = data["actions"]     # (T, N)
-        old_logprobs = data["logprobs"]    # (T,)
+        old_logprobs = data["logprobs"]    # (T, N)
         returns      = data["returns"]     # (T,)
         advantages   = data["advantages"]  # (T,)
         old_values   = torch.tensor(self.rollout_buffer.values, dtype=torch.float32)
@@ -843,8 +976,9 @@ class CCLevel2Agent(BaseAgent):
         for _ in range(self._num_epochs):
             if kl_stop:
                 break
+            permutation = np.random.permutation(num_steps)
             for start in range(0, num_steps, self._mini_batch_size):
-                mb = np.random.permutation(num_steps)[start : start + self._mini_batch_size]
+                mb = permutation[start : start + self._mini_batch_size]
 
                 _, new_logprobs, entropy, new_values = self.policy.get_action_and_value(
                     community[mb], actions[mb]
@@ -858,7 +992,7 @@ class CCLevel2Agent(BaseAgent):
                     kl_stop = True
                     break
 
-                mb_adv  = advantages[mb]
+                mb_adv  = advantages[mb].unsqueeze(-1)
                 pg_loss = torch.max(
                     -mb_adv * ratio,
                     -mb_adv * torch.clamp(ratio, 1 - self._clip_coef, 1 + self._clip_coef),
@@ -956,6 +1090,9 @@ class CCLevel2Agent(BaseAgent):
         self._episode_count += 1
         ep     = self._episode_count
         fields = list(self._decision_trace[0].keys())
+        self._completed_decision_traces.extend(
+            {"episode": ep, **row} for row in self._decision_trace
+        )
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".csv", prefix=f"cc2_ep{ep}_", delete=False
@@ -1038,20 +1175,59 @@ class CCLevel2Agent(BaseAgent):
         onnx_dir = export_root / "onnx_models"
         onnx_dir.mkdir(parents=True, exist_ok=True)
         export_path = onnx_dir / "cc2_market_maker.onnx"
+        deterministic_policy = DeterministicVectorMultiplierPolicy(
+            self.policy,
+            self._price_min,
+            self._price_max,
+            self._reference_multipliers,
+            self._policy_residual_scale,
+        ).eval()
         torch.onnx.export(
-            self.policy.encoder,
+            deterministic_policy,
             torch.randn(1, self._c_dim),
             str(export_path),
             export_params=True,
             opset_version=DEFAULT_ONNX_OPSET,
             do_constant_folding=True,
             input_names=["community_context"],
-            output_names=["hidden"],
-            dynamic_axes={"community_context": {0: "batch"}, "hidden": {0: "batch"}},
+            output_names=["price_multipliers"],
+            dynamic_axes={
+                "community_context": {0: "batch"},
+                "price_multipliers": {0: "batch"},
+            },
         )
+        self._flush_decision_trace()
+        artifacts = [
+            {
+                "agent_index": 0,
+                "path": str(export_path.relative_to(export_root)),
+                "format": "onnx",
+            }
+        ]
+        diagnostic_artifacts: List[Dict[str, Any]] = []
+        if self._completed_decision_traces:
+            trace_path = export_root / "decision_trace.csv"
+            fields = list(self._completed_decision_traces[0].keys())
+            with trace_path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(self._completed_decision_traces)
+            diagnostic_artifacts.append(
+                {
+                    "path": str(trace_path.relative_to(export_root)),
+                    "format": "csv",
+                }
+            )
         return {
             "format": "onnx",
-            "artifacts": [{"agent_index": 0, "path": str(export_path.relative_to(export_root)), "format": "onnx"}],
+            "output_contract": "deterministic_per_building_price_multiplier_vector",
+            "num_buildings": self._num_buildings,
+            "price_min": self._price_min,
+            "price_max": self._price_max,
+            "reference_multipliers": self._reference_multipliers.tolist(),
+            "policy_residual_scale": self._policy_residual_scale,
+            "artifacts": artifacts,
+            "diagnostic_artifacts": diagnostic_artifacts,
         }
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
@@ -1068,6 +1244,7 @@ class CCLevel2Agent(BaseAgent):
                 "reward_rms_M2":      self._reward_rms._M2,
                 "ppo_update_count":   self._ppo_update_count,
                 "global_cc_step":     self._global_cc_step,
+                "reference_multipliers": self._reference_multipliers.tolist(),
                 "bc_pretrain_done":   self._bc_pretrain_done,
                 "bc_target_import":   self._bc_target_import,
                 "bc_reference_peak":  self._bc_reference_peak,
@@ -1088,6 +1265,14 @@ class CCLevel2Agent(BaseAgent):
         else:
             path = root
         ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
+        checkpoint_reference = ckpt.get("reference_multipliers")
+        if checkpoint_reference is not None and not np.allclose(
+            np.asarray(checkpoint_reference, dtype=np.float32),
+            self._reference_multipliers,
+        ):
+            raise ValueError(
+                "CC-L2 checkpoint reference_multipliers do not match the current config"
+            )
         self.policy.load_state_dict(ckpt["policy"])
         self.ppo_optim.load_state_dict(ckpt["optimizer"])
         self._reward_rms._n    = ckpt.get("reward_rms_n",    0)

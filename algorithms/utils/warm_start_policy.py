@@ -26,10 +26,14 @@ def build_warm_start_policy(
         NormalPolicy,
         RBCBasicPolicy,
         RBCCommunityPolicy,
+        RBCSmartLocalPolicy,
         RBCSmartPolicy,
         RandomPolicy,
     )
+    from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolicy
     from algorithms.agents.rbc_agent import RuleBasedPolicy
+    from algorithms.agents.total_home_oracle_replay_policy import TotalHomeOracleReplayPolicy
+    from algorithms.agents.total_oracle_replay_policy import TotalOracleReplayPolicy
 
     policy_registry = {
         "RuleBasedPolicy": RuleBasedPolicy,
@@ -38,7 +42,11 @@ def build_warm_start_policy(
         "NormalPolicy": NormalPolicy,
         "RBCBasicPolicy": RBCBasicPolicy,
         "RBCCommunityPolicy": RBCCommunityPolicy,
+        "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
         "RBCSmartPolicy": RBCSmartPolicy,
+        "FixedServiceOracleReplayPolicy": FixedServiceOracleReplayPolicy,
+        "TotalHomeOracleReplayPolicy": TotalHomeOracleReplayPolicy,
+        "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
     }
 
     policy_cls = policy_registry.get(policy_name)

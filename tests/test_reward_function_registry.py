@@ -10,6 +10,10 @@ def test_reward_registry_contains_expected_reward_functions():
     assert "CostHardConstraintReward" in names
     assert "CostServiceGuardRewardV2" in names
     assert "CostServiceCostBalancedRewardV3" in names
+    assert "LocalCostServiceRewardV1" in names
+    assert "LocalScorecardGuardRewardV2" in names
+    assert "LocalEconomicSafetyRewardV3" in names
+    assert "IndividualScorecardAlignedRewardV3" in names
     assert "CostServiceCommunityBandRewardV4" in names
     assert "CostServiceCommunityStorageBandRewardV41" in names
     assert "CostServiceCommunityServiceBandRewardV42" in names
@@ -33,6 +37,13 @@ def test_reward_registry_contains_expected_reward_functions():
     assert REWARD_FUNCTION_MAP["CostHardConstraintReward"].__name__ == "CostHardConstraintReward"
     assert REWARD_FUNCTION_MAP["CostServiceGuardRewardV2"].__name__ == "CostServiceGuardRewardV2"
     assert REWARD_FUNCTION_MAP["CostServiceCostBalancedRewardV3"].__name__ == "CostServiceCostBalancedRewardV3"
+    assert REWARD_FUNCTION_MAP["LocalCostServiceRewardV1"].__name__ == "LocalCostServiceRewardV1"
+    assert REWARD_FUNCTION_MAP["LocalScorecardGuardRewardV2"].__name__ == "LocalScorecardGuardRewardV2"
+    assert REWARD_FUNCTION_MAP["LocalEconomicSafetyRewardV3"].__name__ == "LocalEconomicSafetyRewardV3"
+    assert (
+        REWARD_FUNCTION_MAP["IndividualScorecardAlignedRewardV3"].__name__
+        == "IndividualScorecardAlignedRewardV3"
+    )
     assert REWARD_FUNCTION_MAP["CostServiceCommunityBandRewardV4"].__name__ == "CostServiceCommunityBandRewardV4"
     assert REWARD_FUNCTION_MAP["CostServiceCommunityStorageBandRewardV41"].__name__ == "CostServiceCommunityStorageBandRewardV41"
     assert REWARD_FUNCTION_MAP["CostServiceCommunityServiceBandRewardV42"].__name__ == "CostServiceCommunityServiceBandRewardV42"

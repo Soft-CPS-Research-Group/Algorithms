@@ -494,14 +494,22 @@ class GaussianActor(nn.Module):
         nn.init.uniform_(self.mean_out.weight, -3e-3, 3e-3)
         nn.init.uniform_(self.mean_out.bias, -3e-3, 3e-3)
 
-    def forward(self, state):
+    def _raw_mean(self, state):
         x = state
         for fc in self.fc_layers:
             x = F.relu(fc(x))
-        return torch.tanh(self.mean_out(x))
+        return self.mean_out(x)
+
+    def forward(self, state):
+        """Return the deterministic, bounded action used for serving."""
+        return torch.tanh(self._raw_mean(state))
 
     def distribution(self, state):
-        mean = self.forward(state)
+        # The Normal lives in the unconstrained pre-tanh space.  Applying
+        # tanh to the mean here would bound it twice during stochastic
+        # sampling and make the exported deterministic actor disagree with
+        # the mode of the policy used for training.
+        mean = self._raw_mean(state)
         log_std = torch.clamp(self.log_std, self.min_log_std, self.max_log_std)
         std = torch.exp(log_std).expand_as(mean)
         return Normal(mean, std)

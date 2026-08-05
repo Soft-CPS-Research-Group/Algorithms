@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import random
+from collections import deque
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -14,8 +16,21 @@ from torch.nn.utils import clip_grad_norm_
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.maddpg_agent import ActionScaledActor, _log_torch_runtime, _select_torch_device
 from algorithms.constants import DEFAULT_ONNX_OPSET
+from algorithms.utils.citylearn_local_action_safety import (
+    CityLearnLocalSafetyAdapter,
+    CityLearnSafetyConfig,
+    preserve_teacher_service_with_storage_fallback,
+    replace_service_actions_with_teacher,
+)
 from algorithms.utils.networks import GaussianActor, ValueNetwork
 from algorithms.utils.warm_start_policy import build_warm_start_policy
+from algorithms.utils.price_multiplier_adapter import (
+    ForecastMode,
+    PriceMultiplierObservationAdapter,
+    normalize_price_multiplier_context,
+    price_feature_bounds_from_metadata,
+    price_observation_names_from_metadata,
+)
 from utils.artifact_config_builder import build_auto_artifact_config
 
 
@@ -56,6 +71,9 @@ class _PPOBase(BaseAgent):
         self.clip_ratio = float(max(exploration_cfg.get("clip_ratio", 0.2), 1.0e-6))
         self.entropy_coef = float(max(exploration_cfg.get("entropy_coef", 0.01), 0.0))
         self.value_loss_coef = float(max(exploration_cfg.get("value_loss_coef", 0.5), 0.0))
+        self.actor_policy_loss_weight = float(
+            max(exploration_cfg.get("actor_policy_loss_weight", 1.0), 0.0)
+        )
         self.max_grad_norm = float(max(exploration_cfg.get("max_grad_norm", 0.5), 0.0))
         self.ppo_epochs = max(1, int(exploration_cfg.get("ppo_epochs", 4) or 4))
         self.rollout_length = max(
@@ -103,9 +121,261 @@ class _PPOBase(BaseAgent):
         ).strip().lower()
         if self.warm_start_policy_phaseout_mode not in {"probability", "blend"}:
             raise ValueError("PPO warm_start_policy_phaseout_mode must be 'probability' or 'blend'.")
+        self.residual_policy_enabled = bool(
+            exploration_cfg.get("residual_policy_enabled", False)
+        )
+        self.residual_base_policy_name = self._optional_string(
+            exploration_cfg.get("residual_base_policy")
+        )
+        if self.residual_policy_enabled and not self.residual_base_policy_name:
+            raise ValueError(
+                "PPO residual_policy_enabled requires residual_base_policy; "
+                "use an explicit local baseline instead of a silent no-op base."
+            )
+        self.residual_base_policy_deterministic = bool(
+            exploration_cfg.get("residual_base_policy_deterministic", True)
+        )
+        self.residual_action_scale = float(
+            np.clip(
+                float(exploration_cfg.get("residual_action_scale", 0.0) or 0.0),
+                0.0,
+                1.0,
+            )
+        )
+        self.residual_storage_action_scale_multiplier = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "residual_storage_action_scale_multiplier",
+                    1.0,
+                )
+                or 0.0
+            ),
+        )
+        self.residual_ev_action_scale_multiplier = max(
+            0.0,
+            float(
+                exploration_cfg.get("residual_ev_action_scale_multiplier", 1.0)
+                or 0.0
+            ),
+        )
+        self.residual_deferrable_action_scale_multiplier = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "residual_deferrable_action_scale_multiplier",
+                    1.0,
+                )
+                or 0.0
+            ),
+        )
+        raw_building_gains = exploration_cfg.get(
+            "residual_building_gain_multipliers",
+            {},
+        ) or {}
+        if not isinstance(raw_building_gains, dict):
+            raise ValueError(
+                "PPO residual_building_gain_multipliers must be an object "
+                "mapping building names to gains."
+            )
+        self.residual_building_gain_multipliers: Dict[str, float] = {}
+        for raw_name, raw_gain in raw_building_gains.items():
+            try:
+                gain = float(raw_gain)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "PPO residual building gains must be numeric."
+                ) from exc
+            self.residual_building_gain_multipliers[str(raw_name)] = float(
+                np.clip(gain, 0.0, 1.0)
+            )
+        self.residual_action_deadband = float(
+            np.clip(
+                float(exploration_cfg.get("residual_action_deadband", 0.0) or 0.0),
+                0.0,
+                1.0,
+            )
+        )
+        raw_building_deadbands = exploration_cfg.get(
+            "residual_building_deadbands",
+            {},
+        ) or {}
+        if not isinstance(raw_building_deadbands, dict):
+            raise ValueError(
+                "PPO residual_building_deadbands must be an object mapping "
+                "building names to normalized-action thresholds."
+            )
+        self.residual_building_deadbands: Dict[str, float] = {}
+        for raw_name, raw_deadband in raw_building_deadbands.items():
+            try:
+                deadband = float(raw_deadband)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "PPO residual building deadbands must be numeric."
+                ) from exc
+            self.residual_building_deadbands[str(raw_name)] = float(
+                np.clip(deadband, 0.0, 1.0)
+            )
+        self.residual_zero_initialization = bool(
+            exploration_cfg.get("residual_zero_initialization", True)
+        )
         self.actor_behavior_cloning_weight = max(
             0.0,
             float(exploration_cfg.get("actor_behavior_cloning_weight", 0.0) or 0.0),
+        )
+        self.actor_residual_behavior_cloning_neutral_target_weight = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_residual_behavior_cloning_neutral_target_weight",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_residual_behavior_cloning_neutral_target_threshold = float(
+            np.clip(
+                float(
+                    exploration_cfg.get(
+                        "actor_residual_behavior_cloning_neutral_target_threshold",
+                        0.02,
+                    )
+                    or 0.02
+                ),
+                0.0,
+                1.0,
+            )
+        )
+        self.actor_ev_behavior_cloning_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("actor_ev_behavior_cloning_multiplier", 1.0) or 0.0),
+        )
+        self.actor_ev_behavior_cloning_positive_target_weight = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_ev_behavior_cloning_positive_target_weight",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_ev_behavior_cloning_positive_target_power = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_ev_behavior_cloning_positive_target_power",
+                    1.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_ev_behavior_cloning_zero_target_weight = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_ev_behavior_cloning_zero_target_weight",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_ev_behavior_cloning_zero_target_threshold = float(
+            np.clip(
+                float(
+                    exploration_cfg.get(
+                        "actor_ev_behavior_cloning_zero_target_threshold",
+                        0.05,
+                    )
+                    or 0.05
+                ),
+                0.0,
+                1.0,
+            )
+        )
+        self.actor_storage_behavior_cloning_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("actor_storage_behavior_cloning_multiplier", 1.0) or 0.0),
+        )
+        self.actor_deferrable_behavior_cloning_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("actor_deferrable_behavior_cloning_multiplier", 1.0) or 0.0),
+        )
+        self.actor_deferrable_behavior_cloning_positive_target_weight = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_deferrable_behavior_cloning_positive_target_weight",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_deferrable_behavior_cloning_positive_target_power = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_deferrable_behavior_cloning_positive_target_power",
+                    1.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_other_behavior_cloning_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("actor_other_behavior_cloning_multiplier", 1.0) or 0.0),
+        )
+        self.local_action_safety_enabled = bool(
+            exploration_cfg.get("local_action_safety_enabled", False)
+        )
+        self.local_action_safety_fail_on_infeasible = bool(
+            exploration_cfg.get("local_action_safety_fail_on_infeasible", False)
+        )
+        self.local_action_safety_headroom_reserve_kw = max(
+            0.0,
+            float(exploration_cfg.get("local_action_safety_headroom_reserve_kw", 0.0) or 0.0),
+        )
+        self.local_action_safety_allow_discretionary_deferrable_start = bool(
+            exploration_cfg.get(
+                "local_action_safety_allow_discretionary_deferrable_start",
+                False,
+            )
+        )
+        self.local_action_safety_runtime_only_export = bool(
+            exploration_cfg.get("local_action_safety_runtime_only_export", False)
+        )
+        self.local_action_safety_protect_ev_minimum = bool(
+            exploration_cfg.get("local_action_safety_protect_ev_minimum", True)
+        )
+        self.local_action_safety_ev_minimum_mode = str(
+            exploration_cfg.get("local_action_safety_ev_minimum_mode", "average")
+            or "average"
+        )
+        self.local_action_safety_protect_ev_service_target = bool(
+            exploration_cfg.get(
+                "local_action_safety_protect_ev_service_target",
+                False,
+            )
+        )
+        self.local_action_safety_service_teacher_enabled = bool(
+            exploration_cfg.get("local_action_safety_service_teacher_enabled", False)
+        )
+        self.local_action_safety_service_teacher_eval_enabled = bool(
+            exploration_cfg.get(
+                "local_action_safety_service_teacher_eval_enabled",
+                self.local_action_safety_service_teacher_enabled,
+            )
+        )
+        self.local_price_conditioning_enabled = bool(
+            exploration_cfg.get("local_price_conditioning_enabled", False)
+        )
+        self.local_price_forecast_mode = ForecastMode(
+            str(
+                exploration_cfg.get(
+                    "local_price_forecast_mode",
+                    ForecastMode.REAL_UNMODIFIED.value,
+                )
+            )
         )
         self.actor_behavior_cloning_min_weight = max(
             0.0,
@@ -130,6 +400,10 @@ class _PPOBase(BaseAgent):
         self.actor_behavior_cloning_extra_update_end_step = max(
             0,
             int(exploration_cfg.get("actor_behavior_cloning_extra_update_end_step", 0) or 0),
+        )
+        self.actor_behavior_cloning_replay_capacity = max(
+            0,
+            int(exploration_cfg.get("actor_behavior_cloning_replay_capacity", 0) or 0),
         )
         self.actor_action_l2_penalty = max(
             0.0,
@@ -181,6 +455,21 @@ class _PPOBase(BaseAgent):
         self.checkpoint_artifact = checkpoint_cfg.get("checkpoint_artifact", "latest_checkpoint.pth")
         self.reset_replay_buffer = bool(checkpoint_cfg.get("reset_replay_buffer", False))
         self.fine_tune = bool(checkpoint_cfg.get("fine_tune", False))
+        restore_optimizers = checkpoint_cfg.get("restore_optimizers")
+        restore_replay_buffer = checkpoint_cfg.get("restore_replay_buffer")
+        self.restore_optimizers = (
+            not self.fine_tune
+            if restore_optimizers is None
+            else bool(restore_optimizers)
+        )
+        self.restore_replay_buffer = (
+            not self.reset_replay_buffer
+            if restore_replay_buffer is None
+            else bool(restore_replay_buffer)
+        )
+        self.restore_exploration_state = bool(
+            checkpoint_cfg.get("restore_exploration_state", True)
+        )
 
         self.num_agents = topology.get("num_agents") or hyperparams.get("num_agents")
         self.observation_dimension = topology.get("observation_dimensions") or hyperparams.get("observation_dimensions")
@@ -197,12 +486,47 @@ class _PPOBase(BaseAgent):
         self.exploration_step = 0
         self._latest_training_metrics: Dict[str, float] = {}
         self.rollout: List[Dict[str, Any]] = []
+        self.behavior_cloning_replay = deque(
+            maxlen=(
+                self.actor_behavior_cloning_replay_capacity
+                if self.actor_behavior_cloning_replay_capacity > 0
+                else None
+            )
+        )
         self._warm_start_policy = None
+        self._residual_base_policy = None
         self._latest_raw_observations: Optional[List[np.ndarray]] = None
         self._latest_encoded_observations: Optional[List[np.ndarray]] = None
+        self._episode_clock_is_explicit = False
+        self._episode_schedule_step: Optional[int] = None
         self._last_warm_start_policy_actions: Optional[List[List[float]]] = None
+        self._last_residual_base_actions: Optional[List[List[float]]] = None
+        self._last_residual_delta_actions: Optional[List[List[float]]] = None
+        self._last_residual_neutral_safety_bypass = False
+        self._residual_building_names: List[str] = []
+        self._last_raw_behavior_teacher_actions: Optional[List[List[float]]] = None
+        self._last_projected_behavior_teacher_actions: Optional[List[List[float]]] = None
+        self._behavior_teacher_projection_diagnostics = (
+            self._empty_behavior_teacher_projection_diagnostics()
+        )
         self._last_warm_start_phaseout_probability = 0.0
         self._last_warm_start_phaseout_used = False
+        self._last_policy_action_eligible = [True for _ in range(int(self.num_agents))]
+        # Ephemeral, one-step cache populated by ``predict`` and consumed by
+        # ``update``. PPO's behaviour probability must be the probability of
+        # the exact latent sample that produced the environment action. It is
+        # unsafe to reconstruct it later from a clipped/scaled action after
+        # the actor may have changed, and it will be impossible once action
+        # projection is introduced.
+        self._last_policy_samples: Optional[List[Dict[str, Any]]] = None
+        self._local_action_safety_adapters: List[CityLearnLocalSafetyAdapter] = []
+        self._last_local_action_projections: List[Any] = []
+        self._last_service_teacher_applied = False
+        self._local_price_adapters: List[PriceMultiplierObservationAdapter] = []
+        self._last_local_price_diagnostics: List[Any] = []
+        self._last_local_price_context_non_neutral = False
+        if self.local_action_safety_enabled or self.residual_policy_enabled:
+            self.requires_raw_observation_context = True
 
         actor_layers = network_cfg["actor"]["layers"]
         value_layers = network_cfg["critic"]["layers"]
@@ -221,6 +545,11 @@ class _PPOBase(BaseAgent):
             ).to(self.device)
             for agent_idx in range(int(self.num_agents))
         ]
+        if self.residual_policy_enabled and self.residual_zero_initialization:
+            for actor in self.actors:
+                with torch.no_grad():
+                    actor.mean_out.weight.zero_()
+                    actor.mean_out.bias.zero_()
         self.value_nets = [
             ValueNetwork(
                 self._value_input_dimension(agent_idx),
@@ -267,6 +596,16 @@ class _PPOBase(BaseAgent):
         self.observation_names = [list(names) for names in observation_names]
         self.action_names = [list(names) for names in action_names]
         self.observation_space = list(observation_space)
+        metadata_building_names = (
+            (metadata or {}).get("building_names")
+            if isinstance(metadata, dict)
+            else None
+        )
+        self._residual_building_names = (
+            [str(name) for name in metadata_building_names]
+            if isinstance(metadata_building_names, list)
+            else []
+        )
         lows, highs = self._default_action_bounds()
         for agent_idx, space in enumerate(action_space[: int(self.num_agents)]):
             if not hasattr(space, "low") or not hasattr(space, "high"):
@@ -285,6 +624,60 @@ class _PPOBase(BaseAgent):
             observation_space=observation_space,
             metadata=metadata,
         )
+        self._initialize_residual_base_policy(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+        self._local_action_safety_adapters = []
+        self._last_local_action_projections = []
+        if self.local_action_safety_enabled:
+            for agent_idx in range(int(self.num_agents)):
+                self._local_action_safety_adapters.append(
+                    CityLearnLocalSafetyAdapter(
+                        observation_names=observation_names[agent_idx],
+                        action_names=action_names[agent_idx],
+                        action_low=self._action_low_for_agent(agent_idx),
+                        action_high=self._action_high_for_agent(agent_idx),
+                        metadata=metadata,
+                        config=CityLearnSafetyConfig(
+                            fail_on_infeasible=self.local_action_safety_fail_on_infeasible,
+                            protect_ev_minimum=self.local_action_safety_protect_ev_minimum,
+                            ev_minimum_mode=self.local_action_safety_ev_minimum_mode,
+                            protect_ev_service_target=(
+                                self.local_action_safety_protect_ev_service_target
+                            ),
+                            headroom_reserve_kw=self.local_action_safety_headroom_reserve_kw,
+                            allow_discretionary_deferrable_start=(
+                                self.local_action_safety_allow_discretionary_deferrable_start
+                            ),
+                        ),
+                    )
+                )
+
+        self._local_price_adapters = []
+        self._last_local_price_diagnostics = []
+        if self.local_price_conditioning_enabled:
+            for agent_idx in range(int(self.num_agents)):
+                feature_low, feature_high = price_feature_bounds_from_metadata(
+                    metadata=metadata,
+                    agent_index=agent_idx,
+                )
+                actor_observation_names = price_observation_names_from_metadata(
+                    metadata=metadata,
+                    agent_index=agent_idx,
+                    fallback_observation_names=observation_names[agent_idx],
+                )
+                self._local_price_adapters.append(
+                    PriceMultiplierObservationAdapter(
+                        observation_names=actor_observation_names,
+                        feature_low=feature_low,
+                        feature_high=feature_high,
+                        forecast_mode=self.local_price_forecast_mode,
+                    )
+                )
 
     @staticmethod
     def _optional_string(value: Any) -> Optional[str]:
@@ -325,6 +718,75 @@ class _PPOBase(BaseAgent):
         )
         logger.info("{} warm-start policy enabled: {}", self.metric_prefix, self.warm_start_policy_name)
 
+    def _initialize_residual_base_policy(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        if not self.residual_policy_enabled:
+            return
+
+        from algorithms.agents.baseline_policies import (  # Local import avoids registry cycles.
+            NormalNoBatteryPolicy,
+            NormalPolicy,
+            RBCBasicPolicy,
+            RBCSmartLocalPolicy,
+            RBCSmartPolicy,
+            RandomPolicy,
+        )
+        from algorithms.agents.rbc_agent import RuleBasedPolicy
+
+        policy_registry = {
+            "RuleBasedPolicy": RuleBasedPolicy,
+            "RandomPolicy": RandomPolicy,
+            "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
+            "NormalPolicy": NormalPolicy,
+            "RBCBasicPolicy": RBCBasicPolicy,
+            "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
+            "RBCSmartPolicy": RBCSmartPolicy,
+        }
+        policy_cls = policy_registry.get(str(self.residual_base_policy_name))
+        if policy_cls is None:
+            supported = ", ".join(sorted(policy_registry))
+            raise ValueError(
+                f"Unsupported PPO residual_base_policy "
+                f"'{self.residual_base_policy_name}'. Supported policies: {supported}."
+            )
+
+        exploration_cfg = self.config["algorithm"]["exploration"]["params"]
+        policy_hyperparams = (
+            exploration_cfg.get("residual_base_policy_hyperparameters") or {}
+        )
+        if not isinstance(policy_hyperparams, dict):
+            raise ValueError(
+                "PPO residual_base_policy_hyperparameters must be an object "
+                "when provided."
+            )
+
+        policy_config = deepcopy(self.config)
+        policy_config["algorithm"] = {
+            "name": str(self.residual_base_policy_name),
+            "hyperparameters": dict(policy_hyperparams),
+        }
+        self._residual_base_policy = policy_cls(policy_config)
+        self._residual_base_policy.attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+        logger.info(
+            "{} residual policy enabled over {} with scale {}.",
+            self.metric_prefix,
+            self.residual_base_policy_name,
+            self.residual_action_scale,
+        )
+
     def set_observation_context(
         self,
         *,
@@ -342,6 +804,22 @@ class _PPOBase(BaseAgent):
             else None
         )
         self._last_warm_start_policy_actions = None
+        self._last_residual_base_actions = None
+        self._last_residual_delta_actions = None
+        self._last_residual_neutral_safety_bypass = False
+        self._reset_behavior_teacher_projection()
+
+    def set_episode_context(
+        self,
+        *,
+        episode_step: Optional[int] = None,
+        next_episode_step: Optional[int] = None,
+    ) -> None:
+        del next_episode_step
+        self._episode_clock_is_explicit = episode_step is not None
+        self._episode_schedule_step = (
+            None if episode_step is None else max(int(episode_step), 0)
+        )
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return global_learning_step >= self.end_initial_exploration_time_step
@@ -360,33 +838,534 @@ class _PPOBase(BaseAgent):
         *,
         context: Any = None,
     ) -> List[List[float]]:
-        _ = context
+        observations = self._apply_local_price_context(observations, context)
         deterministic = bool(deterministic)
         self.exploration_step += 1
+        self._last_service_teacher_applied = False
         self._last_warm_start_policy_actions = None
+        self._reset_behavior_teacher_projection()
+        self._last_policy_action_eligible = [False for _ in range(int(self.num_agents))]
+        self._last_policy_samples = None
         if not deterministic and self.exploration_step <= self.random_exploration_steps:
+            # Teacher/random actions are deliberately ineligible for the PPO
+            # ratio, but the value prediction still belongs to this state and
+            # is cached at action-selection time for a coherent rollout.
+            self._cache_value_predictions(observations)
+            if self.residual_policy_enabled:
+                self._predict_residual_base_policy()
             if self.initial_exploration_strategy == "policy":
-                return self._predict_warm_start_policy()
-            return self._predict_random()
+                actions = self._predict_warm_start_policy()
+            else:
+                actions = self._predict_random()
+            actions = self._apply_service_teacher(actions, deterministic=deterministic)
+            return self._apply_local_action_safety(actions)
 
         actions = self._predict_actor(observations, deterministic=deterministic)
+        actions = self._apply_residual_policy(actions)
         if not deterministic:
             actions = self._apply_warm_start_phaseout(actions)
-        return actions
+        actions = self._apply_service_teacher(actions, deterministic=deterministic)
+        return self._apply_local_action_safety(actions)
+
+    def _apply_local_price_context(
+        self,
+        observations: List[Any],
+        context: Any,
+    ) -> List[Any]:
+        self._last_local_price_diagnostics = []
+        self._last_local_price_context_non_neutral = False
+        if not self.local_price_conditioning_enabled:
+            return observations
+        if len(self._local_price_adapters) != int(self.num_agents):
+            raise RuntimeError(
+                "PPO local price conditioning is enabled but the environment is not attached."
+            )
+        parsed_context = normalize_price_multiplier_context(context)
+        if parsed_context is None:
+            return observations
+
+        transformed: List[np.ndarray] = []
+        for adapter, observation in zip(self._local_price_adapters, observations):
+            conditioned, diagnostics = adapter.transform(observation, parsed_context)
+            transformed.append(conditioned)
+            self._last_local_price_diagnostics.append(diagnostics)
+            self._last_local_price_context_non_neutral |= not diagnostics.neutral_noop
+        return transformed
+
+    def _predict_residual_base_policy(self) -> List[List[float]]:
+        if not self.residual_policy_enabled or self._residual_base_policy is None:
+            raise RuntimeError(
+                "PPO residual policy is enabled but the residual base policy "
+                "is not attached."
+            )
+        observations = self._latest_raw_observations
+        if observations is None:
+            raise RuntimeError(
+                "PPO residual policy requires raw observation context before predict."
+            )
+        predict_at_step = getattr(self._residual_base_policy, "predict_at_step", None)
+        if callable(predict_at_step):
+            schedule_step = (
+                self._episode_schedule_step
+                if self._episode_clock_is_explicit
+                else max(int(self.exploration_step) - 1, 0)
+            )
+            actions = predict_at_step(
+                observations,
+                schedule_step=int(schedule_step),
+                deterministic=self.residual_base_policy_deterministic,
+            )
+        else:
+            actions = self._residual_base_policy.predict(
+                observations,
+                deterministic=self.residual_base_policy_deterministic,
+            )
+        copied = self._copy_action_groups(actions)
+        if len(copied) != int(self.num_agents):
+            raise RuntimeError(
+                "PPO residual base policy returned an action count different "
+                "from the attached agent count."
+            )
+        self._last_residual_base_actions = copied
+        return copied
+
+    def _residual_action_scale_mask(
+        self,
+        agent_idx: int,
+        *,
+        action_dim: int,
+    ) -> np.ndarray:
+        building_gain = 1.0
+        if agent_idx < len(self._residual_building_names):
+            building_gain = self.residual_building_gain_multipliers.get(
+                self._residual_building_names[agent_idx],
+                1.0,
+            )
+        values = np.full(
+            int(action_dim),
+            float(building_gain),
+            dtype=np.float32,
+        )
+        names = self._action_names_for_agent(agent_idx)
+        for action_idx, action_name in enumerate(names[: int(action_dim)]):
+            if self._is_storage_action_name(action_name):
+                values[action_idx] *= self.residual_storage_action_scale_multiplier
+            if self._is_ev_action_name(action_name):
+                values[action_idx] *= self.residual_ev_action_scale_multiplier
+            if self._is_deferrable_action_name(action_name):
+                values[action_idx] *= self.residual_deferrable_action_scale_multiplier
+        return values
+
+    def _residual_action_denominator(
+        self,
+        agent_idx: int,
+        *,
+        action_dim: int,
+    ) -> np.ndarray:
+        low = self._action_low_for_agent(agent_idx)
+        high = self._action_high_for_agent(agent_idx)
+        span = np.maximum(high - low, 1.0e-6)
+        mask = self._residual_action_scale_mask(
+            agent_idx,
+            action_dim=action_dim,
+        )
+        return 0.5 * span * float(self.residual_action_scale) * mask
+
+    def _residual_deadband_for_agent(self, agent_idx: int) -> float:
+        if agent_idx < len(self._residual_building_names):
+            return self.residual_building_deadbands.get(
+                self._residual_building_names[agent_idx],
+                self.residual_action_deadband,
+            )
+        return self.residual_action_deadband
+
+    def _apply_residual_policy(
+        self,
+        actor_actions: List[List[float]],
+    ) -> List[List[float]]:
+        if not self.residual_policy_enabled:
+            return actor_actions
+        base_actions = (
+            self._last_residual_base_actions
+            if self._last_residual_base_actions is not None
+            else self._predict_residual_base_policy()
+        )
+        if self._last_policy_samples is None:
+            raise RuntimeError(
+                "PPO residual policy requires the actor's atomic policy sample cache."
+            )
+
+        combined: List[List[float]] = []
+        deltas: List[List[float]] = []
+        for agent_idx, base_action in enumerate(base_actions):
+            normalized = np.asarray(
+                self._last_policy_samples[agent_idx]["normalized_action"],
+                dtype=np.float64,
+            ).reshape(-1)
+            base = np.asarray(base_action, dtype=np.float64).reshape(-1)
+            if normalized.shape != base.shape:
+                raise RuntimeError(
+                    "PPO residual actor and base policy returned incompatible "
+                    "action shapes."
+                )
+            denominator = self._residual_action_denominator(
+                agent_idx,
+                action_dim=int(normalized.size),
+            )
+            deadband = self._residual_deadband_for_agent(agent_idx)
+            gated_normalized = np.where(
+                np.abs(normalized) <= deadband,
+                0.0,
+                normalized,
+            )
+            delta = denominator * gated_normalized
+            low = self._action_low_for_agent(agent_idx)
+            high = self._action_high_for_agent(agent_idx)
+            executed = np.clip(base + delta, low, high).astype(np.float32)
+            combined.append(executed.tolist())
+            deltas.append(delta.astype(np.float32).tolist())
+            self._last_policy_samples[agent_idx]["executed_action"] = (
+                torch.as_tensor(executed, dtype=torch.float32)
+            )
+        self._last_residual_delta_actions = deltas
+        return combined
+
+    def _apply_service_teacher(
+        self,
+        actions: List[List[float]],
+        *,
+        deterministic: bool,
+    ) -> List[List[float]]:
+        if not self.local_action_safety_service_teacher_enabled:
+            return actions
+        if deterministic and not self.local_action_safety_service_teacher_eval_enabled:
+            return actions
+        if self._warm_start_policy is None:
+            raise RuntimeError(
+                "PPO service-teacher safety requires a configured warm_start_policy."
+            )
+        teacher_actions = self._predict_warm_start_policy()
+        self._last_service_teacher_applied = True
+        return replace_service_actions_with_teacher(
+            action_names=self.action_names,
+            proposed_actions=actions,
+            teacher_actions=teacher_actions,
+        )
+
+    def _apply_local_action_safety(
+        self,
+        actions: List[List[float]],
+    ) -> List[List[float]]:
+        self._last_residual_neutral_safety_bypass = False
+        if not self.local_action_safety_enabled:
+            return actions
+        if len(self._local_action_safety_adapters) != int(self.num_agents):
+            raise RuntimeError(
+                "PPO local action safety is enabled but the environment is not attached."
+            )
+        if self._latest_raw_observations is None or len(self._latest_raw_observations) != int(
+            self.num_agents
+        ):
+            raise RuntimeError(
+                "PPO local action safety requires raw observation context before predict."
+            )
+
+        # The residual base is already an operational policy.  Re-projecting
+        # its action when the learned correction is exactly neutral is not an
+        # identity operation for every EV/storage state and would therefore
+        # silently change the baseline that the residual contract promises to
+        # preserve.  Corrections that are not neutral still pass through the
+        # normal safety projector below.
+        service_anchor_matches_residual_base = (
+            not self._last_service_teacher_applied
+            or (
+                self._last_residual_base_actions is not None
+                and len(actions) == len(self._last_residual_base_actions)
+                and all(
+                    np.allclose(
+                        np.asarray(proposed, dtype=np.float64),
+                        np.asarray(base, dtype=np.float64),
+                        atol=1.0e-9,
+                        rtol=0.0,
+                    )
+                    for proposed, base in zip(
+                        actions,
+                        self._last_residual_base_actions,
+                    )
+                )
+            )
+        )
+        residual_is_neutral = (
+            self.residual_policy_enabled
+            and service_anchor_matches_residual_base
+            and self._last_residual_delta_actions is not None
+            and all(
+                np.all(np.asarray(delta, dtype=np.float64) == 0.0)
+                for delta in self._last_residual_delta_actions
+            )
+        )
+        if residual_is_neutral:
+            copied = self._copy_action_groups(actions)
+            self._last_local_action_projections = []
+            self._last_residual_neutral_safety_bypass = True
+            if self._last_policy_samples is not None:
+                for agent_idx, executed in enumerate(copied):
+                    if agent_idx >= len(self._last_policy_samples):
+                        break
+                    self._last_policy_samples[agent_idx]["executed_action"] = (
+                        torch.as_tensor(executed, dtype=torch.float32)
+                    )
+            return copied
+
+        projected: List[List[float]] = []
+        projections = []
+        for agent_idx, (adapter, raw_observation, proposed) in enumerate(
+            zip(
+                self._local_action_safety_adapters,
+                self._latest_raw_observations,
+                actions,
+            )
+        ):
+            result = adapter.project(raw_observation, proposed)
+            executed = list(result.executed_actions)
+            if self._last_service_teacher_applied:
+                storage_fallback = (
+                    None
+                    if self._last_residual_base_actions is None
+                    or agent_idx >= len(self._last_residual_base_actions)
+                    else self._last_residual_base_actions[agent_idx]
+                )
+                executed = preserve_teacher_service_with_storage_fallback(
+                    action_names=self.action_names[agent_idx],
+                    teacher_merged_actions=proposed,
+                    projected_actions=executed,
+                    storage_fallback_actions=storage_fallback,
+                )
+            projected.append(executed)
+            projections.append(result)
+            if self._last_policy_samples is not None and agent_idx < len(
+                self._last_policy_samples
+            ):
+                self._last_policy_samples[agent_idx]["executed_action"] = torch.as_tensor(
+                    executed,
+                    dtype=torch.float32,
+                )
+        self._last_local_action_projections = projections
+        return projected
+
+    @staticmethod
+    def _empty_behavior_teacher_projection_diagnostics() -> Dict[str, float]:
+        return {
+            "target_available": 0.0,
+            "projection_applied": 0.0,
+            "action_count": 0.0,
+            "disagreement_count": 0.0,
+            "disagreement_ratio": 0.0,
+            "mae": 0.0,
+            "max_abs": 0.0,
+        }
+
+    def _reset_behavior_teacher_projection(self) -> None:
+        self._last_raw_behavior_teacher_actions = None
+        self._last_projected_behavior_teacher_actions = None
+        self._behavior_teacher_projection_diagnostics = (
+            self._empty_behavior_teacher_projection_diagnostics()
+        )
+
+    @staticmethod
+    def _copy_action_groups(actions: List[Any]) -> List[List[float]]:
+        return [
+            np.asarray(action, dtype=np.float64).reshape(-1).tolist()
+            for action in actions
+        ]
+
+    def _set_behavior_teacher_projection_diagnostics(
+        self,
+        *,
+        raw_actions: Optional[List[List[float]]],
+        projected_actions: Optional[List[List[float]]],
+        projection_applied: bool,
+    ) -> None:
+        diagnostics = self._empty_behavior_teacher_projection_diagnostics()
+        if raw_actions is not None and projected_actions is not None:
+            raw_parts = [
+                np.asarray(action, dtype=np.float64).reshape(-1)
+                for action in raw_actions
+            ]
+            projected_parts = [
+                np.asarray(action, dtype=np.float64).reshape(-1)
+                for action in projected_actions
+            ]
+            raw_flat = (
+                np.concatenate(raw_parts)
+                if raw_parts
+                else np.empty(0, dtype=np.float64)
+            )
+            projected_flat = (
+                np.concatenate(projected_parts)
+                if projected_parts
+                else np.empty(0, dtype=np.float64)
+            )
+            if raw_flat.shape != projected_flat.shape:
+                raise ValueError(
+                    "PPO behavior-teacher safety projection returned an action shape "
+                    "different from the raw teacher target."
+                )
+            absolute_difference = np.abs(projected_flat - raw_flat)
+            action_count = int(absolute_difference.size)
+            disagreement_count = int(
+                np.count_nonzero(absolute_difference > 1.0e-9)
+            )
+            diagnostics.update(
+                {
+                    "target_available": 1.0,
+                    "projection_applied": float(projection_applied),
+                    "action_count": float(action_count),
+                    "disagreement_count": float(disagreement_count),
+                    "disagreement_ratio": (
+                        float(disagreement_count / action_count)
+                        if action_count > 0
+                        else 0.0
+                    ),
+                    "mae": (
+                        float(np.mean(absolute_difference))
+                        if action_count > 0
+                        else 0.0
+                    ),
+                    "max_abs": (
+                        float(np.max(absolute_difference))
+                        if action_count > 0
+                        else 0.0
+                    ),
+                }
+            )
+        self._behavior_teacher_projection_diagnostics = diagnostics
+
+    def _project_behavior_teacher_actions(
+        self,
+        raw_actions: Optional[List[Any]],
+    ) -> Optional[List[List[float]]]:
+        if raw_actions is None:
+            self._reset_behavior_teacher_projection()
+            return None
+
+        raw_copy = self._copy_action_groups(raw_actions)
+        if len(raw_copy) != int(self.num_agents):
+            raise RuntimeError(
+                "PPO behavior-teacher target does not match the attached agent count."
+            )
+        projected = [list(action) for action in raw_copy]
+        projection_applied = False
+        if self.local_action_safety_enabled:
+            if len(self._local_action_safety_adapters) != int(self.num_agents):
+                raise RuntimeError(
+                    "PPO behavior-teacher safety projection requires attached local "
+                    "action safety adapters."
+                )
+            if self._latest_raw_observations is None or len(
+                self._latest_raw_observations
+            ) != int(self.num_agents):
+                raise RuntimeError(
+                    "PPO behavior-teacher safety projection requires current raw "
+                    "observation context."
+                )
+            projected = [
+                list(adapter.project(raw_observation, action).executed_actions)
+                for adapter, raw_observation, action in zip(
+                    self._local_action_safety_adapters,
+                    self._latest_raw_observations,
+                    raw_copy,
+                )
+            ]
+            projection_applied = True
+
+        self._last_raw_behavior_teacher_actions = raw_copy
+        self._last_projected_behavior_teacher_actions = projected
+        self._set_behavior_teacher_projection_diagnostics(
+            raw_actions=raw_copy,
+            projected_actions=projected,
+            projection_applied=projection_applied,
+        )
+        return projected
 
     def _predict_actor(self, observations, *, deterministic: bool) -> List[List[float]]:
         actions: List[List[float]] = []
-        with torch.inference_mode():
-            for agent_idx, obs in enumerate(observations):
-                obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=self.device).view(1, -1)
+        obs_tensors = [
+            torch.as_tensor(obs, dtype=torch.float32, device=self.device).view(-1)
+            for obs in observations
+        ]
+        policy_samples: List[Dict[str, Any]] = []
+        # Cached tensors are later inputs to an autograd-enabled log-prob
+        # calculation. ``no_grad`` produces ordinary detached tensors;
+        # inference tensors cannot safely be saved for backward.
+        with torch.no_grad():
+            for agent_idx, obs_tensor_flat in enumerate(obs_tensors):
+                obs_tensor = obs_tensor_flat.view(1, -1)
+                distribution = self.actors[agent_idx].distribution(obs_tensor)
                 if deterministic:
-                    normalized = self.actors[agent_idx](obs_tensor)
+                    raw_action = distribution.mean
+                    normalized = torch.tanh(raw_action)
+                    log_prob = None
                 else:
-                    distribution = self.actors[agent_idx].distribution(obs_tensor)
-                    normalized = torch.clamp(distribution.rsample(), -1.0, 1.0)
+                    raw_action = distribution.rsample()
+                    normalized = torch.tanh(raw_action)
+                    log_prob = self._squashed_log_prob_from_latent(
+                        distribution,
+                        raw_action,
+                        normalized,
+                    )
                 scaled = self._scale_action_tensor(agent_idx, normalized)
+                value_input = self._value_input_for_agent(agent_idx, obs_tensors).view(1, -1)
+                value = self.value_nets[agent_idx](value_input).squeeze(-1)
                 actions.append(scaled.squeeze(0).cpu().numpy().tolist())
+                policy_samples.append(
+                    {
+                        "observation": obs_tensor_flat.detach().cpu().clone(),
+                        "raw_action": raw_action.squeeze(0).detach().cpu().clone(),
+                        "normalized_action": normalized.squeeze(0).detach().cpu().clone(),
+                        "scaled_action": scaled.squeeze(0).detach().cpu().clone(),
+                        "log_prob": (
+                            log_prob.squeeze(0).detach().cpu().clone()
+                            if log_prob is not None
+                            else None
+                        ),
+                        "value": value.squeeze(0).detach().cpu().clone(),
+                        "stochastic": not deterministic,
+                    }
+                )
+        self._last_policy_samples = policy_samples
         return actions
+
+    def _cache_value_predictions(self, observations: List[Any]) -> None:
+        """Cache value estimates for non-policy behaviour actions.
+
+        Warm-start and uniform exploration rows are never PPO-policy eligible,
+        so they intentionally have no latent action or behaviour log-prob.
+        Their critic target still uses the value estimate made for the state
+        at action-selection time.
+        """
+
+        obs_tensors = [
+            torch.as_tensor(obs, dtype=torch.float32, device=self.device).view(-1)
+            for obs in observations
+        ]
+        policy_samples: List[Dict[str, Any]] = []
+        with torch.no_grad():
+            for agent_idx, obs_tensor in enumerate(obs_tensors):
+                value_input = self._value_input_for_agent(agent_idx, obs_tensors).view(1, -1)
+                value = self.value_nets[agent_idx](value_input).squeeze(-1)
+                policy_samples.append(
+                    {
+                        "observation": obs_tensor.detach().cpu().clone(),
+                        "raw_action": None,
+                        "normalized_action": None,
+                        "scaled_action": None,
+                        "log_prob": None,
+                        "value": value.squeeze(0).detach().cpu().clone(),
+                        "stochastic": False,
+                    }
+                )
+        self._last_policy_samples = policy_samples
 
     def _predict_warm_start_policy(self) -> List[List[float]]:
         if self._warm_start_policy is None:
@@ -394,10 +1373,25 @@ class _PPOBase(BaseAgent):
         observations = self._latest_raw_observations or self._latest_encoded_observations
         if observations is None:
             return self._predict_random()
-        actions = self._warm_start_policy.predict(
-            observations,
-            deterministic=self.warm_start_policy_deterministic,
-        )
+        predict_at_step = getattr(self._warm_start_policy, "predict_at_step", None)
+        if callable(predict_at_step):
+            schedule_step = (
+                self._episode_schedule_step
+                if self._episode_clock_is_explicit
+                else max(int(self.exploration_step) - 1, 0)
+            )
+            if schedule_step is None:
+                return self._predict_random()
+            actions = predict_at_step(
+                observations,
+                schedule_step=schedule_step,
+                deterministic=self.warm_start_policy_deterministic,
+            )
+        else:
+            actions = self._warm_start_policy.predict(
+                observations,
+                deterministic=self.warm_start_policy_deterministic,
+            )
         actions = self._add_warm_start_noise(actions)
         self._last_warm_start_policy_actions = actions
         return actions
@@ -430,9 +1424,26 @@ class _PPOBase(BaseAgent):
         self._last_warm_start_phaseout_probability = probability
         self._last_warm_start_phaseout_used = False
         if probability <= 0.0 or self._warm_start_policy is None:
+            self._last_policy_action_eligible = [True for _ in range(int(self.num_agents))]
+            # Once the teacher no longer controls behavior, it may still label
+            # the actor's on-policy states for an auxiliary BC loss.  Querying
+            # it here does not change the action sent to the environment.
+            if self._warm_start_policy is not None and self.actor_behavior_cloning_weight > 0.0:
+                self._predict_warm_start_policy()
             return actor_actions
 
-        teacher_actions = self._predict_warm_start_policy()
+        # While a teacher can still affect the behavior trajectory, samples
+        # are not on-policy for the PPO actor.  They remain useful for value
+        # learning and behavior cloning, but must not enter the PPO ratio,
+        # entropy bonus, or KL early-stop calculation.  This also covers the
+        # actor branch of probability phase-out: its state distribution still
+        # comes from the mixed behavior policy.
+        self._last_policy_action_eligible = [False for _ in range(int(self.num_agents))]
+        teacher_actions = (
+            self._last_warm_start_policy_actions
+            if self._last_warm_start_policy_actions is not None
+            else self._predict_warm_start_policy()
+        )
         if self.warm_start_policy_phaseout_mode == "probability":
             if random.random() < probability:
                 self._last_warm_start_phaseout_used = True
@@ -474,6 +1485,12 @@ class _PPOBase(BaseAgent):
         update_step: bool,
         initial_exploration_done: bool,
     ) -> None:
+        if self._last_local_price_context_non_neutral:
+            raise RuntimeError(
+                "PPO received a non-neutral local price context during learning. "
+                "Price-conditioned leaves are currently inference-only and must be frozen "
+                "under the community coordinator."
+            )
         _ = update_target_step
         done = bool(terminated or truncated)
         self._append_rollout_transition(observations, actions, rewards, next_observations, done)
@@ -505,28 +1522,121 @@ class _PPOBase(BaseAgent):
             for agent_idx in range(int(self.num_agents))
         ]
         normalized_actions = []
+        policy_actions = []
+        latent_actions = []
         teacher_actions = []
         old_log_probs = []
         values = []
+        behavior_teacher_actions = self._project_behavior_teacher_actions(
+            self._last_warm_start_policy_actions
+        )
         with torch.no_grad():
             for agent_idx in range(int(self.num_agents)):
                 action_tensor = torch.as_tensor(actions[agent_idx], dtype=torch.float32, device=self.device).view(1, -1)
                 normalized = self._normalize_scaled_action_tensor(agent_idx, action_tensor)
+                policy_eligible = bool(self._last_policy_action_eligible[agent_idx])
+                cached_sample = (
+                    self._last_policy_samples[agent_idx]
+                    if self._last_policy_samples is not None
+                    and agent_idx < len(self._last_policy_samples)
+                    else None
+                )
+                cache_matches_observation = bool(
+                    cached_sample is not None
+                    and cached_sample.get("observation") is not None
+                    and torch.allclose(
+                        cached_sample["observation"].view(-1),
+                        obs_tensors[agent_idx].view(-1),
+                        rtol=1.0e-5,
+                        atol=1.0e-6,
+                    )
+                )
+                if policy_eligible:
+                    if (
+                        not cache_matches_observation
+                        or not bool(cached_sample.get("stochastic", False))
+                        or cached_sample.get("raw_action") is None
+                        or cached_sample.get("normalized_action") is None
+                        or cached_sample.get("scaled_action") is None
+                        or cached_sample.get("log_prob") is None
+                    ):
+                        raise RuntimeError(
+                            "PPO policy-eligible transition has no matching stochastic "
+                            "sample cache. Call predict exactly once before update and "
+                            "pass back the same observations/actions."
+                        )
+                    cached_executed = cached_sample.get(
+                        "executed_action",
+                        cached_sample["scaled_action"],
+                    )
+                    cached_scaled = cached_executed.to(
+                        device=self.device,
+                        dtype=action_tensor.dtype,
+                    ).view(1, -1)
+                    if not torch.allclose(
+                        cached_scaled,
+                        action_tensor,
+                        rtol=1.0e-5,
+                        atol=1.0e-6,
+                    ):
+                        raise RuntimeError(
+                            "PPO policy-eligible action differs from the action returned "
+                            "by predict; refusing to construct an invalid on-policy ratio."
+                        )
+                    policy_normalized = cached_sample["normalized_action"].to(
+                        device=self.device,
+                        dtype=normalized.dtype,
+                    ).view(1, -1)
+                    latent_action = cached_sample["raw_action"].to(
+                        device=self.device,
+                        dtype=normalized.dtype,
+                    ).view(1, -1)
+                    log_prob = cached_sample["log_prob"].to(
+                        device=self.device,
+                        dtype=normalized.dtype,
+                    ).view(-1)
+                else:
+                    # A finite placeholder keeps mixed minibatches numerically
+                    # stable. The policy mask prevents this inferred latent and
+                    # zero log-prob from ever entering ratio/entropy/KL terms.
+                    policy_normalized = normalized
+                    bounded = policy_normalized.clamp(-1.0 + 1.0e-6, 1.0 - 1.0e-6)
+                    latent_action = torch.atanh(bounded)
+                    log_prob = torch.zeros(1, dtype=normalized.dtype, device=self.device)
                 teacher_action = None
-                if self._last_warm_start_policy_actions is not None and agent_idx < len(self._last_warm_start_policy_actions):
+                if (
+                    behavior_teacher_actions is not None
+                    and agent_idx < len(behavior_teacher_actions)
+                ):
                     teacher_tensor = torch.as_tensor(
-                        self._last_warm_start_policy_actions[agent_idx],
+                        behavior_teacher_actions[agent_idx],
                         dtype=torch.float32,
                         device=self.device,
                     ).view(1, -1)
                     if teacher_tensor.shape[-1] == normalized.shape[-1]:
-                        teacher_action = self._normalize_scaled_action_tensor(agent_idx, teacher_tensor)
-                obs_batch = obs_tensors[agent_idx].to(self.device).view(1, -1)
-                distribution = self.actors[agent_idx].distribution(obs_batch)
-                log_prob = distribution.log_prob(normalized).sum(dim=-1)
-                value_input = self._value_input_for_agent(agent_idx, obs_tensors).to(self.device).view(1, -1)
-                value = self.value_nets[agent_idx](value_input).squeeze(-1)
+                        if self.residual_policy_enabled:
+                            teacher_action = self._normalize_residual_teacher_action(
+                                agent_idx,
+                                teacher_tensor,
+                            )
+                        else:
+                            teacher_action = self._normalize_scaled_action_tensor(
+                                agent_idx,
+                                teacher_tensor,
+                            )
+                if cache_matches_observation and cached_sample.get("value") is not None:
+                    value = cached_sample["value"].to(
+                        device=self.device,
+                        dtype=normalized.dtype,
+                    ).view(-1)
+                else:
+                    # Backward-compatible critic fallback for manually supplied
+                    # teacher transitions. Policy-eligible rows never use it.
+                    value_input = self._value_input_for_agent(agent_idx, obs_tensors).to(self.device).view(1, -1)
+                    value = self.value_nets[agent_idx](value_input).squeeze(-1)
                 normalized_actions.append(normalized.squeeze(0).cpu())
+                policy_actions.append(policy_normalized.squeeze(0).cpu())
+                latent_actions.append(latent_action.squeeze(0).cpu())
                 if teacher_action is None:
                     teacher_actions.append(torch.full_like(normalized.squeeze(0).cpu(), float("nan")))
                 else:
@@ -534,18 +1644,69 @@ class _PPOBase(BaseAgent):
                 old_log_probs.append(log_prob.squeeze(0).cpu())
                 values.append(value.squeeze(0).cpu())
 
-        self.rollout.append(
-            {
-                "observations": obs_tensors,
-                "next_observations": next_obs_tensors,
-                "actions": normalized_actions,
-                "teacher_actions": teacher_actions,
-                "rewards": torch.as_tensor(rewards, dtype=torch.float32).view(-1),
-                "done": bool(done),
-                "old_log_probs": torch.stack(old_log_probs),
-                "values": torch.stack(values),
-            }
+        transition = {
+            "observations": obs_tensors,
+            "next_observations": next_obs_tensors,
+            "actions": normalized_actions,
+            "policy_actions": policy_actions,
+            "latent_actions": latent_actions,
+            "teacher_actions": teacher_actions,
+            "rewards": torch.as_tensor(rewards, dtype=torch.float32).view(-1),
+            "done": bool(done),
+            "old_log_probs": torch.stack(old_log_probs),
+            "values": torch.stack(values),
+            "policy_eligible": torch.as_tensor(
+                self._last_policy_action_eligible,
+                dtype=torch.bool,
+            ),
+        }
+        self.rollout.append(transition)
+        # A behaviour sample is a single-use hand-off from predict to update.
+        # Consuming it prevents accidental reuse when update is called twice.
+        self._last_policy_samples = None
+        self._last_policy_action_eligible = [False for _ in range(int(self.num_agents))]
+        if self.actor_behavior_cloning_replay_capacity > 0 and any(
+            bool(torch.isfinite(action).all()) for action in teacher_actions
+        ):
+            self.behavior_cloning_replay.append(
+                {
+                    "observations": [observation.detach().clone() for observation in obs_tensors],
+                    "teacher_actions": [action.detach().clone() for action in teacher_actions],
+                }
+            )
+
+    def _normalize_residual_teacher_action(
+        self,
+        agent_idx: int,
+        teacher_action: torch.Tensor,
+    ) -> torch.Tensor:
+        if self._last_residual_base_actions is None:
+            raise RuntimeError(
+                "PPO residual behavior cloning requires a base action cached "
+                "for the same observation."
+            )
+        base_action = torch.as_tensor(
+            self._last_residual_base_actions[agent_idx],
+            dtype=teacher_action.dtype,
+            device=teacher_action.device,
+        ).view(1, -1)
+        denominator = torch.as_tensor(
+            self._residual_action_denominator(
+                agent_idx,
+                action_dim=int(teacher_action.shape[-1]),
+            ),
+            dtype=teacher_action.dtype,
+            device=teacher_action.device,
+        ).view(1, -1)
+        usable = denominator.abs() > 1.0e-8
+        safe_denominator = torch.where(
+            usable,
+            denominator,
+            torch.ones_like(denominator),
         )
+        target = (teacher_action - base_action) / safe_denominator
+        target = torch.where(usable, target, torch.zeros_like(target))
+        return torch.clamp(target, -1.0, 1.0)
 
     def _train_from_rollout(self, *, global_learning_step: int) -> None:
         if not self.rollout:
@@ -560,6 +1721,15 @@ class _PPOBase(BaseAgent):
         )
         old_values = torch.stack([transition["values"] for transition in self.rollout]).to(self.device)
         old_log_probs = torch.stack([transition["old_log_probs"] for transition in self.rollout]).to(self.device)
+        policy_eligible = torch.stack(
+            [
+                transition.get(
+                    "policy_eligible",
+                    torch.ones(int(self.num_agents), dtype=torch.bool),
+                )
+                for transition in self.rollout
+            ]
+        ).to(self.device, dtype=torch.bool)
 
         with torch.no_grad():
             next_obs_tensors = self.rollout[-1]["next_observations"]
@@ -579,7 +1749,12 @@ class _PPOBase(BaseAgent):
                 advantages[step_idx] = last_gae
             returns = advantages + old_values
 
-        flat_advantages = advantages.reshape(-1)
+        eligible_advantages = advantages[policy_eligible]
+        flat_advantages = (
+            eligible_advantages
+            if eligible_advantages.numel() > 0
+            else advantages.reshape(-1)
+        )
         adv_mean = flat_advantages.mean()
         adv_std = flat_advantages.std(unbiased=False).clamp_min(1.0e-8)
         advantages = (advantages - adv_mean) / adv_std
@@ -597,13 +1772,8 @@ class _PPOBase(BaseAgent):
             global_learning_step,
             behavior_cloning_weight,
         )
-        behavior_cloning_extra_losses, behavior_cloning_extra_grad_norms = (
-            self._run_actor_behavior_cloning_extra_updates(
-                indices,
-                behavior_cloning_weight=behavior_cloning_weight,
-                extra_updates=behavior_cloning_extra_updates,
-            )
-        )
+        behavior_cloning_extra_losses: List[float] = []
+        behavior_cloning_extra_grad_norms: List[float] = []
 
         for _epoch in range(self.ppo_epochs):
             shuffled = indices[torch.randperm(rollout_size, device=self.device)]
@@ -613,20 +1783,36 @@ class _PPOBase(BaseAgent):
                 for agent_idx in self._ppo_agent_update_order():
                     obs_batch = self._stack_agent_observations(agent_idx, batch_idx)
                     action_batch = self._stack_agent_actions(agent_idx, batch_idx)
+                    latent_action_batch = self._stack_agent_latent_actions(agent_idx, batch_idx)
                     value_input_batch = self._stack_value_inputs(agent_idx, batch_idx)
 
                     distribution = self.actors[agent_idx].distribution(obs_batch)
-                    log_prob = distribution.log_prob(action_batch).sum(dim=-1)
-                    entropy = distribution.entropy().sum(dim=-1).mean()
-                    ratio = torch.exp(log_prob - old_log_probs[batch_idx, agent_idx])
-                    advantage_batch = advantages[batch_idx, agent_idx]
-                    unclipped_loss = ratio * advantage_batch
-                    clipped_loss = torch.clamp(
-                        ratio,
-                        1.0 - self.clip_ratio,
-                        1.0 + self.clip_ratio,
-                    ) * advantage_batch
-                    policy_loss = -torch.minimum(unclipped_loss, clipped_loss).mean()
+                    log_prob = self._squashed_log_prob_from_latent(
+                        distribution,
+                        latent_action_batch,
+                        action_batch,
+                    )
+                    eligible_mask = policy_eligible[batch_idx, agent_idx]
+                    if bool(eligible_mask.any()):
+                        eligible_log_prob = log_prob[eligible_mask]
+                        eligible_old_log_prob = old_log_probs[batch_idx, agent_idx][eligible_mask]
+                        entropy = distribution.entropy().sum(dim=-1)[eligible_mask].mean()
+                        ratio = torch.exp(eligible_log_prob - eligible_old_log_prob)
+                        advantage_batch = advantages[batch_idx, agent_idx][eligible_mask]
+                        unclipped_loss = ratio * advantage_batch
+                        clipped_loss = torch.clamp(
+                            ratio,
+                            1.0 - self.clip_ratio,
+                            1.0 + self.clip_ratio,
+                        ) * advantage_batch
+                        policy_loss = -torch.minimum(unclipped_loss, clipped_loss).mean()
+                        approx_kl = (eligible_old_log_prob - eligible_log_prob).mean().abs()
+                    else:
+                        # Preserve an actor-connected zero so BC/regularization
+                        # can still be combined with this loss safely.
+                        policy_loss = log_prob.sum() * 0.0
+                        entropy = distribution.entropy().sum() * 0.0
+                        approx_kl = log_prob.detach().sum() * 0.0
 
                     value_pred = self.value_nets[agent_idx](value_input_batch).squeeze(-1)
                     value_loss = mse_loss(value_pred, returns[batch_idx, agent_idx])
@@ -637,7 +1823,7 @@ class _PPOBase(BaseAgent):
                     )
                     actor_regularization_loss = self._actor_action_regularization_loss(agent_idx, obs_batch)
                     loss = (
-                        policy_loss
+                        self.actor_policy_loss_weight * policy_loss
                         + self.value_loss_coef * value_loss
                         - self.entropy_coef * entropy
                         + behavior_cloning_weight * behavior_cloning_loss
@@ -658,9 +1844,6 @@ class _PPOBase(BaseAgent):
                     self.actor_optimizers[agent_idx].step()
                     self.value_optimizers[agent_idx].step()
 
-                    with torch.no_grad():
-                        approx_kl = (old_log_probs[batch_idx, agent_idx] - log_prob).mean().abs()
-
                     policy_losses.append(float(policy_loss.detach().item()))
                     value_losses.append(float(value_loss.detach().item()))
                     behavior_cloning_losses.append(float(behavior_cloning_loss.detach().item()))
@@ -669,7 +1852,11 @@ class _PPOBase(BaseAgent):
                     approx_kl_values.append(float(approx_kl.detach().item()))
                     grad_norm_values.append(float(grad_norm))
 
-                    if self.target_kl is not None and approx_kl.item() > self.target_kl:
+                    if (
+                        self.target_kl is not None
+                        and bool(eligible_mask.any())
+                        and approx_kl.item() > self.target_kl
+                    ):
                         stop_epoch = True
                         break
                 if stop_epoch:
@@ -677,9 +1864,25 @@ class _PPOBase(BaseAgent):
             if stop_epoch:
                 break
 
+        # Keep the actor unchanged between rollout collection and the PPO
+        # ratio calculation. Running auxiliary BC first makes the stored
+        # old_log_probs stale and can produce an artificial KL spike before
+        # the first PPO minibatch. Extra imitation updates are safe only after
+        # every PPO objective that references the rollout policy is complete.
+        behavior_cloning_extra_losses, behavior_cloning_extra_grad_norms = (
+            self._run_actor_behavior_cloning_extra_updates(
+                indices,
+                behavior_cloning_weight=behavior_cloning_weight,
+                extra_updates=behavior_cloning_extra_updates,
+            )
+        )
+
         if self.training_diagnostics_enabled and global_learning_step % self.mlflow_step_sample_interval == 0:
             metrics = {
                 f"{self.metric_prefix}/rollout_size": float(rollout_size),
+                f"{self.metric_prefix}/policy_eligible_fraction": float(
+                    policy_eligible.float().mean().item()
+                ),
                 f"{self.metric_prefix}/policy_loss_mean": float(np.mean(policy_losses) if policy_losses else 0.0),
                 f"{self.metric_prefix}/value_loss_mean": float(np.mean(value_losses) if value_losses else 0.0),
                 f"{self.metric_prefix}/behavior_cloning_loss_mean": float(
@@ -714,12 +1917,69 @@ class _PPOBase(BaseAgent):
             random.shuffle(order)
         return order
 
+    @staticmethod
+    def _squashed_log_prob(
+        distribution: torch.distributions.Normal,
+        normalized_action: torch.Tensor,
+        epsilon: float = 1.0e-6,
+    ) -> torch.Tensor:
+        """Log-probability under a Normal policy transformed by ``tanh``.
+
+        PPO stores the bounded action sent to the simulator. Recovering its
+        pre-tanh sample and applying the Jacobian correction keeps rollout and
+        update probabilities consistent, including near action bounds.
+        """
+        bounded = normalized_action.clamp(-1.0 + epsilon, 1.0 - epsilon)
+        raw_action = torch.atanh(bounded)
+        correction = torch.log(torch.clamp(1.0 - bounded.pow(2), min=epsilon))
+        return (distribution.log_prob(raw_action) - correction).sum(dim=-1)
+
+    @staticmethod
+    def _squashed_log_prob_from_latent(
+        distribution: torch.distributions.Normal,
+        raw_action: torch.Tensor,
+        normalized_action: torch.Tensor,
+        epsilon: float = 1.0e-6,
+    ) -> torch.Tensor:
+        """Evaluate an exact cached pre-tanh policy sample.
+
+        Keeping the latent avoids the lossy ``atanh`` reconstruction used by
+        the compatibility helper above, especially for saturated actions.
+        """
+
+        correction = torch.log(
+            torch.clamp(1.0 - normalized_action.pow(2), min=epsilon)
+        )
+        return (distribution.log_prob(raw_action) - correction).sum(dim=-1)
+
     def _stack_agent_observations(self, agent_idx: int, indices: torch.Tensor) -> torch.Tensor:
         selected = [self.rollout[int(idx.item())]["observations"][agent_idx] for idx in indices]
         return torch.stack(selected).to(self.device)
 
     def _stack_agent_actions(self, agent_idx: int, indices: torch.Tensor) -> torch.Tensor:
-        selected = [self.rollout[int(idx.item())]["actions"][agent_idx] for idx in indices]
+        selected = [
+            self.rollout[int(idx.item())].get(
+                "policy_actions",
+                self.rollout[int(idx.item())]["actions"],
+            )[agent_idx]
+            for idx in indices
+        ]
+        return torch.stack(selected).to(self.device)
+
+    def _stack_agent_latent_actions(self, agent_idx: int, indices: torch.Tensor) -> torch.Tensor:
+        selected = []
+        for idx in indices:
+            transition = self.rollout[int(idx.item())]
+            latent_actions = transition.get("latent_actions")
+            if latent_actions is not None:
+                selected.append(latent_actions[agent_idx])
+                continue
+            # Checkpoints created before atomic policy sampling only contain
+            # bounded normalized actions. Preserve resume compatibility by
+            # reconstructing their latent exactly as the old implementation.
+            policy_actions = transition.get("policy_actions", transition["actions"])
+            bounded = policy_actions[agent_idx].clamp(-1.0 + 1.0e-6, 1.0 - 1.0e-6)
+            selected.append(torch.atanh(bounded))
         return torch.stack(selected).to(self.device)
 
     def _stack_agent_teacher_actions(self, agent_idx: int, indices: torch.Tensor) -> torch.Tensor:
@@ -775,18 +2035,45 @@ class _PPOBase(BaseAgent):
 
         losses: List[float] = []
         grad_norms: List[float] = []
-        rollout_size = int(indices.numel())
+        use_demonstration_replay = bool(
+            self.actor_behavior_cloning_replay_capacity > 0
+            and len(self.behavior_cloning_replay) > 0
+        )
+        source_size = (
+            len(self.behavior_cloning_replay)
+            if use_demonstration_replay
+            else int(indices.numel())
+        )
+        sample_size = min(source_size, int(indices.numel()))
         for _update in range(extra_updates):
-            shuffled = indices[torch.randperm(rollout_size, device=self.device)]
-            for start in range(0, rollout_size, self.minibatch_size):
+            if use_demonstration_replay:
+                shuffled = torch.randperm(source_size, device=self.device)[:sample_size]
+            else:
+                shuffled = indices[torch.randperm(source_size, device=self.device)]
+            for start in range(0, sample_size, self.minibatch_size):
                 batch_idx = shuffled[start : start + self.minibatch_size]
                 for agent_idx in self._ppo_agent_update_order():
-                    obs_batch = self._stack_agent_observations(agent_idx, batch_idx)
-                    behavior_cloning_loss = self._actor_behavior_cloning_loss(
-                        agent_idx,
-                        obs_batch,
-                        batch_idx,
-                    )
+                    if use_demonstration_replay:
+                        obs_batch = self._stack_behavior_cloning_replay_observations(
+                            agent_idx,
+                            batch_idx,
+                        )
+                        teacher_actions = self._stack_behavior_cloning_replay_teacher_actions(
+                            agent_idx,
+                            batch_idx,
+                        )
+                        behavior_cloning_loss = self._actor_behavior_cloning_loss_for_targets(
+                            agent_idx,
+                            obs_batch,
+                            teacher_actions,
+                        )
+                    else:
+                        obs_batch = self._stack_agent_observations(agent_idx, batch_idx)
+                        behavior_cloning_loss = self._actor_behavior_cloning_loss(
+                            agent_idx,
+                            obs_batch,
+                            batch_idx,
+                        )
                     if not torch.isfinite(behavior_cloning_loss) or behavior_cloning_loss.detach().item() <= 0.0:
                         continue
                     weighted_loss = behavior_cloning_weight * behavior_cloning_loss
@@ -801,6 +2088,28 @@ class _PPOBase(BaseAgent):
                     grad_norms.append(float(grad_norm))
         return losses, grad_norms
 
+    def _stack_behavior_cloning_replay_observations(
+        self,
+        agent_idx: int,
+        indices: torch.Tensor,
+    ) -> torch.Tensor:
+        selected = [
+            self.behavior_cloning_replay[int(idx.item())]["observations"][agent_idx]
+            for idx in indices
+        ]
+        return torch.stack(selected).to(self.device)
+
+    def _stack_behavior_cloning_replay_teacher_actions(
+        self,
+        agent_idx: int,
+        indices: torch.Tensor,
+    ) -> torch.Tensor:
+        selected = [
+            self.behavior_cloning_replay[int(idx.item())]["teacher_actions"][agent_idx]
+            for idx in indices
+        ]
+        return torch.stack(selected).to(self.device)
+
     def _actor_behavior_cloning_loss(
         self,
         agent_idx: int,
@@ -811,13 +2120,161 @@ class _PPOBase(BaseAgent):
             return torch.as_tensor(0.0, dtype=obs_batch.dtype, device=obs_batch.device)
 
         teacher_actions = self._stack_agent_teacher_actions(agent_idx, indices)
+        return self._actor_behavior_cloning_loss_for_targets(
+            agent_idx,
+            obs_batch,
+            teacher_actions,
+        )
+
+    def _actor_behavior_cloning_loss_for_targets(
+        self,
+        agent_idx: int,
+        obs_batch: torch.Tensor,
+        teacher_actions: torch.Tensor,
+    ) -> torch.Tensor:
         valid_mask = torch.isfinite(teacher_actions).all(dim=1)
         if not torch.any(valid_mask):
             return torch.as_tensor(0.0, dtype=obs_batch.dtype, device=obs_batch.device)
 
         predicted = self.actors[agent_idx](obs_batch[valid_mask])
         target = teacher_actions[valid_mask]
-        return mse_loss(predicted, target)
+        squared_error = (predicted - target).pow(2)
+        weights = self._actor_behavior_cloning_action_weights(
+            agent_idx,
+            action_dim=squared_error.shape[-1],
+            dtype=squared_error.dtype,
+            device=squared_error.device,
+        )
+        sample_weights = self._actor_behavior_cloning_sample_weights(
+            agent_idx,
+            base_weights=weights,
+            normalized_target=target,
+        )
+        denominator = torch.clamp(sample_weights.sum(), min=1.0)
+        return (squared_error * sample_weights).sum() / denominator
+
+    def _actor_behavior_cloning_sample_weights(
+        self,
+        agent_idx: int,
+        *,
+        base_weights: torch.Tensor,
+        normalized_target: torch.Tensor,
+    ) -> torch.Tensor:
+        sample_weights = base_weights.view(1, -1).expand_as(normalized_target)
+        names = self._action_names_for_agent(agent_idx)
+        action_dim = int(normalized_target.shape[-1])
+        ev_positive_weight = float(
+            getattr(self, "actor_ev_behavior_cloning_positive_target_weight", 0.0) or 0.0
+        )
+        ev_zero_weight = float(
+            getattr(self, "actor_ev_behavior_cloning_zero_target_weight", 0.0) or 0.0
+        )
+        deferrable_positive_weight = float(
+            getattr(
+                self,
+                "actor_deferrable_behavior_cloning_positive_target_weight",
+                0.0,
+            )
+            or 0.0
+        )
+        residual_neutral_weight = float(
+            getattr(
+                self,
+                "actor_residual_behavior_cloning_neutral_target_weight",
+                0.0,
+            )
+            or 0.0
+        )
+        if (
+            ev_positive_weight <= 0.0
+            and ev_zero_weight <= 0.0
+            and deferrable_positive_weight <= 0.0
+            and (
+                not self.residual_policy_enabled
+                or residual_neutral_weight <= 0.0
+            )
+        ):
+            return sample_weights
+
+        multiplier = torch.ones_like(normalized_target)
+        if self.residual_policy_enabled and residual_neutral_weight > 0.0:
+            neutral_threshold = float(
+                getattr(
+                    self,
+                    "actor_residual_behavior_cloning_neutral_target_threshold",
+                    0.02,
+                )
+                or 0.02
+            )
+            neutral_target = (
+                normalized_target.abs() <= neutral_threshold
+            ).to(dtype=normalized_target.dtype)
+            multiplier += residual_neutral_weight * neutral_target
+        for action_idx in range(action_dim):
+            action_name = names[action_idx] if action_idx < len(names) else ""
+            if self._is_ev_action_name(action_name):
+                if ev_positive_weight > 0.0:
+                    positive = torch.clamp(normalized_target[:, action_idx], 0.0, 1.0)
+                    power = float(
+                        getattr(self, "actor_ev_behavior_cloning_positive_target_power", 1.0)
+                        or 1.0
+                    )
+                    if power != 1.0:
+                        positive = positive.pow(power)
+                    multiplier[:, action_idx] += ev_positive_weight * positive
+                if ev_zero_weight > 0.0:
+                    zero_threshold = float(
+                        getattr(self, "actor_ev_behavior_cloning_zero_target_threshold", 0.05)
+                        or 0.05
+                    )
+                    zero_target = (
+                        normalized_target[:, action_idx].abs() <= zero_threshold
+                    ).to(dtype=normalized_target.dtype)
+                    multiplier[:, action_idx] += ev_zero_weight * zero_target
+            elif self._is_deferrable_action_name(action_name) and deferrable_positive_weight > 0.0:
+                # Deferrable actions use [0, 1] in the simulator and therefore
+                # [-1, 1] after normalization. Map the target back to an
+                # off/on fraction before upweighting the rare start commands.
+                positive = torch.clamp(
+                    (normalized_target[:, action_idx] + 1.0) * 0.5,
+                    0.0,
+                    1.0,
+                )
+                power = float(
+                    getattr(
+                        self,
+                        "actor_deferrable_behavior_cloning_positive_target_power",
+                        1.0,
+                    )
+                    or 1.0
+                )
+                if power != 1.0:
+                    positive = positive.pow(power)
+                multiplier[:, action_idx] += deferrable_positive_weight * positive
+        return sample_weights * multiplier
+
+    def _actor_behavior_cloning_action_weights(
+        self,
+        agent_idx: int,
+        *,
+        action_dim: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        names = self._action_names_for_agent(agent_idx)
+        weights: List[float] = []
+        for action_idx in range(int(action_dim)):
+            action_name = names[action_idx] if action_idx < len(names) else ""
+            if self._is_ev_action_name(action_name):
+                multiplier = self.actor_ev_behavior_cloning_multiplier
+            elif self._is_storage_action_name(action_name):
+                multiplier = self.actor_storage_behavior_cloning_multiplier
+            elif self._is_deferrable_action_name(action_name):
+                multiplier = self.actor_deferrable_behavior_cloning_multiplier
+            else:
+                multiplier = self.actor_other_behavior_cloning_multiplier
+            weights.append(float(multiplier))
+        return torch.as_tensor(weights, dtype=dtype, device=device)
 
     def _actor_action_regularization_loss(self, agent_idx: int, obs_batch: torch.Tensor) -> torch.Tensor:
         if (
@@ -882,6 +2339,15 @@ class _PPOBase(BaseAgent):
         lowered = str(action_name).lower()
         return "charger" in lowered or "electric_vehicle" in lowered or lowered.startswith("ev")
 
+    @staticmethod
+    def _is_deferrable_action_name(action_name: str) -> bool:
+        lowered = str(action_name).lower()
+        return (
+            lowered.startswith("deferrable_appliance")
+            or lowered.endswith("::start")
+            or lowered == "start"
+        )
+
     def _value_input_for_agent(self, agent_idx: int, observations: List[torch.Tensor]) -> torch.Tensor:
         if self.value_scope == "global":
             return torch.cat([obs.view(-1) for obs in observations], dim=0)
@@ -926,14 +2392,17 @@ class _PPOBase(BaseAgent):
         return torch.clamp(2.0 * (action - low) / span - 1.0, -1.0, 1.0)
 
     def get_diagnostic_metrics(self) -> Dict[str, float]:
-        return {
+        metrics = {
             f"{self.metric_prefix}/rollout_buffer_size": float(len(self.rollout)),
             f"{self.metric_prefix}/rollout_length": float(self.rollout_length),
             f"{self.metric_prefix}/minibatch_size": float(self.minibatch_size),
             f"{self.metric_prefix}/ppo_epochs": float(self.ppo_epochs),
             f"{self.metric_prefix}/clip_ratio": float(self.clip_ratio),
             f"{self.metric_prefix}/entropy_coef": float(self.entropy_coef),
-            f"{self.metric_prefix}/value_loss_coef": float(self.value_loss_coef),
+                f"{self.metric_prefix}/value_loss_coef": float(self.value_loss_coef),
+                f"{self.metric_prefix}/actor_policy_loss_weight": float(
+                    self.actor_policy_loss_weight
+                ),
             f"{self.metric_prefix}/gae_lambda": float(self.gae_lambda),
             f"{self.metric_prefix}/value_scope_global": float(self.value_scope == "global"),
             f"{self.metric_prefix}/agent_update_order_random": float(self.agent_update_order == "random"),
@@ -944,12 +2413,120 @@ class _PPOBase(BaseAgent):
                 self._last_warm_start_phaseout_probability
             ),
             f"{self.metric_prefix}/warm_start_policy_phaseout_used": float(self._last_warm_start_phaseout_used),
+            f"{self.metric_prefix}/residual_policy_enabled": float(
+                self.residual_policy_enabled
+            ),
+            f"{self.metric_prefix}/residual_neutral_safety_bypass": float(
+                self._last_residual_neutral_safety_bypass
+            ),
+            f"{self.metric_prefix}/residual_base_policy_enabled": float(
+                self._residual_base_policy is not None
+            ),
+            f"{self.metric_prefix}/residual_action_scale": float(
+                self.residual_action_scale
+            ),
+            f"{self.metric_prefix}/residual_building_gain": float(
+                self.residual_building_gain_multipliers.get(
+                    self._residual_building_names[0],
+                    1.0,
+                )
+                if self._residual_building_names
+                else 1.0
+            ),
+            f"{self.metric_prefix}/residual_deadband": float(
+                self._residual_deadband_for_agent(0)
+            ),
+            f"{self.metric_prefix}/residual_delta_l1_mean": float(
+                np.mean(
+                    [
+                        abs(value)
+                        for action in (self._last_residual_delta_actions or [])
+                        for value in action
+                    ]
+                )
+                if self._last_residual_delta_actions
+                else 0.0
+            ),
             f"{self.metric_prefix}/behavior_cloning_weight": float(self.actor_behavior_cloning_weight),
+            f"{self.metric_prefix}/behavior_cloning_residual_neutral_target_weight": float(
+                self.actor_residual_behavior_cloning_neutral_target_weight
+            ),
+            f"{self.metric_prefix}/behavior_cloning_residual_neutral_target_threshold": float(
+                self.actor_residual_behavior_cloning_neutral_target_threshold
+            ),
             f"{self.metric_prefix}/behavior_cloning_min_weight": float(self.actor_behavior_cloning_min_weight),
+            f"{self.metric_prefix}/behavior_cloning_replay_size": float(
+                len(self.behavior_cloning_replay)
+            ),
+            f"{self.metric_prefix}/behavior_cloning_replay_capacity": float(
+                self.actor_behavior_cloning_replay_capacity
+            ),
+            f"{self.metric_prefix}/behavior_cloning_ev_multiplier": float(
+                self.actor_ev_behavior_cloning_multiplier
+            ),
+            f"{self.metric_prefix}/behavior_cloning_ev_positive_target_weight": float(
+                self.actor_ev_behavior_cloning_positive_target_weight
+            ),
+            f"{self.metric_prefix}/behavior_cloning_ev_zero_target_weight": float(
+                self.actor_ev_behavior_cloning_zero_target_weight
+            ),
+            f"{self.metric_prefix}/behavior_cloning_ev_zero_target_threshold": float(
+                self.actor_ev_behavior_cloning_zero_target_threshold
+            ),
+            f"{self.metric_prefix}/behavior_cloning_storage_multiplier": float(
+                self.actor_storage_behavior_cloning_multiplier
+            ),
+            f"{self.metric_prefix}/behavior_cloning_deferrable_multiplier": float(
+                self.actor_deferrable_behavior_cloning_multiplier
+            ),
+            f"{self.metric_prefix}/behavior_cloning_deferrable_positive_target_weight": float(
+                self.actor_deferrable_behavior_cloning_positive_target_weight
+            ),
             f"{self.metric_prefix}/initial_exploration_done": float(
                 self.exploration_step >= self.end_initial_exploration_time_step
             ),
+            f"{self.metric_prefix}/local_action_safety_enabled": float(
+                self.local_action_safety_enabled
+            ),
+            f"{self.metric_prefix}/local_action_safety_service_teacher_enabled": float(
+                self.local_action_safety_service_teacher_enabled
+            ),
+            f"{self.metric_prefix}/local_action_safety_service_teacher_eval_enabled": float(
+                self.local_action_safety_service_teacher_eval_enabled
+            ),
+            f"{self.metric_prefix}/local_action_safety_service_teacher_applied": float(
+                self._last_service_teacher_applied
+            ),
+            f"{self.metric_prefix}/local_price_conditioning_enabled": float(
+                self.local_price_conditioning_enabled
+            ),
+            f"{self.metric_prefix}/local_price_context_non_neutral": float(
+                self._last_local_price_context_non_neutral
+            ),
+            f"{self.metric_prefix}/local_price_clipping_count": float(
+                sum(
+                    diagnostics.clipping_count
+                    for diagnostics in self._last_local_price_diagnostics
+                )
+            ),
+            f"{self.metric_prefix}/local_action_safety_interventions": float(
+                sum(
+                    len(result.interventions)
+                    for result in self._last_local_action_projections
+                )
+            ),
+            f"{self.metric_prefix}/local_action_safety_infeasible": float(
+                sum(
+                    len(result.infeasible_reasons)
+                    for result in self._last_local_action_projections
+                )
+            ),
         }
+        for key, value in self._behavior_teacher_projection_diagnostics.items():
+            metrics[
+                f"{self.metric_prefix}/behavior_teacher_raw_projected_{key}"
+            ] = float(value)
+        return metrics
 
     def consume_latest_training_metrics(self) -> Dict[str, float]:
         metrics = dict(self._latest_training_metrics)
@@ -958,13 +2535,14 @@ class _PPOBase(BaseAgent):
 
     def _record_training_metrics(self, metrics: Dict[str, float], step: int) -> None:
         self._latest_training_metrics = dict(metrics)
-        if mlflow.active_run():
+        if mlflow.active_run() and not bool(getattr(self, "managed_by_ensemble", False)):
             mlflow.log_metrics(metrics, step=step)
 
     def save_checkpoint(self, output_dir: str, step: int) -> str:
         checkpoint: Dict[str, Any] = {
             "step": int(step),
             "rollout": self.rollout,
+            "behavior_cloning_replay": list(self.behavior_cloning_replay),
             "exploration_step": int(self.exploration_step),
             "rng_state": {
                 "python": random.getstate(),
@@ -989,42 +2567,65 @@ class _PPOBase(BaseAgent):
         checkpoint_file = Path(checkpoint_path)
         if not checkpoint_file.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
-        checkpoint = torch.load(checkpoint_file, map_location=self.device, weights_only=False)
+        # Rollout and demonstration tensors are intentionally accumulated on
+        # CPU and moved to the active device only when a minibatch is built.
+        # Loading the entire checkpoint directly onto CUDA makes restored
+        # rows incompatible with newly appended CPU rows.
+        checkpoint = torch.load(checkpoint_file, map_location="cpu", weights_only=False)
         for agent_idx in range(int(self.num_agents)):
             self.actors[agent_idx].load_state_dict(checkpoint[f"actor_state_dict_{agent_idx}"])
             self.value_nets[agent_idx].load_state_dict(checkpoint[f"value_state_dict_{agent_idx}"])
-            if not self.fine_tune:
+            if bool(getattr(self, "restore_optimizers", not self.fine_tune)):
                 self.actor_optimizers[agent_idx].load_state_dict(
                     checkpoint[f"actor_optimizer_state_dict_{agent_idx}"]
                 )
                 self.value_optimizers[agent_idx].load_state_dict(
                     checkpoint[f"value_optimizer_state_dict_{agent_idx}"]
                 )
-        if not self.reset_replay_buffer:
+        if bool(getattr(self, "restore_replay_buffer", not self.reset_replay_buffer)):
             self.rollout = list(checkpoint.get("rollout", []))
-        self.exploration_step = int(checkpoint.get("exploration_step", self.exploration_step))
+            restored_demonstrations = checkpoint.get("behavior_cloning_replay", [])
+            self.behavior_cloning_replay.clear()
+            self.behavior_cloning_replay.extend(restored_demonstrations)
+        if bool(getattr(self, "restore_exploration_state", True)):
+            self.exploration_step = int(
+                checkpoint.get("exploration_step", self.exploration_step)
+            )
         rng_state = checkpoint.get("rng_state")
-        if isinstance(rng_state, dict):
+        if bool(getattr(self, "restore_exploration_state", True)) and isinstance(
+            rng_state, dict
+        ):
             if rng_state.get("python") is not None:
                 random.setstate(rng_state["python"])
             if rng_state.get("numpy") is not None:
                 np.random.set_state(rng_state["numpy"])
             if rng_state.get("torch") is not None:
-                torch.set_rng_state(rng_state["torch"])
+                torch.set_rng_state(rng_state["torch"].cpu())
             if rng_state.get("torch_cuda") is not None and torch.cuda.is_available():
-                torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+                torch.cuda.set_rng_state_all([state.cpu() for state in rng_state["torch_cuda"]])
 
     def export_artifacts(
         self,
         output_dir: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        if (
+            self.local_action_safety_enabled
+            and not self.local_action_safety_runtime_only_export
+        ):
+            raise RuntimeError(
+                f"{self.metric_prefix} local action safety is not embedded in the "
+                "ONNX actor. Set local_action_safety_runtime_only_export=true "
+                "only for non-deployable experiment evidence, or implement a "
+                "composite bundle."
+            )
         context = context or {}
         bundle_cfg = ((context.get("config") or {}).get("bundle") or {})
         global_artifact_config = dict(bundle_cfg.get("artifact_config") or {})
         raw_per_agent_config = bundle_cfg.get("per_agent_artifact_config") or {}
         per_agent_artifact_config = raw_per_agent_config if isinstance(raw_per_agent_config, dict) else {}
         require_observations_envelope = bool(bundle_cfg.get("require_observations_envelope", False))
+        agent_index_offset = int(context.get("agent_index_offset", 0) or 0)
 
         export_root = Path(output_dir)
         onnx_dir = export_root / "onnx_models"
@@ -1032,6 +2633,7 @@ class _PPOBase(BaseAgent):
         metadata: Dict[str, Any] = {"format": "onnx", "artifacts": []}
 
         for agent_idx, actor in enumerate(self.actors):
+            global_agent_idx = agent_index_offset + agent_idx
             export_path = onnx_dir / f"agent_{agent_idx}.onnx"
             dummy_input = torch.randn(1, self.observation_dimension[agent_idx], device=self.device)
             export_model = ActionScaledActor(
@@ -1056,13 +2658,13 @@ class _PPOBase(BaseAgent):
             )
 
             raw_agent_override = (
-                per_agent_artifact_config.get(str(agent_idx))
-                if str(agent_idx) in per_agent_artifact_config
-                else per_agent_artifact_config.get(agent_idx)
+                per_agent_artifact_config.get(str(global_agent_idx))
+                if str(global_agent_idx) in per_agent_artifact_config
+                else per_agent_artifact_config.get(global_agent_idx)
             )
             agent_override = raw_agent_override if isinstance(raw_agent_override, dict) else {}
             artifact_config: Dict[str, Any] = {}
-            artifact_config.update(build_auto_artifact_config(context=context, agent_index=agent_idx))
+            artifact_config.update(build_auto_artifact_config(context=context, agent_index=global_agent_idx))
             artifact_config.update(global_artifact_config)
             artifact_config.update(agent_override)
             if require_observations_envelope:
@@ -1070,7 +2672,7 @@ class _PPOBase(BaseAgent):
 
             metadata["artifacts"].append(
                 {
-                    "agent_index": agent_idx,
+                    "agent_index": global_agent_idx,
                     "path": str(export_path.relative_to(export_root)),
                     "format": "onnx",
                     "observation_dimension": self.observation_dimension[agent_idx],
@@ -1078,10 +2680,69 @@ class _PPOBase(BaseAgent):
                     "config": artifact_config,
                 }
             )
+            if self.local_action_safety_enabled:
+                metadata["artifacts"][-1].setdefault("config", {}).update(
+                    {
+                        "deployable": False,
+                        "runtime_only_reason": "external_local_action_safety_projector",
+                        "requires_runtime_local_action_safety": True,
+                        "requires_runtime_service_teacher": bool(
+                            self.local_action_safety_service_teacher_enabled
+                        ),
+                    }
+                )
+            if self.local_price_conditioning_enabled:
+                metadata["artifacts"][-1].setdefault("config", {}).update(
+                    {
+                        "requires_runtime_local_price_adapter": True,
+                        "local_price_forecast_mode": self.local_price_forecast_mode.value,
+                        "local_price_context_scope": "effective_local_price_only",
+                        "community_observations_used_by_leaf": False,
+                    }
+                )
+            if self.residual_policy_enabled:
+                metadata["artifacts"][-1].setdefault("config", {}).update(
+                    {
+                        "deployable": False,
+                        "runtime_only_reason": "external_residual_base_policy",
+                        "requires_runtime_residual_base_policy": True,
+                        "residual_base_policy": self.residual_base_policy_name,
+                        "residual_action_scale": self.residual_action_scale,
+                        "residual_building_gain_multipliers": dict(
+                            self.residual_building_gain_multipliers
+                        ),
+                        "residual_action_deadband": self.residual_action_deadband,
+                        "residual_building_deadbands": dict(
+                            self.residual_building_deadbands
+                        ),
+                    }
+                )
             if mlflow.active_run():
                 mlflow.log_artifact(str(export_path), artifact_path="onnx")
 
         return metadata
+
+
+class PPO(_PPOBase):
+    """Strict single-agent PPO for exactly one local environment slot.
+
+    Multiple independent building controllers are composed with
+    :class:`algorithms.pipeline.Ensemble`; this class deliberately never owns
+    more than one actor, value function, optimiser pair, or local reward stream.
+    """
+
+    single_agent_only = True
+    value_scope = "local"
+    metric_prefix = "PPO"
+
+    def __init__(self, config: dict) -> None:
+        super().__init__(config)
+        if int(self.num_agents) != 1:
+            raise ValueError(
+                "PPO controls exactly one environment slot. For a distributed "
+                "multi-building run configure one PPO stage with count equal to "
+                "the number of buildings."
+            )
 
 
 class IPPO(_PPOBase):

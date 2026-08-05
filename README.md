@@ -150,10 +150,17 @@ Use this diagram as the mental model when wiring CI or new algorithms.
 - Templates under `configs/templates/` provide algorithm x environment
   starting points, grouped by purpose:
   `maddpg/maddpg_local.yaml`,
+  `rl/ppo_distributed_local.yaml`,
+  `rl/td3_distributed_local.yaml`,
   `baselines/rbc_community_local.yaml`,
   `baselines/rbc_smart_local.yaml`,
   `dynamic/rule_based_entity_dynamic_local.yaml`.
   Executor/runtime specifics are chosen at launch time (UI/payload), not in template YAML.
+- Replay-validated teachers that must exist inside remote images live under
+  `configs/demonstrations/`. Use
+  `scripts/package_total_energy_demonstration.py` to remove machine-local
+  paths, record hashes and refuse unvalidated schedules; do not point remote
+  configs at ignored artefacts under `runs/`.
 
 Important knobs:
 
@@ -182,8 +189,10 @@ Important knobs:
 - `training.*` – exploration warm-up, update cadence, target refresh.
 - `algorithm.*` – hyperparameters, network sizes, replay buffer type, exploration
   policy. Rule-based baselines replace neural network knobs with heuristic
-  thresholds and charger overrides. `SingleAgentRL` is currently a schema
-  placeholder only (not runtime-implemented).
+  thresholds and charger overrides. Strict single-agent `PPO` and `TD3` are
+  runtime implementations; use `count` equal to the number of buildings for
+  a fully distributed run. The generic `SingleAgentRL` name remains a schema
+  placeholder only.
 
 ## Training Outputs & Inference Hand-off
 

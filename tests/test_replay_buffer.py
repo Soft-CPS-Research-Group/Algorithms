@@ -296,6 +296,153 @@ def test_reward_weighted_multi_agent_replay_buffer_can_mask_behavior_action_prio
     assert list(buffer.priorities) == pytest.approx([1.0e-3, 1.601])
 
 
+def test_reward_weighted_multi_agent_replay_buffer_prioritizes_concurrent_ev_events() -> None:
+    buffer = RewardWeightedMultiAgentReplayBuffer(
+        capacity=16,
+        num_agents=1,
+        batch_size=2,
+        priority_fraction=1.0,
+        priority_alpha=1.0,
+        priority_epsilon=1.0e-3,
+        priority_mode="negative_reward",
+        behavior_action_priority_weight=2.0,
+        behavior_action_priority_mode="positive",
+        behavior_action_priority_scope="ev",
+    )
+    # Building_15 has two EV charger actions. Storage is deliberately excluded
+    # by the mask and must not affect event priority.
+    buffer.set_behavior_action_priority_masks([[False, True, True]])
+
+    buffer.push(
+        states=[np.array([0.0], dtype=np.float32)],
+        actions=[np.zeros(3, dtype=np.float32)],
+        rewards=[0.0],
+        next_states=[np.array([1.0], dtype=np.float32)],
+        done=False,
+        behavior_actions=[np.array([1.0, 0.8, 0.0], dtype=np.float32)],
+    )
+    buffer.push(
+        states=[np.array([1.0], dtype=np.float32)],
+        actions=[np.zeros(3, dtype=np.float32)],
+        rewards=[0.0],
+        next_states=[np.array([2.0], dtype=np.float32)],
+        done=False,
+        behavior_actions=[np.array([0.0, 0.8, 0.6], dtype=np.float32)],
+    )
+
+    # One active charger contributes 0.8; simultaneous chargers contribute
+    # 0.8 + 0.6, preserving their coordination event in replay sampling.
+    assert list(buffer.priorities) == pytest.approx([1.601, 2.801])
+
+
+def test_reward_weighted_multi_agent_replay_buffer_keeps_all_scope_max_reduction() -> None:
+    buffer = RewardWeightedMultiAgentReplayBuffer(
+        capacity=16,
+        num_agents=1,
+        batch_size=1,
+        priority_fraction=1.0,
+        priority_alpha=1.0,
+        priority_epsilon=1.0e-3,
+        priority_mode="negative_reward",
+        behavior_action_priority_weight=2.0,
+        behavior_action_priority_mode="positive",
+        behavior_action_priority_scope="all",
+    )
+
+    buffer.push(
+        states=[np.array([0.0], dtype=np.float32)],
+        actions=[np.zeros(2, dtype=np.float32)],
+        rewards=[0.0],
+        next_states=[np.array([1.0], dtype=np.float32)],
+        done=False,
+        behavior_actions=[np.array([0.8, 0.6], dtype=np.float32)],
+    )
+
+    assert list(buffer.priorities) == pytest.approx([1.601])
+
+
+def test_reward_weighted_replay_stratifies_each_ev_and_concurrent_events() -> None:
+    buffer = RewardWeightedMultiAgentReplayBuffer(
+        capacity=16,
+        num_agents=1,
+        batch_size=4,
+        priority_fraction=0.75,
+        priority_alpha=8.0,
+        priority_epsilon=1.0e-6,
+        priority_mode="negative_reward",
+        behavior_action_priority_weight=4.0,
+        behavior_action_priority_mode="positive",
+        behavior_action_priority_scope="ev",
+        behavior_action_stratified_sampling=True,
+        behavior_action_positive_threshold=0.1,
+    )
+    buffer.set_behavior_action_priority_masks([[False, True, True]])
+
+    transitions = [
+        # The neutral transition has overwhelming scalar priority. The opt-in
+        # stratified portion must nevertheless represent the three EV strata.
+        (-1000.0, [0.0, 0.0, 0.0]),
+        (0.0, [0.0, 0.8, 0.0]),
+        (0.0, [0.0, 0.0, 0.7]),
+        (0.0, [0.0, 0.6, 0.5]),
+    ]
+    for step, (reward, teacher_action) in enumerate(transitions):
+        buffer.push(
+            states=[np.array([step], dtype=np.float32)],
+            actions=[np.zeros(3, dtype=np.float32)],
+            rewards=[reward],
+            next_states=[np.array([step + 1], dtype=np.float32)],
+            done=False,
+            behavior_actions=[np.asarray(teacher_action, dtype=np.float32)],
+        )
+
+    indices = buffer._sample_indices()
+
+    # batch_size=4 and priority_fraction=.75 reserve three samples: charger 1
+    # only, charger 2 only, and both chargers concurrently. The fourth sample
+    # stays uniform/backward-compatible.
+    assert {1, 2, 3}.issubset(indices)
+    assert buffer._last_behavior_action_stratum_count == 3
+    assert buffer._last_behavior_action_stratified_sample_count == 3
+
+
+def test_reward_weighted_replay_stratified_sampling_checkpoint_roundtrip() -> None:
+    buffer = RewardWeightedMultiAgentReplayBuffer(
+        capacity=8,
+        num_agents=1,
+        batch_size=1,
+        priority_fraction=1.0,
+        behavior_action_priority_scope="ev",
+        behavior_action_stratified_sampling=True,
+        behavior_action_positive_threshold=0.2,
+    )
+    buffer.set_behavior_action_priority_masks([[True, True]])
+    buffer.push(
+        states=[np.array([0.0], dtype=np.float32)],
+        actions=[np.zeros(2, dtype=np.float32)],
+        rewards=[0.0],
+        next_states=[np.array([1.0], dtype=np.float32)],
+        done=False,
+        behavior_actions=[np.array([0.3, 0.1], dtype=np.float32)],
+    )
+
+    restored = RewardWeightedMultiAgentReplayBuffer(
+        capacity=8,
+        num_agents=1,
+        batch_size=1,
+    )
+    restored.set_state(buffer.get_state())
+    # Masks are environment metadata and are deliberately reattached instead
+    # of serialized in model checkpoints.
+    restored.set_behavior_action_priority_masks([[True, True]])
+
+    assert restored.behavior_action_priority_scope == "ev"
+    assert restored.behavior_action_stratified_sampling is True
+    assert restored.behavior_action_positive_threshold == pytest.approx(0.2)
+    assert restored._behavior_action_positive_events[0].tolist() == [True, False]
+    assert restored._sample_indices() == [0]
+
+
 def test_reward_weighted_multi_agent_replay_buffer_keeps_behavior_actions() -> None:
     buffer = RewardWeightedMultiAgentReplayBuffer(
         capacity=4,

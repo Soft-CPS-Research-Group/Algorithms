@@ -269,6 +269,7 @@ def test_rl_agent_predict_update_and_checkpoint_contract(agent_cls, tmp_path):
 
     for step in range(2):
         obs, next_obs, rewards = _transition(step)
+        agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
         actions = agent.predict(obs, deterministic=False)
         assert len(actions) == 2
         assert -2.0 <= actions[0][0] <= 2.0
@@ -363,6 +364,69 @@ def test_ppo_warm_start_policy_and_behavior_cloning_contract():
     assert metrics["MAPPO/behavior_cloning_effective_weight"] == pytest.approx(0.5)
     assert "MAPPO/behavior_cloning_loss_mean" in metrics
     assert metrics["MAPPO/behavior_cloning_extra_updates"] == pytest.approx(1.0)
+    assert metrics["MAPPO/policy_eligible_fraction"] == pytest.approx(0.0)
+
+
+def test_ppo_actor_generated_rollout_is_policy_eligible(monkeypatch, tmp_path):
+    config = _base_rl_config("MAPPO")
+    params = config["pipeline"][0]["exploration"]["params"]
+    params.update(
+        {
+            "warm_start_policy": "RandomPolicy",
+            "warm_start_policy_phaseout_steps": 0,
+            "actor_behavior_cloning_weight": 0.5,
+            "actor_behavior_cloning_min_weight": 0.5,
+            "actor_behavior_cloning_extra_updates": 1,
+            "actor_behavior_cloning_replay_capacity": 8,
+        }
+    )
+    agent = MAPPO(_agent_view(config))
+    _attach_bounds(agent)
+
+    ordering = {"ppo_batch_seen": False, "extra_bc_ran": False}
+    original_stack_observations = agent._stack_agent_observations
+
+    def stack_observations(agent_idx, indices):
+        assert ordering["extra_bc_ran"] is False
+        ordering["ppo_batch_seen"] = True
+        return original_stack_observations(agent_idx, indices)
+
+    def record_extra_bc(*_args, **_kwargs):
+        assert ordering["ppo_batch_seen"] is True
+        ordering["extra_bc_ran"] = True
+        return [0.0], [0.0]
+
+    monkeypatch.setattr(agent, "_stack_agent_observations", stack_observations)
+    monkeypatch.setattr(agent, "_run_actor_behavior_cloning_extra_updates", record_extra_bc)
+
+    for step in range(2):
+        obs, next_obs, rewards = _transition(step)
+        agent.set_observation_context(raw_observations=obs, encoded_observations=obs)
+        actions = agent.predict(obs, deterministic=False)
+        agent.update(
+            observations=obs,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_obs,
+            terminated=False,
+            truncated=step == 1,
+            update_target_step=True,
+            global_learning_step=step + 1,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+    metrics = agent.consume_latest_training_metrics()
+    assert ordering == {"ppo_batch_seen": True, "extra_bc_ran": True}
+    assert len(agent.behavior_cloning_replay) == 2
+    assert agent.get_diagnostic_metrics()["MAPPO/behavior_cloning_replay_size"] == pytest.approx(2.0)
+    checkpoint = agent.save_checkpoint(str(tmp_path), step=2)
+    restored = MAPPO(_agent_view(config))
+    _attach_bounds(restored)
+    restored.load_checkpoint(checkpoint)
+    assert len(restored.behavior_cloning_replay) == 2
+    assert metrics["MAPPO/policy_eligible_fraction"] == pytest.approx(1.0)
+    assert metrics["MAPPO/behavior_cloning_loss_mean"] > 0.0
 
 
 def test_masac_behavior_cloning_and_action_regularization_metrics():

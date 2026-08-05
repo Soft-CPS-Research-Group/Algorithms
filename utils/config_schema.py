@@ -204,14 +204,61 @@ class TrackingConfig(BaseModel):
 class CheckpointingConfig(BaseModel):
     resume_training: bool = False
     checkpoint_run_id: Optional[str] = None
+    checkpoint_local_path: Optional[str] = None
+    stage_checkpoint_local_paths: Dict[int, str] = Field(
+        default_factory=dict,
+        description=(
+            "Optional pipeline-stage checkpoint roots keyed by zero-based stage "
+            "index. Use this to initialise selected stages without restoring the "
+            "entire pipeline."
+        ),
+    )
     checkpoint_artifact: str = Field(default="latest_checkpoint.pth")
     use_best_checkpoint_artifact: bool = False
     reset_replay_buffer: bool = False
     freeze_pretrained_layers: bool = False
     fine_tune: bool = False
+    restore_optimizers: Optional[bool] = None
+    restore_replay_buffer: Optional[bool] = None
+    restore_exploration_state: bool = True
+    restore_reward_normalizer: bool = True
     checkpoint_interval: Optional[int] = Field(default=None, ge=1)
     require_update_step: bool = True
     require_initial_exploration_done: bool = True
+
+    @field_validator("stage_checkpoint_local_paths")
+    @classmethod
+    def validate_stage_checkpoint_local_paths(
+        cls, value: Dict[int, str]
+    ) -> Dict[int, str]:
+        normalized: Dict[int, str] = {}
+        for raw_index, raw_path in value.items():
+            index = int(raw_index)
+            path = str(raw_path or "").strip()
+            if index < 0:
+                raise ValueError("checkpointing.stage_checkpoint_local_paths indices must be >= 0")
+            if not path:
+                raise ValueError(
+                    "checkpointing.stage_checkpoint_local_paths values must be non-empty paths"
+                )
+            normalized[index] = path
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_checkpoint_source(self) -> "CheckpointingConfig":
+        if not self.stage_checkpoint_local_paths:
+            return self
+        if not self.resume_training:
+            raise ValueError(
+                "checkpointing.resume_training must be true when "
+                "stage_checkpoint_local_paths is configured"
+            )
+        if self.checkpoint_run_id or self.checkpoint_local_path or self.use_best_checkpoint_artifact:
+            raise ValueError(
+                "checkpointing.stage_checkpoint_local_paths cannot be combined with "
+                "checkpoint_run_id, checkpoint_local_path, or use_best_checkpoint_artifact"
+            )
+        return self
 
 
 class SimulatorExportConfig(BaseModel):
@@ -250,6 +297,7 @@ class EntityEncodingConfig(BaseModel):
         "maddpg_v2_compact",
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
+        "building_local_v1",
         "cc_level1",
         "cc_level2",
     ] = "minmax_space"
@@ -395,10 +443,24 @@ class ReplayBufferConfig(BaseModel):
     behavior_action_priority_weight: Optional[float] = Field(default=None, ge=0.0)
     behavior_action_priority_mode: Optional[Literal["positive", "abs"]] = None
     behavior_action_priority_scope: Optional[Literal["all", "ev"]] = None
+    behavior_action_stratified_sampling: Optional[bool] = None
+    behavior_action_positive_threshold: Optional[float] = Field(default=None, ge=0.0)
     observation_event_priority_weight: Optional[float] = Field(default=None, ge=0.0)
     observation_event_priority_mode: Optional[
         Literal["ev_departure_service", "ev_pv_price_peak", "combined"]
     ] = None
+
+    @model_validator(mode="after")
+    def validate_behavior_action_stratified_sampling(self) -> "ReplayBufferConfig":
+        if (
+            self.behavior_action_stratified_sampling
+            and self.behavior_action_priority_scope != "ev"
+        ):
+            raise ValueError(
+                "behavior_action_stratified_sampling requires "
+                "behavior_action_priority_scope='ev'"
+            )
+        return self
 
 
 class ExplorationParams(BaseModel):
@@ -474,6 +536,18 @@ class RuleBasedHyperparameters(BaseModel):
     ev_deadline_buffer_hours: float = Field(default=0.25, ge=0)
     ev_v2g_min_departure_hours: float = Field(default=2.0, ge=0)
     ev_v2g_service_margin_soc: float = Field(default=0.05, ge=0)
+    schedule_path: Optional[str] = None
+    repeat_schedule_for_training: bool = False
+    local_action_safety_enabled: bool = True
+    local_action_safety_fail_on_infeasible: bool = False
+    local_action_safety_protect_ev_minimum: bool = True
+    local_action_safety_ev_minimum_mode: Literal[
+        "average", "deadline_feasible"
+    ] = "average"
+    local_action_safety_protect_ev_service_target: bool = False
+    local_action_safety_protect_deferrable_must_start: bool = True
+    local_action_safety_allow_discretionary_deferrable_start: bool = True
+    local_action_safety_headroom_reserve_kw: float = Field(default=0.0, ge=0)
 
 
 class TopologyConfig(BaseModel):
@@ -518,10 +592,98 @@ class CommunityCoordinatorHyperparameters(ExperimentalPPOHyperparameters):
 
 class CCLevel1Hyperparameters(ExperimentalPPOHyperparameters):
     # Phase-1 market maker: emits a global price multiplier.
-    c_dim: int = Field(default=16, gt=0)                # cc_level1 encoding width
+    c_dim: int = Field(default=17, gt=0)                # cc_level1 encoding width
     cc_action_interval: int = Field(default=4, gt=0)    # 4 × 15min = hourly
     price_min: float = Field(default=0.5, gt=0)         # min price multiplier
     price_max: float = Field(default=1.5, gt=0)         # max price multiplier
+    initial_log_std: float = Field(default=0.0, ge=-5.0, le=1.0)
+    reference_multiplier: Optional[float] = None
+    policy_residual_scale: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_price_range(self) -> "CCLevel1Hyperparameters":
+        if self.price_max <= self.price_min:
+            raise ValueError("CCLevel1 price_max must be greater than price_min")
+        if (
+            self.reference_multiplier is not None
+            and not self.price_min <= self.reference_multiplier <= self.price_max
+        ):
+            raise ValueError(
+                "CCLevel1 reference_multiplier must lie within the configured price range"
+            )
+        return self
+
+
+class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
+    """Per-building market maker with an auditable reference policy."""
+
+    c_dim: int = Field(default=118, gt=0)
+    num_buildings: int = Field(default=17, gt=0)
+    cc_action_interval: int = Field(default=4, gt=0)
+    price_min: float = Field(default=0.5, gt=0)
+    price_max: float = Field(default=1.5, gt=0)
+    initial_log_std: float = Field(default=-2.5, ge=-5.0, le=1.0)
+    reference_multipliers: Optional[List[float]] = None
+    policy_residual_scale: float = Field(default=1.0, ge=0.0, le=1.0)
+    w_factor: float = Field(default=0.3, ge=0)
+    w_smoothness: float = Field(default=0.02, ge=0)
+
+    @model_validator(mode="after")
+    def validate_price_contract(self) -> "CCLevel2Hyperparameters":
+        if self.price_max <= self.price_min:
+            raise ValueError("CCLevel2 price_max must be greater than price_min")
+        values = self.reference_multipliers
+        if values is not None:
+            if len(values) != self.num_buildings:
+                raise ValueError(
+                    "CCLevel2 reference_multipliers length must equal num_buildings"
+                )
+            if any(value < self.price_min or value > self.price_max for value in values):
+                raise ValueError(
+                    "CCLevel2 reference_multipliers must lie within the configured price range"
+                )
+        return self
+
+
+class FixedPriceScheduleEntry(BaseModel):
+    start_step: int = Field(ge=0)
+    multiplier: float = Field(gt=0)
+
+
+class FixedPriceSignalHyperparameters(BaseModel):
+    multiplier: float = Field(default=1.0, gt=0)
+    multipliers: Optional[List[float]] = None
+    schedule: Optional[List[FixedPriceScheduleEntry]] = None
+
+    @field_validator("multipliers")
+    @classmethod
+    def validate_multiplier_vector(cls, values: Optional[List[float]]) -> Optional[List[float]]:
+        if values is None:
+            return None
+        if not values:
+            raise ValueError("FixedPriceSignal multipliers must not be empty")
+        if any(value <= 0 for value in values):
+            raise ValueError("FixedPriceSignal multipliers must all be positive")
+        return values
+
+    @model_validator(mode="after")
+    def validate_schedule(self) -> "FixedPriceSignalHyperparameters":
+        if self.schedule is None:
+            return self
+        if self.multipliers is not None:
+            raise ValueError(
+                "FixedPriceSignal schedule and per-member multipliers are mutually exclusive"
+            )
+        if not self.schedule:
+            raise ValueError("FixedPriceSignal schedule must not be empty")
+        starts = [entry.start_step for entry in self.schedule]
+        if starts[0] != 0:
+            raise ValueError("FixedPriceSignal schedule must start at step 0")
+        if starts != sorted(set(starts)):
+            raise ValueError(
+                "FixedPriceSignal schedule start_step values must be strictly increasing"
+            )
+        return self
 
 
 class BuildingAgentHyperparameters(BaseModel):
@@ -562,11 +724,20 @@ class CCLevel1AlgorithmConfig(BaseModel):
     hyperparameters: CCLevel1Hyperparameters = Field(default_factory=CCLevel1Hyperparameters)
 
 
+class FixedPriceSignalAlgorithmConfig(BaseModel):
+    algorithm: Literal["FixedPriceSignal"]
+    count: Literal[1] = 1
+    frozen: bool = True
+    hyperparameters: FixedPriceSignalHyperparameters = Field(
+        default_factory=FixedPriceSignalHyperparameters
+    )
+
+
 class CCLevel2AlgorithmConfig(BaseModel):
     algorithm: Literal["CCLevel2"]
     count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
     frozen: bool = False
-    hyperparameters: Any = Field(default_factory=dict)
+    hyperparameters: CCLevel2Hyperparameters = Field(default_factory=CCLevel2Hyperparameters)
 
 
 class BuildingAgentStageConfig(BaseModel):
@@ -582,7 +753,7 @@ class BuildingAgentStageConfig(BaseModel):
 
 
 class ActorCriticAlgorithmConfig(BaseModel):
-    algorithm: Literal["MADDPG", "MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"]
+    algorithm: Literal["MADDPG", "MATD3", "MASAC", "PPO", "TD3", "IPPO", "MAPPO", "HAPPO"]
     count: int = Field(default=1, ge=1, description="Number of identical agents at this level")
     frozen: bool = False
     hyperparameters: AlgorithmHyperparameters
@@ -599,8 +770,12 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "NormalNoBatteryPolicy",
         "RBCBasicPolicy",
         "RBCCommunityPolicy",
+        "RBCSmartLocalPolicy",
         "RBCSmartPolicy",
         "SignalAwareRBC",
+        "FixedServiceOracleReplayPolicy",
+        "TotalHomeOracleReplayPolicy",
+        "TotalOracleReplayPolicy",
     ]
     count: int = Field(default=1, ge=1)
     frozen: bool = False
@@ -626,7 +801,7 @@ class SingleAgentRLStageConfig(BaseModel):
         raise ValueError(
             "Algorithm 'SingleAgentRL' is a schema placeholder and has no runtime "
             "implementation yet. Use one of: MADDPG, MATD3, MASAC, IPPO, MAPPO, HAPPO, "
-            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartPolicy, SignalAwareRBC, "
+            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartLocalPolicy, RBCSmartPolicy, SignalAwareRBC, "
             "RandomPolicy, NormalPolicy, NormalNoBatteryPolicy."
         )
         return self  # unreachable; satisfies type checker
@@ -722,6 +897,7 @@ class TransformerPPOStageConfig(BaseModel):
 PipelineStageConfig = Union[
     BuildingAgentStageConfig,
     CCLevel1AlgorithmConfig,
+    FixedPriceSignalAlgorithmConfig,
     CCLevel2AlgorithmConfig,
     CommunityCoordinatorAlgorithmConfig,
     ActorCriticAlgorithmConfig,
@@ -847,6 +1023,21 @@ class ProjectConfig(BaseModel):
             ):
                 raise ValueError(
                     "AgentTransformerPPO requires training.steps_between_training_updates >= pipeline[].hyperparameters.minibatch_size."
+                )
+
+        stage_checkpoint_paths = self.checkpointing.stage_checkpoint_local_paths
+        if stage_checkpoint_paths:
+            if len(self.pipeline) < 2:
+                raise ValueError(
+                    "checkpointing.stage_checkpoint_local_paths requires a multi-stage pipeline"
+                )
+            invalid_indices = sorted(
+                index for index in stage_checkpoint_paths if index >= len(self.pipeline)
+            )
+            if invalid_indices:
+                raise ValueError(
+                    "checkpointing.stage_checkpoint_local_paths contains stage indices "
+                    f"outside pipeline range 0:{len(self.pipeline) - 1}: {invalid_indices}"
                 )
 
         if self.simulator.interface == "entity" and self.simulator.topology_mode == "dynamic":

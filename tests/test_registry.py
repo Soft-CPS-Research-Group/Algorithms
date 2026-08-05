@@ -97,10 +97,70 @@ def test_registered_agents_accept_predict_context_keyword():
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
+def test_fixed_price_signal_is_registered_and_emits_configured_multiplier():
+    unit = ALGORITHM_REGISTRY["FixedPriceSignal"](
+        config={"algorithm": {"hyperparameters": {"multiplier": 1.0}}}
+    )
+
+    assert unit.use_raw_observations is True
+    assert unit.predict([], deterministic=True) == 1.0
+
+
+def test_fixed_price_signal_can_emit_one_multiplier_per_pipeline_member():
+    unit = ALGORITHM_REGISTRY["FixedPriceSignal"](
+        config={"algorithm": {"hyperparameters": {"multipliers": [0.9, 1.05]}}}
+    )
+
+    assert unit.predict([], deterministic=True) == [0.9, 1.05]
+    artifact = unit.export_artifacts("unused")
+    assert artifact["multipliers"] == [0.9, 1.05]
+    assert artifact["output_contract"] == "per_member_price_multiplier_vector"
+
+
+def test_fixed_price_signal_can_emit_a_step_schedule():
+    unit = ALGORITHM_REGISTRY["FixedPriceSignal"](
+        config={
+            "algorithm": {
+                "hyperparameters": {
+                    "schedule": [
+                        {"start_step": 0, "multiplier": 1.05},
+                        {"start_step": 96, "multiplier": 1.025},
+                    ]
+                }
+            }
+        }
+    )
+
+    unit.set_episode_context(episode_step=95)
+    assert unit.predict([], deterministic=True) == 1.05
+    unit.set_episode_context(episode_step=96)
+    assert unit.predict([], deterministic=True) == 1.025
+    artifact = unit.export_artifacts("unused")
+    assert artifact["schedule"][1] == {
+        "start_step": 96,
+        "multiplier": 1.025,
+    }
+    assert artifact["output_contract"] == "scheduled_global_price_multiplier"
+
+
 def test_hierarchical_raw_observation_agents_are_registered():
     for name in ("BuildingAgent", "CommunityCoordinator", "SignalAwareRBC"):
         assert is_algorithm_supported(name)
         assert ALGORITHM_REGISTRY[name]._use_raw_observations is True
+
+
+def test_fixed_service_oracle_replay_policy_is_registered_as_raw_observation_policy():
+    assert is_algorithm_supported("FixedServiceOracleReplayPolicy")
+    assert ALGORITHM_REGISTRY["FixedServiceOracleReplayPolicy"]._use_raw_observations is True
+    assert is_algorithm_supported("TotalHomeOracleReplayPolicy")
+    assert ALGORITHM_REGISTRY["TotalHomeOracleReplayPolicy"]._use_raw_observations is True
+    assert is_algorithm_supported("TotalOracleReplayPolicy")
+    assert ALGORITHM_REGISTRY["TotalOracleReplayPolicy"]._use_raw_observations is True
+
+
+def test_strict_local_rbc_is_registered_as_raw_observation_policy():
+    assert is_algorithm_supported("RBCSmartLocalPolicy")
+    assert ALGORITHM_REGISTRY["RBCSmartLocalPolicy"]._use_raw_observations is True
 
 
 def test_hierarchical_manager_agents_use_encoded_observations():

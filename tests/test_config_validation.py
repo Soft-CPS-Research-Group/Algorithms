@@ -25,6 +25,24 @@ def test_validate_config_accepts_metadata_community_name(base_config):
     validate_config(config)
 
 
+def test_validate_config_accepts_building_local_entity_profile(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["entity_encoding"]["profile"] = "building_local_v1"
+    validate_config(config)
+
+
+def test_validate_config_accepts_strict_local_rbc_policy(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"] = [
+        {
+            "algorithm": "RBCSmartLocalPolicy",
+            "count": 1,
+            "hyperparameters": {},
+        }
+    ]
+    validate_config(config)
+
+
 def test_validate_config_rejects_legacy_algorithm_key(base_config):
     config = copy.deepcopy(base_config)
     config.pop("pipeline", None)
@@ -57,6 +75,30 @@ def test_validate_config_invalid_network_layers(base_config):
         validate_config(config)
 
 
+def test_validate_config_accepts_ev_stratified_replay_sampling(base_config):
+    config = copy.deepcopy(base_config)
+    replay = config["pipeline"][0]["replay_buffer"]
+    replay["behavior_action_priority_scope"] = "ev"
+    replay["behavior_action_stratified_sampling"] = True
+    replay["behavior_action_positive_threshold"] = 0.1
+
+    model = validate_config(config)
+    parsed = model.pipeline[0].replay_buffer
+
+    assert parsed.behavior_action_stratified_sampling is True
+    assert parsed.behavior_action_positive_threshold == pytest.approx(0.1)
+
+
+def test_validate_config_rejects_ev_stratified_sampling_without_ev_scope(base_config):
+    config = copy.deepcopy(base_config)
+    replay = config["pipeline"][0]["replay_buffer"]
+    replay["behavior_action_priority_scope"] = "all"
+    replay["behavior_action_stratified_sampling"] = True
+
+    with pytest.raises(ValueError, match="requires behavior_action_priority_scope='ev'"):
+        validate_config(config)
+
+
 def test_validate_config_accepts_late_fusion_critic_layers(base_config):
     config = copy.deepcopy(base_config)
     config["pipeline"][0]["networks"]["critic"] = {
@@ -80,6 +122,53 @@ def test_validate_config_accepts_late_fusion_critic_layers(base_config):
 def test_validate_config_accepts_hierarchical_templates(config_path):
     with config_path.open("r", encoding="utf-8") as handle:
         validate_config(yaml.safe_load(handle))
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        Path("configs/templates/cc_local.yaml"),
+        Path("configs/templates/cc_level2_local.yaml"),
+    ],
+)
+def test_cc_templates_use_complete_annual_horizon(config_path):
+    with config_path.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+
+    assert config["simulator"]["episode_time_steps"] == 35040
+
+
+def test_cc_level1_bc_collection_matches_complete_annual_horizon():
+    with Path("configs/templates/cc_local.yaml").open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+
+    assert config["pipeline"][0]["hyperparameters"]["bc_collect_steps"] == 8760
+
+
+def test_fixed_price_schedule_requires_ordered_entries_from_step_zero():
+    from utils.config_schema import FixedPriceSignalHyperparameters
+
+    valid = FixedPriceSignalHyperparameters(
+        schedule=[
+            {"start_step": 0, "multiplier": 1.05},
+            {"start_step": 96, "multiplier": 1.025},
+        ]
+    )
+    assert valid.schedule is not None
+    assert valid.schedule[1].start_step == 96
+
+    with pytest.raises(ValueError, match="start at step 0"):
+        FixedPriceSignalHyperparameters(
+            schedule=[{"start_step": 96, "multiplier": 1.025}]
+        )
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        FixedPriceSignalHyperparameters(
+            schedule=[
+                {"start_step": 0, "multiplier": 1.05},
+                {"start_step": 0, "multiplier": 1.025},
+            ]
+        )
 
 
 def test_to_dict_removes_none_network_optional_layers_from_pipeline(base_config):
@@ -142,6 +231,122 @@ def test_validate_config_accepts_bundle_section(base_config):
         },
     }
     validate_config(config)
+
+
+def test_validate_config_accepts_selected_pipeline_stage_checkpoint(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "CCLevel1",
+            "count": 1,
+            "hyperparameters": {},
+        },
+    )
+    config["checkpointing"].update(
+        {
+            "resume_training": True,
+            "checkpoint_local_path": None,
+            "checkpoint_run_id": None,
+            "stage_checkpoint_local_paths": {1: "runs/jobs/local-ppo/checkpoints"},
+        }
+    )
+
+    parsed = validate_config(config)
+
+    assert parsed.checkpointing.stage_checkpoint_local_paths == {
+        1: "runs/jobs/local-ppo/checkpoints"
+    }
+
+
+def test_validate_config_accepts_fixed_neutral_price_signal_manager(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "FixedPriceSignal",
+            "count": 1,
+            "frozen": True,
+            "hyperparameters": {"multiplier": 1.0},
+        },
+    )
+
+    parsed = validate_config(config)
+
+    assert parsed.pipeline[0].algorithm == "FixedPriceSignal"
+    assert parsed.pipeline[0].hyperparameters.multiplier == 1.0
+
+
+def test_validate_config_accepts_fixed_per_member_price_signal_manager(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "FixedPriceSignal",
+            "count": 1,
+            "frozen": True,
+            "hyperparameters": {"multipliers": [0.9, 1.05]},
+        },
+    )
+
+    parsed = validate_config(config)
+
+    assert parsed.pipeline[0].hyperparameters.multipliers == [0.9, 1.05]
+
+
+@pytest.mark.parametrize("multipliers", [[], [0.9, 0.0], [-1.0, 0.9]])
+def test_validate_config_rejects_invalid_fixed_price_signal_vector(base_config, multipliers):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "FixedPriceSignal",
+            "count": 1,
+            "frozen": True,
+            "hyperparameters": {"multipliers": multipliers},
+        },
+    )
+
+    with pytest.raises(Exception, match="multipliers"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_invalid_cc_price_range(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "CCLevel1",
+            "count": 1,
+            "hyperparameters": {"price_min": 1.0, "price_max": 1.0},
+        },
+    )
+
+    with pytest.raises(Exception, match="price_max must be greater"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_out_of_range_pipeline_stage_checkpoint(base_config):
+    config = copy.deepcopy(base_config)
+    config["pipeline"].insert(
+        0,
+        {
+            "algorithm": "CCLevel1",
+            "count": 1,
+            "hyperparameters": {},
+        },
+    )
+    config["checkpointing"].update(
+        {
+            "resume_training": True,
+            "checkpoint_local_path": None,
+            "checkpoint_run_id": None,
+            "stage_checkpoint_local_paths": {2: "runs/jobs/missing/checkpoints"},
+        }
+    )
+
+    with pytest.raises(Exception, match="outside pipeline range"):
+        validate_config(config)
 
 
 def test_validate_config_rejects_invalid_per_agent_artifact_config(base_config):

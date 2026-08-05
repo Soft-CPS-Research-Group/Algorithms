@@ -42,6 +42,8 @@ class RecordingUnit(ExecutionUnit):
         self.save_calls: List[Dict[str, Any]] = []
         self.load_calls: List[str] = []
         self.export_calls: List[Dict[str, Any]] = []
+        self.observation_context_calls: List[Dict[str, Any]] = []
+        self.transition_context_calls: List[Dict[str, Any]] = []
 
     def predict(self, observations, deterministic=None, *, context=None):
         self.predict_calls.append(
@@ -115,6 +117,12 @@ class RecordingUnit(ExecutionUnit):
     def attach_environment(self, **kwargs) -> None:
         self.attach_calls.append(kwargs)
 
+    def set_observation_context(self, **kwargs) -> None:
+        self.observation_context_calls.append(kwargs)
+
+    def set_transition_context(self, **kwargs) -> None:
+        self.transition_context_calls.append(kwargs)
+
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
         self.save_calls.append({"output_dir": output_dir, "step": step})
         return str(Path(output_dir) / f"{self.name}.pth")
@@ -150,6 +158,17 @@ class TestPipelinePredict:
 
         assert first.predict_calls[0]["context"] == "from_outside"
 
+    def test_frozen_stage_is_deterministic_while_trainable_stage_explores(self) -> None:
+        manager = RecordingUnit("manager", predict_output="price")
+        leaf = RecordingUnit("leaf", predict_output=[[0.5]])
+        leaf.frozen = True
+        pipeline = Pipeline([manager, leaf])
+
+        pipeline.predict([[1.0]], deterministic=False)
+
+        assert manager.predict_calls[0]["deterministic"] is False
+        assert leaf.predict_calls[0]["deterministic"] is True
+
     def test_passes_observations_unchanged_to_each_stage(self) -> None:
         first = RecordingUnit("first", predict_output="ctx")
         second = RecordingUnit("second", predict_output=[[0.1]])
@@ -178,6 +197,27 @@ class TestPipelinePredict:
         assert manager.predict_calls[0]["observations"] is encoded_observations
         assert leaf.predict_calls[0]["observations"] is raw_observations
         assert leaf.predict_calls[0]["context"] == "price"
+
+    def test_routes_stage_specific_encoded_observation_profile(self) -> None:
+        manager = RecordingUnit("manager", predict_output="price")
+        manager.observation_encoding_profile = "cc_level1"
+        leaf = RecordingUnit("leaf", predict_output=[[0.2]])
+        pipeline = Pipeline([manager, leaf])
+        default_encoded = [["building-local"]]
+        cc_encoded = [["community"]]
+
+        assert pipeline.required_observation_encoding_profiles() == ["cc_level1"]
+        pipeline.set_observation_context(
+            raw_observations=[["raw"]],
+            encoded_observations=default_encoded,
+        )
+        pipeline.set_profiled_observation_context(
+            {"cc_level1": cc_encoded}
+        )
+        pipeline.predict(default_encoded)
+
+        assert manager.predict_calls[0]["observations"] is cc_encoded
+        assert leaf.predict_calls[0]["observations"] is default_encoded
 
 
 class TestPipelineUpdate:
@@ -304,6 +344,44 @@ class TestPipelineUpdate:
         assert active.topology_transition_calls[0]["observations"] is encoded_observations
         assert frozen.topology_transition_calls == []
 
+    def test_routes_stage_specific_encoded_transition_profile(self) -> None:
+        manager = RecordingUnit("manager")
+        manager.observation_encoding_profile = "cc_level1"
+        leaf = RecordingUnit("leaf")
+        pipeline = Pipeline([manager, leaf])
+        default_encoded = [["building-local"]]
+        default_next = [["building-local-next"]]
+        cc_encoded = [["community"]]
+        cc_next = [["community-next"]]
+
+        pipeline.set_transition_context(
+            raw_observations=[["raw"]],
+            raw_next_observations=[["raw-next"]],
+            encoded_observations=default_encoded,
+            encoded_next_observations=default_next,
+        )
+        pipeline.set_profiled_transition_context(
+            profiled_encoded_observations={"cc_level1": cc_encoded},
+            profiled_encoded_next_observations={"cc_level1": cc_next},
+        )
+        pipeline.update(
+            default_encoded,
+            [[0.5]],
+            [0.1],
+            default_next,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=1,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+        assert manager.update_calls[0]["observations"] is cc_encoded
+        assert manager.update_calls[0]["next_observations"] is cc_next
+        assert leaf.update_calls[0]["observations"] is default_encoded
+        assert leaf.update_calls[0]["next_observations"] is default_next
+
 
 class TestPipelineLifecycle:
     def test_forwards_episode_lifecycle_to_every_stage(self) -> None:
@@ -377,6 +455,50 @@ class TestPipelineLifecycle:
         assert manager.attach_calls[0]["observation_names"] == encoded_names
         assert leaf.attach_calls[0]["observation_names"] == raw_names
 
+    def test_attach_environment_preserves_raw_name_contract_for_encoded_leaf(self) -> None:
+        manager = RecordingUnit("manager", use_raw_observations=True)
+        leaf_member = RecordingUnit("leaf", use_raw_observations=False)
+        leaf_member.requires_raw_observation_context = True
+        leaf = Ensemble([leaf_member])
+        raw_names = [["raw_a"]]
+        encoded_names = [["encoded_a"]]
+
+        Pipeline([manager, leaf]).attach_environment(
+            observation_names=raw_names,
+            action_names=[["act_a"]],
+            action_space=["space_a"],
+            observation_space=["obs_space_a"],
+            metadata={
+                "raw_observation_names": raw_names,
+                "encoded_observation_names": encoded_names,
+            },
+        )
+
+        assert leaf_member.attach_calls[0]["observation_names"] == raw_names
+
+    def test_attach_environment_routes_profiled_names_to_requesting_stage(self) -> None:
+        manager = RecordingUnit("manager")
+        manager.observation_encoding_profile = "cc_level1"
+        leaf = RecordingUnit("leaf")
+        raw_names = [["raw_a"]]
+        encoded_names = [["building_a"]]
+        cc_names = [["community_a"]]
+
+        Pipeline([manager, leaf]).attach_environment(
+            observation_names=raw_names,
+            action_names=[["act_a"]],
+            action_space=["space_a"],
+            observation_space=["obs_space_a"],
+            metadata={
+                "raw_observation_names": raw_names,
+                "encoded_observation_names": encoded_names,
+                "profiled_encoded_observation_names": {"cc_level1": cc_names},
+            },
+        )
+
+        assert manager.attach_calls[0]["observation_names"] == cc_names
+        assert leaf.attach_calls[0]["observation_names"] == encoded_names
+
 
 class TestPipelinePersistence:
     def test_save_creates_subdir_per_stage(self, tmp_path: Path) -> None:
@@ -388,6 +510,19 @@ class TestPipelinePersistence:
         assert (tmp_path / "stage_1").is_dir()
         assert a.save_calls[0]["output_dir"] == str(tmp_path / "stage_0")
         assert b.save_calls[0]["output_dir"] == str(tmp_path / "stage_1")
+
+    def test_save_skips_frozen_pipeline_stage(self, tmp_path: Path) -> None:
+        manager = RecordingUnit("manager")
+        leaf = RecordingUnit("leaf")
+        leaf.frozen = True
+
+        Pipeline([manager, leaf]).save_checkpoint(str(tmp_path), step=7)
+
+        assert manager.save_calls == [
+            {"output_dir": str(tmp_path / "stage_0"), "step": 7}
+        ]
+        assert leaf.save_calls == []
+        assert not (tmp_path / "stage_1").exists()
 
     def test_load_routes_each_stage_subdir(self, tmp_path: Path) -> None:
         a = RecordingUnit("a")
@@ -410,6 +545,26 @@ class TestPipelinePersistence:
 
         assert len(a.load_calls) == 1
         assert b.load_calls == []
+
+    def test_load_stage_checkpoint_routes_only_selected_stage(self, tmp_path: Path) -> None:
+        manager = RecordingUnit("manager")
+        leaf = RecordingUnit("leaf")
+        checkpoint_root = tmp_path / "standalone-leaf"
+        checkpoint_root.mkdir()
+
+        Pipeline([manager, leaf]).load_stage_checkpoint(1, str(checkpoint_root))
+
+        assert manager.load_calls == []
+        assert leaf.load_calls == [str(checkpoint_root)]
+
+    def test_load_stage_checkpoint_rejects_invalid_index(self, tmp_path: Path) -> None:
+        checkpoint_root = tmp_path / "checkpoint"
+        checkpoint_root.mkdir()
+
+        with pytest.raises(IndexError, match="outside range"):
+            Pipeline([RecordingUnit("only")]).load_stage_checkpoint(
+                1, str(checkpoint_root)
+            )
 
     def test_export_aggregates_metadata(self, tmp_path: Path) -> None:
         a = RecordingUnit("a")
@@ -537,6 +692,44 @@ class TestEnsembleLifecycle:
         assert a.episode_end_calls == [{"episode": 7, "training": True}]
         assert b.episode_end_calls == [{"episode": 7, "training": True}]
 
+    def test_context_hooks_route_raw_and_encoded_slices(self) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+        ensemble = Ensemble([a, b])
+
+        ensemble.set_observation_context(
+            raw_observations=[["raw-a"], ["raw-b"]],
+            encoded_observations=[["encoded-a"], ["encoded-b"]],
+        )
+        ensemble.set_transition_context(
+            raw_observations=[["raw-a"], ["raw-b"]],
+            raw_next_observations=[["next-raw-a"], ["next-raw-b"]],
+            encoded_observations=[["encoded-a"], ["encoded-b"]],
+            encoded_next_observations=[["next-encoded-a"], ["next-encoded-b"]],
+        )
+
+        assert a.observation_context_calls[0] == {
+            "raw_observations": [["raw-a"]],
+            "encoded_observations": [["encoded-a"]],
+        }
+        assert b.observation_context_calls[0] == {
+            "raw_observations": [["raw-b"]],
+            "encoded_observations": [["encoded-b"]],
+        }
+        assert a.transition_context_calls[0]["raw_next_observations"] == [["next-raw-a"]]
+        assert b.transition_context_calls[0]["encoded_next_observations"] == [["next-encoded-b"]]
+
+    def test_warm_start_member_requires_raw_context(self) -> None:
+        plain = RecordingUnit("plain")
+        guided = RecordingUnit("guided")
+        guided.warm_start_policy_name = "RBCSmartPolicy"
+
+        ensemble = Ensemble([plain, guided])
+        pipeline = Pipeline([ensemble])
+
+        assert ensemble.requires_raw_observation_context is True
+        assert pipeline.requires_raw_observation_context is True
+
     def test_attach_environment_routes_each_slice(self) -> None:
         a = RecordingUnit("a")
         b = RecordingUnit("b")
@@ -566,6 +759,10 @@ class TestEnsembleLifecycle:
                 "building_names": ["Building_1", "Building_2"],
                 "raw_observation_names": [["raw_a"], ["raw_b"]],
                 "encoded_observation_names": [["encoded_a"], ["encoded_b"]],
+                "raw_observation_bounds": [
+                    {"low": [0.0], "high": [1.0]},
+                    {"low": [-1.0], "high": [2.0]},
+                ],
                 "shared": "kept",
             },
         )
@@ -576,6 +773,12 @@ class TestEnsembleLifecycle:
         assert b.attach_calls[0]["metadata"]["raw_observation_names"] == [["raw_b"]]
         assert a.attach_calls[0]["metadata"]["encoded_observation_names"] == [["encoded_a"]]
         assert b.attach_calls[0]["metadata"]["encoded_observation_names"] == [["encoded_b"]]
+        assert a.attach_calls[0]["metadata"]["raw_observation_bounds"] == [
+            {"low": [0.0], "high": [1.0]}
+        ]
+        assert b.attach_calls[0]["metadata"]["raw_observation_bounds"] == [
+            {"low": [-1.0], "high": [2.0]}
+        ]
         assert a.attach_calls[0]["metadata"]["shared"] == "kept"
         assert b.attach_calls[0]["metadata"]["shared"] == "kept"
 

@@ -579,7 +579,7 @@ class MATD3(MADDPG):
             aux_state = checkpoint.get(f"actor_aux_head_state_dict_{agent_idx}")
             if aux_state is not None and agent_idx < len(getattr(self, "actor_aux_heads", [])):
                 self.actor_aux_heads[agent_idx].load_state_dict(aux_state)
-            if not self.fine_tune:
+            if bool(getattr(self, "restore_optimizers", not self.fine_tune)):
                 self.actor_optimizers[agent_idx].load_state_dict(
                     checkpoint[f"actor_optimizer_state_dict_{agent_idx}"]
                 )
@@ -590,30 +590,38 @@ class MATD3(MADDPG):
                     checkpoint[f"critic_optimizer_2_state_dict_{agent_idx}"]
                 )
 
-        if "replay_buffer" in checkpoint and not self.reset_replay_buffer:
+        if "replay_buffer" in checkpoint and bool(
+            getattr(self, "restore_replay_buffer", not self.reset_replay_buffer)
+        ):
             self.replay_buffer.set_state(checkpoint["replay_buffer"])
 
         exploration_state = checkpoint.get("exploration_state")
-        if isinstance(exploration_state, dict):
+        if bool(getattr(self, "restore_exploration_state", True)) and isinstance(
+            exploration_state, dict
+        ):
             self.sigma = float(exploration_state.get("sigma", self.sigma))
             self.exploration_step = int(exploration_state.get("exploration_step", self.exploration_step))
 
         reward_norm_state = checkpoint.get("reward_normalization_state")
-        if isinstance(reward_norm_state, dict):
+        if bool(getattr(self, "restore_reward_normalizer", True)) and isinstance(
+            reward_norm_state, dict
+        ):
             self.reward_norm_count = int(reward_norm_state.get("count", self.reward_norm_count))
             self.reward_norm_mean = float(reward_norm_state.get("mean", self.reward_norm_mean))
             self.reward_norm_m2 = float(reward_norm_state.get("m2", self.reward_norm_m2))
 
         rng_state = checkpoint.get("rng_state")
-        if isinstance(rng_state, dict):
+        if bool(getattr(self, "restore_exploration_state", True)) and isinstance(
+            rng_state, dict
+        ):
             if rng_state.get("python") is not None:
                 random.setstate(rng_state["python"])
             if rng_state.get("numpy") is not None:
                 np.random.set_state(rng_state["numpy"])
             if rng_state.get("torch") is not None:
-                torch.set_rng_state(rng_state["torch"])
+                torch.set_rng_state(rng_state["torch"].cpu())
             if rng_state.get("torch_cuda") is not None and torch.cuda.is_available():
-                torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+                torch.cuda.set_rng_state_all([state.cpu() for state in rng_state["torch_cuda"]])
 
         if self.freeze_pretrained_layers:
             self.freeze_layers(freeze_actor=True, freeze_critic=False)

@@ -1,0 +1,123 @@
+metadata:
+  experiment_name: "td3_distributed_local"
+  run_name: "TD3 distributed local"
+  community_name: "citylearn_static_15min"
+  description: "One independent TD3 learner per building with strictly local rewards"
+
+tracking:
+  mlflow_enabled: false
+  log_level: "INFO"
+  log_frequency: 512
+  mlflow_step_sample_interval: 64
+  progress_update_interval: 256
+  action_diagnostics_enabled: true
+  training_diagnostics_enabled: true
+  training_diagnostics_detail: summary
+  reward_diagnostics_enabled: true
+  reward_diagnostics_detail: summary
+
+checkpointing:
+  resume_training: false
+  checkpoint_artifact: "latest_checkpoint.pth"
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  restore_optimizers: true
+  restore_replay_buffer: true
+  restore_exploration_state: false
+  restore_reward_normalizer: false
+  checkpoint_interval: 2048
+
+simulator:
+  dataset_name: citylearn_three_phase_electrical_service_demo_15min_parquet
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo_15min_parquet/schema.json
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    profile: building_local_v1
+    clip: true
+  reward_function: LocalEconomicSafetyRewardV3
+  reward_function_kwargs:
+    # Shared with PPO so scorecard comparisons use the same local objective.
+    reward_scale: 0.01
+  episodes: 2
+  deterministic_finish: true
+  simulation_start_time_step: 0
+  simulation_end_time_step: 35039
+  episode_time_steps: 35040
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    final_episode_only: true
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: false
+    session_name: "td3-distributed-local"
+
+training:
+  seed: 123
+  steps_between_training_updates: 2
+  target_update_interval: 2
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+pipeline:
+  - algorithm: TD3
+    count: 17
+    hyperparameters:
+      gamma: 0.995
+    networks:
+      actor:
+        class: SemanticMultiHeadActor
+        layers: [256, 256]
+        head_layers: [64]
+        lr: 1.0e-4
+      critic:
+        class: Critic
+        layers: [256, 256]
+        lr: 3.0e-4
+    replay_buffer:
+      class: MultiAgentReplayBuffer
+      capacity: 100000
+      batch_size: 256
+    exploration:
+      strategy: GaussianNoise
+      params:
+        sigma: 0.01
+        decay: 0.9995
+        min_sigma: 0.002
+        bias: 0.0
+        use_amp: true
+        end_initial_exploration_time_step: 512
+        random_exploration_steps: 512
+        initial_exploration_strategy: uniform_full_range
+        train_during_initial_exploration: false
+        actor_update_interval: 2
+        target_policy_smoothing: true
+        target_policy_noise: 0.05
+        target_policy_noise_clip: 0.10
+        reward_normalization: true
+        reward_normalization_clip: 10.0
+        reward_normalization_epsilon: 1.0e-8
+        critic_loss: huber
+        critic_huber_beta: 1.0
+        local_action_safety_enabled: true
+        local_action_safety_fail_on_infeasible: false
+        local_action_safety_ev_minimum_mode: deadline_feasible
+        local_action_safety_protect_ev_minimum: true
+        local_action_safety_protect_ev_service_target: true
+        local_action_safety_allow_discretionary_deferrable_start: false
+        local_action_safety_service_teacher_enabled: false
+        local_action_safety_service_teacher_eval_enabled: false
+        local_action_safety_runtime_only_export: true
+        local_price_conditioning_enabled: true
+        local_price_forecast_mode: real_unmodified
+        tau: 0.005
+
+execution: null

@@ -65,10 +65,14 @@ simulator:
     profile: cc_level1
     clip: true
   reward_function: CCRewardLevel1
+  reward_function_kwargs:
+    # Community market is disabled in this template, so optimize the same
+    # sum of member retail costs reported by district_cost_total_control_eur.
+    cost_aggregation: member_retail
   episodes: 10
   simulation_start_time_step: null
   simulation_end_time_step: null
-  episode_time_steps: 34944     # full year per ep (dataset total = 34944 steps)
+  episode_time_steps: 35040     # full year per ep (dataset total = 35040 steps)
   export:
     mode: end
     export_kpis_on_episode_end: true
@@ -103,6 +107,11 @@ pipeline:
       price_min: 0.5
       price_max: 1.5
 
+      # Auditable safe-improvement contract.  Scale 0 reproduces this fixed
+      # incumbent exactly; values below 1 limit the learned correction.
+      reference_multiplier: 1.0
+      policy_residual_scale: 1.0
+
       # Temporal abstraction: CC decides every hour over 15-minute steps.
       cc_action_interval: 4
 
@@ -132,7 +141,7 @@ pipeline:
       # Behaviour-cloning warm-start (runs once before any RL).
       # Teacher mirrors CCRewardLevel1: cost + peak-import + export signals.
       bc_pretrain_enabled: true
-      bc_collect_steps: 8736       # full year (34944 env steps / cc_action_interval=4)
+      bc_collect_steps: 8760       # full year (35040 env steps / cc_action_interval=4)
       bc_train_steps: 2000
       bc_lr: 1.0e-3
       # Legacy price thresholds — kept for backward-compat, no longer drive teacher.

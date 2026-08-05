@@ -508,6 +508,8 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
         behavior_action_priority_weight: float = 0.0,
         behavior_action_priority_mode: str = "positive",
         behavior_action_priority_scope: str = "all",
+        behavior_action_stratified_sampling: bool = False,
+        behavior_action_positive_threshold: float = 0.0,
     ):
         super().__init__(capacity=capacity, num_agents=num_agents, batch_size=batch_size)
         self.priority_fraction = float(np.clip(float(priority_fraction), 0.0, 1.0))
@@ -533,7 +535,37 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
                 "RewardWeightedMultiAgentReplayBuffer behavior_action_priority_scope must be "
                 "'all' or 'ev'."
             )
+        self.behavior_action_stratified_sampling = bool(
+            behavior_action_stratified_sampling
+        )
+        if (
+            self.behavior_action_stratified_sampling
+            and self.behavior_action_priority_scope != "ev"
+        ):
+            raise ValueError(
+                "RewardWeightedMultiAgentReplayBuffer "
+                "behavior_action_stratified_sampling requires "
+                "behavior_action_priority_scope='ev'."
+            )
+        self.behavior_action_positive_threshold = float(
+            behavior_action_positive_threshold or 0.0
+        )
+        if (
+            not np.isfinite(self.behavior_action_positive_threshold)
+            or self.behavior_action_positive_threshold < 0.0
+        ):
+            raise ValueError(
+                "RewardWeightedMultiAgentReplayBuffer "
+                "behavior_action_positive_threshold must be finite and >= 0."
+            )
         self.behavior_action_priority_masks = None
+        self._behavior_action_priority_dimensions: list[tuple[int, int]] = []
+        self._behavior_action_positive_events = np.zeros(
+            (self.capacity, 0),
+            dtype=bool,
+        )
+        self._last_behavior_action_stratum_count = 0
+        self._last_behavior_action_stratified_sample_count = 0
         self._priorities = np.zeros((self.capacity,), dtype=np.float32)
 
     @property
@@ -546,6 +578,59 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
         for mask in masks or []:
             parsed_masks.append(np.asarray(mask, dtype=bool).reshape(-1))
         self.behavior_action_priority_masks = parsed_masks or None
+        self._behavior_action_priority_dimensions = [
+            (agent_idx, action_idx)
+            for agent_idx, mask in enumerate(parsed_masks)
+            for action_idx, selected in enumerate(mask)
+            if bool(selected)
+        ]
+        self._refresh_behavior_action_positive_events()
+
+    def _refresh_behavior_action_positive_events(self) -> None:
+        dimensions = self._behavior_action_priority_dimensions
+        if not self.behavior_action_stratified_sampling:
+            self._behavior_action_positive_events = np.zeros(
+                (self.capacity, 0),
+                dtype=bool,
+            )
+            return
+        events = np.zeros((self.capacity, len(dimensions)), dtype=bool)
+        if self._behavior_actions is not None and self.size > 0:
+            for column_idx, (agent_idx, action_idx) in enumerate(dimensions):
+                if agent_idx >= len(self._behavior_actions):
+                    continue
+                agent_actions = self._behavior_actions[agent_idx]
+                if action_idx >= agent_actions.shape[1]:
+                    continue
+                values = agent_actions[: self.size, action_idx]
+                events[: self.size, column_idx] = np.isfinite(values) & (
+                    values > self.behavior_action_positive_threshold
+                )
+        self._behavior_action_positive_events = events
+
+    def _update_behavior_action_positive_events(self, insert_index: int) -> None:
+        if not self.behavior_action_stratified_sampling:
+            return
+        dimensions = self._behavior_action_priority_dimensions
+        if self._behavior_action_positive_events.shape != (
+            self.capacity,
+            len(dimensions),
+        ):
+            self._refresh_behavior_action_positive_events()
+        if not dimensions or self._behavior_actions is None:
+            return
+        self._behavior_action_positive_events[insert_index, :] = False
+        for column_idx, (agent_idx, action_idx) in enumerate(dimensions):
+            if agent_idx >= len(self._behavior_actions):
+                continue
+            agent_actions = self._behavior_actions[agent_idx]
+            if action_idx >= agent_actions.shape[1]:
+                continue
+            value = float(agent_actions[insert_index, action_idx])
+            self._behavior_action_positive_events[insert_index, column_idx] = (
+                np.isfinite(value)
+                and value > self.behavior_action_positive_threshold
+            )
 
     def push(
         self,
@@ -568,6 +653,8 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
             next_behavior_actions=next_behavior_actions,
             priority_boost=priority_boost,
         )
+        insert_index = getattr(self, "_last_insert_index", len(self.priorities))
+        self._update_behavior_action_positive_events(insert_index)
         reward_values = np.asarray(rewards, dtype=np.float64).reshape(-1)
         finite_rewards = reward_values[np.isfinite(reward_values)]
         priority = self._priority_from_rewards(finite_rewards)
@@ -578,7 +665,6 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
         if self.priority_max is not None:
             priority = min(priority, self.priority_max)
         priority += self.priority_epsilon
-        insert_index = getattr(self, "_last_insert_index", len(self.priorities))
         self._priorities[insert_index] = np.float32(priority)
 
     def _priority_from_rewards(self, finite_rewards: np.ndarray) -> float:
@@ -611,8 +697,18 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
             return 0.0
         action_values = np.concatenate(values)
         if self.behavior_action_priority_mode == "abs":
-            return float(np.max(np.abs(action_values)))
-        return float(np.max(np.maximum(action_values, 0.0)))
+            activity = np.abs(action_values)
+        else:
+            activity = np.maximum(action_values, 0.0)
+
+        if self.behavior_action_priority_scope == "ev":
+            # A max reduction makes a transition with two active chargers
+            # indistinguishable from one with a single active charger.  Sum
+            # only the explicitly masked EV dimensions so concurrent charger
+            # events (for example Building_15) remain visible to prioritized
+            # replay without changing the legacy ``all``-scope semantics.
+            return float(np.sum(activity))
+        return float(np.max(activity))
 
     @staticmethod
     def _priority_from_external_boost(priority_boost) -> float:
@@ -660,7 +756,13 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
         if uniform_count > 0:
             indices.extend(np.random.randint(0, replay_size, size=uniform_count).tolist())
 
-        if priority_count > 0:
+        stratified_indices = self._sample_behavior_action_stratified_indices(
+            priority_count
+        )
+        indices.extend(stratified_indices)
+        scalar_priority_count = priority_count - len(stratified_indices)
+
+        if scalar_priority_count > 0:
             priorities = self._priorities[:replay_size].astype(np.float64, copy=False)
             if priorities.shape[0] != replay_size:
                 priorities = np.ones(replay_size, dtype=np.float64)
@@ -670,10 +772,85 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
                 probabilities = np.full(replay_size, 1.0 / replay_size, dtype=np.float64)
             else:
                 probabilities = weights / total
-            indices.extend(np.random.choice(replay_size, size=priority_count, replace=True, p=probabilities).tolist())
+            indices.extend(
+                np.random.choice(
+                    replay_size,
+                    size=scalar_priority_count,
+                    replace=True,
+                    p=probabilities,
+                ).tolist()
+            )
 
         random.shuffle(indices)
         return indices
+
+    def _sample_behavior_action_stratified_indices(self, count: int) -> list[int]:
+        """Balance positive EV samples across chargers and concurrent events.
+
+        Per-charger strata prefer events where only that charger is active. If
+        no such event exists, the stratum falls back to all positive events for
+        that charger. A separate concurrent stratum represents transitions
+        where at least two EV action dimensions are positive. This makes the
+        prioritized portion of a batch structurally informative for multi-EV
+        buildings instead of reducing the whole transition to one scalar.
+        """
+        self._last_behavior_action_stratum_count = 0
+        self._last_behavior_action_stratified_sample_count = 0
+        if (
+            count <= 0
+            or not self.behavior_action_stratified_sampling
+            or self.behavior_action_priority_scope != "ev"
+            or not self._behavior_action_priority_dimensions
+        ):
+            return []
+
+        events = self._behavior_action_positive_events[: len(self)]
+        expected_shape = (
+            len(self),
+            len(self._behavior_action_priority_dimensions),
+        )
+        if events.shape != expected_shape:
+            self._refresh_behavior_action_positive_events()
+            events = self._behavior_action_positive_events[: len(self)]
+        if events.size == 0:
+            return []
+
+        positive_dimension_count = np.sum(events, axis=1)
+        concurrent = positive_dimension_count >= 2
+        buckets: list[np.ndarray] = []
+        for column_idx in range(events.shape[1]):
+            dimension_events = events[:, column_idx]
+            exclusive_candidates = np.flatnonzero(dimension_events & ~concurrent)
+            candidates = (
+                exclusive_candidates
+                if exclusive_candidates.size > 0
+                else np.flatnonzero(dimension_events)
+            )
+            if candidates.size > 0:
+                buckets.append(candidates)
+        concurrent_candidates = np.flatnonzero(concurrent)
+        if concurrent_candidates.size > 0:
+            buckets.append(concurrent_candidates)
+        if not buckets:
+            return []
+
+        self._last_behavior_action_stratum_count = len(buckets)
+        base_count, remainder = divmod(int(count), len(buckets))
+        bucket_order = np.random.permutation(len(buckets))
+        sampled: list[int] = []
+        for order_idx, bucket_idx in enumerate(bucket_order):
+            bucket_sample_count = base_count + int(order_idx < remainder)
+            if bucket_sample_count <= 0:
+                continue
+            sampled.extend(
+                np.random.choice(
+                    buckets[int(bucket_idx)],
+                    size=bucket_sample_count,
+                    replace=True,
+                ).tolist()
+            )
+        self._last_behavior_action_stratified_sample_count = len(sampled)
+        return sampled
 
     def get_state(self):
         state = super().get_state()
@@ -689,6 +866,8 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
                 "behavior_action_priority_weight": self.behavior_action_priority_weight,
                 "behavior_action_priority_mode": self.behavior_action_priority_mode,
                 "behavior_action_priority_scope": self.behavior_action_priority_scope,
+                "behavior_action_stratified_sampling": self.behavior_action_stratified_sampling,
+                "behavior_action_positive_threshold": self.behavior_action_positive_threshold,
             }
         )
         return state
@@ -718,6 +897,28 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
                 scope = scope.strip().lower()
                 if scope in {"all", "ev"}:
                     self.behavior_action_priority_scope = scope
+            if "behavior_action_stratified_sampling" in state:
+                self.behavior_action_stratified_sampling = bool(
+                    state.get("behavior_action_stratified_sampling")
+                )
+            if "behavior_action_positive_threshold" in state:
+                threshold = float(
+                    state.get("behavior_action_positive_threshold") or 0.0
+                )
+                if not np.isfinite(threshold) or threshold < 0.0:
+                    raise ValueError(
+                        "Restored behavior_action_positive_threshold must be "
+                        "finite and >= 0."
+                    )
+                self.behavior_action_positive_threshold = threshold
+            if (
+                self.behavior_action_stratified_sampling
+                and self.behavior_action_priority_scope != "ev"
+            ):
+                raise ValueError(
+                    "Restored behavior_action_stratified_sampling requires "
+                    "behavior_action_priority_scope='ev'."
+                )
         self._priorities = np.zeros((self.capacity,), dtype=np.float32)
         if isinstance(state, dict) and "priorities" in state:
             values = np.asarray(state.get("priorities"), dtype=np.float32).reshape(-1)[-self.capacity :]
@@ -727,6 +928,7 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
         if len(self) > 0:
             active_priorities = self._priorities[: len(self)]
             active_priorities[active_priorities <= 0.0] = np.float32(self.priority_epsilon)
+        self._refresh_behavior_action_positive_events()
 
 
 class PrioritizedReplayBuffer:

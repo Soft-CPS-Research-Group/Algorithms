@@ -304,6 +304,30 @@ class MADDPG(BaseAgent):
             0.0,
             float(exploration_cfg.get("actor_storage_behavior_cloning_multiplier", 1.0) or 0.0),
         )
+        self.actor_deferrable_behavior_cloning_multiplier = max(
+            0.0,
+            float(exploration_cfg.get("actor_deferrable_behavior_cloning_multiplier", 1.0) or 0.0),
+        )
+        self.actor_deferrable_behavior_cloning_positive_target_weight = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_deferrable_behavior_cloning_positive_target_weight",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        self.actor_deferrable_behavior_cloning_positive_target_power = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "actor_deferrable_behavior_cloning_positive_target_power",
+                    1.0,
+                )
+                or 0.0
+            ),
+        )
         self.actor_behavior_cloning_min_weight = max(
             0.0,
             float(exploration_cfg.get("actor_behavior_cloning_min_weight", 0.0) or 0.0),
@@ -361,6 +385,24 @@ class MADDPG(BaseAgent):
                 "MADDPG actor_behavior_cloning_source must be 'replay_action' or 'warm_start_policy'."
             )
         self.residual_policy_enabled = bool(exploration_cfg.get("residual_policy_enabled", False))
+        if self.warm_start_policy_name and self.initial_exploration_strategy != "policy":
+            raise ValueError(
+                "MADDPG warm_start_policy requires initial_exploration_strategy='policy'; "
+                "otherwise the teacher is never initialized."
+            )
+        if (
+            self.actor_behavior_cloning_source == "warm_start_policy"
+            and not self.warm_start_policy_name
+        ):
+            raise ValueError(
+                "MADDPG actor_behavior_cloning_source='warm_start_policy' requires "
+                "warm_start_policy."
+            )
+        if self.residual_policy_enabled and not self.warm_start_policy_name:
+            raise ValueError(
+                "MADDPG residual_policy_enabled requires warm_start_policy; use an explicit "
+                "teacher instead of silently falling back to a no-op base action."
+            )
         self.residual_action_scale = float(
             np.clip(float(exploration_cfg.get("residual_action_scale", 0.0) or 0.0), 0.0, 1.0)
         )
@@ -487,6 +529,24 @@ class MADDPG(BaseAgent):
         self.reset_replay_buffer = checkpoint_cfg.get("reset_replay_buffer", False)
         self.freeze_pretrained_layers = checkpoint_cfg.get("freeze_pretrained_layers", False)
         self.fine_tune = checkpoint_cfg.get("fine_tune", False)
+        restore_optimizers = checkpoint_cfg.get("restore_optimizers")
+        restore_replay_buffer = checkpoint_cfg.get("restore_replay_buffer")
+        self.restore_optimizers = (
+            not self.fine_tune
+            if restore_optimizers is None
+            else bool(restore_optimizers)
+        )
+        self.restore_replay_buffer = (
+            not self.reset_replay_buffer
+            if restore_replay_buffer is None
+            else bool(restore_replay_buffer)
+        )
+        self.restore_exploration_state = bool(
+            checkpoint_cfg.get("restore_exploration_state", True)
+        )
+        self.restore_reward_normalizer = bool(
+            checkpoint_cfg.get("restore_reward_normalizer", True)
+        )
         try:
             self.mlflow_step_sample_interval = int(tracking_cfg.get("mlflow_step_sample_interval", 10) or 10)
         except (TypeError, ValueError):
@@ -555,6 +615,9 @@ class MADDPG(BaseAgent):
         self._latest_raw_next_observations: Optional[List[np.ndarray]] = None
         self._latest_encoded_observations: Optional[List[np.ndarray]] = None
         self._latest_encoded_next_observations: Optional[List[np.ndarray]] = None
+        self._episode_clock_is_explicit = False
+        self._episode_schedule_step: Optional[int] = None
+        self._next_episode_schedule_step: Optional[int] = None
         self._warm_start_policy = None
         self._warned_missing_raw_context = False
         self._last_warm_start_policy_actions: Optional[List[List[float]]] = None
@@ -573,7 +636,7 @@ class MADDPG(BaseAgent):
         self.use_amp = bool(exploration_cfg.get("use_amp", True)) and self.device.type == "cuda"
         self.scaler = GradScaler(enabled=self.use_amp)
 
-        logger.info("MADDPG initialization complete.")
+        logger.info("{} initialization complete.", self.__class__.__name__)
 
     @staticmethod
     def _optional_string(value: Any) -> Optional[str]:
@@ -731,10 +794,18 @@ class MADDPG(BaseAgent):
             NormalPolicy,
             RBCBasicPolicy,
             RBCCommunityPolicy,
+            RBCSmartLocalPolicy,
             RBCSmartPolicy,
             RandomPolicy,
         )
         from algorithms.agents.rbc_agent import RuleBasedPolicy
+        from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolicy
+        from algorithms.agents.total_home_oracle_replay_policy import (
+            TotalHomeOracleReplayPolicy,
+        )
+        from algorithms.agents.total_oracle_replay_policy import (
+            TotalOracleReplayPolicy,
+        )
 
         policy_registry = {
             "RuleBasedPolicy": RuleBasedPolicy,
@@ -743,7 +814,11 @@ class MADDPG(BaseAgent):
             "NormalPolicy": NormalPolicy,
             "RBCBasicPolicy": RBCBasicPolicy,
             "RBCCommunityPolicy": RBCCommunityPolicy,
+            "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
             "RBCSmartPolicy": RBCSmartPolicy,
+            "FixedServiceOracleReplayPolicy": FixedServiceOracleReplayPolicy,
+            "TotalHomeOracleReplayPolicy": TotalHomeOracleReplayPolicy,
+            "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
         }
         policy_cls = policy_registry.get(str(self.warm_start_policy_name))
         if policy_cls is None:
@@ -799,6 +874,21 @@ class MADDPG(BaseAgent):
         )
         self._last_warm_start_policy_actions = None
 
+    def set_episode_context(
+        self,
+        *,
+        episode_step: Optional[int] = None,
+        next_episode_step: Optional[int] = None,
+    ) -> None:
+        """Bind teacher labels to the environment episode, not checkpoint age."""
+        self._episode_clock_is_explicit = episode_step is not None
+        self._episode_schedule_step = (
+            None if episode_step is None else max(int(episode_step), 0)
+        )
+        self._next_episode_schedule_step = (
+            None if next_episode_step is None else max(int(next_episode_step), 0)
+        )
+
     def set_transition_context(
         self,
         *,
@@ -826,8 +916,14 @@ class MADDPG(BaseAgent):
             if encoded_next_observations is not None
             else None
         )
-        self._last_warm_start_next_policy_actions = self._predict_warm_start_policy_for_observations(
-            self._latest_raw_next_observations,
+        next_schedule_step = self._teacher_schedule_step(next_observation=True)
+        self._last_warm_start_next_policy_actions = (
+            None
+            if next_schedule_step is None
+            else self._predict_warm_start_policy_for_observations(
+                self._latest_raw_next_observations,
+                schedule_step=next_schedule_step,
+            )
         )
 
     def _prepare_policy_actor_observations(self, observations: List[Any]) -> List[np.ndarray]:
@@ -1126,6 +1222,14 @@ class MADDPG(BaseAgent):
                     "behavior_action_priority_scope": buffer_cfg.get(
                         "behavior_action_priority_scope",
                         "all",
+                    ),
+                    "behavior_action_stratified_sampling": buffer_cfg.get(
+                        "behavior_action_stratified_sampling",
+                        False,
+                    ),
+                    "behavior_action_positive_threshold": buffer_cfg.get(
+                        "behavior_action_positive_threshold",
+                        0.0,
                     ),
                 }
             )
@@ -2213,6 +2317,23 @@ class MADDPG(BaseAgent):
             "MADDPG/actor_storage_behavior_cloning_multiplier": float(
                 getattr(self, "actor_storage_behavior_cloning_multiplier", 1.0)
             ),
+            "MADDPG/actor_deferrable_behavior_cloning_multiplier": float(
+                getattr(self, "actor_deferrable_behavior_cloning_multiplier", 1.0)
+            ),
+            "MADDPG/actor_deferrable_behavior_cloning_positive_target_weight": float(
+                getattr(
+                    self,
+                    "actor_deferrable_behavior_cloning_positive_target_weight",
+                    0.0,
+                )
+            ),
+            "MADDPG/actor_deferrable_behavior_cloning_positive_target_power": float(
+                getattr(
+                    self,
+                    "actor_deferrable_behavior_cloning_positive_target_power",
+                    1.0,
+                )
+            ),
             "MADDPG/actor_behavior_cloning_min_weight": float(
                 getattr(self, "actor_behavior_cloning_min_weight", 0.0)
             ),
@@ -2283,6 +2404,22 @@ class MADDPG(BaseAgent):
                     ),
                     "MADDPG/replay_behavior_action_priority_scope_ev": float(
                         getattr(replay_buffer, "behavior_action_priority_scope", "all") == "ev"
+                    ),
+                    "MADDPG/replay_behavior_action_stratified_sampling": float(
+                        getattr(replay_buffer, "behavior_action_stratified_sampling", False)
+                    ),
+                    "MADDPG/replay_behavior_action_positive_threshold": float(
+                        getattr(replay_buffer, "behavior_action_positive_threshold", 0.0)
+                    ),
+                    "MADDPG/replay_behavior_action_stratum_count": float(
+                        getattr(replay_buffer, "_last_behavior_action_stratum_count", 0)
+                    ),
+                    "MADDPG/replay_behavior_action_stratified_sample_count": float(
+                        getattr(
+                            replay_buffer,
+                            "_last_behavior_action_stratified_sample_count",
+                            0,
+                        )
                     ),
                 }
             )
@@ -2374,7 +2511,7 @@ class MADDPG(BaseAgent):
         if not metrics:
             return
         self._latest_training_metrics = dict(metrics)
-        if mlflow.active_run():
+        if mlflow.active_run() and not bool(getattr(self, "managed_by_ensemble", False)):
             mlflow.log_metrics(metrics, step=step)
 
     def _soft_update(self, local_model, target_model, tau):
@@ -3036,7 +3173,10 @@ class MADDPG(BaseAgent):
     def _current_residual_base_actions(self) -> Optional[List[List[float]]]:
         if not getattr(self, "residual_policy_enabled", False):
             return None
-        predicted = self._predict_warm_start_policy_for_observations(self._latest_raw_observations)
+        predicted = self._predict_warm_start_policy_for_observations(
+            self._latest_raw_observations,
+            schedule_step=self._teacher_schedule_step(next_observation=False),
+        )
         if predicted is not None:
             self._last_warm_start_policy_actions = [list(action) for action in predicted]
             return predicted
@@ -3048,18 +3188,38 @@ class MADDPG(BaseAgent):
     def _predict_warm_start_policy_for_observations(
         self,
         observations: Optional[List[np.ndarray]],
+        *,
+        schedule_step: Optional[int] = None,
     ) -> Optional[List[List[float]]]:
-        if self._warm_start_policy is None or observations is None:
+        if self._warm_start_policy is None or observations is None or schedule_step is None:
             return None
-        actions = self._warm_start_policy.predict(
-            observations,
-            deterministic=bool(getattr(self, "warm_start_policy_deterministic", True)),
-        )
+        predict_at_step = getattr(self._warm_start_policy, "predict_at_step", None)
+        if callable(predict_at_step):
+            actions = predict_at_step(
+                observations,
+                schedule_step=int(schedule_step),
+                deterministic=bool(getattr(self, "warm_start_policy_deterministic", True)),
+            )
+        else:
+            actions = self._warm_start_policy.predict(
+                observations,
+                deterministic=bool(getattr(self, "warm_start_policy_deterministic", True)),
+            )
         clipped_actions: List[List[float]] = []
         for agent_idx, action in enumerate(actions):
             action_array = np.asarray(action, dtype=np.float64).reshape(-1)
             clipped_actions.append(self._clip_action_array(agent_idx, action_array).tolist())
         return clipped_actions
+
+    def _teacher_schedule_step(self, *, next_observation: bool) -> Optional[int]:
+        if self._episode_clock_is_explicit:
+            return (
+                self._next_episode_schedule_step
+                if next_observation
+                else self._episode_schedule_step
+            )
+        offset = 0 if next_observation else -1
+        return max(int(self.exploration_step) + offset, 0)
 
     def _predict_warm_start_policy(
         self,
@@ -3079,10 +3239,21 @@ class MADDPG(BaseAgent):
         deterministic_effective = (
             self.warm_start_policy_deterministic if deterministic is None else bool(deterministic)
         )
-        actions = self._warm_start_policy.predict(
-            self._latest_raw_observations,
-            deterministic=deterministic_effective,
-        )
+        predict_at_step = getattr(self._warm_start_policy, "predict_at_step", None)
+        if callable(predict_at_step):
+            schedule_step = self._teacher_schedule_step(next_observation=False)
+            if schedule_step is None:
+                return self._predict_noop_centered()
+            actions = predict_at_step(
+                self._latest_raw_observations,
+                schedule_step=schedule_step,
+                deterministic=deterministic_effective,
+            )
+        else:
+            actions = self._warm_start_policy.predict(
+                self._latest_raw_observations,
+                deterministic=deterministic_effective,
+            )
         base_clipped_actions: List[List[float]] = []
         clipped_actions: List[List[float]] = []
         for agent_idx, action in enumerate(actions):
@@ -3921,11 +4092,16 @@ class MADDPG(BaseAgent):
         names = self._action_names_for_agent(agent_idx)
         ev_multiplier = float(getattr(self, "actor_ev_behavior_cloning_multiplier", 1.0))
         storage_multiplier = float(getattr(self, "actor_storage_behavior_cloning_multiplier", 1.0))
+        deferrable_multiplier = float(
+            getattr(self, "actor_deferrable_behavior_cloning_multiplier", 1.0)
+        )
         for action_idx, action_name in enumerate(names[: int(action_dim)]):
             if self._is_ev_action_name(action_name):
                 weights[action_idx] *= ev_multiplier
             if self._is_storage_action_name(action_name):
                 weights[action_idx] *= storage_multiplier
+            if self._is_deferrable_action_name(action_name):
+                weights[action_idx] *= deferrable_multiplier
         return torch.as_tensor(weights, dtype=dtype, device=device)
 
     def _actor_behavior_cloning_sample_weights(
@@ -3942,7 +4118,19 @@ class MADDPG(BaseAgent):
         zero_target_weight = float(
             getattr(self, "actor_ev_behavior_cloning_zero_target_weight", 0.0) or 0.0
         )
-        if positive_target_weight <= 0.0 and zero_target_weight <= 0.0:
+        deferrable_positive_target_weight = float(
+            getattr(
+                self,
+                "actor_deferrable_behavior_cloning_positive_target_weight",
+                0.0,
+            )
+            or 0.0
+        )
+        if (
+            positive_target_weight <= 0.0
+            and zero_target_weight <= 0.0
+            and deferrable_positive_target_weight <= 0.0
+        ):
             return weights
 
         action_dim = min(int(replay_action.shape[1]), int(base_weights.shape[0]))
@@ -3951,11 +4139,32 @@ class MADDPG(BaseAgent):
             1.0 if action_idx < len(names) and self._is_ev_action_name(names[action_idx]) else 0.0
             for action_idx in range(action_dim)
         ]
-        if not any(ev_mask_values):
+        deferrable_mask_values = [
+            1.0
+            if action_idx < len(names) and self._is_deferrable_action_name(names[action_idx])
+            else 0.0
+            for action_idx in range(action_dim)
+        ]
+        if not any(ev_mask_values) and not any(deferrable_mask_values):
             return weights
 
         ev_mask = torch.as_tensor(
             ev_mask_values,
+            dtype=replay_action.dtype,
+            device=replay_action.device,
+        ).view(1, -1)
+        deferrable_mask = torch.as_tensor(
+            deferrable_mask_values,
+            dtype=replay_action.dtype,
+            device=replay_action.device,
+        ).view(1, -1)
+        action_low = torch.as_tensor(
+            self._action_low_for_agent(agent_idx)[:action_dim],
+            dtype=replay_action.dtype,
+            device=replay_action.device,
+        ).view(1, -1)
+        action_high = torch.as_tensor(
+            self._action_high_for_agent(agent_idx)[:action_dim],
             dtype=replay_action.dtype,
             device=replay_action.device,
         ).view(1, -1)
@@ -3979,6 +4188,29 @@ class MADDPG(BaseAgent):
                 dtype=replay_action.dtype
             )
             multiplier = multiplier + zero_target_weight * ev_mask * zero_target
+        if deferrable_positive_target_weight > 0.0:
+            action_span = torch.clamp(action_high - action_low, min=1.0e-6)
+            deferrable_positive_target = torch.clamp(
+                (replay_action[:, :action_dim] - action_low) / action_span,
+                0.0,
+                1.0,
+            )
+            power = float(
+                getattr(
+                    self,
+                    "actor_deferrable_behavior_cloning_positive_target_power",
+                    1.0,
+                )
+                or 1.0
+            )
+            if power != 1.0:
+                deferrable_positive_target = deferrable_positive_target.pow(power)
+            multiplier = (
+                multiplier
+                + deferrable_positive_target_weight
+                * deferrable_mask
+                * deferrable_positive_target
+            )
         return weights[:, :action_dim] * multiplier
 
     def _actor_behavior_cloning_effective_weight(self, global_learning_step: int) -> float:
@@ -4095,28 +4327,36 @@ class MADDPG(BaseAgent):
             aux_state = checkpoint.get(f"actor_aux_head_state_dict_{i}")
             if aux_state is not None and i < len(getattr(self, "actor_aux_heads", [])):
                 self.actor_aux_heads[i].load_state_dict(aux_state)
-            if not self.fine_tune:
+            if bool(getattr(self, "restore_optimizers", not self.fine_tune)):
                 self.actor_optimizers[i].load_state_dict(checkpoint[f"actor_optimizer_state_dict_{i}"])
                 self.critic_optimizers[i].load_state_dict(checkpoint[f"critic_optimizer_state_dict_{i}"])
 
-        if "replay_buffer" in checkpoint and not self.reset_replay_buffer:
+        if "replay_buffer" in checkpoint and bool(
+            getattr(self, "restore_replay_buffer", not self.reset_replay_buffer)
+        ):
             self.replay_buffer.set_state(checkpoint["replay_buffer"])
 
         exploration_state = checkpoint.get("exploration_state")
-        if isinstance(exploration_state, dict):
+        if bool(getattr(self, "restore_exploration_state", True)) and isinstance(
+            exploration_state, dict
+        ):
             if "sigma" in exploration_state:
                 self.sigma = float(exploration_state["sigma"])
             if "exploration_step" in exploration_state:
                 self.exploration_step = int(exploration_state["exploration_step"])
 
         reward_norm_state = checkpoint.get("reward_normalization_state")
-        if isinstance(reward_norm_state, dict):
+        if bool(getattr(self, "restore_reward_normalizer", True)) and isinstance(
+            reward_norm_state, dict
+        ):
             self.reward_norm_count = int(reward_norm_state.get("count", self.reward_norm_count))
             self.reward_norm_mean = float(reward_norm_state.get("mean", self.reward_norm_mean))
             self.reward_norm_m2 = float(reward_norm_state.get("m2", self.reward_norm_m2))
 
         rng_state = checkpoint.get("rng_state")
-        if isinstance(rng_state, dict):
+        if bool(getattr(self, "restore_exploration_state", True)) and isinstance(
+            rng_state, dict
+        ):
             python_state = rng_state.get("python")
             numpy_state = rng_state.get("numpy")
             torch_state = rng_state.get("torch")
@@ -4126,9 +4366,9 @@ class MADDPG(BaseAgent):
             if numpy_state is not None:
                 np.random.set_state(numpy_state)
             if torch_state is not None:
-                torch.set_rng_state(torch_state)
+                torch.set_rng_state(torch_state.cpu())
             if torch_cuda_state is not None and torch.cuda.is_available():
-                torch.cuda.set_rng_state_all(torch_cuda_state)
+                torch.cuda.set_rng_state_all([state.cpu() for state in torch_cuda_state])
 
         if self.freeze_pretrained_layers:
             self.freeze_layers(freeze_actor=True, freeze_critic=False)
@@ -4156,6 +4396,15 @@ class MADDPG(BaseAgent):
         output_dir: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        if bool(getattr(self, "residual_policy_enabled", False)):
+            raise RuntimeError(
+                "Residual policy export is not yet deployment-safe: runtime "
+                "executes warm_start_policy + actor delta, while the current "
+                "ONNX contract can represent only the actor output. Disable "
+                "residual_policy_enabled for a standalone actor export or add "
+                "an explicit composite teacher+delta+projection bundle."
+            )
+
         context = context or {}
         bundle_cfg = ((context.get("config") or {}).get("bundle") or {})
         global_artifact_config = dict(bundle_cfg.get("artifact_config") or {})
@@ -4164,11 +4413,12 @@ class MADDPG(BaseAgent):
             raw_per_agent_config if isinstance(raw_per_agent_config, dict) else {}
         )
         require_observations_envelope = bool(bundle_cfg.get("require_observations_envelope", False))
+        agent_index_offset = int(context.get("agent_index_offset", 0) or 0)
 
         export_root = Path(output_dir)
         onnx_dir = export_root / "onnx_models"
         onnx_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("Exporting MADDPG actors to ONNX under {}", onnx_dir)
+        logger.info("Exporting {} actors to ONNX under {}", self.__class__.__name__, onnx_dir)
 
         metadata: Dict[str, Any] = {"format": "onnx", "artifacts": []}
         base_observation_dimension = getattr(
@@ -4178,6 +4428,7 @@ class MADDPG(BaseAgent):
         )
 
         for i, actor in enumerate(self.actors):
+            global_agent_idx = agent_index_offset + i
             export_path = onnx_dir / f"agent_{i}.onnx"
             dummy_input = torch.randn(1, self.observation_dimension[i], device=self.device)
             export_model = ActionScaledActor(
@@ -4201,16 +4452,19 @@ class MADDPG(BaseAgent):
                 },
             )
 
-            logger.info("ONNX model exported for agent {}: {}", i, export_path)
+            logger.info("ONNX model exported for agent {}: {}", global_agent_idx, export_path)
 
             relative_path = export_path.relative_to(export_root)
             raw_agent_override = (
-                per_agent_artifact_config.get(str(i))
-                if str(i) in per_agent_artifact_config
-                else per_agent_artifact_config.get(i)
+                per_agent_artifact_config.get(str(global_agent_idx))
+                if str(global_agent_idx) in per_agent_artifact_config
+                else per_agent_artifact_config.get(global_agent_idx)
             )
             agent_override = raw_agent_override if isinstance(raw_agent_override, dict) else {}
-            auto_artifact_config = build_auto_artifact_config(context=context, agent_index=i)
+            auto_artifact_config = build_auto_artifact_config(
+                context=context,
+                agent_index=global_agent_idx,
+            )
             artifact_config: Dict[str, Any] = {}
             artifact_config.update(auto_artifact_config)
             artifact_config.update(global_artifact_config)
@@ -4219,7 +4473,7 @@ class MADDPG(BaseAgent):
                 artifact_config["require_observations_envelope"] = True
             metadata["artifacts"].append(
                 {
-                    "agent_index": i,
+                    "agent_index": global_agent_idx,
                     "path": str(relative_path),
                     "format": "onnx",
                     "observation_dimension": self.observation_dimension[i],

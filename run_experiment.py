@@ -54,6 +54,7 @@ _startup_trace("after base agent import")
 _startup_trace("before execution unit import")
 from algorithms.execution_unit import ExecutionUnit
 _startup_trace("after execution unit import")
+from algorithms.pipeline import Pipeline
 _startup_trace("before algorithms registry import")
 from algorithms.registry import (
     ENCODED_OBSERVATION_ALGORITHMS,
@@ -483,13 +484,24 @@ def _resolve_local_checkpoint_path(
 ) -> Path:
     """Resolve a local checkpoint path using standard and fallback locations."""
     artifact = str(checkpoint_artifact or "latest_checkpoint.pth").strip() or "latest_checkpoint.pth"
-    candidate_paths = [
-        checkpoints_dir / artifact,
-        Path(artifact),
+    # Current jobs write to <job>/checkpoints.  The legacy wrapper wrote to
+    # <job>/logs/checkpoints, so keep that root readable for old runs.
+    checkpoint_roots = [
+        checkpoints_dir,
+        checkpoints_dir.parent / "logs" / "checkpoints",
     ]
+    candidate_paths = [root / artifact for root in checkpoint_roots]
+    candidate_paths.append(Path(artifact))
     for candidate in candidate_paths:
         if candidate.exists():
             return candidate.resolve()
+
+    # Composite single-agent baselines persist one checkpoint per Ensemble
+    # member under checkpoints/agent_<index>/.  Resolve the root so the
+    # Ensemble can route each file to the matching local learner.
+    for checkpoint_root in checkpoint_roots:
+        if checkpoint_root.exists() and any(checkpoint_root.glob("agent_*")):
+            return checkpoint_root.resolve()
 
     attempted = ", ".join(str(path) for path in candidate_paths)
     raise RuntimeError(f"Could not resolve local checkpoint path. Tried: {attempted}.")
@@ -512,8 +524,33 @@ def _resume_agent_from_checkpoint(
             f"resume_training=true but agent '{agent.__class__.__name__}' does not implement load_checkpoint()."
         )
 
+    stage_checkpoint_paths = checkpoint_cfg.get("stage_checkpoint_local_paths") or {}
+    if stage_checkpoint_paths:
+        if not isinstance(agent, Pipeline):
+            raise RuntimeError(
+                "checkpointing.stage_checkpoint_local_paths requires a Pipeline execution unit."
+            )
+        for raw_index, raw_path in sorted(
+            stage_checkpoint_paths.items(), key=lambda item: int(item[0])
+        ):
+            stage_index = int(raw_index)
+            checkpoint_path = Path(str(raw_path)).expanduser().resolve()
+            if not checkpoint_path.exists():
+                raise RuntimeError(
+                    "Configured stage checkpoint path does not exist for "
+                    f"stage {stage_index}: {checkpoint_path}"
+                )
+            agent.load_stage_checkpoint(stage_index, str(checkpoint_path))
+            logger.info(
+                "Pipeline stage {} resumed from checkpoint {}",
+                stage_index,
+                checkpoint_path,
+            )
+        return None
+
     checkpoint_artifact = str(checkpoint_cfg.get("checkpoint_artifact", "latest_checkpoint.pth"))
     checkpoint_run_id = checkpoint_cfg.get("checkpoint_run_id")
+    checkpoint_local_path = checkpoint_cfg.get("checkpoint_local_path")
     if bool(checkpoint_cfg.get("use_best_checkpoint_artifact", False)) and not checkpoint_run_id:
         metadata_cfg = config.get("metadata", {}) or {}
         checkpoint_run_id = _resolve_best_checkpoint_run_id(
@@ -529,6 +566,12 @@ def _resume_agent_from_checkpoint(
             tracking_uri=tracking_uri,
             download_dir=checkpoints_dir,
         )
+    elif checkpoint_local_path:
+        checkpoint_path = Path(str(checkpoint_local_path)).expanduser().resolve()
+        if not checkpoint_path.exists():
+            raise RuntimeError(
+                f"Configured checkpoint_local_path does not exist: {checkpoint_path}"
+            )
     else:
         checkpoint_path = _resolve_local_checkpoint_path(
             checkpoint_artifact=checkpoint_artifact,
@@ -817,6 +860,18 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             deterministic_finish=bool(simulator_cfg.get("deterministic_finish", False)),
         )
 
+        # A completed training run must leave a reusable representation of its
+        # final state even when the horizon is not an exact checkpoint interval.
+        # Without this, a successful run can silently expose an older periodic
+        # checkpoint as ``latest_checkpoint.pth``.
+        checkpoint_manager = getattr(wrapper, "checkpoint_manager", None)
+        save_final_checkpoint = getattr(checkpoint_manager, "save_final", None)
+        if callable(save_final_checkpoint):
+            save_final_checkpoint(
+                agent=agent,
+                step=max(0, int(getattr(wrapper, "global_step", 0) or 0)),
+            )
+
         # Ensure progress file reaches terminal state with 100% completion.
         completed_episodes = int(simulator_cfg.get("episodes", 1) or 1)
         final_step_total = int(getattr(wrapper, "episode_time_steps", 0) or 0)
@@ -856,6 +911,16 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
                 "squash": str((simulator_cfg.get("wrapper_reward") or {}).get("squash", "none")),
             }
         )
+        environment_metadata = (
+            wrapper.describe_environment()
+            if hasattr(wrapper, "describe_environment")
+            else {}
+        )
+        reward_function_metadata = (
+            environment_metadata.get("reward_function", {})
+            if isinstance(environment_metadata, dict)
+            else {}
+        )
 
         result_payload = {
             "status": "completed",
@@ -873,6 +938,8 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
                 export_cfg.get("export_business_as_usual_timeseries", True)
             ),
             "simulation_data_dir": str(path_info["simulation_data_dir"]),
+            "reward_function": reward_function_metadata,
+            "wrapper_reward_enabled": bool(wrapper_reward_metadata.get("enabled", False)),
             "wrapper_reward_profile": wrapper_reward_metadata.get("profile"),
             "wrapper_reward_version": wrapper_reward_metadata.get("version"),
         }
