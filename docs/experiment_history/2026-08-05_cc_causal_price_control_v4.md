@@ -4,7 +4,8 @@
 - Horizonte de evidência: ano completo, passos `0:35039`
 - Mercado comunitário: ativo, preço local `0,8` do preço grid
 - Objetivo primário: custo comunitário settled
-- Estado: implementação e smokes concluídos; campanha anual aguarda imagem remota
+- Estado: campanha anual em curso; cinco probes fixos concluídos, dois em
+  reposição e três treinos CC-SMART ainda ativos
 
 ## Motivo da correção CC-PPO
 
@@ -87,3 +88,110 @@ fairness só serão aceites no ano completo. A promoção de CC+PPO exige:
 3. scorecard completo de importação, picos, ramping, load factor, emissões,
    autoconsumo, throughput, V2G e fairness;
 4. confirmação posterior em três seeds ou superfície temporal held-out.
+
+## Atualização de 2026-08-05: campanha anual parcial
+
+A campanha foi lançada com a imagem do commit `8b73465`. Todos os jobs usam o
+mesmo dataset, passos `0:35039`, settlement comunitário ativo e PPO local
+congelado seed 789. Cinco dos sete probes fixos já têm resultados anuais
+válidos:
+
+| Multiplicador | Custo settled | Delta vs 1,00 | Delta contrafactual | Delta poupança settlement | Pico diário vs BAU | Ramping vs BAU | EV mínimo viável | Decisão parcial |
+|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 0,90 | EUR 20 857,60 | EUR +7,60 | EUR +100,62 | EUR +93,02 | 1,0754 | 1,5045 | 99,673% | `REJECT_COST` |
+| **0,95** | **EUR 20 845,01** | **EUR -4,99 (-0,024%)** | EUR +70,89 | EUR +75,88 | 1,0772 | 1,4829 | 99,709% | `MARGINAL_CANDIDATE` |
+| 1,00 | EUR 20 850,00 | referência | referência | referência | 1,0807 | 1,3620 | 99,927% | `REFERENCE` |
+| 1,05 | EUR 20 850,00 | EUR -0,00 | EUR -0,00 | EUR -0,00 | 1,0807 | 1,3620 | 99,927% | `NO_EFFECT` |
+| 1,10 | pendente | pendente | pendente | pendente | pendente | pendente | pendente | reposição no servidor |
+| 1,20 | pendente | pendente | pendente | pendente | pendente | pendente | pendente | reposição no Deucalion |
+| 1,30 | EUR 20 850,00 | EUR -0,00 | EUR -0,00 | EUR -0,00 | 1,0807 | 1,3620 | 99,927% | `NO_EFFECT` |
+
+O replay `0,95` passa o perfil completo
+`phase10_w6_adapted_local_v1`: EV mínimo viável pelo menos 0,99, precisão EV
+pelo menos 0,40, zero violações elétricas, zero serviço deferrable perdido,
+SOC estacionário em `[0,1]` e zero outage unserved energy. O perfil Phase 6
+mais estrito, que exige EV mínimo viável de 0,999, sinaliza contudo `0,95` e
+`0,90`; esta diferença de perfil fica explícita e impede apresentar `0,95`
+como promoção já confirmada.
+
+Face ao PPO neutro, `0,95`:
+
+- reduz o custo settled em EUR 4,99 e melhora o custo settled de 16/17
+  edifícios, mas o Building 15 piora EUR 23,04;
+- piora o custo físico contrafactual em EUR 70,89 e aumenta importação em
+  92,17 kWh;
+- aumenta a poupança do mercado local em EUR 75,88, reduz exportação em
+  160,87 kWh e aumenta autoconsumo solar em 0,111 pontos percentuais;
+- reduz o pico diário em 0,32% relativo, sem alterar materialmente o pico
+  absoluto;
+- aumenta ramping em 8,88%, emissões em 0,528% e throughput da bateria em
+  7,20%;
+- reduz EV mínimo e precisão em 0,218 pontos percentuais, mantendo os gates
+  do perfil Phase 10, e conserva zero violações de rede, deferrables, SOC e
+  outage.
+
+Assim, o sweep já prova que o novo canal altera causalmente o PPO e identifica
+uma região útil perto de `0,95`, mas a melhoria económica é mínima e depende
+do settlement para compensar uma regressão física concentrada no Building 15.
+Isto justifica testar um CC temporal estreito em torno de `0,95--1,00`, com
+penalização de ramping/emissões e atenção explícita ao Building 15; não
+justifica ainda afirmar que CC-PPO supera robustamente PPO.
+
+Os probes originais `1,10` e `1,20` falharam apenas na recolha remota: a ação
+Union terminou com sucesso, mas o signer não disponibilizou o artefacto após
+seis tentativas. Os logs foram preservados, os dois jobs terminais foram
+apagados após autorização explícita e as mesmas configurações científicas
+foram relançadas como `4b1ff744-b55c-4f44-86b8-a2730946bed8` no servidor e
+`9a64e88e-f6ca-46b1-8f1c-5bf60022f302` no Deucalion CPU.
+
+Evidência bruta e scorecard completo:
+`runs/remote_results/cc_causal_price_control_v4_annual_20260805/`.
+
+## Preparação V5 enquanto a campanha anual termina
+
+O protocolo seguinte foi separado da V4 para não alterar nem reinterpretar os
+jobs que usam a imagem imutável `8b73465`. A V5 responde primeiro a duas
+questões causais antes de autorizar qualquer novo treino do PPO:
+
+1. o PPO congelado reage melhor quando o multiplicador `0,95` altera apenas o
+   preço atual ou quando altera também os três forecasts?;
+2. o desconto marginalmente útil pode ser aplicado apenas em horas escolhidas,
+   evitando a regressão física do sinal constante?
+
+Foram geradas duas configurações anuais auditáveis em
+`configs/experiments/cc_ppo_controllability_v5/`. Ambas mantêm settlement,
+checkpoint seed 789 e a base `SignalAwareRBCSmartLocal`; diferem apenas entre
+`real_unmodified` e `persist_current`. Como o ator atual foi treinado apenas no
+preço nominal, estão marcadas `explicit_ood_diagnostic` e não podem ser
+promovidas diretamente.
+
+Foi também criado `scripts/build_cc_ppo_schedule_probes.py`. A partir dos
+replays anuais emparelhados `1,00` e `0,95`, o script produz schedules horários
+com hashes das fontes e cinco hipóteses:
+
+- preço naturalmente barato;
+- exportação comunitária;
+- união e interseção das duas condições;
+- seleção retrospetiva do melhor multiplicador por bloco horário.
+
+O último schedule escolhe `0,95` em 4 430/8 760 horas. A mistura independente
+dos dois traces estima EUR 223,33 de margem, mas esse valor **não é evidência**:
+combina estados de bateria incompatíveis. Só um replay anual contínuo pode
+medir o ganho real. Esse replay foi iniciado localmente como
+`cc-ppo-v5-temporal-retrospective-cost-annual-local`; resultado ainda pendente.
+
+Validação funcional antes do replay anual:
+
+- 117 testes focados passaram no conjunto V4/V5, adaptador de preço, registry e
+  schema;
+- smoke real `persist_current`, 384 transições, 17 checkpoints carregados,
+  resultado e manifesto exportados, exit 0;
+- smoke real do schedule conservador `cheap_and_export`, 384 transições,
+  resultado e manifesto exportados, exit 0.
+
+O re-treino price-responsive continua deliberadamente bloqueado por contrato.
+Randomizar apenas o preço observado mantendo a reward na tarifa real ensinaria
+o PPO a ignorar o CC. Antes desse treino, o mesmo contexto tem de chegar à
+observação atual/seguinte, à base residual e a uma reward económica estritamente
+local ou a um oracle local condicionado pelo preço. O leaf continuará sem
+observações comunitárias.
