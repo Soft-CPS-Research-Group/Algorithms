@@ -121,7 +121,7 @@ def test_dynamic_bc_template_preserves_layout_compatible_demonstrations() -> Non
     wrapper._apply_entity_layout(env._observation_payload(version=1), force_attach=False)
 
     assert agent._bc.demonstration_count(0) == 1
-    assert len(agent._bc.sample_demonstrations(agent._per_building[0].layout, batch_size=1)) == 1
+    assert len(agent._bc.sample_demonstrations(0, agent._per_building[0].layout, batch_size=1)) == 1
     assert agent._bc.demonstration_count(1) == 0
 
 

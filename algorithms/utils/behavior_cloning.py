@@ -227,10 +227,12 @@ class BehaviorCloningRegularizer:
         return len(self._demonstrations.get(building_idx, []))
 
     def sample_demonstrations(
-        self, layout: BuildingTokenLayout, batch_size: int
+        self, building_idx: int, layout: BuildingTokenLayout, batch_size: int
     ) -> List[Demonstration]:
-        compatible = self.demonstrations_by_signature.get(
-            self.layout_signature(layout), ()
+        compatible = tuple(
+            demo
+            for demo in self._demonstrations.get(building_idx, [])
+            if demo.layout_signature == self.layout_signature(layout)
         )
         if len(compatible) <= batch_size:
             return list(compatible)

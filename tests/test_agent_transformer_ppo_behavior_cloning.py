@@ -25,6 +25,12 @@ class _DummySpace:
         self.high = np.full(size, 1.0, dtype=np.float64)
 
 
+class _BoundedDummySpace:
+    def __init__(self, low: list[float], high: list[float]) -> None:
+        self.low = np.asarray(low, dtype=np.float64)
+        self.high = np.asarray(high, dtype=np.float64)
+
+
 def _config(*, demonstrations: int = 1, weight: float = 0.0) -> dict:
     config = _base_config()
     config["algorithm"]["behavior_cloning"] = {
@@ -235,6 +241,53 @@ def test_demo_episode_executes_teacher_only_records_immutable_demo_and_no_ppo() 
     observation[0] = 99.0
     assert demo.observation[0] == 1.0
     assert demo.layout is not agent._per_building[0].layout
+
+
+def test_demo_teacher_actions_are_normalized_to_actor_tanh_space() -> None:
+    names = load_sample_observation_names_for_first_building()
+    actions = list(_DEFAULT_ACTIONS)
+    low = np.linspace(-0.9, -0.3, len(actions), dtype=np.float64)
+    high = np.linspace(0.2, 0.8, len(actions), dtype=np.float64)
+    agent = AgentTransformerPPO(_config())
+    agent.attach_environment(
+        observation_names=[names],
+        action_names=[actions],
+        action_space=[_BoundedDummySpace(low.tolist(), high.tolist())],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
+    )
+    dimension = BehaviorCloningRegularizer.full_representation_width(
+        agent._per_building[0].layout
+    )
+    teacher_action = low + 0.75 * (high - low)
+    observation = np.ones(dimension, dtype=np.float64)
+
+    agent.update(
+        observations=[observation],
+        actions=[teacher_action],
+        rewards=[0.1],
+        next_observations=[observation],
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    assert agent._bc is not None
+    demonstration = next(
+        iter(agent._bc.demonstrations_for_building_by_signature(0).values())
+    )[0]
+    expected_tanh_action = 2.0 * (teacher_action - low) / (high - low) - 1.0
+    assert demonstration.target == pytest.approx(expected_tanh_action)
+    loss = agent._bc.demonstration_loss(
+        layout=agent._per_building[0].layout,
+        demonstrations=[demonstration],
+        predicted_means=torch.as_tensor(expected_tanh_action).view(1, -1, 1),
+        global_learning_step=0,
+    )
+    assert loss.item() == pytest.approx(0.0)
 
 
 def test_final_demo_end_pretrains_actor_then_ppo_uses_only_actor_actions() -> None:
@@ -501,6 +554,39 @@ def test_auxiliary_bc_update_changes_actor_and_tokenizer_but_not_critic() -> Non
     )
 
 
+def test_auxiliary_bc_uses_only_owning_building_demonstrations() -> None:
+    agent, dimension = _agent(demonstrations=0, weight=1.0, building_count=2)
+    assert agent._bc is not None
+    agent._bc.batch_size = 2
+    observation = np.ones(dimension, dtype=np.float64)
+    for parameter in agent._per_building[0].actor.mlp.parameters():
+        parameter.data.zero_()
+    agent._bc.record_demonstration(
+        0,
+        observation,
+        agent._per_building[0].layout,
+        [0.0] * agent._per_building[0].layout.n_ca,
+    )
+    agent._bc.record_demonstration(
+        1,
+        observation,
+        agent._per_building[0].layout,
+        [1.0] * agent._per_building[1].layout.n_ca,
+    )
+    pooled = agent._bc.sample_demonstrations(
+        0,
+        agent._per_building[0].layout,
+        batch_size=2,
+    )
+    assert [demo.target.tolist() for demo in pooled] == [
+        [0.0] * agent._per_building[0].layout.n_ca,
+    ]
+
+    agent._run_auxiliary_bc_update(0, agent._per_building[0])
+
+    assert agent._bc.snapshot_metrics()["behavior_cloning_loss"] == pytest.approx(0.0)
+
+
 def test_auxiliary_bc_samples_demonstrations_during_ppo_update() -> None:
     agent, dimension = _agent(demonstrations=0, weight=1.0)
     teacher_actions = _teacher(agent, 0.9)
@@ -510,9 +596,9 @@ def test_auxiliary_bc_samples_demonstrations_during_ppo_update() -> None:
     sampled = []
     original_sample = agent._bc.sample_demonstrations
 
-    def record_sample(layout, batch_size):
-        sampled.append((layout, batch_size))
-        return original_sample(layout, batch_size)
+    def record_sample(building_idx, layout, batch_size):
+        sampled.append((building_idx, layout, batch_size))
+        return original_sample(building_idx, layout, batch_size)
 
     agent._bc.sample_demonstrations = record_sample
     agent.on_episode_start(episode=1, training=True)
@@ -530,7 +616,8 @@ def test_auxiliary_bc_samples_demonstrations_during_ppo_update() -> None:
         )
 
     assert sampled
-    assert all(batch_size == agent._bc.batch_size for _, batch_size in sampled)
+    assert all(building_idx == 0 for building_idx, _, _ in sampled)
+    assert all(batch_size == agent._bc.batch_size for _, _, batch_size in sampled)
 
 
 def test_auxiliary_bc_runs_after_all_ppo_epochs() -> None:
@@ -664,7 +751,7 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
     target._bc.record_demonstration(
         0, observation + 1.0, state.layout, [0.5] * state.layout.n_ca
     )
-    sampled_demos = target._bc.sample_demonstrations(state.layout, batch_size=1)
+    sampled_demos = target._bc.sample_demonstrations(0, state.layout, batch_size=1)
     target._bc.demonstration_loss(
         layout=state.layout,
         demonstrations=sampled_demos,
@@ -943,7 +1030,7 @@ def test_checkpoint_rejects_tokenizer_incompatible_demo_layout_before_mutating_a
     )
     target._bc.demonstration_loss(
         layout=state.layout,
-        demonstrations=target._bc.sample_demonstrations(state.layout, batch_size=1),
+        demonstrations=target._bc.sample_demonstrations(0, state.layout, batch_size=1),
         predicted_means=torch.full((1, state.layout.n_ca, 1), 0.75),
         global_learning_step=0,
     )

@@ -279,7 +279,7 @@ def test_reservoir_sampling_is_bounded_per_building_and_auxiliary_loss_uses_demo
     predictions = torch.tensor([[[1.0]], [[0.0]]])
     loss = regularizer.demonstration_loss(
         layout=layout,
-        demonstrations=regularizer.sample_demonstrations(layout, batch_size=2),
+        demonstrations=regularizer.sample_demonstrations(0, layout, batch_size=2),
         predicted_means=predictions,
         global_learning_step=0,
     )

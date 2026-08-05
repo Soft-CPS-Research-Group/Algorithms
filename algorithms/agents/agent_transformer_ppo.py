@@ -550,11 +550,18 @@ class AgentTransformerPPO(BaseAgent):
                     raise ValueError(
                         f"Teacher action for building {state.building_id!r} has invalid shape."
                     )
+                low, high = self._action_bounds[building_idx]
+                low_values = low.squeeze(-1).detach().cpu().numpy()
+                high_values = high.squeeze(-1).detach().cpu().numpy()
+                teacher_tanh_action = (
+                    2.0 * (teacher_action - low_values) / (high_values - low_values)
+                    - 1.0
+                )
                 self._bc.record_demonstration(
                     building_idx,
                     np.asarray(observations[building_idx]),
                     state.layout,
-                    teacher_action.tolist(),
+                    teacher_tanh_action.tolist(),
                 )
             self._pending_decisions = [None] * building_count
             self._latest_global_learning_step = int(global_learning_step)
@@ -1658,9 +1665,9 @@ class AgentTransformerPPO(BaseAgent):
         state: _PerBuildingState,
     ) -> None:
         """Optimize auxiliary BC without updating the PPO critic."""
-        del building_idx
         assert self._bc is not None
         demonstrations = self._bc.sample_demonstrations(
+            building_idx=building_idx,
             layout=state.layout,
             batch_size=self._bc.batch_size,
         )
