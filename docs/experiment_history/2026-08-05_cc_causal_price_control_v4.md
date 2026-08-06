@@ -4,8 +4,8 @@
 - Horizonte de evidência: ano completo, passos `0:35039`
 - Mercado comunitário: ativo, preço local `0,8` do preço grid
 - Objetivo primário: custo comunitário settled
-- Estado: campanha anual em curso; cinco probes fixos concluídos, dois em
-  reposição e três treinos CC-SMART ainda ativos
+- Estado: campanha anual V4 concluída; sete probes fixos e três treinos
+  CC-SMART anuais recolhidos e auditados
 
 ## Motivo da correção CC-PPO
 
@@ -89,12 +89,11 @@ fairness só serão aceites no ano completo. A promoção de CC+PPO exige:
    autoconsumo, throughput, V2G e fairness;
 4. confirmação posterior em três seeds ou superfície temporal held-out.
 
-## Atualização de 2026-08-05: campanha anual parcial
+## Atualização de 2026-08-05: campanha anual concluída
 
 A campanha foi lançada com a imagem do commit `8b73465`. Todos os jobs usam o
 mesmo dataset, passos `0:35039`, settlement comunitário ativo e PPO local
-congelado seed 789. Cinco dos sete probes fixos já têm resultados anuais
-válidos:
+congelado seed 789. Os sete probes fixos têm resultados anuais válidos:
 
 | Multiplicador | Custo settled | Delta vs 1,00 | Delta contrafactual | Delta poupança settlement | Pico diário vs BAU | Ramping vs BAU | EV mínimo viável | Decisão parcial |
 |---:|---:|---:|---:|---:|---:|---:|---:|---|
@@ -102,8 +101,8 @@ válidos:
 | **0,95** | **EUR 20 845,01** | **EUR -4,99 (-0,024%)** | EUR +70,89 | EUR +75,88 | 1,0772 | 1,4829 | 99,709% | `MARGINAL_CANDIDATE` |
 | 1,00 | EUR 20 850,00 | referência | referência | referência | 1,0807 | 1,3620 | 99,927% | `REFERENCE` |
 | 1,05 | EUR 20 850,00 | EUR -0,00 | EUR -0,00 | EUR -0,00 | 1,0807 | 1,3620 | 99,927% | `NO_EFFECT` |
-| 1,10 | pendente | pendente | pendente | pendente | pendente | pendente | pendente | reposição no servidor |
-| 1,20 | pendente | pendente | pendente | pendente | pendente | pendente | pendente | reposição no Deucalion |
+| 1,10 | EUR 20 850,00 | EUR +0,00 | EUR +0,00 | EUR +0,00 | 1,0807 | 1,3620 | 99,927% | `NO_EFFECT` |
+| 1,20 | EUR 20 850,00 | EUR +0,00 | EUR +0,00 | EUR +0,00 | 1,0807 | 1,3620 | 99,927% | `NO_EFFECT` |
 | 1,30 | EUR 20 850,00 | EUR -0,00 | EUR -0,00 | EUR -0,00 | 1,0807 | 1,3620 | 99,927% | `NO_EFFECT` |
 
 O replay `0,95` passa o perfil completo
@@ -144,6 +143,35 @@ apagados após autorização explícita e as mesmas configurações científicas
 foram relançadas como `4b1ff744-b55c-4f44-86b8-a2730946bed8` no servidor e
 `9a64e88e-f6ca-46b1-8f1c-5bf60022f302` no Deucalion CPU.
 
+As reposições terminaram e confirmaram a zona morta acima de `1,0`: `1,10` e
+`1,20` reproduzem o custo neutro até à precisão numérica. Portanto, não há
+justificação para mais probes fixos acima de `1,0`; a única região com sinal
+económico nesta arquitetura continua perto de `0,95`.
+
+### Resultado CC-SMART anual
+
+Os três CC-SMART passaram todos os hard gates. Comparados com o SMART settled
+neutro emparelhado (EUR 21 964,67), os resultados completos são:
+
+| Receita | Custo settled | Delta custo | Importação | Delta importação | Pico diário vs BAU | Ramping vs BAU | Emissões kgCO2 | Autoconsumo solar | Decisão |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| SMART neutro | EUR 21 964,67 | referência | 132 780,13 kWh | referência | 1,07108 | 2,40308 | 22 415,74 | 69,737% | `REFERENCE` |
+| CC-SMART hourly | EUR 21 938,27 | EUR -26,40 (-0,120%) | 132 481,51 kWh | -298,62 kWh | 1,06575 | 2,26144 | 22 228,67 | 69,667% | `PASS_CC_SCORECARD` |
+| **CC-SMART 15 min** | **EUR 21 921,29** | **EUR -43,38 (-0,198%)** | **132 422,30 kWh** | **-357,83 kWh** | **1,06574** | **2,28716** | **22 315,90** | **69,813%** | **`PASS_CC_SCORECARD`** |
+| CC-SMART peak 15 min | EUR 21 928,37 | EUR -36,29 (-0,165%) | 132 473,00 kWh | -307,13 kWh | 1,06581 | 2,31327 | 22 319,57 | 69,781% | `PASS_CC_SCORECARD` |
+
+O `CC-SMART 15 min` é o vencedor económico. A melhoria é pequena, mas não é
+apenas redistribuição contabilística do settlement: reduz também importação,
+pico diário, ramping e emissões, aumenta ligeiramente o autoconsumo solar e
+reduz throughput da bateria em 1 295,61 kWh. O pico absoluto fica inalterado.
+O termo adicional de pico/ramping não superou a reward cost-only, pelo que a
+receita `peak 15 min` não deve substituir a vencedora.
+
+A fairness ainda é fraca: só 5/17 edifícios melhoram o custo local face ao
+SMART emparelhado e não se cumpre `all_buildings_no_worse_than_baseline`.
+Assim, a run é um `PASS_CC_SCORECARD` agregado e uma demonstração causal de
+melhoria física, mas não uma solução de distribuição justa entre membros.
+
 Evidência bruta e scorecard completo:
 `runs/remote_results/cc_causal_price_control_v4_annual_20260805/`.
 
@@ -178,7 +206,93 @@ O último schedule escolhe `0,95` em 4 430/8 760 horas. A mistura independente
 dos dois traces estima EUR 223,33 de margem, mas esse valor **não é evidência**:
 combina estados de bateria incompatíveis. Só um replay anual contínuo pode
 medir o ganho real. Esse replay foi iniciado localmente como
-`cc-ppo-v5-temporal-retrospective-cost-annual-local`; resultado ainda pendente.
+`cc-ppo-v5-temporal-retrospective-cost-annual-local-r2`, mas o serviço
+transiente foi parado externamente aos 31 616/35 040 passos (90,23%). Não há
+exceção do algoritmo nos logs e `result.json` ficou `pending`; esta tentativa
+não é evidência e só deve ser repetida remotamente mediante nova submissão.
+
+Depois da publicação da imagem imutável
+`add-cc-ppo-controllability-v5-protocol-bfecf60`, as duas ablações anuais do
+ator foram submetidas ao Union e confirmadas em execução:
+
+- `338cee85-a639-49a2-aedb-0c392b9966fa`: multiplicador aplicado ao preço
+  atual do ator, com forecasts reais inalterados;
+- `eb25701d-2444-415e-a103-3d4239c43ca4`: multiplicador aplicado ao preço
+  atual e ao caminho de forecasts (`persist_current`).
+
+Para aproveitar a janela overnight sem abrir uma nova grelha de parâmetros,
+foram ainda submetidos os quatro schedules causais pré-registados e uma
+referência neutra na mesma imagem:
+
+- `03c4ee06-bc05-4519-b5a7-b263b465cf6c`: referência neutra no servidor;
+- `47bc80bc-376b-4cc4-aae3-dee155cde5a1`: `native_cheap` no Deucalion CPU;
+- `5342355a-f15f-4009-8348-d0d071c433e2`: `community_export` no Union;
+- `f2306821-e641-46a6-b4d9-ffe6425073ea`: `cheap_or_export` no Union;
+- `e5391bb9-d3fe-40e2-86d8-432c8200dd1b`: `cheap_and_export` no Union.
+
+As duas ablações do ator, os cinco replays temporais e a referência neutra
+formam o diagnóstico V5. As ablações do ator continuam fora da distribuição e
+os schedules derivados são diagnósticos in-sample, não candidatos de promoção.
+Servem para decidir se ainda existe margem causal com o PPO nominal congelado
+ou se o próximo passo obrigatório é treinar uma folha PPO local explicitamente
+condicionada pelo preço efetivo. Não foi aberta uma grelha `0,975` antes de
+observar estes resultados, evitando procura oportunista de hiperparâmetros.
+
+### Resultado anual V5
+
+Os sete jobs remotos terminaram com sucesso e exportaram KPIs anuais. A
+referência neutra na imagem V5 reproduziu EUR 20 850,00. O diagnóstico completo
+é:
+
+| Receita | Custo settled | Delta vs neutro | Violação elétrica | Decisão |
+|---|---:|---:|---:|---|
+| `actor_current_only` 0,95 | EUR 20 901,29 | EUR +51,28 | 0,01022 kWh | `REJECT_HARD_GATES` |
+| `actor_current_and_forecasts` 0,95 | EUR 20 867,38 | EUR +17,38 | 0 | `REJECT_COST` |
+| PPO neutro V5 | EUR 20 850,00 | referência | 0 | `REFERENCE` |
+| `native_cheap` | EUR 20 838,76 | EUR -11,24 | 0,00830 kWh | `REJECT_HARD_GATES` |
+| **`community_export`** | **EUR 20 816,31** | **EUR -33,69 (-0,162%)** | **0** | **`PASS_COST_WITH_TRADEOFFS`** |
+| `cheap_or_export` | EUR 20 835,04 | EUR -14,97 | 0,00877 kWh | `REJECT_HARD_GATES` |
+| **`cheap_and_export`** | **EUR 20 818,15** | **EUR -31,85 (-0,153%)** | **0** | **`PASS_COST_WITH_TRADEOFFS`** |
+
+Os dois candidatos válidos passam o perfil
+`phase10_w6_adapted_local_v1` e a projeção
+`phase10_w6_executed_safety_projection_v1`: EV mínimo viável acima de 0,99,
+precisão EV acima de 0,40, zero violações elétricas executadas, zero ciclos
+deferrable perdidos, serviço deferrable 1,0, zero violações de SoC e zero
+outage unserved energy.
+
+Face ao PPO neutro V5:
+
+| Métrica | `community_export` | `cheap_and_export` |
+|---|---:|---:|
+| Custo settled | EUR -33,69 | EUR -31,85 |
+| Importação | -199,42 kWh | -187,81 kWh |
+| Pico diário vs BAU | -0,001199 | -0,001199 |
+| Pico absoluto vs BAU | sem alteração material | sem alteração material |
+| Ramping vs BAU | +1,46% relativo | +1,37% relativo |
+| Emissões | +32,62 kgCO2 (+0,15%) | +25,32 kgCO2 (+0,11%) |
+| Autoconsumo solar | +0,205 p.p. | +0,181 p.p. |
+| Throughput da bateria | +1 242,71 kWh (+2,49%) | +984,70 kWh (+1,97%) |
+| Edifícios com custo melhor | 16/17 | **17/17** |
+| Pior delta local | EUR +3,81 | **EUR -0,17** |
+
+`community_export` é o vencedor no objetivo primário, mas piora ligeiramente um
+edifício. `cheap_and_export` perde apenas EUR 1,84 de poupança agregada e é a
+solução mais equilibrada: todos os 17 edifícios poupam e usa menos bateria. Os
+dois ficam `PASS_COST_WITH_TRADEOFFS`, não `PASS_CC_SCORECARD`, porque o ramping
+piora mais de 1%, a tolerância explícita do scorecard.
+
+Estes schedules foram derivados dos traces anuais e continuam a ser evidência
+in-sample, não um CC aprendido ou diretamente destacável. Contudo, demonstram
+que o PPO congelado pode ser melhorado por coordenação temporal e identificam
+um alvo concreto para o próximo CC: aprender online quando a comunidade está a
+exportar, com a interseção preço-barato/exportação como opção de maior fairness
+e menor desgaste.
+
+Evidência bruta:
+`runs/remote_results/cc_ppo_controllability_v5_annual_20260806/`.
+Scorecard completo:
+`runs/remote_results/cc_ppo_controllability_v5_annual_20260806/scorecards/v5_valid_temporal_vs_neutral/`.
 
 Validação funcional antes do replay anual:
 
