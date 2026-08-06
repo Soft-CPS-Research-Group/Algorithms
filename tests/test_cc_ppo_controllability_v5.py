@@ -7,6 +7,7 @@ import yaml
 
 from scripts.build_cc_ppo_schedule_probes import (
     _compress_schedule,
+    _probe_config,
     derive_schedule_masks,
 )
 from scripts.generate_cc_ppo_controllability_v5 import (
@@ -145,3 +146,39 @@ def test_schedule_masks_separate_tariff_export_and_retrospective_hypotheses():
         {"start_step": 0, "multiplier": 0.95},
         {"start_step": 2, "multiplier": 1.0},
     ]
+
+
+@pytest.mark.parametrize("charge_rate", (0.3, 0.45, 0.6))
+def test_temporal_probe_records_and_applies_signal_charge_rate(charge_rate: float):
+    config = _probe_config(
+        recipe="community_export",
+        schedule=[{"start_step": 0, "multiplier": 0.95}],
+        discount=0.95,
+        block_steps=4,
+        signal_price_charge_rate=charge_rate,
+        smoke_transitions=None,
+    )
+    validate_config(config)
+
+    tags = config["tracking"]["tags"]
+    residual = config["pipeline"][1]["exploration"]["params"][
+        "residual_base_policy_hyperparameters"
+    ]
+    assert float(tags["signal_price_charge_rate"]) == pytest.approx(charge_rate)
+    assert residual["signal_price_charge_rate"] == pytest.approx(charge_rate)
+    assert f"charge-{charge_rate:.2f}".replace(".", "p") in config["simulator"][
+        "export"
+    ]["session_name"]
+
+
+@pytest.mark.parametrize("charge_rate", (-0.01, 1.01))
+def test_temporal_probe_rejects_invalid_signal_charge_rate(charge_rate: float):
+    with pytest.raises(ValueError, match="signal_price_charge_rate"):
+        _probe_config(
+            recipe="community_export",
+            schedule=[{"start_step": 0, "multiplier": 0.95}],
+            discount=0.95,
+            block_steps=4,
+            signal_price_charge_rate=charge_rate,
+            smoke_transitions=None,
+        )

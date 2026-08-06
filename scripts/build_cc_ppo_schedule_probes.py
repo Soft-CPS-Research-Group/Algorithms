@@ -30,6 +30,7 @@ except ModuleNotFoundError:  # Direct execution puts scripts/ on sys.path.
 EXPERIMENT_NAME = "cc_ppo_controllability_v5"
 DEFAULT_DISCOUNT = 0.95
 DEFAULT_NEUTRAL = 1.0
+DEFAULT_SIGNAL_PRICE_CHARGE_RATE = 0.6
 
 
 def _sha256(path: Path) -> str:
@@ -294,8 +295,11 @@ def _probe_config(
     schedule: Sequence[Mapping[str, float | int]],
     discount: float,
     block_steps: int,
+    signal_price_charge_rate: float,
     smoke_transitions: int | None,
 ) -> dict[str, Any]:
+    if not 0.0 <= signal_price_charge_rate <= 1.0:
+        raise ValueError("signal_price_charge_rate must be within [0, 1]")
     config = ppo_fixed_recipe(1.0)
     config["metadata"].update(
         {
@@ -318,6 +322,7 @@ def _probe_config(
             "promotion_eligible": "False",
             "cc_action_interval": str(block_steps),
             "discount_multiplier": str(discount),
+            "signal_price_charge_rate": str(signal_price_charge_rate),
         }
     )
     config["pipeline"][0]["hyperparameters"].update(
@@ -327,8 +332,12 @@ def _probe_config(
         }
     )
     config["simulator"]["export"]["session_name"] = (
-        f"cc-ppo-v5-temporal-{recipe}-seed{PPO_SEED}"
+        f"cc-ppo-v5-temporal-{recipe}-charge-"
+        f"{signal_price_charge_rate:.2f}-seed{PPO_SEED}".replace(".", "p")
     )
+    config["pipeline"][1]["exploration"]["params"][
+        "residual_base_policy_hyperparameters"
+    ]["signal_price_charge_rate"] = float(signal_price_charge_rate)
     if smoke_transitions is not None:
         if smoke_transitions < 1:
             raise ValueError("smoke_transitions must be >= 1")
@@ -353,6 +362,7 @@ def build_probes(
     block_steps: int = 4,
     activation_fraction: float = 0.5,
     minimum_saving: float = 0.0,
+    signal_price_charge_rate: float = DEFAULT_SIGNAL_PRICE_CHARGE_RATE,
     smoke_transitions: int | None = None,
 ) -> dict[str, Any]:
     if not 0.0 < discount < neutral:
@@ -419,9 +429,13 @@ def build_probes(
             schedule=schedule,
             discount=discount,
             block_steps=block_steps,
+            signal_price_charge_rate=signal_price_charge_rate,
             smoke_transitions=smoke_transitions,
         )
-        path = output_dir / f"cc_ppo_temporal_{recipe}_seed{PPO_SEED}.yaml"
+        charge_label = f"{signal_price_charge_rate:.2f}".replace(".", "p")
+        path = output_dir / (
+            f"cc_ppo_temporal_{recipe}_charge_{charge_label}_seed{PPO_SEED}.yaml"
+        )
         path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
         files[recipe] = str(path)
         summaries[recipe] = {
@@ -459,6 +473,7 @@ def build_probes(
         "block_steps": block_steps,
         "activation_fraction": activation_fraction,
         "minimum_saving": minimum_saving,
+        "signal_price_charge_rate": signal_price_charge_rate,
         "smoke_transitions": smoke_transitions,
         "sources": sources,
         "recipes": summaries,
@@ -479,6 +494,11 @@ def main() -> int:
     parser.add_argument("--block-steps", type=int, default=4)
     parser.add_argument("--activation-fraction", type=float, default=0.5)
     parser.add_argument("--minimum-saving", type=float, default=0.0)
+    parser.add_argument(
+        "--signal-price-charge-rate",
+        type=float,
+        default=DEFAULT_SIGNAL_PRICE_CHARGE_RATE,
+    )
     parser.add_argument("--smoke-transitions", type=int)
     parser.add_argument(
         "--output-dir",
@@ -496,6 +516,7 @@ def main() -> int:
         block_steps=args.block_steps,
         activation_fraction=args.activation_fraction,
         minimum_saving=args.minimum_saving,
+        signal_price_charge_rate=args.signal_price_charge_rate,
         smoke_transitions=args.smoke_transitions,
     )
     print(json.dumps(manifest, indent=2))

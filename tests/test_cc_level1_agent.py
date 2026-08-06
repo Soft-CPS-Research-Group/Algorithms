@@ -233,6 +233,31 @@ def test_cc_training_flushes_one_transition_per_decision_interval() -> None:
     assert len(agent._decision_trace) == 1
 
 
+def test_cc_deterministic_evaluation_does_not_update_rollout() -> None:
+    agent = _attached_cc(interval=2)
+    observations = [np.zeros(len(_CC_LEVEL1_FEATURES), dtype=np.float32)]
+
+    for step in range(4):
+        agent.set_episode_context(episode_step=step)
+        agent.predict(observations, deterministic=True)
+        agent.update(
+            observations,
+            [[]],
+            [-1.0],
+            observations,
+            terminated=step == 3,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step,
+            update_step=True,
+            initial_exploration_done=True,
+        )
+
+    assert agent.rollout_buffer._ptr == 0
+    assert agent._reward_rms._n == 0
+    assert len(agent._completed_decision_traces) == 2
+
+
 def test_cc_bc_teacher_uses_raw_physical_values_not_policy_encoding() -> None:
     agent = CCLevel1Agent(
         {
