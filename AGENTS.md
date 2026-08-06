@@ -76,6 +76,11 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
 - `configs/config.yaml` → add parameters under `algorithm.hyperparameters`
 - `utils/config_schema.py` → add validation model if needed
 
+## GPU Training
+
+- Learning agents must select a Torch device and move training models and tensors to it.
+- GPU server templates must require CUDA and fail if CUDA is unavailable.
+
 ## Available Algorithms
 
 | Algorithm | Description |
