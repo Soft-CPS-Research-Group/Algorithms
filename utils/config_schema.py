@@ -672,6 +672,24 @@ class FixedPriceSignalHyperparameters(BaseModel):
         return self
 
 
+class CausalPriceSignalHyperparameters(BaseModel):
+    neutral_multiplier: float = Field(default=1.0, gt=0)
+    discount_multiplier: float = Field(default=0.95, gt=0)
+    cc_action_interval: int = Field(default=4, gt=0)
+    community_export_threshold_kw: float = Field(default=1.0e-9, ge=0)
+    forecast_mean_margin: float = Field(default=0.20, ge=0)
+    forecast_min_margin: float = Field(default=0.10, ge=0)
+    spread_floor_ratio: float = Field(default=0.05, gt=0)
+
+    @model_validator(mode="after")
+    def validate_discount_contract(self) -> "CausalPriceSignalHyperparameters":
+        if self.discount_multiplier >= self.neutral_multiplier:
+            raise ValueError(
+                "CausalPriceSignal discount_multiplier must be below neutral_multiplier"
+            )
+        return self
+
+
 class BuildingAgentHyperparameters(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -716,6 +734,15 @@ class FixedPriceSignalAlgorithmConfig(BaseModel):
     frozen: bool = True
     hyperparameters: FixedPriceSignalHyperparameters = Field(
         default_factory=FixedPriceSignalHyperparameters
+    )
+
+
+class CausalPriceSignalAlgorithmConfig(BaseModel):
+    algorithm: Literal["CausalPriceSignal"]
+    count: Literal[1] = 1
+    frozen: Literal[True] = True
+    hyperparameters: CausalPriceSignalHyperparameters = Field(
+        default_factory=CausalPriceSignalHyperparameters
     )
 
 
@@ -827,6 +854,7 @@ class TransformerPPOStageConfig(BaseModel):
 PipelineStageConfig = Union[
     BuildingAgentStageConfig,
     CCLevel1AlgorithmConfig,
+    CausalPriceSignalAlgorithmConfig,
     FixedPriceSignalAlgorithmConfig,
     CCLevel2AlgorithmConfig,
     CommunityCoordinatorAlgorithmConfig,
