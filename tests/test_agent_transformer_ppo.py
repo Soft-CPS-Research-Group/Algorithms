@@ -332,6 +332,36 @@ def test_episode_boundary_trains_one_sample_rollout() -> None:
     assert agent.consume_latest_training_metrics()["TPPO/building_0/rollout_size"] == 1.0
 
 
+def test_building_count_change_flushes_one_sample_rollout() -> None:
+    agent, obs_names, action_names, obs_dim = _make_agent(n_buildings=1)
+    observation = [np.zeros(obs_dim, dtype=np.float64)]
+    action = [np.asarray(agent.predict(observation, deterministic=True)[0])]
+    agent.update(
+        observations=observation,
+        actions=action,
+        rewards=[0.1],
+        next_observations=observation,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=1,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    agent.attach_environment(
+        observation_names=[obs_names[0], obs_names[0]],
+        action_names=[action_names[0], action_names[0]],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={"building_names": ["Building_1", "Building_2"]},
+    )
+
+    assert len(agent._per_building) == 2
+    assert agent._ppo_update_count == 1
+    assert agent.consume_latest_training_metrics()["TPPO/building_0/rollout_size"] == 1.0
+
+
 def test_training_metrics_keep_each_building_result() -> None:
     agent, _, _, obs_dim = _make_agent(n_buildings=2)
     observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
