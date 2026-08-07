@@ -43,6 +43,12 @@ class Pipeline(ExecutionUnit):
         if not stages:
             raise ValueError("Pipeline requires at least one stage.")
         self.stages: List[ExecutionUnit] = list(stages)
+        for index, stage in enumerate(self.stages[:-1]):
+            if getattr(stage, "requires_final_pipeline_stage", False):
+                raise ValueError(
+                    f"Pipeline stage {index} ({type(stage).__name__}) must be the final "
+                    "stage because it learns from its own executed actions."
+                )
         self._raw_observations: Optional[Any] = None
         self._encoded_observations: Optional[Any] = None
         self._raw_next_observations: Optional[Any] = None
@@ -233,6 +239,14 @@ class Pipeline(ExecutionUnit):
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        for stage in self.stages:
+            stage.on_episode_start(episode=episode, training=training)
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        for stage in self.stages:
+            stage.on_episode_end(episode=episode, training=training)
+
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return all(
             stage.is_initial_exploration_done(global_learning_step)
@@ -602,6 +616,14 @@ class Ensemble(ExecutionUnit):
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        for agent in self.agents:
+            agent.on_episode_start(episode=episode, training=training)
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        for agent in self.agents:
+            agent.on_episode_end(episode=episode, training=training)
+
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return all(
             agent.is_initial_exploration_done(global_learning_step)

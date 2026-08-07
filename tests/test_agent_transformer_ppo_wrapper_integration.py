@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import pytest
+import numpy as np
+from gymnasium import spaces
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
 from tests.test_wrapper_entity_mode import _DummyEntityEnv, _entity_config
@@ -36,6 +38,18 @@ class _DummyEntityEnvForPPO(_DummyEntityEnv):
         return [
             ["electrical_storage", "electric_vehicle_storage"],
             ["electrical_storage", "electric_vehicle_storage"],
+        ]
+
+    @property
+    def flat_action_space(self) -> List[spaces.Box]:  # type: ignore[override]
+        building_count = 1 if self._version == 0 else 2
+        return [
+            spaces.Box(
+                low=np.array([-1.0, 0.0], dtype=np.float32),
+                high=np.array([1.0, 1.0], dtype=np.float32),
+                dtype=np.float32,
+            )
+            for _ in range(building_count)
         ]
 
 

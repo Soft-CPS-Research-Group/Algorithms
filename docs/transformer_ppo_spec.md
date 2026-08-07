@@ -768,9 +768,9 @@ is rebuilt (see §11.2).
 
 ### 9.3 Action range and clipping
 
-`predict()` returns values in `[-1, 1]`. The wrapper clips to per-agent
-action-space bounds via the existing `_clip_actions`
-(`utils/wrapper_citylearn.py`).
+The actor samples in `[-1, 1]`, then `predict()` maps each component
+affinely to its finite environment range `[low, high]`. Bounds must have
+exactly one value per action and satisfy `low < high`.
 
 ---
 
@@ -843,6 +843,11 @@ class AgentTransformerPPO(BaseAgent):
 
 Each building owns: tokenizer, backbone, actor, critic, rollout buffer,
 optimizer, cached `BuildingTokenLayout`.
+
+`AgentTransformerPPO` must be the final pipeline stage. It stores the exact
+action returned by `predict()` and accepts only that action in `update()`.
+Earlier stages may transform the leaf action, so TPPO cannot safely learn
+from a downstream stage's environment action.
 
 ### Tests (`tests/test_agent_transformer_ppo.py`)
 
@@ -939,6 +944,14 @@ owns layout reconstruction. Sequence (must run in this order):
 > `update_step` window is handled here (the buffer is force-flushed). The
 > next regularly-scheduled `update_step` will then operate on a fresh
 > buffer.
+
+When the building count changes, each existing building is flushed before
+the complete per-building state rebuild.
+
+Episode end uses the same boundary flush. A one-sample rollout is trained
+with a one-sample batch so its transition and reward are never discarded.
+The wrapper consumes training metrics after this hook, including on the
+last episode.
 
 ### 11.3 No-op steps
 
@@ -1325,7 +1338,7 @@ simulator:
 
 training:
   seed: 22
-  steps_between_training_updates: 1
+  steps_between_training_updates: 256
   target_update_interval: 0
 
 topology:
@@ -1343,7 +1356,7 @@ pipeline:
       nhead: 4
       num_layers: 2
       dim_feedforward: 128
-      dropout: 0.1
+      dropout: 0.0
     hyperparameters:
       learning_rate: 3.0e-4
       gamma: 0.99

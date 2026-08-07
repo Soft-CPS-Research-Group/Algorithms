@@ -1197,6 +1197,9 @@ class Wrapper_CityLearn(RLC):
                 )
             else:
                 observations = raw_observations
+            on_episode_start = getattr(self.model, "on_episode_start", None)
+            if callable(on_episode_start):
+                on_episode_start(episode=episode, training=not deterministic)
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             self._write_phase_progress(
@@ -1545,8 +1548,7 @@ class Wrapper_CityLearn(RLC):
                     metrics.update(self._collect_model_status_metrics())
                     metrics.update(self._build_action_diagnostic_metrics(actions, step_observations))
                     metrics.update(self._build_reward_component_metrics())
-                    if not mlflow.active_run():
-                        metrics.update(self._consume_model_training_metrics())
+                    metrics.update(self._consume_model_training_metrics())
                     if should_profile_step:
                         metrics["Runtime/diagnostics_build_seconds"] = (
                             time.perf_counter() - diagnostics_start_time
@@ -1591,6 +1593,19 @@ class Wrapper_CityLearn(RLC):
                     )
 
                 time_step += 1
+
+            on_episode_end = getattr(self.model, "on_episode_end", None)
+            if callable(on_episode_end):
+                on_episode_end(episode=episode, training=not deterministic)
+            boundary_training_metrics = self._consume_model_training_metrics()
+            if boundary_training_metrics:
+                if mlflow.active_run():
+                    mlflow.log_metrics(boundary_training_metrics, step=self.global_step)
+                elif self.local_metrics_logger:
+                    self.local_metrics_logger.log(
+                        boundary_training_metrics,
+                        self.global_step,
+                    )
 
             last_rewards = rewards_list[-1] if rewards_list else None
             self._write_phase_progress(
