@@ -578,8 +578,8 @@ class AgentTransformerPPO(BaseAgent):
                     f"Action-space object for building {building_idx} must expose both low and high attributes."
                 )
             if has_low:
-                low = np.asarray(space.low, dtype=np.float32).reshape(-1)
-                high = np.asarray(space.high, dtype=np.float32).reshape(-1)
+                low = np.asarray(space.low, dtype=np.float64).reshape(-1)
+                high = np.asarray(space.high, dtype=np.float64).reshape(-1)
                 if low.shape[0] != action_count or high.shape[0] != action_count:
                     raise ValueError(
                         f"Action-space bounds for building {building_idx} have shape "
@@ -590,11 +590,11 @@ class AgentTransformerPPO(BaseAgent):
                         f"Action-space bounds for building {building_idx} must be finite and satisfy low < high."
                     )
             else:
-                low = np.full(action_count, -1.0, dtype=np.float32)
-                high = np.full(action_count, 1.0, dtype=np.float32)
+                low = np.full(action_count, -1.0, dtype=np.float64)
+                high = np.full(action_count, 1.0, dtype=np.float64)
             bounds.append((
-                torch.as_tensor(low, device=self.device).view(action_count, 1),
-                torch.as_tensor(high, device=self.device).view(action_count, 1),
+                torch.as_tensor(low, dtype=torch.float64, device=self.device).view(action_count, 1),
+                torch.as_tensor(high, dtype=torch.float64, device=self.device).view(action_count, 1),
             ))
         return bounds
 
