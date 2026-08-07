@@ -1511,8 +1511,9 @@ teacher episodes, while `max_samples_per_building` bounds retained examples.
 the first PPO rollout.
 
 On topology changes, the wrapper rebuilds the entity layout and reattaches
-the agent. BC rebuilds the `RBCSmartPolicy` teacher and demonstration store
-for affected buildings. Demonstrations from an obsolete layout are discarded.
+the agent. BC rebuilds the `RBCSmartPolicy` teacher. Demonstrations retain
+their stored layout signatures, and pretraining trains every internally
+compatible signature group, including historical topologies.
 
 ### 13.1 Required diagnostics
 

@@ -634,62 +634,6 @@ def test_resolve_citylearn_schema_input_applies_community_market_overlay(tmp_pat
     assert schema_input["community_market"]["intra_community_sell_ratio"] == 0.7
 
 
-def test_resolve_citylearn_schema_input_offsets_topology_events(tmp_path):
-    dataset_dir = tmp_path / "dataset"
-    dataset_dir.mkdir()
-    schema_path = dataset_dir / "schema.json"
-    schema_path.write_text(
-        json.dumps(
-            {
-                "root_directory": "data/datasets/from-other-repo",
-                "topology_events": [
-                    {"id": "before", "time_step": 5000},
-                    {"id": "inside", "time_step": 5200},
-                    {"id": "after", "time_step": 6000},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    schema_input = runner._resolve_citylearn_schema_input(
-        str(schema_path),
-        {"topology_event_time_offset": -5184},
-    )
-
-    assert schema_input["topology_events"] == [
-        {"id": "inside", "time_step": 16},
-        {"id": "after", "time_step": 816},
-    ]
-
-
-def test_resolve_citylearn_schema_input_preserves_malformed_topology_events(tmp_path):
-    dataset_dir = tmp_path / "dataset"
-    dataset_dir.mkdir()
-    schema_path = dataset_dir / "schema.json"
-    schema_path.write_text(
-        json.dumps(
-            {
-                "topology_events": [
-                    {"id": "missing"},
-                    {"id": "invalid", "time_step": "invalid"},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    schema_input = runner._resolve_citylearn_schema_input(
-        str(schema_path),
-        {"topology_event_time_offset": -10},
-    )
-
-    assert schema_input["topology_events"] == [
-        {"id": "missing"},
-        {"id": "invalid", "time_step": "invalid"},
-    ]
-
-
 def test_run_experiment_refreshes_topology_after_dynamic_changes(monkeypatch, tmp_path):
     config = _build_enabled_config(artifact_profile="minimal")
     config["tracking"]["mlflow_enabled"] = False

@@ -6,8 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from algorithms.agents.maddpg_agent import MADDPG
-from algorithms.utils.torch_runtime import select_torch_device
+from algorithms.agents.maddpg_agent import MADDPG, _select_torch_device
 
 
 def _build_agent_for_exploration() -> MADDPG:
@@ -46,10 +45,10 @@ def _build_agent_for_exploration() -> MADDPG:
 def test_select_torch_device_fails_when_cuda_is_required_but_unavailable(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
-    with pytest.raises(RuntimeError, match="MADDPG requires CUDA"):
-        select_torch_device(require_cuda=True)
+    with pytest.raises(RuntimeError, match="require_cuda=true"):
+        _select_torch_device(require_cuda=True)
 
-    assert select_torch_device(require_cuda=False).type == "cpu"
+    assert _select_torch_device(require_cuda=False).type == "cpu"
 
 
 def test_predict_with_exploration_uses_random_actions_during_warmup():

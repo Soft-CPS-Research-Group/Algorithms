@@ -17,7 +17,6 @@ from algorithms.utils.entity_token_layout import (
     NfcExpression,
     TokenSegment,
 )
-from algorithms.utils.warm_start_policy import build_warm_start_policy
 
 
 @dataclass(frozen=True)
@@ -622,17 +621,27 @@ class BehaviorCloningRegularizer:
             raise RuntimeError("Checkpoint contains invalid BC layout: segment counts disagree.")
 
     def _build_teacher_policy(self, observation_names, action_names, action_space, observation_space, metadata):
-        return build_warm_start_policy(
-            owner_name="AgentTransformerPPO",
-            policy_name=self.policy,
-            policy_hyperparameters=self.hyperparameters,
-            config_template=self.agent_config_template,
+        from algorithms.agents.baseline_policies import RBCSmartPolicy
+
+        if self.policy != "RBCSmartPolicy":
+            raise ValueError(
+                f"Unsupported AgentTransformerPPO BC teacher {self.policy!r}; "
+                "expected 'RBCSmartPolicy'."
+            )
+        config = deepcopy(self.agent_config_template)
+        config["algorithm"] = {
+            "name": self.policy,
+            "hyperparameters": deepcopy(self.hyperparameters),
+        }
+        teacher = RBCSmartPolicy(config)
+        teacher.attach_environment(
             observation_names=observation_names,
             action_names=action_names,
             action_space=action_space,
             observation_space=observation_space,
             metadata=metadata,
         )
+        return teacher
 
     def _set_loss_metrics(self, raw_loss: float, weighted_loss: float, samples: float) -> None:
         self._latest_bc_loss = raw_loss

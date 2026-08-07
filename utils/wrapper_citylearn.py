@@ -303,9 +303,6 @@ class Wrapper_CityLearn(RLC):
         self.max_step_seconds = self._coerce_positive_float(
             tracking_cfg.get("max_step_seconds")
         )
-        self.max_update_seconds = self._coerce_positive_float(
-            tracking_cfg.get("max_update_seconds")
-        )
         self.stall_watchdog_enabled = bool(tracking_cfg.get("stall_watchdog_enabled", False))
         self.stall_watchdog_timeout_seconds = self._coerce_positive_float(
             tracking_cfg.get("stall_watchdog_timeout_seconds")
@@ -518,9 +515,7 @@ class Wrapper_CityLearn(RLC):
 
         if topology_changed and attach_model and self.model is not None:
             self._configure_model_observation_profiles()
-            self._attach_model_environment_metadata_with_watchdog(
-                attach_source="episode_reset" if force_attach else "entity_layout",
-            )
+            self._attach_model_environment_metadata()
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
 
@@ -589,37 +584,6 @@ class Wrapper_CityLearn(RLC):
             action_space=self.action_space,
             observation_space=self.observation_space,
             metadata=metadata,
-        )
-
-    def _attach_model_environment_metadata_with_watchdog(
-        self,
-        *,
-        attach_source: str,
-        episode: int = 0,
-        step: int = 0,
-        episode_total: Optional[int] = None,
-        step_total: Optional[int] = None,
-        global_step_total: Optional[int] = None,
-    ) -> None:
-        phase_extra = {"attach_source": attach_source}
-        self._write_phase_progress(
-            phase="model_attach_start",
-            episode=episode,
-            step=step,
-            episode_total=episode_total,
-            step_total=step_total,
-            global_step_total=global_step_total,
-            extra=phase_extra,
-        )
-        self._attach_model_environment_metadata()
-        self._write_phase_progress(
-            phase="model_attach_end",
-            episode=episode,
-            step=step,
-            episode_total=episode_total,
-            step_total=step_total,
-            global_step_total=global_step_total,
-            extra=phase_extra,
         )
 
     def _resolve_building_names(self) -> Optional[List[str]]:
@@ -782,7 +746,6 @@ class Wrapper_CityLearn(RLC):
             global_step_total=global_step_total,
             status=status,
             rewards=rewards,
-            extra=extra,
         )
 
         if not force and not self._progress_phase_in_window():
@@ -822,7 +785,6 @@ class Wrapper_CityLearn(RLC):
         global_step_total: Optional[int],
         status: str,
         rewards: Optional[List[float]],
-        extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
         if not self.stall_watchdog_enabled:
             return
@@ -837,7 +799,6 @@ class Wrapper_CityLearn(RLC):
                 global_step_total=global_step_total,
                 status=status,
                 rewards=rewards,
-                extra=extra,
             )
             return
 
@@ -924,7 +885,6 @@ class Wrapper_CityLearn(RLC):
         global_step_total: Optional[int],
         status: str,
         rewards: Optional[List[float]],
-        extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
         timeout = self.stall_watchdog_timeout_seconds
         if timeout is None or timeout <= 0:
@@ -953,8 +913,6 @@ class Wrapper_CityLearn(RLC):
         }
         if rewards is not None:
             context["rewards"] = list(rewards)
-        if extra:
-            context.update(dict(extra))
         self._write_stall_watchdog_context(context, force=phase != "step_start")
 
         try:
@@ -1081,48 +1039,6 @@ class Wrapper_CityLearn(RLC):
         self._cancel_stall_watchdog()
         raise TimeoutError(message)
 
-    def _enforce_update_duration_guard(
-        self,
-        *,
-        update_duration: float,
-        episode: int,
-        step: int,
-        episode_total: Optional[int],
-        step_total: Optional[int],
-        global_step_total: Optional[int],
-        rewards: Optional[List[float]],
-    ) -> None:
-        if self.max_update_seconds is None or update_duration <= self.max_update_seconds:
-            return
-
-        message = (
-            f"Update duration {update_duration:.3f}s exceeded configured limit "
-            f"{self.max_update_seconds:.3f}s at global step {self.global_step}."
-        )
-        self._write_phase_progress(
-            phase="update_duration_guard",
-            episode=episode,
-            step=step,
-            episode_total=episode_total,
-            step_total=step_total,
-            global_step_total=global_step_total,
-            rewards=rewards,
-            status="failed",
-            force=True,
-            extra={
-                "error_type": "UpdateDurationGuardError",
-                "error_message": message,
-                "update_duration_seconds": round(float(update_duration), 6),
-                "max_update_seconds": round(float(self.max_update_seconds), 6),
-            },
-        )
-        self._cancel_stall_watchdog()
-        raise TimeoutError(message)
-
-    def _synchronize_model_cuda_for_timing(self) -> None:
-        if getattr(getattr(self.model, "device", None), "type", None) == "cuda":
-            torch.cuda.synchronize()
-
     def _configure_episode_exports(self, episode: int, episodes: int) -> bool:
         """Enable KPI export and timeseries rendering independently per episode."""
 
@@ -1187,7 +1103,7 @@ class Wrapper_CityLearn(RLC):
         """Set the model (any :class:`ExecutionUnit`) after initialization."""
         self.model = model
         self._configure_model_observation_profiles()
-        self._attach_model_environment_metadata_with_watchdog(attach_source="set_model")
+        self._attach_model_environment_metadata()
 
     def _configure_model_observation_profiles(self) -> None:
         """Build auxiliary entity encoders requested by hierarchical stages."""
@@ -1282,23 +1198,7 @@ class Wrapper_CityLearn(RLC):
                 observations = raw_observations
             on_episode_start = getattr(self.model, "on_episode_start", None)
             if callable(on_episode_start):
-                self._write_phase_progress(
-                    phase="episode_start_callback_start",
-                    episode=episode,
-                    step=0,
-                    episode_total=episodes,
-                    step_total=None,
-                    global_step_total=None,
-                )
                 on_episode_start(episode=episode, training=not deterministic)
-                self._write_phase_progress(
-                    phase="episode_start_callback_end",
-                    episode=episode,
-                    step=0,
-                    episode_total=episodes,
-                    step_total=None,
-                    global_step_total=None,
-                )
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             self._write_phase_progress(
@@ -1323,7 +1223,6 @@ class Wrapper_CityLearn(RLC):
                 )
                 step_profile_start_time = time.perf_counter() if should_profile_step else 0.0
                 runtime_profile_metrics: Dict[str, float] = {}
-                model_update_duration = 0.0
                 logger.debug(
                     "Global step {} (episode {}, timestep {})",
                     self.global_step,
@@ -1521,14 +1420,7 @@ class Wrapper_CityLearn(RLC):
                             topology_transition_recorded = True
                     # The old-layout transition is recorded before this call.
                     # TPPO flushes it with zero bootstrap during replacement.
-                    self._attach_model_environment_metadata_with_watchdog(
-                        attach_source="topology_refresh",
-                        episode=episode,
-                        step=time_step,
-                        episode_total=episodes,
-                        step_total=episode_step_total,
-                        global_step_total=global_step_total,
-                    )
+                    self._attach_model_environment_metadata()
 
                 # Update model if not in deterministic mode
                 if not deterministic:
@@ -1549,8 +1441,7 @@ class Wrapper_CityLearn(RLC):
                             global_step_total=global_step_total,
                             rewards=rewards,
                         )
-                        self._synchronize_model_cuda_for_timing()
-                        phase_start_time = time.perf_counter()
+                        phase_start_time = time.perf_counter() if should_profile_step else 0.0
                         self.update(
                             observations,
                             actions,
@@ -1559,21 +1450,9 @@ class Wrapper_CityLearn(RLC):
                             terminated=terminated,
                             truncated=truncated,
                         )
-                        self._synchronize_model_cuda_for_timing()
-                        model_update_duration = time.perf_counter() - phase_start_time
-                        self._last_model_update_seconds = model_update_duration
-                        self._enforce_update_duration_guard(
-                            update_duration=model_update_duration,
-                            episode=episode,
-                            step=time_step,
-                            episode_total=episodes,
-                            step_total=episode_step_total,
-                            global_step_total=global_step_total,
-                            rewards=rewards,
-                        )
                         if should_profile_step:
                             runtime_profile_metrics["Runtime/agent_update_seconds"] = (
-                                model_update_duration
+                                time.perf_counter() - phase_start_time
                             )
                             runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = float(
                                 getattr(self, "_last_model_observation_encoding_seconds", 0.0) or 0.0
@@ -1661,7 +1540,6 @@ class Wrapper_CityLearn(RLC):
 
                 # Step duration calculation
                 step_duration = time.time() - step_start_time
-                normal_step_duration = max(0.0, step_duration - model_update_duration)
                 self._enforce_resource_guards(
                     phase="step_end",
                     episode=episode,
@@ -1671,7 +1549,7 @@ class Wrapper_CityLearn(RLC):
                     global_step_total=global_step_total,
                 )
                 self._enforce_step_duration_guard(
-                    step_duration=normal_step_duration,
+                    step_duration=step_duration,
                     episode=episode,
                     step=time_step,
                     episode_total=episodes,
@@ -1687,16 +1565,10 @@ class Wrapper_CityLearn(RLC):
                     step_total=episode_step_total,
                     global_step_total=global_step_total,
                     rewards=rewards,
-                    extra={
-                        "step_duration_seconds": round(float(step_duration), 6),
-                        "normal_step_duration_seconds": round(float(normal_step_duration), 6),
-                        "update_duration_seconds": round(float(model_update_duration), 6),
-                    },
+                    extra={"step_duration_seconds": round(float(step_duration), 6)},
                 )
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/step_seconds"] = step_duration
-                    runtime_profile_metrics["Runtime/normal_step_seconds"] = normal_step_duration
-                    runtime_profile_metrics["Runtime/update_seconds"] = model_update_duration
                     runtime_profile_metrics["Runtime/step_perf_seconds"] = (
                         time.perf_counter() - step_profile_start_time
                     )
@@ -1758,8 +1630,6 @@ class Wrapper_CityLearn(RLC):
                         extra={
                             "phase": "step_end",
                             "step_duration_seconds": round(float(step_duration), 6),
-                            "normal_step_duration_seconds": round(float(normal_step_duration), 6),
-                            "update_duration_seconds": round(float(model_update_duration), 6),
                             **self._runtime_resource_snapshot(),
                         },
                     )
@@ -1768,25 +1638,7 @@ class Wrapper_CityLearn(RLC):
 
             on_episode_end = getattr(self.model, "on_episode_end", None)
             if callable(on_episode_end):
-                self._write_phase_progress(
-                    phase="episode_end_callback_start",
-                    episode=episode,
-                    step=max(time_step - 1, 0),
-                    episode_total=episodes,
-                    step_total=episode_step_total,
-                    global_step_total=global_step_total,
-                    rewards=rewards_list[-1] if rewards_list else None,
-                )
                 on_episode_end(episode=episode, training=not deterministic)
-                self._write_phase_progress(
-                    phase="episode_end_callback_end",
-                    episode=episode,
-                    step=max(time_step - 1, 0),
-                    episode_total=episodes,
-                    step_total=episode_step_total,
-                    global_step_total=global_step_total,
-                    rewards=rewards_list[-1] if rewards_list else None,
-                )
 
             last_rewards = rewards_list[-1] if rewards_list else None
             self._write_phase_progress(

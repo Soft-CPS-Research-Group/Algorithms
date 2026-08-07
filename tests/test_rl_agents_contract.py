@@ -8,7 +8,6 @@ import pytest
 import torch
 import yaml
 
-from algorithms.agents.baseline_policies import RBCSmartPolicy
 from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.agents.matd3_agent import MATD3
 from algorithms.agents.masac_agent import MASAC
@@ -127,25 +126,6 @@ def _attach_bounds(agent) -> None:
         observation_space=[],
         metadata={"seconds_per_time_step": 3600},
     )
-
-
-def test_ppo_warm_start_policy_initializes_attached_teacher():
-    config = _base_rl_config("IPPO")
-    params = config["pipeline"][0]["exploration"]["params"]
-    params.update(
-        {
-            "initial_exploration_strategy": "policy",
-            "warm_start_policy": "RBCSmartPolicy",
-            "warm_start_policy_hyperparameters": {"pv_preferred_charge_rate": 0.37},
-        }
-    )
-    agent = IPPO(_agent_view(config))
-
-    _attach_bounds(agent)
-
-    assert isinstance(agent._warm_start_policy, RBCSmartPolicy)
-    assert agent._warm_start_policy._action_labels == agent.action_names
-    assert agent._warm_start_policy.pv_preferred_charge_rate == pytest.approx(0.37)
 
 
 def _transition(step: int):

@@ -14,7 +14,7 @@ from torch.nn.functional import mse_loss
 from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.base_agent import BaseAgent
-from algorithms.agents.maddpg_agent import ActionScaledActor
+from algorithms.agents.maddpg_agent import ActionScaledActor, _log_torch_runtime, _select_torch_device
 from algorithms.constants import DEFAULT_ONNX_OPSET
 from algorithms.utils.citylearn_local_action_safety import (
     CityLearnLocalSafetyAdapter,
@@ -23,8 +23,6 @@ from algorithms.utils.citylearn_local_action_safety import (
     replace_service_actions_with_teacher,
 )
 from algorithms.utils.networks import GaussianActor, ValueNetwork
-from algorithms.utils.torch_runtime import log_torch_runtime, select_torch_device
-from algorithms.utils.warm_start_policy import build_warm_start_policy
 from algorithms.utils.price_multiplier_adapter import (
     ForecastMode,
     PriceMultiplierObservationAdapter,
@@ -63,8 +61,8 @@ class _PPOBase(BaseAgent):
         topology = self.config.get("topology", {})
 
         self.require_cuda = bool(exploration_cfg.get("require_cuda", hyperparams.get("require_cuda", False)))
-        self.device = select_torch_device(require_cuda=self.require_cuda)
-        log_torch_runtime(self.device)
+        self.device = _select_torch_device(require_cuda=self.require_cuda)
+        _log_torch_runtime(self.device)
         torch.backends.cudnn.benchmark = self.device.type == "cuda"
 
         self.gamma = float(hyperparams.get("gamma", exploration_cfg.get("gamma", 0.99)))
@@ -724,16 +722,57 @@ class _PPOBase(BaseAgent):
         if not self.warm_start_policy_name:
             return
 
+        from algorithms.agents.baseline_policies import (  # Local import avoids registry cycles.
+            NormalNoBatteryPolicy,
+            NormalPolicy,
+            RBCBasicPolicy,
+            RBCSmartLocalPolicy,
+            RBCSmartPolicy,
+            SignalAwareRBCSmartLocal,
+            RandomPolicy,
+        )
+        from algorithms.agents.rbc_agent import RuleBasedPolicy
+        from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolicy
+        from algorithms.agents.total_home_oracle_replay_policy import (
+            TotalHomeOracleReplayPolicy,
+        )
+        from algorithms.agents.total_oracle_replay_policy import (
+            TotalOracleReplayPolicy,
+        )
+
+        policy_registry = {
+            "RuleBasedPolicy": RuleBasedPolicy,
+            "RandomPolicy": RandomPolicy,
+            "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
+            "NormalPolicy": NormalPolicy,
+            "RBCBasicPolicy": RBCBasicPolicy,
+            "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
+            "RBCSmartPolicy": RBCSmartPolicy,
+            "SignalAwareRBCSmartLocal": SignalAwareRBCSmartLocal,
+            "FixedServiceOracleReplayPolicy": FixedServiceOracleReplayPolicy,
+            "TotalHomeOracleReplayPolicy": TotalHomeOracleReplayPolicy,
+            "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
+        }
+        policy_cls = policy_registry.get(str(self.warm_start_policy_name))
+        if policy_cls is None:
+            supported = ", ".join(sorted(policy_registry))
+            raise ValueError(
+                f"Unsupported PPO warm_start_policy '{self.warm_start_policy_name}'. "
+                f"Supported policies: {supported}."
+            )
+
         exploration_cfg = self.config["algorithm"]["exploration"]["params"]
         policy_hyperparams = exploration_cfg.get("warm_start_policy_hyperparameters") or {}
         if not isinstance(policy_hyperparams, dict):
             raise ValueError("PPO warm_start_policy_hyperparameters must be an object when provided.")
 
-        self._warm_start_policy = build_warm_start_policy(
-            owner_name="PPO",
-            policy_name=str(self.warm_start_policy_name),
-            policy_hyperparameters=policy_hyperparams,
-            config_template=self.config,
+        policy_config = deepcopy(self.config)
+        policy_config["algorithm"] = {
+            "name": str(self.warm_start_policy_name),
+            "hyperparameters": dict(policy_hyperparams),
+        }
+        self._warm_start_policy = policy_cls(policy_config)
+        self._warm_start_policy.attach_environment(
             observation_names=observation_names,
             action_names=action_names,
             action_space=action_space,

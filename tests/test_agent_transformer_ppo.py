@@ -30,8 +30,6 @@ from algorithms.agents.agent_transformer_ppo import (
 )
 from algorithms.utils.behavior_cloning import BehaviorCloningRegularizer
 import algorithms.agents.agent_transformer_ppo as transformer_ppo_module
-from algorithms.agents.base_agent import BaseAgent
-from algorithms.registry import ALGORITHM_REGISTRY, build_execution_unit
 from tests._entity_sample_obs_names import (
     load_sample_observation_names_for_first_building,
 )
@@ -114,33 +112,6 @@ def _run_minimal_ppo_update(agent: AgentTransformerPPO, obs_dim: int) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
-
-
-def test_registered_under_canonical_name() -> None:
-    assert ALGORITHM_REGISTRY.get("AgentTransformerPPO") is AgentTransformerPPO
-
-
-def test_base_agent_declares_no_op_episode_lifecycle_hooks() -> None:
-    assert "on_episode_start" in BaseAgent.__dict__
-    assert "on_episode_end" in BaseAgent.__dict__
-
-    BaseAgent.on_episode_start(object(), episode=0, training=True)
-    BaseAgent.on_episode_end(object(), episode=0, training=False)
-
-
-def test_create_agent_via_registry() -> None:
-    base = _base_config()
-    algo = base.pop("algorithm")
-    stage = {"algorithm": algo.pop("name")}
-    stage.update(algo)
-    base["pipeline"] = [stage]
-    agent = build_execution_unit(base)
-    assert isinstance(agent, AgentTransformerPPO)
-
-
 def test_supports_dynamic_topology_classvar_true() -> None:
     assert AgentTransformerPPO.supports_dynamic_topology is True
 
@@ -148,85 +119,6 @@ def test_supports_dynamic_topology_classvar_true() -> None:
 # ---------------------------------------------------------------------------
 # predict / update
 # ---------------------------------------------------------------------------
-
-
-def test_device_defaults_to_cpu_when_cuda_is_unavailable(monkeypatch) -> None:
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-
-    agent = AgentTransformerPPO(_base_config())
-
-    assert agent.device.type == "cpu"
-
-
-def test_require_cuda_raises_when_cuda_is_unavailable(monkeypatch) -> None:
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    config = _base_config()
-    config["algorithm"]["hyperparameters"]["require_cuda"] = True
-
-    with pytest.raises(RuntimeError, match="requires CUDA"):
-        AgentTransformerPPO(config)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
-def test_places_each_model_on_cuda() -> None:
-    config = _base_config()
-    config["algorithm"]["hyperparameters"]["require_cuda"] = True
-
-    agent, _, _, _ = _make_agent(n_buildings=2, config=config)
-
-    for state in agent._per_building:
-        for module in (state.tokenizer, state.backbone, state.actor, state.critic):
-            assert next(module.parameters()).device.type == "cuda"
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
-def test_tppo_keeps_rollouts_on_cpu_and_moves_ppo_batches_to_cuda(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = _base_config()
-    config["algorithm"]["hyperparameters"].update(
-        require_cuda=True,
-        minibatch_size=2,
-        ppo_epochs=1,
-    )
-    agent, _, _, obs_dim = _make_agent(config=config)
-    state = agent._per_building[0]
-    seen_devices: list[str] = []
-    tokenizer_forward = state.tokenizer.forward
-
-    def record_forward(observations: torch.Tensor, layout):
-        seen_devices.append(observations.device.type)
-        return tokenizer_forward(observations, layout)
-
-    monkeypatch.setattr(state.tokenizer, "forward", record_forward)
-    rng = np.random.default_rng(0)
-
-    for step in range(2):
-        agent.update(
-            observations=[rng.standard_normal(obs_dim)],
-            actions=[rng.uniform(-0.5, 0.5, size=state.layout.n_ca)],
-            rewards=[0.1],
-            next_observations=[rng.standard_normal(obs_dim)],
-            terminated=False,
-            truncated=False,
-            update_target_step=False,
-            global_learning_step=step,
-            update_step=step == 1,
-            initial_exploration_done=True,
-        )
-        if step == 0:
-            assert all(
-                tensor.device.type == "cpu"
-                for tensor in (
-                    state.buffer.observations
-                    + state.buffer.actions
-                    + state.buffer.log_probs
-                    + state.buffer.values
-                )
-            )
-
-    assert seen_devices and set(seen_devices) == {"cuda"}
-    assert len(state.buffer) == 0
 
 
 def test_predict_shape_and_range() -> None:
@@ -922,23 +814,12 @@ def test_update_rejects_later_reward_cardinality_mismatch_without_mutating_state
     assert agent._latest_global_learning_step == global_step
 
 
-def test_actor_log_std_init_and_cpu_device_are_configured() -> None:
+def test_actor_log_std_init_is_configured() -> None:
     config = _base_config()
     config["algorithm"]["hyperparameters"]["actor_log_std_init"] = -0.25
-    config["algorithm"]["hyperparameters"]["require_cuda"] = False
     agent, _, _, _ = _make_agent_with_config(config)
 
-    assert agent.device.type == "cpu"
     assert agent._per_building[0].actor.log_std.item() == pytest.approx(-0.25)
-
-
-def test_require_cuda_rejects_when_cuda_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    config = _base_config()
-    config["algorithm"]["hyperparameters"]["require_cuda"] = True
-
-    with pytest.raises(RuntimeError, match="AgentTransformerPPO.*require_cuda=true"):
-        AgentTransformerPPO(config)
 
 
 def test_transformer_ppo_schema_rejects_nonzero_dropout() -> None:
@@ -2787,30 +2668,6 @@ def test_checkpoint_signature_mismatch_same_cardinality(tmp_path: Path) -> None:
         fresh.load_checkpoint(path)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
-def test_cuda_checkpoint_restores_optimizer_state_on_cuda(tmp_path: Path) -> None:
-    config = _base_config()
-    config["algorithm"]["hyperparameters"].update(
-        require_cuda=True,
-        minibatch_size=2,
-    )
-    agent, _, _, obs_dim = _make_agent(config=config)
-    _run_minimal_ppo_update(agent, obs_dim)
-    path = agent.save_checkpoint(str(tmp_path), step=1)
-    assert path is not None
-
-    restored, _, _, _ = _make_agent(config=config)
-    restored.load_checkpoint(path)
-    state = restored._per_building[0]
-    assert next(state.actor.parameters()).device.type == "cuda"
-    assert all(
-        value.device.type == "cuda"
-        for parameter_state in state.optimizer.state.values()
-        for value in parameter_state.values()
-        if isinstance(value, torch.Tensor)
-    )
-
-
 # ---------------------------------------------------------------------------
 # Artifact export
 # ---------------------------------------------------------------------------
@@ -2876,54 +2733,6 @@ def test_onnx_wrapper_affinely_maps_actions_to_positive_bounds(
     assert np.all(output >= 0.0)
     assert np.all(output <= 1.0)
     np.testing.assert_allclose(output, expected, rtol=1.0e-6, atol=1.0e-6)
-
-
-def test_onnx_export_builds_wrapper_and_input_on_agent_device(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    agent, _, _, _ = _make_agent()
-    state = agent._per_building[0]
-    agent.device = torch.device("cuda")
-    observed: dict[str, object] = {}
-    torch_zeros = torch.zeros
-    torch_tensor = torch.tensor
-
-    def fake_to(module: torch.nn.Module, device: torch.device) -> torch.nn.Module:
-        observed["wrapper_device"] = device
-        return module
-
-    def fake_zeros(*shape: int, **kwargs: object) -> torch.Tensor:
-        observed["input_device"] = kwargs["device"]
-        return torch_zeros(*shape)
-
-    def fake_tensor(data: object, **kwargs: object) -> torch.Tensor:
-        assert kwargs["device"] == torch.device("cuda")
-        return torch_tensor(data, dtype=kwargs.get("dtype"))
-
-    def fake_export(
-        wrapper: torch.nn.Module,
-        inputs: tuple[torch.Tensor],
-        path: str,
-        **kwargs: object,
-    ) -> None:
-        observed["wrapper"] = wrapper
-        observed["input"] = inputs[0]
-
-    monkeypatch.setattr(torch.nn.Module, "to", fake_to)
-    monkeypatch.setattr(torch, "zeros", fake_zeros)
-    monkeypatch.setattr(torch, "tensor", fake_tensor)
-    monkeypatch.setattr(torch.onnx, "export", fake_export)
-
-    agent._export_onnx(
-        state,
-        tmp_path / "agent.onnx",
-        3,
-        *agent._action_bounds[0],
-    )
-
-    assert observed["wrapper_device"] == torch.device("cuda")
-    assert observed["input_device"] == torch.device("cuda")
 
 
 # ---------------------------------------------------------------------------

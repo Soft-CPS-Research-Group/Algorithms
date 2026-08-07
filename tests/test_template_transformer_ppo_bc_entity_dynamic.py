@@ -17,8 +17,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_PATH = (
     REPO_ROOT / "configs/templates/dynamic/transformer_ppo_bc_entity_dynamic.yaml"
 )
-DOC_PATH = REPO_ROOT / "docs/transformer_ppo_spec.md"
-AGENTS_PATH = REPO_ROOT / "AGENTS.md"
 _TOKENIZER_FIXTURE = "tests/fixtures/tokenizer_dummy_env.json"
 
 
@@ -75,24 +73,6 @@ def test_local_bc_template_uses_demonstrations_without_action_blending() -> None
     validate_config(config)
 
 
-def test_docs_define_the_remaining_tppo_correctness_decisions() -> None:
-    text = DOC_PATH.read_text(encoding="utf-8").lower()
-
-    assert "pending decisions" in text
-    assert "huber" in text
-    assert "value normalization" in text
-    assert "separate demonstration episodes" in text
-    assert "actor-only ppo" in text
-    assert "final deterministic evaluation" in text
-    assert "required diagnostics" in text
-    assert "rbcsmartpolicy" in text
-    assert "action blending" not in text
-    assert "collection-time action, pre-tanh" in text
-    assert "denormalized value" in text
-    assert "without recomputation" in text
-    assert "deterministic representation" in text
-
-
 def test_dynamic_bc_template_preserves_layout_compatible_demonstrations() -> None:
     config = _load_template()
     stage = config["pipeline"][0]
@@ -123,13 +103,3 @@ def test_dynamic_bc_template_preserves_layout_compatible_demonstrations() -> Non
     assert agent._bc.demonstration_count(0) == 1
     assert len(agent._bc.sample_demonstrations(0, agent._per_building[0].layout, batch_size=1)) == 1
     assert agent._bc.demonstration_count(1) == 0
-
-
-def test_agents_guidance_describes_current_tppo_demonstration_lifecycle() -> None:
-    text = AGENTS_PATH.read_text(encoding="utf-8")
-
-    assert "RBCSmartPolicy" in text
-    assert "separate deterministic" in text
-    assert "optional auxiliary behavior-cloning loss" in text
-    assert "layout-compatible demonstrations" in text
-    assert "RBCCommunityPolicy warm-start" not in text

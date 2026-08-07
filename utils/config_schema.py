@@ -142,11 +142,6 @@ class TrackingConfig(BaseModel):
         gt=0,
         description="Abort training if a completed environment step exceeds this duration",
     )
-    max_update_seconds: Optional[float] = Field(
-        default=None,
-        gt=0,
-        description="Abort training if a completed model update exceeds this duration",
-    )
     stall_watchdog_enabled: bool = Field(
         default=False,
         description="Arm a faulthandler watchdog around wrapper phases to diagnose stalled jobs",
@@ -337,7 +332,6 @@ class SimulatorConfig(BaseModel):
     simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
     simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
-    topology_event_time_offset: int = 0
     export: SimulatorExportConfig = SimulatorExportConfig()
     wrapper_reward: WrapperRewardConfig = WrapperRewardConfig()
     entity_encoding: EntityEncodingConfig = EntityEncodingConfig()
@@ -373,14 +367,6 @@ class SimulatorConfig(BaseModel):
 
         if self.topology_mode == "dynamic" and self.interface != "entity":
             raise ValueError("simulator.topology_mode='dynamic' requires simulator.interface='entity'")
-
-        if self.topology_event_time_offset != 0 and (
-            self.topology_mode != "dynamic" or self.interface != "entity"
-        ):
-            raise ValueError(
-                "simulator.topology_event_time_offset requires "
-                "simulator.interface='entity' and simulator.topology_mode='dynamic'"
-            )
 
         if self.entity_encoding.enabled is None:
             self.entity_encoding.enabled = self.interface == "entity"
@@ -826,10 +812,6 @@ class TransformerPPOTransformerConfig(BaseModel):
 
 
 class TransformerPPOHyperparameters(BaseModel):
-    require_cuda: bool = Field(
-        default=False,
-        description="If true, AgentTransformerPPO fails during initialization unless CUDA is available.",
-    )
     learning_rate: float = Field(gt=0)
     gamma: float = Field(gt=0, le=1.0)
     gae_lambda: float = Field(gt=0, le=1.0)
@@ -840,9 +822,6 @@ class TransformerPPOHyperparameters(BaseModel):
     value_coeff: float = Field(ge=0)
     max_grad_norm: float = Field(gt=0)
     actor_log_std_init: float = -0.5
-    require_cuda: bool = False
-
-
 class TransformerPPOBehaviorCloningTeacherConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

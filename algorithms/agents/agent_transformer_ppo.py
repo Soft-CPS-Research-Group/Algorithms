@@ -51,7 +51,6 @@ from algorithms.utils.ppo_components import (
     RunningValueNormalizer,
     compute_ppo_loss,
 )
-from algorithms.utils.torch_runtime import log_torch_runtime, select_torch_device
 from algorithms.utils.transformer_backbone import TransformerBackbone
 from utils.entity_tokenizer_schema import (
     EntityPayloadSample,
@@ -215,17 +214,7 @@ class AgentTransformerPPO(BaseAgent):
         self._dropout = float(transformer_cfg.get("dropout", 0.0))
 
         h = dict(algo["hyperparameters"])
-        self.require_cuda = bool(h.get("require_cuda", False))
-        try:
-            self.device = select_torch_device(require_cuda=self.require_cuda)
-        except RuntimeError as error:
-            raise RuntimeError(
-                "AgentTransformerPPO requires CUDA when require_cuda=true, but "
-                "torch.cuda.is_available() is false."
-            ) from error
-        logger.info("Device selected: {}", self.device)
-        log_torch_runtime(self.device)
-        torch.backends.cudnn.benchmark = self.device.type == "cuda"
+        self.device = torch.device("cpu")
         self._lr = float(h["learning_rate"])
         self._gamma = float(h["gamma"])
         self._gae_lambda = float(h["gae_lambda"])

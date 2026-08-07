@@ -224,24 +224,6 @@ def _resolve_citylearn_schema_input(
         # directory. Copied datasets can carry a root_directory from another
         # repository, so local paths intentionally take precedence here.
         payload["root_directory"] = str(candidate.resolve().parent)
-        event_offset = int((simulator_cfg or {}).get("topology_event_time_offset", 0) or 0)
-        if event_offset != 0:
-            shifted_events = []
-            for event in payload.get("topology_events", []) or []:
-                if not isinstance(event, Mapping) or "time_step" not in event:
-                    shifted_events.append(event)
-                    continue
-                try:
-                    shifted_time_step = int(event["time_step"]) + event_offset
-                except (TypeError, ValueError):
-                    shifted_events.append(event)
-                    continue
-                if shifted_time_step < 0:
-                    continue
-                shifted_event = dict(event)
-                shifted_event["time_step"] = shifted_time_step
-                shifted_events.append(shifted_event)
-            payload["topology_events"] = shifted_events
         community_market = _community_market_overlay(simulator_cfg)
         if community_market is not None:
             payload["community_market"] = community_market

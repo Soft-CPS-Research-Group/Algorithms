@@ -151,7 +151,17 @@ def test_record_demonstration_rejects_shape_mismatch() -> None:
     assert regularizer.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 1.0
 
 
-def test_record_demonstration_logs_observation_shape_rejection() -> None:
+@pytest.mark.parametrize(
+    ("observation", "target", "reason", "expected_shape", "actual_shape", "rejected"),
+    [
+        (np.zeros(7), [0.25], "observation_shape_mismatch", "(6,)", "(7,)", 1.0),
+        (np.zeros(6), [0.25, 0.5], "target_shape_mismatch", "(1,)", "(2,)", 0.0),
+        (np.zeros(6), [float("nan")], "target_nonfinite", "(1,)", "(1,)", 0.0),
+    ],
+)
+def test_record_demonstration_logs_rejection(
+    observation, target, reason, expected_shape, actual_shape, rejected
+) -> None:
     regularizer = _regularizer()
     layout = _six_feature_layout()
     messages = []
@@ -161,60 +171,15 @@ def test_record_demonstration_logs_observation_shape_rejection() -> None:
         level="WARNING",
     )
     try:
-        regularizer.record_demonstration(3, np.zeros(7), layout, [0.25])
+        regularizer.record_demonstration(3, observation, layout, target)
     finally:
         logger.remove(sink_id)
 
-    assert messages == [
-        "event=bc_demonstration_rejected building_idx=3 "
-        "reason=observation_shape_mismatch expected_shape=(6,) actual_shape=(7,) "
-        "expected_length=6 actual_length=7"
-    ]
-    assert regularizer.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 1.0
-
-
-def test_record_demonstration_logs_target_shape_rejection() -> None:
-    regularizer = _regularizer()
-    layout = _six_feature_layout()
-    messages = []
-    sink_id = logger.add(
-        lambda message: messages.append(str(message).strip()),
-        format="{message}",
-        level="WARNING",
-    )
-    try:
-        regularizer.record_demonstration(3, np.zeros(6), layout, [0.25, 0.5])
-    finally:
-        logger.remove(sink_id)
-
-    assert messages == [
-        "event=bc_demonstration_rejected building_idx=3 "
-        "reason=target_shape_mismatch expected_shape=(1,) actual_shape=(2,) "
-        "expected_length=1 actual_length=2"
-    ]
-    assert regularizer.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 0.0
-
-
-def test_record_demonstration_logs_nonfinite_target_rejection() -> None:
-    regularizer = _regularizer()
-    layout = _six_feature_layout()
-    messages = []
-    sink_id = logger.add(
-        lambda message: messages.append(str(message).strip()),
-        format="{message}",
-        level="WARNING",
-    )
-    try:
-        regularizer.record_demonstration(3, np.zeros(6), layout, [float("nan")])
-    finally:
-        logger.remove(sink_id)
-
-    assert messages == [
-        "event=bc_demonstration_rejected building_idx=3 "
-        "reason=target_nonfinite expected_shape=(1,) actual_shape=(1,) "
-        "expected_length=1 actual_length=1"
-    ]
-    assert regularizer.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 0.0
+    assert len(messages) == 1
+    assert f"reason={reason}" in messages[0]
+    assert f"expected_shape={expected_shape}" in messages[0]
+    assert f"actual_shape={actual_shape}" in messages[0]
+    assert regularizer.snapshot_metrics()["behavior_cloning_rejected_at_record"] == rejected
 
 
 def test_valid_record_and_reservoir_replacement_do_not_log_warning() -> None:
