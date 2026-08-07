@@ -471,6 +471,40 @@ def test_validate_config_accepts_transformer_ppo_require_cuda(transformer_ppo_te
     assert resolved["pipeline"][0]["hyperparameters"]["require_cuda"] is True
 
 
+def test_validate_config_rejects_enabled_transformer_ppo_bc_without_demonstrations(
+    transformer_ppo_template_config,
+):
+    transformer_ppo_template_config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 0,
+    }
+
+    with pytest.raises(ValueError, match="demonstration_episodes.*at least 1"):
+        validate_config(transformer_ppo_template_config)
+
+
+def test_validate_config_accepts_disabled_transformer_ppo_bc_without_demonstrations(
+    transformer_ppo_template_config,
+):
+    transformer_ppo_template_config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": False,
+        "demonstration_episodes": 0,
+    }
+
+    validate_config(transformer_ppo_template_config)
+
+
+def test_validate_config_accepts_enabled_transformer_ppo_bc_with_demonstrations(
+    transformer_ppo_template_config,
+):
+    transformer_ppo_template_config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+    }
+
+    validate_config(transformer_ppo_template_config)
+
+
 def test_validate_config_rejects_invalid_runtime_safety_guards(base_config):
     config = copy.deepcopy(base_config)
     config["tracking"]["progress_phase_start_step"] = 5700
