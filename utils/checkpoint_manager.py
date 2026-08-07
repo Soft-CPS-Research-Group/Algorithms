@@ -9,6 +9,7 @@ from typing import Optional
 import mlflow
 from loguru import logger
 
+from algorithms.exceptions import DeferredCheckpointError
 from algorithms.execution_unit import ExecutionUnit
 
 
@@ -104,6 +105,9 @@ class CheckpointManager:
             checkpoint_path = agent.save_checkpoint(str(checkpoint_dir), step)
         except NotImplementedError:
             logger.debug("Agent does not implement checkpoint saving; skipping.")
+            return None
+        except DeferredCheckpointError as error:
+            logger.info("Deferring TPPO checkpoint at step {}: {}", step, error)
             return None
 
         if checkpoint_path and self.log_to_mlflow and mlflow.active_run():

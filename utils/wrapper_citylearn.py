@@ -471,6 +471,7 @@ class Wrapper_CityLearn(RLC):
         force_attach: bool,
         *,
         model_observations: bool = False,
+        attach_model: bool = True,
     ) -> List[np.ndarray]:
         if not self._entity_interface_mode or self._entity_adapter is None:
             return []
@@ -526,11 +527,8 @@ class Wrapper_CityLearn(RLC):
                     "(supports_dynamic_topology=False). Detected topology change during runtime."
                 )
 
-        if topology_changed and self.model is not None:
-            if self._defer_model_environment_attach:
-                self._pending_model_environment_attach = True
-            else:
-                self._attach_model_environment_metadata()
+        if topology_changed and attach_model and self.model is not None:
+            self._attach_model_environment_metadata()
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
 
@@ -1468,15 +1466,12 @@ class Wrapper_CityLearn(RLC):
                 )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 if self._entity_interface_mode:
-                    self._defer_model_environment_attach = not deterministic
-                    try:
-                        next_observations = self._apply_entity_layout(
-                            next_observations_raw,
-                            force_attach=False,
-                            model_observations=self._entity_model_observations_direct,
-                        )
-                    finally:
-                        self._defer_model_environment_attach = False
+                    next_observations = self._apply_entity_layout(
+                        next_observations_raw,
+                        force_attach=False,
+                        model_observations=self._entity_model_observations_direct,
+                        attach_model=False,
+                    )
                 else:
                     next_observations = next_observations_raw
                 if should_profile_step:
@@ -1518,11 +1513,33 @@ class Wrapper_CityLearn(RLC):
                 )
                 rewards_list.append(rewards)
 
+                topology_transition_recorded = False
+                if self._topology_changed_during_step:
+                    if not deterministic:
+                        transition_hook = getattr(self.model, "record_topology_transition", None)
+                        if callable(transition_hook):
+                            transition_observations = (
+                                [np.asarray(obs, dtype=np.float64) for obs in observations]
+                                if self._entity_model_observations_direct
+                                else self._encode_observations_for_model(observations)
+                            )
+                            transition_hook(
+                                observations=transition_observations,
+                                actions=actions,
+                                rewards=rewards,
+                                terminated=terminated,
+                                truncated=truncated,
+                                global_learning_step=self.global_step,
+                            )
+                            topology_transition_recorded = True
+                    self._attach_model_environment_metadata()
+
                 # Update model if not in deterministic mode
                 if not episode_deterministic:
                     if self._topology_changed_during_step and not self._pending_model_environment_attach:
                         logger.debug(
-                            "Skipping model.update at global step {} due to mid-step topology change.",
+                            "{} model.update at global step {} due to mid-step topology change.",
+                            "Recorded old-layout transition before" if topology_transition_recorded else "Skipping",
                             self.global_step,
                         )
                         self._topology_changed_during_step = False
