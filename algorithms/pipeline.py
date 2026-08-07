@@ -43,6 +43,12 @@ class Pipeline(ExecutionUnit):
         if not stages:
             raise ValueError("Pipeline requires at least one stage.")
         self.stages: List[ExecutionUnit] = list(stages)
+        for index, stage in enumerate(self.stages[:-1]):
+            if getattr(stage, "requires_final_pipeline_stage", False):
+                raise ValueError(
+                    f"Pipeline stage {index} ({type(stage).__name__}) must be the final "
+                    "stage because it learns from its own executed actions."
+                )
         self._raw_observations: Optional[Any] = None
         self._encoded_observations: Optional[Any] = None
         self._raw_next_observations: Optional[Any] = None

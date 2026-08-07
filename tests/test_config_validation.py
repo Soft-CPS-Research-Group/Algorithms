@@ -43,6 +43,18 @@ def test_validate_config_accepts_strict_local_rbc_policy(base_config):
     validate_config(config)
 
 
+def test_validate_config_rejects_non_leaf_transformer_ppo() -> None:
+    config_path = Path("configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml")
+    with config_path.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+    config["pipeline"].append(
+        {"algorithm": "RuleBasedPolicy", "count": 1, "hyperparameters": {}}
+    )
+
+    with pytest.raises(ValueError, match="must be the final pipeline stage"):
+        validate_config(config)
+
+
 def test_validate_config_rejects_legacy_algorithm_key(base_config):
     config = copy.deepcopy(base_config)
     config.pop("pipeline", None)
