@@ -208,6 +208,12 @@ class AgentTransformerPPO(BaseAgent):
         if len(self._per_building) != len(observation_names):
             # Total building-count change is treated as a complete rebuild —
             # cannot resume per-building states across cardinality changes.
+            for building_idx, state in enumerate(self._per_building):
+                self._flush_rollout_boundary(
+                    building_idx,
+                    state,
+                    boundary="building_count_change",
+                )
             self._per_building = self._build_per_building_states(
                 observation_names, action_names, metadata
             )
