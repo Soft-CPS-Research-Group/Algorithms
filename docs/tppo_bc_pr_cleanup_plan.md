@@ -8,11 +8,21 @@ independent runtime and experiment work out of the feature diff.
 
 ## Target Scope
 
+### PR #26: behavior-cloning primitives
+
+Keep:
+
+- immutable demonstration storage grouped by building and compatible layout;
+- bounded per-building reservoir sampling;
+- teacher-policy attachment and normalized demonstration loss;
+- weight decay, diagnostics, and checkpoint-state validation;
+- focused unit tests for the standalone regularizer contract.
+
 ### PR #22: Transformer PPO behavior cloning
 
 Keep:
 
-- behavior-cloning configuration and validation;
+- behavior-cloning configuration and validation on top of PR #26;
 - deterministic teacher construction and demonstration collection;
 - actor-only pretraining and auxiliary BC loss;
 - per-building and per-layout demonstration isolation;
@@ -22,7 +32,7 @@ Keep:
 - transactional topology and checkpoint restoration required to make BC
   checkpoints safe;
 - one local dynamic BC template;
-- focused unit, integration, and configuration tests for those behaviors.
+- focused integration and configuration tests for those behaviors.
 
 Remove from PR #22:
 
@@ -79,12 +89,13 @@ The cleanup must retain tests proving:
 5. Correct documentation so historical compatible layouts are described
    consistently.
 6. Run focused BC/TPPO tests, then the complete test suite and `git diff --check`.
-7. Compare final file and line counts with the original 46-file, 11,507-line
-   diff and prepare logically separated commits/PRs.
+7. Move the standalone regularizer and its unit contract to PR #26, stack
+   PR #22 on that branch, and compare both diffs with the original 46-file,
+   11,507-line change.
 
 ## Acceptance Criteria
 
-- PR #22 CI-equivalent test suite passes.
+- PR #26 and PR #22 CI-equivalent test suites pass.
 - No test references a deleted file.
 - No production option exists solely for a removed recipe.
 - The BC specification, agent guidance, schema, and runtime behavior agree.
