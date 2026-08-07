@@ -141,7 +141,7 @@ def test_update_appends_to_buffer_then_ppo_step_clears() -> None:
     for _ in range(5):
         obs = [rng.standard_normal(obs_dim)]
         next_obs = [rng.standard_normal(obs_dim)]
-        actions_arr = rng.uniform(-0.5, 0.5, size=(n_ca,))
+        actions_arr = np.asarray(agent.predict(obs, deterministic=False)[0])
         agent.update(
             observations=obs,
             actions=[actions_arr],
@@ -161,7 +161,7 @@ def test_update_appends_to_buffer_then_ppo_step_clears() -> None:
 
     obs = [rng.standard_normal(obs_dim)]
     next_obs = [rng.standard_normal(obs_dim)]
-    actions_arr = rng.uniform(-0.5, 0.5, size=(n_ca,))
+    actions_arr = np.asarray(agent.predict(obs, deterministic=False)[0])
     agent.update(
         observations=obs,
         actions=[actions_arr],
@@ -177,6 +177,28 @@ def test_update_appends_to_buffer_then_ppo_step_clears() -> None:
     assert len(state.buffer) == 0  # cleared after PPO step
     p_after = next(state.actor.parameters()).clone().detach()
     assert not torch.allclose(p_before, p_after), "PPO step should update actor weights"
+
+
+def test_update_rejects_action_that_differs_from_pending_decision() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    observation = [np.zeros(obs_dim)]
+    action = np.asarray(agent.predict(observation, deterministic=True)[0])
+
+    with pytest.raises(ValueError, match="does not match the pending TPPO action"):
+        agent.update(
+            observations=observation,
+            actions=[action + 1.0e-6],
+            rewards=[0.0],
+            next_observations=observation,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=0,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
+    assert agent._pending_decisions[0] is not None
 
 
 # ---------------------------------------------------------------------------

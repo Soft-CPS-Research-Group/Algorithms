@@ -233,6 +233,14 @@ class Pipeline(ExecutionUnit):
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        for stage in self.stages:
+            stage.on_episode_start(episode=episode, training=training)
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        for stage in self.stages:
+            stage.on_episode_end(episode=episode, training=training)
+
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return all(
             stage.is_initial_exploration_done(global_learning_step)
@@ -602,6 +610,14 @@ class Ensemble(ExecutionUnit):
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        for agent in self.agents:
+            agent.on_episode_start(episode=episode, training=training)
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        for agent in self.agents:
+            agent.on_episode_end(episode=episode, training=training)
+
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return all(
             agent.is_initial_exploration_done(global_learning_step)
