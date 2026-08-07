@@ -230,9 +230,39 @@ class Pipeline(ExecutionUnit):
                 initial_exploration_done=initial_exploration_done,
             )
 
+    def record_topology_transition(
+        self,
+        *,
+        observations,
+        actions,
+        rewards,
+        terminated: bool,
+        truncated: bool,
+        global_learning_step: int,
+    ) -> None:
+        for stage in self.stages:
+            if getattr(stage, "frozen", False):
+                continue
+            stage.record_topology_transition(
+                observations=self._observations_for_stage(stage, observations),
+                actions=actions,
+                rewards=rewards,
+                terminated=terminated,
+                truncated=truncated,
+                global_learning_step=global_learning_step,
+            )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        for stage in self.stages:
+            stage.on_episode_start(episode=episode, training=training)
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        for stage in self.stages:
+            stage.on_episode_end(episode=episode, training=training)
+
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return all(
             stage.is_initial_exploration_done(global_learning_step)
@@ -599,9 +629,44 @@ class Ensemble(ExecutionUnit):
                 initial_exploration_done=initial_exploration_done,
             )
 
+    def record_topology_transition(
+        self,
+        *,
+        observations,
+        actions,
+        rewards,
+        terminated: bool,
+        truncated: bool,
+        global_learning_step: int,
+    ) -> None:
+        n_obs = len(observations)
+        if n_obs != len(self.agents):
+            raise RuntimeError(
+                f"Ensemble.record_topology_transition: observations length ({n_obs}) "
+                f"does not match ensemble size ({len(self.agents)}). "
+                "Ensure the wrapper supplies one observation slice per ensemble member."
+            )
+        for index, agent in enumerate(self.agents):
+            agent.record_topology_transition(
+                observations=[observations[index]],
+                actions=[actions[index]] if index < len(actions) else [],
+                rewards=[rewards[index]] if index < len(rewards) else [],
+                terminated=terminated,
+                truncated=truncated,
+                global_learning_step=global_learning_step,
+            )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        for agent in self.agents:
+            agent.on_episode_start(episode=episode, training=training)
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        for agent in self.agents:
+            agent.on_episode_end(episode=episode, training=training)
+
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return all(
             agent.is_initial_exploration_done(global_learning_step)

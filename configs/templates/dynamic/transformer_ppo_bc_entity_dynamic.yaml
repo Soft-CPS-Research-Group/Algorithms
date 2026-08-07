@@ -1,11 +1,11 @@
-# Local AgentTransformerPPO template for entity interface with dynamic asset-only events.
-# Smoke-tested by tests/test_e2e_transformer_ppo_entity_dynamic.py.
+# Local AgentTransformerPPO template for entity interface with dynamic asset-only events and behavior cloning.
+# Smoke-tested by tests/test_template_transformer_ppo_bc_entity_dynamic.py.
 
 metadata:
-  experiment_name: "transformer_ppo_entity_dynamic_assets_only_template"
-  run_name: "Transformer PPO Entity Dynamic Assets-Only Local"
+  experiment_name: "transformer_ppo_bc_entity_dynamic_assets_only_template"
+  run_name: "Transformer PPO BC Entity Dynamic Assets-Only Local"
   community_name: "default_community"
-  description: "Per-building Transformer + PPO over the entity interface; assets-only dynamic topology"
+  description: "Per-building Transformer + PPO with RBC demonstration regularization; assets-only dynamic topology"
 
 runtime:
   log_dir: null
@@ -61,8 +61,8 @@ simulator:
     clip: true
   reward_function: CostHardConstraintReward
   reward_function_kwargs:
-    squash: 1
-  episodes: 26
+    squash: 1   # tanh-squash rewards to [-1, 1] to prevent PPO gradient explosion
+  episodes: 26  # ~6.5h based on ~15min/episode observed in my_test_run
   simulation_start_time_step: 0
   simulation_end_time_step: 3400
   episode_time_steps: 3401
@@ -80,8 +80,8 @@ simulator:
 
 training:
   seed: 7
-  steps_between_training_updates: 256
-  target_update_interval: 0
+  steps_between_training_updates: 256  # PPO is on-policy: collect a real trajectory before each update. Must be >= minibatch_size.
+  target_update_interval: 0  # PPO doesn't use a target net; preserved for schema parity
 
 topology:
   num_agents: null
@@ -109,5 +109,22 @@ pipeline:
       entropy_coeff: 0.03
       value_coeff: 0.5
       max_grad_norm: 1.0
+      actor_log_std_init: -0.5
+    behavior_cloning:
+      enabled: true
+      demonstration_episodes: 1
+      max_samples_per_building: 3400
+      pretraining_epochs: 4
+      batch_size: 64
+      weight: 0.42
+      min_weight: 0.24
+      decay_start_step: 512
+      decay_steps: 3584
+      ev_multiplier: 24.0
+      storage_multiplier: 0.18
+      teacher:
+        policy: RBCSmartPolicy
+        deterministic: true
+        hyperparameters: {}
 
 execution: null

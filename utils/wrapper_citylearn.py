@@ -457,6 +457,7 @@ class Wrapper_CityLearn(RLC):
         force_attach: bool,
         *,
         model_observations: bool = False,
+        attach_model: bool = True,
     ) -> List[np.ndarray]:
         if not self._entity_interface_mode or self._entity_adapter is None:
             return []
@@ -512,7 +513,8 @@ class Wrapper_CityLearn(RLC):
                     "(supports_dynamic_topology=False). Detected topology change during runtime."
                 )
 
-        if topology_changed and self.model is not None:
+        if topology_changed and attach_model and self.model is not None:
+            self._configure_model_observation_profiles()
             self._attach_model_environment_metadata()
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
@@ -576,16 +578,13 @@ class Wrapper_CityLearn(RLC):
             ],
         }
 
-        try:
-            self.model.attach_environment(
-                observation_names=self.observation_names,
-                action_names=self.action_names,
-                action_space=self.action_space,
-                observation_space=self.observation_space,
-                metadata=metadata,
-            )
-        except AttributeError:
-            pass
+        self.model.attach_environment(
+            observation_names=self.observation_names,
+            action_names=self.action_names,
+            action_space=self.action_space,
+            observation_space=self.observation_space,
+            metadata=metadata,
+        )
 
     def _resolve_building_names(self) -> Optional[List[str]]:
         raw_building_names = getattr(self.env, "building_names", None)
@@ -1197,6 +1196,9 @@ class Wrapper_CityLearn(RLC):
                 )
             else:
                 observations = raw_observations
+            on_episode_start = getattr(self.model, "on_episode_start", None)
+            if callable(on_episode_start):
+                on_episode_start(episode=episode, training=not deterministic)
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             self._write_phase_progress(
@@ -1337,6 +1339,7 @@ class Wrapper_CityLearn(RLC):
                         next_observations_raw,
                         force_attach=False,
                         model_observations=self._entity_model_observations_direct,
+                        attach_model=False,
                     )
                 else:
                     next_observations = next_observations_raw
@@ -1379,11 +1382,52 @@ class Wrapper_CityLearn(RLC):
                 )
                 rewards_list.append(rewards)
 
+                topology_transition_recorded = False
+                if self._topology_changed_during_step:
+                    if not deterministic:
+                        transition_hook = getattr(
+                            self.model, "record_topology_transition", None
+                        )
+                        if callable(transition_hook):
+                            direct_entity_model_observations = bool(
+                                getattr(self, "_entity_model_observations_direct", False)
+                            )
+                            transition_observations = (
+                                [np.asarray(obs, dtype=np.float64) for obs in step_observations]
+                                if direct_entity_model_observations
+                                else self._encode_observations_for_model(step_observations)
+                            )
+                            transition_context_hook = getattr(
+                                self.model, "set_transition_context", None
+                            )
+                            if callable(transition_context_hook):
+                                transition_context_hook(
+                                    raw_observations=None
+                                    if direct_entity_model_observations
+                                    else step_observations,
+                                    raw_next_observations=None,
+                                    encoded_observations=transition_observations,
+                                    encoded_next_observations=None,
+                                )
+                            transition_hook(
+                                observations=transition_observations,
+                                actions=actions,
+                                rewards=rewards,
+                                terminated=terminated,
+                                truncated=truncated,
+                                global_learning_step=self.global_step,
+                            )
+                            topology_transition_recorded = True
+                    # The old-layout transition is recorded before this call.
+                    # TPPO flushes it with zero bootstrap during replacement.
+                    self._attach_model_environment_metadata()
+
                 # Update model if not in deterministic mode
                 if not deterministic:
                     if self._topology_changed_during_step:
                         logger.debug(
-                            "Skipping model.update at global step {} due to mid-step topology change.",
+                            "{} model.update at global step {} due to mid-step topology change.",
+                            "Recorded old-layout transition before" if topology_transition_recorded else "Skipping",
                             self.global_step,
                         )
                         self._topology_changed_during_step = False
@@ -1426,6 +1470,7 @@ class Wrapper_CityLearn(RLC):
                             global_step_total=global_step_total,
                             rewards=rewards,
                         )
+                        self._topology_changed_during_step = False
 
                     self._write_phase_progress(
                         phase="checkpoint_start",
@@ -1545,8 +1590,7 @@ class Wrapper_CityLearn(RLC):
                     metrics.update(self._collect_model_status_metrics())
                     metrics.update(self._build_action_diagnostic_metrics(actions, step_observations))
                     metrics.update(self._build_reward_component_metrics())
-                    if not mlflow.active_run():
-                        metrics.update(self._consume_model_training_metrics())
+                    metrics.update(self._consume_model_training_metrics())
                     if should_profile_step:
                         metrics["Runtime/diagnostics_build_seconds"] = (
                             time.perf_counter() - diagnostics_start_time
@@ -1591,6 +1635,10 @@ class Wrapper_CityLearn(RLC):
                     )
 
                 time_step += 1
+
+            on_episode_end = getattr(self.model, "on_episode_end", None)
+            if callable(on_episode_end):
+                on_episode_end(episode=episode, training=not deterministic)
 
             last_rewards = rewards_list[-1] if rewards_list else None
             self._write_phase_progress(
@@ -2376,28 +2424,7 @@ class Wrapper_CityLearn(RLC):
             logger.error("Model is not set. Use `set_model` to provide a model.")
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        # Determine whether to update
-        if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
-            self.update_step = True
-        else:
-            self.update_step = self.global_step % self.steps_between_training_updates == 0
-        logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
-
-        # Exploration phase ownership belongs to the algorithm.
-        self.initial_exploration_done = bool(self.model.is_initial_exploration_done(self.global_step))
-        logger.debug(
-            "Initial exploration done: {} (global step={})",
-            self.initial_exploration_done,
-            self.global_step,
-        )
-
-        # Determine whether to update the target networks
-        if not self.target_update_interval:
-            self.update_target_step = False
-        else:
-            self.update_target_step = self.global_step % self.target_update_interval == 0
-        logger.debug(
-            "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
+        self._refresh_update_schedule()
 
         phase_start_time = time.perf_counter()
         direct_entity_model_observations = bool(
@@ -2468,6 +2495,30 @@ class Wrapper_CityLearn(RLC):
         )
         self._last_model_update_seconds = time.perf_counter() - phase_start_time
         return update_result
+
+    def _refresh_update_schedule(self) -> None:
+        """Refresh per-step training and checkpoint scheduling state."""
+        if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
+            self.update_step = True
+        else:
+            self.update_step = self.global_step % self.steps_between_training_updates == 0
+        logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
+
+        # Exploration phase ownership belongs to the algorithm.
+        self.initial_exploration_done = bool(self.model.is_initial_exploration_done(self.global_step))
+        logger.debug(
+            "Initial exploration done: {} (global step={})",
+            self.initial_exploration_done,
+            self.global_step,
+        )
+
+        # Determine whether to update the target networks
+        if not self.target_update_interval:
+            self.update_target_step = False
+        else:
+            self.update_target_step = self.global_step % self.target_update_interval == 0
+        logger.debug(
+            "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
     def _should_log_step(self, step: int) -> bool:
         return step % self.step_metric_interval == 0
