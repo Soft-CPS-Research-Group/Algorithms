@@ -38,8 +38,8 @@ _DEFAULT_ACTIONS = ["electrical_storage", "electric_vehicle_storage"]
 
 class _Box:
     def __init__(self, low: list[float], high: list[float]) -> None:
-        self.low = np.asarray(low, dtype=np.float32)
-        self.high = np.asarray(high, dtype=np.float32)
+        self.low = np.asarray(low, dtype=np.float64)
+        self.high = np.asarray(high, dtype=np.float64)
 
 
 def _base_config() -> dict:
@@ -297,6 +297,20 @@ def test_affine_action_bounds_accept_ranges_outside_unit_interval() -> None:
     action = agent.predict([np.zeros(obs_dim, dtype=np.float64)], deterministic=True)[0]
     assert 0.0 <= action[0] <= 2.0
     assert 2.0 <= action[1] <= 4.0
+
+
+def test_affine_action_bounds_retain_small_float64_span() -> None:
+    agent, obs_names, action_names, obs_dim = _make_agent(n_buildings=1)
+    agent.attach_environment(
+        observation_names=obs_names,
+        action_names=action_names,
+        action_space=[_Box([1.0e8, 1.0e8], [1.0e8 + 1.0, 1.0e8 + 1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+
+    action = agent.predict([np.zeros(obs_dim, dtype=np.float64)], deterministic=True)[0]
+    assert all(1.0e8 <= value <= 1.0e8 + 1.0 for value in action)
 
 
 def test_action_bounds_require_exact_action_count() -> None:
