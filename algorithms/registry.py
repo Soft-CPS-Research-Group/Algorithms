@@ -46,6 +46,7 @@ _registry_trace("before base agent import")
 from algorithms.agents.base_agent import BaseAgent
 _registry_trace("after base agent import")
 from algorithms.agents.fixed_price_signal_agent import FixedPriceSignalAgent
+from algorithms.agents.causal_price_signal_agent import CausalPriceSignalAgent
 _registry_trace("before building agent import")
 from algorithms.agents.building_agent import BuildingAgent
 _registry_trace("after building agent import")
@@ -93,6 +94,7 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "BuildingAgent": BuildingAgent,
     "CCLevel1": CCLevel1Agent,
     "CCLevel2": CCLevel2Agent,
+    "CausalPriceSignal": CausalPriceSignalAgent,
     "CommunityCoordinator": CommunityCoordinatorAgent,
     "HAPPO": HAPPO,
     "IPPO": IPPO,

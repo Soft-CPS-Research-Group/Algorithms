@@ -332,6 +332,7 @@ class CCLevel1Agent(BaseAgent):
         self._step_in_interval = 0
         self._decision_interval_complete = False
         self._episode_step_context: Optional[int] = None
+        self._last_predict_deterministic = False
 
         # Cached decision
         self._cached_multiplier: float = self._reference_multiplier
@@ -446,6 +447,7 @@ class CCLevel1Agent(BaseAgent):
         context: Any = None,
     ) -> float:
         """Return the global price multiplier (Pipeline context for low-level)."""
+        self._last_predict_deterministic = bool(deterministic)
         if self._step_in_interval == 0:
             if not self._bc_pretrain_done:
                 # BC collection phase: store context, act with teacher.
@@ -537,6 +539,16 @@ class CCLevel1Agent(BaseAgent):
     ) -> None:
         """Accumulate community reward over the interval, then push a transition."""
         done = terminated or truncated
+        if self._last_predict_deterministic:
+            if self._decision_interval_complete or done:
+                self._decision_interval_complete = False
+                self._accumulated_reward = 0.0
+            if done:
+                self._step_in_interval = 0
+                self._prev_multiplier = self._reference_multiplier
+                self._flush_decision_trace()
+            return
+
         self._accumulated_reward += float(sum(rewards))
 
         if not (self._decision_interval_complete or done):

@@ -6,6 +6,11 @@ from typing import Any, Iterable, List, Mapping, Optional, Union
 
 from citylearn.reward_function import RewardFunction
 
+from reward_function.community_settlement import (
+    allocate_weighted_import_share,
+    community_settlement_components,
+)
+
 
 class CostHardConstraintReward(RewardFunction):
     """Encourage low cost while strongly discouraging EV departure and grid constraint violations."""
@@ -397,111 +402,30 @@ class CostHardConstraintReward(RewardFunction):
         traded_energy: float,
         weights: Optional[List[float]] = None,
     ) -> List[float]:
-        allocations = [0.0 for _ in imports]
-        remaining = max(float(traded_energy), 0.0)
-        weights = list(weights) if weights is not None else [1.0 for _ in imports]
-        weights = [max(float(weight), 0.0) for weight in weights]
-        eps = 1.0e-9
-
-        while remaining > eps:
-            needs = [max(imported - allocated, 0.0) for imported, allocated in zip(imports, allocations)]
-            active_indexes = [index for index, need in enumerate(needs) if need > eps]
-            if not active_indexes:
-                break
-
-            active_weight_sum = sum(weights[index] for index in active_indexes)
-            granted = [0.0 for _ in imports]
-            for index in active_indexes:
-                if active_weight_sum <= eps:
-                    share = remaining / float(len(active_indexes))
-                else:
-                    share = remaining * (weights[index] / active_weight_sum)
-                granted[index] = min(share, needs[index])
-
-            granted_total = sum(granted)
-            if granted_total <= eps:
-                break
-
-            allocations = [allocated + grant for allocated, grant in zip(allocations, granted)]
-            remaining -= granted_total
-
-        return allocations
+        return allocate_weighted_import_share(imports, traded_energy, weights)
 
     def _community_settlement_components(
         self,
         observations: List[Mapping[str, Union[int, float]]],
     ) -> tuple[List[Mapping[str, float]], Mapping[str, float]]:
-        imports = [
-            max(self._safe_float(observation.get("net_electricity_consumption"), default=0.0), 0.0)
-            for observation in observations
-        ]
-        exports = [
-            max(-self._safe_float(observation.get("net_electricity_consumption"), default=0.0), 0.0)
-            for observation in observations
-        ]
-        prices = [
-            max(self._safe_float(observation.get("electricity_pricing"), default=0.0), 0.0)
-            for observation in observations
-        ]
-
-        total_import = sum(imports)
-        total_export = sum(exports)
-        traded_energy = min(total_import, total_export)
-        local_imports = (
-            self._allocate_weighted_import_share(imports, traded_energy)
-            if total_import > 0.0 and traded_energy > 0.0
-            else [0.0 for _ in imports]
+        raw_rows, raw_totals = community_settlement_components(
+            observations,
+            local_price_ratio=self.community_local_price_ratio,
+            grid_export_price=self.community_grid_export_price,
         )
-        local_exports = (
-            [exported * (traded_energy / total_export) for exported in exports]
-            if total_export > 0.0 and traded_energy > 0.0
-            else [0.0 for _ in exports]
-        )
-
-        rows: List[Mapping[str, float]] = []
-        total_cost = 0.0
-        total_grid_import = 0.0
-        total_grid_export = 0.0
-        for imported, exported, price, local_import, local_export in zip(
-            imports,
-            exports,
-            prices,
-            local_imports,
-            local_exports,
-        ):
-            local_price = self.community_local_price_ratio * price
-            grid_import = max(imported - local_import, 0.0)
-            grid_export = max(exported - local_export, 0.0)
-            settlement_cost = (
-                grid_import * price
-                + local_import * local_price
-                - local_export * local_price
-                - grid_export * self.community_grid_export_price
-            )
-            settlement_reward = -settlement_cost * self.community_settlement_cost_weight
-            total_cost += settlement_cost
-            total_grid_import += grid_import
-            total_grid_export += grid_export
-            rows.append(
-                {
-                    "community_settlement_cost": settlement_cost,
-                    "community_settlement_reward": settlement_reward,
-                    "community_local_import_energy": local_import,
-                    "community_local_export_energy": local_export,
-                    "community_grid_import_energy": grid_import,
-                    "community_grid_export_energy": grid_export,
-                    "community_local_price": local_price,
-                    "community_settlement_cost_weight": self.community_settlement_cost_weight,
-                }
-            )
-
+        rows = [
+            {
+                **row,
+                "community_settlement_reward": (
+                    -row["community_settlement_cost"]
+                    * self.community_settlement_cost_weight
+                ),
+                "community_settlement_cost_weight": self.community_settlement_cost_weight,
+            }
+            for row in raw_rows
+        ]
         totals = {
-            "community_settlement_cost_total": total_cost,
-            "community_local_traded_energy": traded_energy,
-            "community_grid_import_after_settlement": total_grid_import,
-            "community_grid_export_after_settlement": total_grid_export,
-            "community_local_price_ratio": self.community_local_price_ratio,
-            "community_grid_export_price": self.community_grid_export_price,
+            **raw_totals,
             "community_settlement_cost_weight": self.community_settlement_cost_weight,
         }
         return rows, totals

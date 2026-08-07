@@ -89,6 +89,72 @@ def test_cc_reward_can_mix_settled_proxy_and_member_retail_costs():
     assert sum(reward.calculate(observations)) == pytest.approx(-0.75)
 
 
+def test_cc_reward_can_optimize_exact_community_settlement_cost():
+    observations = [
+        {"net_electricity_consumption": 2.0, "electricity_pricing": 0.5},
+        {"net_electricity_consumption": -1.0, "electricity_pricing": 0.25},
+    ]
+    exact = CCRewardLevel1(
+        env_metadata={
+            "central_agent": False,
+            "community_market": {
+                "local_price_ratio_to_grid_import": 0.8,
+                "grid_export_price": 0.0,
+            },
+        },
+        cost_aggregation="community_settled",
+        reference_cost=1.0,
+        w_peak=0.0,
+        w_ramp=0.0,
+        w_export=0.0,
+        w_violation=0.0,
+    )
+    proxy = CCRewardLevel1(
+        env_metadata={"central_agent": False},
+        cost_aggregation="community_net",
+        reference_cost=1.0,
+        w_peak=0.0,
+        w_ramp=0.0,
+        w_export=0.0,
+        w_violation=0.0,
+    )
+
+    # Exact CityLearn settlement: importer pays 0.5 + 0.4, exporter receives
+    # 0.2. The community-net proxy incorrectly values the net 1 kWh at 0.5.
+    assert sum(exact.calculate(observations)) == pytest.approx(-0.7)
+    assert sum(proxy.calculate(observations)) == pytest.approx(-0.5)
+    assert exact.last_community_settlement[
+        "community_settlement_cost_total"
+    ] == pytest.approx(0.7)
+
+
+def test_cc_exact_settlement_reward_accepts_deferred_environment_metadata():
+    reward = CCRewardLevel1(
+        env_metadata=None,
+        cost_aggregation="community_settled",
+        reference_cost=1.0,
+        w_peak=0.0,
+        w_ramp=0.0,
+        w_export=0.0,
+        w_violation=0.0,
+    )
+
+    reward.env_metadata = {
+        "central_agent": False,
+        "community_market": {"local_price_ratio_to_grid_import": 0.7},
+        "buildings": [{"name": "importer"}, {"name": "exporter"}],
+    }
+
+    assert sum(
+        reward.calculate(
+            [
+                {"net_electricity_consumption": 2.0, "electricity_pricing": 0.5},
+                {"net_electricity_consumption": -1.0, "electricity_pricing": 0.25},
+            ]
+        )
+    ) == pytest.approx(-0.675)
+
+
 def test_cc_reward_member_retail_auxiliary_term_defaults_to_disabled():
     observations = [
         {"net_electricity_consumption": 2.0, "electricity_pricing": 0.5},
