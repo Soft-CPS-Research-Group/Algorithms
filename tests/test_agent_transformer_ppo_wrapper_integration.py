@@ -9,10 +9,12 @@ the dummy env's feature schema.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict, List
 
-import pytest
 import numpy as np
+import pytest
+import torch
 from gymnasium import spaces
 
 from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
@@ -52,6 +54,31 @@ class _DummyEntityEnvForPPO(_DummyEntityEnv):
             for _ in range(building_count)
         ]
 
+class _TerminalTopologyChangeEntityEnvForPPO(_DummyEntityEnvForPPO):
+    """Changes topology on the terminal transition of a two-step episode."""
+
+    def __init__(self, *, truncated: bool) -> None:
+        super().__init__()
+        self._steps = 0
+        self._truncated = truncated
+
+    def reset(self):
+        self._version = 0
+        self._steps = 0
+        return self._observation_payload(version=0), {}
+
+    def step(self, _actions):
+        self._steps += 1
+        if self._steps == 2:
+            self._version = 1
+            return (
+                self._observation_payload(version=1),
+                [0.1],
+                not self._truncated,
+                self._truncated,
+                {},
+            )
+        return self._observation_payload(version=0), [0.1], False, False, {}
 
 def _ppo_algo_config() -> Dict[str, Any]:
     return {
@@ -119,6 +146,84 @@ def test_wrapper_predict_returns_per_building_per_ca_actions() -> None:
     assert len(actions[0]) == 2  # storage + charger CA
     for v in actions[0]:
         assert -1.0 <= v <= 1.0
+
+
+@pytest.mark.parametrize("truncated", [False, True], ids=["terminal", "truncated"])
+def test_demo_topology_transition_rejects_building_without_demonstrations(
+    monkeypatch: pytest.MonkeyPatch,
+    truncated: bool,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO(truncated=truncated)
+    wrapper_config = _entity_config()
+    wrapper_config["training"]["steps_between_training_updates"] = 4
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-entity-terminal-topology"
+    )
+    agent_config = deepcopy(_ppo_full_config())
+    agent_config["algorithm"]["hyperparameters"]["minibatch_size"] = 2
+    agent_config["algorithm"]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+        "max_samples_per_building": 8,
+        "pretraining_epochs": 2,
+        "batch_size": 2,
+        "weight": 0.4,
+        "min_weight": 0.1,
+        "decay_start_step": 0,
+        "decay_steps": 100,
+        "ev_multiplier": 2.0,
+        "storage_multiplier": 1.0,
+        "teacher": {
+            "policy": "RBCSmartPolicy",
+            "deterministic": True,
+            "hyperparameters": {},
+        },
+    }
+    agent = AgentTransformerPPO(agent_config)
+    wrapper.set_model(agent)
+    assert agent._bc is not None
+
+    ppo_updates: list[tuple[int, int, int, torch.Tensor]] = []
+    original_update = agent._run_ppo_update_with_last_value
+
+    def record_ppo_update(state, last_value, *, building_idx):
+        ppo_updates.append(
+            (agent._current_episode, building_idx, len(state.buffer), last_value.detach().clone())
+        )
+        return original_update(state, last_value, building_idx=building_idx)
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", record_ppo_update)
+    pretraining_calls = 0
+    pretraining_metrics: list[dict[str, float]] = []
+    original_pretraining = agent._run_bc_pretraining
+
+    def record_pretraining() -> None:
+        nonlocal pretraining_calls
+        pretraining_calls += 1
+        original_pretraining()
+        pretraining_metrics.append(agent._bc.snapshot_metrics())
+
+    monkeypatch.setattr(agent, "_run_bc_pretraining", record_pretraining)
+    teacher_calls: list[int] = []
+
+    def teacher_actions(observations):
+        teacher_calls.append(agent._current_episode)
+        return [
+            [0.9] * state.layout.n_ca
+            for state in agent._per_building[: len(observations)]
+        ]
+
+    agent._bc.compute_teacher_actions = teacher_actions
+    with pytest.raises(RuntimeError, match=r"zero compatible demonstrations.*B2"):
+        wrapper.learn(episodes=2, deterministic=False)
+
+    assert pretraining_calls == 1
+    assert teacher_calls == [0, 0]
+    assert pretraining_metrics == []
+    assert ppo_updates == []
+    assert len(agent._per_building) == 2
+    assert agent._bc.demonstration_count(0) == 2
+    assert agent._bc.demonstration_count(1) == 0
 
 
 def test_wrapper_topology_change_triggers_agent_rebuild() -> None:

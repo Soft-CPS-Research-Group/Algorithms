@@ -36,6 +36,7 @@ from torch import nn
 
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.exceptions import DeferredCheckpointError
+from algorithms.utils.behavior_cloning import BehaviorCloningRegularizer
 from algorithms.utils.entity_observation_tokenizer import (
     EntityObservationTokenizer,
 )
@@ -71,6 +72,9 @@ class _PerBuildingState:
     actor: ActorHead
     critic: CriticHead
     optimizer: torch.optim.Optimizer
+    # BC updates the tokenizer/backbone/actor only.  Keep a separate optimizer
+    # so it never moves critic parameters or PPO optimizer moments.
+    bc_optimizer: torch.optim.Optimizer
     buffer: RolloutBuffer
     value_normalizer: RunningValueNormalizer
     layout: BuildingTokenLayout
@@ -111,7 +115,7 @@ class _TransitionCandidate:
 
 @dataclass
 class _UpdateRuntimeSnapshot:
-    """Mutable non-BC state that an ordinary PPO update may change."""
+    """Mutable PPO and BC state that an ordinary update may change."""
 
     buffers: List[RolloutBuffer]
     last_next_observations: List[Optional[torch.Tensor]]
@@ -126,7 +130,9 @@ class _UpdateRuntimeSnapshot:
     actor_states: List[Dict[str, torch.Tensor]]
     critic_states: List[Dict[str, torch.Tensor]]
     optimizer_states: List[Dict[str, Any]]
+    bc_optimizer_states: List[Dict[str, Any]]
     value_normalizer_states: List[Dict[str, Any]]
+    behavior_cloning_state: Optional[Dict[str, Any]]
     python_rng_state: object
     numpy_rng_state: tuple
     torch_rng_state: torch.Tensor
@@ -179,6 +185,10 @@ class AgentTransformerPPO(BaseAgent):
         self._per_building: List[_PerBuildingState] = []
         self._pending_decisions: List[Optional[_PendingDecision]] = []
         self._action_bounds: List[Tuple[torch.Tensor, torch.Tensor]] = []
+        self._bc = BehaviorCloningRegularizer.from_config(algo, self.config)
+        self.requires_raw_observation_context = bool(self._bc is not None)
+        self._latest_raw_observations: Optional[List[npt.NDArray[np.float64]]] = None
+        self._latest_encoded_observations: Optional[List[npt.NDArray[np.float64]]] = None
         self._latest_global_learning_step = 0
         self._latest_training_metrics: Dict[str, float] = {}
         self._current_episode = 0
@@ -218,6 +228,13 @@ class AgentTransformerPPO(BaseAgent):
             )
             self._pending_decisions = [None] * len(self._per_building)
             self._set_action_bounds(self._prepare_action_bounds(action_space, action_names))
+            self._attach_bc_environment(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                observation_space=observation_space,
+                metadata=metadata,
+            )
             self._first_attach_done = True
             for st in self._per_building:
                 logger.info(
@@ -245,8 +262,16 @@ class AgentTransformerPPO(BaseAgent):
             )
             self._pending_decisions = [None] * len(self._per_building)
             self._set_action_bounds(self._prepare_action_bounds(action_space, action_names))
+            self._notify_bc_topology_change(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                observation_space=observation_space,
+                metadata=metadata,
+            )
             return
 
+        changed_buildings: List[int] = []
         for b, (obs_n, act_n) in enumerate(
             zip(observation_names, action_names)
         ):
@@ -264,7 +289,35 @@ class AgentTransformerPPO(BaseAgent):
             state.obs_names_tuple = new_obs
             state.action_names_tuple = new_act
             self._handle_topology_change(b)
+            changed_buildings.append(b)
         self._set_action_bounds(self._prepare_action_bounds(action_space, action_names))
+        if changed_buildings:
+            self._notify_bc_topology_change(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                observation_space=observation_space,
+                metadata=metadata,
+                changed_buildings=changed_buildings,
+            )
+
+    def set_observation_context(
+        self,
+        *,
+        raw_observations: Optional[List[npt.NDArray[np.float64]]] = None,
+        encoded_observations: Optional[List[npt.NDArray[np.float64]]] = None,
+    ) -> None:
+        """Receive raw observations for the teacher without changing PPO input."""
+        self._latest_raw_observations = (
+            [np.asarray(obs, dtype=np.float64) for obs in raw_observations]
+            if raw_observations is not None
+            else None
+        )
+        self._latest_encoded_observations = (
+            [np.asarray(obs, dtype=np.float64) for obs in encoded_observations]
+            if encoded_observations is not None
+            else None
+        )
 
     def predict(
         self,
@@ -279,6 +332,15 @@ class AgentTransformerPPO(BaseAgent):
                 f"TPPO predict observations has {len(observations)} rows; expected {building_count}."
             )
         det = bool(deterministic) if deterministic is not None else False
+        if self._in_demonstration_phase():
+            assert self._bc is not None
+            teacher_observations = (
+                self._latest_raw_observations
+                if self._latest_raw_observations is not None
+                else observations
+            )
+            self._pending_decisions = [None] * building_count
+            return self._bc.compute_teacher_actions(teacher_observations)
         out: List[List[float]] = []
         pending_decisions: List[_PendingDecision] = []
         for building_idx, (state, obs) in enumerate(zip(self._per_building, observations)):
@@ -337,6 +399,35 @@ class AgentTransformerPPO(BaseAgent):
         for name, value in (("terminated", terminated), ("truncated", truncated)):
             if not isinstance(value, (bool, np.bool_)) and len(value) != building_count:
                 raise ValueError(f"TPPO update {name} has {len(value)} rows; expected {building_count}.")
+
+        if self._in_demonstration_phase():
+            assert self._bc is not None
+            for building_idx, state in enumerate(self._per_building):
+                teacher_action = np.asarray(actions[building_idx], dtype=np.float32)
+                if teacher_action.shape != (state.layout.n_ca,):
+                    raise ValueError(
+                        f"Teacher action for building {state.building_id!r} has invalid shape."
+                    )
+                low, high = self._action_bounds[building_idx]
+                low_values = low.squeeze(-1).detach().cpu().numpy()
+                high_values = high.squeeze(-1).detach().cpu().numpy()
+                teacher_tanh_action = (
+                    2.0 * (teacher_action - low_values) / (high_values - low_values)
+                    - 1.0
+                )
+                self._bc.record_demonstration(
+                    building_idx,
+                    np.asarray(observations[building_idx]),
+                    state.layout,
+                    teacher_tanh_action.tolist(),
+                )
+            self._pending_decisions = [None] * building_count
+            self._latest_global_learning_step = int(global_learning_step)
+            self._latest_training_metrics.update(
+                {"episode_training": 1.0, "teacher_action_execution": 1.0}
+            )
+            self._latest_training_metrics.update(self._bc.snapshot_metrics())
+            return
 
         candidates: List[_TransitionCandidate] = []
         for b, state in enumerate(self._per_building):
@@ -407,8 +498,14 @@ class AgentTransformerPPO(BaseAgent):
             self._pending_decisions = [None] * len(self._per_building)
             return
         self._pending_decisions = [None] * len(self._per_building)
+        if self._in_demonstration_phase() and self._bc is not None:
+            if episode + 1 == self._bc.demonstration_episodes:
+                self._run_bc_pretraining()
         for building_idx, state in enumerate(self._per_building):
             self._flush_rollout_boundary(building_idx, state, boundary="episode_end")
+
+    def get_diagnostic_metrics(self) -> Dict[str, float]:
+        return {} if self._bc is None else self._bc.snapshot_metrics()
 
     def record_topology_transition(
         self,
@@ -458,7 +555,11 @@ class AgentTransformerPPO(BaseAgent):
             actor_states=[deepcopy(state.actor.state_dict()) for state in states],
             critic_states=[deepcopy(state.critic.state_dict()) for state in states],
             optimizer_states=[deepcopy(state.optimizer.state_dict()) for state in states],
+            bc_optimizer_states=[deepcopy(state.bc_optimizer.state_dict()) for state in states],
             value_normalizer_states=[state.value_normalizer.state_dict() for state in states],
+            behavior_cloning_state=(
+                self._bc.state_dict() if self._bc is not None else None
+            ),
             python_rng_state=random.getstate(),
             numpy_rng_state=np.random.get_state(),
             torch_rng_state=torch.get_rng_state(),
@@ -475,11 +576,14 @@ class AgentTransformerPPO(BaseAgent):
             state.actor.load_state_dict(snapshot.actor_states[index])
             state.critic.load_state_dict(snapshot.critic_states[index])
             state.optimizer.load_state_dict(snapshot.optimizer_states[index])
+            state.bc_optimizer.load_state_dict(snapshot.bc_optimizer_states[index])
             state.value_normalizer.load_state_dict(snapshot.value_normalizer_states[index])
         self._pending_decisions = deepcopy(snapshot.pending_decisions)
         self._latest_global_learning_step = snapshot.latest_global_learning_step
         self._latest_training_metrics = dict(snapshot.latest_training_metrics)
         self._ppo_update_count = snapshot.ppo_update_count
+        if self._bc is not None and snapshot.behavior_cloning_state is not None:
+            self._bc.load_state_dict(snapshot.behavior_cloning_state)
         random.setstate(snapshot.python_rng_state)
         np.random.set_state(snapshot.numpy_rng_state)
         torch.set_rng_state(snapshot.torch_rng_state)
@@ -575,12 +679,16 @@ class AgentTransformerPPO(BaseAgent):
         out.mkdir(parents=True, exist_ok=True)
         path = out / f"transformer_ppo_step{step}.pt"
         payload = {
+            "checkpoint_format_version": 2,
             "step": int(step),
             "config": dict(self.config["algorithm"]),
             "global_learning_step": self._latest_global_learning_step,
             "ppo_update_count": self._ppo_update_count,
             "current_episode": self._current_episode,
             "latest_training_metrics": dict(self._latest_training_metrics),
+            "behavior_cloning_state": (
+                self._bc.state_dict() if self._bc is not None else None
+            ),
             "torch_rng_state": torch.get_rng_state(),
             "numpy_rng_state": np.random.get_state(),
             "python_rng_state": random.getstate(),
@@ -592,6 +700,7 @@ class AgentTransformerPPO(BaseAgent):
                     "actor_state": s.actor.state_dict(),
                     "critic_state": s.critic.state_dict(),
                     "optimizer_state": s.optimizer.state_dict(),
+                    "bc_optimizer_state": s.bc_optimizer.state_dict(),
                     "layout_signature": tuple(sorted(s.obs_names_tuple)),
                     "action_names": list(s.action_names_tuple),
                     "action_bounds": [bound.detach().cpu() for bound in self._action_bounds[self._per_building.index(s)]],
@@ -611,6 +720,22 @@ class AgentTransformerPPO(BaseAgent):
                 f"Checkpoint has {len(agents)} per-building entries; current "
                 f"agent has {len(self._per_building)}. Cross-cardinality "
                 "resume is not supported."
+            )
+        behavior_cloning_state = payload.get("behavior_cloning_state")
+        if behavior_cloning_state is not None and self._bc is None:
+            raise RuntimeError(
+                "Checkpoint contains behavior-cloning state but the BC-disabled "
+                "target cannot restore it."
+            )
+        if behavior_cloning_state is not None:
+            BehaviorCloningRegularizer.validate_state_dict(
+                behavior_cloning_state,
+                max_samples_per_building=(
+                    self._bc.max_samples_per_building if self._bc is not None else None
+                ),
+            )
+            self._validate_checkpoint_bc_tokenizer_compatibility(
+                behavior_cloning_state
             )
         for building_idx, (state, saved) in enumerate(zip(self._per_building, agents)):
             sig_now = tuple(sorted(state.obs_names_tuple))
@@ -648,18 +773,64 @@ class AgentTransformerPPO(BaseAgent):
             state.actor.load_state_dict(saved["actor_state"])
             state.critic.load_state_dict(saved["critic_state"])
             state.optimizer.load_state_dict(saved["optimizer_state"])
+            if "bc_optimizer_state" in saved:
+                state.bc_optimizer.load_state_dict(saved["bc_optimizer_state"])
             if "value_normalizer" in saved:
                 state.value_normalizer.load_state_dict(saved["value_normalizer"])
         self._latest_global_learning_step = int(payload.get("global_learning_step", 0))
         self._ppo_update_count = int(payload.get("ppo_update_count", 0))
         self._current_episode = int(payload.get("current_episode", 0))
         self._latest_training_metrics = dict(payload.get("latest_training_metrics", {}))
+        if self._bc is not None and behavior_cloning_state is not None:
+            self._bc.load_state_dict(behavior_cloning_state)
         if "torch_rng_state" in payload:
             torch.set_rng_state(payload["torch_rng_state"])
         if "numpy_rng_state" in payload:
             np.random.set_state(payload["numpy_rng_state"])
         if "python_rng_state" in payload:
             random.setstate(payload["python_rng_state"])
+
+    def _validate_checkpoint_bc_tokenizer_compatibility(
+        self, behavior_cloning_state: Dict[str, Any]
+    ) -> None:
+        """Reject stored demos that cannot be represented by the attached model."""
+        nfc_type = self._tokenizer_config.nfc.type_name
+        sro_types = set(self._tokenizer_config.sro_types)
+        ca_types = set(self._tokenizer_config.ca_types)
+        for building_idx, demonstrations in behavior_cloning_state["demonstrations"].items():
+            if not isinstance(building_idx, int) or not 0 <= building_idx < len(self._per_building):
+                raise RuntimeError(
+                    "Checkpoint BC layout/tokenizer compatibility failed: invalid "
+                    f"building index {building_idx!r}."
+                )
+            projections = self._per_building[building_idx].tokenizer.projections
+            for demonstration in demonstrations:
+                for segment in demonstration.layout.segments:
+                    valid_type = (
+                        (segment.family == "nfc" and segment.type_name == nfc_type)
+                        or (segment.family == "sro" and segment.type_name in sro_types)
+                        or (segment.family == "ca" and segment.type_name in ca_types)
+                    )
+                    if not valid_type:
+                        raise RuntimeError(
+                            "Checkpoint BC layout/tokenizer compatibility failed: "
+                            f"invalid {segment.family} type {segment.type_name!r}."
+                        )
+                    if segment.type_name not in projections:
+                        raise RuntimeError(
+                            "Checkpoint BC layout/tokenizer compatibility failed: "
+                            f"building {building_idx} has no projection for "
+                            f"type {segment.type_name!r}."
+                        )
+                    expected_width = 1 if segment.family == "nfc" else len(segment.feature_indices)
+                    actual_width = int(projections[segment.type_name].in_features)
+                    if actual_width != expected_width:
+                        raise RuntimeError(
+                            "Checkpoint BC layout/tokenizer compatibility failed: "
+                            f"building {building_idx} projection for "
+                            f"{segment.type_name!r} expects {actual_width} features, "
+                            f"but stored layout provides {expected_width}."
+                        )
 
     # ==========================================================================
     # Internal helpers
@@ -729,6 +900,44 @@ class AgentTransformerPPO(BaseAgent):
 
     def _set_action_bounds(self, bounds: List[Tuple[torch.Tensor, torch.Tensor]]) -> None:
         self._action_bounds = bounds
+
+    def _attach_bc_environment(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        if self._bc is not None:
+            self._bc.attach_environment(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                observation_space=observation_space,
+                metadata=metadata,
+            )
+
+    def _notify_bc_topology_change(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+        changed_buildings: Optional[List[int]] = None,
+    ) -> None:
+        if self._bc is not None:
+            self._bc.on_topology_change(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                observation_space=observation_space,
+                metadata=metadata,
+                changed_buildings=changed_buildings,
+            )
 
     def _build_per_building_states(
         self,
@@ -816,6 +1025,12 @@ class AgentTransformerPPO(BaseAgent):
             + list(critic.parameters())
         )
         optimizer = torch.optim.Adam(params, lr=self._lr)
+        bc_optimizer = torch.optim.Adam(
+            list(tokenizer.parameters())
+            + list(backbone.parameters())
+            + list(actor.parameters()),
+            lr=self._lr,
+        )
         buffer = RolloutBuffer(gamma=self._gamma, gae_lambda=self._gae_lambda)
         return _PerBuildingState(
             building_id=building_id,
@@ -824,6 +1039,7 @@ class AgentTransformerPPO(BaseAgent):
             actor=actor,
             critic=critic,
             optimizer=optimizer,
+            bc_optimizer=bc_optimizer,
             buffer=buffer,
             value_normalizer=RunningValueNormalizer(),
             layout=layout,
@@ -981,7 +1197,148 @@ class AgentTransformerPPO(BaseAgent):
 
     @staticmethod
     def _infer_obs_dim(layout: BuildingTokenLayout) -> int:
-        return max(max(seg.feature_indices) for seg in layout.segments) + 1
+        return BehaviorCloningRegularizer.full_representation_width(layout)
+
+    def _in_demonstration_phase(self) -> bool:
+        return (
+            self._bc is not None
+            and self._current_episode < self._bc.demonstration_episodes
+        )
+
+    def _run_bc_pretraining(self) -> None:
+        """Fit the shared representation and actor to recorded teacher samples."""
+        assert self._bc is not None
+        logger.info("event=bc_pretraining_start buildings={}", len(self._per_building))
+        failure_logged = False
+        try:
+            grouped_by_building = [
+                self._bc.demonstrations_for_building_by_signature(building_idx)
+                for building_idx in range(len(self._per_building))
+            ]
+            missing_buildings = [
+                state.building_id
+                for state, grouped in zip(self._per_building, grouped_by_building)
+                if not grouped
+            ]
+            if missing_buildings:
+                logger.info(
+                    "event=bc_pretraining_failure reason=zero_usable_demonstrations "
+                    "missing_buildings={} total_buildings={}",
+                    len(missing_buildings), len(self._per_building),
+                )
+                failure_logged = True
+                raise RuntimeError(
+                    "Behavior-cloning pretraining has zero compatible demonstrations for "
+                    f"building(s): {', '.join(missing_buildings)}."
+                )
+            total_usable_samples = 0
+            total_trained_batches = 0
+            metrics: Dict[str, float] = {}
+            for state, grouped in zip(self._per_building, grouped_by_building):
+                usable_samples = 0
+                trained_batches = 0
+                for group_index, demonstrations in enumerate(grouped.values(), start=1):
+                    layout = demonstrations[0].layout
+                    group_samples = len(demonstrations)
+                    group_trained_batches = 0
+                    usable_samples += group_samples
+                    for _ in range(self._bc.pretraining_epochs):
+                        for start in range(0, group_samples, self._bc.batch_size):
+                            batch = demonstrations[start : start + self._bc.batch_size]
+                            observations = torch.as_tensor(
+                                np.stack([demo.observation for demo in batch]),
+                                dtype=torch.float, device=self.device,
+                            )
+                            state.bc_optimizer.zero_grad()
+                            tokenized = state.tokenizer(observations, layout)
+                            ca_embeddings, _ = state.backbone(
+                                tokenized.sro_tokens,
+                                tokenized.nfc_token,
+                                tokenized.ca_tokens,
+                            )
+                            loss = self._bc.demonstration_loss(
+                                layout=layout,
+                                demonstrations=list(batch),
+                                predicted_means=torch.tanh(state.actor.mlp(ca_embeddings)),
+                                global_learning_step=0,
+                                apply_weight=False,
+                            )
+                            loss.backward()
+                            torch.nn.utils.clip_grad_norm_(
+                                list(state.tokenizer.parameters())
+                                + list(state.backbone.parameters())
+                                + list(state.actor.parameters()),
+                                self._max_grad_norm,
+                            )
+                            state.bc_optimizer.step()
+                            trained_batches += 1
+                            group_trained_batches += 1
+                    logger.info(
+                        "event=bc_pretraining_group building_id={} group_index={} "
+                        "group_count={} group_samples={} usable_samples={} trained_batches={}",
+                        state.building_id,
+                        group_index,
+                        len(grouped),
+                        group_samples,
+                        group_samples,
+                        group_trained_batches,
+                    )
+                metrics[f"behavior_cloning_building_{state.building_id}_usable_samples"] = float(usable_samples)
+                metrics[f"behavior_cloning_building_{state.building_id}_trained_batches"] = float(trained_batches)
+                total_usable_samples += usable_samples
+                total_trained_batches += trained_batches
+            self._bc.set_pretraining_epochs(self._bc.pretraining_epochs)
+            self._bc.set_incompatible_demonstration_samples(0)
+            metrics["behavior_cloning_pretraining_batches"] = float(total_trained_batches)
+            self._latest_training_metrics.update(self._bc.snapshot_metrics())
+            self._latest_training_metrics.update(metrics)
+            logger.info(
+                "event=bc_pretraining_complete buildings={} usable_samples={} trained_batches={}",
+                len(self._per_building), total_usable_samples, total_trained_batches,
+            )
+        except Exception as error:
+            if not failure_logged:
+                logger.info(
+                    "event=bc_pretraining_failure reason=pretraining_error error_type={}",
+                    type(error).__name__,
+                )
+            raise
+
+    def _run_auxiliary_bc_update(
+        self, building_idx: int, state: _PerBuildingState
+    ) -> None:
+        """Apply one actor-only BC step after all PPO epochs are complete."""
+        assert self._bc is not None
+        demonstrations = self._bc.sample_demonstrations(
+            building_idx, state.layout, self._bc.batch_size
+        )
+        if not demonstrations:
+            return
+        observations = torch.as_tensor(
+            np.stack([demo.observation for demo in demonstrations]),
+            dtype=torch.float, device=self.device,
+        )
+        state.bc_optimizer.zero_grad()
+        tokenized = state.tokenizer(observations, state.layout)
+        ca_embeddings, _ = state.backbone(
+            tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
+        )
+        loss = self._bc.demonstration_loss(
+            layout=state.layout,
+            demonstrations=demonstrations,
+            predicted_means=torch.tanh(state.actor.mlp(ca_embeddings)),
+            global_learning_step=self._latest_global_learning_step,
+        )
+        if not loss.requires_grad:
+            return
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            list(state.tokenizer.parameters())
+            + list(state.backbone.parameters())
+            + list(state.actor.parameters()),
+            self._max_grad_norm,
+        )
+        state.bc_optimizer.step()
 
     # ----- PPO loss helpers ---------------------------------------------------
 
@@ -1110,6 +1467,11 @@ class AgentTransformerPPO(BaseAgent):
                 state.optimizer.step()
                 for k, v in _metrics.items():
                     all_metrics.setdefault(k, []).append(v)
+        # Do not alter the policy between PPO minibatches: the rollout was
+        # collected by a single policy.  BC is therefore deliberately a
+        # separate post-PPO actor-only step.
+        if self._bc is not None:
+            self._run_auxiliary_bc_update(building_idx, state)
         averaged = {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
         returns = state.buffer.returns.detach().cpu().numpy()
         values = torch.stack(state.buffer.values).squeeze(-1).cpu().numpy()
@@ -1120,11 +1482,14 @@ class AgentTransformerPPO(BaseAgent):
             "clipped_reward_mean": float(clipped_rewards.mean()), "clipped_reward_min": float(clipped_rewards.min()), "clipped_reward_max": float(clipped_rewards.max()),
             "value_residual_p50": float(np.percentile(residuals, 50)), "value_residual_p90": float(np.percentile(residuals, 90)), "value_residual_p99": float(np.percentile(residuals, 99)),
             "episode_training": 1.0,
+            "teacher_action_execution": 0.0,
         })
         self._ppo_update_count += 1
         self._latest_training_metrics.update(
             {f"building_{building_idx}/{name}": value for name, value in averaged.items()}
         )
+        if self._bc is not None:
+            self._latest_training_metrics.update(self._bc.snapshot_metrics())
         building_id = getattr(state, "building_id", "?")
         logger.info(
             "PPO update [{}]: policy_loss={:.4f}, value_loss={:.4f}, entropy={:.4f}, clip_frac={:.3f}",
