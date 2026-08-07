@@ -34,6 +34,9 @@ Return value
 Same scalar split equally across buildings (same pattern as CCRewardLevel1).
 Set ``cost_aggregation="member_retail"`` while the community market is
 disabled to align the cost term with ``district_cost_total_control_eur``.
+Set ``cost_aggregation="community_settled"`` with the community market enabled
+to optimize the exact member-level settlement reported by
+``community_settled_cost_total_eur``.
 """
 
 from __future__ import annotations
@@ -42,6 +45,8 @@ from typing import Any, List, Mapping, Union
 
 import mlflow
 from citylearn.reward_function import RewardFunction
+
+from reward_function.community_settlement import community_settlement_components
 
 
 class CCRewardLevel2(RewardFunction):
@@ -65,6 +70,9 @@ class CCRewardLevel2(RewardFunction):
         # EV urgency horizon in hours
         urgency_horizon:  float = 4.0,    # harm starts H hours before departure
         cost_aggregation: str = "community_net",
+        community_local_price_ratio: float | None = None,
+        community_grid_export_price: float | None = None,
+        community_import_member_weights: Mapping[str, float] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(env_metadata, **kwargs)
@@ -78,11 +86,73 @@ class CCRewardLevel2(RewardFunction):
         self._ref_peak         = max(float(reference_peak),   1e-8)
         self._ref_export       = max(float(reference_export), 1e-8)
         self._cost_aggregation = str(cost_aggregation).strip().lower()
-        if self._cost_aggregation not in {"community_net", "member_retail"}:
+        if self._cost_aggregation not in {
+            "community_net",
+            "community_settled",
+            "member_retail",
+        }:
             raise ValueError(
-                "CCRewardLevel2 cost_aggregation must be 'community_net' or "
-                "'member_retail'"
+                "CCRewardLevel2 cost_aggregation must be 'community_net', "
+                "'community_settled', or 'member_retail'"
             )
+
+        initial_metadata = env_metadata if isinstance(env_metadata, Mapping) else {}
+        self._community_local_price_ratio_explicit = (
+            community_local_price_ratio is not None
+        )
+        self._community_grid_export_price_explicit = (
+            community_grid_export_price is not None
+        )
+        self._community_import_member_weights_explicit = (
+            community_import_member_weights is not None
+        )
+        self._explicit_community_import_member_weights = dict(
+            community_import_member_weights or {}
+        )
+        market_metadata = initial_metadata.get("community_market") or {}
+        if not isinstance(market_metadata, Mapping):
+            market_metadata = {}
+        configured_ratio = (
+            market_metadata.get(
+                "local_price_ratio_to_grid_import",
+                market_metadata.get("intra_community_sell_ratio", 0.8),
+            )
+            if community_local_price_ratio is None
+            else community_local_price_ratio
+        )
+        self._community_local_price_ratio = min(
+            max(self._safe(configured_ratio, 0.8), 0.0),
+            1.0,
+        )
+        configured_export_price = (
+            market_metadata.get("grid_export_price", 0.0)
+            if community_grid_export_price is None
+            else community_grid_export_price
+        )
+        self._community_grid_export_price = max(
+            self._safe(configured_export_price, 0.0),
+            0.0,
+        )
+        configured_weights = (
+            market_metadata.get("import_member_weights") or {}
+            if community_import_member_weights is None
+            else community_import_member_weights
+        )
+        buildings = initial_metadata.get("buildings") or []
+        building_names = [
+            str(building.get("name") or "")
+            for building in buildings
+            if isinstance(building, Mapping)
+        ]
+        self._community_import_member_weights = (
+            [
+                max(self._safe(configured_weights.get(name, 1.0), 1.0), 0.0)
+                for name in building_names
+            ]
+            if isinstance(configured_weights, Mapping) and building_names
+            else None
+        )
+        self.last_community_settlement: Mapping[str, float] = {}
 
         self._urgency_horizon  = max(float(urgency_horizon), 1e-6)
 
@@ -128,6 +198,45 @@ class CCRewardLevel2(RewardFunction):
 
         return total / count if count > 0 else 0.0
 
+    def _refresh_community_settlement_contract(self) -> None:
+        """Resolve market metadata after CityLearn completes environment loading."""
+
+        metadata = self.env_metadata if isinstance(self.env_metadata, Mapping) else {}
+        market = metadata.get("community_market") or {}
+        if not isinstance(market, Mapping):
+            market = {}
+        if not self._community_local_price_ratio_explicit:
+            ratio = market.get(
+                "local_price_ratio_to_grid_import",
+                market.get("intra_community_sell_ratio", 0.8),
+            )
+            self._community_local_price_ratio = min(
+                max(self._safe(ratio, 0.8), 0.0),
+                1.0,
+            )
+        if not self._community_grid_export_price_explicit:
+            self._community_grid_export_price = max(
+                self._safe(market.get("grid_export_price", 0.0), 0.0),
+                0.0,
+            )
+
+        configured_weights = (
+            self._explicit_community_import_member_weights
+            if self._community_import_member_weights_explicit
+            else market.get("import_member_weights") or {}
+        )
+        buildings = metadata.get("buildings") or []
+        building_names = [
+            str(building.get("name") or "")
+            for building in buildings
+            if isinstance(building, Mapping)
+        ]
+        if isinstance(configured_weights, Mapping) and building_names:
+            self._community_import_member_weights = [
+                max(self._safe(configured_weights.get(name, 1.0), 1.0), 0.0)
+                for name in building_names
+            ]
+
     # ── main interface ────────────────────────────────────────────────────────
 
     def calculate(
@@ -152,6 +261,19 @@ class CCRewardLevel2(RewardFunction):
                 * max(self._safe(obs.get("electricity_pricing")), 0.0)
                 for obs in observations
             )
+        elif self._cost_aggregation == "community_settled":
+            self._refresh_community_settlement_contract()
+            weights = self._community_import_member_weights
+            if weights is not None and len(weights) != len(observations):
+                weights = None
+            _, settlement = community_settlement_components(
+                observations,
+                local_price_ratio=self._community_local_price_ratio,
+                grid_export_price=self._community_grid_export_price,
+                import_member_weights=weights,
+            )
+            self.last_community_settlement = settlement
+            community_cost = settlement["community_settlement_cost_total"]
         else:
             price = max(self._safe(observations[0].get("electricity_pricing")), 0.0)
             community_cost = import_t * price

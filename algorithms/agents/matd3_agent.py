@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import mlflow
 import numpy as np
@@ -13,6 +13,13 @@ from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.maddpg_agent import MADDPG
 from algorithms.utils.networks import build_actor_network, build_critic_network
+from algorithms.utils.price_multiplier_adapter import (
+    ForecastMode,
+    PriceMultiplierObservationAdapter,
+    normalize_price_multiplier_contexts,
+    price_feature_bounds_from_metadata,
+    price_observation_names_from_metadata,
+)
 from algorithms.utils.torch_amp import autocast
 
 
@@ -24,6 +31,136 @@ class MATD3(MADDPG):
     delayed actor/target updates. It is the closest controlled comparator for
     checking whether MADDPG is limited by critic overestimation/instability.
     """
+
+    def __init__(self, config: dict) -> None:
+        super().__init__(config)
+        exploration_cfg = ((config["algorithm"].get("exploration") or {}).get("params") or {})
+        self.checkpoint_mode = str(
+            (config.get("checkpointing") or {}).get("checkpoint_mode", "full") or "full"
+        ).strip().lower()
+        if self.checkpoint_mode not in {"full", "inference"}:
+            raise ValueError("MATD3 checkpoint_mode must be 'full' or 'inference'.")
+        self.local_price_conditioning_enabled = bool(
+            exploration_cfg.get("local_price_conditioning_enabled", False)
+        )
+        self.local_price_forecast_mode = ForecastMode(
+            str(
+                exploration_cfg.get(
+                    "local_price_forecast_mode",
+                    ForecastMode.REAL_UNMODIFIED.value,
+                )
+            )
+        )
+        # TD3 is a MATD3 subclass but already owns its one-slot adapter.  Keep
+        # the joint adapter off there to avoid transforming the price twice.
+        self._joint_local_price_conditioning_enabled = bool(
+            self.local_price_conditioning_enabled
+            and not getattr(self, "single_agent_only", False)
+        )
+        self._joint_local_price_adapters: List[PriceMultiplierObservationAdapter] = []
+        self._last_joint_local_price_diagnostics = []
+        self._last_joint_local_price_context_non_neutral = False
+
+    def attach_environment(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+        self._joint_local_price_adapters = []
+        self._last_joint_local_price_diagnostics = []
+        if not self._joint_local_price_conditioning_enabled:
+            return
+        if len(observation_names) != int(self.num_agents):
+            raise ValueError(
+                "MATD3 local price conditioning requires one observation layout per actor."
+            )
+        for agent_idx in range(int(self.num_agents)):
+            feature_low, feature_high = price_feature_bounds_from_metadata(
+                metadata=metadata,
+                agent_index=agent_idx,
+            )
+            actor_observation_names = price_observation_names_from_metadata(
+                metadata=metadata,
+                agent_index=agent_idx,
+                fallback_observation_names=observation_names[agent_idx],
+            )
+            self._joint_local_price_adapters.append(
+                PriceMultiplierObservationAdapter(
+                    observation_names=actor_observation_names,
+                    feature_low=feature_low,
+                    feature_high=feature_high,
+                    forecast_mode=self.local_price_forecast_mode,
+                    # MATD3 may already include community features in its
+                    # established observation profile.  The adapter neither
+                    # appends nor changes them; it modifies exact price fields.
+                    require_strict_local=False,
+                )
+            )
+
+    def _apply_joint_local_price_context(
+        self,
+        observations: List[Any],
+        context: Any,
+    ) -> List[Any]:
+        self._last_joint_local_price_diagnostics = []
+        self._last_joint_local_price_context_non_neutral = False
+        if not self._joint_local_price_conditioning_enabled:
+            return observations
+        if len(self._joint_local_price_adapters) != int(self.num_agents):
+            raise RuntimeError(
+                "MATD3 local price conditioning is enabled but the environment is not attached."
+            )
+        if len(observations) != int(self.num_agents):
+            raise ValueError(
+                "MATD3 local price conditioning requires one observation per actor."
+            )
+
+        contexts = normalize_price_multiplier_contexts(
+            context,
+            num_agents=int(self.num_agents),
+        )
+        if all(value is None for value in contexts):
+            return observations
+
+        transformed: List[np.ndarray] = []
+        for adapter, observation, actor_context in zip(
+            self._joint_local_price_adapters,
+            observations,
+            contexts,
+        ):
+            if actor_context is None:
+                transformed.append(np.asarray(observation).copy())
+                continue
+            conditioned, diagnostics = adapter.transform(observation, actor_context)
+            transformed.append(conditioned)
+            self._last_joint_local_price_diagnostics.append(diagnostics)
+            self._last_joint_local_price_context_non_neutral |= not diagnostics.neutral_noop
+        return transformed
+
+    def predict(
+        self,
+        observations,
+        deterministic: bool = False,
+        *,
+        context: Any = None,
+    ) -> List[List[float]]:
+        observations = self._apply_joint_local_price_context(observations, context)
+        return super().predict(
+            observations,
+            deterministic=deterministic,
+            context=context,
+        )
 
     def _initialize_networks(self):
         logger.debug("Initializing MATD3 actor and twin critic networks.")
@@ -94,6 +231,12 @@ class MATD3(MADDPG):
         update_step: bool,
         initial_exploration_done: bool,
     ) -> None:
+        if self._last_joint_local_price_context_non_neutral:
+            raise RuntimeError(
+                "MATD3 received a non-neutral local price context during learning. "
+                "Price-conditioned MATD3 leaves are inference-only and must be frozen "
+                "under the community coordinator."
+            )
         update_start_time = time.time()
         observations, next_observations = self._prepare_transition_actor_observations(
             observations,
@@ -510,24 +653,57 @@ class MATD3(MADDPG):
                 "MATD3/enabled": 1.0,
                 "MATD3/target_policy_smoothing": float(getattr(self, "target_policy_smoothing", False)),
                 "MATD3/actor_update_interval": float(getattr(self, "actor_update_interval", 1)),
+                "MATD3/local_price_conditioning_enabled": float(
+                    self._joint_local_price_conditioning_enabled
+                ),
+                "MATD3/local_price_context_non_neutral": float(
+                    self._last_joint_local_price_context_non_neutral
+                ),
+                "MATD3/local_price_clipping_count": float(
+                    sum(
+                        diagnostics.clipping_count
+                        for diagnostics in self._last_joint_local_price_diagnostics
+                    )
+                ),
             }
         )
         return metrics
 
     def save_checkpoint(self, output_dir: str, step: int) -> str:
-        checkpoint: Dict[str, Any] = {}
+        checkpoint_mode = str(getattr(self, "checkpoint_mode", "full") or "full")
+        checkpoint: Dict[str, Any] = {
+            "checkpoint_version": 2,
+            "checkpoint_mode": checkpoint_mode,
+            "algorithm": "MATD3",
+            "num_agents": int(self.num_agents),
+            "observation_dimensions": list(getattr(self, "observation_dimension", [])),
+            "action_dimensions": list(getattr(self, "action_dimension", [])),
+            "step": int(step),
+        }
         for agent_idx in range(self.num_agents):
             checkpoint[f"actor_state_dict_{agent_idx}"] = self.actors[agent_idx].state_dict()
-            checkpoint[f"critic_state_dict_{agent_idx}"] = self.critics[agent_idx].state_dict()
-            checkpoint[f"critic_2_state_dict_{agent_idx}"] = self.critics_2[agent_idx].state_dict()
             checkpoint[f"actor_target_state_dict_{agent_idx}"] = self.actor_targets[agent_idx].state_dict()
-            checkpoint[f"critic_target_state_dict_{agent_idx}"] = self.critic_targets[agent_idx].state_dict()
-            checkpoint[f"critic_target_2_state_dict_{agent_idx}"] = self.critic_targets_2[agent_idx].state_dict()
             if agent_idx < len(getattr(self, "actor_aux_heads", [])):
                 checkpoint[f"actor_aux_head_state_dict_{agent_idx}"] = self.actor_aux_heads[agent_idx].state_dict()
+            if checkpoint_mode == "inference":
+                continue
+            checkpoint[f"critic_state_dict_{agent_idx}"] = self.critics[agent_idx].state_dict()
+            checkpoint[f"critic_2_state_dict_{agent_idx}"] = self.critics_2[agent_idx].state_dict()
+            checkpoint[f"critic_target_state_dict_{agent_idx}"] = self.critic_targets[agent_idx].state_dict()
+            checkpoint[f"critic_target_2_state_dict_{agent_idx}"] = self.critic_targets_2[agent_idx].state_dict()
             checkpoint[f"actor_optimizer_state_dict_{agent_idx}"] = self.actor_optimizers[agent_idx].state_dict()
             checkpoint[f"critic_optimizer_state_dict_{agent_idx}"] = self.critic_optimizers[agent_idx].state_dict()
             checkpoint[f"critic_optimizer_2_state_dict_{agent_idx}"] = self.critic_optimizers_2[agent_idx].state_dict()
+
+        if checkpoint_mode == "inference":
+            output_dir_path = Path(output_dir)
+            output_dir_path.mkdir(parents=True, exist_ok=True)
+            latest_path = output_dir_path / (
+                getattr(self, "checkpoint_artifact", None) or "latest_checkpoint.pth"
+            )
+            torch.save(checkpoint, latest_path)
+            logger.info("MATD3 inference checkpoint saved at step {} -> {}", step, latest_path)
+            return str(latest_path)
 
         if hasattr(self.replay_buffer, "get_state"):
             checkpoint["replay_buffer"] = self.replay_buffer.get_state()
@@ -560,13 +736,32 @@ class MATD3(MADDPG):
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
 
         checkpoint = torch.load(checkpoint_file, map_location=self.device, weights_only=False)
+        checkpoint_mode = str(checkpoint.get("checkpoint_mode", "full") or "full")
+        if checkpoint_mode not in {"full", "inference"}:
+            raise ValueError(f"Unsupported MATD3 checkpoint_mode={checkpoint_mode!r}.")
+        if checkpoint_mode == "inference" and not bool(getattr(self, "frozen", False)):
+            raise RuntimeError(
+                "MATD3 inference checkpoints contain actors only and may be loaded "
+                "only into a frozen pipeline stage."
+            )
+        saved_num_agents = checkpoint.get("num_agents")
+        if saved_num_agents is not None and int(saved_num_agents) != int(self.num_agents):
+            raise ValueError(
+                "MATD3 checkpoint actor count does not match the configured topology "
+                f"({saved_num_agents} != {self.num_agents})."
+            )
         for agent_idx in range(self.num_agents):
             self.actors[agent_idx].load_state_dict(checkpoint[f"actor_state_dict_{agent_idx}"])
-            self.critics[agent_idx].load_state_dict(checkpoint[f"critic_state_dict_{agent_idx}"])
-            self.critics_2[agent_idx].load_state_dict(checkpoint[f"critic_2_state_dict_{agent_idx}"])
             self.actor_targets[agent_idx].load_state_dict(
                 checkpoint.get(f"actor_target_state_dict_{agent_idx}", checkpoint[f"actor_state_dict_{agent_idx}"])
             )
+            aux_state = checkpoint.get(f"actor_aux_head_state_dict_{agent_idx}")
+            if aux_state is not None and agent_idx < len(getattr(self, "actor_aux_heads", [])):
+                self.actor_aux_heads[agent_idx].load_state_dict(aux_state)
+            if checkpoint_mode == "inference":
+                continue
+            self.critics[agent_idx].load_state_dict(checkpoint[f"critic_state_dict_{agent_idx}"])
+            self.critics_2[agent_idx].load_state_dict(checkpoint[f"critic_2_state_dict_{agent_idx}"])
             self.critic_targets[agent_idx].load_state_dict(
                 checkpoint.get(f"critic_target_state_dict_{agent_idx}", checkpoint[f"critic_state_dict_{agent_idx}"])
             )
@@ -576,9 +771,6 @@ class MATD3(MADDPG):
                     checkpoint[f"critic_2_state_dict_{agent_idx}"],
                 )
             )
-            aux_state = checkpoint.get(f"actor_aux_head_state_dict_{agent_idx}")
-            if aux_state is not None and agent_idx < len(getattr(self, "actor_aux_heads", [])):
-                self.actor_aux_heads[agent_idx].load_state_dict(aux_state)
             if bool(getattr(self, "restore_optimizers", not self.fine_tune)):
                 self.actor_optimizers[agent_idx].load_state_dict(
                     checkpoint[f"actor_optimizer_state_dict_{agent_idx}"]
@@ -589,6 +781,10 @@ class MATD3(MADDPG):
                 self.critic_optimizers_2[agent_idx].load_state_dict(
                     checkpoint[f"critic_optimizer_2_state_dict_{agent_idx}"]
                 )
+
+        if checkpoint_mode == "inference":
+            logger.info("Frozen MATD3 actors loaded from inference checkpoint {}", checkpoint_file)
+            return
 
         if "replay_buffer" in checkpoint and bool(
             getattr(self, "restore_replay_buffer", not self.reset_replay_buffer)

@@ -198,6 +198,57 @@ def test_cc_level2_reward_can_match_member_retail_cost():
     assert sum(reward.calculate(observations)) == pytest.approx(-1.0)
 
 
+def test_cc_level2_reward_can_optimize_exact_community_settlement_cost():
+    reward = CCRewardLevel2(
+        env_metadata={
+            "central_agent": False,
+            "community_market": {
+                "local_price_ratio_to_grid_import": 0.8,
+                "grid_export_price": 0.0,
+            },
+        },
+        cost_aggregation="community_settled",
+        reference_cost=1.0,
+        w_peak=0.0,
+        w_export=0.0,
+        w_ev=0.0,
+    )
+    observations = [
+        {"net_electricity_consumption": 2.0, "electricity_pricing": 0.5},
+        {"net_electricity_consumption": -1.0, "electricity_pricing": 0.25},
+    ]
+
+    assert sum(reward.calculate(observations)) == pytest.approx(-0.7)
+    assert reward.last_community_settlement[
+        "community_settlement_cost_total"
+    ] == pytest.approx(0.7)
+
+
+def test_cc_level2_exact_settlement_accepts_deferred_environment_metadata():
+    reward = CCRewardLevel2(
+        env_metadata=None,
+        cost_aggregation="community_settled",
+        reference_cost=1.0,
+        w_peak=0.0,
+        w_export=0.0,
+        w_ev=0.0,
+    )
+    reward.env_metadata = {
+        "central_agent": False,
+        "community_market": {"local_price_ratio_to_grid_import": 0.7},
+        "buildings": [{"name": "importer"}, {"name": "exporter"}],
+    }
+
+    assert sum(
+        reward.calculate(
+            [
+                {"net_electricity_consumption": 2.0, "electricity_pricing": 0.5},
+                {"net_electricity_consumption": -1.0, "electricity_pricing": 0.25},
+            ]
+        )
+    ) == pytest.approx(-0.675)
+
+
 def test_cost_reward_prefers_storing_pv_export_to_avoid_later_import():
     reward = CostHardConstraintReward(
         env_metadata={"central_agent": False},

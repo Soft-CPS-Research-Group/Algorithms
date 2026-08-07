@@ -71,6 +71,7 @@ checkpointing:
   resume_training: false
   checkpoint_run_id: null
   checkpoint_artifact: latest_checkpoint.pth
+  checkpoint_mode: inference
   use_best_checkpoint_artifact: false
   reset_replay_buffer: false
   freeze_pretrained_layers: false

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from algorithms.agents.maddpg_agent import MADDPG
@@ -229,6 +230,55 @@ def test_matd3_explicit_restore_flags_override_legacy_fine_tune_mix(tmp_path):
     assert agent.reward_norm_count == 9
     assert agent.reward_norm_mean == 3.0
     assert agent.reward_norm_m2 == 4.0
+
+
+def test_matd3_inference_checkpoint_contains_only_frozen_actor_state(tmp_path):
+    source = _build_matd3_agent_for_load()
+    source.checkpoint_mode = "inference"
+    source.observation_dimension = [2]
+    source.action_dimension = [1]
+    source.checkpoint_artifact = "matd3_leaf.pth"
+    with torch.no_grad():
+        source.actors[0].weight.fill_(0.75)
+        source.actors[0].bias.fill_(-0.25)
+        source.actor_targets[0].load_state_dict(source.actors[0].state_dict())
+
+    checkpoint_path = source.save_checkpoint(str(tmp_path), step=42)
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    assert payload["checkpoint_mode"] == "inference"
+    assert payload["num_agents"] == 1
+    assert "actor_state_dict_0" in payload
+    assert "critic_state_dict_0" not in payload
+    assert "critic_2_state_dict_0" not in payload
+    assert "actor_optimizer_state_dict_0" not in payload
+    assert "replay_buffer" not in payload
+
+    restored = _build_matd3_agent_for_load()
+    restored.frozen = True
+    critic_before = {
+        key: value.clone() for key, value in restored.critics[0].state_dict().items()
+    }
+    restored.load_checkpoint(checkpoint_path)
+
+    for key, value in source.actors[0].state_dict().items():
+        assert torch.equal(restored.actors[0].state_dict()[key], value)
+        assert torch.equal(restored.actor_targets[0].state_dict()[key], value)
+    for key, value in critic_before.items():
+        assert torch.equal(restored.critics[0].state_dict()[key], value)
+
+
+def test_matd3_inference_checkpoint_rejects_trainable_stage(tmp_path):
+    source = _build_matd3_agent_for_load()
+    source.checkpoint_mode = "inference"
+    source.observation_dimension = [2]
+    source.action_dimension = [1]
+    checkpoint_path = source.save_checkpoint(str(tmp_path), step=1)
+
+    trainable = _build_matd3_agent_for_load()
+    trainable.frozen = False
+    with pytest.raises(RuntimeError, match="only into a frozen pipeline stage"):
+        trainable.load_checkpoint(checkpoint_path)
 
 
 def test_maddpg_update_uses_terminated_or_truncated_for_done():

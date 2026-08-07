@@ -209,6 +209,13 @@ class CheckpointingConfig(BaseModel):
         ),
     )
     checkpoint_artifact: str = Field(default="latest_checkpoint.pth")
+    checkpoint_mode: Literal["full", "inference"] = Field(
+        default="full",
+        description=(
+            "Persist the complete trainable state or an actor-only checkpoint "
+            "intended for a frozen inference stage."
+        ),
+    )
     use_best_checkpoint_artifact: bool = False
     reset_replay_buffer: bool = False
     freeze_pretrained_layers: bool = False

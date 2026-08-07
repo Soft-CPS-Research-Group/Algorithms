@@ -10,6 +10,7 @@ from algorithms.utils.price_multiplier_adapter import (
     PriceMultiplierContext,
     PriceMultiplierObservationAdapter,
     normalize_price_multiplier_context,
+    normalize_price_multiplier_contexts,
     price_feature_bounds_from_metadata,
     price_observation_names_from_metadata,
 )
@@ -222,6 +223,26 @@ def test_adapter_rejects_any_community_observation_name(leaked_name):
         )
 
 
+def test_adapter_can_preserve_an_existing_multi_agent_community_layout():
+    names, low, high, observation = _layout()
+    names = (*names, "district__community_import_power_kw")
+    low = np.append(low, -100.0)
+    high = np.append(high, 100.0)
+    observation = np.append(observation, np.float32(0.4)).astype(np.float32)
+    adapter = PriceMultiplierObservationAdapter(
+        observation_names=names,
+        feature_low=low,
+        feature_high=high,
+        forecast_mode=ForecastMode.REAL_UNMODIFIED,
+        require_strict_local=False,
+    )
+
+    transformed, _ = adapter.transform(observation, {"current": 1.5})
+
+    assert transformed[names.index(CURRENT_PRICE_NAME)] == pytest.approx(0.875)
+    assert transformed[-1] == observation[-1]
+
+
 def test_adapter_discovers_only_exact_price_contract_once():
     names, low, high, _ = _layout()
     legacy_names = tuple(
@@ -269,6 +290,26 @@ def test_scalar_cc_context_is_normalized_without_changing_mapping_contract():
     assert normalize_price_multiplier_context(mapping) is mapping
     with pytest.raises(TypeError, match="scalar multiplier"):
         normalize_price_multiplier_context([1.0])
+
+
+def test_price_contexts_broadcast_level1_and_distribute_level2():
+    broadcast = normalize_price_multiplier_contexts(0.9, num_agents=3)
+    distributed = normalize_price_multiplier_contexts(
+        np.asarray([0.7, 1.0, 1.3], dtype=np.float32),
+        num_agents=3,
+    )
+
+    assert broadcast == [{"current": 0.9}] * 3
+    assert [item["current"] for item in distributed] == pytest.approx(
+        [0.7, 1.0, 1.3]
+    )
+
+
+def test_price_contexts_reject_malformed_level2_vectors():
+    with pytest.raises(ValueError, match="length must match"):
+        normalize_price_multiplier_contexts([0.9, 1.1], num_agents=3)
+    with pytest.raises(ValueError, match="one-dimensional"):
+        normalize_price_multiplier_contexts(np.ones((2, 2)), num_agents=2)
 
 
 def test_price_bounds_are_resolved_from_wrapper_metadata():

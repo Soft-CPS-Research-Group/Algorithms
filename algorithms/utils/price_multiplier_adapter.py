@@ -170,7 +170,14 @@ class PriceMultiplierDiagnostics:
 
 
 class PriceMultiplierObservationAdapter:
-    """Apply a virtual price context to one strict building-local observation."""
+    """Apply a virtual price context to one actor observation.
+
+    Strict-local validation remains the default used by PPO/TD3 leaves.  A
+    centralized-training multi-agent policy may already have community
+    coordinates in its established observation contract; setting
+    ``require_strict_local=False`` preserves those coordinates while still
+    changing only the four exact price features.
+    """
 
     def __init__(
         self,
@@ -179,12 +186,15 @@ class PriceMultiplierObservationAdapter:
         feature_low: Sequence[float] | Mapping[str, float],
         feature_high: Sequence[float] | Mapping[str, float],
         forecast_mode: ForecastMode | str = ForecastMode.REAL_UNMODIFIED,
+        require_strict_local: bool = True,
     ) -> None:
         self.observation_names = tuple(str(name) for name in observation_names)
         if not self.observation_names:
             raise ValueError("observation_names must not be empty.")
         self.forecast_mode = _parse_forecast_mode(forecast_mode)
-        self._validate_strict_local_names()
+        self.require_strict_local = bool(require_strict_local)
+        if self.require_strict_local:
+            self._validate_strict_local_names()
         self.price_indices = self._discover_price_indices()
         self._low = self._resolve_bounds(feature_low, "feature_low")
         self._high = self._resolve_bounds(feature_high, "feature_high")
@@ -384,6 +394,54 @@ def normalize_price_multiplier_context(context: Any) -> Mapping[str, Any] | None
     )
 
 
+def normalize_price_multiplier_contexts(
+    context: Any,
+    *,
+    num_agents: int,
+) -> list[Mapping[str, Any] | None]:
+    """Broadcast a CC-L1 scalar or distribute a CC-L2 per-agent vector.
+
+    A scalar/structured mapping is broadcast to every actor.  A one-dimensional
+    sequence must contain exactly one scalar or structured mapping per actor.
+    This explicit shape check prevents a malformed CC-L2 vector from silently
+    becoming a shared context.
+    """
+
+    count = int(num_agents)
+    if count < 1:
+        raise ValueError("num_agents must be >= 1 for local price conditioning.")
+    if context is None:
+        return [None for _ in range(count)]
+
+    if isinstance(context, np.ndarray):
+        if context.ndim == 0:
+            context = context.item()
+        elif context.ndim == 1:
+            values = context.tolist()
+            if len(values) != count:
+                raise ValueError(
+                    "Per-agent price multiplier vector length must match num_agents: "
+                    f"expected {count}, got {len(values)}."
+                )
+            return [normalize_price_multiplier_context(value) for value in values]
+        else:
+            raise ValueError(
+                "Per-agent price multiplier context must be one-dimensional."
+            )
+
+    if isinstance(context, (list, tuple)):
+        values = list(context)
+        if len(values) != count:
+            raise ValueError(
+                "Per-agent price multiplier vector length must match num_agents: "
+                f"expected {count}, got {len(values)}."
+            )
+        return [normalize_price_multiplier_context(value) for value in values]
+
+    shared = normalize_price_multiplier_context(context)
+    return [shared for _ in range(count)]
+
+
 def price_feature_bounds_from_metadata(
     *,
     metadata: Mapping[str, Any] | None,
@@ -466,6 +524,7 @@ __all__ = [
     "PriceMultiplierDiagnostics",
     "PriceMultiplierObservationAdapter",
     "normalize_price_multiplier_context",
+    "normalize_price_multiplier_contexts",
     "price_feature_bounds_from_metadata",
     "price_observation_names_from_metadata",
 ]
