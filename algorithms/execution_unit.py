@@ -51,6 +51,10 @@ class ExecutionUnit(ABC):
     # remain frozen (useful for two-phase HIRO training).
     frozen: bool = False
 
+    # Learners that retain their own emitted environment action may only be
+    # used as the leaf of a Pipeline.
+    requires_final_pipeline_stage: bool = False
+
     # ------------------------------------------------------------------
     # Core interaction loop
     # ------------------------------------------------------------------

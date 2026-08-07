@@ -107,6 +107,13 @@ class RecordingUnit(ExecutionUnit):
 # Pipeline
 # ----------------------------------------------------------------------
 class TestPipelinePredict:
+    def test_rejects_action_retaining_non_leaf_stage(self) -> None:
+        action_retaining = RecordingUnit("action_retaining")
+        action_retaining.requires_final_pipeline_stage = True
+
+        with pytest.raises(ValueError, match="must be the final stage"):
+            Pipeline([action_retaining, RecordingUnit("leaf")])
+
     def test_threads_context_top_to_bottom(self) -> None:
         manager = RecordingUnit("manager", predict_output="signal_from_manager")
         leaf = RecordingUnit("leaf", predict_output=[[0.5]])

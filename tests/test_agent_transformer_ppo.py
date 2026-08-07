@@ -36,6 +36,12 @@ _TOKENIZER_CFG = "configs/tokenizers/entity_default.json"
 _DEFAULT_ACTIONS = ["electrical_storage", "electric_vehicle_storage"]
 
 
+class _Box:
+    def __init__(self, low: list[float], high: list[float]) -> None:
+        self.low = np.asarray(low, dtype=np.float32)
+        self.high = np.asarray(high, dtype=np.float32)
+
+
 def _base_config() -> dict:
     return {
         "algorithm": {
@@ -300,6 +306,81 @@ def test_update_rejects_action_that_differs_from_pending_decision() -> None:
         )
 
     assert agent._pending_decisions[0] is not None
+
+
+def test_episode_boundary_trains_one_sample_rollout() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=1)
+    observation = [np.zeros(obs_dim, dtype=np.float64)]
+    action = [np.asarray(agent.predict(observation, deterministic=True)[0])]
+    agent.update(
+        observations=observation,
+        actions=action,
+        rewards=[0.1],
+        next_observations=observation,
+        terminated=True,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=1,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    agent.on_episode_end(episode=0, training=True)
+
+    assert len(agent._per_building[0].buffer) == 0
+    assert agent._ppo_update_count == 1
+    assert agent.consume_latest_training_metrics()["TPPO/building_0/rollout_size"] == 1.0
+
+
+def test_training_metrics_keep_each_building_result() -> None:
+    agent, _, _, obs_dim = _make_agent(n_buildings=2)
+    observations = [np.zeros(obs_dim, dtype=np.float64) for _ in range(2)]
+    for step in range(4):
+        actions = [np.asarray(row) for row in agent.predict(observations, deterministic=True)]
+        agent.update(
+            observations=observations,
+            actions=actions,
+            rewards=[0.1, 0.2],
+            next_observations=observations,
+            terminated=False,
+            truncated=False,
+            update_target_step=False,
+            global_learning_step=step + 1,
+            update_step=step == 3,
+            initial_exploration_done=True,
+        )
+
+    metrics = agent.consume_latest_training_metrics()
+    assert "TPPO/building_0/policy_loss" in metrics
+    assert "TPPO/building_1/policy_loss" in metrics
+
+
+def test_affine_action_bounds_accept_ranges_outside_unit_interval() -> None:
+    agent, obs_names, action_names, obs_dim = _make_agent(n_buildings=1)
+    agent.attach_environment(
+        observation_names=obs_names,
+        action_names=action_names,
+        action_space=[_Box([0.0, 2.0], [2.0, 4.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+
+    action = agent.predict([np.zeros(obs_dim, dtype=np.float64)], deterministic=True)[0]
+    assert 0.0 <= action[0] <= 2.0
+    assert 2.0 <= action[1] <= 4.0
+
+
+def test_action_bounds_require_exact_action_count() -> None:
+    agent, obs_names, action_names, _ = _make_agent(n_buildings=1)
+
+    with pytest.raises(ValueError, match="expected exactly 2"):
+        agent.attach_environment(
+            observation_names=obs_names,
+            action_names=action_names,
+            action_space=[_Box([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0])],
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"]},
+        )
 
 
 # ---------------------------------------------------------------------------

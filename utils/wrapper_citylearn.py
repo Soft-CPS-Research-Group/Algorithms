@@ -1701,6 +1701,15 @@ class Wrapper_CityLearn(RLC):
             on_episode_end = getattr(self.model, "on_episode_end", None)
             if callable(on_episode_end):
                 on_episode_end(episode=episode, training=not deterministic)
+            boundary_training_metrics = self._consume_model_training_metrics()
+            if boundary_training_metrics:
+                if mlflow.active_run():
+                    mlflow.log_metrics(boundary_training_metrics, step=self.global_step)
+                elif self.local_metrics_logger:
+                    self.local_metrics_logger.log(
+                        boundary_training_metrics,
+                        self.global_step,
+                    )
 
             last_rewards = rewards_list[-1] if rewards_list else None
             self._write_phase_progress(

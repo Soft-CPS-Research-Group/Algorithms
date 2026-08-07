@@ -112,6 +112,7 @@ class AgentTransformerPPO(BaseAgent):
     """Per-building Transformer + PPO."""
 
     supports_dynamic_topology: ClassVar[bool] = True
+    requires_final_pipeline_stage: ClassVar[bool] = True
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
@@ -573,20 +574,14 @@ class AgentTransformerPPO(BaseAgent):
             if has_low:
                 low = np.asarray(space.low, dtype=np.float32).reshape(-1)
                 high = np.asarray(space.high, dtype=np.float32).reshape(-1)
-                if low.shape[0] < action_count or high.shape[0] < action_count:
+                if low.shape[0] != action_count or high.shape[0] != action_count:
                     raise ValueError(
                         f"Action-space bounds for building {building_idx} have shape "
-                        f"({low.shape[0]}, {high.shape[0]}), expected at least {action_count}."
+                        f"({low.shape[0]}, {high.shape[0]}), expected exactly {action_count}."
                     )
-                low = low[:action_count]
-                high = high[:action_count]
                 if not np.isfinite(low).all() or not np.isfinite(high).all() or np.any(low >= high):
                     raise ValueError(
                         f"Action-space bounds for building {building_idx} must be finite and satisfy low < high."
-                    )
-                if np.any(low < -1.0) or np.any(high > 1.0):
-                    raise ValueError(
-                        f"Action-space bounds for building {building_idx} must be within the ActorHead supported action domain [-1, 1]."
                     )
             else:
                 low = np.full(action_count, -1.0, dtype=np.float32)
@@ -913,10 +908,6 @@ class AgentTransformerPPO(BaseAgent):
     ) -> None:
         if len(state.buffer) == 0:
             return
-        if len(state.buffer) == 1:
-            logger.warning("Discarding invalid one-sample PPO rollout for %s at rollout_boundary=%s", state.building_id, boundary)
-            self._clear_rollout(building_idx, state)
-            return
         if last_value is None:
             last_value = torch.zeros(1, device=self.device) if state.last_transition_terminated or state.last_next_observation is None else self._critic_value(state, state.last_next_observation)
         if self._run_ppo_update_with_last_value(state, last_value, building_idx=building_idx):
@@ -998,7 +989,9 @@ class AgentTransformerPPO(BaseAgent):
             "episode_training": 1.0,
         })
         self._ppo_update_count += 1
-        self._latest_training_metrics.update(averaged)
+        self._latest_training_metrics.update(
+            {f"building_{building_idx}/{name}": value for name, value in averaged.items()}
+        )
         building_id = getattr(state, "building_id", "?")
         logger.info(
             "PPO update [{}]: policy_loss={:.4f}, value_loss={:.4f}, entropy={:.4f}, clip_frac={:.3f}",
