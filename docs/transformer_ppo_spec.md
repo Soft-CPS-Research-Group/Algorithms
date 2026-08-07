@@ -1483,9 +1483,58 @@ Validation is performed in a single authoritative place
 
 ---
 
-## 13. Export & Checkpoint Contract (dynamic topology)
+## 13. Behavior Cloning
 
-### 13.1 ONNX export
+`AgentTransformerPPO` can add a behavior-cloning (BC) regularizer through
+the pipeline stage's `behavior_cloning` block. Separate demonstration episodes
+are collected before PPO rollouts: deterministic `RBCSmartPolicy` episodes
+populate a bounded per-building demonstration set before training. PPO rollout
+transitions always come from the Transformer actor. The teacher never changes
+an environment action during PPO collection or evaluation.
+
+The BC loss is an auxiliary actor-only loss. The critic uses only PPO value
+targets and receives no demonstration loss. Per-CA imitation uses Huber loss,
+weighted by `ev_multiplier` or `storage_multiplier`, with a scheduled BC
+weight added to the actor objective. Demonstrations never update value
+normalization statistics.
+
+```yaml
+behavior_cloning:
+  enabled: true
+  demonstration_episodes: 1
+  max_samples_per_building: 3400
+  pretraining_epochs: 4
+  batch_size: 64
+  weight: 0.42
+  min_weight: 0.24
+  decay_start_step: 512
+  decay_steps: 3584
+  ev_multiplier: 24.0
+  storage_multiplier: 0.18
+  teacher:
+    policy: RBCSmartPolicy
+    deterministic: true
+    hyperparameters: {}
+```
+
+`weight` decays linearly toward `min_weight` after `decay_start_step` for
+`decay_steps`. `demonstration_episodes` controls deterministic teacher
+collection; `max_samples_per_building` bounds retained examples; and
+`pretraining_epochs` plus `batch_size` control actor-only pretraining before
+the first PPO rollout.
+
+On topology changes, the wrapper rebuilds the entity layout and reattaches the
+agent. BC rebuilds its teacher while retaining demonstrations with their layout
+signatures, so compatible historical topology groups remain available for
+pretraining. Diagnostics include retained demonstration samples, pretraining
+loss, BC loss and weight, skipped/invalid batches, and final actor-only
+evaluation metrics.
+
+---
+
+## 14. Export & Checkpoint Contract (dynamic topology)
+
+### 14.1 ONNX export
 
 Per-building, per call to `export_artifacts(output_dir, context=...)`. For
 each building `b`:
@@ -1506,7 +1555,7 @@ each building `b`:
   valid if encoded length changes inside the same topology, which it
   doesn’t today but is cheap to guard against).
 
-### 13.2 Manifest entries
+### 14.2 Manifest entries
 
 `export_artifacts` MUST return the canonical artifact payload required
 by `utils/artifact_manifest.py` and validated by
@@ -1587,7 +1636,7 @@ used by debugging and tooling and are passed through verbatim by
 We export **only the topology version current at export time**; no
 cross-topology weight portability is required for production.
 
-### 13.3 Checkpoints
+### 14.3 Checkpoints
 
 - File: `<output_dir>/checkpoints/transformer_ppo_step<step>.pt`.
 - Payload (`torch.save`):
@@ -1623,11 +1672,11 @@ Run on `citylearn_three_phase_dynamic_assets_only_demo` for a small horizon.
 | `test_actions_in_valid_range` | All actions in `[-1, 1]`, no NaN |
 | `test_topology_changes_observed_during_run` | At least one `topology_version` increment in 200 steps (the assets-only demo guarantees this) |
 | `test_kpi_files_generated` | `runs/jobs/<id>/results/{result,summary}.json` exist |
-| `test_artifact_manifest_includes_onnx_per_building` | `artifact_manifest.json` lists per-building ONNX with the naming from §13.2 |
+| `test_artifact_manifest_includes_onnx_per_building` | `artifact_manifest.json` lists per-building ONNX with the naming from §14.2 |
 | `test_buffer_flush_on_topology_change_does_not_crash` | The PPO update triggered by topology change runs and the agent continues training |
 
 ---
-## 14. Decisions Log
+## 15. Decisions Log
 
 | # | Question | Decision |
 |---|---|---|
