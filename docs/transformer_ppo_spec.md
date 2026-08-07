@@ -945,6 +945,9 @@ owns layout reconstruction. Sequence (must run in this order):
 > next regularly-scheduled `update_step` will then operate on a fresh
 > buffer.
 
+When the building count changes, each existing building is flushed before
+the complete per-building state rebuild.
+
 Episode end uses the same boundary flush. A one-sample rollout is trained
 with a one-sample batch so its transition and reward are never discarded.
 The wrapper consumes training metrics after this hook, including on the
