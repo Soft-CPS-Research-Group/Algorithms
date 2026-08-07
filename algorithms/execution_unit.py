@@ -120,6 +120,14 @@ class ExecutionUnit(ABC):
     # ------------------------------------------------------------------
     # Lifecycle hooks
     # ------------------------------------------------------------------
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        """Observe the start of an episode."""
+        _ = episode, training
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        """Observe the end of an episode."""
+        _ = episode, training
+
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         """Return whether warm-up is complete. Default: always ``True``."""
         _ = global_learning_step

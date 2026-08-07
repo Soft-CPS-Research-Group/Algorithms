@@ -23,7 +23,7 @@ Checkpoint resume across topology changes is out of scope —
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
@@ -46,6 +46,7 @@ from algorithms.utils.ppo_components import (
     ActorHead,
     CriticHead,
     RolloutBuffer,
+    RunningValueNormalizer,
     compute_ppo_loss,
 )
 from algorithms.utils.transformer_backbone import TransformerBackbone
@@ -70,6 +71,7 @@ class _PerBuildingState:
     critic: CriticHead
     optimizer: torch.optim.Optimizer
     buffer: RolloutBuffer
+    value_normalizer: RunningValueNormalizer
     layout: BuildingTokenLayout
     obs_names_tuple: Tuple[str, ...]
     action_names_tuple: Tuple[str, ...]
@@ -78,13 +80,32 @@ class _PerBuildingState:
     # exporter records this in ``artifact_manifest.json`` so deployment
     # callers can route to the right artifact bundle for a given mutation.
     topology_version: int = 0
+    last_next_observation: Optional[torch.Tensor] = None
+    last_transition_terminated: bool = False
+    raw_rewards: List[float] = field(default_factory=list)
 
 
-def _atanh_safe(x: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
-    """Numerically-safe inverse tanh used to recover the pre-squash sample
-    from a stored ``[-1, 1]`` action."""
-    x = x.clamp(-1.0 + eps, 1.0 - eps)
-    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+@dataclass
+class _PendingDecision:
+    """Exact policy statistics collected for one environment decision."""
+
+    observation: torch.Tensor
+    action: torch.Tensor
+    pre_tanh_action: torch.Tensor
+    log_prob: torch.Tensor
+    value: torch.Tensor
+
+
+@dataclass(frozen=True)
+class _TransitionCandidate:
+    """Validated transition ready to commit to one rollout buffer."""
+
+    pending: _PendingDecision
+    raw_reward: float
+    reward: float
+    terminated: bool
+    truncated: bool
+    next_observation: Optional[torch.Tensor]
 
 
 class AgentTransformerPPO(BaseAgent):
@@ -107,7 +128,7 @@ class AgentTransformerPPO(BaseAgent):
         self._nhead = int(transformer_cfg["nhead"])
         self._num_layers = int(transformer_cfg["num_layers"])
         self._dim_feedforward = int(transformer_cfg.get("dim_feedforward", 256))
-        self._dropout = float(transformer_cfg.get("dropout", 0.1))
+        self._dropout = float(transformer_cfg.get("dropout", 0.0))
 
         h = dict(algo["hyperparameters"])
         self.require_cuda = bool(h.get("require_cuda", False))
@@ -133,9 +154,16 @@ class AgentTransformerPPO(BaseAgent):
         self._critic_hidden_dim = int(
             h.get("critic_hidden_dim", max(32, self._d_model * 2))
         )
+        self._actor_log_std_init = float(h.get("actor_log_std_init", -0.5))
 
         self._layout_builder = EntityTokenLayoutBuilder(self._tokenizer_config)
         self._per_building: List[_PerBuildingState] = []
+        self._pending_decisions: List[Optional[_PendingDecision]] = []
+        self._action_bounds: List[Tuple[torch.Tensor, torch.Tensor]] = []
+        self._latest_global_learning_step = 0
+        self._latest_training_metrics: Dict[str, float] = {}
+        self._current_episode = 0
+        self._ppo_update_count = 0
 
         # Tracks whether ``attach_environment`` has ever been called. The
         # very first call is not a topology change.
@@ -158,11 +186,19 @@ class AgentTransformerPPO(BaseAgent):
         ``(observation_names, action_names)`` is a no-op. Detected mutation
         triggers ``_handle_topology_change(building_idx)`` per affected
         building."""
+        action_space, observation_space = self._validate_environment_metadata(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+        )
         if not self._first_attach_done:
             # First-ever attach — fresh build for every building.
-            self._build_all_per_building_states(
+            self._per_building = self._build_per_building_states(
                 observation_names, action_names, metadata
             )
+            self._pending_decisions = [None] * len(self._per_building)
+            self._set_action_bounds(self._prepare_action_bounds(action_space, action_names))
             self._first_attach_done = True
             for st in self._per_building:
                 logger.info(
@@ -179,10 +215,11 @@ class AgentTransformerPPO(BaseAgent):
         if len(self._per_building) != len(observation_names):
             # Total building-count change is treated as a complete rebuild —
             # cannot resume per-building states across cardinality changes.
-            self._per_building = []
-            self._build_all_per_building_states(
+            self._per_building = self._build_per_building_states(
                 observation_names, action_names, metadata
             )
+            self._pending_decisions = [None] * len(self._per_building)
+            self._set_action_bounds(self._prepare_action_bounds(action_space, action_names))
             return
 
         for b, (obs_n, act_n) in enumerate(
@@ -202,6 +239,7 @@ class AgentTransformerPPO(BaseAgent):
             state.obs_names_tuple = new_obs
             state.action_names_tuple = new_act
             self._handle_topology_change(b)
+        self._set_action_bounds(self._prepare_action_bounds(action_space, action_names))
 
     def predict(
         self,
@@ -210,30 +248,49 @@ class AgentTransformerPPO(BaseAgent):
         *,
         context: Any = None,
     ) -> List[List[float]]:
+        building_count = len(self._per_building)
+        if len(observations) != building_count:
+            raise ValueError(
+                f"TPPO predict observations has {len(observations)} rows; expected {building_count}."
+            )
         det = bool(deterministic) if deterministic is not None else False
         out: List[List[float]] = []
-        for state, obs in zip(self._per_building, observations):
+        pending_decisions: List[_PendingDecision] = []
+        for building_idx, (state, obs) in enumerate(zip(self._per_building, observations)):
             obs_t = torch.as_tensor(
                 np.asarray(obs), dtype=torch.float, device=self.device
             ).unsqueeze(0)
             with torch.no_grad():
                 tokenized = state.tokenizer(obs_t, state.layout)
-                ca_emb, _ = state.backbone(
+                ca_emb, pooled = state.backbone(
                     tokenized.sro_tokens,
                     tokenized.nfc_token,
                     tokenized.ca_tokens,
                 )
-                actions, _, _ = state.actor(ca_emb, deterministic=det)
+                tanh_actions, raw_log_prob, _, pre_tanh_action = state.actor(
+                    ca_emb, deterministic=det, return_pre_tanh=True
+                )
+                low, high = self._action_bounds[building_idx]
+                actions = self._affine_action(tanh_actions, low, high)
+                log_prob = raw_log_prob - torch.log((high - low) / 2.0).squeeze(-1)
+                value = state.value_normalizer.denormalize(state.critic(pooled).squeeze(-1))
+            pending_decisions.append(_PendingDecision(
+                observation=obs_t.squeeze(0).detach().cpu(),
+                action=actions.squeeze(0).detach().cpu(),
+                pre_tanh_action=pre_tanh_action.squeeze(0).detach().cpu(),
+                log_prob=log_prob.squeeze(0).detach().cpu(),
+                value=value.detach().cpu(),
+            ))
             # ActorHead returns ``[B, N_ca, 1]``; the wrapper expects a flat
             # per-CA list.
             out.append(
                 actions.squeeze(0)
                 .squeeze(-1)
-                .clamp(-1.0, 1.0)
                 .detach()
                 .cpu()
                 .tolist()
             )
+        self._pending_decisions = pending_decisions
         return out
 
     def update(
@@ -252,42 +309,87 @@ class AgentTransformerPPO(BaseAgent):
     ) -> None:
         """Append the transition to each per-building rollout buffer; when
         ``update_step`` is true, run a PPO update per building and clear."""
-        del update_target_step, global_learning_step, initial_exploration_done
+        del update_target_step, initial_exploration_done
+        building_count = len(self._per_building)
+        for name, rows in (("observations", observations), ("actions", actions),
+                           ("rewards", rewards), ("next_observations", next_observations)):
+            if len(rows) != building_count:
+                raise ValueError(f"TPPO update {name} has {len(rows)} rows; expected {building_count}.")
+        for name, value in (("terminated", terminated), ("truncated", truncated)):
+            if not isinstance(value, (bool, np.bool_)) and len(value) != building_count:
+                raise ValueError(f"TPPO update {name} has {len(value)} rows; expected {building_count}.")
 
-        done = bool(terminated or truncated)
+        candidates: List[_TransitionCandidate] = []
         for b, state in enumerate(self._per_building):
-            obs_t = torch.as_tensor(
-                np.asarray(observations[b]), dtype=torch.float, device=self.device
-            ).unsqueeze(0)
-            act_t = torch.as_tensor(
-                np.asarray(actions[b]), dtype=torch.float, device=self.device
-            )
-            # Reshape actions to ``[1, N_ca, 1]`` to match ActorHead output.
-            act_t = act_t.view(1, state.layout.n_ca, 1)
-            with torch.no_grad():
-                tokenized = state.tokenizer(obs_t, state.layout)
-                ca_emb, pooled = state.backbone(
-                    tokenized.sro_tokens,
-                    tokenized.nfc_token,
-                    tokenized.ca_tokens,
+            pending = self._pending_decisions[b] if b < len(self._pending_decisions) else None
+            if pending is None:
+                raise ValueError(
+                    f"TPPO update for building {state.building_id!r} has no pending decision. "
+                    "Call predict() and pass its returned action before update()."
                 )
-                value = state.critic(pooled).squeeze(-1)  # [1]
-                log_prob = self._compute_log_prob(state.actor, ca_emb, act_t)
-            state.buffer.add(
-                observation=obs_t.squeeze(0).detach().cpu(),
-                action=act_t.squeeze(0).detach().cpu(),
-                log_prob=log_prob.squeeze(0).detach().cpu(),
-                reward=max(float(rewards[b]), -self._reward_clip),
-                value=value.detach().cpu(),
-                done=done,
+            executed_action = torch.as_tensor(
+                np.asarray(actions[b]), dtype=pending.action.dtype, device=pending.action.device
+            ).view(state.layout.n_ca, 1)
+            if not torch.equal(executed_action, pending.action):
+                raise ValueError(
+                    f"Executed action for building {state.building_id!r} does not match the "
+                    "pending TPPO action from predict(). Pass predict()'s returned action unchanged, "
+                    "or call predict() again before update()."
+                )
+            next_observation = next_observations[b]
+            next_observation_t = None if next_observation is None else torch.as_tensor(
+                np.asarray(next_observation), dtype=torch.float, device=self.device
             )
+            candidates.append(_TransitionCandidate(
+                pending=pending,
+                raw_reward=float(rewards[b]),
+                reward=max(float(rewards[b]), -self._reward_clip),
+                terminated=bool(terminated) if isinstance(terminated, (bool, np.bool_)) else bool(terminated[b]),
+                truncated=bool(truncated) if isinstance(truncated, (bool, np.bool_)) else bool(truncated[b]),
+                next_observation=next_observation_t,
+            ))
 
+        for state, candidate in zip(self._per_building, candidates):
+            state.buffer.add(
+                observation=candidate.pending.observation,
+                action=candidate.pending.action,
+                pre_tanh_action=candidate.pending.pre_tanh_action,
+                log_prob=candidate.pending.log_prob,
+                reward=candidate.reward,
+                value=candidate.pending.value,
+                terminated=candidate.terminated,
+                truncated=candidate.truncated,
+            )
+            state.last_next_observation = candidate.next_observation
+            state.last_transition_terminated = candidate.terminated
+            state.raw_rewards.append(candidate.raw_reward)
+        self._pending_decisions = [None] * building_count
+        self._latest_global_learning_step = int(global_learning_step)
         if not update_step:
             return
+        for building_idx, state in enumerate(self._per_building):
+            candidate = candidates[building_idx]
+            last_value = torch.zeros(1, device=self.device) if candidate.terminated or candidate.next_observation is None else self._critic_value(state, candidate.next_observation)
+            if self._ppo_update(building_idx, state, last_value):
+                self._clear_rollout(building_idx, state)
 
-        for state in self._per_building:
-            self._ppo_update(state, next_observations)
-            state.buffer.clear()
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        _ = training
+        self._current_episode = episode
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        self._current_episode = episode
+        if not training:
+            self._pending_decisions = [None] * len(self._per_building)
+            return
+        self._pending_decisions = [None] * len(self._per_building)
+        for building_idx, state in enumerate(self._per_building):
+            self._flush_rollout_boundary(building_idx, state, boundary="episode_end")
+
+    def consume_latest_training_metrics(self) -> Dict[str, float]:
+        metrics = {f"TPPO/{name}": value for name, value in self._latest_training_metrics.items()}
+        self._latest_training_metrics = {}
+        return metrics
 
     def export_artifacts(  # type: ignore[override]
         self,
@@ -319,7 +421,7 @@ class AgentTransformerPPO(BaseAgent):
             relpath = (
                 f"onnx_models/agent_{b}__topology_v{topology_version}.onnx"
             )
-            self._export_onnx(state, out / relpath, obs_dim)
+            self._export_onnx(state, out / relpath, obs_dim, *self._action_bounds[b])
             sro_types = [
                 s.type_name for s in state.layout.segments if s.family == "sro"
             ]
@@ -427,6 +529,92 @@ class AgentTransformerPPO(BaseAgent):
     # Internal helpers
     # ==========================================================================
 
+    @staticmethod
+    def _validate_environment_metadata(
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: Any,
+        observation_space: Any,
+    ) -> Tuple[List[Any], List[Any]]:
+        expected_count = len(observation_names)
+        if len(action_names) != expected_count:
+            raise ValueError(
+                "observation_names and action_names must have equal counts; "
+                f"got {expected_count} and {len(action_names)}."
+            )
+
+        def normalize_spaces(name: str, spaces: Any) -> List[Any]:
+            if isinstance(spaces, (list, tuple)):
+                if len(spaces) != expected_count:
+                    raise ValueError(
+                        f"{name} has {len(spaces)} per-building entries; "
+                        f"expected {expected_count}."
+                    )
+                return list(spaces)
+            return [spaces] * expected_count
+
+        return normalize_spaces("action_space", action_space), normalize_spaces(
+            "observation_space", observation_space
+        )
+
+    def _prepare_action_bounds(
+        self, action_space: List[Any], action_names: List[List[str]]
+    ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
+        bounds: List[Tuple[torch.Tensor, torch.Tensor]] = []
+        for building_idx, names in enumerate(action_names):
+            action_count = len(names)
+            space = action_space[building_idx]
+            has_low, has_high = hasattr(space, "low"), hasattr(space, "high")
+            if has_low != has_high:
+                raise ValueError(
+                    f"Action-space object for building {building_idx} must expose both low and high attributes."
+                )
+            if has_low:
+                low = np.asarray(space.low, dtype=np.float32).reshape(-1)
+                high = np.asarray(space.high, dtype=np.float32).reshape(-1)
+                if low.shape[0] < action_count or high.shape[0] < action_count:
+                    raise ValueError(
+                        f"Action-space bounds for building {building_idx} have shape "
+                        f"({low.shape[0]}, {high.shape[0]}), expected at least {action_count}."
+                    )
+                low = low[:action_count]
+                high = high[:action_count]
+                if not np.isfinite(low).all() or not np.isfinite(high).all() or np.any(low >= high):
+                    raise ValueError(
+                        f"Action-space bounds for building {building_idx} must be finite and satisfy low < high."
+                    )
+                if np.any(low < -1.0) or np.any(high > 1.0):
+                    raise ValueError(
+                        f"Action-space bounds for building {building_idx} must be within the ActorHead supported action domain [-1, 1]."
+                    )
+            else:
+                low = np.full(action_count, -1.0, dtype=np.float32)
+                high = np.full(action_count, 1.0, dtype=np.float32)
+            bounds.append((
+                torch.as_tensor(low, device=self.device).view(action_count, 1),
+                torch.as_tensor(high, device=self.device).view(action_count, 1),
+            ))
+        return bounds
+
+    def _set_action_bounds(self, bounds: List[Tuple[torch.Tensor, torch.Tensor]]) -> None:
+        self._action_bounds = bounds
+
+    def _build_per_building_states(
+        self,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        metadata: Optional[Dict[str, Any]],
+    ) -> List[_PerBuildingState]:
+        building_names = (metadata or {}).get("building_names")
+        return [
+            self._build_one_per_building_state(
+                building_names[b] if building_names and b < len(building_names) and building_names[b] else f"building_{b}",
+                list(obs_n), list(act_n),
+            )
+            for b, (obs_n, act_n) in enumerate(zip(observation_names, action_names))
+        ]
+
     def _build_all_per_building_states(
         self,
         observation_names: List[List[str]],
@@ -489,6 +677,7 @@ class AgentTransformerPPO(BaseAgent):
         actor = ActorHead(
             d_model=self._d_model, hidden_dim=self._actor_hidden_dim
         ).to(self.device)
+        actor.log_std.data.fill_(self._actor_log_std_init)
         critic = CriticHead(
             d_model=self._d_model, hidden_dim=self._critic_hidden_dim
         ).to(self.device)
@@ -508,6 +697,7 @@ class AgentTransformerPPO(BaseAgent):
             critic=critic,
             optimizer=optimizer,
             buffer=buffer,
+            value_normalizer=RunningValueNormalizer(),
             layout=layout,
             obs_names_tuple=tuple(observation_names),
             action_names_tuple=tuple(action_names),
@@ -531,7 +721,7 @@ class AgentTransformerPPO(BaseAgent):
                 # the conservative choice; a future improvement could
                 # forward through the new layout's critic.
                 self._run_ppo_update_with_last_value(
-                    state, last_value=torch.zeros(1, device=self.device)
+                    state, last_value=torch.zeros(1, device=self.device), building_idx=building_idx
                 )
             finally:
                 state.buffer.clear()
@@ -670,31 +860,28 @@ class AgentTransformerPPO(BaseAgent):
     @staticmethod
     def _compute_log_prob(
         actor: ActorHead,
-        ca_embeddings: torch.Tensor,  # [B, N_ca, d_model]
-        actions_tanh: torch.Tensor,  # [B, N_ca, 1] in [-1, 1]
+        ca_embeddings: torch.Tensor,
+        pre_tanh_actions: torch.Tensor,
+        low: torch.Tensor,
+        high: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute log-prob of a stored squashed action under the actor's
-        current Normal(mean, std)+tanh distribution. Returns ``[B, N_ca]``.
-        """
-        means = actor.mlp(ca_embeddings)  # [B, N_ca, 1]
-        log_std_clamped = torch.clamp(actor.log_std, min=-2.0, max=0.5)
-        std = torch.exp(log_std_clamped).expand_as(means)
-        pre_tanh = _atanh_safe(actions_tanh)
-        # log p(pre_tanh) - log(1 - tanh(pre_tanh)^2)
-        normal = torch.distributions.Normal(means, std)
-        log_prob_pre = normal.log_prob(pre_tanh)
-        log_prob = log_prob_pre - torch.log(
-            1.0 - actions_tanh.pow(2) + 1.0e-6
-        )
-        return log_prob.squeeze(-1)
+        """Score retained samples under the affine squashed policy."""
+        return actor.log_prob_from_pre_tanh(ca_embeddings, pre_tanh_actions) - torch.log(
+            (high - low) / 2.0
+        ).squeeze(-1)
+
+    @staticmethod
+    def _affine_action(tanh_actions: torch.Tensor, low: torch.Tensor, high: torch.Tensor) -> torch.Tensor:
+        return low + (tanh_actions + 1.0) * ((high - low) / 2.0)
 
     def _ppo_update(
         self,
+        building_idx: int,
         state: _PerBuildingState,
-        next_observations: List[npt.NDArray[np.float64]],
-    ) -> None:
+        last_value: Optional[torch.Tensor],
+    ) -> bool:
         if len(state.buffer) == 0:
-            return
+            return False
         # Defensive guard: PPO is on-policy and needs a meaningful trajectory
         # batch before updating. If the wrapper's `update_step` cadence
         # (`simulator.steps_between_training_updates`) is set too low, the
@@ -703,56 +890,68 @@ class AgentTransformerPPO(BaseAgent):
         # gradients on near-saturated stored actions). Skip with a warning.
         if len(state.buffer) < self._minibatch_size:
             logger.warning(
-                "Skipping PPO update for {}: buffer_size={} < minibatch_size={}. "
-                "Increase `simulator.steps_between_training_updates` (recommended >= 256) "
-                "to give PPO a real trajectory to learn from.",
+                "Retaining PPO rollout for {}: buffer_size={} < minibatch_size={}. "
+                "It will train at the next cadence or episode boundary.",
                 getattr(state, "building_id", "?"),
                 len(state.buffer),
                 self._minibatch_size,
             )
+            return False
+        assert last_value is not None
+        return self._run_ppo_update_with_last_value(state, last_value, building_idx=building_idx)
+
+    def _clear_rollout(self, building_idx: int, state: _PerBuildingState) -> None:
+        del building_idx
+        state.buffer.clear()
+        state.last_next_observation = None
+        state.last_transition_terminated = False
+        state.raw_rewards.clear()
+
+    def _flush_rollout_boundary(
+        self, building_idx: int, state: _PerBuildingState, *, boundary: str,
+        last_value: Optional[torch.Tensor] = None,
+    ) -> None:
+        if len(state.buffer) == 0:
             return
-        # Bootstrap value from the next observation of this building.
-        try:
-            b_idx = self._per_building.index(state)
-            next_obs = next_observations[b_idx]
-        except (ValueError, IndexError):
-            next_obs = None
-        if next_obs is None:
-            last_value = torch.zeros(1, device=self.device)
-        else:
-            last_value = self._critic_value(
-                state, np.asarray(next_obs, dtype=np.float64)
-            )
-        self._run_ppo_update_with_last_value(state, last_value)
+        if len(state.buffer) == 1:
+            logger.warning("Discarding invalid one-sample PPO rollout for %s at rollout_boundary=%s", state.building_id, boundary)
+            self._clear_rollout(building_idx, state)
+            return
+        if last_value is None:
+            last_value = torch.zeros(1, device=self.device) if state.last_transition_terminated or state.last_next_observation is None else self._critic_value(state, state.last_next_observation)
+        if self._run_ppo_update_with_last_value(state, last_value, building_idx=building_idx):
+            self._clear_rollout(building_idx, state)
 
     def _critic_value(
         self,
         state: _PerBuildingState,
-        obs: npt.NDArray[np.float64],
+        obs: torch.Tensor,
     ) -> torch.Tensor:
         with torch.no_grad():
-            obs_t = torch.as_tensor(
-                obs, dtype=torch.float, device=self.device
-            ).unsqueeze(0)
+            obs_t = obs.to(self.device).unsqueeze(0)
             tokenized = state.tokenizer(obs_t, state.layout)
             _, pooled = state.backbone(
                 tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
             )
-            return state.critic(pooled).squeeze(-1)
+            return state.value_normalizer.denormalize(state.critic(pooled).squeeze(-1))
 
     def _run_ppo_update_with_last_value(
-        self, state: _PerBuildingState, last_value: torch.Tensor
-    ) -> None:
+        self, state: _PerBuildingState, last_value: torch.Tensor, *, building_idx: int
+    ) -> bool:
+        if len(state.buffer) == 0:
+            return False
+        rollout_size = len(state.buffer)
+        raw_rewards = np.asarray(state.raw_rewards, dtype=np.float64)
+        clipped_rewards = np.asarray(state.buffer.rewards, dtype=np.float64)
+        batch_size = min(self._minibatch_size, len(state.buffer))
         state.buffer.compute_returns_and_advantages(last_value.detach().cpu())
-        all_metrics: dict = {"policy_loss": [], "value_loss": [], "entropy": []}
+        assert state.buffer.returns is not None
+        state.value_normalizer.update(state.buffer.returns)
+        all_metrics: dict = {"policy_loss": [], "value_loss": [], "entropy": [], "actor_grad_norm": [], "critic_grad_norm": []}
         for _epoch in range(self._ppo_epochs):
-            for batch in state.buffer.get_batches(self._minibatch_size):
+            for batch in state.buffer.get_batches(batch_size):
                 state.optimizer.zero_grad()
-                obs_b = batch.observations.to(self.device)  # [B, obs_dim]
-                act_b = batch.actions.to(self.device)  # [B, N_ca, 1]
-                log_probs_old_b = batch.log_probs.to(self.device)
-                advantages_b = batch.advantages.to(self.device)
-                returns_b = batch.returns.to(self.device)
+                obs_b = batch.observations.to(self.device)
                 # Forward through tokenizer + backbone with grads on.
                 tokenized = state.tokenizer(obs_b, state.layout)
                 ca_emb, pooled = state.backbone(
@@ -761,35 +960,45 @@ class AgentTransformerPPO(BaseAgent):
                     tokenized.ca_tokens,
                 )
                 log_probs_new = self._compute_log_prob(
-                    state.actor, ca_emb, act_b
+                    state.actor, ca_emb, batch.pre_tanh_actions.to(self.device), *self._action_bounds[building_idx]
                 )  # [B, N_ca]
                 # Sum over CA actions per step → scalar per step (matches
                 # log_probs_old shape stored in buffer).
                 log_probs_new_sum = log_probs_new.sum(dim=-1)
-                log_probs_old_sum = log_probs_old_b.sum(dim=-1)
-                values = state.critic(pooled).squeeze(-1)  # [B]
+                log_probs_old_sum = batch.log_probs.to(self.device).sum(dim=-1)
+                values = state.critic(pooled).squeeze(-1)
                 loss, _metrics = compute_ppo_loss(
                     log_probs_new=log_probs_new_sum,
                     log_probs_old=log_probs_old_sum,
-                    advantages=advantages_b,
+                    advantages=batch.advantages.to(self.device),
                     values=values,
-                    returns=returns_b,
+                    returns=state.value_normalizer.normalize(batch.returns).to(self.device),
                     clip_eps=self._clip_eps,
                     value_coeff=self._value_coeff,
                     entropy_coeff=self._entropy_coeff,
                 )
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    list(state.tokenizer.parameters())
-                    + list(state.backbone.parameters())
-                    + list(state.actor.parameters())
-                    + list(state.critic.parameters()),
-                    self._max_grad_norm,
-                )
+                actor_parameters = list(state.tokenizer.parameters()) + list(state.backbone.parameters()) + list(state.actor.parameters())
+                critic_parameters = list(state.critic.parameters())
+                all_metrics["actor_grad_norm"].append(self._gradient_norm(actor_parameters))
+                all_metrics["critic_grad_norm"].append(self._gradient_norm(critic_parameters))
+                torch.nn.utils.clip_grad_norm_(actor_parameters + critic_parameters, self._max_grad_norm)
                 state.optimizer.step()
                 for k, v in _metrics.items():
                     all_metrics.setdefault(k, []).append(v)
         averaged = {k: sum(v) / len(v) for k, v in all_metrics.items() if v}
+        returns = state.buffer.returns.detach().cpu().numpy()
+        values = torch.stack(state.buffer.values).squeeze(-1).cpu().numpy()
+        residuals = np.abs(returns - values)
+        averaged.update({
+            "update_count": float(self._ppo_update_count + 1), "rollout_size": float(rollout_size),
+            "raw_reward_mean": float(raw_rewards.mean()), "raw_reward_min": float(raw_rewards.min()), "raw_reward_max": float(raw_rewards.max()),
+            "clipped_reward_mean": float(clipped_rewards.mean()), "clipped_reward_min": float(clipped_rewards.min()), "clipped_reward_max": float(clipped_rewards.max()),
+            "value_residual_p50": float(np.percentile(residuals, 50)), "value_residual_p90": float(np.percentile(residuals, 90)), "value_residual_p99": float(np.percentile(residuals, 99)),
+            "episode_training": 1.0,
+        })
+        self._ppo_update_count += 1
+        self._latest_training_metrics.update(averaged)
         building_id = getattr(state, "building_id", "?")
         logger.info(
             "PPO update [{}]: policy_loss={:.4f}, value_loss={:.4f}, entropy={:.4f}, clip_frac={:.3f}",
@@ -799,6 +1008,16 @@ class AgentTransformerPPO(BaseAgent):
             averaged.get("entropy", 0.0),
             averaged.get("clip_fraction", 0.0),
         )
+        return True
+
+    @staticmethod
+    def _gradient_norm(parameters: List[torch.nn.Parameter]) -> float:
+        squared_norm = sum(
+            parameter.grad.detach().pow(2).sum()
+            for parameter in parameters
+            if parameter.grad is not None
+        )
+        return float(squared_norm.sqrt().cpu()) if isinstance(squared_norm, torch.Tensor) else 0.0
 
     # ----- ONNX export --------------------------------------------------------
 
@@ -807,6 +1026,8 @@ class AgentTransformerPPO(BaseAgent):
         state: _PerBuildingState,
         path: Path,
         obs_dim: int,
+        action_low: torch.Tensor,
+        action_high: torch.Tensor,
     ) -> None:
         """Save the actor pipeline as ONNX. The layout indices are baked
         into the wrapper as Python constants. Pure ``index_select`` +
@@ -842,6 +1063,8 @@ class AgentTransformerPPO(BaseAgent):
                 self_inner.tokenizer = tokenizer
                 self_inner.backbone = backbone
                 self_inner.actor = actor
+                self_inner.register_buffer("action_low", action_low.detach().cpu())
+                self_inner.register_buffer("action_high", action_high.detach().cpu())
 
             def forward(self_inner, encoded_obs: torch.Tensor) -> torch.Tensor:
                 sro_tokens_list = []
@@ -875,7 +1098,10 @@ class AgentTransformerPPO(BaseAgent):
                 # ActorHead.forward returns (actions, log_probs, means);
                 # for export we want the deterministic mean ∈ [-1, 1].
                 means = self_inner.actor.mlp(ca_emb)
-                return torch.tanh(means).squeeze(-1)
+                actions = self_inner.action_low + (torch.tanh(means) + 1.0) * (
+                    (self_inner.action_high - self_inner.action_low) / 2.0
+                )
+                return actions.squeeze(-1)
 
         wrapper = _ExportWrapper().eval()
         dummy = torch.zeros(1, obs_dim)
