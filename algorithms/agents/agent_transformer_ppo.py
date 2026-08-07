@@ -22,7 +22,9 @@ Checkpoint resume across topology changes is out of scope —
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
+import random
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
@@ -33,6 +35,7 @@ from loguru import logger
 from torch import nn
 
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.exceptions import DeferredCheckpointError
 from algorithms.utils.entity_observation_tokenizer import (
     EntityObservationTokenizer,
 )
@@ -104,6 +107,29 @@ class _TransitionCandidate:
     terminated: bool
     truncated: bool
     next_observation: Optional[torch.Tensor]
+
+
+@dataclass
+class _UpdateRuntimeSnapshot:
+    """Mutable non-BC state that an ordinary PPO update may change."""
+
+    buffers: List[RolloutBuffer]
+    last_next_observations: List[Optional[torch.Tensor]]
+    last_transition_terminated: List[bool]
+    raw_rewards: List[List[float]]
+    pending_decisions: List[Optional[_PendingDecision]]
+    latest_global_learning_step: int
+    latest_training_metrics: Dict[str, float]
+    ppo_update_count: int
+    tokenizer_states: List[Dict[str, torch.Tensor]]
+    backbone_states: List[Dict[str, torch.Tensor]]
+    actor_states: List[Dict[str, torch.Tensor]]
+    critic_states: List[Dict[str, torch.Tensor]]
+    optimizer_states: List[Dict[str, Any]]
+    value_normalizer_states: List[Dict[str, Any]]
+    python_rng_state: object
+    numpy_rng_state: tuple
+    torch_rng_state: torch.Tensor
 
 
 class AgentTransformerPPO(BaseAgent):
@@ -342,29 +368,34 @@ class AgentTransformerPPO(BaseAgent):
                 next_observation=next_observation_t,
             ))
 
-        for state, candidate in zip(self._per_building, candidates):
-            state.buffer.add(
-                observation=candidate.pending.observation,
-                action=candidate.pending.action,
-                pre_tanh_action=candidate.pending.pre_tanh_action,
-                log_prob=candidate.pending.log_prob,
-                reward=candidate.reward,
-                value=candidate.pending.value,
-                terminated=candidate.terminated,
-                truncated=candidate.truncated,
-            )
-            state.last_next_observation = candidate.next_observation
-            state.last_transition_terminated = candidate.terminated
-            state.raw_rewards.append(candidate.raw_reward)
-        self._pending_decisions = [None] * building_count
-        self._latest_global_learning_step = int(global_learning_step)
-        if not update_step:
-            return
-        for building_idx, state in enumerate(self._per_building):
-            candidate = candidates[building_idx]
-            last_value = torch.zeros(1, device=self.device) if candidate.terminated or candidate.next_observation is None else self._critic_value(state, candidate.next_observation)
-            if self._ppo_update(building_idx, state, last_value):
-                self._clear_rollout(building_idx, state)
+        snapshot = self._snapshot_update_runtime_state()
+        try:
+            for state, candidate in zip(self._per_building, candidates):
+                state.buffer.add(
+                    observation=candidate.pending.observation,
+                    action=candidate.pending.action,
+                    pre_tanh_action=candidate.pending.pre_tanh_action,
+                    log_prob=candidate.pending.log_prob,
+                    reward=candidate.reward,
+                    value=candidate.pending.value,
+                    terminated=candidate.terminated,
+                    truncated=candidate.truncated,
+                )
+                state.last_next_observation = candidate.next_observation
+                state.last_transition_terminated = candidate.terminated
+                state.raw_rewards.append(candidate.raw_reward)
+            self._pending_decisions = [None] * building_count
+            self._latest_global_learning_step = int(global_learning_step)
+            if not update_step:
+                return
+            for building_idx, state in enumerate(self._per_building):
+                candidate = candidates[building_idx]
+                last_value = torch.zeros(1, device=self.device) if candidate.terminated or candidate.next_observation is None else self._critic_value(state, candidate.next_observation)
+                if self._ppo_update(building_idx, state, last_value):
+                    self._clear_rollout(building_idx, state)
+        except Exception:
+            self._restore_update_runtime_state(snapshot)
+            raise
 
     def on_episode_start(self, *, episode: int, training: bool) -> None:
         _ = training
@@ -379,10 +410,79 @@ class AgentTransformerPPO(BaseAgent):
         for building_idx, state in enumerate(self._per_building):
             self._flush_rollout_boundary(building_idx, state, boundary="episode_end")
 
+    def record_topology_transition(
+        self,
+        *,
+        observations: List[npt.NDArray[np.float64]],
+        actions: List[npt.NDArray[np.float64]],
+        rewards: List[float],
+        terminated: bool,
+        truncated: bool,
+        global_learning_step: int,
+    ) -> None:
+        """Commit the old-layout transition before its successor is replaced."""
+        self.update(
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            next_observations=[None] * len(self._per_building),
+            terminated=terminated,
+            truncated=truncated,
+            update_target_step=False,
+            global_learning_step=global_learning_step,
+            update_step=False,
+            initial_exploration_done=True,
+        )
+
     def consume_latest_training_metrics(self) -> Dict[str, float]:
         metrics = {f"TPPO/{name}": value for name, value in self._latest_training_metrics.items()}
         self._latest_training_metrics = {}
         return metrics
+
+    def _snapshot_update_runtime_state(self) -> _UpdateRuntimeSnapshot:
+        states = self._per_building
+        return _UpdateRuntimeSnapshot(
+            buffers=[deepcopy(state.buffer) for state in states],
+            last_next_observations=[
+                None if state.last_next_observation is None else state.last_next_observation.detach().clone()
+                for state in states
+            ],
+            last_transition_terminated=[state.last_transition_terminated for state in states],
+            raw_rewards=[list(state.raw_rewards) for state in states],
+            pending_decisions=deepcopy(self._pending_decisions),
+            latest_global_learning_step=self._latest_global_learning_step,
+            latest_training_metrics=dict(self._latest_training_metrics),
+            ppo_update_count=self._ppo_update_count,
+            tokenizer_states=[deepcopy(state.tokenizer.state_dict()) for state in states],
+            backbone_states=[deepcopy(state.backbone.state_dict()) for state in states],
+            actor_states=[deepcopy(state.actor.state_dict()) for state in states],
+            critic_states=[deepcopy(state.critic.state_dict()) for state in states],
+            optimizer_states=[deepcopy(state.optimizer.state_dict()) for state in states],
+            value_normalizer_states=[state.value_normalizer.state_dict() for state in states],
+            python_rng_state=random.getstate(),
+            numpy_rng_state=np.random.get_state(),
+            torch_rng_state=torch.get_rng_state(),
+        )
+
+    def _restore_update_runtime_state(self, snapshot: _UpdateRuntimeSnapshot) -> None:
+        for index, state in enumerate(self._per_building):
+            state.buffer = deepcopy(snapshot.buffers[index])
+            state.last_next_observation = snapshot.last_next_observations[index]
+            state.last_transition_terminated = snapshot.last_transition_terminated[index]
+            state.raw_rewards = list(snapshot.raw_rewards[index])
+            state.tokenizer.load_state_dict(snapshot.tokenizer_states[index])
+            state.backbone.load_state_dict(snapshot.backbone_states[index])
+            state.actor.load_state_dict(snapshot.actor_states[index])
+            state.critic.load_state_dict(snapshot.critic_states[index])
+            state.optimizer.load_state_dict(snapshot.optimizer_states[index])
+            state.value_normalizer.load_state_dict(snapshot.value_normalizer_states[index])
+        self._pending_decisions = deepcopy(snapshot.pending_decisions)
+        self._latest_global_learning_step = snapshot.latest_global_learning_step
+        self._latest_training_metrics = dict(snapshot.latest_training_metrics)
+        self._ppo_update_count = snapshot.ppo_update_count
+        random.setstate(snapshot.python_rng_state)
+        np.random.set_state(snapshot.numpy_rng_state)
+        torch.set_rng_state(snapshot.torch_rng_state)
 
     def export_artifacts(  # type: ignore[override]
         self,
@@ -467,12 +567,23 @@ class AgentTransformerPPO(BaseAgent):
         }
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
+        if any(len(state.buffer) for state in self._per_building):
+            raise DeferredCheckpointError(
+                "TPPO cannot save a checkpoint with a nonempty rollout. Save at a completed optimizer or episode boundary."
+            )
         out = Path(output_dir) / "checkpoints"
         out.mkdir(parents=True, exist_ok=True)
         path = out / f"transformer_ppo_step{step}.pt"
         payload = {
             "step": int(step),
             "config": dict(self.config["algorithm"]),
+            "global_learning_step": self._latest_global_learning_step,
+            "ppo_update_count": self._ppo_update_count,
+            "current_episode": self._current_episode,
+            "latest_training_metrics": dict(self._latest_training_metrics),
+            "torch_rng_state": torch.get_rng_state(),
+            "numpy_rng_state": np.random.get_state(),
+            "python_rng_state": random.getstate(),
             "agents": [
                 {
                     "building_id": s.building_id,
@@ -483,6 +594,8 @@ class AgentTransformerPPO(BaseAgent):
                     "optimizer_state": s.optimizer.state_dict(),
                     "layout_signature": tuple(sorted(s.obs_names_tuple)),
                     "action_names": list(s.action_names_tuple),
+                    "action_bounds": [bound.detach().cpu() for bound in self._action_bounds[self._per_building.index(s)]],
+                    "value_normalizer": s.value_normalizer.state_dict(),
                 }
                 for s in self._per_building
             ],
@@ -491,7 +604,7 @@ class AgentTransformerPPO(BaseAgent):
         return str(path)
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
-        payload = torch.load(checkpoint_path, map_location="cpu")
+        payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         agents = payload["agents"]
         if len(agents) != len(self._per_building):
             raise ValueError(
@@ -508,11 +621,26 @@ class AgentTransformerPPO(BaseAgent):
                     f"{state.building_id!r}: cannot resume across topology "
                     "changes."
                 )
+            if list(saved.get("action_names", [])) != list(state.action_names_tuple):
+                raise ValueError(f"Checkpoint action_names mismatch for building {state.building_id!r}.")
+        for state, saved in zip(self._per_building, agents):
             state.tokenizer.load_state_dict(saved["tokenizer_state"])
             state.backbone.load_state_dict(saved["backbone_state"])
             state.actor.load_state_dict(saved["actor_state"])
             state.critic.load_state_dict(saved["critic_state"])
             state.optimizer.load_state_dict(saved["optimizer_state"])
+            if "value_normalizer" in saved:
+                state.value_normalizer.load_state_dict(saved["value_normalizer"])
+        self._latest_global_learning_step = int(payload.get("global_learning_step", 0))
+        self._ppo_update_count = int(payload.get("ppo_update_count", 0))
+        self._current_episode = int(payload.get("current_episode", 0))
+        self._latest_training_metrics = dict(payload.get("latest_training_metrics", {}))
+        if "torch_rng_state" in payload:
+            torch.set_rng_state(payload["torch_rng_state"])
+        if "numpy_rng_state" in payload:
+            np.random.set_state(payload["numpy_rng_state"])
+        if "python_rng_state" in payload:
+            random.setstate(payload["python_rng_state"])
 
     # ==========================================================================
     # Internal helpers
