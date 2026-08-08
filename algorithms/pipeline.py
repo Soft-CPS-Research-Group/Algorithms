@@ -21,13 +21,35 @@ the configuration that drives the builder in :mod:`run_experiment`.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
+from shutil import rmtree
 from typing import Any, Dict, List, Optional, Sequence
+from uuid import uuid4
 
 import numpy as np
 from loguru import logger
 
 from algorithms.execution_unit import ExecutionUnit
+
+
+def _checkpoint_transaction_root(root: Path, step: int) -> tuple[Path, Path]:
+    """Return unpublished and published locations for one composite checkpoint."""
+    return (
+        root / f".step_{step}.{uuid4().hex}.tmp",
+        root / f"step_{step}",
+    )
+
+
+def _require_topology_hooks(unit: ExecutionUnit, label: str) -> tuple[Any, Any]:
+    snapshot = getattr(unit, "snapshot_topology_state", None)
+    restore = getattr(unit, "restore_topology_state", None)
+    if not callable(snapshot) or not callable(restore):
+        raise RuntimeError(
+            f"{label} cannot participate in a transactional topology change: "
+            "it must provide snapshot_topology_state() and restore_topology_state()."
+        )
+    return snapshot, restore
 
 
 class Pipeline(ExecutionUnit):
@@ -55,6 +77,7 @@ class Pipeline(ExecutionUnit):
         self._encoded_next_observations: Optional[Any] = None
         self._profiled_encoded_observations: Dict[str, Any] = {}
         self._profiled_encoded_next_observations: Dict[str, Any] = {}
+        self._topology_attachment_completed = False
 
     @property
     def use_raw_observations(self) -> bool:
@@ -301,23 +324,70 @@ class Pipeline(ExecutionUnit):
             metadata.get("profiled_encoded_observation_names") or {}
         )
 
-        for stage in self.stages:
-            stage_kwargs = dict(kwargs)
-            profile = str(
-                getattr(stage, "observation_encoding_profile", "") or ""
-            ).strip().lower()
-            if profile and profile in profiled_encoded_observation_names:
-                stage_kwargs["observation_names"] = profiled_encoded_observation_names[
-                    profile
-                ]
-            elif (
-                stage.use_raw_observations
-                or bool(getattr(stage, "requires_raw_observation_context", False))
-            ) and raw_observation_names is not None:
-                stage_kwargs["observation_names"] = raw_observation_names
-            elif not stage.use_raw_observations and encoded_observation_names is not None:
-                stage_kwargs["observation_names"] = encoded_observation_names
-            stage.attach_environment(**stage_kwargs)
+        snapshot = (
+            self.snapshot_topology_state()
+            if self._topology_attachment_completed
+            and str((metadata or {}).get("topology_mode", "")).lower() == "dynamic"
+            else None
+        )
+        try:
+            for stage in self.stages:
+                stage_kwargs = dict(kwargs)
+                profile = str(
+                    getattr(stage, "observation_encoding_profile", "") or ""
+                ).strip().lower()
+                if profile and profile in profiled_encoded_observation_names:
+                    stage_kwargs["observation_names"] = profiled_encoded_observation_names[
+                        profile
+                    ]
+                elif (
+                    stage.use_raw_observations
+                    or bool(getattr(stage, "requires_raw_observation_context", False))
+                ) and raw_observation_names is not None:
+                    stage_kwargs["observation_names"] = raw_observation_names
+                elif not stage.use_raw_observations and encoded_observation_names is not None:
+                    stage_kwargs["observation_names"] = encoded_observation_names
+                stage.attach_environment(**stage_kwargs)
+        except Exception:
+            if snapshot is not None:
+                self.restore_topology_state(snapshot)
+            raise
+        self._topology_attachment_completed = True
+
+    def snapshot_topology_state(self) -> Dict[str, Any]:
+        """Snapshot every mutable stage before a dynamic reattachment."""
+        stage_snapshots = []
+        for index, stage in enumerate(self.stages):
+            snapshot, _ = _require_topology_hooks(stage, f"Pipeline stage {index}")
+            stage_snapshots.append(snapshot())
+        return {
+            "stages": stage_snapshots,
+            "raw_observations": deepcopy(self._raw_observations),
+            "encoded_observations": deepcopy(self._encoded_observations),
+            "raw_next_observations": deepcopy(self._raw_next_observations),
+            "encoded_next_observations": deepcopy(self._encoded_next_observations),
+            "profiled_encoded_observations": deepcopy(self._profiled_encoded_observations),
+            "profiled_encoded_next_observations": deepcopy(self._profiled_encoded_next_observations),
+            "topology_attachment_completed": self._topology_attachment_completed,
+        }
+
+    def restore_topology_state(self, snapshot: Dict[str, Any]) -> None:
+        """Restore child stages in reverse order after a failed reattachment."""
+        stage_snapshots = snapshot.get("stages")
+        if not isinstance(stage_snapshots, list) or len(stage_snapshots) != len(self.stages):
+            raise TypeError("Invalid Pipeline topology snapshot.")
+        for index in reversed(range(len(self.stages))):
+            _, restore = _require_topology_hooks(
+                self.stages[index], f"Pipeline stage {index}"
+            )
+            restore(stage_snapshots[index])
+        self._raw_observations = deepcopy(snapshot["raw_observations"])
+        self._encoded_observations = deepcopy(snapshot["encoded_observations"])
+        self._raw_next_observations = deepcopy(snapshot["raw_next_observations"])
+        self._encoded_next_observations = deepcopy(snapshot["encoded_next_observations"])
+        self._profiled_encoded_observations = deepcopy(snapshot["profiled_encoded_observations"])
+        self._profiled_encoded_next_observations = deepcopy(snapshot["profiled_encoded_next_observations"])
+        self._topology_attachment_completed = bool(snapshot["topology_attachment_completed"])
 
     # ------------------------------------------------------------------
     # Persistence
@@ -325,31 +395,43 @@ class Pipeline(ExecutionUnit):
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
         root = Path(output_dir)
         root.mkdir(parents=True, exist_ok=True)
-        for index, stage in enumerate(self.stages):
-            if getattr(stage, "frozen", False):
-                logger.debug(
-                    "Pipeline stage {} ({}) is frozen; skipping checkpoint save.",
-                    index,
-                    type(stage).__name__,
-                )
-                continue
-            stage_dir = root / f"stage_{index}"
-            stage_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                stage.save_checkpoint(str(stage_dir), step)
-            except NotImplementedError:
-                logger.debug(
-                    "Pipeline stage {} ({}) does not implement save_checkpoint; skipping.",
-                    index,
-                    type(stage).__name__,
-                )
-                continue
-        return str(root)
+        for stage in self.stages:
+            preflight = getattr(stage, "preflight_checkpoint", None)
+            if callable(preflight):
+                preflight(step)
+        temporary, published = _checkpoint_transaction_root(root, step)
+        if published.exists():
+            raise FileExistsError(f"Pipeline checkpoint already exists: {published}")
+        try:
+            for index, stage in enumerate(self.stages):
+                if getattr(stage, "frozen", False):
+                    continue
+                stage_dir = temporary / f"stage_{index}"
+                stage_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    stage.save_checkpoint(str(stage_dir), step)
+                except NotImplementedError:
+                    logger.debug("Pipeline stage {} ({}) has no checkpoint.", index, type(stage).__name__)
+            (temporary / ".complete").touch()
+            temporary.replace(published)
+        except Exception:
+            if temporary.exists():
+                rmtree(temporary)
+            raise
+        return str(published)
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
         root = Path(checkpoint_path)
         if not root.exists():
             raise FileNotFoundError(f"Pipeline checkpoint root not found: {root}")
+        if not any(root.glob("stage_*")):
+            completed = sorted(
+                path for path in root.glob("step_*")
+                if path.is_dir() and (path / ".complete").is_file()
+            )
+            if not completed:
+                raise FileNotFoundError(f"No complete Pipeline checkpoint found in {root}")
+            root = completed[-1]
         loaded_count = 0
         for index, stage in enumerate(self.stages):
             stage_dir = root / f"stage_{index}"
@@ -453,6 +535,7 @@ class Ensemble(ExecutionUnit):
         if not agents:
             raise ValueError("Ensemble requires at least one agent.")
         self.agents: List[ExecutionUnit] = list(agents)
+        self._topology_attachment_completed = False
         for agent in self.agents:
             # Child metrics are aggregated by the Ensemble and then logged by
             # the wrapper.  Direct child logging would make N independent
@@ -746,32 +829,52 @@ class Ensemble(ExecutionUnit):
                 f"but the environment exposes {env_agent_count} agent slot(s). "
                 f"Adjust 'count' in the pipeline config to match the environment."
             )
+        snapshot = (
+            self.snapshot_topology_state()
+            if self._topology_attachment_completed
+            and str((metadata or {}).get("topology_mode", "")).lower() == "dynamic"
+            else None
+        )
+        try:
+            for index, agent in enumerate(self.agents):
+                member_metadata = dict(metadata or {})
+                for key in (
+                    "building_names",
+                    "raw_observation_names",
+                    "encoded_observation_names",
+                    "raw_observation_bounds",
+                ):
+                    value = member_metadata.get(key)
+                    if isinstance(value, (list, tuple)) and index < len(value):
+                        member_metadata[key] = [value[index]]
+                agent.attach_environment(
+                    observation_names=([observation_names[index]] if index < len(observation_names) else []),
+                    action_names=([action_names[index]] if index < len(action_names) else []),
+                    action_space=([action_space[index]] if index < len(action_space) else []),
+                    observation_space=([observation_space[index]] if index < len(observation_space) else []),
+                    metadata=member_metadata,
+                )
+        except Exception:
+            if snapshot is not None:
+                self.restore_topology_state(snapshot)
+            raise
+        self._topology_attachment_completed = True
+
+    def snapshot_topology_state(self) -> Dict[str, Any]:
+        snapshots = []
         for index, agent in enumerate(self.agents):
-            member_metadata = dict(metadata or {})
-            for key in (
-                "building_names",
-                "raw_observation_names",
-                "encoded_observation_names",
-                "raw_observation_bounds",
-            ):
-                value = member_metadata.get(key)
-                if isinstance(value, (list, tuple)) and index < len(value):
-                    member_metadata[key] = [value[index]]
-            agent.attach_environment(
-                observation_names=(
-                    [observation_names[index]] if index < len(observation_names) else []
-                ),
-                action_names=(
-                    [action_names[index]] if index < len(action_names) else []
-                ),
-                action_space=(
-                    [action_space[index]] if index < len(action_space) else []
-                ),
-                observation_space=(
-                    [observation_space[index]] if index < len(observation_space) else []
-                ),
-                metadata=member_metadata,
-            )
+            snapshot, _ = _require_topology_hooks(agent, f"Ensemble member {index}")
+            snapshots.append(snapshot())
+        return {"agents": snapshots, "topology_attachment_completed": self._topology_attachment_completed}
+
+    def restore_topology_state(self, snapshot: Dict[str, Any]) -> None:
+        snapshots = snapshot.get("agents")
+        if not isinstance(snapshots, list) or len(snapshots) != len(self.agents):
+            raise TypeError("Invalid Ensemble topology snapshot.")
+        for index in reversed(range(len(self.agents))):
+            _, restore = _require_topology_hooks(self.agents[index], f"Ensemble member {index}")
+            restore(snapshots[index])
+        self._topology_attachment_completed = bool(snapshot["topology_attachment_completed"])
 
     # ------------------------------------------------------------------
     # Persistence
@@ -779,19 +882,28 @@ class Ensemble(ExecutionUnit):
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
         root = Path(output_dir)
         root.mkdir(parents=True, exist_ok=True)
-        for index, agent in enumerate(self.agents):
-            agent_dir = root / f"agent_{index}"
-            agent_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                agent.save_checkpoint(str(agent_dir), step)
-            except NotImplementedError:
-                logger.debug(
-                    "Ensemble member {} ({}) does not implement save_checkpoint; skipping.",
-                    index,
-                    type(agent).__name__,
-                )
-                continue
-        return str(root)
+        for agent in self.agents:
+            preflight = getattr(agent, "preflight_checkpoint", None)
+            if callable(preflight):
+                preflight(step)
+        temporary, published = _checkpoint_transaction_root(root, step)
+        if published.exists():
+            raise FileExistsError(f"Ensemble checkpoint already exists: {published}")
+        try:
+            for index, agent in enumerate(self.agents):
+                agent_dir = temporary / f"agent_{index}"
+                agent_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    agent.save_checkpoint(str(agent_dir), step)
+                except NotImplementedError:
+                    logger.debug("Ensemble member {} ({}) has no checkpoint.", index, type(agent).__name__)
+            (temporary / ".complete").touch()
+            temporary.replace(published)
+        except Exception:
+            if temporary.exists():
+                rmtree(temporary)
+            raise
+        return str(published)
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
         root = Path(checkpoint_path)
@@ -799,6 +911,11 @@ class Ensemble(ExecutionUnit):
             raise FileNotFoundError(f"Ensemble checkpoint root not found: {root}")
         if root.is_file():
             root = root.parent
+        if not any(root.glob("agent_*")):
+            completed = sorted(path for path in root.glob("step_*") if path.is_dir() and (path / ".complete").is_file())
+            if not completed:
+                raise FileNotFoundError(f"No complete Ensemble checkpoint found in {root}")
+            root = completed[-1]
         for index, agent in enumerate(self.agents):
             agent_dir = root / f"agent_{index}"
             if not agent_dir.exists():

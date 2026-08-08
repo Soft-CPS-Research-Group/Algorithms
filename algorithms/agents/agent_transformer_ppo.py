@@ -134,6 +134,18 @@ class _UpdateRuntimeSnapshot:
 
 
 @dataclass
+class _CollectionSnapshot:
+    """Small rollback state for a transition that does not train PPO."""
+
+    buffer_lengths: List[int]
+    last_next_observations: List[Optional[torch.Tensor]]
+    last_transition_terminated: List[bool]
+    raw_reward_lengths: List[int]
+    pending_decisions: List[Optional[_PendingDecision]]
+    latest_global_learning_step: int
+
+
+@dataclass
 class _TopologyStateSnapshot:
     """Complete agent state required to roll back a topology transaction."""
 
@@ -387,7 +399,7 @@ class AgentTransformerPPO(BaseAgent):
                 next_observation=next_observation_t,
             ))
 
-        snapshot = self._snapshot_update_runtime_state()
+        collection_snapshot = self._snapshot_collection_state()
         try:
             for state, candidate in zip(self._per_building, candidates):
                 state.buffer.add(
@@ -407,13 +419,21 @@ class AgentTransformerPPO(BaseAgent):
             self._latest_global_learning_step = int(global_learning_step)
             if not update_step:
                 return
+            optimizer_snapshot = (
+                self._snapshot_update_runtime_state()
+                if any(len(state.buffer) >= self._minibatch_size for state in self._per_building)
+                else None
+            )
             for building_idx, state in enumerate(self._per_building):
                 candidate = candidates[building_idx]
                 last_value = torch.zeros(1, device=self.device) if candidate.terminated or candidate.next_observation is None else self._critic_value(state, candidate.next_observation)
                 if self._ppo_update(building_idx, state, last_value):
                     self._clear_rollout(building_idx, state)
         except Exception:
-            self._restore_update_runtime_state(snapshot)
+            if "optimizer_snapshot" in locals() and optimizer_snapshot is not None:
+                self._restore_update_runtime_state(optimizer_snapshot)
+            else:
+                self._restore_collection_state(collection_snapshot)
             raise
 
     def on_episode_start(self, *, episode: int, training: bool) -> None:
@@ -502,6 +522,32 @@ class AgentTransformerPPO(BaseAgent):
             numpy_rng_state=np.random.get_state(),
             torch_rng_state=torch.get_rng_state(),
         )
+
+    def _snapshot_collection_state(self) -> _CollectionSnapshot:
+        return _CollectionSnapshot(
+            buffer_lengths=[len(state.buffer) for state in self._per_building],
+            last_next_observations=[state.last_next_observation for state in self._per_building],
+            last_transition_terminated=[state.last_transition_terminated for state in self._per_building],
+            raw_reward_lengths=[len(state.raw_rewards) for state in self._per_building],
+            pending_decisions=list(self._pending_decisions),
+            latest_global_learning_step=self._latest_global_learning_step,
+        )
+
+    def _restore_collection_state(self, snapshot: _CollectionSnapshot) -> None:
+        buffer_fields = (
+            "observations", "actions", "pre_tanh_actions", "log_probs", "rewards",
+            "values", "terminated", "truncated",
+        )
+        for index, state in enumerate(self._per_building):
+            for name in buffer_fields:
+                del getattr(state.buffer, name)[snapshot.buffer_lengths[index]:]
+            state.buffer.advantages = None
+            state.buffer.returns = None
+            state.last_next_observation = snapshot.last_next_observations[index]
+            state.last_transition_terminated = snapshot.last_transition_terminated[index]
+            del state.raw_rewards[snapshot.raw_reward_lengths[index]:]
+        self._pending_decisions = list(snapshot.pending_decisions)
+        self._latest_global_learning_step = snapshot.latest_global_learning_step
 
     def _restore_update_runtime_state(self, snapshot: _UpdateRuntimeSnapshot) -> None:
         for index, state in enumerate(self._per_building):
@@ -606,10 +652,7 @@ class AgentTransformerPPO(BaseAgent):
         }
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
-        if any(len(state.buffer) for state in self._per_building):
-            raise DeferredCheckpointError(
-                "TPPO cannot save a checkpoint with a nonempty rollout. Save at a completed optimizer or episode boundary."
-            )
+        self.preflight_checkpoint(step)
         out = Path(output_dir) / "checkpoints"
         out.mkdir(parents=True, exist_ok=True)
         path = out / f"transformer_ppo_step{step}.pt"
@@ -641,6 +684,14 @@ class AgentTransformerPPO(BaseAgent):
         }
         torch.save(payload, path)
         return str(path)
+
+    def preflight_checkpoint(self, step: int) -> None:
+        """Reject a deferred save before composite stages write checkpoint data."""
+        del step
+        if any(len(state.buffer) for state in self._per_building):
+            raise DeferredCheckpointError(
+                "TPPO cannot save a checkpoint with a nonempty rollout. Save at a completed optimizer or episode boundary."
+            )
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
         payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
