@@ -21,10 +21,23 @@ keep working unchanged once :class:`BaseAgent` adopts this interface.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
+
+
+@runtime_checkable
+class TopologyTransactional(Protocol):
+    """Capability contract for units that can roll back topology changes."""
+
+    def snapshot_topology_state(self) -> Any:
+        """Capture all state that topology attachment may mutate."""
+        ...
+
+    def restore_topology_state(self, snapshot: Any) -> None:
+        """Restore a snapshot after topology attachment fails."""
+        ...
 
 
 class ExecutionUnit(ABC):
