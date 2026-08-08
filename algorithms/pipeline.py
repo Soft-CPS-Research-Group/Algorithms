@@ -23,8 +23,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import re
 from shutil import rmtree
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 from uuid import uuid4
 
 import numpy as np
@@ -50,6 +51,85 @@ def _require_topology_hooks(unit: ExecutionUnit, label: str) -> tuple[Any, Any]:
             "it must provide snapshot_topology_state() and restore_topology_state()."
         )
     return snapshot, restore
+
+
+def _snapshot_children(
+    children: Sequence[ExecutionUnit], *, label: str
+) -> List[Any]:
+    """Snapshot each child that may mutate during topology reattachment."""
+    snapshots = []
+    for index, child in enumerate(children):
+        snapshot, _ = _require_topology_hooks(child, f"{label} {index}")
+        snapshots.append(snapshot())
+    return snapshots
+
+
+def _restore_children(
+    children: Sequence[ExecutionUnit], snapshots: Any, *, label: str
+) -> None:
+    """Restore children in reverse attachment order."""
+    if not isinstance(snapshots, list) or len(snapshots) != len(children):
+        raise TypeError(f"Invalid {label} topology snapshot.")
+    for index in reversed(range(len(children))):
+        _, restore = _require_topology_hooks(children[index], f"{label} {index}")
+        restore(snapshots[index])
+
+
+def _latest_complete_checkpoint(root: Path) -> Path:
+    """Return the highest numbered complete composite checkpoint."""
+    candidates = []
+    for path in root.iterdir():
+        match = re.fullmatch(r"step_(\d+)", path.name)
+        if match and path.is_dir() and (path / ".complete").is_file():
+            candidates.append((int(match.group(1)), path))
+    if not candidates:
+        raise FileNotFoundError(f"No complete composite checkpoint found in {root}")
+    return max(candidates, key=lambda candidate: candidate[0])[1]
+
+
+def _save_composite_checkpoint(
+    *,
+    root: Path,
+    step: int,
+    children: Sequence[ExecutionUnit],
+    child_prefix: str,
+    child_label: str,
+    skip_child: Callable[[ExecutionUnit], bool],
+) -> str:
+    """Preflight, write, and atomically publish one composite checkpoint."""
+    root.mkdir(parents=True, exist_ok=True)
+    indexed_children = [
+        (index, child)
+        for index, child in enumerate(children)
+        if not skip_child(child)
+    ]
+    for _, child in indexed_children:
+        preflight = getattr(child, "preflight_checkpoint", None)
+        if callable(preflight):
+            preflight(step)
+    temporary, published = _checkpoint_transaction_root(root, step)
+    if published.exists():
+        raise FileExistsError(f"Composite checkpoint already exists: {published}")
+    try:
+        for index, child in indexed_children:
+            child_dir = temporary / f"{child_prefix}_{index}"
+            child_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                child.save_checkpoint(str(child_dir), step)
+            except NotImplementedError:
+                logger.debug(
+                    "{} {} ({}) has no checkpoint.",
+                    child_label,
+                    index,
+                    type(child).__name__,
+                )
+        (temporary / ".complete").touch()
+        temporary.replace(published)
+    except Exception:
+        if temporary.exists():
+            rmtree(temporary)
+        raise
+    return str(published)
 
 
 class Pipeline(ExecutionUnit):
@@ -358,10 +438,7 @@ class Pipeline(ExecutionUnit):
 
     def snapshot_topology_state(self) -> Dict[str, Any]:
         """Snapshot every mutable stage before a dynamic reattachment."""
-        stage_snapshots = []
-        for index, stage in enumerate(self.stages):
-            snapshot, _ = _require_topology_hooks(stage, f"Pipeline stage {index}")
-            stage_snapshots.append(snapshot())
+        stage_snapshots = _snapshot_children(self.stages, label="Pipeline stage")
         return {
             "stages": stage_snapshots,
             "raw_observations": deepcopy(self._raw_observations),
@@ -375,14 +452,9 @@ class Pipeline(ExecutionUnit):
 
     def restore_topology_state(self, snapshot: Dict[str, Any]) -> None:
         """Restore child stages in reverse order after a failed reattachment."""
-        stage_snapshots = snapshot.get("stages")
-        if not isinstance(stage_snapshots, list) or len(stage_snapshots) != len(self.stages):
-            raise TypeError("Invalid Pipeline topology snapshot.")
-        for index in reversed(range(len(self.stages))):
-            _, restore = _require_topology_hooks(
-                self.stages[index], f"Pipeline stage {index}"
-            )
-            restore(stage_snapshots[index])
+        _restore_children(
+            self.stages, snapshot.get("stages"), label="Pipeline stage"
+        )
         self._raw_observations = deepcopy(snapshot["raw_observations"])
         self._encoded_observations = deepcopy(snapshot["encoded_observations"])
         self._raw_next_observations = deepcopy(snapshot["raw_next_observations"])
@@ -395,45 +467,21 @@ class Pipeline(ExecutionUnit):
     # Persistence
     # ------------------------------------------------------------------
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
-        root = Path(output_dir)
-        root.mkdir(parents=True, exist_ok=True)
-        for stage in self.stages:
-            preflight = getattr(stage, "preflight_checkpoint", None)
-            if callable(preflight):
-                preflight(step)
-        temporary, published = _checkpoint_transaction_root(root, step)
-        if published.exists():
-            raise FileExistsError(f"Pipeline checkpoint already exists: {published}")
-        try:
-            for index, stage in enumerate(self.stages):
-                if getattr(stage, "frozen", False):
-                    continue
-                stage_dir = temporary / f"stage_{index}"
-                stage_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    stage.save_checkpoint(str(stage_dir), step)
-                except NotImplementedError:
-                    logger.debug("Pipeline stage {} ({}) has no checkpoint.", index, type(stage).__name__)
-            (temporary / ".complete").touch()
-            temporary.replace(published)
-        except Exception:
-            if temporary.exists():
-                rmtree(temporary)
-            raise
-        return str(published)
+        return _save_composite_checkpoint(
+            root=Path(output_dir),
+            step=step,
+            children=self.stages,
+            child_prefix="stage",
+            child_label="Pipeline stage",
+            skip_child=lambda stage: bool(getattr(stage, "frozen", False)),
+        )
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
         root = Path(checkpoint_path)
         if not root.exists():
             raise FileNotFoundError(f"Pipeline checkpoint root not found: {root}")
         if not any(root.glob("stage_*")):
-            completed = sorted(
-                path for path in root.glob("step_*")
-                if path.is_dir() and (path / ".complete").is_file()
-            )
-            if not completed:
-                raise FileNotFoundError(f"No complete Pipeline checkpoint found in {root}")
-            root = completed[-1]
+            root = _latest_complete_checkpoint(root)
         loaded_count = 0
         for index, stage in enumerate(self.stages):
             stage_dir = root / f"stage_{index}"
@@ -863,49 +911,27 @@ class Ensemble(ExecutionUnit):
         self._topology_attachment_completed = True
 
     def snapshot_topology_state(self) -> Dict[str, Any]:
-        snapshots = []
-        for index, agent in enumerate(self.agents):
-            snapshot, _ = _require_topology_hooks(agent, f"Ensemble member {index}")
-            snapshots.append(snapshot())
+        snapshots = _snapshot_children(self.agents, label="Ensemble member")
         return {"agents": snapshots, "topology_attachment_completed": self._topology_attachment_completed}
 
     def restore_topology_state(self, snapshot: Dict[str, Any]) -> None:
-        snapshots = snapshot.get("agents")
-        if not isinstance(snapshots, list) or len(snapshots) != len(self.agents):
-            raise TypeError("Invalid Ensemble topology snapshot.")
-        for index in reversed(range(len(self.agents))):
-            _, restore = _require_topology_hooks(self.agents[index], f"Ensemble member {index}")
-            restore(snapshots[index])
+        _restore_children(
+            self.agents, snapshot.get("agents"), label="Ensemble member"
+        )
         self._topology_attachment_completed = bool(snapshot["topology_attachment_completed"])
 
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
-        root = Path(output_dir)
-        root.mkdir(parents=True, exist_ok=True)
-        for agent in self.agents:
-            preflight = getattr(agent, "preflight_checkpoint", None)
-            if callable(preflight):
-                preflight(step)
-        temporary, published = _checkpoint_transaction_root(root, step)
-        if published.exists():
-            raise FileExistsError(f"Ensemble checkpoint already exists: {published}")
-        try:
-            for index, agent in enumerate(self.agents):
-                agent_dir = temporary / f"agent_{index}"
-                agent_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    agent.save_checkpoint(str(agent_dir), step)
-                except NotImplementedError:
-                    logger.debug("Ensemble member {} ({}) has no checkpoint.", index, type(agent).__name__)
-            (temporary / ".complete").touch()
-            temporary.replace(published)
-        except Exception:
-            if temporary.exists():
-                rmtree(temporary)
-            raise
-        return str(published)
+        return _save_composite_checkpoint(
+            root=Path(output_dir),
+            step=step,
+            children=self.agents,
+            child_prefix="agent",
+            child_label="Ensemble member",
+            skip_child=lambda agent: False,
+        )
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
         root = Path(checkpoint_path)
@@ -914,10 +940,7 @@ class Ensemble(ExecutionUnit):
         if root.is_file():
             root = root.parent
         if not any(root.glob("agent_*")):
-            completed = sorted(path for path in root.glob("step_*") if path.is_dir() and (path / ".complete").is_file())
-            if not completed:
-                raise FileNotFoundError(f"No complete Ensemble checkpoint found in {root}")
-            root = completed[-1]
+            root = _latest_complete_checkpoint(root)
         for index, agent in enumerate(self.agents):
             agent_dir = root / f"agent_{index}"
             if not agent_dir.exists():

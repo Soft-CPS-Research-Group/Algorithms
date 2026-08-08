@@ -472,6 +472,16 @@ class TestPipelinePersistence:
         assert len(a.load_calls) == 1
         assert b.load_calls == []
 
+    def test_load_uses_highest_numeric_completed_step(self, tmp_path: Path) -> None:
+        a = RecordingUnit("a")
+        pipeline = Pipeline([a])
+
+        pipeline.save_checkpoint(str(tmp_path), step=9)
+        pipeline.save_checkpoint(str(tmp_path), step=10)
+        pipeline.load_checkpoint(str(tmp_path))
+
+        assert a.load_calls == [str(tmp_path / "step_10" / "stage_0")]
+
     def test_load_stage_checkpoint_routes_only_selected_stage(self, tmp_path: Path) -> None:
         manager = RecordingUnit("manager")
         leaf = RecordingUnit("leaf")
