@@ -858,6 +858,41 @@ class TransformerPPOHyperparameters(BaseModel):
     actor_log_std_init: float = -0.5
 
 
+class TransformerPPOBehaviorCloningTeacherConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy: Literal["RBCSmartPolicy"] = "RBCSmartPolicy"
+    deterministic: bool = True
+    hyperparameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TransformerPPOBehaviorCloningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    demonstration_episodes: int = Field(default=1, ge=0)
+    max_samples_per_building: int = Field(default=4096, ge=1)
+    pretraining_epochs: int = Field(default=4, ge=1)
+    batch_size: int = Field(default=64, ge=1)
+    weight: float = Field(default=0.0, ge=0.0)
+    min_weight: float = Field(default=0.0, ge=0.0)
+    decay_start_step: int = Field(default=0, ge=0)
+    decay_steps: int = Field(default=0, ge=0)
+    ev_multiplier: float = Field(default=1.0, ge=0.0)
+    storage_multiplier: float = Field(default=1.0, ge=0.0)
+    teacher: TransformerPPOBehaviorCloningTeacherConfig = Field(
+        default_factory=TransformerPPOBehaviorCloningTeacherConfig
+    )
+
+    @model_validator(mode="after")
+    def require_demonstration_episode_when_enabled(self) -> "TransformerPPOBehaviorCloningConfig":
+        if self.enabled and self.demonstration_episodes < 1:
+            raise ValueError(
+                "behavior_cloning.demonstration_episodes must be at least 1 when behavior_cloning.enabled=true."
+            )
+        return self
+
+
 class TransformerPPOStageConfig(BaseModel):
     algorithm: Literal["AgentTransformerPPO"]
     count: int = 1
@@ -865,6 +900,7 @@ class TransformerPPOStageConfig(BaseModel):
     tokenizer_config_path: str = Field(min_length=1)
     transformer: TransformerPPOTransformerConfig
     hyperparameters: TransformerPPOHyperparameters
+    behavior_cloning: Optional[TransformerPPOBehaviorCloningConfig] = None
 
     @field_validator("count")
     @classmethod

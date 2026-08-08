@@ -410,6 +410,47 @@ def test_validate_config_accepts_runtime_safety_guards(base_config):
     validate_config(config)
 
 
+@pytest.fixture
+def transformer_ppo_template_config():
+    config_path = Path("configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml")
+    with config_path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def test_validate_config_rejects_enabled_transformer_ppo_bc_without_demonstrations(
+    transformer_ppo_template_config,
+):
+    transformer_ppo_template_config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 0,
+    }
+
+    with pytest.raises(ValueError, match="demonstration_episodes.*at least 1"):
+        validate_config(transformer_ppo_template_config)
+
+
+def test_validate_config_accepts_disabled_transformer_ppo_bc_without_demonstrations(
+    transformer_ppo_template_config,
+):
+    transformer_ppo_template_config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": False,
+        "demonstration_episodes": 0,
+    }
+
+    validate_config(transformer_ppo_template_config)
+
+
+def test_validate_config_accepts_enabled_transformer_ppo_bc_with_demonstrations(
+    transformer_ppo_template_config,
+):
+    transformer_ppo_template_config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+    }
+
+    validate_config(transformer_ppo_template_config)
+
+
 def test_validate_config_rejects_invalid_runtime_safety_guards(base_config):
     config = copy.deepcopy(base_config)
     config["tracking"]["progress_phase_start_step"] = 5700
