@@ -217,11 +217,7 @@ class AgentTransformerPPO(BaseAgent):
             # Total building-count change is treated as a complete rebuild —
             # cannot resume per-building states across cardinality changes.
             for building_idx, state in enumerate(self._per_building):
-                self._flush_rollout_boundary(
-                    building_idx,
-                    state,
-                    boundary="building_count_change",
-                )
+                self._flush_rollout_boundary(building_idx, state)
             self._per_building = self._build_per_building_states(
                 observation_names, action_names, metadata
             )
@@ -391,7 +387,7 @@ class AgentTransformerPPO(BaseAgent):
             return
         self._pending_decisions = [None] * len(self._per_building)
         for building_idx, state in enumerate(self._per_building):
-            self._flush_rollout_boundary(building_idx, state, boundary="episode_end")
+            self._flush_rollout_boundary(building_idx, state)
 
     def consume_latest_training_metrics(self) -> Dict[str, float]:
         metrics = {f"TPPO/{name}": value for name, value in self._latest_training_metrics.items()}
@@ -615,30 +611,6 @@ class AgentTransformerPPO(BaseAgent):
             )
             for b, (obs_n, act_n) in enumerate(zip(observation_names, action_names))
         ]
-
-    def _build_all_per_building_states(
-        self,
-        observation_names: List[List[str]],
-        action_names: List[List[str]],
-        metadata: Optional[Dict[str, Any]],
-    ) -> None:
-        building_names = (
-            (metadata or {}).get("building_names")
-            if metadata is not None
-            else None
-        )
-        for b, (obs_n, act_n) in enumerate(
-            zip(observation_names, action_names)
-        ):
-            building_id = (
-                building_names[b]
-                if building_names and b < len(building_names) and building_names[b]
-                else f"building_{b}"
-            )
-            state = self._build_one_per_building_state(
-                building_id, list(obs_n), list(act_n)
-            )
-            self._per_building.append(state)
 
     def _build_one_per_building_state(
         self,
@@ -883,20 +855,10 @@ class AgentTransformerPPO(BaseAgent):
     ) -> bool:
         if len(state.buffer) == 0:
             return False
-        # Defensive guard: PPO is on-policy and needs a meaningful trajectory
-        # batch before updating. If the wrapper's `update_step` cadence
-        # (`simulator.steps_between_training_updates`) is set too low, the
-        # buffer can be smaller than a single minibatch which produces a
-        # degenerate update (zero-mean advantages, NaN-prone log_prob
-        # gradients on near-saturated stored actions). Skip with a warning.
+        # A short update cadence retains the rollout until it reaches one
+        # minibatch. Episode and topology boundaries still train a short final
+        # rollout through ``_flush_rollout_boundary``.
         if len(state.buffer) < self._minibatch_size:
-            logger.warning(
-                "Retaining PPO rollout for {}: buffer_size={} < minibatch_size={}. "
-                "It will train at the next cadence or episode boundary.",
-                getattr(state, "building_id", "?"),
-                len(state.buffer),
-                self._minibatch_size,
-            )
             return False
         assert last_value is not None
         return self._run_ppo_update_with_last_value(state, last_value, building_idx=building_idx)
@@ -909,7 +871,7 @@ class AgentTransformerPPO(BaseAgent):
         state.raw_rewards.clear()
 
     def _flush_rollout_boundary(
-        self, building_idx: int, state: _PerBuildingState, *, boundary: str,
+        self, building_idx: int, state: _PerBuildingState,
         last_value: Optional[torch.Tensor] = None,
     ) -> None:
         if len(state.buffer) == 0:

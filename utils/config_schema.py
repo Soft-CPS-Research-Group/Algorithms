@@ -1226,17 +1226,6 @@ class ProjectConfig(BaseModel):
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
         for index, stage in enumerate(self.pipeline):
-            if (
-                isinstance(stage, TransformerPPOStageConfig)
-                and (
-                    self.training.steps_between_training_updates <= 1
-                    or self.training.steps_between_training_updates
-                    < stage.hyperparameters.minibatch_size
-                )
-            ):
-                raise ValueError(
-                    "AgentTransformerPPO requires training.steps_between_training_updates >= pipeline[].hyperparameters.minibatch_size."
-                )
             if isinstance(stage, TransformerPPOStageConfig) and index != len(self.pipeline) - 1:
                 raise ValueError(
                     "AgentTransformerPPO must be the final pipeline stage because it learns from its own executed actions."

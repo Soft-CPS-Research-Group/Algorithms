@@ -380,7 +380,7 @@ def _make_minimal_transformer_ppo_cfg(
         },
         "training": {
             "seed": 0,
-            "steps_between_training_updates": 64,
+            "steps_between_training_updates": 1,
             "target_update_interval": 0,
         },
         "topology": {},
