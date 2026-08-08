@@ -124,7 +124,6 @@ pipeline:
       storage_multiplier: 0.18
       teacher:
         policy: RBCSmartPolicy
-        deterministic: true
         hyperparameters: {}
 
 execution: null

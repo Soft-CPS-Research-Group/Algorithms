@@ -119,7 +119,7 @@ class BehaviorCloningRegularizer:
             ev_multiplier=float(config.get("ev_multiplier", 1.0)),
             storage_multiplier=float(config.get("storage_multiplier", 1.0)),
             policy=str(policy),
-            deterministic=bool(teacher.get("deterministic", True)),
+            deterministic=True,
             hyperparameters=teacher.get("hyperparameters") or {},
             agent_config_template=agent_config_template,
         )

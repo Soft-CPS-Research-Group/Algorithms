@@ -1094,7 +1094,6 @@ class TransformerPPOBehaviorCloningTeacherConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     policy: Literal["RBCSmartPolicy"] = "RBCSmartPolicy"
-    deterministic: bool = True
     hyperparameters: Dict[str, Any] = Field(default_factory=dict)
 
 

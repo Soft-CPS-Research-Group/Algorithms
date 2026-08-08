@@ -1515,12 +1515,13 @@ behavior_cloning:
   storage_multiplier: 0.18
   teacher:
     policy: RBCSmartPolicy
-    deterministic: true
     hyperparameters: {}
 ```
 
 `weight` decays linearly toward `min_weight` after `decay_start_step` for
-`decay_steps`. `min_weight` must not exceed `weight`.
+`decay_steps`. The schedule uses persisted post-demonstration actor-training
+steps. Teacher collection and evaluation do not advance this clock.
+`min_weight` must not exceed `weight`.
 `demonstration_episodes` controls deterministic teacher collection;
 `max_samples_per_building` bounds retained examples; and `pretraining_epochs`
 plus `batch_size` control actor-only pretraining before the first PPO rollout.
@@ -1530,7 +1531,8 @@ agent. BC rebuilds its teacher while retaining demonstrations with their layout
 signatures, so compatible historical topology groups remain available for
 pretraining.
 
-Checkpoints persist whether BC pretraining completed. A resumed run therefore
+Checkpoints persist whether BC pretraining completed and the BC actor-training
+clock. A resumed run therefore
 does not restart teacher collection when the wrapper restarts episode numbering
 at zero. Version 2 checkpoints infer completion from their stored pretraining
 metrics.
