@@ -223,6 +223,10 @@ class AgentTransformerPPO(BaseAgent):
         self._latest_global_learning_step = 0
         self._latest_training_metrics: Dict[str, float] = {}
         self._current_episode = 0
+        # No collection phase is active until the wrapper starts a training
+        # episode. This keeps evaluation actor-only, including evaluation that
+        # begins at episode zero.
+        self._current_episode_is_training = False
         self._ppo_update_count = 0
 
         # Tracks whether ``attach_environment`` has ever been called. The
@@ -530,8 +534,8 @@ class AgentTransformerPPO(BaseAgent):
             raise
 
     def on_episode_start(self, *, episode: int, training: bool) -> None:
-        _ = training
         self._current_episode = episode
+        self._current_episode_is_training = bool(training)
 
     def on_episode_end(self, *, episode: int, training: bool) -> None:
         self._current_episode = episode
@@ -1292,6 +1296,7 @@ class AgentTransformerPPO(BaseAgent):
     def _in_demonstration_phase(self) -> bool:
         return (
             self._bc is not None
+            and self._current_episode_is_training
             and self._current_episode < self._bc.demonstration_episodes
         )
 
@@ -1313,7 +1318,7 @@ class AgentTransformerPPO(BaseAgent):
             if missing_buildings:
                 logger.info(
                     "event=bc_pretraining_failure reason=zero_usable_demonstrations "
-                    "missing_buildings={} total_buildings={}",
+                    "missing_building_count={} total_buildings={}",
                     len(missing_buildings), len(self._per_building),
                 )
                 failure_logged = True

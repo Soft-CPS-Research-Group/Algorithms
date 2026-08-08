@@ -244,6 +244,26 @@ def test_demo_episode_executes_teacher_only_records_immutable_demo_and_no_ppo() 
     assert demo.layout is not agent._per_building[0].layout
 
 
+def test_evaluation_at_episode_zero_uses_actor_not_teacher() -> None:
+    agent, dimension = _agent()
+    observation = np.ones(dimension, dtype=np.float64)
+    assert agent._bc is not None
+
+    def fail_if_teacher_is_used(_observations):
+        raise AssertionError("Evaluation must not request teacher actions.")
+
+    agent._bc.compute_teacher_actions = fail_if_teacher_is_used
+    agent.on_episode_start(episode=0, training=False)
+    agent.set_observation_context(
+        raw_observations=[observation], encoded_observations=[observation]
+    )
+
+    actions = agent.predict([observation], deterministic=True)
+
+    assert len(actions) == 1
+    assert agent._pending_decisions[0] is not None
+
+
 def test_demo_teacher_actions_are_normalized_to_actor_tanh_space() -> None:
     names = load_sample_observation_names_for_first_building()
     actions = list(_DEFAULT_ACTIONS)
@@ -262,6 +282,7 @@ def test_demo_teacher_actions_are_normalized_to_actor_tanh_space() -> None:
     )
     teacher_action = low + 0.75 * (high - low)
     observation = np.ones(dimension, dtype=np.float64)
+    agent.on_episode_start(episode=0, training=True)
 
     agent.update(
         observations=[observation],
@@ -430,7 +451,7 @@ def test_pretraining_logs_missing_and_total_buildings_before_zero_demo_error() -
     assert messages == [
         "event=bc_pretraining_start buildings=2",
         "event=bc_pretraining_failure reason=zero_usable_demonstrations "
-        "missing_buildings=1 total_buildings=2",
+        "missing_building_count=1 total_buildings=2",
     ]
 
 
@@ -777,9 +798,11 @@ def test_checkpoint_restores_bc_demonstrations_phase_and_decay_progress(
     assert fresh._bc is not None
     assert fresh._bc.demonstration_count() == expected_count == 1
     assert fresh._current_episode == 0
-    assert fresh._in_demonstration_phase()
+    assert not fresh._in_demonstration_phase()
     assert fresh._latest_global_learning_step == 7
     assert fresh._bc.effective_weight(fresh._latest_global_learning_step) == expected_weight
+    fresh.on_episode_start(episode=0, training=True)
+    assert fresh._in_demonstration_phase()
     expected_actions = fresh._bc.compute_teacher_actions([observation])
     assert fresh.predict([observation]) == expected_actions
     assert fresh._pending_decisions == [None]

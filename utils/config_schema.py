@@ -1122,6 +1122,10 @@ class TransformerPPOBehaviorCloningConfig(BaseModel):
             raise ValueError(
                 "behavior_cloning.demonstration_episodes must be at least 1 when behavior_cloning.enabled=true."
             )
+        if self.min_weight > self.weight:
+            raise ValueError(
+                "behavior_cloning.min_weight must be less than or equal to behavior_cloning.weight."
+            )
         return self
 
 

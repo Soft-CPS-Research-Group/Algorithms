@@ -93,16 +93,22 @@ class BehaviorCloningRegularizer:
         agent_config_template: Mapping[str, Any],
     ) -> Optional["BehaviorCloningRegularizer"]:
         config = algorithm_cfg.get("behavior_cloning")
-        if not isinstance(config, Mapping) or not bool(config.get("enabled", False)):
+        if not isinstance(config, Mapping) or not bool(config.get("enabled", True)):
             return None
-        teacher = config.get("teacher")
-        if not isinstance(teacher, Mapping) or not teacher.get("policy"):
+        teacher = config.get("teacher", {})
+        if not isinstance(teacher, Mapping):
+            raise ValueError(
+                "behavior_cloning.enabled=true requires "
+                "behavior_cloning.teacher.policy."
+            )
+        policy = teacher.get("policy", "RBCSmartPolicy")
+        if not policy:
             raise ValueError(
                 "behavior_cloning.enabled=true requires "
                 "behavior_cloning.teacher.policy."
             )
         return cls(
-            demonstration_episodes=int(config.get("demonstration_episodes", 0)),
+            demonstration_episodes=int(config.get("demonstration_episodes", 1)),
             max_samples_per_building=int(config.get("max_samples_per_building", 4096)),
             pretraining_epochs=int(config.get("pretraining_epochs", 4)),
             batch_size=int(config.get("batch_size", 64)),
@@ -112,7 +118,7 @@ class BehaviorCloningRegularizer:
             decay_steps=int(config.get("decay_steps", 0)),
             ev_multiplier=float(config.get("ev_multiplier", 1.0)),
             storage_multiplier=float(config.get("storage_multiplier", 1.0)),
-            policy=str(teacher["policy"]),
+            policy=str(policy),
             deterministic=bool(teacher.get("deterministic", True)),
             hyperparameters=teacher.get("hyperparameters") or {},
             agent_config_template=agent_config_template,
