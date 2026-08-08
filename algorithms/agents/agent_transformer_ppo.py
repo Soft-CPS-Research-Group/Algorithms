@@ -133,6 +133,16 @@ class _UpdateRuntimeSnapshot:
     torch_rng_state: torch.Tensor
 
 
+@dataclass
+class _TopologyStateSnapshot:
+    """Complete agent state required to roll back a topology transaction."""
+
+    agent_state: Dict[str, Any]
+    python_rng_state: object
+    numpy_rng_state: tuple
+    torch_rng_state: torch.Tensor
+
+
 class AgentTransformerPPO(BaseAgent):
     """Per-building Transformer + PPO."""
 
@@ -442,6 +452,26 @@ class AgentTransformerPPO(BaseAgent):
             update_step=False,
             initial_exploration_done=True,
         )
+
+    def snapshot_topology_state(self) -> _TopologyStateSnapshot:
+        """Capture all mutable agent state before a topology transaction."""
+        return _TopologyStateSnapshot(
+            agent_state=deepcopy(self.__dict__),
+            python_rng_state=random.getstate(),
+            numpy_rng_state=np.random.get_state(),
+            torch_rng_state=torch.get_rng_state(),
+        )
+
+    def restore_topology_state(self, snapshot: _TopologyStateSnapshot) -> None:
+        """Restore a snapshot after topology adaptation fails."""
+        if not isinstance(snapshot, _TopologyStateSnapshot):
+            raise TypeError("Invalid TPPO topology snapshot.")
+        restored_state = deepcopy(snapshot.agent_state)
+        self.__dict__.clear()
+        self.__dict__.update(restored_state)
+        random.setstate(snapshot.python_rng_state)
+        np.random.set_state(snapshot.numpy_rng_state)
+        torch.set_rng_state(snapshot.torch_rng_state)
 
     def consume_latest_training_metrics(self) -> Dict[str, float]:
         metrics = {f"TPPO/{name}": value for name, value in self._latest_training_metrics.items()}

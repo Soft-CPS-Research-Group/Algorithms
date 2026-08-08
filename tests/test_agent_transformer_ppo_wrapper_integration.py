@@ -53,6 +53,26 @@ class _DummyEntityEnvForPPO(_DummyEntityEnv):
         ]
 
 
+class _TerminalTopologyChangeEntityEnvForPPO(_DummyEntityEnvForPPO):
+    """Change topology on the terminal transition of a two-step episode."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._steps = 0
+
+    def reset(self):
+        self._version = 0
+        self._steps = 0
+        return self._observation_payload(version=0), {}
+
+    def step(self, _actions):
+        self._steps += 1
+        if self._steps == 2:
+            self._version = 1
+            return self._observation_payload(version=1), [0.1], True, False, {}
+        return self._observation_payload(version=0), [0.1], False, False, {}
+
+
 def _ppo_algo_config() -> Dict[str, Any]:
     return {
         "name": "AgentTransformerPPO",
@@ -140,6 +160,47 @@ def test_wrapper_topology_change_triggers_agent_rebuild() -> None:
     assert len(agent._per_building) == 2
     for state in agent._per_building:
         assert state.layout.n_ca == 2
+
+
+def test_learn_rolls_back_wrapper_and_agent_when_deferred_attach_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO()
+    wrapper_config = _entity_config()
+    wrapper_config["training"]["steps_between_training_updates"] = 4
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-entity-rollback"
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+    wrapper.set_model(agent)
+    original_attach = agent.attach_environment
+
+    def fail_after_new_topology_is_attached(**kwargs):
+        original_attach(**kwargs)
+        if len(kwargs["observation_names"]) == 2:
+            raise RuntimeError("deferred reattachment failed")
+
+    monkeypatch.setattr(agent, "attach_environment", fail_after_new_topology_is_attached)
+
+    with pytest.raises(RuntimeError, match="deferred reattachment failed"):
+        wrapper.learn(episodes=1)
+
+    assert wrapper._entity_topology_version == 0
+    assert wrapper._entity_adapter is not None
+    assert wrapper._entity_adapter.topology_version == 0
+    assert len(wrapper.action_names) == 1
+    assert len(agent._per_building) == 1
+    assert agent._per_building[0].topology_version == 0
+    assert len(agent._per_building[0].buffer) == 1
+    assert agent._per_building[0].raw_rewards == [0.1]
+    assert agent._pending_decisions[0] is not None
+
+    monkeypatch.setattr(agent, "attach_environment", original_attach)
+    adapted = wrapper._apply_entity_layout(
+        env._observation_payload(version=1), force_attach=False
+    )
+    assert len(adapted) == 2
+    assert len(agent._per_building) == 2
 
 
 def test_wrapper_to_env_actions_round_trips_ppo_output() -> None:
