@@ -75,7 +75,7 @@ class _PerBuildingState:
     optimizer: torch.optim.Optimizer
     # BC updates the tokenizer/backbone/actor only.  Keep a separate optimizer
     # so it never moves critic parameters or PPO optimizer moments.
-    bc_optimizer: torch.optim.Optimizer
+    bc_optimizer: Optional[torch.optim.Optimizer]
     buffer: RolloutBuffer
     value_normalizer: RunningValueNormalizer
     layout: BuildingTokenLayout
@@ -131,7 +131,7 @@ class _UpdateRuntimeSnapshot:
     actor_states: List[Dict[str, torch.Tensor]]
     critic_states: List[Dict[str, torch.Tensor]]
     optimizer_states: List[Dict[str, Any]]
-    bc_optimizer_states: List[Dict[str, Any]]
+    bc_optimizer_states: List[Optional[Dict[str, Any]]]
     value_normalizer_states: List[Dict[str, Any]]
     behavior_cloning_state: Optional[Dict[str, Any]]
     python_rng_state: object
@@ -228,6 +228,7 @@ class AgentTransformerPPO(BaseAgent):
         # begins at episode zero.
         self._current_episode_is_training = False
         self._bc_pretraining_complete = False
+        self._bc_actor_training_step = 0
         self._ppo_update_count = 0
 
         # Tracks whether ``attach_environment`` has ever been called. The
@@ -303,7 +304,7 @@ class AgentTransformerPPO(BaseAgent):
             )
             return
 
-        changed_buildings: List[int] = []
+        topology_changed = False
         for b, (obs_n, act_n) in enumerate(
             zip(observation_names, action_names)
         ):
@@ -321,16 +322,15 @@ class AgentTransformerPPO(BaseAgent):
             state.obs_names_tuple = new_obs
             state.action_names_tuple = new_act
             self._handle_topology_change(b)
-            changed_buildings.append(b)
+            topology_changed = True
         self._set_action_bounds(self._prepare_action_bounds(action_space, action_names))
-        if changed_buildings:
+        if topology_changed:
             self._notify_bc_topology_change(
                 observation_names=observation_names,
                 action_names=action_names,
                 action_space=action_space,
                 observation_space=observation_space,
                 metadata=metadata,
-                changed_buildings=changed_buildings,
             )
 
     def set_observation_context(
@@ -515,6 +515,8 @@ class AgentTransformerPPO(BaseAgent):
                 state.raw_rewards.append(candidate.raw_reward)
             self._pending_decisions = [None] * building_count
             self._latest_global_learning_step = int(global_learning_step)
+            if self._bc is not None and self._bc_pretraining_complete and self._current_episode_is_training:
+                self._bc_actor_training_step += 1
             if not update_step:
                 return
             optimizer_snapshot = (
@@ -548,6 +550,7 @@ class AgentTransformerPPO(BaseAgent):
             if episode + 1 == self._bc.demonstration_episodes:
                 self._run_bc_pretraining()
                 self._bc_pretraining_complete = True
+                self._bc_actor_training_step = 0
         for building_idx, state in enumerate(self._per_building):
             self._flush_rollout_boundary(building_idx, state)
 
@@ -624,7 +627,10 @@ class AgentTransformerPPO(BaseAgent):
             actor_states=[deepcopy(state.actor.state_dict()) for state in states],
             critic_states=[deepcopy(state.critic.state_dict()) for state in states],
             optimizer_states=[deepcopy(state.optimizer.state_dict()) for state in states],
-            bc_optimizer_states=[deepcopy(state.bc_optimizer.state_dict()) for state in states],
+            bc_optimizer_states=[
+                None if state.bc_optimizer is None else deepcopy(state.bc_optimizer.state_dict())
+                for state in states
+            ],
             value_normalizer_states=[state.value_normalizer.state_dict() for state in states],
             behavior_cloning_state=(
                 self._bc.state_dict() if self._bc is not None else None
@@ -672,7 +678,8 @@ class AgentTransformerPPO(BaseAgent):
             state.actor.load_state_dict(snapshot.actor_states[index])
             state.critic.load_state_dict(snapshot.critic_states[index])
             state.optimizer.load_state_dict(snapshot.optimizer_states[index])
-            state.bc_optimizer.load_state_dict(snapshot.bc_optimizer_states[index])
+            if state.bc_optimizer is not None and snapshot.bc_optimizer_states[index] is not None:
+                state.bc_optimizer.load_state_dict(snapshot.bc_optimizer_states[index])
             state.value_normalizer.load_state_dict(snapshot.value_normalizer_states[index])
         self._pending_decisions = deepcopy(snapshot.pending_decisions)
         self._latest_global_learning_step = snapshot.latest_global_learning_step
@@ -773,13 +780,14 @@ class AgentTransformerPPO(BaseAgent):
         out.mkdir(parents=True, exist_ok=True)
         path = out / f"transformer_ppo_step{step}.pt"
         payload = {
-            "checkpoint_format_version": 3,
+            "checkpoint_format_version": 4,
             "step": int(step),
             "config": dict(self.config["algorithm"]),
             "global_learning_step": self._latest_global_learning_step,
             "ppo_update_count": self._ppo_update_count,
             "current_episode": self._current_episode,
             "bc_pretraining_complete": self._bc_pretraining_complete,
+            "bc_actor_training_step": self._bc_actor_training_step,
             "latest_training_metrics": dict(self._latest_training_metrics),
             "behavior_cloning_state": (
                 self._bc.state_dict() if self._bc is not None else None
@@ -796,7 +804,7 @@ class AgentTransformerPPO(BaseAgent):
                     "actor_state": s.actor.state_dict(),
                     "critic_state": s.critic.state_dict(),
                     "optimizer_state": s.optimizer.state_dict(),
-                    "bc_optimizer_state": s.bc_optimizer.state_dict(),
+                    **({"bc_optimizer_state": s.bc_optimizer.state_dict()} if s.bc_optimizer is not None else {}),
                     "layout_signature": tuple(sorted(s.obs_names_tuple)),
                     "action_names": list(s.action_names_tuple),
                     "action_bounds": [bound.detach().cpu() for bound in self._action_bounds[self._per_building.index(s)]],
@@ -845,13 +853,13 @@ class AgentTransformerPPO(BaseAgent):
         if (
             not isinstance(checkpoint_version, int)
             or isinstance(checkpoint_version, bool)
-            or checkpoint_version not in {1, 2, 3}
+            or checkpoint_version not in {1, 2, 3, 4}
         ):
             raise RuntimeError(
                 "Unsupported TPPO checkpoint_format_version "
-                f"{checkpoint_version!r}; expected one of 1, 2, or 3."
+                f"{checkpoint_version!r}; expected one of 1, 2, 3, or 4."
             )
-        if checkpoint_version == 3:
+        if checkpoint_version in {3, 4}:
             bc_pretraining_complete = payload.get("bc_pretraining_complete")
             if not isinstance(bc_pretraining_complete, bool):
                 raise RuntimeError(
@@ -905,7 +913,7 @@ class AgentTransformerPPO(BaseAgent):
             state.actor.load_state_dict(saved["actor_state"])
             state.critic.load_state_dict(saved["critic_state"])
             state.optimizer.load_state_dict(saved["optimizer_state"])
-            if "bc_optimizer_state" in saved:
+            if state.bc_optimizer is not None and "bc_optimizer_state" in saved:
                 state.bc_optimizer.load_state_dict(saved["bc_optimizer_state"])
             for optimizer in (state.optimizer, state.bc_optimizer):
                 for parameter_state in optimizer.state.values():
@@ -918,6 +926,7 @@ class AgentTransformerPPO(BaseAgent):
         self._ppo_update_count = int(payload.get("ppo_update_count", 0))
         self._current_episode = int(payload.get("current_episode", 0))
         self._bc_pretraining_complete = bc_pretraining_complete
+        self._bc_actor_training_step = int(payload.get("bc_actor_training_step", 0))
         self._latest_training_metrics = dict(payload.get("latest_training_metrics", {}))
         if self._bc is not None and behavior_cloning_state is not None:
             self._bc.load_state_dict(behavior_cloning_state)
@@ -1075,7 +1084,6 @@ class AgentTransformerPPO(BaseAgent):
         action_space: List[Any],
         observation_space: List[Any],
         metadata: Optional[Dict[str, Any]],
-        changed_buildings: Optional[List[int]] = None,
     ) -> None:
         if self._bc is not None:
             self._bc.on_topology_change(
@@ -1084,7 +1092,6 @@ class AgentTransformerPPO(BaseAgent):
                 action_space=action_space,
                 observation_space=observation_space,
                 metadata=metadata,
-                changed_buildings=changed_buildings,
             )
 
     def _build_per_building_states(
@@ -1151,12 +1158,12 @@ class AgentTransformerPPO(BaseAgent):
             + list(critic.parameters())
         )
         optimizer = torch.optim.Adam(params, lr=self._lr)
-        bc_optimizer = torch.optim.Adam(
-            list(tokenizer.parameters())
-            + list(backbone.parameters())
-            + list(actor.parameters()),
-            lr=self._lr,
-        )
+        bc_optimizer = None
+        if self._bc is not None:
+            bc_optimizer = torch.optim.Adam(
+                list(tokenizer.parameters()) + list(backbone.parameters()) + list(actor.parameters()),
+                lr=self._lr,
+            )
         buffer = RolloutBuffer(gamma=self._gamma, gae_lambda=self._gae_lambda)
         return _PerBuildingState(
             building_id=building_id,
@@ -1377,6 +1384,7 @@ class AgentTransformerPPO(BaseAgent):
                                 np.stack([demo.observation for demo in batch]),
                                 dtype=torch.float, device=self.device,
                             )
+                            assert state.bc_optimizer is not None
                             state.bc_optimizer.zero_grad()
                             tokenized = state.tokenizer(observations, layout)
                             ca_embeddings, _ = state.backbone(
@@ -1446,6 +1454,9 @@ class AgentTransformerPPO(BaseAgent):
             np.stack([demo.observation for demo in demonstrations]),
             dtype=torch.float, device=self.device,
         )
+        assert state.bc_optimizer is not None
+        if self._bc.ca_type_weights(state.layout, dtype=torch.float32, device=self.device).sum().item() <= 0.0:
+            raise RuntimeError("Behavior-cloning action weights sum to zero for the current layout.")
         state.bc_optimizer.zero_grad()
         tokenized = state.tokenizer(observations, state.layout)
         ca_embeddings, _ = state.backbone(
@@ -1455,7 +1466,7 @@ class AgentTransformerPPO(BaseAgent):
             layout=state.layout,
             demonstrations=demonstrations,
             predicted_means=torch.tanh(state.actor.mlp(ca_embeddings)),
-            global_learning_step=self._latest_global_learning_step,
+            global_learning_step=self._bc_actor_training_step,
         )
         if not loss.requires_grad:
             return

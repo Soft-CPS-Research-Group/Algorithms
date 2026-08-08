@@ -238,7 +238,7 @@ def test_demo_episode_executes_teacher_only_records_immutable_demo_and_no_ppo() 
     assert len(agent._per_building[0].buffer) == 0
     assert agent._pending_decisions == [None]
     assert agent._bc is not None
-    demo = next(iter(agent._bc.demonstrations_by_signature.values()))[0]
+    demo = next(iter(agent._bc.demonstrations_for_building_by_signature(0).values()))[0]
     observation[0] = 99.0
     assert demo.observation[0] == 1.0
     assert demo.layout is not agent._per_building[0].layout
@@ -533,7 +533,7 @@ def test_final_demo_boundary_pretrains_every_stored_topology_group() -> None:
     agent.on_episode_end(episode=0, training=True)
 
     old_signature = agent._bc.layout_signature(
-        next(iter(agent._bc.demonstrations_by_signature.values()))[0].layout
+        next(iter(agent._bc.demonstrations_for_building_by_signature(0).values()))[0].layout
     )
     assert trained_signatures == (
         [old_signature] * agent._bc.pretraining_epochs
@@ -878,7 +878,7 @@ def test_version_two_checkpoint_infers_completed_bc_pretraining(
     assert not fresh._in_demonstration_phase()
 
 
-@pytest.mark.parametrize("version", [0, 4, True, "3"])
+@pytest.mark.parametrize("version", [0, 5, True, "3"])
 def test_checkpoint_rejects_unsupported_format_version(
     tmp_path: Path,
     version,
@@ -1333,7 +1333,7 @@ def test_checkpoint_rejects_demo_segment_in_wrong_tokenizer_family_before_mutati
     snapshot = _snapshot_restore_state(target)
 
     payload = torch.load(path, weights_only=False)
-    assert payload["checkpoint_format_version"] == 3
+    assert payload["checkpoint_format_version"] == 4
     demo = payload["behavior_cloning_state"]["demonstrations"][0][0]
     segment_idx = next(
         index for index, segment in enumerate(demo.layout.segments)

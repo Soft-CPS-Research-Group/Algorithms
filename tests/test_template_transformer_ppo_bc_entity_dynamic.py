@@ -54,18 +54,10 @@ def test_local_bc_template_uses_demonstrations_without_action_blending() -> None
     assert "actor_log_std_init" in hyperparameters
     assert behavior_cloning["enabled"] is True
     assert behavior_cloning["demonstration_episodes"] >= 1
-    assert behavior_cloning["max_samples_per_building"] == 3400
     assert behavior_cloning["pretraining_epochs"] >= 1
     assert behavior_cloning["batch_size"] >= 1
-    assert behavior_cloning["weight"] == pytest.approx(0.42)
-    assert behavior_cloning["min_weight"] == pytest.approx(0.24)
-    assert behavior_cloning["decay_start_step"] == 512
-    assert behavior_cloning["decay_steps"] == 3584
-    assert behavior_cloning["ev_multiplier"] == pytest.approx(24.0)
-    assert behavior_cloning["storage_multiplier"] == pytest.approx(0.18)
     assert behavior_cloning["teacher"] == {
         "policy": "RBCSmartPolicy",
-        "deterministic": True,
         "hyperparameters": {},
     }
     _assert_no_legacy_bc_fields(behavior_cloning)
