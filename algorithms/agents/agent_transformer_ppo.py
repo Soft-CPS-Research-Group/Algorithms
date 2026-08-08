@@ -26,7 +26,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 import random
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import numpy.typing as npt
@@ -37,7 +37,10 @@ from torch import nn
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.maddpg_agent import _log_torch_runtime, _select_torch_device
 from algorithms.exceptions import DeferredCheckpointError
-from algorithms.utils.behavior_cloning import BehaviorCloningRegularizer
+from algorithms.utils.behavior_cloning import (
+    BehaviorCloningRegularizer,
+    Demonstration,
+)
 from algorithms.utils.entity_observation_tokenizer import (
     EntityObservationTokenizer,
 )
@@ -59,6 +62,10 @@ from utils.entity_tokenizer_schema import (
     load_entity_tokenizer_config,
     validate_against_payload,
 )
+
+
+CURRENT_CHECKPOINT_FORMAT_VERSION = 4
+SUPPORTED_CHECKPOINT_FORMAT_VERSIONS = frozenset({1, 2, 3, 4})
 
 
 @dataclass
@@ -782,7 +789,7 @@ class AgentTransformerPPO(BaseAgent):
         out.mkdir(parents=True, exist_ok=True)
         path = out / f"transformer_ppo_step{step}.pt"
         payload = {
-            "checkpoint_format_version": 4,
+            "checkpoint_format_version": CURRENT_CHECKPOINT_FORMAT_VERSION,
             "step": int(step),
             "config": dict(self.config["algorithm"]),
             "global_learning_step": self._latest_global_learning_step,
@@ -855,13 +862,16 @@ class AgentTransformerPPO(BaseAgent):
         if (
             not isinstance(checkpoint_version, int)
             or isinstance(checkpoint_version, bool)
-            or checkpoint_version not in {1, 2, 3, 4}
+            or checkpoint_version not in SUPPORTED_CHECKPOINT_FORMAT_VERSIONS
         ):
+            supported_versions = ", ".join(
+                str(version) for version in sorted(SUPPORTED_CHECKPOINT_FORMAT_VERSIONS)
+            )
             raise RuntimeError(
                 "Unsupported TPPO checkpoint_format_version "
-                f"{checkpoint_version!r}; expected one of 1, 2, 3, or 4."
+                f"{checkpoint_version!r}; expected one of {supported_versions}."
             )
-        if checkpoint_version in {3, 4}:
+        if checkpoint_version >= 3:
             bc_pretraining_complete = payload.get("bc_pretraining_complete")
             if not isinstance(bc_pretraining_complete, bool):
                 raise RuntimeError(
@@ -1370,33 +1380,13 @@ class AgentTransformerPPO(BaseAgent):
                     for _ in range(self._bc.pretraining_epochs):
                         for start in range(0, group_samples, self._bc.batch_size):
                             batch = demonstrations[start : start + self._bc.batch_size]
-                            observations = torch.as_tensor(
-                                np.stack([demo.observation for demo in batch]),
-                                dtype=torch.float, device=self.device,
-                            )
-                            assert state.bc_optimizer is not None
-                            state.bc_optimizer.zero_grad()
-                            tokenized = state.tokenizer(observations, layout)
-                            ca_embeddings, _ = state.backbone(
-                                tokenized.sro_tokens,
-                                tokenized.nfc_token,
-                                tokenized.ca_tokens,
-                            )
-                            loss = self._bc.demonstration_loss(
+                            self._apply_bc_gradient_step(
+                                state=state,
                                 layout=layout,
                                 demonstrations=list(batch),
-                                predicted_means=torch.tanh(state.actor.mlp(ca_embeddings)),
                                 global_learning_step=0,
                                 apply_weight=False,
                             )
-                            loss.backward()
-                            torch.nn.utils.clip_grad_norm_(
-                                list(state.tokenizer.parameters())
-                                + list(state.backbone.parameters())
-                                + list(state.actor.parameters()),
-                                self._max_grad_norm,
-                            )
-                            state.bc_optimizer.step()
                             trained_batches += 1
                             group_trained_batches += 1
                     logger.info(
@@ -1430,33 +1420,36 @@ class AgentTransformerPPO(BaseAgent):
                 )
             raise
 
-    def _run_auxiliary_bc_update(
-        self, building_idx: int, state: _PerBuildingState
+    def _apply_bc_gradient_step(
+        self,
+        *,
+        state: _PerBuildingState,
+        layout: BuildingTokenLayout,
+        demonstrations: Sequence[Demonstration],
+        global_learning_step: int,
+        apply_weight: bool,
     ) -> None:
-        """Apply one actor-only BC step after all PPO epochs are complete."""
+        """Apply one tokenizer, backbone, and actor BC optimizer step."""
         assert self._bc is not None
-        demonstrations = self._bc.sample_demonstrations(
-            building_idx, state.layout, self._bc.batch_size
-        )
-        if not demonstrations:
-            return
+        assert state.bc_optimizer is not None
         observations = torch.as_tensor(
             np.stack([demo.observation for demo in demonstrations]),
-            dtype=torch.float, device=self.device,
+            dtype=torch.float,
+            device=self.device,
         )
-        assert state.bc_optimizer is not None
-        if self._bc.ca_type_weights(state.layout, dtype=torch.float32, device=self.device).sum().item() <= 0.0:
-            raise RuntimeError("Behavior-cloning action weights sum to zero for the current layout.")
         state.bc_optimizer.zero_grad()
-        tokenized = state.tokenizer(observations, state.layout)
+        tokenized = state.tokenizer(observations, layout)
         ca_embeddings, _ = state.backbone(
-            tokenized.sro_tokens, tokenized.nfc_token, tokenized.ca_tokens
+            tokenized.sro_tokens,
+            tokenized.nfc_token,
+            tokenized.ca_tokens,
         )
         loss = self._bc.demonstration_loss(
-            layout=state.layout,
-            demonstrations=demonstrations,
+            layout=layout,
+            demonstrations=list(demonstrations),
             predicted_means=torch.tanh(state.actor.mlp(ca_embeddings)),
-            global_learning_step=self._bc_actor_training_step,
+            global_learning_step=global_learning_step,
+            apply_weight=apply_weight,
         )
         if not loss.requires_grad:
             return
@@ -1468,6 +1461,26 @@ class AgentTransformerPPO(BaseAgent):
             self._max_grad_norm,
         )
         state.bc_optimizer.step()
+
+    def _run_auxiliary_bc_update(
+        self, building_idx: int, state: _PerBuildingState
+    ) -> None:
+        """Apply one actor-only BC step after all PPO epochs are complete."""
+        assert self._bc is not None
+        demonstrations = self._bc.sample_demonstrations(
+            building_idx, state.layout, self._bc.batch_size
+        )
+        if not demonstrations:
+            return
+        if self._bc.ca_type_weights(state.layout, dtype=torch.float32, device=self.device).sum().item() <= 0.0:
+            raise RuntimeError("Behavior-cloning action weights sum to zero for the current layout.")
+        self._apply_bc_gradient_step(
+            state=state,
+            layout=state.layout,
+            demonstrations=demonstrations,
+            global_learning_step=self._bc_actor_training_step,
+            apply_weight=True,
+        )
 
     # ----- PPO loss helpers ---------------------------------------------------
 
