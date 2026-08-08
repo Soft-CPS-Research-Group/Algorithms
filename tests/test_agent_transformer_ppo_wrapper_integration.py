@@ -57,7 +57,7 @@ class _DummyEntityEnvForPPO(_DummyEntityEnv):
 class _TerminalTopologyChangeEntityEnvForPPO(_DummyEntityEnvForPPO):
     """Changes topology on the terminal transition of a two-step episode."""
 
-    def __init__(self, *, truncated: bool) -> None:
+    def __init__(self, *, truncated: bool = False) -> None:
         super().__init__()
         self._steps = 0
         self._truncated = truncated
@@ -78,25 +78,6 @@ class _TerminalTopologyChangeEntityEnvForPPO(_DummyEntityEnvForPPO):
                 self._truncated,
                 {},
             )
-        return self._observation_payload(version=0), [0.1], False, False, {}
-
-class _TerminalTopologyChangeEntityEnvForPPO(_DummyEntityEnvForPPO):
-    """Change topology on the terminal transition of a two-step episode."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._steps = 0
-
-    def reset(self):
-        self._version = 0
-        self._steps = 0
-        return self._observation_payload(version=0), {}
-
-    def step(self, _actions):
-        self._steps += 1
-        if self._steps == 2:
-            self._version = 1
-            return self._observation_payload(version=1), [0.1], True, False, {}
         return self._observation_payload(version=0), [0.1], False, False, {}
 
 

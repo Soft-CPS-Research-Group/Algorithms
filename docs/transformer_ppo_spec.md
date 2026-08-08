@@ -1530,6 +1530,11 @@ agent. BC rebuilds its teacher while retaining demonstrations with their layout
 signatures, so compatible historical topology groups remain available for
 pretraining.
 
+Checkpoints persist whether BC pretraining completed. A resumed run therefore
+does not restart teacher collection when the wrapper restarts episode numbering
+at zero. Version 2 checkpoints infer completion from their stored pretraining
+metrics.
+
 BC diagnostics include `behavior_cloning_teacher_enabled`,
 `behavior_cloning_demonstration_samples`,
 `behavior_cloning_effective_weight`, `behavior_cloning_loss`,

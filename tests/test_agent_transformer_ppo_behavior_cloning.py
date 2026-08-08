@@ -808,6 +808,76 @@ def test_checkpoint_restores_bc_demonstrations_phase_and_decay_progress(
     assert fresh._pending_decisions == [None]
 
 
+def test_checkpoint_after_pretraining_does_not_restart_demonstration_phase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, dimension = _agent(demonstrations=1, weight=1.0)
+    observation = np.ones(dimension, dtype=np.float64)
+    _teacher(agent, 0.5)
+    agent.on_episode_start(episode=0, training=True)
+    agent.set_observation_context(
+        raw_observations=[observation], encoded_observations=[observation]
+    )
+    _update(agent, observation, agent.predict([observation]), step=7)
+    agent.on_episode_end(episode=0, training=True)
+    assert agent._bc_pretraining_complete
+    path = agent.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+
+    fresh, _ = _agent(demonstrations=1, weight=1.0)
+    fresh.load_checkpoint(path)
+    fresh.on_episode_start(episode=0, training=True)
+    assert fresh._bc is not None
+    demonstration_count = fresh._bc.demonstration_count()
+
+    def fail_if_teacher_is_used(_observations):
+        raise AssertionError("Restored PPO training must not execute the teacher.")
+
+    monkeypatch.setattr(fresh._bc, "compute_teacher_actions", fail_if_teacher_is_used)
+    actions = fresh.predict([observation], deterministic=True)
+    _update(fresh, observation, actions, step=8)
+    assert fresh._pending_decisions == [None]
+    assert fresh._bc.demonstration_count() == demonstration_count
+
+    pretraining_calls = 0
+
+    def record_pretraining() -> None:
+        nonlocal pretraining_calls
+        pretraining_calls += 1
+
+    monkeypatch.setattr(fresh, "_run_bc_pretraining", record_pretraining)
+    fresh.on_episode_end(episode=0, training=True)
+    assert pretraining_calls == 0
+
+
+def test_version_two_checkpoint_infers_completed_bc_pretraining(
+    tmp_path: Path,
+) -> None:
+    agent, dimension = _agent(demonstrations=1, weight=1.0)
+    observation = np.ones(dimension, dtype=np.float64)
+    _teacher(agent, 0.5)
+    agent.on_episode_start(episode=0, training=True)
+    agent.set_observation_context(
+        raw_observations=[observation], encoded_observations=[observation]
+    )
+    _update(agent, observation, agent.predict([observation]), step=7)
+    agent.on_episode_end(episode=0, training=True)
+    path = agent.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+    payload = torch.load(path, weights_only=False)
+    payload["checkpoint_format_version"] = 2
+    payload.pop("bc_pretraining_complete")
+    torch.save(payload, path)
+
+    fresh, _ = _agent(demonstrations=1, weight=1.0)
+    fresh.load_checkpoint(path)
+    fresh.on_episode_start(episode=0, training=True)
+
+    assert fresh._bc_pretraining_complete
+    assert not fresh._in_demonstration_phase()
+
+
 def test_checkpoint_restores_historical_layout_demonstrations_after_topology_change(
     tmp_path: Path,
 ) -> None:
@@ -1246,7 +1316,7 @@ def test_checkpoint_rejects_demo_segment_in_wrong_tokenizer_family_before_mutati
     snapshot = _snapshot_restore_state(target)
 
     payload = torch.load(path, weights_only=False)
-    assert payload["checkpoint_format_version"] == 2
+    assert payload["checkpoint_format_version"] == 3
     demo = payload["behavior_cloning_state"]["demonstrations"][0][0]
     segment_idx = next(
         index for index, segment in enumerate(demo.layout.segments)
