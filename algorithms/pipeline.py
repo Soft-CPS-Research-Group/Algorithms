@@ -31,7 +31,7 @@ from uuid import uuid4
 import numpy as np
 from loguru import logger
 
-from algorithms.execution_unit import ExecutionUnit
+from algorithms.execution_unit import ExecutionUnit, TopologyTransactional
 
 
 def _checkpoint_transaction_root(root: Path, step: int) -> tuple[Path, Path]:
@@ -43,14 +43,12 @@ def _checkpoint_transaction_root(root: Path, step: int) -> tuple[Path, Path]:
 
 
 def _require_topology_hooks(unit: ExecutionUnit, label: str) -> tuple[Any, Any]:
-    snapshot = getattr(unit, "snapshot_topology_state", None)
-    restore = getattr(unit, "restore_topology_state", None)
-    if not callable(snapshot) or not callable(restore):
+    if not isinstance(unit, TopologyTransactional):
         raise RuntimeError(
             f"{label} cannot participate in a transactional topology change: "
             "it must provide snapshot_topology_state() and restore_topology_state()."
         )
-    return snapshot, restore
+    return unit.snapshot_topology_state, unit.restore_topology_state
 
 
 def _snapshot_children(
