@@ -56,7 +56,6 @@ class BehaviorCloningRegularizer:
         ev_multiplier: float,
         storage_multiplier: float,
         policy: str,
-        deterministic: bool,
         hyperparameters: Mapping[str, Any],
         agent_config_template: Mapping[str, Any],
     ) -> None:
@@ -71,7 +70,6 @@ class BehaviorCloningRegularizer:
         self.ev_multiplier = ev_multiplier
         self.storage_multiplier = storage_multiplier
         self.policy = policy
-        self.deterministic = deterministic
         self.hyperparameters = deepcopy(dict(hyperparameters))
         self.agent_config_template = deepcopy(dict(agent_config_template))
         self.teacher_policy = None
@@ -119,7 +117,6 @@ class BehaviorCloningRegularizer:
             ev_multiplier=float(config.get("ev_multiplier", 1.0)),
             storage_multiplier=float(config.get("storage_multiplier", 1.0)),
             policy=str(policy),
-            deterministic=True,
             hyperparameters=teacher.get("hyperparameters") or {},
             agent_config_template=agent_config_template,
         )
@@ -161,7 +158,7 @@ class BehaviorCloningRegularizer:
             raise RuntimeError("Behavior-cloning teacher is not attached.")
         return self._copy_actions(
             self.teacher_policy.predict(
-                raw_or_encoded_observations, deterministic=self.deterministic
+                raw_or_encoded_observations, deterministic=True
             )
         )
 

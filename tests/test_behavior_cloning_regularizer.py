@@ -77,7 +77,6 @@ def _regularizer(**overrides) -> BehaviorCloningRegularizer:
         "storage_multiplier": 1.0,
         "teacher": {
             "policy": "RBCSmartPolicy",
-            "deterministic": True,
             "hyperparameters": {},
         },
     }

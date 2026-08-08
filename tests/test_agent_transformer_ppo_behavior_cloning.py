@@ -46,7 +46,7 @@ def _config(*, demonstrations: int = 1, weight: float = 0.0) -> dict:
         "decay_steps": 1,
         "ev_multiplier": 1.0,
         "storage_multiplier": 1.0,
-        "teacher": {"policy": "RBCSmartPolicy", "deterministic": True, "hyperparameters": {}},
+        "teacher": {"policy": "RBCSmartPolicy", "hyperparameters": {}},
     }
     return config
 
