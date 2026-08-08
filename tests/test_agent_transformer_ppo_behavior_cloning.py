@@ -878,6 +878,23 @@ def test_version_two_checkpoint_infers_completed_bc_pretraining(
     assert not fresh._in_demonstration_phase()
 
 
+@pytest.mark.parametrize("version", [0, 4, True, "3"])
+def test_checkpoint_rejects_unsupported_format_version(
+    tmp_path: Path,
+    version,
+) -> None:
+    source, _ = _agent(demonstrations=1, weight=1.0)
+    path = source.save_checkpoint(str(tmp_path), step=7)
+    assert path is not None
+    payload = torch.load(path, weights_only=False)
+    payload["checkpoint_format_version"] = version
+    torch.save(payload, path)
+
+    target, _ = _agent(demonstrations=1, weight=1.0)
+    with pytest.raises(RuntimeError, match="Unsupported TPPO checkpoint_format_version"):
+        target.load_checkpoint(path)
+
+
 def test_checkpoint_restores_historical_layout_demonstrations_after_topology_change(
     tmp_path: Path,
 ) -> None:

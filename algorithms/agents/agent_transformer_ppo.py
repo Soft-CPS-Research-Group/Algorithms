@@ -841,8 +841,17 @@ class AgentTransformerPPO(BaseAgent):
             self._validate_checkpoint_bc_tokenizer_compatibility(
                 behavior_cloning_state
             )
-        checkpoint_version = int(payload.get("checkpoint_format_version", 1))
-        if checkpoint_version >= 3:
+        checkpoint_version = payload.get("checkpoint_format_version", 1)
+        if (
+            not isinstance(checkpoint_version, int)
+            or isinstance(checkpoint_version, bool)
+            or checkpoint_version not in {1, 2, 3}
+        ):
+            raise RuntimeError(
+                "Unsupported TPPO checkpoint_format_version "
+                f"{checkpoint_version!r}; expected one of 1, 2, or 3."
+            )
+        if checkpoint_version == 3:
             bc_pretraining_complete = payload.get("bc_pretraining_complete")
             if not isinstance(bc_pretraining_complete, bool):
                 raise RuntimeError(
