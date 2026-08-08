@@ -453,6 +453,35 @@ def test_checkpoint_round_trip(tmp_path: Path) -> None:
     assert torch.allclose(actor_w, actor_w_loaded)
 
 
+def test_checkpoint_without_new_action_metadata_remains_loadable(tmp_path: Path) -> None:
+    agent, _, _, _ = _make_agent(n_buildings=1)
+    path = agent.save_checkpoint(str(tmp_path), step=1)
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    payload["agents"][0].pop("action_names")
+    payload["agents"][0].pop("action_bounds")
+    legacy_path = tmp_path / "legacy.pt"
+    torch.save(payload, legacy_path)
+
+    fresh, _, _, _ = _make_agent(n_buildings=1)
+    fresh.load_checkpoint(str(legacy_path))
+
+
+def test_checkpoint_rejects_changed_action_bounds(tmp_path: Path) -> None:
+    agent, obs_names, action_names, _ = _make_agent(n_buildings=1)
+    agent.attach_environment(
+        observation_names=obs_names,
+        action_names=action_names,
+        action_space=[_Box([0.0, 0.0], [1.0, 1.0])],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+    path = agent.save_checkpoint(str(tmp_path), step=1)
+
+    fresh, _, _, _ = _make_agent(n_buildings=1)
+    with pytest.raises(ValueError, match="action_bounds mismatch"):
+        fresh.load_checkpoint(path)
+
+
 def test_checkpoint_layout_signature_mismatch_rejected(tmp_path: Path) -> None:
     """Save a 1-building checkpoint, then try to load into a 2-building agent.
     Cardinality mismatch is rejected before signature check, exercising the

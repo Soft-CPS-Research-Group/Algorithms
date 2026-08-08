@@ -288,6 +288,28 @@ def test_wrapper_entity_rebuilds_and_reattaches_on_topology_change():
     assert model.attach_calls == 2
 
 
+def test_wrapper_restores_metadata_when_model_reattachment_fails():
+    class _FailingOnSecondAttach(_DummyModel):
+        def attach_environment(self, **kwargs):
+            super().attach_environment(**kwargs)
+            if self.attach_calls == 2:
+                raise RuntimeError("reattachment failed")
+
+    env = _DummyEntityEnv()
+    wrapper = Wrapper_CityLearn(env=env, config=_entity_config(), job_id="entity-rollback")
+    model = _FailingOnSecondAttach()
+    wrapper.set_model(model)
+    old_version = wrapper._entity_topology_version
+    old_action_names = wrapper.action_names
+
+    env._version = 1
+    with pytest.raises(RuntimeError, match="reattachment failed"):
+        wrapper._apply_entity_layout(env._observation_payload(version=1), force_attach=False)
+
+    assert wrapper._entity_topology_version == old_version
+    assert wrapper.action_names == old_action_names
+
+
 def test_wrapper_entity_converts_flat_actions_into_entity_tables():
     env = _DummyEntityEnv()
     wrapper = Wrapper_CityLearn(env=env, config=_entity_config(), job_id="entity-actions")

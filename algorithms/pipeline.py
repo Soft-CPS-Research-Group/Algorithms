@@ -630,16 +630,22 @@ class Ensemble(ExecutionUnit):
         self, *, observations, actions, rewards, terminated: bool, truncated: bool,
         global_learning_step: int,
     ) -> None:
-        if len(observations) != len(self.agents):
-            raise RuntimeError(
-                f"Ensemble.record_topology_transition: observations length ({len(observations)}) "
-                f"does not match ensemble size ({len(self.agents)})."
-            )
+        expected_count = len(self.agents)
+        for name, values in (
+            ("observations", observations),
+            ("actions", actions),
+            ("rewards", rewards),
+        ):
+            if len(values) != expected_count:
+                raise RuntimeError(
+                    f"Ensemble.record_topology_transition: {name} length ({len(values)}) "
+                    f"does not match ensemble size ({expected_count})."
+                )
         for index, agent in enumerate(self.agents):
             agent.record_topology_transition(
                 observations=[observations[index]],
-                actions=[actions[index]] if index < len(actions) else [],
-                rewards=[rewards[index]] if index < len(rewards) else [],
+                actions=[actions[index]],
+                rewards=[rewards[index]],
                 terminated=terminated, truncated=truncated,
                 global_learning_step=global_learning_step,
             )
