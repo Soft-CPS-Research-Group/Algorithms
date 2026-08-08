@@ -295,12 +295,13 @@ class AgentTransformerPPO(BaseAgent):
             )
             self._pending_decisions = [None] * len(self._per_building)
             self._set_action_bounds(self._prepare_action_bounds(action_space, action_names))
-            self._notify_bc_topology_change(
+            self._attach_bc_environment(
                 observation_names=observation_names,
                 action_names=action_names,
                 action_space=action_space,
                 observation_space=observation_space,
                 metadata=metadata,
+                topology_change=True,
             )
             return
 
@@ -325,12 +326,13 @@ class AgentTransformerPPO(BaseAgent):
             topology_changed = True
         self._set_action_bounds(self._prepare_action_bounds(action_space, action_names))
         if topology_changed:
-            self._notify_bc_topology_change(
+            self._attach_bc_environment(
                 observation_names=observation_names,
                 action_names=action_names,
                 action_space=action_space,
                 observation_space=observation_space,
                 metadata=metadata,
+                topology_change=True,
             )
 
     def set_observation_context(
@@ -1066,27 +1068,15 @@ class AgentTransformerPPO(BaseAgent):
         action_space: List[Any],
         observation_space: List[Any],
         metadata: Optional[Dict[str, Any]],
+        topology_change: bool = False,
     ) -> None:
         if self._bc is not None:
-            self._bc.attach_environment(
-                observation_names=observation_names,
-                action_names=action_names,
-                action_space=action_space,
-                observation_space=observation_space,
-                metadata=metadata,
+            rebuild_teacher = (
+                self._bc.on_topology_change
+                if topology_change
+                else self._bc.attach_environment
             )
-
-    def _notify_bc_topology_change(
-        self,
-        *,
-        observation_names: List[List[str]],
-        action_names: List[List[str]],
-        action_space: List[Any],
-        observation_space: List[Any],
-        metadata: Optional[Dict[str, Any]],
-    ) -> None:
-        if self._bc is not None:
-            self._bc.on_topology_change(
+            rebuild_teacher(
                 observation_names=observation_names,
                 action_names=action_names,
                 action_space=action_space,
