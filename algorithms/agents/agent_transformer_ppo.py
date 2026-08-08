@@ -621,7 +621,7 @@ class AgentTransformerPPO(BaseAgent):
                 f"agent has {len(self._per_building)}. Cross-cardinality "
                 "resume is not supported."
             )
-        for state, saved in zip(self._per_building, agents):
+        for building_idx, (state, saved) in enumerate(zip(self._per_building, agents)):
             sig_now = tuple(sorted(state.obs_names_tuple))
             sig_saved = tuple(saved["layout_signature"])
             if sig_now != sig_saved:
@@ -630,8 +630,27 @@ class AgentTransformerPPO(BaseAgent):
                     f"{state.building_id!r}: cannot resume across topology "
                     "changes."
                 )
-            if list(saved.get("action_names", [])) != list(state.action_names_tuple):
+            if "action_names" in saved and list(saved["action_names"]) != list(state.action_names_tuple):
                 raise ValueError(f"Checkpoint action_names mismatch for building {state.building_id!r}.")
+            if "action_bounds" in saved:
+                try:
+                    saved_low, saved_high = (
+                        torch.as_tensor(bound, dtype=torch.float64).reshape(-1, 1)
+                        for bound in saved["action_bounds"]
+                    )
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"Checkpoint action_bounds are invalid for building {state.building_id!r}."
+                    ) from error
+                current_low, current_high = self._action_bounds[building_idx]
+                if not (
+                    torch.equal(saved_low, current_low.detach().cpu().to(dtype=torch.float64))
+                    and torch.equal(saved_high, current_high.detach().cpu().to(dtype=torch.float64))
+                ):
+                    raise ValueError(
+                        f"Checkpoint action_bounds mismatch for building {state.building_id!r}; "
+                        "resume requires the same environment action bounds."
+                    )
         for state, saved in zip(self._per_building, agents):
             state.tokenizer.load_state_dict(saved["tokenizer_state"])
             state.backbone.load_state_dict(saved["backbone_state"])

@@ -477,6 +477,17 @@ class Wrapper_CityLearn(RLC):
             return []
 
         previous_version = self._entity_topology_version
+        previous_layout_state = {
+            "_entity_topology_version": self._entity_topology_version,
+            "_topology_changed_during_step": self._topology_changed_during_step,
+            "episode_time_steps": self.episode_time_steps,
+            "observation_names": self.observation_names,
+            "observation_space": self.observation_space,
+            "action_space": self.action_space,
+            "action_names": self.action_names,
+            "encoders": getattr(self, "encoders", None),
+            "_action_bounds_cache": getattr(self, "_action_bounds_cache", None),
+        }
         if model_observations:
             agent_observations, observation_names, observation_spaces = (
                 self._entity_adapter.to_agent_encoded_observations(observation_payload)
@@ -485,50 +496,55 @@ class Wrapper_CityLearn(RLC):
             agent_observations, observation_names, observation_spaces = (
                 self._entity_adapter.to_agent_observations(observation_payload)
             )
-        self._entity_topology_version = self._entity_adapter.topology_version
+        try:
+            self._entity_topology_version = self._entity_adapter.topology_version
 
-        self.episode_time_steps = int(getattr(self.episode_tracker, "episode_time_steps", self.episode_time_steps))
+            self.episode_time_steps = int(getattr(self.episode_tracker, "episode_time_steps", self.episode_time_steps))
 
-        topology_changed = (
-            force_attach
-            or previous_version is None
-            or self._entity_topology_version != previous_version
-        )
-        self._topology_changed_during_step = (
-            topology_changed and not force_attach and previous_version is not None
-        )
-        if topology_changed:
-            self.observation_names = observation_names
-            self.observation_space = observation_spaces
-            self.action_space = list(getattr(self.env, "flat_action_space", []))
-            self.action_names = [list(names) for names in getattr(self.env, "action_names", [])]
-            if len(self.action_names) < len(self.action_space):
-                self.action_names.extend([[] for _ in range(len(self.action_space) - len(self.action_names))])
-            elif len(self.action_names) > len(self.action_space):
-                self.action_names = self.action_names[: len(self.action_space)]
-            self.encoders = self.set_encoders()
-            self._action_bounds_cache = None
+            topology_changed = (
+                force_attach
+                or previous_version is None
+                or self._entity_topology_version != previous_version
+            )
+            self._topology_changed_during_step = (
+                topology_changed and not force_attach and previous_version is not None
+            )
+            if topology_changed:
+                self.observation_names = observation_names
+                self.observation_space = observation_spaces
+                self.action_space = list(getattr(self.env, "flat_action_space", []))
+                self.action_names = [list(names) for names in getattr(self.env, "action_names", [])]
+                if len(self.action_names) < len(self.action_space):
+                    self.action_names.extend([[] for _ in range(len(self.action_space) - len(self.action_names))])
+                elif len(self.action_names) > len(self.action_space):
+                    self.action_names = self.action_names[: len(self.action_space)]
+                self.encoders = self.set_encoders()
+                self._action_bounds_cache = None
 
-        if topology_changed and self._entity_dynamic_mode and previous_version is not None:
-            from algorithms.registry import ALGORITHM_REGISTRY
-            offenders = [
-                name for name in self._algorithm_names
-                if (cls := ALGORITHM_REGISTRY.get(name)) is not None
-                and not bool(getattr(cls, "supports_dynamic_topology", False))
-            ]
-            if offenders:
-                if "MADDPG" in offenders:
+            if topology_changed and self._entity_dynamic_mode and previous_version is not None:
+                from algorithms.registry import ALGORITHM_REGISTRY
+                offenders = [
+                    name for name in self._algorithm_names
+                    if (cls := ALGORITHM_REGISTRY.get(name)) is not None
+                    and not bool(getattr(cls, "supports_dynamic_topology", False))
+                ]
+                if offenders:
+                    if "MADDPG" in offenders:
+                        raise ValueError(
+                            "MADDPG supports entity interface only with topology_mode='static'. "
+                            "Detected topology change during runtime."
+                        )
                     raise ValueError(
-                        "MADDPG supports entity interface only with topology_mode='static'. "
-                        "Detected topology change during runtime."
+                        f"{sorted(offenders)} do not support dynamic topology "
+                        "(supports_dynamic_topology=False). Detected topology change during runtime."
                     )
-                raise ValueError(
-                    f"{sorted(offenders)} do not support dynamic topology "
-                    "(supports_dynamic_topology=False). Detected topology change during runtime."
-                )
 
-        if topology_changed and attach_model and self.model is not None:
-            self._attach_model_environment_metadata()
+            if topology_changed and attach_model and self.model is not None:
+                self._attach_model_environment_metadata()
+        except Exception:
+            for name, value in previous_layout_state.items():
+                setattr(self, name, value)
+            raise
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
 
