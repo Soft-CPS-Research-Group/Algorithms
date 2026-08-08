@@ -479,15 +479,17 @@ class Wrapper_CityLearn(RLC):
 
         previous_version = self._entity_topology_version
         previous_layout_state = self._snapshot_entity_layout_state()
-        if model_observations:
-            agent_observations, observation_names, observation_spaces = (
-                self._entity_adapter.to_agent_encoded_observations(observation_payload)
-            )
-        else:
-            agent_observations, observation_names, observation_spaces = (
-                self._entity_adapter.to_agent_observations(observation_payload)
-            )
         try:
+            if model_observations:
+                agent_observations, observation_names, observation_spaces = (
+                    self._entity_adapter.to_agent_encoded_observations(
+                        observation_payload
+                    )
+                )
+            else:
+                agent_observations, observation_names, observation_spaces = (
+                    self._entity_adapter.to_agent_observations(observation_payload)
+                )
             self._entity_topology_version = self._entity_adapter.topology_version
 
             self.episode_time_steps = int(getattr(self.episode_tracker, "episode_time_steps", self.episode_time_steps))
@@ -1563,12 +1565,10 @@ class Wrapper_CityLearn(RLC):
                 if self._topology_changed_during_step:
                     snapshot_hook = getattr(self.model, "snapshot_topology_state", None)
                     restore_hook = getattr(self.model, "restore_topology_state", None)
-                    model_topology_snapshot = (
-                        snapshot_hook()
-                        if callable(snapshot_hook) and callable(restore_hook)
-                        else None
-                    )
+                    model_topology_snapshot = None
                     try:
+                        if callable(snapshot_hook) and callable(restore_hook):
+                            model_topology_snapshot = snapshot_hook()
                         if not deterministic:
                             transition_hook = getattr(self.model, "record_topology_transition", None)
                             if callable(transition_hook):

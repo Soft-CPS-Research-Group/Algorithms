@@ -203,6 +203,36 @@ def test_learn_rolls_back_wrapper_and_agent_when_deferred_attach_fails(
     assert len(agent._per_building) == 2
 
 
+def test_learn_rolls_back_wrapper_when_agent_snapshot_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO()
+    wrapper_config = _entity_config()
+    wrapper_config["training"]["steps_between_training_updates"] = 4
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-entity-snapshot-rollback"
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+    wrapper.set_model(agent)
+
+    def fail_snapshot():
+        raise RuntimeError("topology snapshot failed")
+
+    monkeypatch.setattr(agent, "snapshot_topology_state", fail_snapshot)
+
+    with pytest.raises(RuntimeError, match="topology snapshot failed"):
+        wrapper.learn(episodes=1)
+
+    assert wrapper._entity_topology_version == 0
+    assert wrapper._entity_adapter is not None
+    assert wrapper._entity_adapter.topology_version == 0
+    assert len(wrapper.action_names) == 1
+    assert len(agent._per_building) == 1
+    assert len(agent._per_building[0].buffer) == 1
+    assert agent._per_building[0].raw_rewards == [0.1]
+    assert agent._pending_decisions[0] is not None
+
+
 def test_wrapper_to_env_actions_round_trips_ppo_output() -> None:
     """``predict`` -> ``_to_env_actions`` produces the entity-tabled action
     payload the simulator expects."""
