@@ -419,6 +419,24 @@ def test_validate_config_accepts_transformer_ppo_algorithm():
     validate_config(_make_minimal_transformer_ppo_cfg())
 
 
+def test_validate_config_rejects_behavior_cloning_min_weight_above_weight():
+    from utils.config_schema import validate_config
+
+    config = _make_minimal_transformer_ppo_cfg()
+    config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+        "weight": 0.1,
+        "min_weight": 0.2,
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="behavior_cloning.min_weight must be less than or equal to behavior_cloning.weight",
+    ):
+        validate_config(config)
+
+
 @pytest.mark.parametrize("count", [0, 2])
 def test_project_config_rejects_transformer_ppo_stage_count_other_than_one(count: int):
     from utils.config_schema import ProjectConfig

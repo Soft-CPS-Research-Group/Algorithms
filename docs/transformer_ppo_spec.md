@@ -1493,10 +1493,12 @@ transitions always come from the Transformer actor. The teacher never changes
 an environment action during PPO collection or evaluation.
 
 The BC loss is an auxiliary actor-only loss. The critic uses only PPO value
-targets and receives no demonstration loss. Per-CA imitation uses Huber loss,
-weighted by `ev_multiplier` or `storage_multiplier`, with a scheduled BC
-weight added to the actor objective. Demonstrations never update value
-normalization statistics.
+targets and receives no demonstration loss. Per-CA imitation uses weighted
+squared error. Each CA uses `ev_multiplier` or `storage_multiplier`; the
+scheduled BC `weight` then scales the loss. The agent runs one separate BC
+optimizer step after all PPO epochs for a rollout. It does not add BC loss to
+the PPO actor objective. Demonstrations never update value normalization
+statistics.
 
 ```yaml
 behavior_cloning:
@@ -1518,16 +1520,27 @@ behavior_cloning:
 ```
 
 `weight` decays linearly toward `min_weight` after `decay_start_step` for
-`decay_steps`. `demonstration_episodes` controls deterministic teacher
-collection; `max_samples_per_building` bounds retained examples; and
-`pretraining_epochs` plus `batch_size` control actor-only pretraining before
-the first PPO rollout.
+`decay_steps`. `min_weight` must not exceed `weight`.
+`demonstration_episodes` controls deterministic teacher collection;
+`max_samples_per_building` bounds retained examples; and `pretraining_epochs`
+plus `batch_size` control actor-only pretraining before the first PPO rollout.
 
 On topology changes, the wrapper rebuilds the entity layout and reattaches the
 agent. BC rebuilds its teacher while retaining demonstrations with their layout
 signatures, so compatible historical topology groups remain available for
-pretraining. Diagnostics include retained demonstration samples, pretraining
-loss, BC loss and weight, skipped/invalid batches, and final actor-only
+pretraining.
+
+BC diagnostics include `behavior_cloning_teacher_enabled`,
+`behavior_cloning_demonstration_samples`,
+`behavior_cloning_effective_weight`, `behavior_cloning_loss`,
+`behavior_cloning_weighted_loss`, `behavior_cloning_valid_samples`,
+`behavior_cloning_pretraining_epochs`,
+`behavior_cloning_incompatible_demonstration_samples`, and
+`behavior_cloning_rejected_at_record`. Pretraining also reports
+`behavior_cloning_pretraining_batches` and per-building
+`behavior_cloning_building_<building_id>_usable_samples` and
+`behavior_cloning_building_<building_id>_trained_batches`. The implementation
+does not provide dedicated skipped-batch diagnostics or final actor-only
 evaluation metrics.
 
 ---

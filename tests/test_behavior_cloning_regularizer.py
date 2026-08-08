@@ -89,6 +89,17 @@ def _regularizer(**overrides) -> BehaviorCloningRegularizer:
     return regularizer
 
 
+def test_from_config_uses_schema_defaults_for_a_present_bc_block() -> None:
+    regularizer = BehaviorCloningRegularizer.from_config(
+        {"behavior_cloning": {}},
+        {"algorithm": {"name": "AgentTransformerPPO"}},
+    )
+
+    assert regularizer is not None
+    assert regularizer.demonstration_episodes == 1
+    assert regularizer.policy == "RBCSmartPolicy"
+
+
 def test_demonstration_is_frozen_and_groups_by_layout_signature() -> None:
     regularizer = _regularizer(max_samples_per_building=8)
     layout = _layout()
@@ -111,14 +122,6 @@ def test_demonstration_is_frozen_and_groups_by_layout_signature() -> None:
 
     regularizer.record_demonstration(0, np.zeros(3), _layout("charger_2"), [0.5])
     assert len(regularizer.demonstrations_for_building_by_signature(0)) == 2
-
-
-def test_enabled_behavior_cloning_requires_a_teacher_policy() -> None:
-    with pytest.raises(ValueError, match="behavior_cloning.teacher.policy"):
-        BehaviorCloningRegularizer.from_config(
-            {"behavior_cloning": {"enabled": True}},
-            {"algorithm": {"name": "AgentTransformerPPO"}},
-        )
 
 
 def test_demonstration_stores_encoded_length() -> None:
