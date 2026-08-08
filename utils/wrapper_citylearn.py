@@ -478,7 +478,14 @@ class Wrapper_CityLearn(RLC):
             return []
 
         previous_version = self._entity_topology_version
-        previous_layout_state = self._snapshot_entity_layout_state()
+        candidate_topology_change = force_attach or self._entity_adapter.needs_rebuild(
+            observation_payload
+        )
+        previous_layout_state = (
+            self._snapshot_entity_layout_state() if candidate_topology_change else None
+        )
+        model_topology_snapshot = None
+        restore_model_topology = None
         try:
             if model_observations:
                 agent_observations, observation_names, observation_spaces = (
@@ -533,9 +540,22 @@ class Wrapper_CityLearn(RLC):
                     )
 
             if topology_changed and attach_model and self.model is not None:
+                if previous_version is not None and self._entity_dynamic_mode:
+                    snapshot_model_topology = getattr(self.model, "snapshot_topology_state", None)
+                    restore_model_topology = getattr(self.model, "restore_topology_state", None)
+                    if callable(snapshot_model_topology) != callable(restore_model_topology):
+                        raise RuntimeError(
+                            "Model topology rollback requires both snapshot_topology_state() "
+                            "and restore_topology_state()."
+                        )
+                    if callable(snapshot_model_topology):
+                        model_topology_snapshot = snapshot_model_topology()
                 self._attach_model_environment_metadata()
         except Exception:
-            self._restore_entity_layout_state(previous_layout_state)
+            if model_topology_snapshot is not None and callable(restore_model_topology):
+                restore_model_topology(model_topology_snapshot)
+            if previous_layout_state is not None:
+                self._restore_entity_layout_state(previous_layout_state)
             raise
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
@@ -634,7 +654,7 @@ class Wrapper_CityLearn(RLC):
             "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "building_names": building_names,
             "interface": getattr(self.env, "interface", None),
-            "topology_mode": getattr(self.env, "topology_mode", None),
+            "topology_mode": self._entity_topology_mode if self._entity_interface_mode else getattr(self.env, "topology_mode", None),
             "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
             "raw_observation_names": raw_observation_names,
             "encoded_observation_names": encoded_observation_names,
@@ -1512,8 +1532,13 @@ class Wrapper_CityLearn(RLC):
                 )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 entity_layout_snapshot = None
+                model_topology_snapshot = None
+                restore_model_topology = None
                 if self._entity_interface_mode:
-                    entity_layout_snapshot = self._snapshot_entity_layout_state()
+                    if self._entity_adapter is not None and self._entity_adapter.needs_rebuild(
+                        next_observations_raw
+                    ):
+                        entity_layout_snapshot = self._snapshot_entity_layout_state()
                     next_observations = self._apply_entity_layout(
                         next_observations_raw,
                         force_attach=False,
@@ -1563,12 +1588,16 @@ class Wrapper_CityLearn(RLC):
 
                 topology_transition_recorded = False
                 if self._topology_changed_during_step:
-                    snapshot_hook = getattr(self.model, "snapshot_topology_state", None)
-                    restore_hook = getattr(self.model, "restore_topology_state", None)
-                    model_topology_snapshot = None
+                    snapshot_model_topology = getattr(self.model, "snapshot_topology_state", None)
+                    restore_model_topology = getattr(self.model, "restore_topology_state", None)
                     try:
-                        if callable(snapshot_hook) and callable(restore_hook):
-                            model_topology_snapshot = snapshot_hook()
+                        if callable(snapshot_model_topology) != callable(restore_model_topology):
+                            raise RuntimeError(
+                                "Model topology rollback requires both snapshot_topology_state() "
+                                "and restore_topology_state()."
+                            )
+                        if callable(snapshot_model_topology):
+                            model_topology_snapshot = snapshot_model_topology()
                         if not deterministic:
                             transition_hook = getattr(self.model, "record_topology_transition", None)
                             if callable(transition_hook):
@@ -1588,8 +1617,8 @@ class Wrapper_CityLearn(RLC):
                                 topology_transition_recorded = True
                         self._attach_model_environment_metadata()
                     except Exception:
-                        if model_topology_snapshot is not None:
-                            restore_hook(model_topology_snapshot)
+                        if model_topology_snapshot is not None and callable(restore_model_topology):
+                            restore_model_topology(model_topology_snapshot)
                         if entity_layout_snapshot is not None:
                             self._restore_entity_layout_state(entity_layout_snapshot)
                         raise

@@ -431,12 +431,12 @@ class TestPipelinePersistence:
     def test_save_creates_subdir_per_stage(self, tmp_path: Path) -> None:
         a = RecordingUnit("a")
         b = RecordingUnit("b")
-        Pipeline([a, b]).save_checkpoint(str(tmp_path), step=7)
+        path = Pipeline([a, b]).save_checkpoint(str(tmp_path), step=7)
 
-        assert (tmp_path / "stage_0").is_dir()
-        assert (tmp_path / "stage_1").is_dir()
-        assert a.save_calls[0]["output_dir"] == str(tmp_path / "stage_0")
-        assert b.save_calls[0]["output_dir"] == str(tmp_path / "stage_1")
+        assert path == str(tmp_path / "step_7")
+        assert (tmp_path / "step_7" / ".complete").is_file()
+        assert (tmp_path / "step_7" / "stage_0").is_dir()
+        assert (tmp_path / "step_7" / "stage_1").is_dir()
 
     def test_save_skips_frozen_pipeline_stage(self, tmp_path: Path) -> None:
         manager = RecordingUnit("manager")
@@ -445,11 +445,10 @@ class TestPipelinePersistence:
 
         Pipeline([manager, leaf]).save_checkpoint(str(tmp_path), step=7)
 
-        assert manager.save_calls == [
-            {"output_dir": str(tmp_path / "stage_0"), "step": 7}
-        ]
+        assert len(manager.save_calls) == 1
+        assert manager.save_calls[0]["step"] == 7
         assert leaf.save_calls == []
-        assert not (tmp_path / "stage_1").exists()
+        assert not (tmp_path / "step_7" / "stage_1").exists()
 
     def test_load_routes_each_stage_subdir(self, tmp_path: Path) -> None:
         a = RecordingUnit("a")

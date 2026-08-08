@@ -228,9 +228,9 @@ def test_learn_rolls_back_wrapper_when_agent_snapshot_fails(
     assert wrapper._entity_adapter.topology_version == 0
     assert len(wrapper.action_names) == 1
     assert len(agent._per_building) == 1
-    assert len(agent._per_building[0].buffer) == 1
-    assert agent._per_building[0].raw_rewards == [0.1]
-    assert agent._pending_decisions[0] is not None
+    assert len(agent._per_building[0].buffer) == 0
+    assert agent._per_building[0].raw_rewards == []
+    assert agent._pending_decisions[0] is None
 
 
 def test_wrapper_to_env_actions_round_trips_ppo_output() -> None:
