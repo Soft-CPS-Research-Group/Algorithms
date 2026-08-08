@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from numbers import Integral
 from random import Random
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 import torch
@@ -59,7 +59,6 @@ class BehaviorCloningRegularizer:
         deterministic: bool,
         hyperparameters: Mapping[str, Any],
         agent_config_template: Mapping[str, Any],
-        config_dict: Mapping[str, Any],
     ) -> None:
         self.demonstration_episodes = demonstration_episodes
         self.max_samples_per_building = max_samples_per_building
@@ -75,7 +74,6 @@ class BehaviorCloningRegularizer:
         self.deterministic = deterministic
         self.hyperparameters = deepcopy(dict(hyperparameters))
         self.agent_config_template = deepcopy(dict(agent_config_template))
-        self.config_dict = deepcopy(dict(config_dict))
         self.teacher_policy = None
         self._demonstrations: Dict[int, List[Demonstration]] = {}
         self._seen_per_building: Dict[int, int] = {}
@@ -118,7 +116,6 @@ class BehaviorCloningRegularizer:
             deterministic=bool(teacher.get("deterministic", True)),
             hyperparameters=teacher.get("hyperparameters") or {},
             agent_config_template=agent_config_template,
-            config_dict=config,
         )
 
     def attach_environment(
@@ -142,7 +139,6 @@ class BehaviorCloningRegularizer:
         action_space: List[Any],
         observation_space: List[Any],
         metadata: Optional[Dict[str, Any]],
-        changed_buildings: Optional[Iterable[int]] = None,
     ) -> None:
         self.attach_environment(
             observation_names=observation_names,
@@ -181,16 +177,6 @@ class BehaviorCloningRegularizer:
             ),
             layout.excluded_feature_names,
         )
-
-    @property
-    def demonstrations_by_signature(
-        self,
-    ) -> Dict[Tuple[Any, ...], Tuple[Demonstration, ...]]:
-        grouped: Dict[Tuple[Any, ...], List[Demonstration]] = {}
-        for demos in self._demonstrations.values():
-            for demo in demos:
-                grouped.setdefault(demo.layout_signature, []).append(demo)
-        return {signature: tuple(demos) for signature, demos in grouped.items()}
 
     def demonstrations_for_building_by_signature(
         self, building_idx: int
