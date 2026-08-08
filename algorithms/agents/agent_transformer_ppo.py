@@ -227,6 +227,7 @@ class AgentTransformerPPO(BaseAgent):
         # episode. This keeps evaluation actor-only, including evaluation that
         # begins at episode zero.
         self._current_episode_is_training = False
+        self._bc_pretraining_complete = False
         self._ppo_update_count = 0
 
         # Tracks whether ``attach_environment`` has ever been called. The
@@ -546,6 +547,7 @@ class AgentTransformerPPO(BaseAgent):
         if self._in_demonstration_phase() and self._bc is not None:
             if episode + 1 == self._bc.demonstration_episodes:
                 self._run_bc_pretraining()
+                self._bc_pretraining_complete = True
         for building_idx, state in enumerate(self._per_building):
             self._flush_rollout_boundary(building_idx, state)
 
@@ -771,12 +773,13 @@ class AgentTransformerPPO(BaseAgent):
         out.mkdir(parents=True, exist_ok=True)
         path = out / f"transformer_ppo_step{step}.pt"
         payload = {
-            "checkpoint_format_version": 2,
+            "checkpoint_format_version": 3,
             "step": int(step),
             "config": dict(self.config["algorithm"]),
             "global_learning_step": self._latest_global_learning_step,
             "ppo_update_count": self._ppo_update_count,
             "current_episode": self._current_episode,
+            "bc_pretraining_complete": self._bc_pretraining_complete,
             "latest_training_metrics": dict(self._latest_training_metrics),
             "behavior_cloning_state": (
                 self._bc.state_dict() if self._bc is not None else None
@@ -838,6 +841,25 @@ class AgentTransformerPPO(BaseAgent):
             self._validate_checkpoint_bc_tokenizer_compatibility(
                 behavior_cloning_state
             )
+        checkpoint_version = int(payload.get("checkpoint_format_version", 1))
+        if checkpoint_version >= 3:
+            bc_pretraining_complete = payload.get("bc_pretraining_complete")
+            if not isinstance(bc_pretraining_complete, bool):
+                raise RuntimeError(
+                    "Checkpoint bc_pretraining_complete must be a boolean."
+                )
+        else:
+            bc_pretraining_complete = bool(
+                behavior_cloning_state is not None
+                and float(
+                    behavior_cloning_state.get("latest_pretraining_epochs", 0.0)
+                )
+                > 0.0
+            )
+        if bc_pretraining_complete and self._bc is None:
+            raise RuntimeError(
+                "Checkpoint completed BC pretraining but the target has BC disabled."
+            )
         for building_idx, (state, saved) in enumerate(zip(self._per_building, agents)):
             sig_now = tuple(sorted(state.obs_names_tuple))
             sig_saved = tuple(saved["layout_signature"])
@@ -886,6 +908,7 @@ class AgentTransformerPPO(BaseAgent):
         self._latest_global_learning_step = int(payload.get("global_learning_step", 0))
         self._ppo_update_count = int(payload.get("ppo_update_count", 0))
         self._current_episode = int(payload.get("current_episode", 0))
+        self._bc_pretraining_complete = bc_pretraining_complete
         self._latest_training_metrics = dict(payload.get("latest_training_metrics", {}))
         if self._bc is not None and behavior_cloning_state is not None:
             self._bc.load_state_dict(behavior_cloning_state)
@@ -1162,7 +1185,7 @@ class AgentTransformerPPO(BaseAgent):
                     state, last_value=torch.zeros(1, device=self.device), building_idx=building_idx
                 )
             finally:
-                state.buffer.clear()
+                self._clear_rollout(building_idx, state)
 
         # 2. Rebuild the layout from the cached ``names``.
         new_layout = self._layout_builder.build(
@@ -1296,6 +1319,7 @@ class AgentTransformerPPO(BaseAgent):
     def _in_demonstration_phase(self) -> bool:
         return (
             self._bc is not None
+            and not self._bc_pretraining_complete
             and self._current_episode_is_training
             and self._current_episode < self._bc.demonstration_episodes
         )

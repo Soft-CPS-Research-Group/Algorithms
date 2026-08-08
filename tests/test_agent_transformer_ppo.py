@@ -523,6 +523,55 @@ def test_topology_change_rebuilds_layout_and_preserves_weights() -> None:
     assert torch.allclose(actor_w_before, actor_w_after)
 
 
+def test_topology_change_clears_raw_rewards_with_the_flushed_rollout() -> None:
+    agent, obs_per, act_per, obs_dim = _make_agent(n_buildings=1)
+    observation = [np.zeros(obs_dim, dtype=np.float64)]
+    actions = [np.asarray(agent.predict(observation, deterministic=True)[0])]
+    agent.update(
+        observations=observation,
+        actions=actions,
+        rewards=[3.0],
+        next_observations=observation,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=1,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+    state = agent._per_building[0]
+    assert state.raw_rewards == [3.0]
+
+    original_charger_id = next(
+        name.split("::")[1]
+        for name in obs_per[0]
+        if name.startswith("charger::")
+        and "::connected_ev::" not in name
+        and "::incoming_ev::" not in name
+    )
+    new_charger_id = "Building_1/charger_NEW"
+    new_observation_names = list(obs_per[0])
+    new_observation_names.extend(
+        name.replace(
+            f"charger::{original_charger_id}::",
+            f"charger::{new_charger_id}::",
+            1,
+        )
+        for name in obs_per[0]
+        if name.startswith(f"charger::{original_charger_id}::")
+    )
+    agent.attach_environment(
+        observation_names=[new_observation_names],
+        action_names=[list(act_per[0]) + ["electric_vehicle_storage"]],
+        action_space=[None],
+        observation_space=[None],
+        metadata={"building_names": ["Building_1"]},
+    )
+
+    assert len(state.buffer) == 0
+    assert state.raw_rewards == []
+
+
 def test_topology_change_feature_count_drift_hard_fails() -> None:
     """Inject an extra storage feature that wasn't present at attach time —
     feature count for type 'storage' changes. Must raise."""
