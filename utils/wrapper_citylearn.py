@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import inspect
 import json
 import faulthandler
@@ -477,17 +478,7 @@ class Wrapper_CityLearn(RLC):
             return []
 
         previous_version = self._entity_topology_version
-        previous_layout_state = {
-            "_entity_topology_version": self._entity_topology_version,
-            "_topology_changed_during_step": self._topology_changed_during_step,
-            "episode_time_steps": self.episode_time_steps,
-            "observation_names": self.observation_names,
-            "observation_space": self.observation_space,
-            "action_space": self.action_space,
-            "action_names": self.action_names,
-            "encoders": getattr(self, "encoders", None),
-            "_action_bounds_cache": getattr(self, "_action_bounds_cache", None),
-        }
+        previous_layout_state = self._snapshot_entity_layout_state()
         if model_observations:
             agent_observations, observation_names, observation_spaces = (
                 self._entity_adapter.to_agent_encoded_observations(observation_payload)
@@ -542,11 +533,48 @@ class Wrapper_CityLearn(RLC):
             if topology_changed and attach_model and self.model is not None:
                 self._attach_model_environment_metadata()
         except Exception:
-            for name, value in previous_layout_state.items():
-                setattr(self, name, value)
+            self._restore_entity_layout_state(previous_layout_state)
             raise
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
+
+    def _snapshot_entity_layout_state(self) -> Dict[str, Any]:
+        """Capture wrapper and adapter metadata changed during layout rebuild."""
+        adapter_state = None
+        if self._entity_adapter is not None:
+            adapter_state = {
+                name: deepcopy(value)
+                for name, value in self._entity_adapter.__dict__.items()
+                if name != "env"
+            }
+        return {
+            "wrapper": {
+                "_entity_topology_version": self._entity_topology_version,
+                "_topology_changed_during_step": self._topology_changed_during_step,
+                "episode_time_steps": self.episode_time_steps,
+                "observation_names": deepcopy(self.observation_names),
+                "observation_space": deepcopy(self.observation_space),
+                "action_space": deepcopy(self.action_space),
+                "action_names": deepcopy(self.action_names),
+                "encoders": deepcopy(getattr(self, "encoders", None)),
+                "_action_bounds_cache": deepcopy(
+                    getattr(self, "_action_bounds_cache", None)
+                ),
+            },
+            "adapter": adapter_state,
+        }
+
+    def _restore_entity_layout_state(self, snapshot: Mapping[str, Any]) -> None:
+        """Restore wrapper and adapter metadata after a failed rebuild."""
+        for name, value in snapshot["wrapper"].items():
+            setattr(self, name, deepcopy(value))
+        adapter_state = snapshot.get("adapter")
+        if self._entity_adapter is None or adapter_state is None:
+            return
+        for name in list(self._entity_adapter.__dict__):
+            if name != "env":
+                del self._entity_adapter.__dict__[name]
+        self._entity_adapter.__dict__.update(deepcopy(adapter_state))
 
     def _model_requires_raw_observation_context(self) -> bool:
         if self.model is None:
@@ -1481,7 +1509,9 @@ class Wrapper_CityLearn(RLC):
                     rewards=rewards,
                 )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
+                entity_layout_snapshot = None
                 if self._entity_interface_mode:
+                    entity_layout_snapshot = self._snapshot_entity_layout_state()
                     next_observations = self._apply_entity_layout(
                         next_observations_raw,
                         force_attach=False,
@@ -1531,24 +1561,38 @@ class Wrapper_CityLearn(RLC):
 
                 topology_transition_recorded = False
                 if self._topology_changed_during_step:
-                    if not deterministic:
-                        transition_hook = getattr(self.model, "record_topology_transition", None)
-                        if callable(transition_hook):
-                            transition_observations = (
-                                [np.asarray(obs, dtype=np.float64) for obs in observations]
-                                if self._entity_model_observations_direct
-                                else self._encode_observations_for_model(observations)
-                            )
-                            transition_hook(
-                                observations=transition_observations,
-                                actions=actions,
-                                rewards=rewards,
-                                terminated=terminated,
-                                truncated=truncated,
-                                global_learning_step=self.global_step,
-                            )
-                            topology_transition_recorded = True
-                    self._attach_model_environment_metadata()
+                    snapshot_hook = getattr(self.model, "snapshot_topology_state", None)
+                    restore_hook = getattr(self.model, "restore_topology_state", None)
+                    model_topology_snapshot = (
+                        snapshot_hook()
+                        if callable(snapshot_hook) and callable(restore_hook)
+                        else None
+                    )
+                    try:
+                        if not deterministic:
+                            transition_hook = getattr(self.model, "record_topology_transition", None)
+                            if callable(transition_hook):
+                                transition_observations = (
+                                    [np.asarray(obs, dtype=np.float64) for obs in observations]
+                                    if self._entity_model_observations_direct
+                                    else self._encode_observations_for_model(observations)
+                                )
+                                transition_hook(
+                                    observations=transition_observations,
+                                    actions=actions,
+                                    rewards=rewards,
+                                    terminated=terminated,
+                                    truncated=truncated,
+                                    global_learning_step=self.global_step,
+                                )
+                                topology_transition_recorded = True
+                        self._attach_model_environment_metadata()
+                    except Exception:
+                        if model_topology_snapshot is not None:
+                            restore_hook(model_topology_snapshot)
+                        if entity_layout_snapshot is not None:
+                            self._restore_entity_layout_state(entity_layout_snapshot)
+                        raise
 
                 # Update model if not in deterministic mode
                 if not episode_deterministic:
