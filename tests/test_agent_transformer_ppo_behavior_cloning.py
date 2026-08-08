@@ -191,6 +191,39 @@ def _assert_restore_state_unchanged(agent: AgentTransformerPPO, snapshot: dict) 
     assert torch.equal(torch.get_rng_state(), snapshot["torch_rng"])
 
 
+def _save_checkpoint(agent: AgentTransformerPPO, tmp_path: Path, *, step: int = 7) -> Path:
+    path = agent.save_checkpoint(str(tmp_path), step=step)
+    assert path is not None
+    return Path(path)
+
+
+def _record_demo(agent: AgentTransformerPPO, dimension: int, value: float = 0.25) -> None:
+    assert agent._bc is not None
+    state = agent._per_building[0]
+    agent._bc.record_demonstration(
+        0,
+        np.full(dimension, value),
+        state.layout,
+        [value] * state.layout.n_ca,
+    )
+
+
+def _prepared_checkpoint_target(
+    dimension: int, *, max_samples_per_building: int | None = None
+) -> tuple[AgentTransformerPPO, dict]:
+    target, _ = _agent(demonstrations=2, weight=1.0)
+    state = target._per_building[0]
+    assert target._bc is not None
+    if max_samples_per_building is not None:
+        target._bc.max_samples_per_building = max_samples_per_building
+    assert state.bc_optimizer is not None
+    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
+    _record_demo(target, dimension, 0.5)
+    target.on_episode_start(episode=2, training=True)
+    target.predict([np.ones(dimension)], deterministic=True)
+    return target, _snapshot_restore_state(target)
+
+
 def _expand_charger_topology(
     agent: AgentTransformerPPO,
     observation_names: list[str],
@@ -222,6 +255,11 @@ def _expand_charger_topology(
         metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
     )
     return expanded_names, expanded_actions
+
+
+# ---------------------------------------------------------------------------
+# Demonstration lifecycle and pretraining
+# ---------------------------------------------------------------------------
 
 
 def test_demo_episode_executes_teacher_only_records_immutable_demo_and_no_ppo() -> None:
@@ -624,6 +662,11 @@ def test_pretraining_distinguishes_layouts_with_different_excluded_features() ->
     assert agent._bc.snapshot_metrics()["behavior_cloning_rejected_at_record"] == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Auxiliary BC updates
+# ---------------------------------------------------------------------------
+
+
 def test_auxiliary_bc_never_changes_ppo_actions() -> None:
     agent, dimension = _agent(demonstrations=0, weight=1.0)
     teacher_actions = _teacher(agent, 0.9)
@@ -775,6 +818,11 @@ def test_auxiliary_bc_runs_after_all_ppo_epochs() -> None:
     assert events == ["ppo"] * agent._ppo_epochs + ["auxiliary_bc"]
 
 
+# ---------------------------------------------------------------------------
+# Checkpoint compatibility and atomic restore
+# ---------------------------------------------------------------------------
+
+
 def test_checkpoint_restores_bc_demonstrations_phase_and_decay_progress(
     tmp_path: Path,
 ) -> None:
@@ -789,8 +837,7 @@ def test_checkpoint_restores_bc_demonstrations_phase_and_decay_progress(
     assert agent._bc is not None
     expected_count = agent._bc.demonstration_count()
     expected_weight = agent._bc.effective_weight(agent._latest_global_learning_step)
-    path = agent.save_checkpoint(str(tmp_path), step=7)
-    assert path is not None
+    path = _save_checkpoint(agent, tmp_path)
 
     fresh, _ = _agent(demonstrations=2, weight=1.0)
     fresh.load_checkpoint(path)
@@ -884,8 +931,7 @@ def test_checkpoint_rejects_unsupported_format_version(
     version,
 ) -> None:
     source, _ = _agent(demonstrations=1, weight=1.0)
-    path = source.save_checkpoint(str(tmp_path), step=7)
-    assert path is not None
+    path = _save_checkpoint(source, tmp_path)
     payload = torch.load(path, weights_only=False)
     payload["checkpoint_format_version"] = version
     torch.save(payload, path)
@@ -916,8 +962,7 @@ def test_checkpoint_restores_historical_layout_demonstrations_after_topology_cha
         [0.5] * current_layout.n_ca,
     )
     expected_groups = source._bc.demonstrations_for_building_by_signature(0)
-    path = source.save_checkpoint(str(tmp_path), step=7)
-    assert path is not None
+    path = _save_checkpoint(source, tmp_path)
 
     fresh, _ = _agent(demonstrations=2, weight=1.0)
     fresh.attach_environment(
@@ -941,8 +986,7 @@ def test_checkpoint_rejects_legacy_bc_state_before_mutating_agent(
         source._per_building[0].optimizer,
         source._per_building[0].bc_optimizer,
     )
-    path = source.save_checkpoint(str(tmp_path), step=7)
-    assert path is not None
+    path = _save_checkpoint(source, tmp_path)
     target, dimension = _agent(demonstrations=2, weight=1.0)
     state = target._per_building[0]
     target._latest_training_metrics = {"target_metric": 1.0}
@@ -1233,29 +1277,8 @@ def test_checkpoint_rejects_tokenizer_incompatible_demo_layout_before_mutating_a
     path = source.save_checkpoint(str(tmp_path), step=7)
     assert path is not None
 
-    target, _ = _agent(demonstrations=2, weight=1.0)
-    state = target._per_building[0]
+    target, snapshot = _prepared_checkpoint_target(dimension)
     assert target._bc is not None
-    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
-    target._latest_training_metrics = {"target_metric": 1.0}
-    target._bc.record_demonstration(
-        0, np.ones(dimension), state.layout, [0.25] * state.layout.n_ca
-    )
-    target._bc.record_demonstration(
-        0, np.full(dimension, 2.0), state.layout, [0.5] * state.layout.n_ca
-    )
-    target._bc.demonstration_loss(
-        layout=state.layout,
-        demonstrations=target._bc.sample_demonstrations(0, state.layout, batch_size=1),
-        predicted_means=torch.full((1, state.layout.n_ca, 1), 0.75),
-        global_learning_step=0,
-    )
-    target._bc.set_pretraining_epochs(3)
-    target._bc.set_incompatible_demonstration_samples(2)
-    target.on_episode_start(episode=2, training=True)
-    target.predict([np.ones(dimension)], deterministic=True)
-    assert target._pending_decisions[0] is not None
-    snapshot = _snapshot_restore_state(target)
     payload = torch.load(path, weights_only=False)
     demo = payload["behavior_cloning_state"]["demonstrations"][0][0]
     segment_idx = next(
@@ -1321,16 +1344,8 @@ def test_checkpoint_rejects_demo_segment_in_wrong_tokenizer_family_before_mutati
     path = source.save_checkpoint(str(tmp_path), step=7)
     assert path is not None
 
-    target, _ = _agent(demonstrations=2, weight=1.0)
-    state = target._per_building[0]
+    target, snapshot = _prepared_checkpoint_target(dimension)
     assert target._bc is not None
-    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
-    target._bc.record_demonstration(
-        0, np.ones(dimension), state.layout, [0.5] * state.layout.n_ca
-    )
-    target.on_episode_start(episode=2, training=True)
-    target.predict([np.ones(dimension)], deterministic=True)
-    snapshot = _snapshot_restore_state(target)
 
     payload = torch.load(path, weights_only=False)
     assert payload["checkpoint_format_version"] == 4
@@ -1394,16 +1409,8 @@ def test_checkpoint_rejects_incomplete_bc_state_before_mutating_agent(
     path = source.save_checkpoint(str(tmp_path), step=7)
     assert path is not None
 
-    target, _ = _agent(demonstrations=2, weight=1.0)
-    state = target._per_building[0]
+    target, snapshot = _prepared_checkpoint_target(dimension)
     assert target._bc is not None
-    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
-    target._bc.record_demonstration(
-        0, np.ones(dimension), state.layout, [0.5] * state.layout.n_ca
-    )
-    target.on_episode_start(episode=2, training=True)
-    target.predict([np.ones(dimension)], deterministic=True)
-    snapshot = _snapshot_restore_state(target)
 
     payload = torch.load(path, weights_only=False)
     payload["behavior_cloning_state"].pop("seen_per_building")
@@ -1468,17 +1475,10 @@ def test_checkpoint_rejects_bc_buffer_above_receiver_capacity_before_mutating_ag
     path = source.save_checkpoint(str(tmp_path), step=7)
     assert path is not None
 
-    target, _ = _agent(demonstrations=2, weight=1.0)
-    state = target._per_building[0]
-    assert target._bc is not None
-    target._bc.max_samples_per_building = 1
-    _materialize_optimizer_state(state.optimizer, state.bc_optimizer)
-    target._bc.record_demonstration(
-        0, np.ones(dimension), state.layout, [0.75] * state.layout.n_ca
+    target, snapshot = _prepared_checkpoint_target(
+        dimension, max_samples_per_building=1
     )
-    target.on_episode_start(episode=2, training=True)
-    target.predict([np.ones(dimension)], deterministic=True)
-    snapshot = _snapshot_restore_state(target)
+    assert target._bc is not None
 
     with pytest.raises(RuntimeError, match="BC capacity incompatibility"):
         target.load_checkpoint(path)
