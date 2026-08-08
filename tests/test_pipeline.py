@@ -39,6 +39,7 @@ class RecordingUnit(ExecutionUnit):
         self.export_calls: List[Dict[str, Any]] = []
         self.observation_context_calls: List[Dict[str, Any]] = []
         self.transition_context_calls: List[Dict[str, Any]] = []
+        self.topology_transition_calls: List[Dict[str, Any]] = []
 
     def predict(self, observations, deterministic=None, *, context=None):
         self.predict_calls.append(
@@ -90,6 +91,9 @@ class RecordingUnit(ExecutionUnit):
 
     def set_transition_context(self, **kwargs) -> None:
         self.transition_context_calls.append(kwargs)
+
+    def record_topology_transition(self, **kwargs) -> None:
+        self.topology_transition_calls.append(kwargs)
 
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
         self.save_calls.append({"output_dir": output_dir, "step": step})
@@ -544,6 +548,23 @@ class TestEnsembleUpdate:
 
 
 class TestEnsembleLifecycle:
+    def test_topology_transition_rejects_short_actions_before_dispatch(self) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+
+        with pytest.raises(RuntimeError, match="actions length"):
+            Ensemble([a, b]).record_topology_transition(
+                observations=[[1.0], [2.0]],
+                actions=[[0.1]],
+                rewards=[0.5, 0.6],
+                terminated=False,
+                truncated=False,
+                global_learning_step=1,
+            )
+
+        assert a.topology_transition_calls == []
+        assert b.topology_transition_calls == []
+
     def test_context_hooks_route_raw_and_encoded_slices(self) -> None:
         a = RecordingUnit("a")
         b = RecordingUnit("b")
