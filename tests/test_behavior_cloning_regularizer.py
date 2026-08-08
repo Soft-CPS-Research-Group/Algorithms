@@ -100,7 +100,7 @@ def test_demonstration_is_frozen_and_groups_by_layout_signature() -> None:
     target[0] = 99.0
 
     signature = regularizer.layout_signature(layout)
-    demo = regularizer.demonstrations_by_signature[signature][0]
+    demo = regularizer.demonstrations_for_building_by_signature(0)[signature][0]
     assert isinstance(demo, Demonstration)
     assert demo.observation.tolist() == [1.0, 2.0, 3.0]
     assert demo.target.tolist() == [0.25]
@@ -110,7 +110,6 @@ def test_demonstration_is_frozen_and_groups_by_layout_signature() -> None:
         demo.target[0] = 0.0
 
     regularizer.record_demonstration(0, np.zeros(3), _layout("charger_2"), [0.5])
-    assert len(regularizer.demonstrations_by_signature) == 2
     assert len(regularizer.demonstrations_for_building_by_signature(0)) == 2
 
 
@@ -220,7 +219,7 @@ def test_state_round_trip_restores_read_only_demonstration_arrays() -> None:
     restored = _regularizer()
     restored.load_state_dict(regularizer.state_dict())
 
-    demo = next(iter(restored.demonstrations_by_signature.values()))[0]
+    demo = next(iter(restored.demonstrations_for_building_by_signature(0).values()))[0]
     assert not demo.observation.flags.writeable
     assert not demo.target.flags.writeable
     with pytest.raises(ValueError):
@@ -319,19 +318,15 @@ def test_load_state_dict_rejects_out_of_bounds_demonstration_layout() -> None:
         _regularizer().load_state_dict(state)
 
 
-def test_demonstration_accessors_return_immutable_group_snapshots() -> None:
+def test_demonstration_accessor_returns_an_immutable_group_snapshot() -> None:
     regularizer = _regularizer()
     layout = _layout()
     regularizer.record_demonstration(0, np.zeros(3), layout, [0.25])
 
     signature = regularizer.layout_signature(layout)
-    grouped = regularizer.demonstrations_by_signature
     building_grouped = regularizer.demonstrations_for_building_by_signature(0)
 
-    assert isinstance(grouped[signature], tuple)
     assert isinstance(building_grouped[signature], tuple)
-    with pytest.raises(AttributeError):
-        grouped[signature].append(grouped[signature][0])
     with pytest.raises(AttributeError):
         building_grouped[signature].append(building_grouped[signature][0])
     assert regularizer.demonstration_count(0) == 1
