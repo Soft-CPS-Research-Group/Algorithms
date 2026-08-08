@@ -168,11 +168,14 @@ The adapter (`utils/entity_adapter.py`) returns:
 ```python
 {
   "tables": {
-    "building": np.zeros((n_buildings, len(building_action_features)), dtype=np.float32),
-    "charger": np.zeros((n_chargers, len(charger_action_features)), dtype=np.float32),
+    "building": np.zeros((n_buildings, len(building_action_features)), dtype=np.float64),
+    "charger": np.zeros((n_chargers, len(charger_action_features)), dtype=np.float64),
   }
 }
 ```
+
+The adapter preserves float64 action values through the entity payload. This
+keeps the executed action identical to the affine action retained by PPO.
 
 It does **not** emit a `"map"` field today. The schema in `softcpsrecsimulator
 0.3.0`’s example uses `tables + map`, but the env accepts the tables-only
