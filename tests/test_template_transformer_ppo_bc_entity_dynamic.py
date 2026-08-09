@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.transformer_ppo.agent import AgentTransformerPPO
 from algorithms.registry import build_execution_unit
 from tests.test_agent_transformer_ppo_wrapper_integration import _DummyEntityEnvForPPO
 from tests.test_wrapper_entity_mode import _entity_config

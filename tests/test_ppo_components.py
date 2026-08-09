@@ -6,7 +6,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from algorithms.utils.ppo_components import (
+from algorithms.transformer_ppo.ppo_components import (
     ActorHead,
     CriticHead,
     RolloutBuffer,

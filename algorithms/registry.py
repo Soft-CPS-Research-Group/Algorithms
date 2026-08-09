@@ -78,7 +78,7 @@ from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolic
 from algorithms.agents.total_home_oracle_replay_policy import TotalHomeOracleReplayPolicy
 from algorithms.agents.total_oracle_replay_policy import TotalOracleReplayPolicy
 _registry_trace("before AgentTransformerPPO agents import")
-from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.transformer_ppo.agent import AgentTransformerPPO
 _registry_trace("after AgentTransformerPPO agents import")
 _registry_trace("before RuleBasedPolicy import")
 from algorithms.agents.rbc_agent import RuleBasedPolicy

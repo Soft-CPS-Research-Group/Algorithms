@@ -23,7 +23,7 @@ def test_template_passes_schema_validation() -> None:
 
 
 def test_template_resolves_to_registered_agent() -> None:
-    from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+    from algorithms.transformer_ppo.agent import AgentTransformerPPO
     from algorithms.registry import ALGORITHM_REGISTRY
 
     cfg = _load_template()

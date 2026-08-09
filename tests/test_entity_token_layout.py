@@ -32,7 +32,7 @@ def cfg():
 
 @pytest.fixture
 def builder_and_obs(cfg):
-    from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder
+    from algorithms.transformer_ppo.entity_token_layout import EntityTokenLayoutBuilder
 
     builder = EntityTokenLayoutBuilder(cfg)
     obs_names = load_sample_observation_names_for_first_building()
@@ -57,7 +57,7 @@ def _find_segment(layout, family, type_name, instance_substr=None):
 
 
 def test_dataclasses_constructible():
-    from algorithms.utils.entity_token_layout import (
+    from algorithms.transformer_ppo.entity_token_layout import (
         BuildingTokenLayout,
         NfcExpression,
         TokenSegment,
@@ -247,7 +247,7 @@ def test_excluded_features_dropped_before_classification(builder_and_obs):
 
 
 def test_unmatched_feature_raises(cfg):
-    from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder
+    from algorithms.transformer_ppo.entity_token_layout import EntityTokenLayoutBuilder
 
     builder = EntityTokenLayoutBuilder(cfg)
     obs = load_sample_observation_names_for_first_building() + [
@@ -262,7 +262,7 @@ def test_unmatched_feature_raises(cfg):
 
 
 def test_ambiguous_pattern_raises():
-    from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder
+    from algorithms.transformer_ppo.entity_token_layout import EntityTokenLayoutBuilder
     from utils.entity_tokenizer_schema import EntityTokenizerConfig
 
     raw = json.loads(
@@ -289,7 +289,7 @@ def test_ambiguous_pattern_raises():
 
 
 def test_missing_nfc_source_raises(cfg):
-    from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder
+    from algorithms.transformer_ppo.entity_token_layout import EntityTokenLayoutBuilder
 
     builder = EntityTokenLayoutBuilder(cfg)
     obs = ["non_shiftable_load"]  # solar_generation missing
@@ -298,7 +298,7 @@ def test_missing_nfc_source_raises(cfg):
 
 
 def test_ca_count_mismatch_raises(cfg):
-    from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder
+    from algorithms.transformer_ppo.entity_token_layout import EntityTokenLayoutBuilder
 
     builder = EntityTokenLayoutBuilder(cfg)
     obs = load_sample_observation_names_for_first_building()
@@ -379,10 +379,10 @@ def test_layout_is_cached(builder_and_obs):
 
 
 def test_no_external_imports():
-    """``algorithms/utils/entity_token_layout.py`` must be portable: only
+    """``algorithms/transformer_ppo/entity_token_layout.py`` must be portable: only
     stdlib + typing + re. No torch / numpy / pydantic / algorithms.* /
     utils.* imports at any depth."""
-    src = Path("algorithms/utils/entity_token_layout.py").read_text()
+    src = Path("algorithms/transformer_ppo/entity_token_layout.py").read_text()
     tree = ast.parse(src)
     forbidden = ("torch", "numpy", "pydantic", "algorithms.", "utils.")
     bad: list[str] = []
