@@ -131,6 +131,7 @@ class _UpdateRuntimeSnapshot:
     python_rng_state: object
     numpy_rng_state: tuple
     torch_rng_state: torch.Tensor
+    cuda_rng_state: Optional[torch.Tensor]
 
 
 @dataclass
@@ -153,6 +154,7 @@ class _TopologyStateSnapshot:
     python_rng_state: object
     numpy_rng_state: tuple
     torch_rng_state: torch.Tensor
+    cuda_rng_state: Optional[torch.Tensor]
 
 
 class AgentTransformerPPO(BaseAgent):
@@ -480,6 +482,7 @@ class AgentTransformerPPO(BaseAgent):
             python_rng_state=random.getstate(),
             numpy_rng_state=np.random.get_state(),
             torch_rng_state=torch.get_rng_state(),
+            cuda_rng_state=self._capture_cuda_rng_state(),
         )
 
     def restore_topology_state(self, snapshot: _TopologyStateSnapshot) -> None:
@@ -492,6 +495,7 @@ class AgentTransformerPPO(BaseAgent):
         random.setstate(snapshot.python_rng_state)
         np.random.set_state(snapshot.numpy_rng_state)
         torch.set_rng_state(snapshot.torch_rng_state)
+        self._restore_cuda_rng_state(snapshot.cuda_rng_state)
 
     def consume_latest_training_metrics(self) -> Dict[str, float]:
         metrics = {f"TPPO/{name}": value for name, value in self._latest_training_metrics.items()}
@@ -521,6 +525,7 @@ class AgentTransformerPPO(BaseAgent):
             python_rng_state=random.getstate(),
             numpy_rng_state=np.random.get_state(),
             torch_rng_state=torch.get_rng_state(),
+            cuda_rng_state=self._capture_cuda_rng_state(),
         )
 
     def _snapshot_collection_state(self) -> _CollectionSnapshot:
@@ -568,6 +573,7 @@ class AgentTransformerPPO(BaseAgent):
         random.setstate(snapshot.python_rng_state)
         np.random.set_state(snapshot.numpy_rng_state)
         torch.set_rng_state(snapshot.torch_rng_state)
+        self._restore_cuda_rng_state(snapshot.cuda_rng_state)
 
     def export_artifacts(  # type: ignore[override]
         self,
@@ -664,6 +670,7 @@ class AgentTransformerPPO(BaseAgent):
             "current_episode": self._current_episode,
             "latest_training_metrics": dict(self._latest_training_metrics),
             "torch_rng_state": torch.get_rng_state(),
+            "cuda_rng_state": self._capture_cuda_rng_state(),
             "numpy_rng_state": np.random.get_state(),
             "python_rng_state": random.getstate(),
             "agents": [
@@ -750,6 +757,7 @@ class AgentTransformerPPO(BaseAgent):
         self._latest_training_metrics = dict(payload.get("latest_training_metrics", {}))
         if "torch_rng_state" in payload:
             torch.set_rng_state(payload["torch_rng_state"])
+        self._restore_cuda_rng_state(payload.get("cuda_rng_state"))
         if "numpy_rng_state" in payload:
             np.random.set_state(payload["numpy_rng_state"])
         if "python_rng_state" in payload:
@@ -758,6 +766,15 @@ class AgentTransformerPPO(BaseAgent):
     # ==========================================================================
     # Internal helpers
     # ==========================================================================
+
+    def _capture_cuda_rng_state(self) -> Optional[torch.Tensor]:
+        if self.device.type != "cuda":
+            return None
+        return torch.cuda.get_rng_state(self.device).cpu()
+
+    def _restore_cuda_rng_state(self, state: Optional[torch.Tensor]) -> None:
+        if self.device.type == "cuda" and state is not None:
+            torch.cuda.set_rng_state(state.cpu(), self.device)
 
     @staticmethod
     def _validate_environment_metadata(
