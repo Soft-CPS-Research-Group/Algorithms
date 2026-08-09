@@ -1531,7 +1531,7 @@ class Wrapper_CityLearn(RLC):
                 rewards_list.append(rewards)
 
                 topology_transition_recorded = False
-                if self._topology_changed_during_step:
+                if deterministic and self._topology_changed_during_step:
                     snapshot_model_topology = getattr(self.model, "snapshot_topology_state", None)
                     restore_model_topology = getattr(self.model, "restore_topology_state", None)
                     try:
@@ -1542,7 +1542,39 @@ class Wrapper_CityLearn(RLC):
                             )
                         if callable(snapshot_model_topology):
                             model_topology_snapshot = snapshot_model_topology()
-                        if not deterministic:
+                        self._attach_model_environment_metadata()
+                        self._topology_changed_during_step = False
+                    except Exception:
+                        if model_topology_snapshot is not None and callable(restore_model_topology):
+                            restore_model_topology(model_topology_snapshot)
+                        if entity_layout_snapshot is not None:
+                            self._restore_entity_layout_state(entity_layout_snapshot)
+                        raise
+
+                # Update model if not in deterministic mode
+                if not deterministic:
+                    self._write_phase_progress(
+                        phase="model_update_start",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
+                    self._synchronize_model_cuda_for_timing()
+                    phase_start_time = time.perf_counter()
+                    if self._topology_changed_during_step:
+                        snapshot_model_topology = getattr(self.model, "snapshot_topology_state", None)
+                        restore_model_topology = getattr(self.model, "restore_topology_state", None)
+                        try:
+                            if callable(snapshot_model_topology) != callable(restore_model_topology):
+                                raise RuntimeError(
+                                    "Model topology rollback requires both snapshot_topology_state() "
+                                    "and restore_topology_state()."
+                                )
+                            if callable(snapshot_model_topology):
+                                model_topology_snapshot = snapshot_model_topology()
                             transition_hook = getattr(self.model, "record_topology_transition", None)
                             if callable(transition_hook):
                                 transition_observations = (
@@ -1559,81 +1591,63 @@ class Wrapper_CityLearn(RLC):
                                     global_learning_step=self.global_step,
                                 )
                                 topology_transition_recorded = True
-                        self._attach_model_environment_metadata()
-                    except Exception:
-                        if model_topology_snapshot is not None and callable(restore_model_topology):
-                            restore_model_topology(model_topology_snapshot)
-                        if entity_layout_snapshot is not None:
-                            self._restore_entity_layout_state(entity_layout_snapshot)
-                        raise
-
-                # Update model if not in deterministic mode
-                if not deterministic:
-                    if self._topology_changed_during_step and not self._pending_model_environment_attach:
-                        logger.debug(
-                            "{} model.update at global step {} due to mid-step topology change.",
-                            "Recorded old-layout transition before" if topology_transition_recorded else "Skipping",
-                            self.global_step,
-                        )
-                        self._topology_changed_during_step = False
-                    else:
-                        self._write_phase_progress(
-                            phase="model_update_start",
-                            episode=episode,
-                            step=time_step,
-                            episode_total=episodes,
-                            step_total=episode_step_total,
-                            global_step_total=global_step_total,
-                            rewards=rewards,
-                        )
-                        self._synchronize_model_cuda_for_timing()
-                        phase_start_time = time.perf_counter()
-                        if self._pending_model_environment_attach:
-                            self._pending_model_environment_attach = False
                             self._refresh_update_schedule()
                             self._attach_model_environment_metadata()
-                        else:
-                            self.update(
-                                observations,
-                                actions,
-                                rewards,
-                                next_observations,
-                                terminated=terminated,
-                                truncated=truncated,
-                            )
-                        self._synchronize_model_cuda_for_timing()
-                        model_update_duration = time.perf_counter() - phase_start_time
-                        self._last_model_update_seconds = model_update_duration
-                        self._enforce_update_duration_guard(
-                            update_duration=model_update_duration,
-                            episode=episode,
-                            step=time_step,
-                            episode_total=episodes,
-                            step_total=episode_step_total,
-                            global_step_total=global_step_total,
-                            rewards=rewards,
+                        except Exception:
+                            if model_topology_snapshot is not None and callable(restore_model_topology):
+                                restore_model_topology(model_topology_snapshot)
+                            if entity_layout_snapshot is not None:
+                                self._restore_entity_layout_state(entity_layout_snapshot)
+                            raise
+                        logger.debug(
+                            "{} model.update at global step {} due to mid-step topology change.",
+                            "Recorded old-layout transition before" if topology_transition_recorded else "Skipped",
+                            self.global_step,
                         )
-                        if should_profile_step:
-                            runtime_profile_metrics["Runtime/agent_update_seconds"] = (
-                                model_update_duration
-                            )
-                            runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = float(
-                                getattr(self, "_last_model_observation_encoding_seconds", 0.0) or 0.0
-                            )
-                            runtime_profile_metrics["Runtime/model_update_seconds"] = float(
-                                getattr(self, "_last_model_update_seconds", 0.0) or 0.0
-                            )
-                        logger.debug("Model update executed at global step {}", self.global_step)
-                        self._write_phase_progress(
-                            phase="model_update_end",
-                            episode=episode,
-                            step=time_step,
-                            episode_total=episodes,
-                            step_total=episode_step_total,
-                            global_step_total=global_step_total,
-                            rewards=rewards,
+                    elif self._pending_model_environment_attach:
+                        self._pending_model_environment_attach = False
+                        self._refresh_update_schedule()
+                        self._attach_model_environment_metadata()
+                    else:
+                        self.update(
+                            observations,
+                            actions,
+                            rewards,
+                            next_observations,
+                            terminated=terminated,
+                            truncated=truncated,
                         )
-                        self._topology_changed_during_step = False
+                    self._synchronize_model_cuda_for_timing()
+                    model_update_duration = time.perf_counter() - phase_start_time
+                    self._last_model_update_seconds = model_update_duration
+                    self._enforce_update_duration_guard(
+                        update_duration=model_update_duration,
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
+                    if should_profile_step:
+                        runtime_profile_metrics["Runtime/agent_update_seconds"] = model_update_duration
+                        runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = float(
+                            getattr(self, "_last_model_observation_encoding_seconds", 0.0) or 0.0
+                        )
+                        runtime_profile_metrics["Runtime/model_update_seconds"] = float(
+                            getattr(self, "_last_model_update_seconds", 0.0) or 0.0
+                        )
+                    logger.debug("Model update executed at global step {}", self.global_step)
+                    self._write_phase_progress(
+                        phase="model_update_end",
+                        episode=episode,
+                        step=time_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=rewards,
+                    )
+                    self._topology_changed_during_step = False
 
                     self._write_phase_progress(
                         phase="checkpoint_start",
