@@ -1385,10 +1385,21 @@ class AgentTransformerPPO(BaseAgent):
             for state, grouped in zip(self._per_building, grouped_by_building):
                 usable_samples = 0
                 trained_batches = 0
+                zero_action_samples = 0
                 for group_index, demonstrations in enumerate(grouped.values(), start=1):
                     layout = demonstrations[0].layout
                     group_samples = len(demonstrations)
                     group_trained_batches = 0
+                    if not self._bc_layout_has_active_actions(state, layout):
+                        zero_action_samples += group_samples
+                        logger.info(
+                            "event=bc_pretraining_group_skipped building_id={} "
+                            "group_index={} group_samples={} reason=no_controllable_actions",
+                            state.building_id,
+                            group_index,
+                            group_samples,
+                        )
+                        continue
                     usable_samples += group_samples
                     for _ in range(self._bc.pretraining_epochs):
                         for start in range(0, group_samples, self._bc.batch_size):
@@ -1414,6 +1425,9 @@ class AgentTransformerPPO(BaseAgent):
                     )
                 metrics[f"behavior_cloning_building_{state.building_id}_usable_samples"] = float(usable_samples)
                 metrics[f"behavior_cloning_building_{state.building_id}_trained_batches"] = float(trained_batches)
+                metrics[f"behavior_cloning_building_{state.building_id}_zero_action_samples"] = float(
+                    zero_action_samples
+                )
                 total_usable_samples += usable_samples
                 total_trained_batches += trained_batches
             self._bc.set_pretraining_epochs(self._bc.pretraining_epochs)
@@ -1432,6 +1446,29 @@ class AgentTransformerPPO(BaseAgent):
                     type(error).__name__,
                 )
             raise
+
+    def _bc_layout_has_active_actions(
+        self, state: _PerBuildingState, layout: BuildingTokenLayout
+    ) -> bool:
+        """Return whether BC can train this layout without hiding bad weights."""
+        assert self._bc is not None
+        if layout.n_ca == 0:
+            return False
+        weights = self._bc.ca_type_weights(
+            layout, dtype=torch.float32, device=self.device
+        )
+        if weights.numel() != layout.n_ca:
+            raise RuntimeError(
+                "Behavior-cloning action-weight count does not match the layout "
+                f"for building {state.building_id!r}."
+            )
+        if weights.sum().item() <= 0.0:
+            raise ValueError(
+                "Behavior cloning has no active action weights for building "
+                f"{state.building_id!r} with actions {layout.ca_action_names!r}. "
+                "Configure at least one positive action-type multiplier."
+            )
+        return True
 
     def _apply_bc_gradient_step(
         self,
@@ -1480,13 +1517,18 @@ class AgentTransformerPPO(BaseAgent):
     ) -> None:
         """Apply one actor-only BC step after all PPO epochs are complete."""
         assert self._bc is not None
+        if not self._bc_layout_has_active_actions(state, state.layout):
+            logger.info(
+                "event=bc_auxiliary_update_skipped building_id={} "
+                "reason=no_controllable_actions",
+                state.building_id,
+            )
+            return
         demonstrations = self._bc.sample_demonstrations(
             building_idx, state.layout, self._bc.batch_size
         )
         if not demonstrations:
             return
-        if self._bc.ca_type_weights(state.layout, dtype=torch.float32, device=self.device).sum().item() <= 0.0:
-            raise RuntimeError("Behavior-cloning action weights sum to zero for the current layout.")
         self._apply_bc_gradient_step(
             state=state,
             layout=state.layout,

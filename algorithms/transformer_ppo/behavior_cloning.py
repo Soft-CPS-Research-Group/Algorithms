@@ -322,6 +322,11 @@ class BehaviorCloningRegularizer:
         if not demonstrations or (apply_weight and effective_weight <= 0.0):
             self._set_loss_metrics(0.0, 0.0, 0.0)
             return predicted_means.new_tensor(0.0)
+        if layout.n_ca == 0:
+            # A building may legitimately have no controllable assets. There
+            # is no actor target to clone in that layout, so this is a no-op.
+            self._set_loss_metrics(0.0, 0.0, 0.0)
+            return predicted_means.new_tensor(0.0)
         targets = predicted_means.new_tensor(np.stack([demo.target for demo in demonstrations]))
         weights = self.ca_type_weights(
             layout, dtype=predicted_means.dtype, device=predicted_means.device
