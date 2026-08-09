@@ -86,7 +86,6 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
 | `SingleAgentRL` | Schema placeholder only |
 
 The Transformer PPO implementation lives in `algorithms/transformer_ppo/`.
-`algorithms/agents/agent_transformer_ppo.py` remains a compatibility import.
 
 ## Runtime Flow
 
