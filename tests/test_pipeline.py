@@ -291,6 +291,24 @@ class TestPipelineLifecycle:
         assert Pipeline([ready, ready]).is_initial_exploration_done(10) is True
         assert Pipeline([ready, warming]).is_initial_exploration_done(10) is False
 
+    def test_stage_metrics_are_namespaced_and_training_metrics_consumed(self) -> None:
+        manager = RecordingUnit("manager")
+        leaf = RecordingUnit("leaf")
+        manager.get_diagnostic_metrics = lambda: {"multiplier_mean": 0.9}
+        leaf.get_diagnostic_metrics = lambda: {"price_context_active": 1.0}
+        manager.consume_latest_training_metrics = lambda: {"update_count": 4.0}
+        leaf.consume_latest_training_metrics = lambda: {"actor_loss": -0.2}
+        pipeline = Pipeline([manager, leaf])
+
+        assert pipeline.get_diagnostic_metrics() == {
+            "Pipeline/stage_0/multiplier_mean": 0.9,
+            "Pipeline/stage_1/price_context_active": 1.0,
+        }
+        assert pipeline.consume_latest_training_metrics() == {
+            "Pipeline/stage_0/update_count": 4.0,
+            "Pipeline/stage_1/actor_loss": -0.2,
+        }
+
     def test_attach_environment_delegates_to_every_stage(self) -> None:
         a = RecordingUnit("a")
         b = RecordingUnit("b")

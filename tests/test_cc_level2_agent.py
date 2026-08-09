@@ -13,6 +13,7 @@ from algorithms.agents.cc_level2_agent import (
     RolloutBufferV2,
     _CC_LEVEL2_BUILDING_FEATURES,
     _CC_LEVEL2_DISTRICT_FEATURES,
+    _CC_LEVEL2_HEADROOM_FEATURE,
 )
 from utils.config_schema import CCLevel2Hyperparameters
 
@@ -64,6 +65,110 @@ def test_cc_level2_requests_its_own_pipeline_observation_profile() -> None:
     assert CCLevel2Agent.observation_encoding_profile == "cc_level2"
 
 
+def test_cc_level2_headroom_and_physical_bc_teacher_are_explicit() -> None:
+    count = 2
+    district_names = [
+        *_CC_LEVEL2_DISTRICT_FEATURES,
+        _CC_LEVEL2_HEADROOM_FEATURE,
+    ]
+    names = []
+    for building in range(1, count + 1):
+        building_names = list(district_names)
+        for feature in _CC_LEVEL2_BUILDING_FEATURES:
+            if "::" in feature:
+                prefix, tail = feature.split("::", 1)
+                building_names.append(
+                    f"{prefix}::Building_{building}/asset::{tail}"
+                )
+            else:
+                building_names.append(
+                    f"charger::Building_{building}/charger::{feature}"
+                )
+        names.append(building_names)
+
+    agent = CCLevel2Agent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "num_buildings": count,
+                    "c_dim": len(district_names)
+                    + len(_CC_LEVEL2_BUILDING_FEATURES) * count,
+                    "hidden_dims": [8],
+                    "include_community_headroom": True,
+                    "bc_pretrain_enabled": True,
+                    "bc_use_physical_teacher_context": True,
+                    "bc_target_import": 2.0,
+                    "bc_reference_peak": 4.0,
+                    "bc_reference_export": 3.0,
+                    "bc_w_cost": 0.0,
+                    "bc_w_peak": 1.0,
+                    "bc_w_export": 0.0,
+                }
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=names,
+        action_names=[[], []],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={"raw_observation_names": names},
+    )
+
+    encoded = [np.zeros(len(member_names), dtype=np.float32) for member_names in names]
+    encoded[0][names[0].index(_CC_LEVEL2_HEADROOM_FEATURE)] = 0.25
+    raw = [member.copy() for member in encoded]
+    raw_values = {
+        "district__electricity_pricing": 0.20,
+        "district__electricity_pricing_predicted_1": 0.25,
+        "district__electricity_pricing_predicted_2": 0.30,
+        "district__electricity_pricing_predicted_3": 0.35,
+        "district__community_import_power_kw": 10.0,
+        "district__community_export_power_kw": 1.5,
+    }
+    for name, value in raw_values.items():
+        raw[0][names[0].index(name)] = value
+    agent.set_observation_context(raw_observations=raw)
+
+    policy_context = agent._build_context(encoded)
+    teacher_context = agent._build_teacher_context(policy_context)
+
+    assert len(policy_context) == 17 + 6 * count
+    assert policy_context[district_names.index(_CC_LEVEL2_HEADROOM_FEATURE)] == (
+        pytest.approx(0.25)
+    )
+    for name, value in raw_values.items():
+        assert teacher_context[district_names.index(name)] == pytest.approx(value)
+    # 10 kW × 0.25 h = 2.5 kWh. Against a 2.0 kWh target and 4.0
+    # reference, the physical peak signal is (0.5² / 4) = 0.0625.
+    assert agent._community_signal(teacher_context) == pytest.approx(0.0625)
+
+
+def test_cc_level2_physical_bc_teacher_requires_raw_metadata() -> None:
+    with pytest.raises(ValueError, match="requires raw district features"):
+        agent = CCLevel2Agent(
+            {
+                "algorithm": {
+                    "hyperparameters": {
+                        "num_buildings": 2,
+                        "c_dim": len(_CC_LEVEL2_DISTRICT_FEATURES)
+                        + len(_CC_LEVEL2_BUILDING_FEATURES) * 2,
+                        "bc_pretrain_enabled": True,
+                        "bc_use_physical_teacher_context": True,
+                    }
+                }
+            }
+        )
+        names = [_observation_names(1), _observation_names(2)]
+        agent.attach_environment(
+            observation_names=names,
+            action_names=[[], []],
+            action_space=[None, None],
+            observation_space=[None, None],
+            metadata={},
+        )
+
+
 def test_vector_policy_honors_initial_log_std() -> None:
     policy = CommunityMarketMakerNetV2(
         c_dim=2,
@@ -103,6 +208,7 @@ def test_deterministic_vector_policy_exports_price_mapping() -> None:
         agent._price_max,
         agent._reference_multipliers,
         agent._policy_residual_scale,
+        agent._policy_parameterization,
     )
 
     output = inference(torch.zeros((3, agent._c_dim), dtype=torch.float32))
@@ -132,6 +238,74 @@ def test_cc_level2_can_conservatively_scale_policy_away_from_reference() -> None
     # Full policy output is the midpoint 0.95; blend halfway from each
     # building's measured reference [0.90, 1.05].
     np.testing.assert_allclose(output, [0.925, 1.0], atol=1e-6)
+
+
+def test_centered_residual_can_learn_away_from_reference_at_price_bound() -> None:
+    agent = CCLevel2Agent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "num_buildings": 2,
+                    "c_dim": len(_CC_LEVEL2_DISTRICT_FEATURES)
+                    + len(_CC_LEVEL2_BUILDING_FEATURES) * 2,
+                    "hidden_dims": [8],
+                    "price_min": 0.5,
+                    "price_max": 1.3,
+                    "reference_multipliers": [1.3, 0.5],
+                    "policy_residual_scale": 1.0,
+                    "policy_parameterization": "centered_residual",
+                    "cc_action_interval": 1,
+                    "bc_pretrain_enabled": False,
+                }
+            }
+        }
+    )
+    names = [_observation_names(1), _observation_names(2)]
+    agent.attach_environment(
+        observation_names=names,
+        action_names=[[], []],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={},
+    )
+    observations = [np.zeros(len(names[0]), dtype=np.float32) for _ in range(2)]
+
+    np.testing.assert_allclose(
+        agent.predict(observations, deterministic=True), [1.3, 0.5], atol=1e-6
+    )
+    with torch.no_grad():
+        agent.policy.mean_head.bias.copy_(torch.tensor([-0.2, 0.2]))
+
+    moved = agent.predict(observations, deterministic=True)
+    assert moved[0] < 1.3
+    assert moved[1] > 0.5
+    assert moved[0] == pytest.approx(1.3 - 0.8 * np.tanh(0.2))
+    assert moved[1] == pytest.approx(0.5 + 0.8 * np.tanh(0.2))
+
+
+def test_centered_residual_export_matches_runtime_mapping() -> None:
+    agent = _attached_agent()
+    agent._policy_parameterization = "centered_residual"
+    agent._initialize_policy_at_reference()
+    with torch.no_grad():
+        agent.policy.mean_head.bias.copy_(torch.tensor([-0.3, 0.4]))
+    inference = DeterministicVectorMultiplierPolicy(
+        agent.policy,
+        agent._price_min,
+        agent._price_max,
+        agent._reference_multipliers,
+        agent._policy_residual_scale,
+        agent._policy_parameterization,
+    )
+    observations = [
+        np.zeros(len(_observation_names(1)), dtype=np.float32),
+        np.zeros(len(_observation_names(2)), dtype=np.float32),
+    ]
+
+    expected = agent.predict(observations, deterministic=True)
+    exported = inference(torch.zeros((1, agent._c_dim), dtype=torch.float32))
+
+    np.testing.assert_allclose(exported.detach().numpy()[0], expected, atol=1e-6)
 
 
 def test_cc_level2_temporal_abstraction_adds_one_joint_transition() -> None:
@@ -212,6 +386,7 @@ def test_cc_level2_export_persists_vector_contract_and_trace(tmp_path) -> None:
     assert metadata["output_contract"] == "deterministic_per_building_price_multiplier_vector"
     assert metadata["reference_multipliers"] == pytest.approx([0.9, 1.05])
     assert metadata["policy_residual_scale"] == 1.0
+    assert metadata["policy_parameterization"] == "absolute_blend"
     assert (tmp_path / "onnx_models" / "cc2_market_maker.onnx").is_file()
     with (tmp_path / "decision_trace.csv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))

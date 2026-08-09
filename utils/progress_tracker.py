@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -81,9 +83,26 @@ class ProgressTracker:
         if extra:
             payload.update(dict(extra))
 
+        temporary_path: Optional[Path] = None
         try:
             self.progress_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.progress_path.open("w", encoding="utf-8") as handle:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.progress_path.parent,
+                prefix=f".{self.progress_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
                 json.dump(payload, handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, self.progress_path)
         except Exception as exc:
             logger.warning("Failed to write progress file {}: {}", self.progress_path, exc)
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass

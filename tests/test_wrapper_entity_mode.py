@@ -348,6 +348,9 @@ def test_wrapper_entity_maddpg_profile_exports_serving_encoded_observations():
     assert info["entity_encoding"]["profile"] == "maddpg_v1"
     assert info["entity_encoding"]["serving_observation_names"] == "encoded"
     assert info["observation_names"] == info["encoded_observation_names"]
+    assert info["profiled_encoded_observation_names"]["maddpg_v1"] == (
+        info["encoded_observation_names"]
+    )
     assert info["raw_observation_names"] != info["observation_names"]
     assert "district__hour" in info["raw_observation_names"][0]
     assert "district__hour" not in info["observation_names"][0]

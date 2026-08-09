@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from utils import progress_tracker as progress_tracker_module
 from utils.progress_tracker import ProgressTracker
 
 
@@ -91,3 +92,20 @@ def test_progress_tracker_writes_extra_runtime_fields(tmp_path):
     payload = json.loads(progress_path.read_text(encoding="utf-8"))
     assert payload["phase"] == "env_step_start"
     assert payload["process_rss_mb"] == 123.4
+
+
+def test_progress_tracker_atomically_replaces_previous_payload(tmp_path, monkeypatch):
+    progress_path = tmp_path / "progress" / "progress.json"
+    progress_path.parent.mkdir(parents=True)
+    progress_path.write_text('{"global_step": 7}', encoding="utf-8")
+    tracker = ProgressTracker(str(progress_path))
+
+    def fail_replace(source, destination):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(progress_tracker_module.os, "replace", fail_replace)
+
+    tracker.update(episode=0, step=8, global_step=8, status="running")
+
+    assert json.loads(progress_path.read_text(encoding="utf-8")) == {"global_step": 7}
+    assert list(progress_path.parent.glob(".progress.json.*.tmp")) == []

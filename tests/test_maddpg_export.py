@@ -16,6 +16,30 @@ def test_maddpg_rejects_semantically_incomplete_residual_export(tmp_path):
         agent.export_artifacts(output_dir=str(tmp_path))
 
 
+def test_maddpg_runtime_only_residual_export_is_explicitly_non_deployable(tmp_path):
+    agent = MADDPG.__new__(MADDPG)
+    agent.device = torch.device("cpu")
+    agent.actors = [torch.nn.Sequential(torch.nn.Linear(3, 1), torch.nn.Tanh())]
+    agent.observation_dimension = [3]
+    agent.action_dimension = [1]
+    agent.residual_policy_enabled = True
+    agent.residual_policy_runtime_only_export = True
+    agent.warm_start_policy_name = "RBCCommunityPolicy"
+    agent.residual_action_scale = 0.04
+    agent.residual_action_final_scale = 0.20
+
+    metadata = agent.export_artifacts(output_dir=str(tmp_path))
+
+    artifact = metadata["artifacts"][0]
+    assert artifact["config"]["deployable"] is False
+    assert artifact["config"]["runtime_only_reason"] == (
+        "external_residual_warm_start_policy"
+    )
+    assert artifact["config"]["residual_base_policy"] == "RBCCommunityPolicy"
+    assert artifact["config"]["residual_action_scale"] == pytest.approx(0.04)
+    assert artifact["config"]["residual_action_final_scale"] == pytest.approx(0.20)
+
+
 def test_maddpg_export_artifacts_includes_per_artifact_format_and_config(tmp_path):
     agent = MADDPG.__new__(MADDPG)
     agent.device = torch.device("cpu")

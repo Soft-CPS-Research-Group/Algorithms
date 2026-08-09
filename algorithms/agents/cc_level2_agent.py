@@ -16,13 +16,12 @@ DESIGN
 Observations:
     Uses the `cc_level2` entity-encoding profile.  Each building's encoded
     vector contains:
-        • 16 district features (same as cc_level1: time, price, carbon,
-          community power)
-        • 3 per-building features: storage::soc, pv::generation_power_kw,
-          net_power_kw
+        • 16 legacy district features (time, price, carbon, community power),
+          plus optional community electrical headroom
+        • 6 per-building features: storage/PV/net power and EV service state
 
     The CC assembles a single context vector of shape
-        (16 + 3 * num_buildings,)
+        (district_features + 6 * num_buildings,)
     taking district features from observations[0] (identical across all
     buildings) and per-building features from observations[i] for each i.
 
@@ -92,6 +91,7 @@ _CC_LEVEL2_DISTRICT_FEATURES = (
     "district__community_pv_power_kw",
 )
 _N_DISTRICT = len(_CC_LEVEL2_DISTRICT_FEATURES)  # 16
+_CC_LEVEL2_HEADROOM_FEATURE = "district__community_building_headroom_kw"
 _PRICE_FEATURE = "district__electricity_pricing"
 
 # ── Per-building features (6 per building) ────────────────────────────────────
@@ -239,6 +239,7 @@ class DeterministicVectorMultiplierPolicy(nn.Module):
         price_max: float,
         reference_multipliers: np.ndarray,
         policy_residual_scale: float,
+        policy_parameterization: str = "absolute_blend",
     ) -> None:
         super().__init__()
         self.encoder = policy.encoder
@@ -253,9 +254,22 @@ class DeterministicVectorMultiplierPolicy(nn.Module):
             "policy_residual_scale",
             torch.tensor(float(policy_residual_scale)),
         )
+        self.policy_parameterization = str(policy_parameterization)
 
     def forward(self, community: torch.Tensor) -> torch.Tensor:
         raw = self.mean_head(self.encoder(community))
+        if self.policy_parameterization == "centered_residual":
+            unit = torch.tanh(raw)
+            upward_distance = self.price_min + self.price_span - self.reference_multipliers
+            downward_distance = self.reference_multipliers - self.price_min
+            distance = torch.where(unit >= 0.0, upward_distance, downward_distance)
+            output = self.reference_multipliers + (
+                self.policy_residual_scale * distance * unit
+            )
+            return torch.minimum(
+                torch.maximum(output, self.price_min),
+                self.price_min + self.price_span,
+            )
         full = self.price_min + self.price_span * (torch.tanh(raw) + 1.0) / 2.0
         return self.reference_multipliers + self.policy_residual_scale * (
             full - self.reference_multipliers
@@ -377,12 +391,38 @@ class CCLevel2Agent(BaseAgent):
         self._policy_residual_scale = float(hyper.get("policy_residual_scale", 1.0))
         if not 0.0 <= self._policy_residual_scale <= 1.0:
             raise ValueError("CCLevel2 policy_residual_scale must be within [0, 1]")
+        self._policy_parameterization = str(
+            hyper.get("policy_parameterization", "absolute_blend")
+        ).strip().lower()
+        if self._policy_parameterization not in {
+            "absolute_blend",
+            "centered_residual",
+        }:
+            raise ValueError(
+                "CCLevel2 policy_parameterization must be 'absolute_blend' or "
+                "'centered_residual'"
+            )
 
-        # Context dimension: 16 district + 6 per-building × N = 118 for N=17
-        self._n_district = _N_DISTRICT
+        # Keep the historical 118-wide contract by default. New campaigns may
+        # opt into the headroom feature that the cc_level2 adapter already
+        # exposes, giving 17 + 6*N = 119 inputs for 17 buildings.
+        self._include_community_headroom = bool(
+            hyper.get("include_community_headroom", False)
+        )
+        self._district_feature_names = _CC_LEVEL2_DISTRICT_FEATURES + (
+            (_CC_LEVEL2_HEADROOM_FEATURE,)
+            if self._include_community_headroom
+            else ()
+        )
+        self._n_district = len(self._district_feature_names)
         self._n_building_feats = _N_BUILDING_FEATS
-        default_c_dim = _N_DISTRICT + _N_BUILDING_FEATS * self._num_buildings
+        default_c_dim = self._n_district + _N_BUILDING_FEATS * self._num_buildings
         self._c_dim = int(hyper.get("c_dim", default_c_dim))
+        if self._c_dim != default_c_dim:
+            raise ValueError(
+                "CCLevel2 c_dim does not match the selected observation contract: "
+                f"expected {default_c_dim}, got {self._c_dim}"
+            )
 
         # Per-building feature positions in encoded obs — populated at attach_environment.
         self._district_positions: List[int] = []
@@ -427,11 +467,18 @@ class CCLevel2Agent(BaseAgent):
 
         # BC warm-start
         self._bc_enabled       = bool(hyper.get("bc_pretrain_enabled", False))
+        self._bc_use_physical_teacher_context = bool(
+            hyper.get("bc_use_physical_teacher_context", False)
+        )
+        self.requires_raw_observation_context = (
+            self._bc_enabled and self._bc_use_physical_teacher_context
+        )
         self._bc_collect_steps = int(hyper.get("bc_collect_steps", 336))
         self._bc_train_steps   = int(hyper.get("bc_train_steps",   2000))
         self._bc_lr            = float(hyper.get("bc_lr",           1e-3))
         self._bc_pretrain_done: bool = not self._bc_enabled
         self._bc_contexts:  List[np.ndarray] = []
+        self._bc_teacher_contexts: List[np.ndarray] = []
         # targets: shape (N_steps, num_buildings)
         self._bc_targets:   List[np.ndarray] = []
         # Community-level reference values (auto-calibrated from episode-0 data)
@@ -441,6 +488,8 @@ class CCLevel2Agent(BaseAgent):
         self._bc_reference_export = hyper.get("bc_reference_export", None)
         self._bc_import_samples: List[float] = []
         self._bc_export_samples: List[float] = []
+        self._latest_raw_observations: Optional[List[np.ndarray]] = None
+        self._raw_obs_indices: List[Dict[str, int]] = []
         # Weights mirroring CCRewardLevel1
         self._bc_w_cost   = float(hyper.get("bc_w_cost",   1.0))
         self._bc_w_peak   = float(hyper.get("bc_w_peak",   0.3))
@@ -465,22 +514,59 @@ class CCLevel2Agent(BaseAgent):
         self._completed_decision_traces: List[dict] = []
 
     def _multipliers_to_raw(self, multipliers: np.ndarray) -> np.ndarray:
-        unit = (
-            (np.asarray(multipliers, dtype=np.float64) - self._price_min)
-            / (self._price_max - self._price_min)
-            * 2.0
-            - 1.0
-        )
+        values = np.asarray(multipliers, dtype=np.float64)
+        reference = self._reference_multipliers.astype(np.float64)
+        if self._policy_parameterization == "centered_residual":
+            delta = values - reference
+            distance = np.where(
+                delta >= 0.0,
+                self._price_max - reference,
+                reference - self._price_min,
+            )
+            denominator = self._policy_residual_scale * distance
+            unit = np.divide(
+                delta,
+                denominator,
+                out=np.zeros_like(delta, dtype=np.float64),
+                where=denominator > 1.0e-12,
+            )
+        else:
+            if self._policy_residual_scale <= 1.0e-12:
+                full = reference
+            else:
+                full = reference + (
+                    (values - reference) / self._policy_residual_scale
+                )
+            unit = (
+                (full - self._price_min)
+                / (self._price_max - self._price_min)
+                * 2.0
+                - 1.0
+            )
         return np.arctanh(np.clip(unit, -0.999, 0.999)).astype(np.float32)
 
     def _initialize_policy_at_reference(self) -> None:
         """Start deterministic inference at a measured safe/reference signal."""
-        raw_reference = self._multipliers_to_raw(self._reference_multipliers)
+        raw_reference = (
+            np.zeros_like(self._reference_multipliers, dtype=np.float32)
+            if self._policy_parameterization == "centered_residual"
+            else self._multipliers_to_raw(self._reference_multipliers)
+        )
         with torch.no_grad():
             self.policy.mean_head.weight.zero_()
             self.policy.mean_head.bias.copy_(torch.from_numpy(raw_reference))
 
     def _raw_to_multipliers(self, raw: np.ndarray) -> np.ndarray:
+        if self._policy_parameterization == "centered_residual":
+            unit = np.tanh(raw)
+            reference = self._reference_multipliers
+            distance = np.where(
+                unit >= 0.0,
+                self._price_max - reference,
+                reference - self._price_min,
+            )
+            output = reference + self._policy_residual_scale * distance * unit
+            return np.clip(output, self._price_min, self._price_max)
         full = self._price_min + (
             (self._price_max - self._price_min) * (np.tanh(raw) + 1.0) / 2.0
         )
@@ -502,7 +588,50 @@ class CCLevel2Agent(BaseAgent):
 
         # --- District feature positions (same names across all buildings) ------
         obs0_idx = self._obs_index
-        self._district_positions = [obs0_idx.get(name, -1) for name in _CC_LEVEL2_DISTRICT_FEATURES]
+        self._district_positions = [
+            obs0_idx.get(name, -1) for name in self._district_feature_names
+        ]
+        missing_district = [
+            name
+            for name, position in zip(
+                self._district_feature_names,
+                self._district_positions,
+            )
+            if position < 0
+        ]
+        if missing_district:
+            raise ValueError(
+                "CCLevel2 required district features are missing from the selected "
+                f"observation profile: {missing_district}"
+            )
+
+        raw_observation_names = (
+            (metadata or {}).get("raw_observation_names")
+            if isinstance(metadata, dict)
+            else None
+        )
+        self._raw_obs_indices = []
+        if isinstance(raw_observation_names, list):
+            self._raw_obs_indices = [
+                {str(name): index for index, name in enumerate(names)}
+                for names in raw_observation_names
+            ]
+        if self.requires_raw_observation_context:
+            required_physical = {
+                "district__electricity_pricing",
+                "district__electricity_pricing_predicted_1",
+                "district__electricity_pricing_predicted_2",
+                "district__electricity_pricing_predicted_3",
+                "district__community_import_power_kw",
+                "district__community_export_power_kw",
+            }
+            available = set(self._raw_obs_indices[0]) if self._raw_obs_indices else set()
+            missing_physical = sorted(required_physical - available)
+            if missing_physical:
+                raise ValueError(
+                    "CCLevel2 physical BC teacher requires raw district features: "
+                    f"{missing_physical}"
+                )
 
         # --- Per-building feature positions (pattern-matched per building) -----
         # Each building's encoded obs has different qualified IDs, e.g.
@@ -547,9 +676,25 @@ class CCLevel2Agent(BaseAgent):
             # Rebuild policy and buffer with corrected size.
             self._rebuild_for_num_buildings()
 
+    def set_observation_context(
+        self,
+        *,
+        raw_observations: Optional[List[np.ndarray]] = None,
+        encoded_observations: Optional[List[np.ndarray]] = None,
+    ) -> None:
+        _ = encoded_observations
+        self._latest_raw_observations = (
+            [
+                np.asarray(observation, dtype=np.float64)
+                for observation in raw_observations
+            ]
+            if raw_observations is not None
+            else None
+        )
+
     def _rebuild_for_num_buildings(self) -> None:
         """Reconstruct policy and buffer when num_buildings changes at env attach."""
-        self._c_dim = _N_DISTRICT + _N_BUILDING_FEATS * self._num_buildings  # 16 + 6×N
+        self._c_dim = self._n_district + _N_BUILDING_FEATS * self._num_buildings
         self.policy = CommunityMarketMakerNetV2(
             self._c_dim,
             self._num_buildings,
@@ -584,26 +729,43 @@ class CCLevel2Agent(BaseAgent):
         if self._step_in_interval == 0:
             if not self._bc_pretrain_done:
                 ctx = self._build_context(observations)
+                teacher_ctx = self._build_teacher_context(ctx)
                 self._bc_contexts.append(ctx.copy())
+                self._bc_teacher_contexts.append(teacher_ctx.copy())
                 # Compute teacher targets per building.
-                teacher_targets = self._bc_teacher_multipliers_per_building(ctx, observations)
+                teacher_targets = self._bc_teacher_multipliers_per_building(
+                    teacher_ctx,
+                    observations,
+                )
                 self._bc_targets.append(teacher_targets.copy())
                 # Use per-building teacher as cached output.
-                self._cached_multipliers = teacher_targets.copy()
+                self._cached_action = self._multipliers_to_raw(teacher_targets)
+                self._cached_multipliers = self._raw_to_multipliers(
+                    self._cached_action
+                ).astype(np.float32)
                 self._cached_community   = ctx
-                self._cached_action      = self._multipliers_to_raw(teacher_targets)
                 self._cached_logprob     = np.zeros(
                     self._num_buildings, dtype=np.float32
                 )
                 self._cached_value       = 0.0
                 # Accumulate community import/export for BC calibration.
-                _idx = _CC_LEVEL2_DISTRICT_FEATURES.index
+                _idx = self._district_feature_names.index
                 dt = self._bc_dt_hours
                 self._bc_import_samples.append(
-                    float(ctx[_idx("district__community_import_power_kw")]) * dt
+                    float(
+                        teacher_ctx[
+                            _idx("district__community_import_power_kw")
+                        ]
+                    )
+                    * dt
                 )
                 self._bc_export_samples.append(
-                    float(ctx[_idx("district__community_export_power_kw")]) * dt
+                    float(
+                        teacher_ctx[
+                            _idx("district__community_export_power_kw")
+                        ]
+                    )
+                    * dt
                 )
                 if len(self._bc_contexts) >= self._bc_collect_steps:
                     self._run_bc_pretraining()
@@ -703,7 +865,7 @@ class CCLevel2Agent(BaseAgent):
 
     def _community_signal(self, ctx: np.ndarray) -> float:
         """Community-level raw signal (mirrors CCLevel1 BC teacher)."""
-        _idx = _CC_LEVEL2_DISTRICT_FEATURES.index
+        _idx = self._district_feature_names.index
         price    = float(ctx[_idx("district__electricity_pricing")])
         price_p1 = float(ctx[_idx("district__electricity_pricing_predicted_1")])
         price_p2 = float(ctx[_idx("district__electricity_pricing_predicted_2")])
@@ -783,6 +945,7 @@ class CCLevel2Agent(BaseAgent):
     def _run_bc_pretraining(self) -> None:
         """Supervised pretraining of encoder + mean_head against per-building teacher targets."""
         X = np.stack(self._bc_contexts)          # (N_steps, c_dim)
+        teacher_X = np.stack(self._bc_teacher_contexts)
         T = np.stack(self._bc_targets)            # (N_steps, num_buildings)
 
         # Auto-calibrate reference values from community import/export distribution.
@@ -807,8 +970,8 @@ class CCLevel2Agent(BaseAgent):
         # Re-compute targets now that reference values are calibrated.
         # Per-building block: [soc, pv, net, ev_conn, soc_deficit, urgency_24h]
         for j in range(len(X)):
-            base = self._community_signal(X[j])
-            d_start = _N_DISTRICT
+            base = self._community_signal(teacher_X[j])
+            d_start = self._n_district
             for i in range(self._num_buildings):
                 feat_start = d_start + i * _N_BUILDING_FEATS
                 soc         = float(X[j][feat_start + 0])  # storage::soc [0,1]
@@ -826,12 +989,10 @@ class CCLevel2Agent(BaseAgent):
                 raw = float(np.clip((base + soc_mod + net_mod + ev_mod) * self._bc_mult_scale, -0.8, 0.8))
                 T[j, i] = float(np.clip(1.0 + raw, self._price_min, self._price_max))
 
-        # Convert multiplier targets to pre-tanh space (atanh).
-        def to_raw(mult: np.ndarray) -> np.ndarray:
-            t = (mult - self._price_min) / (self._price_max - self._price_min) * 2.0 - 1.0
-            return np.arctanh(np.clip(t, -0.999, 0.999))
-
-        T_raw = to_raw(T)   # (N_steps, num_buildings)
+        # Convert reachable multiplier targets to the configured pre-tanh
+        # representation.  This is especially important for centered residual
+        # policies whose reference may lie exactly on a price bound.
+        T_raw = self._multipliers_to_raw(T)   # (N_steps, num_buildings)
 
         X_t   = torch.tensor(X,     dtype=torch.float32)
         T_t   = torch.tensor(T_raw, dtype=torch.float32)
@@ -871,6 +1032,7 @@ class CCLevel2Agent(BaseAgent):
             )
 
         self._bc_contexts.clear()
+        self._bc_teacher_contexts.clear()
         self._bc_targets.clear()
         self._bc_import_samples.clear()
         self._bc_export_samples.clear()
@@ -878,11 +1040,11 @@ class CCLevel2Agent(BaseAgent):
     # ───────────────────────── Internal: decision ────────────────────────────
 
     def _build_context(self, observations: List[np.ndarray]) -> np.ndarray:
-        """Build (16 + 6*N,) context vector from all buildings' encoded observations.
+        """Build the compact policy context from encoded observations.
 
         Layout:
-            [0:16]         district features (from obs[0])
-            [16 : 16+6*N]  per-building features (obs[i] for i in range(N))
+            [0:D]       district features (from obs[0])
+            [D:D+6*N]   per-building features (obs[i] for i in range(N))
 
         Within each building block of 6:
             [0] storage::soc                       [0, 1]
@@ -919,6 +1081,39 @@ class CCLevel2Agent(BaseAgent):
             building_parts.append(bfeat)
 
         return np.concatenate([district] + building_parts)
+
+    def _build_teacher_context(self, encoded_context: np.ndarray) -> np.ndarray:
+        """Overlay physical district values for the BC teacher only.
+
+        The policy deliberately consumes normalized features. The heuristic
+        teacher, however, compares import/export energy against physical kWh
+        references and therefore must not use the min-max encoded values.
+        Per-building SoC/net/EV features remain encoded in their documented
+        ranges.
+        """
+        teacher = np.asarray(encoded_context, dtype=np.float32).copy()
+        if not self._bc_use_physical_teacher_context:
+            return teacher
+        if not self._latest_raw_observations or not self._raw_obs_indices:
+            raise RuntimeError(
+                "CCLevel2 physical BC teacher did not receive raw observation context"
+            )
+
+        raw = self._latest_raw_observations[0]
+        raw_index = self._raw_obs_indices[0]
+        aliases = {
+            "district__time_of_day_sin": "district__seconds_of_day_sin",
+            "district__time_of_day_cos": "district__seconds_of_day_cos",
+        }
+        for index, name in enumerate(self._district_feature_names):
+            physical_name = aliases.get(name, name)
+            position = raw_index.get(physical_name)
+            if position is None or position >= len(raw):
+                continue
+            value = float(raw[position])
+            if np.isfinite(value):
+                teacher[index] = value
+        return teacher
 
     def _sample_new_decision(self, observations, deterministic: bool | None) -> None:
         ctx   = self._build_context(observations)
@@ -1038,11 +1233,11 @@ class CCLevel2Agent(BaseAgent):
     def _log_decision(self) -> None:
         ctx   = self._cached_community
         mults = self._cached_multipliers
-        _idx  = _CC_LEVEL2_DISTRICT_FEATURES.index
+        _idx  = self._district_feature_names.index
 
         # Per-building EV state from context blocks [district | b0 | b1 | … | bN]
         # Block layout: [soc, pv, net, ev_conn, soc_def, urgency_24h]
-        d = _N_DISTRICT
+        d = self._n_district
         k = _N_BUILDING_FEATS
         ev_harm_vals: List[float] = []
         n_ev_connected = 0
@@ -1181,6 +1376,7 @@ class CCLevel2Agent(BaseAgent):
             self._price_max,
             self._reference_multipliers,
             self._policy_residual_scale,
+            self._policy_parameterization,
         ).eval()
         torch.onnx.export(
             deterministic_policy,
@@ -1226,6 +1422,13 @@ class CCLevel2Agent(BaseAgent):
             "price_max": self._price_max,
             "reference_multipliers": self._reference_multipliers.tolist(),
             "policy_residual_scale": self._policy_residual_scale,
+            "policy_parameterization": self._policy_parameterization,
+            "community_context_dimension": self._c_dim,
+            "district_features": list(self._district_feature_names),
+            "include_community_headroom": self._include_community_headroom,
+            "bc_use_physical_teacher_context": (
+                self._bc_use_physical_teacher_context
+            ),
             "artifacts": artifacts,
             "diagnostic_artifacts": diagnostic_artifacts,
         }
@@ -1239,6 +1442,7 @@ class CCLevel2Agent(BaseAgent):
                 "optimizer":          self.ppo_optim.state_dict(),
                 "num_buildings":      self._num_buildings,
                 "c_dim":              self._c_dim,
+                "district_features":  list(self._district_feature_names),
                 "reward_rms_n":       self._reward_rms._n,
                 "reward_rms_mean":    self._reward_rms._mean,
                 "reward_rms_M2":      self._reward_rms._M2,
@@ -1265,6 +1469,12 @@ class CCLevel2Agent(BaseAgent):
         else:
             path = root
         ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
+        checkpoint_c_dim = ckpt.get("c_dim")
+        if checkpoint_c_dim is not None and int(checkpoint_c_dim) != self._c_dim:
+            raise ValueError(
+                "CC-L2 checkpoint observation dimension does not match the current "
+                f"config: checkpoint={checkpoint_c_dim}, config={self._c_dim}"
+            )
         checkpoint_reference = ckpt.get("reference_multipliers")
         if checkpoint_reference is not None and not np.allclose(
             np.asarray(checkpoint_reference, dtype=np.float32),

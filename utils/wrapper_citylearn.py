@@ -558,6 +558,17 @@ class Wrapper_CityLearn(RLC):
             profile: adapter.encoded_observation_names(raw_observation_names)
             for profile, adapter in self._entity_profile_adapters.items()
         }
+        if self._entity_interface_mode and self._entity_adapter is not None:
+            active_profile = str(self._entity_encoding_profile or "").strip().lower()
+            if active_profile:
+                # The active encoder is not duplicated in
+                # ``_entity_profile_adapters``. Expose it under the same map so
+                # a stage that also needs raw side-channel context still gets
+                # its encoded model-input names during attach_environment().
+                profiled_encoded_observation_names.setdefault(
+                    active_profile,
+                    encoded_observation_names,
+                )
         metadata = {
             "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "building_names": building_names,
@@ -738,6 +749,16 @@ class Wrapper_CityLearn(RLC):
         force: bool = False,
         extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
+        # ``step_end`` deliberately keeps the watchdog armed across the loop
+        # boundary.  Two long MATD3 runs stopped immediately after a completed
+        # step-end progress write, before the next step could arm its watchdog.
+        completes_phase = (
+            phase != "step_end"
+            and (
+                phase.endswith("_end")
+                or phase in {"model_update_skipped", "episode_end"}
+            )
+        )
         self._update_stall_watchdog_for_phase(
             phase=phase,
             episode=episode,
@@ -749,31 +770,38 @@ class Wrapper_CityLearn(RLC):
             rewards=rewards,
         )
 
-        if not force and not self._progress_phase_in_window():
-            return
+        try:
+            if not force and not self._progress_phase_in_window():
+                return
 
-        payload_extra: Dict[str, Any] = {
-            "phase": phase,
-            "entity_topology_version": self._entity_topology_version,
-            "entity_model_observations_direct": bool(
-                getattr(self, "_entity_model_observations_direct", False)
-            ),
-        }
-        payload_extra.update(self._runtime_resource_snapshot())
-        if extra:
-            payload_extra.update(dict(extra))
+            payload_extra: Dict[str, Any] = {
+                "phase": phase,
+                "entity_topology_version": self._entity_topology_version,
+                "entity_model_observations_direct": bool(
+                    getattr(self, "_entity_model_observations_direct", False)
+                ),
+            }
+            payload_extra.update(self._runtime_resource_snapshot())
+            if extra:
+                payload_extra.update(dict(extra))
 
-        self.progress_tracker.update(
-            episode=episode,
-            step=step,
-            global_step=self.global_step,
-            rewards=rewards,
-            episode_total=episode_total,
-            step_total=step_total,
-            global_step_total=global_step_total,
-            status=status,
-            extra=payload_extra,
-        )
+            self.progress_tracker.update(
+                episode=episode,
+                step=step,
+                global_step=self.global_step,
+                rewards=rewards,
+                episode_total=episode_total,
+                step_total=step_total,
+                global_step_total=global_step_total,
+                status=status,
+                extra=payload_extra,
+            )
+        finally:
+            # Keep the watchdog armed until the completion progress write has
+            # returned.  The previous ordering cancelled it before file I/O,
+            # leaving a blocked progress write invisible to the watchdog.
+            if completes_phase and self.stall_watchdog_enabled:
+                self._cancel_stall_watchdog()
 
     def _update_stall_watchdog_for_phase(
         self,
@@ -802,9 +830,6 @@ class Wrapper_CityLearn(RLC):
                 rewards=rewards,
             )
             return
-
-        if phase == "step_end" or phase.endswith("_end") or phase in {"model_update_skipped", "episode_end"}:
-            self._cancel_stall_watchdog()
 
     def _stall_watchdog_paths(self) -> tuple[Optional[Path], Optional[Path]]:
         if self._stall_watchdog_traceback_path is not None or self._stall_watchdog_context_path is not None:
@@ -1227,7 +1252,7 @@ class Wrapper_CityLearn(RLC):
                     episode,
                     time_step,
                 )
-                self._enforce_resource_guards(
+                self._write_phase_progress(
                     phase="step_start",
                     episode=episode,
                     step=time_step,
@@ -1235,7 +1260,7 @@ class Wrapper_CityLearn(RLC):
                     step_total=episode_step_total,
                     global_step_total=global_step_total,
                 )
-                self._write_phase_progress(
+                self._enforce_resource_guards(
                     phase="step_start",
                     episode=episode,
                     step=time_step,
@@ -1513,7 +1538,7 @@ class Wrapper_CityLearn(RLC):
                     rewards=rewards,
                 )
                 self._write_phase_progress(
-                    phase="step_end",
+                    phase="step_finalize_start",
                     episode=episode,
                     step=time_step,
                     episode_total=episodes,
@@ -1573,22 +1598,16 @@ class Wrapper_CityLearn(RLC):
                         step_duration,
                     )
 
-                if self.progress_updates_enabled and (self.global_step % self.progress_update_interval == 0):
-                    self.progress_tracker.update(
-                        episode=episode,
-                        step=time_step,
-                        global_step=self.global_step,
-                        rewards=rewards,
-                        episode_total=episodes,
-                        step_total=episode_step_total,
-                        global_step_total=global_step_total,
-                        status="running",
-                        extra={
-                            "phase": "step_end",
-                            "step_duration_seconds": round(float(step_duration), 6),
-                            **self._runtime_resource_snapshot(),
-                        },
-                    )
+                self._write_phase_progress(
+                    phase="step_end",
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                    extra={"step_duration_seconds": round(float(step_duration), 6)},
+                )
 
                 time_step += 1
 
@@ -2551,6 +2570,13 @@ class Wrapper_CityLearn(RLC):
             profile: adapter.encoded_observation_names(raw_observation_names)
             for profile, adapter in self._entity_profile_adapters.items()
         }
+        if self._entity_interface_mode and self._entity_adapter is not None:
+            active_profile = str(self._entity_encoding_profile or "").strip().lower()
+            if active_profile:
+                profiled_encoded_observation_names.setdefault(
+                    active_profile,
+                    encoded_observation_names,
+                )
         serves_encoded_observations = (
             self._entity_interface_mode
             and self._entity_adapter is not None

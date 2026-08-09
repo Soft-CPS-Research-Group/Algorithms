@@ -383,6 +383,9 @@ class MADDPG(BaseAgent):
                 "MADDPG actor_behavior_cloning_source must be 'replay_action' or 'warm_start_policy'."
             )
         self.residual_policy_enabled = bool(exploration_cfg.get("residual_policy_enabled", False))
+        self.residual_policy_runtime_only_export = bool(
+            exploration_cfg.get("residual_policy_runtime_only_export", False)
+        )
         if self.warm_start_policy_name and self.initial_exploration_strategy != "policy":
             raise ValueError(
                 "MADDPG warm_start_policy requires initial_exploration_strategy='policy'; "
@@ -4394,13 +4397,20 @@ class MADDPG(BaseAgent):
         output_dir: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        if bool(getattr(self, "residual_policy_enabled", False)):
+        if (
+            bool(getattr(self, "residual_policy_enabled", False))
+            and not bool(
+                getattr(self, "residual_policy_runtime_only_export", False)
+            )
+        ):
             raise RuntimeError(
                 "Residual policy export is not yet deployment-safe: runtime "
                 "executes warm_start_policy + actor delta, while the current "
                 "ONNX contract can represent only the actor output. Disable "
-                "residual_policy_enabled for a standalone actor export or add "
-                "an explicit composite teacher+delta+projection bundle."
+                "residual_policy_enabled for a standalone actor export, set "
+                "residual_policy_runtime_only_export=true for non-deployable "
+                "experiment evidence, or add an explicit composite "
+                "teacher+delta+projection bundle."
             )
 
         context = context or {}
@@ -4485,6 +4495,25 @@ class MADDPG(BaseAgent):
                     "config": artifact_config,
                 }
             )
+            if bool(getattr(self, "residual_policy_enabled", False)):
+                metadata["artifacts"][-1].setdefault("config", {}).update(
+                    {
+                        "deployable": False,
+                        "runtime_only_reason": "external_residual_warm_start_policy",
+                        "requires_runtime_residual_base_policy": True,
+                        "residual_base_policy": getattr(
+                            self,
+                            "warm_start_policy_name",
+                            None,
+                        ),
+                        "residual_action_scale": float(
+                            getattr(self, "residual_action_scale", 0.0)
+                        ),
+                        "residual_action_final_scale": float(
+                            getattr(self, "residual_action_final_scale", 0.0)
+                        ),
+                    }
+                )
 
             if mlflow.active_run():
                 mlflow.log_artifact(str(export_path), artifact_path="onnx")

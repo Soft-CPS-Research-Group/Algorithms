@@ -368,6 +368,17 @@ class _PPOBase(BaseAgent):
         self.local_price_conditioning_enabled = bool(
             exploration_cfg.get("local_price_conditioning_enabled", False)
         )
+        self.local_price_conditioning_trainable = bool(
+            exploration_cfg.get("local_price_conditioning_trainable", False)
+        )
+        if (
+            self.local_price_conditioning_trainable
+            and not self.local_price_conditioning_enabled
+        ):
+            raise ValueError(
+                "PPO local_price_conditioning_trainable requires "
+                "local_price_conditioning_enabled=true."
+            )
         self.residual_base_price_conditioning_enabled = bool(
             exploration_cfg.get(
                 "residual_base_price_conditioning_enabled",
@@ -547,6 +558,7 @@ class _PPOBase(BaseAgent):
         self._local_price_adapters: List[PriceMultiplierObservationAdapter] = []
         self._last_local_price_diagnostics: List[Any] = []
         self._last_local_price_context_non_neutral = False
+        self._last_local_price_context: Optional[Dict[str, Any]] = None
         if self.local_action_safety_enabled or self.residual_policy_enabled:
             self.requires_raw_observation_context = True
 
@@ -960,6 +972,9 @@ class _PPOBase(BaseAgent):
                 "PPO local price conditioning is enabled but the environment is not attached."
             )
         parsed_context = normalize_price_multiplier_context(context)
+        self._last_local_price_context = (
+            None if parsed_context is None else dict(parsed_context)
+        )
         if parsed_context is None:
             return observations
 
@@ -1573,10 +1588,29 @@ class _PPOBase(BaseAgent):
         initial_exploration_done: bool,
     ) -> None:
         if self._last_local_price_context_non_neutral:
-            raise RuntimeError(
-                "PPO received a non-neutral local price context during learning. "
-                "Price-conditioned leaves are currently inference-only and must be frozen "
-                "under the community coordinator."
+            if not self.local_price_conditioning_trainable:
+                raise RuntimeError(
+                    "PPO received a non-neutral local price context during learning. "
+                    "Price-conditioned leaves are inference-only unless "
+                    "local_price_conditioning_trainable=true."
+                )
+            if self._last_local_price_context is None:
+                raise RuntimeError(
+                    "PPO trainable price conditioning lost the context used by predict()."
+                )
+            # Reconstruct the exact actor observation used for the behaviour
+            # sample.  The wrapper owns the canonical unmodified observation,
+            # so the price transform must be repeated before constructing the
+            # PPO ratio.  Apply the held causal price to the immediate next
+            # state as well; subsequent rollout values come from their own
+            # predict-time contexts.
+            observations = self._apply_local_price_context(
+                observations,
+                self._last_local_price_context,
+            )
+            next_observations = self._apply_local_price_context(
+                next_observations,
+                self._last_local_price_context,
             )
         _ = update_target_step
         done = bool(terminated or truncated)

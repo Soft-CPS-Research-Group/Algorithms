@@ -109,6 +109,113 @@ def test_stall_watchdog_arms_and_cancels_independent_of_phase_progress(tmp_path,
     assert calls[-1]["event"] == "cancel"
 
 
+def test_stall_watchdog_cancels_only_after_completion_progress_write(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        wrapper_module.faulthandler,
+        "cancel_dump_traceback_later",
+        lambda: events.append("cancel"),
+    )
+    monkeypatch.setattr(
+        wrapper_module.faulthandler,
+        "dump_traceback_later",
+        lambda timeout, *, repeat=False, file=None, exit=False: events.append("arm"),
+    )
+
+    wrapper = Wrapper_CityLearn(
+        env=_DummyEnv(),
+        config={
+            "runtime": {"log_dir": str(tmp_path / "logs")},
+            "training": {},
+            "checkpointing": {},
+            "tracking": {
+                "progress_updates_enabled": True,
+                "progress_phase_updates_enabled": True,
+                "progress_update_interval": 1,
+                "stall_watchdog_enabled": True,
+                "stall_watchdog_timeout_seconds": 123.0,
+            },
+        },
+        job_id="watchdog-order-test",
+    )
+    wrapper.global_step = 1
+
+    wrapper._write_phase_progress(
+        phase="step_finalize_start",
+        episode=0,
+        step=0,
+        episode_total=1,
+        step_total=1,
+        global_step_total=1,
+    )
+    original_update = wrapper.progress_tracker.update
+
+    def observe_update(*args, **kwargs):
+        events.append("progress")
+        assert events[-2] == "arm"
+        original_update(*args, **kwargs)
+
+    wrapper.progress_tracker.update = observe_update
+    wrapper._write_phase_progress(
+        phase="step_finalize_end",
+        episode=0,
+        step=0,
+        episode_total=1,
+        step_total=1,
+        global_step_total=1,
+    )
+
+    assert events[-2:] == ["progress", "cancel"]
+
+
+def test_step_end_keeps_watchdog_armed_across_loop_boundary(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        wrapper_module.faulthandler,
+        "cancel_dump_traceback_later",
+        lambda: events.append("cancel"),
+    )
+    monkeypatch.setattr(
+        wrapper_module.faulthandler,
+        "dump_traceback_later",
+        lambda timeout, *, repeat=False, file=None, exit=False: events.append("arm"),
+    )
+    wrapper = Wrapper_CityLearn(
+        env=_DummyEnv(),
+        config={
+            "runtime": {"log_dir": str(tmp_path / "logs")},
+            "training": {},
+            "checkpointing": {},
+            "tracking": {
+                "progress_updates_enabled": False,
+                "progress_phase_updates_enabled": False,
+                "stall_watchdog_enabled": True,
+                "stall_watchdog_timeout_seconds": 123.0,
+            },
+        },
+        job_id="watchdog-loop-boundary-test",
+    )
+
+    wrapper._write_phase_progress(
+        phase="step_finalize_start",
+        episode=0,
+        step=0,
+        episode_total=1,
+        step_total=2,
+        global_step_total=2,
+    )
+    wrapper._write_phase_progress(
+        phase="step_end",
+        episode=0,
+        step=0,
+        episode_total=1,
+        step_total=2,
+        global_step_total=2,
+    )
+
+    assert events[-1] == "arm"
+
+
 def test_stall_watchdog_context_writes_are_step_throttled(tmp_path, monkeypatch):
     monkeypatch.setattr(wrapper_module.faulthandler, "cancel_dump_traceback_later", lambda: None)
     monkeypatch.setattr(

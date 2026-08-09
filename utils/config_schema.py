@@ -618,6 +618,11 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
     initial_log_std: float = Field(default=-2.5, ge=-5.0, le=1.0)
     reference_multipliers: Optional[List[float]] = None
     policy_residual_scale: float = Field(default=1.0, ge=0.0, le=1.0)
+    policy_parameterization: Literal[
+        "absolute_blend", "centered_residual"
+    ] = "absolute_blend"
+    include_community_headroom: bool = False
+    bc_use_physical_teacher_context: bool = False
     w_factor: float = Field(default=0.3, ge=0)
     w_smoothness: float = Field(default=0.02, ge=0)
 

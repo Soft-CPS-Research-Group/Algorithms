@@ -799,3 +799,59 @@ def test_ppo_price_context_changes_only_current_local_price_and_is_inference_onl
     )
     with pytest.raises(RuntimeError, match="inference-only"):
         _transition(agent, observation, [[0.0]])
+
+
+def test_ppo_trainable_price_context_preserves_on_policy_observation() -> None:
+    names = [CURRENT_PRICE_NAME, *PREDICTED_PRICE_NAMES, "local_feature"]
+    config = _ppo_config(
+        local_price_conditioning_enabled=True,
+        local_price_conditioning_trainable=True,
+    )
+    config["topology"]["observation_dimensions"] = [len(names)]
+    agent = PPO(config)
+    low = [0.1, 0.1, 0.1, 0.1, -10.0]
+    high = [0.5, 0.5, 0.5, 0.5, 10.0]
+    agent.attach_environment(
+        observation_names=[names],
+        action_names=[["electrical_storage"]],
+        action_space=[_Box([-1.0], [1.0])],
+        observation_space=[None],
+        metadata={
+            "building_names": ["Building_1"],
+            "raw_observation_names": [names],
+            "raw_observation_bounds": [{"low": low, "high": high}],
+        },
+    )
+    observation = np.asarray([0.5, 0.25, 0.5, 0.75, 0.3], dtype=np.float32)
+    next_observation = np.asarray([0.25, 0.5, 0.75, 0.25, 0.4], dtype=np.float32)
+
+    action = agent.predict([observation], deterministic=False, context=1.5)
+    agent.update(
+        observations=[observation],
+        actions=action,
+        rewards=[-0.25],
+        next_observations=[next_observation],
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=1,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    stored = agent.rollout[-1]
+    assert stored["observations"][0][0].item() == pytest.approx(0.875)
+    assert stored["next_observations"][0][0].item() == pytest.approx(0.5)
+    assert torch.equal(
+        stored["observations"][0][1:],
+        torch.as_tensor(observation[1:]),
+    )
+    assert torch.equal(
+        stored["next_observations"][0][1:],
+        torch.as_tensor(next_observation[1:]),
+    )
+
+
+def test_ppo_trainable_price_context_requires_conditioning() -> None:
+    with pytest.raises(ValueError, match="requires local_price_conditioning_enabled"):
+        PPO(_ppo_config(local_price_conditioning_trainable=True))

@@ -76,7 +76,10 @@ checkpointing:
   reset_replay_buffer: false
   freeze_pretrained_layers: false
   fine_tune: false
-  checkpoint_interval: null
+  # Preserve the deterministic actor after each full 15-minute year.  This
+  # lightweight inference checkpoint remains useful even if a later training
+  # episode is interrupted; full replay snapshots are intentionally avoided.
+  checkpoint_interval: 35040
   require_update_step: true
   require_initial_exploration_done: true
 
@@ -337,6 +340,10 @@ pipeline:
         actor_ev_behavior_cloning_zero_target_weight: 7.0
         actor_ev_behavior_cloning_zero_target_threshold: 0.05
         residual_policy_enabled: true
+        # The exported ONNX contains the learned delta only.  Preserve it as
+        # research evidence while marking the bundle non-deployable until the
+        # RBCCommunity+delta composition is embedded in a serving bundle.
+        residual_policy_runtime_only_export: true
         residual_action_scale: 0.04
         residual_action_final_scale: 0.2
         residual_action_start_step: 0

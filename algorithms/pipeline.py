@@ -239,6 +239,33 @@ class Pipeline(ExecutionUnit):
             for stage in self.stages
         )
 
+    def _collect_stage_metric_hook(self, hook_name: str) -> Dict[str, float]:
+        """Expose diagnostics from every hierarchy stage without collisions."""
+
+        metrics: Dict[str, float] = {}
+        for index, stage in enumerate(self.stages):
+            hook = getattr(stage, hook_name, None)
+            if not callable(hook):
+                continue
+            payload = hook()
+            if not isinstance(payload, dict):
+                continue
+            for key, value in payload.items():
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(numeric):
+                    continue
+                metrics[f"Pipeline/stage_{index}/{key}"] = numeric
+        return metrics
+
+    def get_diagnostic_metrics(self) -> Dict[str, float]:
+        return self._collect_stage_metric_hook("get_diagnostic_metrics")
+
+    def consume_latest_training_metrics(self) -> Dict[str, float]:
+        return self._collect_stage_metric_hook("consume_latest_training_metrics")
+
     def attach_environment(self, **kwargs) -> None:
         metadata = kwargs.get("metadata") or {}
         raw_observation_names = metadata.get("raw_observation_names")
