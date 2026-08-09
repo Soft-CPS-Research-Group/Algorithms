@@ -129,6 +129,31 @@ def _agent(
     return agent, dimension
 
 
+def _agent_with_zero_action_building() -> tuple[AgentTransformerPPO, list[int]]:
+    names = load_sample_observation_names_for_first_building()
+    zero_action_names = [
+        name
+        for name in names
+        if not name.startswith(("storage::", "charger::"))
+    ]
+    actions = list(_DEFAULT_ACTIONS)
+    agent = AgentTransformerPPO(_config(weight=1.0))
+    agent.attach_environment(
+        observation_names=[names, zero_action_names],
+        action_names=[actions, []],
+        action_space=[_DummySpace(len(actions)), _DummySpace(0)],
+        observation_space=[None, None],
+        metadata={
+            "building_names": ["Building_1", "Building_3"],
+            "seconds_per_time_step": 3600,
+        },
+    )
+    return agent, [
+        BehaviorCloningRegularizer.full_representation_width(state.layout)
+        for state in agent._per_building
+    ]
+
+
 def _teacher(agent: AgentTransformerPPO, value: float) -> list[list[float]]:
     actions = [[value] * agent._per_building[0].layout.n_ca]
     assert agent._bc is not None
@@ -725,6 +750,122 @@ def test_pretraining_distinguishes_layouts_with_different_excluded_features() ->
 # ---------------------------------------------------------------------------
 # Auxiliary BC updates
 # ---------------------------------------------------------------------------
+
+
+def test_bc_pretraining_skips_zero_action_building() -> None:
+    agent, dimensions = _agent_with_zero_action_building()
+    observations = [np.ones(dimension, dtype=np.float64) for dimension in dimensions]
+    assert agent._bc is not None
+    agent.on_episode_start(episode=0, training=True)
+    agent.update(
+        observations=observations,
+        actions=[[0.25] * agent._per_building[0].layout.n_ca, []],
+        rewards=[0.1, 0.1],
+        next_observations=observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    agent.on_episode_end(episode=0, training=True)
+
+    metrics = agent._latest_training_metrics
+    assert metrics["behavior_cloning_building_Building_1_usable_samples"] == 1.0
+    assert metrics["behavior_cloning_building_Building_1_trained_batches"] == 2.0
+    assert metrics["behavior_cloning_building_Building_3_usable_samples"] == 0.0
+    assert metrics["behavior_cloning_building_Building_3_trained_batches"] == 0.0
+    assert metrics["behavior_cloning_building_Building_3_zero_action_samples"] == 1.0
+
+
+def test_auxiliary_bc_skips_zero_action_building() -> None:
+    agent, dimensions = _agent_with_zero_action_building()
+    state = agent._per_building[1]
+    assert state.layout.n_ca == 0
+    assert agent._bc is not None
+    agent._bc.record_demonstration(
+        1,
+        np.ones(dimensions[1]),
+        state.layout,
+        [],
+    )
+    optimizer_before = deepcopy(state.bc_optimizer.state_dict())
+
+    agent._run_auxiliary_bc_update(1, state)
+
+    _assert_structured_equal(state.bc_optimizer.state_dict(), optimizer_before)
+
+
+def test_zero_action_demonstration_loss_is_explicit_noop() -> None:
+    agent, dimensions = _agent_with_zero_action_building()
+    state = agent._per_building[1]
+    assert agent._bc is not None
+    agent._bc.record_demonstration(
+        1,
+        np.ones(dimensions[1]),
+        state.layout,
+        [],
+    )
+    demonstrations = agent._bc.sample_demonstrations(1, state.layout, batch_size=1)
+
+    loss = agent._bc.demonstration_loss(
+        layout=state.layout,
+        demonstrations=demonstrations,
+        predicted_means=torch.empty((1, 0, 1)),
+        global_learning_step=0,
+    )
+
+    assert loss.item() == pytest.approx(0.0)
+    assert agent._bc.snapshot_metrics()["behavior_cloning_valid_samples"] == 0.0
+
+
+def test_zero_action_topology_can_gain_actionable_assets_without_stale_bc_data() -> None:
+    agent, dimensions = _agent_with_zero_action_building()
+    assert agent._bc is not None
+    old_state = agent._per_building[1]
+    agent._bc.record_demonstration(
+        1,
+        np.ones(dimensions[1]),
+        old_state.layout,
+        [],
+    )
+    names = load_sample_observation_names_for_first_building()
+    actions = list(_DEFAULT_ACTIONS)
+
+    agent.attach_environment(
+        observation_names=[names, names],
+        action_names=[actions, actions],
+        action_space=[_DummySpace(len(actions)), _DummySpace(len(actions))],
+        observation_space=[None, None],
+        metadata={
+            "building_names": ["Building_1", "Building_3"],
+            "seconds_per_time_step": 3600,
+        },
+    )
+
+    new_state = agent._per_building[1]
+    assert new_state.layout.n_ca == len(actions)
+    assert agent._bc.sample_demonstrations(1, new_state.layout, batch_size=1) == []
+    agent._run_auxiliary_bc_update(1, new_state)
+
+
+def test_bc_rejects_zero_weights_for_actionable_layout() -> None:
+    agent, dimension = _agent(demonstrations=0, weight=1.0)
+    state = agent._per_building[0]
+    assert agent._bc is not None
+    agent._bc.ev_multiplier = 0.0
+    agent._bc.storage_multiplier = 0.0
+    agent._bc.record_demonstration(
+        0,
+        np.ones(dimension),
+        state.layout,
+        [0.25] * state.layout.n_ca,
+    )
+
+    with pytest.raises(ValueError, match="no active action weights.*Building_1"):
+        agent._run_auxiliary_bc_update(0, state)
 
 
 def test_auxiliary_bc_never_changes_ppo_actions() -> None:
