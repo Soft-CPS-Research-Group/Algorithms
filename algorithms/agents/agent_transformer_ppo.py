@@ -928,6 +928,8 @@ class AgentTransformerPPO(BaseAgent):
             if state.bc_optimizer is not None and "bc_optimizer_state" in saved:
                 state.bc_optimizer.load_state_dict(saved["bc_optimizer_state"])
             for optimizer in (state.optimizer, state.bc_optimizer):
+                if optimizer is None:
+                    continue
                 for parameter_state in optimizer.state.values():
                     for key, value in parameter_state.items():
                         if isinstance(value, torch.Tensor):
