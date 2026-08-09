@@ -156,6 +156,27 @@ def test_require_cuda_raises_when_cuda_is_unavailable(monkeypatch) -> None:
         AgentTransformerPPO(config)
 
 
+def test_cuda_rng_state_is_captured_and_restored(monkeypatch) -> None:
+    agent = object.__new__(AgentTransformerPPO)
+    agent.device = torch.device("cuda")
+    expected = torch.tensor([1, 2, 3], dtype=torch.uint8)
+    restored = []
+    monkeypatch.setattr(torch.cuda, "get_rng_state", lambda device: expected)
+    monkeypatch.setattr(
+        torch.cuda,
+        "set_rng_state",
+        lambda state, device: restored.append((state, device)),
+    )
+
+    captured = agent._capture_cuda_rng_state()
+    agent._restore_cuda_rng_state(captured)
+
+    assert torch.equal(captured, expected)
+    assert len(restored) == 1
+    assert torch.equal(restored[0][0], expected)
+    assert restored[0][1] == agent.device
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_places_each_model_on_cuda() -> None:
     config = _base_config()
