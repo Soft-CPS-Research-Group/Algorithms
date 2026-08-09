@@ -85,6 +85,9 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
 | `AgentTransformerPPO` | Entity-interface Transformer PPO with dynamic-topology support and optional auxiliary behavior-cloning loss from separate deterministic `RBCSmartPolicy` demonstrations |
 | `SingleAgentRL` | Schema placeholder only |
 
+The Transformer PPO implementation lives in `algorithms/transformer_ppo/`.
+`algorithms/agents/agent_transformer_ppo.py` remains a compatibility import.
+
 ## Runtime Flow
 
 ```

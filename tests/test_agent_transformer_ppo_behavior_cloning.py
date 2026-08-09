@@ -11,8 +11,8 @@ import pytest
 import torch
 from loguru import logger
 
-from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
-from algorithms.utils.behavior_cloning import (
+from algorithms.transformer_ppo.agent import AgentTransformerPPO
+from algorithms.transformer_ppo.behavior_cloning import (
     BehaviorCloningRegularizer,
     Demonstration,
 )
@@ -150,6 +150,8 @@ def _snapshot_restore_state(agent: AgentTransformerPPO) -> dict:
             agent._latest_global_learning_step,
             agent._ppo_update_count,
             agent._current_episode,
+            agent._bc_pretraining_complete,
+            agent._bc_actor_training_step,
         ),
         "topology": state.topology_version,
         "metrics": dict(agent._latest_training_metrics),
@@ -181,9 +183,11 @@ def _assert_restore_state_unchanged(agent: AgentTransformerPPO, snapshot: dict) 
         agent._latest_global_learning_step,
         agent._ppo_update_count,
         agent._current_episode,
+        agent._bc_pretraining_complete,
+        agent._bc_actor_training_step,
     ) == snapshot["counters"]
     assert agent._latest_training_metrics == snapshot["metrics"]
-    assert agent._pending_decisions[0] is snapshot["pending"]
+    _assert_structured_equal(agent._pending_decisions[0], snapshot["pending"])
     assert agent._bc is not None
     _assert_structured_equal(agent._bc.state_dict(), snapshot["bc_state"])
     _assert_structured_equal(random.getstate(), snapshot["python_rng"])
@@ -898,8 +902,14 @@ def test_checkpoint_after_pretraining_does_not_restart_demonstration_phase(
     assert pretraining_calls == 0
 
 
-def test_version_two_checkpoint_infers_completed_bc_pretraining(
+@pytest.mark.parametrize(
+    ("version", "expected_pretraining_complete"),
+    [(1, False), (2, True), (3, True), (4, True)],
+)
+def test_supported_checkpoint_versions_restore_bc_lifecycle(
     tmp_path: Path,
+    version: int,
+    expected_pretraining_complete: bool,
 ) -> None:
     agent, dimension = _agent(demonstrations=1, weight=1.0)
     observation = np.ones(dimension, dtype=np.float64)
@@ -913,16 +923,55 @@ def test_version_two_checkpoint_infers_completed_bc_pretraining(
     path = agent.save_checkpoint(str(tmp_path), step=7)
     assert path is not None
     payload = torch.load(path, weights_only=False)
-    payload["checkpoint_format_version"] = 2
-    payload.pop("bc_pretraining_complete")
+    payload["checkpoint_format_version"] = version
+    if version == 1:
+        payload.pop("behavior_cloning_state")
+        for saved_agent in payload["agents"]:
+            saved_agent.pop("bc_optimizer_state")
+    if version < 3:
+        payload.pop("bc_pretraining_complete")
+    if version < 4:
+        payload.pop("bc_actor_training_step")
     torch.save(payload, path)
 
     fresh, _ = _agent(demonstrations=1, weight=1.0)
     fresh.load_checkpoint(path)
     fresh.on_episode_start(episode=0, training=True)
 
-    assert fresh._bc_pretraining_complete
-    assert not fresh._in_demonstration_phase()
+    assert fresh._bc_pretraining_complete is expected_pretraining_complete
+    assert fresh._in_demonstration_phase() is not expected_pretraining_complete
+
+
+def test_checkpoint_apply_failure_restores_complete_runtime_state(
+    tmp_path: Path,
+) -> None:
+    source, dimension = _agent(demonstrations=2, weight=1.0)
+    _record_demo(source, dimension)
+    path = _save_checkpoint(source, tmp_path)
+    target, snapshot = _prepared_checkpoint_target(dimension)
+
+    payload = torch.load(path, weights_only=False)
+    tokenizer_state = payload["agents"][0]["tokenizer_state"]
+    for key, value in tokenizer_state.items():
+        tokenizer_state[key] = value + torch.ones_like(value)
+    payload["agents"][0]["value_normalizer"] = {
+        "mean": 4.0,
+        "variance": 3.0,
+        "count": 2,
+    }
+    payload["global_learning_step"] = 41
+    payload["ppo_update_count"] = 7
+    payload["current_episode"] = 6
+    payload["bc_pretraining_complete"] = True
+    payload["bc_actor_training_step"] = 13
+    payload["latest_training_metrics"] = {"checkpoint_metric": 2.0}
+    payload["python_rng_state"] = "invalid RNG state"
+    torch.save(payload, path)
+
+    with pytest.raises(ValueError, match="state with version"):
+        target.load_checkpoint(path)
+
+    _assert_restore_state_unchanged(target, snapshot)
 
 
 @pytest.mark.parametrize("version", [0, 5, True, "3"])

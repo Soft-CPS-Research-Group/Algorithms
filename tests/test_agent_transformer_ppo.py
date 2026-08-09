@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 import torch
 
-from algorithms.agents.agent_transformer_ppo import (
+from algorithms.transformer_ppo.agent import (
     AgentTransformerPPO,
     _synthetic_sample_from_obs_names,
 )

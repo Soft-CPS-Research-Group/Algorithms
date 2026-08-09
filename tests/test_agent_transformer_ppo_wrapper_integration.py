@@ -17,7 +17,7 @@ import pytest
 import torch
 from gymnasium import spaces
 
-from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.transformer_ppo.agent import AgentTransformerPPO
 from tests.test_wrapper_entity_mode import _DummyEntityEnv, _entity_config
 from utils.wrapper_citylearn import Wrapper_CityLearn
 

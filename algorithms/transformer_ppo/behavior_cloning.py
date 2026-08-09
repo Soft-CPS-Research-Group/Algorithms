@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from loguru import logger
 
-from algorithms.utils.entity_token_layout import (
+from algorithms.transformer_ppo.entity_token_layout import (
     BuildingTokenLayout,
     NfcExpression,
     TokenSegment,

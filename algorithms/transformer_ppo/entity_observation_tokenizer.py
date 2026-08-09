@@ -25,7 +25,7 @@ from typing import List, Mapping
 import torch
 from torch import nn
 
-from algorithms.utils.entity_token_layout import (
+from algorithms.transformer_ppo.entity_token_layout import (
     BuildingTokenLayout,
     NfcExpression,
 )

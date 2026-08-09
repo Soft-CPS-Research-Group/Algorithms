@@ -554,7 +554,7 @@ The startup check in §9.1 then becomes a pure post-condition assertion.
 
 - No imports from `algorithms.*`, `utils.*`, no torch/numpy.
 - Pure stdlib + `typing` + `re`.
-- File location: `algorithms/utils/entity_token_layout.py`.
+- File location: `algorithms/transformer_ppo/entity_token_layout.py`.
 
 ### Tests (`tests/test_entity_token_layout.py`)
 
@@ -697,7 +697,7 @@ above.)
 
 ## 8. TransformerBackbone
 
-`algorithms/utils/transformer_backbone.py`:
+`algorithms/transformer_ppo/transformer_backbone.py`:
 
 - Type embedding table size = **3**: `SRO=0`, `NFC=1`, `CA=2`.
 - `forward(sros, nfc, cas)` takes three tensors:
