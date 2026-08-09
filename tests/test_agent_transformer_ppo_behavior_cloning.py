@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import fields, is_dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from pathlib import Path
 import random
 
@@ -30,6 +30,62 @@ class _BoundedDummySpace:
     def __init__(self, low: list[float], high: list[float]) -> None:
         self.low = np.asarray(low, dtype=np.float64)
         self.high = np.asarray(high, dtype=np.float64)
+
+
+@dataclass(frozen=True)
+class _CheckpointFormatFixture:
+    """Fields absent from one historical checkpoint format."""
+
+    version: int
+    missing_root_fields: tuple[str, ...]
+    missing_agent_fields: tuple[str, ...]
+    expected_pretraining_complete: bool
+
+
+_CHECKPOINT_FORMAT_FIXTURES = {
+    1: _CheckpointFormatFixture(
+        version=1,
+        missing_root_fields=(
+            "behavior_cloning_state",
+            "bc_pretraining_complete",
+            "bc_actor_training_step",
+        ),
+        missing_agent_fields=("bc_optimizer_state",),
+        expected_pretraining_complete=False,
+    ),
+    2: _CheckpointFormatFixture(
+        version=2,
+        missing_root_fields=(
+            "bc_pretraining_complete",
+            "bc_actor_training_step",
+        ),
+        missing_agent_fields=(),
+        expected_pretraining_complete=True,
+    ),
+    3: _CheckpointFormatFixture(
+        version=3,
+        missing_root_fields=("bc_actor_training_step",),
+        missing_agent_fields=(),
+        expected_pretraining_complete=True,
+    ),
+    4: _CheckpointFormatFixture(
+        version=4,
+        missing_root_fields=(),
+        missing_agent_fields=(),
+        expected_pretraining_complete=True,
+    ),
+}
+
+
+def _as_checkpoint_format(payload: dict, version: int) -> None:
+    """Shape a current checkpoint payload as one documented historical format."""
+    fixture = _CHECKPOINT_FORMAT_FIXTURES[version]
+    payload["checkpoint_format_version"] = fixture.version
+    for field in fixture.missing_root_fields:
+        payload.pop(field)
+    for saved_agent in payload["agents"]:
+        for field in fixture.missing_agent_fields:
+            saved_agent.pop(field)
 
 
 def _config(*, demonstrations: int = 1, weight: float = 0.0) -> dict:
@@ -903,13 +959,12 @@ def test_checkpoint_after_pretraining_does_not_restart_demonstration_phase(
 
 
 @pytest.mark.parametrize(
-    ("version", "expected_pretraining_complete"),
-    [(1, False), (2, True), (3, True), (4, True)],
+    "version",
+    tuple(_CHECKPOINT_FORMAT_FIXTURES),
 )
 def test_supported_checkpoint_versions_restore_bc_lifecycle(
     tmp_path: Path,
     version: int,
-    expected_pretraining_complete: bool,
 ) -> None:
     agent, dimension = _agent(demonstrations=1, weight=1.0)
     observation = np.ones(dimension, dtype=np.float64)
@@ -923,23 +978,19 @@ def test_supported_checkpoint_versions_restore_bc_lifecycle(
     path = agent.save_checkpoint(str(tmp_path), step=7)
     assert path is not None
     payload = torch.load(path, weights_only=False)
-    payload["checkpoint_format_version"] = version
-    if version == 1:
-        payload.pop("behavior_cloning_state")
-        for saved_agent in payload["agents"]:
-            saved_agent.pop("bc_optimizer_state")
-    if version < 3:
-        payload.pop("bc_pretraining_complete")
-    if version < 4:
-        payload.pop("bc_actor_training_step")
+    _as_checkpoint_format(payload, version)
     torch.save(payload, path)
 
     fresh, _ = _agent(demonstrations=1, weight=1.0)
     fresh.load_checkpoint(path)
     fresh.on_episode_start(episode=0, training=True)
 
-    assert fresh._bc_pretraining_complete is expected_pretraining_complete
-    assert fresh._in_demonstration_phase() is not expected_pretraining_complete
+    fixture = _CHECKPOINT_FORMAT_FIXTURES[version]
+    assert fresh._bc_pretraining_complete is fixture.expected_pretraining_complete
+    assert (
+        fresh._in_demonstration_phase()
+        is not fixture.expected_pretraining_complete
+    )
 
 
 def test_checkpoint_apply_failure_restores_complete_runtime_state(

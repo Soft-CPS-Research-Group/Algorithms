@@ -66,6 +66,7 @@ from utils.entity_tokenizer_schema import (
 
 CURRENT_CHECKPOINT_FORMAT_VERSION = 4
 SUPPORTED_CHECKPOINT_FORMAT_VERSIONS = frozenset({1, 2, 3, 4})
+CHECKPOINT_FORMATS_WITH_EXPLICIT_BC_PRETRAINING_COMPLETE = frozenset({3, 4})
 
 
 @dataclass
@@ -878,7 +879,10 @@ class AgentTransformerPPO(BaseAgent):
                 "Unsupported TPPO checkpoint_format_version "
                 f"{checkpoint_version!r}; expected one of {supported_versions}."
             )
-        if checkpoint_version >= 3:
+        if (
+            checkpoint_version
+            in CHECKPOINT_FORMATS_WITH_EXPLICIT_BC_PRETRAINING_COMPLETE
+        ):
             bc_pretraining_complete = payload.get("bc_pretraining_complete")
             if not isinstance(bc_pretraining_complete, bool):
                 raise RuntimeError(
