@@ -216,6 +216,9 @@ pipeline:
     bc_pretrain_enabled: true
     bc_collect_steps: 8760
     bc_train_steps: 4000
+    bc_train_chunk_steps: 256
+    bc_max_torch_threads: 1
+    bc_progress_interval: 500
     bc_lr: 0.0005
     bc_dt_hours: 0.25
     bc_w_cost: 1.0

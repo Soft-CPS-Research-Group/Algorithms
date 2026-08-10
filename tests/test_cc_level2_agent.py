@@ -399,6 +399,45 @@ def test_cc_level2_does_not_store_bc_boundary_as_on_policy_transition() -> None:
     assert agent.rollout_buffer._ptr == 1
 
 
+def test_cc_level2_bc_pretraining_is_incremental_and_restores_threads() -> None:
+    agent = _attached_agent(interval=1, num_steps=2)
+    agent._bc_enabled = True
+    agent._bc_pretrain_done = False
+    agent._bc_collect_steps = 1
+    agent._bc_train_steps = 5
+    agent._bc_train_chunk_steps = 2
+    agent._bc_progress_interval = 2
+    agent._bc_max_torch_threads = 1
+    agent._bc_target_import = 1.0
+    agent._bc_reference_peak = 1.0
+    agent._bc_reference_export = 1.0
+    observations = [
+        np.zeros(len(_observation_names(1)), dtype=np.float32),
+        np.zeros(len(_observation_names(2)), dtype=np.float32),
+    ]
+    original_threads = torch.get_num_threads()
+
+    agent.predict(observations, deterministic=False)
+
+    assert agent._bc_pretrain_done is False
+    assert agent._bc_train_step == 2
+    assert agent._bc_train_inputs is not None
+    assert agent._bc_contexts == []
+    assert torch.get_num_threads() == original_threads
+
+    agent.predict(observations, deterministic=False)
+    assert agent._bc_pretrain_done is False
+    assert agent._bc_train_step == 4
+    assert torch.get_num_threads() == original_threads
+
+    agent.predict(observations, deterministic=False)
+    assert agent._bc_pretrain_done is True
+    assert agent._bc_train_step == 5
+    assert agent._bc_train_inputs is None
+    assert agent._bc_train_optimizer is None
+    assert torch.get_num_threads() == original_threads
+
+
 def test_cc_level2_rollout_gae_stops_at_episode_boundary() -> None:
     buffer = RolloutBufferV2(num_steps=3, c_dim=1, num_buildings=2)
     buffer.values[:] = 0.0

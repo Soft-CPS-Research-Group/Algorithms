@@ -233,6 +233,9 @@ def cc_recipe(name: str) -> dict[str, Any]:
             "bc_use_physical_teacher_context": True,
             "bc_collect_steps": 8760,
             "bc_train_steps": 4000,
+            "bc_train_chunk_steps": 256,
+            "bc_max_torch_threads": 1,
+            "bc_progress_interval": 500,
             "bc_lr": 5.0e-4,
             "bc_w_cost": 1.0,
             "bc_w_peak": float(variant["w_peak"]),
@@ -301,6 +304,8 @@ def derive_smoke(config: dict[str, Any]) -> dict[str, Any]:
                 "mini_batch_size": 48,
                 "bc_collect_steps": 96,
                 "bc_train_steps": 4,
+                "bc_train_chunk_steps": 2,
+                "bc_progress_interval": 2,
                 "num_epochs": 1,
             }
         )

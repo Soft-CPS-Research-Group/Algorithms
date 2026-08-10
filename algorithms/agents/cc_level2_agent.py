@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import csv
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -477,6 +478,24 @@ class CCLevel2Agent(BaseAgent):
         self._bc_collect_steps = int(hyper.get("bc_collect_steps", 336))
         self._bc_train_steps   = int(hyper.get("bc_train_steps",   2000))
         self._bc_lr            = float(hyper.get("bc_lr",           1e-3))
+        self._bc_train_chunk_steps = int(
+            hyper.get("bc_train_chunk_steps", 256)
+        )
+        self._bc_max_torch_threads = int(
+            hyper.get("bc_max_torch_threads", 1)
+        )
+        self._bc_progress_interval = int(
+            hyper.get(
+                "bc_progress_interval",
+                max(self._bc_train_steps // 8, 1),
+            )
+        )
+        if self._bc_train_chunk_steps <= 0:
+            raise ValueError("CCLevel2 bc_train_chunk_steps must be positive")
+        if self._bc_max_torch_threads <= 0:
+            raise ValueError("CCLevel2 bc_max_torch_threads must be positive")
+        if self._bc_progress_interval <= 0:
+            raise ValueError("CCLevel2 bc_progress_interval must be positive")
         self._bc_pretrain_done: bool = not self._bc_enabled
         self._bc_contexts:  List[np.ndarray] = []
         self._bc_teacher_contexts: List[np.ndarray] = []
@@ -504,6 +523,17 @@ class CCLevel2Agent(BaseAgent):
         # The encoded obs feature connected_ev_departure_urgency_24h uses a fixed 24h horizon;
         # we invert it to recover actual hours and re-apply this horizon.
         self._bc_urgency_horizon = float(hyper.get("bc_urgency_horizon", 4.0))
+
+        # Incremental BC state.  Running all BC optimizer updates inside one
+        # predict() call made remote jobs look alive while blocking environment
+        # progress for tens of minutes.  Keep the prepared tensors between
+        # decisions and execute only a bounded chunk at a time.
+        self._bc_train_inputs: Optional[torch.Tensor] = None
+        self._bc_train_targets: Optional[torch.Tensor] = None
+        self._bc_train_optimizer: Optional[Adam] = None
+        self._bc_train_step = 0
+        self._bc_train_losses: List[float] = []
+        self._bc_train_started_at: Optional[float] = None
 
         # Obs layout (set in attach_environment)
         self._obs_index: Dict[str, int] = {}  # feature name → index in obs
@@ -732,14 +762,11 @@ class CCLevel2Agent(BaseAgent):
             if not self._bc_pretrain_done:
                 ctx = self._build_context(observations)
                 teacher_ctx = self._build_teacher_context(ctx)
-                self._bc_contexts.append(ctx.copy())
-                self._bc_teacher_contexts.append(teacher_ctx.copy())
                 # Compute teacher targets per building.
                 teacher_targets = self._bc_teacher_multipliers_per_building(
                     teacher_ctx,
                     observations,
                 )
-                self._bc_targets.append(teacher_targets.copy())
                 # Use per-building teacher as cached output.
                 self._cached_action = self._multipliers_to_raw(teacher_targets)
                 self._cached_multipliers = self._raw_to_multipliers(
@@ -754,28 +781,33 @@ class CCLevel2Agent(BaseAgent):
                 # when this same decision completes BC collection, it must not
                 # enter the PPO rollout as an on-policy transition.
                 self._cached_policy_sample = False
-                # Accumulate community import/export for BC calibration.
-                _idx = self._district_feature_names.index
-                dt = self._bc_dt_hours
-                self._bc_import_samples.append(
-                    float(
-                        teacher_ctx[
-                            _idx("district__community_import_power_kw")
-                        ]
+                if self._bc_train_inputs is None:
+                    self._bc_contexts.append(ctx.copy())
+                    self._bc_teacher_contexts.append(teacher_ctx.copy())
+                    self._bc_targets.append(teacher_targets.copy())
+                    # Accumulate community import/export for BC calibration.
+                    _idx = self._district_feature_names.index
+                    dt = self._bc_dt_hours
+                    self._bc_import_samples.append(
+                        float(
+                            teacher_ctx[
+                                _idx("district__community_import_power_kw")
+                            ]
+                        )
+                        * dt
                     )
-                    * dt
-                )
-                self._bc_export_samples.append(
-                    float(
-                        teacher_ctx[
-                            _idx("district__community_export_power_kw")
-                        ]
+                    self._bc_export_samples.append(
+                        float(
+                            teacher_ctx[
+                                _idx("district__community_export_power_kw")
+                            ]
+                        )
+                        * dt
                     )
-                    * dt
-                )
-                if len(self._bc_contexts) >= self._bc_collect_steps:
-                    self._run_bc_pretraining()
-                    self._bc_pretrain_done = True
+                    if len(self._bc_contexts) >= self._bc_collect_steps:
+                        self._prepare_bc_pretraining()
+                if self._bc_train_inputs is not None:
+                    self._run_bc_pretraining_chunk()
             else:
                 self._sample_new_decision(observations, deterministic)
         self._step_in_interval = (
@@ -948,8 +980,8 @@ class CCLevel2Agent(BaseAgent):
             mults[i] = float(np.clip(1.0 + raw, self._price_min, self._price_max))
         return mults
 
-    def _run_bc_pretraining(self) -> None:
-        """Supervised pretraining of encoder + mean_head against per-building teacher targets."""
+    def _prepare_bc_pretraining(self) -> None:
+        """Prepare supervised BC tensors without running a long optimizer loop."""
         X = np.stack(self._bc_contexts)          # (N_steps, c_dim)
         teacher_X = np.stack(self._bc_teacher_contexts)
         T = np.stack(self._bc_targets)            # (N_steps, num_buildings)
@@ -1000,30 +1032,97 @@ class CCLevel2Agent(BaseAgent):
         # policies whose reference may lie exactly on a price bound.
         T_raw = self._multipliers_to_raw(T)   # (N_steps, num_buildings)
 
-        X_t   = torch.tensor(X,     dtype=torch.float32)
-        T_t   = torch.tensor(T_raw, dtype=torch.float32)
+        self._bc_train_inputs = torch.tensor(X, dtype=torch.float32)
+        self._bc_train_targets = torch.tensor(T_raw, dtype=torch.float32)
 
         bc_params = (list(self.policy.encoder.parameters())
                      + list(self.policy.mean_head.parameters()))
-        bc_opt    = Adam(bc_params, lr=self._bc_lr)
-        N         = len(X_t)
-        losses: List[float] = []
+        self._bc_train_optimizer = Adam(bc_params, lr=self._bc_lr)
+        self._bc_train_step = 0
+        self._bc_train_losses = []
+        self._bc_train_started_at = time.perf_counter()
 
-        for step in range(self._bc_train_steps):
-            idx_mb = np.random.randint(0, N, size=min(64, N))
-            h      = self.policy.encoder(X_t[idx_mb])
-            pred   = self.policy.mean_head(h)             # (batch, num_buildings)
-            loss   = (pred - T_t[idx_mb]).pow(2).mean()
-            bc_opt.zero_grad()
-            loss.backward()
-            nn.utils.clip_grad_norm_(bc_params, max_norm=1.0)
-            bc_opt.step()
-            losses.append(float(loss.item()))
+        # The tensors above now own the collected data.  Free the Python lists
+        # before episode two starts instead of retaining duplicate annual data.
+        self._bc_contexts.clear()
+        self._bc_teacher_contexts.clear()
+        self._bc_targets.clear()
+        self._bc_import_samples.clear()
+        self._bc_export_samples.clear()
 
-        mean_loss = float(np.mean(losses))
+    def _run_bc_pretraining_chunk(self) -> None:
+        """Run a bounded BC chunk so simulator progress remains observable."""
+        X_t = self._bc_train_inputs
+        T_t = self._bc_train_targets
+        bc_opt = self._bc_train_optimizer
+        if X_t is None or T_t is None or bc_opt is None:
+            return
+
+        N = len(X_t)
+        bc_params = [
+            parameter
+            for group in bc_opt.param_groups
+            for parameter in group["params"]
+        ]
+        start_step = self._bc_train_step
+        end_step = min(
+            start_step + self._bc_train_chunk_steps,
+            self._bc_train_steps,
+        )
+        chunk_started_at = time.perf_counter()
+        original_threads = torch.get_num_threads()
+        bounded_threads = min(original_threads, self._bc_max_torch_threads)
+
+        try:
+            if bounded_threads != original_threads:
+                torch.set_num_threads(bounded_threads)
+            for _ in range(start_step, end_step):
+                idx_mb = np.random.randint(0, N, size=min(64, N))
+                h      = self.policy.encoder(X_t[idx_mb])
+                pred   = self.policy.mean_head(h)             # (batch, num_buildings)
+                loss   = (pred - T_t[idx_mb]).pow(2).mean()
+                bc_opt.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(
+                    bc_params,
+                    max_norm=1.0,
+                )
+                bc_opt.step()
+                self._bc_train_losses.append(float(loss.item()))
+        finally:
+            if bounded_threads != original_threads:
+                torch.set_num_threads(original_threads)
+
+        self._bc_train_step = end_step
+        crossed_progress_boundary = (
+            start_step // self._bc_progress_interval
+            != end_step // self._bc_progress_interval
+        )
+        if end_step == self._bc_train_steps or crossed_progress_boundary:
+            logger.info(
+                "CC-L2 BC pretraining progress | steps={}/{} | "
+                "chunk_seconds={:.3f} | mean_loss={:.6f} | torch_threads={}",
+                end_step,
+                self._bc_train_steps,
+                time.perf_counter() - chunk_started_at,
+                float(np.mean(self._bc_train_losses)),
+                bounded_threads,
+            )
+
+        if end_step < self._bc_train_steps:
+            return
+
+        mean_loss = float(np.mean(self._bc_train_losses))
+        total_seconds = (
+            time.perf_counter() - self._bc_train_started_at
+            if self._bc_train_started_at is not None
+            else 0.0
+        )
         logger.info(
-            "CC-L2 BC pretraining done | steps={} | loss={:.6f}",
-            self._bc_train_steps, mean_loss,
+            "CC-L2 BC pretraining done | steps={} | loss={:.6f} | seconds={:.3f}",
+            self._bc_train_steps,
+            mean_loss,
+            total_seconds,
         )
         if mlflow.active_run():
             mlflow.log_metrics(
@@ -1033,15 +1132,17 @@ class CCLevel2Agent(BaseAgent):
                     "CC2/bc_pretrain_target_import": self._bc_target_import,
                     "CC2/bc_pretrain_ref_peak":      self._bc_reference_peak,
                     "CC2/bc_pretrain_ref_export":    self._bc_reference_export,
+                    "CC2/bc_pretrain_seconds":       total_seconds,
                 },
                 step=0,
             )
 
-        self._bc_contexts.clear()
-        self._bc_teacher_contexts.clear()
-        self._bc_targets.clear()
-        self._bc_import_samples.clear()
-        self._bc_export_samples.clear()
+        self._bc_pretrain_done = True
+        self._bc_train_inputs = None
+        self._bc_train_targets = None
+        self._bc_train_optimizer = None
+        self._bc_train_losses = []
+        self._bc_train_started_at = None
 
     # ───────────────────────── Internal: decision ────────────────────────────
 

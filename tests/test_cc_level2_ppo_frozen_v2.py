@@ -57,6 +57,10 @@ def test_v2_trains_only_a_conservative_hourly_cc_level2(tmp_path: Path) -> None:
         assert manager.hyperparameters.reference_multipliers == [1.0] * 17
         assert manager.hyperparameters.cc_action_interval == 4
         assert manager.hyperparameters.policy_parameterization == "centered_residual"
+        assert manager.hyperparameters.bc_train_steps == 4000
+        assert manager.hyperparameters.bc_train_chunk_steps == 256
+        assert manager.hyperparameters.bc_max_torch_threads == 1
+        assert manager.hyperparameters.bc_progress_interval == 500
 
         assert leaf.algorithm == "PPO"
         assert leaf.frozen is True
@@ -83,6 +87,8 @@ def test_v2_smoke_reaches_real_cc_learning_without_unfreezing_leaf(
         assert config.simulator.episodes == 3
         assert manager.hyperparameters.bc_collect_steps == 96
         assert manager.hyperparameters.bc_train_steps == 4
+        assert manager.hyperparameters.bc_train_chunk_steps == 2
+        assert manager.hyperparameters.bc_progress_interval == 2
         assert manager.hyperparameters.num_steps == 96
         assert leaf.frozen is True
         assert config.checkpointing.checkpoint_interval is None

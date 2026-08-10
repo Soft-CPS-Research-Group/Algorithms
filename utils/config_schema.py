@@ -623,6 +623,13 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
         "absolute_blend", "centered_residual"
     ] = "absolute_blend"
     include_community_headroom: bool = False
+    bc_pretrain_enabled: bool = False
+    bc_collect_steps: int = Field(default=336, ge=1)
+    bc_train_steps: int = Field(default=2000, ge=1)
+    bc_train_chunk_steps: int = Field(default=256, ge=1)
+    bc_max_torch_threads: int = Field(default=1, ge=1)
+    bc_progress_interval: int = Field(default=250, ge=1)
+    bc_lr: float = Field(default=1.0e-3, gt=0)
     bc_use_physical_teacher_context: bool = False
     w_factor: float = Field(default=0.3, ge=0)
     w_smoothness: float = Field(default=0.02, ge=0)
