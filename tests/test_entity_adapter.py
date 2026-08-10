@@ -647,6 +647,95 @@ def test_entity_adapter_maddpg_v3_operational_keeps_simulator_110_features():
     assert encoded[encoded_names.index(charge_to_required)] == pytest.approx(0.35, abs=1e-6)
 
 
+def test_entity_adapter_maddpg_v4_preserves_signal_in_derived_forecasts():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(
+        env,
+        normalization_enabled=True,
+        clip=True,
+        encoding_profile="maddpg_v4_operational",
+    )
+    observation_names = [
+        "district__active_buildings_count",
+        "district__electricity_pricing",
+        "district__electricity_pricing_predicted_1",
+        "district__forecast_price_next_1h",
+        "district__forecast_community_net_next_1h_kw",
+        "forecast_load_next_1h_kw",
+        "forecast_net_next_1h_kw",
+    ]
+    observation = np.asarray([2.0, 0.20, 0.25, 0.30, 25.0, 5.0, -5.0], dtype=np.float32)
+    observation_space = spaces.Box(
+        low=np.asarray([0.0, 0.0, 0.0, -1.0e6, -1.0e6, -1.0e6, -1.0e6], dtype=np.float32),
+        high=np.asarray([17.0, 0.65, 0.65, 1.0e6, 1.0e6, 1.0e6, 1.0e6], dtype=np.float32),
+        dtype=np.float32,
+    )
+
+    first = adapter.normalize_observation(
+        agent_index=0,
+        observation=observation,
+        observation_names=observation_names,
+        observation_space=observation_space,
+    )
+    # Exercise the cached compiled plan too; both encoder paths must agree.
+    second = adapter.normalize_observation(
+        agent_index=0,
+        observation=observation,
+        observation_names=observation_names,
+        observation_space=observation_space,
+    )
+    encoded_names = adapter.encoded_observation_names([observation_names])[0]
+
+    assert second == pytest.approx(first, abs=1e-8)
+    assert first[encoded_names.index("district__forecast_price_next_1h")] == pytest.approx(
+        0.30 / 0.65,
+        abs=1e-6,
+    )
+    assert first[
+        encoded_names.index("district__forecast_community_net_next_1h_kw")
+    ] == pytest.approx(0.5, abs=1e-6)
+    assert first[encoded_names.index("forecast_load_next_1h_kw")] == pytest.approx(0.2, abs=1e-6)
+    assert first[encoded_names.index("forecast_net_next_1h_kw")] == pytest.approx(-0.2, abs=1e-6)
+
+
+def test_entity_adapter_maddpg_v3_keeps_legacy_forecast_encoding_for_checkpoints():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(
+        env,
+        normalization_enabled=True,
+        clip=True,
+        encoding_profile="maddpg_v3_operational",
+    )
+    observation_names = [
+        "district__electricity_pricing_predicted_1",
+        "district__forecast_price_next_1h",
+        "forecast_load_next_1h_kw",
+    ]
+    observation = np.asarray([0.25, 0.30, 5.0], dtype=np.float32)
+    observation_space = spaces.Box(
+        low=np.asarray([0.0, -1.0e6, -1.0e6], dtype=np.float32),
+        high=np.asarray([0.65, 1.0e6, 1.0e6], dtype=np.float32),
+        dtype=np.float32,
+    )
+
+    encoded = adapter.normalize_observation(
+        agent_index=0,
+        observation=observation,
+        observation_names=observation_names,
+        observation_space=observation_space,
+    )
+    encoded_names = adapter.encoded_observation_names([observation_names])[0]
+
+    assert encoded[encoded_names.index("district__forecast_price_next_1h")] == pytest.approx(
+        0.50000015,
+        abs=1e-8,
+    )
+    assert encoded[encoded_names.index("forecast_load_next_1h_kw")] == pytest.approx(
+        0.5000025,
+        abs=1e-8,
+    )
+
+
 def test_entity_adapter_maddpg_v3_realtime_drops_simulator_perfect_forecasts():
     env = _DummyEntityEnv()
     adapter = EntityContractAdapter(

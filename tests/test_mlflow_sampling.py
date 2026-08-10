@@ -239,6 +239,25 @@ def test_maddpg_reward_normalization_uses_running_stats():
     assert normalized[1, 0, 0].item() == pytest.approx(1.0 / (2.0**0.5), abs=1e-6)
 
 
+def test_maddpg_critic_team_reward_mix_preserves_local_credit_and_adds_team_credit():
+    agent = MADDPG.__new__(MADDPG)
+    agent.critic_team_reward_mix = 0.75
+    individual = torch.tensor([[[1.0]], [[5.0]]], dtype=torch.float32)
+
+    blended = agent._critic_training_rewards(individual)
+
+    assert blended[:, 0, 0].tolist() == pytest.approx([2.5, 3.5], abs=1e-6)
+    assert blended.mean().item() == pytest.approx(individual.mean().item(), abs=1e-6)
+
+
+def test_maddpg_zero_team_reward_mix_is_backward_compatible():
+    agent = MADDPG.__new__(MADDPG)
+    agent.critic_team_reward_mix = 0.0
+    individual = torch.tensor([[[1.0]], [[5.0]]], dtype=torch.float32)
+
+    assert agent._critic_training_rewards(individual) is individual
+
+
 def test_wrapper_reward_component_diagnostics_are_summarized():
     class DummyReward:
         def get_last_components(self):

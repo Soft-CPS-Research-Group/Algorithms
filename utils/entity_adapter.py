@@ -38,6 +38,7 @@ class EntityContractAdapter:
         "maddpg_v2_compact",
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
+        "maddpg_v4_operational",
         "building_local_v1",
         "cc_level1",
         "cc_level2",
@@ -47,6 +48,7 @@ class EntityContractAdapter:
         "maddpg_v2_compact",
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
+        "maddpg_v4_operational",
         "building_local_v1",
         "cc_level1",
         "cc_level2",
@@ -951,6 +953,15 @@ class EntityContractAdapter:
         low = np.asarray(observation_space.low, dtype=np.float64)
         high = np.asarray(observation_space.high, dtype=np.float64)
         value_name_to_index = {str(name): idx for idx, name in enumerate(observation_names)}
+        forecast_scaling_enabled = profile == "maddpg_v4_operational"
+        if forecast_scaling_enabled:
+            forecast_price_low, forecast_price_high = self._forecast_price_reference_bounds(
+                low=low,
+                high=high,
+                value_name_to_index=value_name_to_index,
+            )
+        else:
+            forecast_price_low, forecast_price_high = 0.0, 1.0
         ops: List[Tuple[Any, ...]] = []
         emitted_time_of_day = False
 
@@ -1108,6 +1119,13 @@ class EntityContractAdapter:
                 append(name, ("signed_by_bounds", index, lo, hi))
                 continue
 
+            if forecast_scaling_enabled and "forecast_price_" in name:
+                append(
+                    name,
+                    ("minmax", index, forecast_price_low, forecast_price_high),
+                )
+                continue
+
             if "headroom_kw" in name:
                 append(name, ("headroom_ratio", index, name, lo, hi))
                 continue
@@ -1138,6 +1156,10 @@ class EntityContractAdapter:
                 or name.endswith("max_discharging_power_kw")
             ):
                 append(name, ("positive_by_high", index, hi, 22.0))
+                continue
+
+            if forecast_scaling_enabled and "forecast_" in name and name.endswith("_kw"):
+                append(name, ("forecast_power_ratio", index, name, lo, hi))
                 continue
 
             if name.endswith("_power_kw") or name.endswith("slack_kw"):
@@ -1350,6 +1372,14 @@ class EntityContractAdapter:
                     high=op[4],
                     values_by_name=values_by_name,
                 )
+            elif kind == "forecast_power_ratio":
+                encoded[output_index] = self._forecast_power_ratio(
+                    name=op[2],
+                    value=value_at(op[1]),
+                    low=op[3],
+                    high=op[4],
+                    values_by_name=values_by_name,
+                )
             elif kind == "scale_clip":
                 encoded[output_index] = float(np.clip(value_at(op[1]) / op[2], op[3], op[4]))
             else:
@@ -1371,6 +1401,15 @@ class EntityContractAdapter:
     ) -> Tuple[np.ndarray, List[str]]:
         low = np.asarray(observation_space.low, dtype=np.float64)
         high = np.asarray(observation_space.high, dtype=np.float64)
+        forecast_scaling_enabled = self.encoding_profile == "maddpg_v4_operational"
+        if forecast_scaling_enabled:
+            forecast_price_low, forecast_price_high = self._forecast_price_reference_bounds(
+                low=low,
+                high=high,
+                value_name_to_index={str(name): idx for idx, name in enumerate(observation_names)},
+            )
+        else:
+            forecast_price_low, forecast_price_high = 0.0, 1.0
         if value_name_index_pairs is None:
             value_name_index_pairs = [
                 (str(name), index) for index, name in enumerate(observation_names)
@@ -1539,6 +1578,10 @@ class EntityContractAdapter:
                 append(name, self._signed_by_bounds(value, lo, hi))
                 continue
 
+            if forecast_scaling_enabled and "forecast_price_" in name:
+                append(name, self._minmax(value, forecast_price_low, forecast_price_high))
+                continue
+
             if "headroom_kw" in name:
                 append(name, self._headroom_ratio(name=name, value=value, low=lo, high=hi))
                 continue
@@ -1586,6 +1629,19 @@ class EntityContractAdapter:
                 or name.endswith("max_discharging_power_kw")
             ):
                 append(name, self._positive_by_high(value, hi, fallback=22.0))
+                continue
+
+            if forecast_scaling_enabled and "forecast_" in name and name.endswith("_kw"):
+                append(
+                    name,
+                    self._forecast_power_ratio(
+                        name=name,
+                        value=value,
+                        low=lo,
+                        high=hi,
+                        values_by_name=values_by_name,
+                    ),
+                )
                 continue
 
             if name.endswith("_power_kw") or name.endswith("slack_kw"):
@@ -1722,6 +1778,8 @@ class EntityContractAdapter:
         if profile == "maddpg_v2_compact":
             return cls._is_maddpg_v2_compact_feature(name)
         if profile == "maddpg_v3_operational":
+            return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=True)
+        if profile == "maddpg_v4_operational":
             return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=True)
         if profile == "maddpg_v3_realtime":
             return cls._is_maddpg_v3_operational_feature(name, include_forecast_features=False)
@@ -2426,6 +2484,43 @@ class EntityContractAdapter:
         return float(scale) if scale > 0.0 else None
 
     @staticmethod
+    def _forecast_price_reference_bounds(
+        *,
+        low: np.ndarray,
+        high: np.ndarray,
+        value_name_to_index: Mapping[str, int],
+    ) -> Tuple[float, float]:
+        """Use a real tariff feature to scale derived price forecasts.
+
+        Derived forecast columns deliberately expose permissive simulator
+        bounds (typically ``[-1e6, 1e6]``).  Generic min-max encoding therefore
+        collapses every realistic price to approximately 0.5.  The legacy
+        predicted/current tariff features carry dataset-calibrated bounds and
+        define the same physical unit, so they are a stable scaling reference.
+        """
+
+        reference_names = (
+            "district__electricity_pricing_predicted_1",
+            "district__electricity_pricing",
+        )
+        for reference_name in reference_names:
+            index = value_name_to_index.get(reference_name)
+            if index is None or index >= len(low) or index >= len(high):
+                continue
+            lo = float(low[index])
+            hi = float(high[index])
+            denominator = hi - lo
+            if (
+                np.isfinite(lo)
+                and np.isfinite(hi)
+                and np.isfinite(denominator)
+                and denominator > 0.0
+                and max(abs(lo), abs(hi)) < 1.0e4
+            ):
+                return lo, hi
+        return 0.0, 1.0
+
+    @staticmethod
     def _is_signed_power_name(name: str) -> bool:
         signed_tokens = (
             "net_power_kw",
@@ -2519,6 +2614,34 @@ class EntityContractAdapter:
             values_by_name=values_by_name,
             signed=signed,
         )
+        if signed:
+            return float(np.clip(value / scale, -1.0, 1.0))
+        return float(np.clip(value / scale, 0.0, 1.0))
+
+    def _forecast_power_ratio(
+        self,
+        *,
+        name: str,
+        value: float,
+        low: float,
+        high: float,
+        values_by_name: Mapping[str, float],
+    ) -> float:
+        """Encode derived kW forecasts without changing legacy V3 profiles."""
+
+        signed = "forecast_net_" in name or "forecast_community_net_" in name
+        bounded = self._reasonable_bound_scale(low, high, signed=signed, max_abs=1.0e4)
+        if bounded is not None:
+            scale = bounded
+        elif "forecast_community_" in name:
+            active_buildings = self._safe_scalar(
+                values_by_name.get("district__active_buildings_count", 0.0),
+                0.0,
+            )
+            scale = max(active_buildings, 1.0) * 25.0
+        else:
+            scale = 25.0
+
         if signed:
             return float(np.clip(value / scale, -1.0, 1.0))
         return float(np.clip(value / scale, 0.0, 1.0))

@@ -283,7 +283,8 @@ class MATD3(MADDPG):
             next_behavior_actions_all = actions_all
 
         raw_rewards_all = torch.stack(rewards_all).to(self.device, dtype=torch.float32, non_blocking=True)
-        rewards_all = self._normalize_reward_tensor(raw_rewards_all)
+        individual_rewards_all = self._normalize_reward_tensor(raw_rewards_all)
+        rewards_all = self._critic_training_rewards(individual_rewards_all)
         dones_all = dones_all.to(self.device, dtype=torch.float32, non_blocking=True)
         states = [state.to(self.device, non_blocking=True) for state in states]
         actions_all = [action.to(self.device, non_blocking=True) for action in actions_all]
@@ -611,6 +612,13 @@ class MATD3(MADDPG):
                 "MATD3/q_target_mean": float(q_target_flat.mean().item()),
                 "MATD3/reward_raw_mean": float(raw_rewards_all.mean().item()),
                 "MATD3/reward_train_mean": float(rewards_all.mean().item()),
+                "MATD3/reward_train_std": float(rewards_all.std(unbiased=False).item()),
+                "MATD3/reward_individual_train_std": float(
+                    individual_rewards_all.std(unbiased=False).item()
+                ),
+                "MATD3/critic_team_reward_mix": float(
+                    getattr(self, "critic_team_reward_mix", 0.0)
+                ),
                 "MATD3/replay_buffer_size": float(len(self.replay_buffer)),
                 "MATD3/replay_push_count": float(getattr(self, "_replay_push_count", 0)),
                 "MATD3/n_step_returns": float(getattr(self, "n_step_returns", 1)),

@@ -138,6 +138,9 @@ class MADDPG(BaseAgent):
         self.critic_update_mode = str(exploration_cfg.get("critic_update_mode", "joint_mean") or "joint_mean").strip().lower()
         if self.critic_update_mode not in {"joint_mean", "per_agent"}:
             raise ValueError("MADDPG critic_update_mode must be 'joint_mean' or 'per_agent'.")
+        self.critic_team_reward_mix = float(exploration_cfg.get("critic_team_reward_mix", 0.0) or 0.0)
+        if not 0.0 <= self.critic_team_reward_mix <= 1.0:
+            raise ValueError("MADDPG critic_team_reward_mix must be between 0.0 and 1.0.")
         self.actor_update_interval = max(1, int(exploration_cfg.get("actor_update_interval", 1) or 1))
         self.actor_policy_loss_weight = max(
             0.0,
@@ -1441,7 +1444,8 @@ class MADDPG(BaseAgent):
 
         phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         raw_rewards_all = torch.stack(rewards_all).to(self.device, dtype=torch.float32, non_blocking=True)
-        rewards_all = self._normalize_reward_tensor(raw_rewards_all)
+        individual_rewards_all = self._normalize_reward_tensor(raw_rewards_all)
+        rewards_all = self._critic_training_rewards(individual_rewards_all)
         dones_all = dones_all.to(self.device, dtype=torch.float32, non_blocking=True)
         states = [s.to(self.device, non_blocking=True) for s in states]
         actions_all = [a.to(self.device, non_blocking=True) for a in actions_all]
@@ -1893,6 +1897,12 @@ class MADDPG(BaseAgent):
                 "MADDPG/reward_raw_std": float(raw_rewards_all.std(unbiased=False).item()),
                 "MADDPG/reward_train_mean": float(rewards_all.mean().item()),
                 "MADDPG/reward_train_std": float(rewards_all.std(unbiased=False).item()),
+                "MADDPG/reward_individual_train_std": float(
+                    individual_rewards_all.std(unbiased=False).item()
+                ),
+                "MADDPG/critic_team_reward_mix": float(
+                    getattr(self, "critic_team_reward_mix", 0.0)
+                ),
                 "MADDPG/reward_norm_count": float(getattr(self, "reward_norm_count", 0)),
                 "MADDPG/reward_norm_mean": float(getattr(self, "reward_norm_mean", 0.0)),
                 "MADDPG/reward_norm_std": float(self._reward_normalization_std()),
@@ -2196,6 +2206,22 @@ class MADDPG(BaseAgent):
         clip_value = float(getattr(self, "reward_normalization_clip", 10.0))
         return torch.clamp(normalized, -clip_value, clip_value)
 
+    def _critic_training_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
+        """Blend individual rewards with the cooperative team objective.
+
+        The first tensor dimension is the agent dimension.  A value of zero
+        preserves historical MADDPG/MATD3 behavior exactly; a value of one
+        makes every critic optimize the mean community reward.  Intermediate
+        values retain local hard-constraint and service credit while exposing
+        the actors to the effect of joint actions on total community value.
+        """
+
+        mix = float(getattr(self, "critic_team_reward_mix", 0.0))
+        if mix <= 0.0 or rewards.ndim == 0 or rewards.shape[0] <= 1:
+            return rewards
+        team_reward = rewards.mean(dim=0, keepdim=True)
+        return (1.0 - mix) * rewards + mix * team_reward
+
     def _critic_loss(self, expected: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if getattr(self, "critic_loss_function", "mse") == "huber":
             return smooth_l1_loss(
@@ -2246,6 +2272,9 @@ class MADDPG(BaseAgent):
                 getattr(self, "exploration_step", 0) >= getattr(self, "end_initial_exploration_time_step", 0)
             ),
             "MADDPG/reward_normalization_enabled": float(getattr(self, "reward_normalization_enabled", False)),
+            "MADDPG/critic_team_reward_mix": float(
+                getattr(self, "critic_team_reward_mix", 0.0)
+            ),
             "MADDPG/reward_norm_count": float(getattr(self, "reward_norm_count", 0)),
             "MADDPG/reward_norm_mean": float(getattr(self, "reward_norm_mean", 0.0)),
             "MADDPG/reward_norm_std": float(self._reward_normalization_std()),

@@ -299,6 +299,7 @@ class EntityEncodingConfig(BaseModel):
         "maddpg_v2_compact",
         "maddpg_v3_operational",
         "maddpg_v3_realtime",
+        "maddpg_v4_operational",
         "building_local_v1",
         "cc_level1",
         "cc_level2",

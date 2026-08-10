@@ -148,6 +148,14 @@ def test_registry_supports_new_rl_agents(algorithm_name):
     assert agent.__class__.__name__ == algorithm_name
 
 
+def test_matd3_rejects_invalid_critic_team_reward_mix():
+    config = _base_rl_config("MATD3")
+    config["pipeline"][0]["exploration"]["params"]["critic_team_reward_mix"] = 1.01
+
+    with pytest.raises(ValueError, match="critic_team_reward_mix"):
+        MATD3(_agent_view(config))
+
+
 @pytest.mark.parametrize("agent_cls", [MADDPG, MATD3, MASAC])
 def test_centralized_critic_respects_configured_late_fusion_class(agent_cls):
     config = _base_rl_config(agent_cls.__name__)
