@@ -19,15 +19,15 @@ runtime:
   mlflow_run_url: null
 
 tracking:
-  mlflow_enabled: true
+  mlflow_enabled: false
   log_level: "INFO"
-  log_frequency: 1
-  mlflow_step_sample_interval: 10
+  log_frequency: 256
+  mlflow_step_sample_interval: 256
   mlflow_artifacts_profile: minimal
   progress_updates_enabled: true
-  progress_update_interval: 5
-  system_metrics_enabled: false
-  system_metrics_interval: 10
+  progress_update_interval: 128
+  system_metrics_enabled: true
+  system_metrics_interval: 256
 
 checkpointing:
   resume_training: false
@@ -37,7 +37,7 @@ checkpointing:
   reset_replay_buffer: false
   freeze_pretrained_layers: false
   fine_tune: false
-  checkpoint_interval: 1
+  checkpoint_interval: null
   require_update_step: true
   require_initial_exploration_done: true
 
@@ -69,6 +69,9 @@ simulator:
   export:
     mode: end
     export_kpis_on_episode_end: true
+    final_episode_only: true
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: false
     session_name: null
   wrapper_reward:
     enabled: false
