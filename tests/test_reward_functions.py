@@ -249,6 +249,42 @@ def test_cc_level2_exact_settlement_accepts_deferred_environment_metadata():
     ) == pytest.approx(-0.675)
 
 
+def test_cc_level2_reward_can_penalize_ramping_and_electrical_violations():
+    reward = CCRewardLevel2(
+        env_metadata={"central_agent": False},
+        cost_aggregation="member_retail",
+        w_cost=0.0,
+        w_peak=0.0,
+        w_ramp=0.5,
+        w_export=0.0,
+        w_violation=2.0,
+        w_ev=0.0,
+        reference_ramping=2.0,
+        reference_violation=1.0,
+    )
+
+    first = reward.calculate(
+        [
+            {
+                "net_electricity_consumption": 2.0,
+                "charging_constraint_violation_kwh": 0.25,
+            },
+            {"net_electricity_consumption": 0.0},
+        ]
+    )
+    second = reward.calculate(
+        [
+            {"net_electricity_consumption": 4.0},
+            {"net_electricity_consumption": 0.0},
+        ]
+    )
+
+    # First step: 2 kWh ramp / 2 reference * 0.5 + 0.25 kWh violation * 2.
+    assert sum(first) == pytest.approx(-1.0)
+    # Second step: only the same 2 kWh ramp remains.
+    assert sum(second) == pytest.approx(-0.5)
+
+
 def test_cost_reward_prefers_storing_pv_export_to_avoid_later_import():
     reward = CostHardConstraintReward(
         env_metadata={"central_agent": False},

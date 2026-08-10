@@ -9,7 +9,9 @@ required SoC by departure time.
 Community term (identical to CCRewardLevel1):
     community_term = − w_cost   * cost_norm
                      − w_peak   * peak_import_norm
+                     − w_ramp   * import_ramp_norm
                      − w_export * export_norm
+                     − w_violation * electrical_violation_norm
 
 EV penalty (average urgency-weighted SoC deficit across all buildings):
     For each building i with a connected EV:
@@ -26,6 +28,9 @@ Design notes
   Default H = 4 h — gives the RBC 4 hours of warning before the signal matters.
 * Dividing by N_buildings keeps ev_penalty on the same scale as the per-building
   community terms regardless of how many EVs are present.
+* ``w_ramp`` and ``w_violation`` default to zero for compatibility with the
+  historical Level-2 runs. Current scorecard-aware campaigns set both
+  explicitly.
 * w_ev = 0.5 default — EV safety carries half the weight of cost, comparable
   to the community signal at a mildly bad timestep but clearly secondary.
 
@@ -59,14 +64,18 @@ class CCRewardLevel2(RewardFunction):
         # Community weights (mirror CCRewardLevel1)
         w_cost:   float = 1.0,
         w_peak:   float = 0.3,
+        w_ramp:   float = 0.0,
         w_export: float = 0.1,
+        w_violation: float = 0.0,
         # EV service weight
         w_ev:     float = 0.5,
         # Community reference values (15-min dataset, 17 buildings)
         target_import:    float = 4.14,   # kWh — p75 community import
         reference_cost:   float = 1.045,  # p90 community cost
         reference_peak:   float = 2.72,   # p90 peak excess squared
+        reference_ramping: float = 1.878,  # p90 import ramp
         reference_export: float = 7.52,   # kWh — p90 community export
+        reference_violation: float = 1.0,
         # EV urgency horizon in hours
         urgency_horizon:  float = 4.0,    # harm starts H hours before departure
         cost_aggregation: str = "community_net",
@@ -78,13 +87,17 @@ class CCRewardLevel2(RewardFunction):
         super().__init__(env_metadata, **kwargs)
         self._w_cost   = float(w_cost)
         self._w_peak   = float(w_peak)
+        self._w_ramp   = float(w_ramp)
         self._w_export = float(w_export)
+        self._w_violation = float(w_violation)
         self._w_ev     = float(w_ev)
 
         self._target_import    = float(target_import)
         self._ref_cost         = max(float(reference_cost),   1e-8)
         self._ref_peak         = max(float(reference_peak),   1e-8)
+        self._ref_ramping      = max(float(reference_ramping), 1e-8)
         self._ref_export       = max(float(reference_export), 1e-8)
+        self._ref_violation    = max(float(reference_violation), 1e-8)
         self._cost_aggregation = str(cost_aggregation).strip().lower()
         if self._cost_aggregation not in {
             "community_net",
@@ -155,6 +168,7 @@ class CCRewardLevel2(RewardFunction):
         self.last_community_settlement: Mapping[str, float] = {}
 
         self._urgency_horizon  = max(float(urgency_horizon), 1e-6)
+        self._prev_import = 0.0
 
         # MLflow logging — sample every N calls to avoid flooding
         self._log_interval: int = 50
@@ -197,6 +211,19 @@ class CCRewardLevel2(RewardFunction):
             count   += 1
 
         return total / count if count > 0 else 0.0
+
+    @classmethod
+    def _violation_kwh(cls, obs: Mapping[str, Any]) -> float:
+        for key in (
+            "charging_constraint_violation_kwh",
+            "electrical_service_violation_kwh",
+            "electrical_service_violation",
+            "service_violation_kwh",
+            "service_violation",
+        ):
+            if key in obs:
+                return max(cls._safe(obs[key]), 0.0)
+        return 0.0
 
     def _refresh_community_settlement_contract(self) -> None:
         """Resolve market metadata after CityLearn completes environment loading."""
@@ -279,12 +306,20 @@ class CCRewardLevel2(RewardFunction):
             community_cost = import_t * price
         cost_norm   = community_cost / self._ref_cost
         peak_norm   = (max(import_t - self._target_import, 0.0) ** 2) / self._ref_peak
+        ramp_norm   = abs(import_t - self._prev_import) / self._ref_ramping
+        self._prev_import = import_t
         export_norm = export_t / self._ref_export
+        violation_norm = (
+            sum(self._violation_kwh(obs) for obs in observations)
+            / self._ref_violation
+        )
 
         community_term = (
             - self._w_cost   * cost_norm
             - self._w_peak   * peak_norm
+            - self._w_ramp   * ramp_norm
             - self._w_export * export_norm
+            - self._w_violation * violation_norm
         )
 
         # ── EV service term ──────────────────────────────────────────────────
@@ -314,7 +349,9 @@ class CCRewardLevel2(RewardFunction):
                     "CC2_rf/ev_harm_sum":     ev_harm_sum,
                     "CC2_rf/cost_norm":       cost_norm,
                     "CC2_rf/peak_norm":       peak_norm,
+                    "CC2_rf/ramp_norm":       ramp_norm,
                     "CC2_rf/export_norm":     export_norm,
+                    "CC2_rf/violation_norm":  violation_norm,
                     "CC2_rf/n_ev_connected":  float(n_ev_connected),
                     "CC2_rf/n_ev_urgent":     float(n_ev_urgent),
                     "CC2_rf/total_reward":    scalar,

@@ -349,6 +349,56 @@ def test_cc_level2_temporal_abstraction_does_not_depend_on_learning_updates() ->
     assert outputs[4:] == [outputs[4]] * 4
 
 
+def test_cc_level2_does_not_store_bc_boundary_as_on_policy_transition() -> None:
+    agent = _attached_agent(interval=1, num_steps=2)
+    agent._bc_enabled = True
+    agent._bc_pretrain_done = False
+    agent._bc_collect_steps = 1
+    agent._bc_train_steps = 1
+    agent._bc_target_import = 1.0
+    agent._bc_reference_peak = 1.0
+    agent._bc_reference_export = 1.0
+    observations = [
+        np.zeros(len(_observation_names(1)), dtype=np.float32),
+        np.zeros(len(_observation_names(2)), dtype=np.float32),
+    ]
+
+    agent.predict(observations, deterministic=False)
+    assert agent._bc_pretrain_done is True
+    assert agent._cached_policy_sample is False
+    agent.update(
+        observations,
+        [[], []],
+        [-1.0, -1.0],
+        observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    assert agent.rollout_buffer._ptr == 0
+
+    agent.predict(observations, deterministic=False)
+    assert agent._cached_policy_sample is True
+    agent.update(
+        observations,
+        [[], []],
+        [-1.0, -1.0],
+        observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=1,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    assert agent.rollout_buffer._ptr == 1
+
+
 def test_cc_level2_rollout_gae_stops_at_episode_boundary() -> None:
     buffer = RolloutBufferV2(num_steps=3, c_dim=1, num_buildings=2)
     buffer.values[:] = 0.0

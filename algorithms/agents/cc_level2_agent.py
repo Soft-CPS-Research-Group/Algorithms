@@ -463,6 +463,7 @@ class CCLevel2Agent(BaseAgent):
             self._num_buildings, dtype=np.float32
         )
         self._cached_value:       float = 0.0
+        self._cached_policy_sample: bool = False
         self._accumulated_reward: float = 0.0
 
         # BC warm-start
@@ -715,6 +716,7 @@ class CCLevel2Agent(BaseAgent):
         self._cached_logprob     = np.zeros(
             self._num_buildings, dtype=np.float32
         )
+        self._cached_policy_sample = False
 
     # ───────────────────────── Per-step interaction ──────────────────────────
 
@@ -748,6 +750,10 @@ class CCLevel2Agent(BaseAgent):
                     self._num_buildings, dtype=np.float32
                 )
                 self._cached_value       = 0.0
+                # A BC-teacher decision has no policy log-probability.  Even
+                # when this same decision completes BC collection, it must not
+                # enter the PPO rollout as an on-policy transition.
+                self._cached_policy_sample = False
                 # Accumulate community import/export for BC calibration.
                 _idx = self._district_feature_names.index
                 dt = self._bc_dt_hours
@@ -815,7 +821,7 @@ class CCLevel2Agent(BaseAgent):
 
         assert self._cached_community is not None, "predict() must run before update()"
 
-        if not self._bc_pretrain_done:
+        if not self._bc_pretrain_done or not self._cached_policy_sample:
             self._decision_interval_complete = False
             self._accumulated_reward = 0.0
             if done:
@@ -1135,6 +1141,7 @@ class CCLevel2Agent(BaseAgent):
         self._cached_community   = ctx
         self._cached_logprob     = logprob.squeeze(0).numpy().astype(np.float32)
         self._cached_value       = float(value.item())
+        self._cached_policy_sample = True
 
         self._log_decision()
 
