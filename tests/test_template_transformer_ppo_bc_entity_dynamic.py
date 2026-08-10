@@ -47,10 +47,20 @@ def test_local_bc_template_uses_demonstrations_without_action_blending() -> None
     transformer = stage["transformer"]
     hyperparameters = stage["hyperparameters"]
     behavior_cloning = stage["behavior_cloning"]
+    tracking = config["tracking"]
+    export = config["simulator"]["export"]
 
     assert transformer["dropout"] == pytest.approx(0.0)
     assert config["training"]["steps_between_training_updates"] == 256
     assert config["training"]["steps_between_training_updates"] >= hyperparameters["minibatch_size"]
+    assert tracking["mlflow_enabled"] is False
+    assert tracking["log_level"] == "INFO"
+    assert tracking["log_frequency"] == config["training"]["steps_between_training_updates"]
+    assert tracking["mlflow_step_sample_interval"] == tracking["log_frequency"]
+    assert config["checkpointing"]["checkpoint_interval"] is None
+    assert export["final_episode_only"] is True
+    assert export["include_business_as_usual"] is True
+    assert export["export_business_as_usual_timeseries"] is False
     assert "actor_log_std_init" in hyperparameters
     assert behavior_cloning["enabled"] is True
     assert behavior_cloning["demonstration_episodes"] >= 1
