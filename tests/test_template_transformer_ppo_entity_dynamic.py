@@ -31,6 +31,21 @@ def test_template_resolves_to_registered_agent() -> None:
     assert ALGORITHM_REGISTRY["AgentTransformerPPO"] is AgentTransformerPPO
 
 
+def test_template_uses_storage_safe_run_defaults() -> None:
+    cfg = _load_template()
+    tracking = cfg["tracking"]
+    export = cfg["simulator"]["export"]
+
+    assert tracking["mlflow_enabled"] is False
+    assert tracking["log_level"] == "INFO"
+    assert tracking["log_frequency"] == cfg["training"]["steps_between_training_updates"]
+    assert tracking["mlflow_step_sample_interval"] == tracking["log_frequency"]
+    assert cfg["checkpointing"]["checkpoint_interval"] is None
+    assert export["final_episode_only"] is True
+    assert export["include_business_as_usual"] is True
+    assert export["export_business_as_usual_timeseries"] is False
+
+
 def test_template_tokenizer_path_validates_against_bundled_sample() -> None:
     """Tokenizer JSON pointed to by the template MUST pass the 5-rule
     validation against the bundled sample payload + per-building action_field
