@@ -15,8 +15,12 @@ from loguru import logger
 class ProgressTracker:
     """Writes incremental progress information for external observers."""
 
-    def __init__(self, progress_path: Optional[str]) -> None:
+    def __init__(self, progress_path: Optional[str], *, durable: bool = False) -> None:
         self.progress_path = Path(progress_path) if progress_path else None
+        # Progress is best-effort telemetry rather than recoverable training
+        # state.  Forcing every heartbeat through fsync can block indefinitely
+        # on remote/FUSE filesystems and must therefore be explicitly opted in.
+        self.durable = bool(durable)
 
     def update(
         self,
@@ -97,7 +101,8 @@ class ProgressTracker:
                 temporary_path = Path(handle.name)
                 json.dump(payload, handle, indent=2)
                 handle.flush()
-                os.fsync(handle.fileno())
+                if self.durable:
+                    os.fsync(handle.fileno())
             os.replace(temporary_path, self.progress_path)
         except Exception as exc:
             logger.warning("Failed to write progress file {}: {}", self.progress_path, exc)

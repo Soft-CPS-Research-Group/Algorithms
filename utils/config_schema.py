@@ -144,7 +144,7 @@ class TrackingConfig(BaseModel):
     )
     stall_watchdog_enabled: bool = Field(
         default=False,
-        description="Arm a faulthandler watchdog around wrapper phases to diagnose stalled jobs",
+        description="Arm a rolling faulthandler watchdog around episode boundaries and environment-step windows",
     )
     stall_watchdog_timeout_seconds: Optional[float] = Field(
         default=None,
@@ -161,12 +161,12 @@ class TrackingConfig(BaseModel):
     )
     stall_watchdog_traceback_file: Optional[str] = Field(
         default=None,
-        description="Optional path for stall watchdog stack dumps; defaults to the run log directory",
+        description="Optional path for stall watchdog stack dumps; defaults to captured stderr",
     )
     stall_watchdog_context_interval_steps: int = Field(
         default=1,
         ge=1,
-        description="Write stall watchdog context every N step_start phases to reduce remote I/O",
+        description="Write stall watchdog context at most every N environment steps to reduce remote I/O",
     )
     resource_guard_enabled: bool = Field(
         default=False,

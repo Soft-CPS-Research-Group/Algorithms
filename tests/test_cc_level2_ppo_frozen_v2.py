@@ -25,6 +25,8 @@ def test_v2_separates_parity_gates_from_cc_only_training(tmp_path: Path) -> None
     assert signal.pipeline[0].algorithm == "FixedPriceSignal"
     assert original.pipeline[1].frozen is True
     assert signal.pipeline[1].frozen is True
+    assert original.tracking.progress_phase_updates_enabled is True
+    assert signal.tracking.progress_phase_updates_enabled is True
     assert original.pipeline[1].exploration.params["residual_base_policy"] == (
         "RBCSmartLocalPolicy"
     )
@@ -65,6 +67,9 @@ def test_v2_trains_only_a_conservative_hourly_cc_level2(tmp_path: Path) -> None:
         assert params["residual_base_policy_hyperparameters"]["allow_v2g"] is False
         assert config.checkpointing.fine_tune is False
         assert config.tracking.tags["joint_training"] == "False"
+        assert config.tracking.progress_update_interval == 512
+        assert config.tracking.progress_phase_updates_enabled is True
+        assert config.tracking.stall_watchdog_timeout_seconds == 900.0
 
 
 def test_v2_smoke_reaches_real_cc_learning_without_unfreezing_leaf(

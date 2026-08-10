@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import numpy as np
 
@@ -76,7 +77,7 @@ def test_stall_watchdog_arms_and_cancels_independent_of_phase_progress(tmp_path,
     wrapper.global_step = 42
 
     wrapper._write_phase_progress(
-        phase="env_step_start",
+        phase="episode_reset_start",
         episode=1,
         step=2,
         episode_total=3,
@@ -88,17 +89,17 @@ def test_stall_watchdog_arms_and_cancels_independent_of_phase_progress(tmp_path,
     assert arm_call["timeout"] == 123.0
     assert arm_call["repeat"] is True
     assert arm_call["exit"] is False
-    assert arm_call["file_name"].endswith("watchdog-test_stall_watchdog.log")
+    assert arm_call["file_name"] == sys.stderr.name
 
     context_path = log_dir / "watchdog-test_stall_watchdog.log.context.json"
     payload = json.loads(context_path.read_text(encoding="utf-8"))
-    assert payload["phase"] == "env_step_start"
+    assert payload["phase"] == "episode_reset_start"
     assert payload["global_step"] == 42
     assert payload["episode_current"] == 2
     assert payload["step_current"] == 3
 
     wrapper._write_phase_progress(
-        phase="env_step_end",
+        phase="episode_reset_end",
         episode=1,
         step=2,
         episode_total=3,
@@ -141,7 +142,7 @@ def test_stall_watchdog_cancels_only_after_completion_progress_write(tmp_path, m
     wrapper.global_step = 1
 
     wrapper._write_phase_progress(
-        phase="step_finalize_start",
+        phase="episode_export_start",
         episode=0,
         step=0,
         episode_total=1,
@@ -157,7 +158,7 @@ def test_stall_watchdog_cancels_only_after_completion_progress_write(tmp_path, m
 
     wrapper.progress_tracker.update = observe_update
     wrapper._write_phase_progress(
-        phase="step_finalize_end",
+        phase="episode_export_end",
         episode=0,
         step=0,
         episode_total=1,
@@ -197,7 +198,7 @@ def test_step_end_keeps_watchdog_armed_across_loop_boundary(tmp_path, monkeypatc
     )
 
     wrapper._write_phase_progress(
-        phase="step_finalize_start",
+        phase="step_start",
         episode=0,
         step=0,
         episode_total=1,
@@ -214,6 +215,57 @@ def test_step_end_keeps_watchdog_armed_across_loop_boundary(tmp_path, monkeypatc
     )
 
     assert events[-1] == "arm"
+
+
+def test_stall_watchdog_refreshes_once_per_step_window(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        wrapper_module.faulthandler,
+        "cancel_dump_traceback_later",
+        lambda: events.append("cancel"),
+    )
+    monkeypatch.setattr(
+        wrapper_module.faulthandler,
+        "dump_traceback_later",
+        lambda timeout, *, repeat=False, file=None, exit=False: events.append("arm"),
+    )
+    wrapper = Wrapper_CityLearn(
+        env=_DummyEnv(),
+        config={
+            "runtime": {"log_dir": str(tmp_path / "logs")},
+            "training": {},
+            "checkpointing": {},
+            "tracking": {
+                "progress_updates_enabled": False,
+                "stall_watchdog_enabled": True,
+                "stall_watchdog_timeout_seconds": 123.0,
+                "stall_watchdog_context_interval_steps": 64,
+            },
+        },
+        job_id="watchdog-window-test",
+    )
+
+    for global_step in (1, 2, 63, 64, 65):
+        wrapper.global_step = global_step
+        wrapper._write_phase_progress(
+            phase="step_start",
+            episode=0,
+            step=global_step - 1,
+            episode_total=1,
+            step_total=128,
+            global_step_total=128,
+        )
+        for phase in ("predict_start", "env_step_start", "model_update_start"):
+            wrapper._write_phase_progress(
+                phase=phase,
+                episode=0,
+                step=global_step - 1,
+                episode_total=1,
+                step_total=128,
+                global_step_total=128,
+            )
+
+    assert events.count("arm") == 2
 
 
 def test_stall_watchdog_context_writes_are_step_throttled(tmp_path, monkeypatch):
@@ -276,3 +328,90 @@ def test_stall_watchdog_context_writes_are_step_throttled(tmp_path, monkeypatch)
         global_step_total=128,
     )
     assert json.loads(context_path.read_text(encoding="utf-8"))["global_step"] == 64
+
+
+def test_stall_watchdog_context_throttles_subphases_in_the_same_step(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(wrapper_module.faulthandler, "cancel_dump_traceback_later", lambda: None)
+    monkeypatch.setattr(
+        wrapper_module.faulthandler,
+        "dump_traceback_later",
+        lambda timeout, *, repeat=False, file=None, exit=False: None,
+    )
+
+    wrapper = Wrapper_CityLearn(
+        env=_DummyEnv(),
+        config={
+            "runtime": {"log_dir": str(tmp_path / "logs")},
+            "training": {},
+            "checkpointing": {},
+            "tracking": {
+                "progress_updates_enabled": False,
+                "progress_phase_updates_enabled": False,
+                "stall_watchdog_enabled": True,
+                "stall_watchdog_timeout_seconds": 123.0,
+                "stall_watchdog_context_interval_steps": 64,
+            },
+        },
+        job_id="watchdog-throttle-test",
+    )
+    original_write = wrapper._write_stall_watchdog_context
+
+    def observe_write(context):
+        events.append(context["phase"])
+        original_write(context)
+
+    monkeypatch.setattr(wrapper, "_write_stall_watchdog_context", observe_write)
+    wrapper.global_step = 64
+    for phase in ("step_start", "predict_start", "env_step_start", "model_update_start"):
+        wrapper._write_phase_progress(
+            phase=phase,
+            episode=0,
+            step=63,
+            episode_total=1,
+            step_total=128,
+            global_step_total=128,
+        )
+
+    assert events == ["step_start"]
+
+
+def test_stall_watchdog_arms_before_context_io(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(wrapper_module.faulthandler, "cancel_dump_traceback_later", lambda: None)
+    monkeypatch.setattr(
+        wrapper_module.faulthandler,
+        "dump_traceback_later",
+        lambda timeout, *, repeat=False, file=None, exit=False: events.append("arm"),
+    )
+
+    wrapper = Wrapper_CityLearn(
+        env=_DummyEnv(),
+        config={
+            "runtime": {"log_dir": str(tmp_path / "logs")},
+            "training": {},
+            "checkpointing": {},
+            "tracking": {
+                "progress_updates_enabled": False,
+                "stall_watchdog_enabled": True,
+                "stall_watchdog_timeout_seconds": 123.0,
+            },
+        },
+        job_id="watchdog-order-test",
+    )
+    monkeypatch.setattr(
+        wrapper,
+        "_write_stall_watchdog_context",
+        lambda context: events.append("context"),
+    )
+
+    wrapper._write_phase_progress(
+        phase="step_start",
+        episode=0,
+        step=0,
+        episode_total=1,
+        step_total=1,
+        global_step_total=1,
+    )
+
+    assert events == ["arm", "context"]

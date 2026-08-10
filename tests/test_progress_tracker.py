@@ -109,3 +109,28 @@ def test_progress_tracker_atomically_replaces_previous_payload(tmp_path, monkeyp
 
     assert json.loads(progress_path.read_text(encoding="utf-8")) == {"global_step": 7}
     assert list(progress_path.parent.glob(".progress.json.*.tmp")) == []
+
+
+def test_progress_tracker_does_not_fsync_best_effort_telemetry_by_default(tmp_path, monkeypatch):
+    progress_path = tmp_path / "progress" / "progress.json"
+    tracker = ProgressTracker(str(progress_path))
+    monkeypatch.setattr(
+        progress_tracker_module.os,
+        "fsync",
+        lambda _fd: (_ for _ in ()).throw(AssertionError("unexpected fsync")),
+    )
+
+    tracker.update(episode=0, step=0, global_step=1, status="running")
+
+    assert json.loads(progress_path.read_text(encoding="utf-8"))["global_step"] == 1
+
+
+def test_progress_tracker_can_opt_into_durable_writes(tmp_path, monkeypatch):
+    progress_path = tmp_path / "progress" / "progress.json"
+    tracker = ProgressTracker(str(progress_path), durable=True)
+    calls = []
+    monkeypatch.setattr(progress_tracker_module.os, "fsync", lambda fd: calls.append(fd))
+
+    tracker.update(episode=0, step=0, global_step=1, status="running")
+
+    assert len(calls) == 1

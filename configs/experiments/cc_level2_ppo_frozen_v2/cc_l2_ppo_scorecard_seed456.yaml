@@ -46,7 +46,8 @@ tracking:
   mlflow_step_sample_interval: 512
   mlflow_artifacts_profile: minimal
   progress_updates_enabled: true
-  progress_update_interval: 128
+  progress_update_interval: 512
+  progress_phase_updates_enabled: true
   system_metrics_enabled: false
   system_metrics_interval: 32
   action_diagnostics_enabled: true
@@ -59,7 +60,7 @@ tracking:
   runtime_profiling_interval: 512
   runtime_profiling_detail: summary
   stall_watchdog_enabled: true
-  stall_watchdog_timeout_seconds: 3600.0
+  stall_watchdog_timeout_seconds: 900.0
   stall_watchdog_exit_on_timeout: true
   stall_watchdog_repeat: false
   stall_watchdog_context_interval_steps: 64

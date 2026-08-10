@@ -749,16 +749,16 @@ class Wrapper_CityLearn(RLC):
         force: bool = False,
         extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
-        # ``step_end`` deliberately keeps the watchdog armed across the loop
-        # boundary.  Two long MATD3 runs stopped immediately after a completed
-        # step-end progress write, before the next step could arm its watchdog.
-        completes_phase = (
-            phase != "step_end"
-            and (
-                phase.endswith("_end")
-                or phase in {"model_update_skipped", "episode_end"}
-            )
-        )
+        # A watchdog scope covers an episode boundary or a continuous window
+        # of environment steps.  Individual predict/update/checkpoint phases
+        # do not need their own timer: the traceback already identifies the
+        # exact blocking call, and repeatedly rebuilding a native watchdog for
+        # every subphase creates millions of needless operations on long runs.
+        completes_watchdog_scope = phase in {
+            "episode_reset_end",
+            "episode_export_end",
+            "episode_end",
+        }
         self._update_stall_watchdog_for_phase(
             phase=phase,
             episode=episode,
@@ -800,7 +800,7 @@ class Wrapper_CityLearn(RLC):
             # Keep the watchdog armed until the completion progress write has
             # returned.  The previous ordering cancelled it before file I/O,
             # leaving a blocked progress write invisible to the watchdog.
-            if completes_phase and self.stall_watchdog_enabled:
+            if completes_watchdog_scope and self.stall_watchdog_enabled:
                 self._cancel_stall_watchdog()
 
     def _update_stall_watchdog_for_phase(
@@ -818,7 +818,15 @@ class Wrapper_CityLearn(RLC):
         if not self.stall_watchdog_enabled:
             return
 
-        if phase == "step_start" or phase.endswith("_start"):
+        force_refresh = phase in {"episode_reset_start", "episode_export_start"}
+        step_refresh = (
+            phase == "step_start"
+            and (
+                self._stall_watchdog_armed_phase is None
+                or self._stall_watchdog_context_is_due(self.global_step)
+            )
+        )
+        if force_refresh or step_refresh:
             self._arm_stall_watchdog(
                 phase=phase,
                 episode=episode,
@@ -867,6 +875,12 @@ class Wrapper_CityLearn(RLC):
         return traceback_path, context_path
 
     def _stall_watchdog_output_file(self):
+        # stderr is captured by every supported executor and does not share
+        # the progress/artifact filesystem that the watchdog is intended to
+        # diagnose.  An explicit path remains supported for local workflows.
+        if self.stall_watchdog_traceback_file is None:
+            return sys.stderr
+
         traceback_path, _ = self._stall_watchdog_paths()
         if traceback_path is None:
             return sys.stderr
@@ -881,24 +895,27 @@ class Wrapper_CityLearn(RLC):
 
         return self._stall_watchdog_file_handle
 
-    def _write_stall_watchdog_context(self, context: Mapping[str, Any], *, force: bool = False) -> None:
+    def _stall_watchdog_context_is_due(self, global_step: int, *, force: bool = False) -> bool:
+        if force:
+            return True
+        interval = max(int(self.stall_watchdog_context_interval_steps or 1), 1)
+        last_global_step = self._stall_watchdog_last_context_global_step
+        return last_global_step is None or (global_step - last_global_step) >= interval
+
+    def _write_stall_watchdog_context(self, context: Mapping[str, Any]) -> None:
         _, context_path = self._stall_watchdog_paths()
         if context_path is None:
             return
-
-        if not force:
-            interval = max(int(self.stall_watchdog_context_interval_steps or 1), 1)
-            global_step = self._coerce_non_negative_int(context.get("global_step")) or 0
-            last_global_step = self._stall_watchdog_last_context_global_step
-            if last_global_step is not None and (global_step - last_global_step) < interval:
-                return
-            self._stall_watchdog_last_context_global_step = global_step
 
         try:
             context_path.parent.mkdir(parents=True, exist_ok=True)
             context_path.write_text(json.dumps(dict(context), indent=2, default=str), encoding="utf-8")
         except Exception as exc:
             logger.warning("Failed to write stall watchdog context {}: {}", context_path, exc)
+        else:
+            self._stall_watchdog_last_context_global_step = (
+                self._coerce_non_negative_int(context.get("global_step")) or 0
+            )
 
     def _arm_stall_watchdog(
         self,
@@ -935,12 +952,12 @@ class Wrapper_CityLearn(RLC):
             "entity_model_observations_direct": bool(
                 getattr(self, "_entity_model_observations_direct", False)
             ),
-            **self._runtime_resource_snapshot(),
         }
         if rewards is not None:
             context["rewards"] = list(rewards)
-        self._write_stall_watchdog_context(context, force=phase != "step_start")
 
+        # Arm first.  If context/progress I/O itself blocks, the watchdog must
+        # already be capable of dumping to the executor's stderr and exiting.
         try:
             faulthandler.cancel_dump_traceback_later()
             faulthandler.dump_traceback_later(
@@ -952,6 +969,11 @@ class Wrapper_CityLearn(RLC):
             self._stall_watchdog_armed_phase = phase
         except Exception as exc:
             logger.warning("Failed to arm stall watchdog for phase {}: {}", phase, exc)
+
+        force_context = phase in {"episode_reset_start", "episode_export_start"}
+        if self._stall_watchdog_context_is_due(self.global_step, force=force_context):
+            context.update(self._runtime_resource_snapshot())
+            self._write_stall_watchdog_context(context)
 
     def _cancel_stall_watchdog(self) -> None:
         if not self.stall_watchdog_enabled:

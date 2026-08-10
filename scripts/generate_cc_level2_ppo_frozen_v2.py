@@ -72,6 +72,9 @@ def _common_tags(config: dict[str, Any], *, recipe: str) -> None:
             "promotion_requires_paired_neutral_replay": "True",
         }
     )
+    # Phase progress is useful for remote diagnosis and is now safe because
+    # watchdog context I/O is throttled independently of phase boundaries.
+    config["tracking"]["progress_phase_updates_enabled"] = True
 
 
 def original_neutral_recipe() -> dict[str, Any]:
@@ -167,6 +170,12 @@ def cc_recipe(name: str) -> dict[str, Any]:
         }
     )
     config["training"]["seed"] = seed
+    config["tracking"].update(
+        {
+            "progress_update_interval": 512,
+            "stall_watchdog_timeout_seconds": 900.0,
+        }
+    )
     config["simulator"].update(
         {
             "reward_function": "CCRewardLevel2",

@@ -39,6 +39,7 @@ tracking:
   mlflow_artifacts_profile: minimal
   progress_updates_enabled: true
   progress_update_interval: 128
+  progress_phase_updates_enabled: true
   system_metrics_enabled: false
   system_metrics_interval: 32
   action_diagnostics_enabled: true
