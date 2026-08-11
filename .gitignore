@@ -1,7 +1,8 @@
 
 /citylearn_env
 /mlruns
-/runs
+# Local experiment payloads, logs, scorecards, collected results, and handoff drafts.
+/runs/
 /tese/
 /configs/generated/
 /datasets/*_15s/

@@ -114,12 +114,25 @@ def build_scorecard(
     baseline_cost = _number(baseline.get("community_cost_eur"))
     if baseline_cost is None:
         raise ValueError("Matching baseline has no official community cost")
+    baseline_episode = _number(baseline.get("export_episode_index"))
 
     output: list[dict[str, Any]] = []
     for aggregate in aggregate_rows:
         run = str(aggregate["run"])
         building = dict(building_summaries.get(run, {}))
         cost = _number(aggregate.get("community_cost_eur"))
+        candidate_episode = _number(aggregate.get("export_episode_index"))
+        if (
+            run != baseline_name
+            and baseline_episode is not None
+            and candidate_episode is not None
+            and int(candidate_episode) != int(baseline_episode)
+        ):
+            raise ValueError(
+                "Frozen-leaf scorecard requires a matched exported episode "
+                f"realization: baseline={int(baseline_episode)}, "
+                f"{run}={int(candidate_episode)}"
+            )
         cost_delta, cost_delta_ratio = _delta(cost, baseline_cost)
         regressions: list[str] = []
         improvements: list[str] = []
@@ -129,6 +142,7 @@ def build_scorecard(
             "scorecard_profile": SCORECARD_PROFILE,
             "baseline_run": baseline_name,
             "time_steps": aggregate.get("time_steps"),
+            "export_episode_index": aggregate.get("export_episode_index"),
             "gate_profile": aggregate.get("gate_profile"),
             "projection_gate_profile": aggregate.get("projection_gate_profile"),
             "hard_gate_decision": aggregate.get("projection_tolerant_learning_gate_decision"),

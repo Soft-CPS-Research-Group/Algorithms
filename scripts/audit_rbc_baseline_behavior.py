@@ -119,6 +119,17 @@ def _building_id(path: Path) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _export_episode_index(data_dir: Path) -> int | None:
+    """Return the final exported simulator episode encoded in CSV names."""
+
+    episodes: set[int] = set()
+    for path in data_dir.glob("exported_data_*_ep*.csv"):
+        match = re.search(r"_ep(\d+)\.csv$", path.name)
+        if match:
+            episodes.add(int(match.group(1)))
+    return max(episodes) if episodes else None
+
+
 def _weighted_share(mask: pd.Series, energy: pd.Series) -> float | None:
     total = float(energy.sum())
     if total <= EPS:
@@ -637,6 +648,7 @@ def _audit_run(
         "ev_min_gate": EV_MIN_GATE,
         "ev_precision_gate": EV_PRECISION_GATE,
         "time_steps": int(len(community)),
+        "export_episode_index": _export_episode_index(data_dir),
         "passive_community_surplus_hours": int((community["passive_community_surplus_kwh"] > 0.5).sum())
         if len(community)
         else 0,

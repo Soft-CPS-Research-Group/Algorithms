@@ -104,3 +104,15 @@ def test_cc_scorecard_rejects_failed_primary_requirements(candidate, decision):
     )
 
     assert rows[1]["decision"] == decision
+
+
+def test_cc_scorecard_rejects_mismatched_episode_realizations():
+    with pytest.raises(ValueError, match="matched exported episode"):
+        build_scorecard(
+            [
+                _aggregate("neutral", cost=100.0, export_episode_index=1),
+                _aggregate("candidate", cost=99.0, export_episode_index=5),
+            ],
+            {name: _buildings(name) for name in ("neutral", "candidate")},
+            baseline_name="neutral",
+        )
