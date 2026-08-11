@@ -275,6 +275,10 @@ class AgentTransformerPPO(BaseAgent):
         self._first_attach_done = False
         self._local_action_safety_adapters: List[CityLearnLocalSafetyAdapter] = []
         self._last_local_action_projections: List[Any] = []
+        self._local_action_safety_projection_count = 0
+        self._local_action_safety_intervention_count = 0
+        self._local_action_safety_infeasible_count = 0
+        self._local_action_safety_reason_counts: Dict[str, int] = {}
 
     # ==========================================================================
     # BaseAgent contract
@@ -504,6 +508,15 @@ class AgentTransformerPPO(BaseAgent):
                     self._latest_raw_observations[building_idx], executed_actions
                 )
                 self._last_local_action_projections.append(projection)
+                self._local_action_safety_projection_count += 1
+                self._local_action_safety_intervention_count += len(projection.interventions)
+                self._local_action_safety_infeasible_count += len(projection.infeasible_reasons)
+                for intervention in projection.interventions:
+                    for reason in intervention.reason_codes:
+                        key = str(reason.value)
+                        self._local_action_safety_reason_counts[key] = (
+                            self._local_action_safety_reason_counts.get(key, 0) + 1
+                        )
                 executed_actions = list(projection.executed_actions)
             pending_decisions.append(_PendingDecision(
                 observation=obs_t.squeeze(0).detach().cpu(),
@@ -661,7 +674,28 @@ class AgentTransformerPPO(BaseAgent):
             self._flush_rollout_boundary(building_idx, state)
 
     def get_diagnostic_metrics(self) -> Dict[str, float]:
-        return {} if self._bc is None else self._bc.snapshot_metrics()
+        metrics = {} if self._bc is None else self._bc.snapshot_metrics()
+        if self._local_action_safety_enabled:
+            metrics.update(
+                {
+                    "TPPO/local_action_safety_projections": float(
+                        self._local_action_safety_projection_count
+                    ),
+                    "TPPO/local_action_safety_interventions": float(
+                        self._local_action_safety_intervention_count
+                    ),
+                    "TPPO/local_action_safety_infeasible": float(
+                        self._local_action_safety_infeasible_count
+                    ),
+                }
+            )
+            metrics.update(
+                {
+                    f"TPPO/local_action_safety_reason_{reason}": float(count)
+                    for reason, count in self._local_action_safety_reason_counts.items()
+                }
+            )
+        return metrics
 
     def record_topology_transition(
         self,
