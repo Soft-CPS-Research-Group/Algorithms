@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List
 
 import numpy as np
@@ -249,6 +250,29 @@ def test_predict_shape_and_range() -> None:
         assert len(vec) == agent._per_building[b].layout.n_ca
         for v in vec:
             assert -1.0 <= v <= 1.0
+
+
+def test_local_action_safety_projection_is_used_for_executed_action() -> None:
+    config = _base_config()
+    config["algorithm"]["hyperparameters"].update(
+        {
+            "local_action_safety_enabled": True,
+            "local_action_safety_protect_ev_service_target": True,
+        }
+    )
+    agent, _, _, obs_dim = _make_agent(config=config)
+    agent._local_action_safety_adapters[0] = SimpleNamespace(
+        project=lambda raw_observation, proposed: SimpleNamespace(
+            executed_actions=tuple(0.0 for _ in proposed)
+        )
+    )
+    observation = np.zeros(obs_dim, dtype=np.float64)
+    agent.set_observation_context(raw_observations=[observation])
+    actions = agent.predict([observation], deterministic=True)
+
+    assert actions == [[0.0, 0.0]]
+    assert agent._pending_decisions[0] is not None
+    assert agent._pending_decisions[0].action.squeeze(-1).tolist() == [0.0, 0.0]
 
 
 def test_predict_deterministic_is_repeatable() -> None:

@@ -56,6 +56,10 @@ from algorithms.transformer_ppo.ppo_components import (
     compute_ppo_loss,
 )
 from algorithms.transformer_ppo.transformer_backbone import TransformerBackbone
+from algorithms.utils.citylearn_local_action_safety import (
+    CityLearnLocalSafetyAdapter,
+    CityLearnSafetyConfig,
+)
 from utils.entity_tokenizer_schema import (
     EntityPayloadSample,
     EntityTokenizerConfig,
@@ -222,13 +226,37 @@ class AgentTransformerPPO(BaseAgent):
             h.get("critic_hidden_dim", max(32, self._d_model * 2))
         )
         self._actor_log_std_init = float(h.get("actor_log_std_init", -0.5))
+        self._local_action_safety_enabled = bool(h.get("local_action_safety_enabled", False))
+        self._local_action_safety_fail_on_infeasible = bool(
+            h.get("local_action_safety_fail_on_infeasible", False)
+        )
+        self._local_action_safety_protect_ev_minimum = bool(
+            h.get("local_action_safety_protect_ev_minimum", True)
+        )
+        self._local_action_safety_ev_minimum_mode = str(
+            h.get("local_action_safety_ev_minimum_mode", "average") or "average"
+        )
+        self._local_action_safety_protect_ev_service_target = bool(
+            h.get("local_action_safety_protect_ev_service_target", False)
+        )
+        self._local_action_safety_protect_deferrable_must_start = bool(
+            h.get("local_action_safety_protect_deferrable_must_start", True)
+        )
+        self._local_action_safety_allow_discretionary_deferrable_start = bool(
+            h.get("local_action_safety_allow_discretionary_deferrable_start", False)
+        )
+        self._local_action_safety_headroom_reserve_kw = max(
+            0.0, float(h.get("local_action_safety_headroom_reserve_kw", 0.0) or 0.0)
+        )
 
         self._layout_builder = EntityTokenLayoutBuilder(self._tokenizer_config)
         self._per_building: List[_PerBuildingState] = []
         self._pending_decisions: List[Optional[_PendingDecision]] = []
         self._action_bounds: List[Tuple[torch.Tensor, torch.Tensor]] = []
         self._bc = BehaviorCloningRegularizer.from_config(algo, self.config)
-        self.requires_raw_observation_context = bool(self._bc is not None)
+        self.requires_raw_observation_context = bool(
+            self._bc is not None or self._local_action_safety_enabled
+        )
         self._latest_raw_observations: Optional[List[npt.NDArray[np.float64]]] = None
         self._latest_encoded_observations: Optional[List[npt.NDArray[np.float64]]] = None
         self._latest_global_learning_step = 0
@@ -245,6 +273,8 @@ class AgentTransformerPPO(BaseAgent):
         # Tracks whether ``attach_environment`` has ever been called. The
         # very first call is not a topology change.
         self._first_attach_done = False
+        self._local_action_safety_adapters: List[CityLearnLocalSafetyAdapter] = []
+        self._last_local_action_projections: List[Any] = []
 
     # ==========================================================================
     # BaseAgent contract
@@ -283,6 +313,12 @@ class AgentTransformerPPO(BaseAgent):
                 observation_space=observation_space,
                 metadata=metadata,
             )
+            self._attach_local_action_safety(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                metadata=metadata,
+            )
             self._first_attach_done = True
             for st in self._per_building:
                 logger.info(
@@ -313,6 +349,12 @@ class AgentTransformerPPO(BaseAgent):
                 observation_space=observation_space,
                 metadata=metadata,
                 topology_change=True,
+            )
+            self._attach_local_action_safety(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                metadata=metadata,
             )
             return
 
@@ -345,6 +387,13 @@ class AgentTransformerPPO(BaseAgent):
                 metadata=metadata,
                 topology_change=True,
             )
+        if topology_changed:
+            self._attach_local_action_safety(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                metadata=metadata,
+            )
 
     def set_observation_context(
         self,
@@ -364,6 +413,41 @@ class AgentTransformerPPO(BaseAgent):
             else None
         )
 
+    def _attach_local_action_safety(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        self._local_action_safety_adapters = []
+        self._last_local_action_projections = []
+        if not self._local_action_safety_enabled:
+            return
+        config = CityLearnSafetyConfig(
+            fail_on_infeasible=self._local_action_safety_fail_on_infeasible,
+            protect_ev_minimum=self._local_action_safety_protect_ev_minimum,
+            ev_minimum_mode=self._local_action_safety_ev_minimum_mode,
+            protect_ev_service_target=self._local_action_safety_protect_ev_service_target,
+            protect_deferrable_must_start=self._local_action_safety_protect_deferrable_must_start,
+            allow_discretionary_deferrable_start=self._local_action_safety_allow_discretionary_deferrable_start,
+            headroom_reserve_kw=self._local_action_safety_headroom_reserve_kw,
+        )
+        for building_idx, (obs_names, names) in enumerate(zip(observation_names, action_names)):
+            space = action_space[building_idx]
+            low = np.asarray(getattr(space, "low", np.full(len(names), -1.0)), dtype=np.float64)
+            high = np.asarray(getattr(space, "high", np.full(len(names), 1.0)), dtype=np.float64)
+            self._local_action_safety_adapters.append(
+                CityLearnLocalSafetyAdapter(
+                    observation_names=obs_names,
+                    action_names=names,
+                    action_low=low,
+                    action_high=high,
+                    metadata=metadata,
+                    config=config,
+                )
+            )
     def predict(
         self,
         observations: List[npt.NDArray[np.float64]],
@@ -406,16 +490,31 @@ class AgentTransformerPPO(BaseAgent):
                 actions = self._affine_action(tanh_actions, low, high)
                 log_prob = raw_log_prob - torch.log((high - low) / 2.0).squeeze(-1)
                 value = state.value_normalizer.denormalize(state.critic(pooled).squeeze(-1))
+            executed_actions = actions.squeeze(0).squeeze(-1).detach().cpu().tolist()
+            if self._local_action_safety_enabled:
+                if len(self._local_action_safety_adapters) != building_count:
+                    raise RuntimeError(
+                        "TPPO local action safety is enabled but the environment is not attached."
+                    )
+                if self._latest_raw_observations is None:
+                    raise RuntimeError(
+                        "TPPO local action safety requires raw observation context before predict."
+                    )
+                projection = self._local_action_safety_adapters[building_idx].project(
+                    self._latest_raw_observations[building_idx], executed_actions
+                )
+                self._last_local_action_projections.append(projection)
+                executed_actions = list(projection.executed_actions)
             pending_decisions.append(_PendingDecision(
                 observation=obs_t.squeeze(0).detach().cpu(),
-                action=actions.squeeze(0).detach().cpu(),
+                action=torch.as_tensor(executed_actions, dtype=torch.float32).view(-1, 1),
                 pre_tanh_action=pre_tanh_action.squeeze(0).detach().cpu(),
                 log_prob=log_prob.squeeze(0).detach().cpu(),
                 value=value.detach().cpu(),
             ))
             # ActorHead returns ``[B, N_ca, 1]``; the wrapper expects a flat
             # per-CA list.
-            out.append(actions.squeeze(0).squeeze(-1).detach().cpu().tolist())
+            out.append(executed_actions)
         self._pending_decisions = pending_decisions
         return out
 
