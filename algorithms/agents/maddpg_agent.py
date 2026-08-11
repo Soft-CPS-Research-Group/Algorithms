@@ -443,6 +443,21 @@ class MADDPG(BaseAgent):
             0.0,
             float(exploration_cfg.get("residual_deferrable_action_scale_multiplier", 1.0) or 0.0),
         )
+        raw_building_gains = exploration_cfg.get(
+            "residual_building_gain_multipliers", {}
+        ) or {}
+        if not isinstance(raw_building_gains, dict):
+            raise ValueError(
+                "MADDPG residual_building_gain_multipliers must be an object"
+            )
+        self.residual_building_gain_multipliers: Dict[str, float] = {}
+        for raw_name, raw_gain in raw_building_gains.items():
+            gain = float(raw_gain)
+            if not np.isfinite(gain) or gain < 0.0:
+                raise ValueError(
+                    "MADDPG residual building gains must be finite and non-negative"
+                )
+            self.residual_building_gain_multipliers[str(raw_name)] = gain
         self._last_residual_action_scale = 0.0
         self.critic_action_input_mode = str(
             exploration_cfg.get("critic_action_input_mode", "final") or "final"
@@ -609,6 +624,7 @@ class MADDPG(BaseAgent):
         self.action_names: List[List[str]] = [[] for _ in range(int(self.num_agents))]
         self.observation_names: List[List[str]] = [[] for _ in range(int(self.num_agents))]
         self.observation_space: List[Any] = []
+        self._building_names: List[str] = []
         self._actor_observation_history: List[deque] = [
             deque(maxlen=max(0, self.actor_frame_stack_steps - 1))
             for _ in range(int(self.num_agents))
@@ -699,6 +715,21 @@ class MADDPG(BaseAgent):
         self.observation_names = [list(names) for names in observation_names]
         self.action_names = [list(names) for names in action_names]
         self.observation_space = list(observation_space)
+        configured_building_names = (metadata or {}).get("building_names") or []
+        if isinstance(configured_building_names, (list, tuple)):
+            self._building_names = [str(value) for value in configured_building_names]
+        else:
+            self._building_names = []
+        if len(self._building_names) != int(self.num_agents):
+            inferred: List[str] = []
+            for names in observation_names[: int(self.num_agents)]:
+                building = ""
+                for name in names:
+                    if "::Building_" in str(name):
+                        building = str(name).split("::", 1)[1].split("/", 1)[0]
+                        break
+                inferred.append(building)
+            self._building_names = inferred
         lows, highs = self._default_action_bounds()
         for agent_idx, space in enumerate(action_space[: self.num_agents]):
             if not hasattr(space, "low") or not hasattr(space, "high"):
@@ -2901,6 +2932,20 @@ class MADDPG(BaseAgent):
                 and scaled_noise[action_idx] < 0.0
             ):
                 scaled_noise[action_idx] *= ev_negative_multiplier
+
+        # Residual actors only have authority over the dimensions selected by
+        # their action mask. Applying exploration after the residual composite
+        # used to bypass that contract: even an EV multiplier of zero still
+        # produced noisy EV actions in the environment and replay buffer.
+        if getattr(self, "residual_policy_enabled", False):
+            authority = self._residual_action_effective_scale()
+            mask = self._residual_action_scale_mask(
+                agent_idx,
+                action_dim=int(scaled_noise.shape[0]),
+                dtype=torch.float32,
+                device=torch.device("cpu"),
+            ).cpu().numpy()
+            scaled_noise *= authority * mask
         return scaled_noise
 
     def _predict_random(self) -> List[List[float]]:
@@ -3404,11 +3449,8 @@ class MADDPG(BaseAgent):
         base_action: Optional[torch.Tensor] = None,
         global_learning_step: Optional[int] = None,
     ) -> torch.Tensor:
-        if (
-            not getattr(self, "residual_policy_enabled", False)
-            or base_action is None
-            or float(getattr(self, "residual_action_final_scale", 0.0) or 0.0) <= 0.0
-        ):
+        residual_enabled = bool(getattr(self, "residual_policy_enabled", False))
+        if not residual_enabled or base_action is None:
             return self._scale_action_tensor(agent_idx, raw_action)
 
         base = base_action.to(dtype=raw_action.dtype, device=raw_action.device)
@@ -3418,6 +3460,12 @@ class MADDPG(BaseAgent):
             base = base.reshape(raw_action.shape)
         elif raw_action.dim() == 1 and base.dim() == 2:
             base = base.reshape(raw_action.shape)
+
+        # A zero-authority residual policy means "use the teacher exactly".
+        # The historical fall-through returned a full-range actor action,
+        # making a nominal zero-residual gate maximally non-neutral.
+        if float(getattr(self, "residual_action_final_scale", 0.0) or 0.0) <= 0.0:
+            return self._clip_action_tensor(agent_idx, base)
 
         span = torch.as_tensor(
             self._action_span_for_agent(agent_idx),
@@ -3467,6 +3515,16 @@ class MADDPG(BaseAgent):
         device: torch.device,
     ) -> torch.Tensor:
         values = np.ones(int(action_dim), dtype=np.float32)
+        building_gain = 1.0
+        building_names = getattr(self, "_building_names", [])
+        if agent_idx < len(building_names):
+            building_gain = float(
+                getattr(self, "residual_building_gain_multipliers", {}).get(
+                    building_names[agent_idx],
+                    1.0,
+                )
+            )
+        values *= building_gain
         names = self._action_names_for_agent(agent_idx)
         for action_idx, action_name in enumerate(names[: int(action_dim)]):
             if self._is_storage_action_name(action_name):
@@ -3520,10 +3578,22 @@ class MADDPG(BaseAgent):
             dtype=action.dtype,
             device=action.device,
         )
-        noise = torch.randn_like(action) * (float(self.target_policy_noise) * span)
+        authority = torch.ones_like(span)
+        if getattr(self, "residual_policy_enabled", False):
+            authority = self._residual_action_scale_mask(
+                agent_idx,
+                action_dim=int(action.shape[-1]),
+                dtype=action.dtype,
+                device=action.device,
+            ) * float(self._residual_action_effective_scale())
+        noise = (
+            torch.randn_like(action)
+            * (float(self.target_policy_noise) * span * authority)
+        )
         noise_clip = float(getattr(self, "target_policy_noise_clip", 0.0) or 0.0)
         if noise_clip > 0.0:
-            noise = torch.max(torch.min(noise, noise_clip * span), -noise_clip * span)
+            clip = noise_clip * span * authority
+            noise = torch.max(torch.min(noise, clip), -clip)
         return self._clip_action_tensor(agent_idx, action + noise)
 
     def _actor_action_regularization_terms(
@@ -4540,6 +4610,23 @@ class MADDPG(BaseAgent):
                         ),
                         "residual_action_final_scale": float(
                             getattr(self, "residual_action_final_scale", 0.0)
+                        ),
+                        "residual_building_name": (
+                            self._building_names[i]
+                            if i < len(getattr(self, "_building_names", []))
+                            else None
+                        ),
+                        "residual_building_gain": float(
+                            getattr(
+                                self,
+                                "residual_building_gain_multipliers",
+                                {},
+                            ).get(
+                                self._building_names[i]
+                                if i < len(getattr(self, "_building_names", []))
+                                else "",
+                                1.0,
+                            )
                         ),
                     }
                 )

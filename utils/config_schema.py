@@ -620,8 +620,13 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
     reference_multipliers: Optional[List[float]] = None
     policy_residual_scale: float = Field(default=1.0, ge=0.0, le=1.0)
     policy_parameterization: Literal[
-        "absolute_blend", "centered_residual"
+        "absolute_blend", "centered_residual", "causal_active_only"
     ] = "absolute_blend"
+    causal_initial_multiplier: float = Field(default=0.90, gt=0.0, le=1.0)
+    causal_initial_multipliers: Optional[List[float]] = None
+    causal_residual_scale: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    causal_use_physical_context: bool = False
+    separate_value_encoder: bool = False
     include_community_headroom: bool = False
     bc_pretrain_enabled: bool = False
     bc_collect_steps: int = Field(default=336, ge=1)
@@ -631,8 +636,16 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
     bc_progress_interval: int = Field(default=250, ge=1)
     bc_lr: float = Field(default=1.0e-3, gt=0)
     bc_use_physical_teacher_context: bool = False
+    bc_teacher_mode: Literal["continuous_score", "cheap_and_export"] = (
+        "continuous_score"
+    )
+    bc_discount_multiplier: float = Field(default=0.90, gt=0.0, le=1.0)
+    bc_export_activation_kw: float = Field(default=1.0e-9, ge=0.0)
     w_factor: float = Field(default=0.3, ge=0)
     w_smoothness: float = Field(default=0.02, ge=0)
+    credit_assignment: Literal["global", "member_decomposed"] = "global"
+    team_reward_mix: float = Field(default=0.0, ge=0.0, le=1.0)
+    reward_normalization: Literal["running_zscore", "none"] = "running_zscore"
 
     @model_validator(mode="after")
     def validate_price_contract(self) -> "CCLevel2Hyperparameters":
@@ -647,6 +660,38 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
             if any(value < self.price_min or value > self.price_max for value in values):
                 raise ValueError(
                     "CCLevel2 reference_multipliers must lie within the configured price range"
+                )
+        if self.bc_discount_multiplier < self.price_min:
+            raise ValueError(
+                "CCLevel2 bc_discount_multiplier must not be below price_min"
+            )
+        if self.policy_parameterization == "causal_active_only":
+            if self.price_max > 1.0:
+                raise ValueError(
+                    "CCLevel2 causal_active_only requires price_max <= 1.0"
+                )
+            if not self.price_min <= self.causal_initial_multiplier <= self.price_max:
+                raise ValueError(
+                    "CCLevel2 causal_initial_multiplier must lie within the price range"
+                )
+            causal_values = self.causal_initial_multipliers
+            if causal_values is not None:
+                if len(causal_values) != self.num_buildings:
+                    raise ValueError(
+                        "CCLevel2 causal_initial_multipliers length must equal "
+                        "num_buildings"
+                    )
+                if any(
+                    value < self.price_min or value > self.price_max
+                    for value in causal_values
+                ):
+                    raise ValueError(
+                        "CCLevel2 causal_initial_multipliers must lie within "
+                        "the price range"
+                    )
+            if self.bc_pretrain_enabled:
+                raise ValueError(
+                    "CCLevel2 causal_active_only does not support BC pretraining"
                 )
         return self
 
@@ -695,6 +740,9 @@ class FixedPriceSignalHyperparameters(BaseModel):
 class CausalPriceSignalHyperparameters(BaseModel):
     neutral_multiplier: float = Field(default=1.0, gt=0)
     discount_multiplier: float = Field(default=0.95, gt=0)
+    discount_multipliers: Optional[List[float]] = None
+    vector_min_multiplier: float = Field(default=0.5, gt=0)
+    vector_max_multiplier: float = Field(default=1.3, gt=0)
     cc_action_interval: int = Field(default=4, gt=0)
     community_export_threshold_kw: float = Field(default=1.0e-9, ge=0)
     forecast_mean_margin: float = Field(default=0.20, ge=0)
@@ -707,6 +755,25 @@ class CausalPriceSignalHyperparameters(BaseModel):
             raise ValueError(
                 "CausalPriceSignal discount_multiplier must be below neutral_multiplier"
             )
+        if self.vector_max_multiplier <= self.vector_min_multiplier:
+            raise ValueError(
+                "CausalPriceSignal vector_max_multiplier must be greater than "
+                "vector_min_multiplier"
+            )
+        if self.discount_multipliers is not None:
+            if not self.discount_multipliers:
+                raise ValueError(
+                    "CausalPriceSignal discount_multipliers must not be empty"
+                )
+            if any(
+                value < self.vector_min_multiplier
+                or value > self.vector_max_multiplier
+                for value in self.discount_multipliers
+            ):
+                raise ValueError(
+                    "CausalPriceSignal discount_multipliers must lie within "
+                    "the configured vector multiplier range"
+                )
         return self
 
 

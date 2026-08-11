@@ -89,8 +89,10 @@ class CostHardConstraintReward(RewardFunction):
         deferrable_urgency_penalty: float = 0.0,
         community_import_penalty: float = 0.0,
         community_peak_import_penalty: float = 0.0,
+        community_ramping_penalty: float = 0.0,
         community_export_penalty: float = 0.0,
         community_penalty_divide_by_agents: bool = False,
+        community_penalty_use_net_exchange: bool = False,
         community_settlement_cost_weight: float = 0.0,
         community_local_price_ratio: float = 0.8,
         community_grid_export_price: float = 0.0,
@@ -132,8 +134,12 @@ class CostHardConstraintReward(RewardFunction):
         self.deferrable_urgency_penalty = float(deferrable_urgency_penalty)
         self.community_import_penalty = float(community_import_penalty)
         self.community_peak_import_penalty = float(community_peak_import_penalty)
+        self.community_ramping_penalty = float(community_ramping_penalty)
         self.community_export_penalty = float(community_export_penalty)
         self.community_penalty_divide_by_agents = bool(community_penalty_divide_by_agents)
+        self.community_penalty_use_net_exchange = bool(
+            community_penalty_use_net_exchange
+        )
         self.community_settlement_cost_weight = float(community_settlement_cost_weight)
         self.community_local_price_ratio = min(max(float(community_local_price_ratio), 0.0), 1.0)
         self.community_grid_export_price = float(community_grid_export_price)
@@ -152,6 +158,11 @@ class CostHardConstraintReward(RewardFunction):
         self._charger_static_import_limit_kw_map = self._build_charger_static_import_limit_kw_map(env_metadata)
         self.last_components_by_agent: List[Mapping[str, float]] = []
         self.last_community_components: Mapping[str, float] = {}
+        self._previous_community_net_consumption: Optional[float] = None
+
+    def reset(self) -> None:
+        super().reset()
+        self._previous_community_net_consumption = None
 
     @staticmethod
     def _build_charger_phase_map(env_metadata: Mapping[str, Any]) -> Mapping[str, str]:
@@ -1465,6 +1476,7 @@ class CostHardConstraintReward(RewardFunction):
                 "community_import_penalty": 0.0,
                 "community_import_linear_penalty": 0.0,
                 "community_peak_import_penalty": 0.0,
+                "community_ramping_penalty": 0.0,
                 "community_export_penalty": 0.0,
                 "community_shared_penalty": 0.0,
                 "reward_total": reward,
@@ -1472,18 +1484,24 @@ class CostHardConstraintReward(RewardFunction):
             component_rows.append(component)
             per_building_rewards.append(reward)
 
-        community_import = sum(
-            max(self._safe_float(obs.get("net_electricity_consumption"), default=0.0), 0.0)
-            for obs in observations
-        )
         community_net_consumption = sum(
             self._safe_float(obs.get("net_electricity_consumption"), default=0.0)
             for obs in observations
+        )
+        member_gross_import = sum(
+            max(self._safe_float(obs.get("net_electricity_consumption"), default=0.0), 0.0)
+            for obs in observations
+        )
+        community_import = (
+            max(community_net_consumption, 0.0)
+            if self.community_penalty_use_net_exchange
+            else member_gross_import
         )
         community_export = max(-community_net_consumption, 0.0)
         agent_count = max(len(observations), 1)
         community_import_linear_penalty = 0.0
         community_peak_import_penalty = 0.0
+        community_ramping_penalty = 0.0
         community_export_penalty = 0.0
         shared_penalty = 0.0
         shared_penalty_per_agent = 0.0
@@ -1494,10 +1512,28 @@ class CostHardConstraintReward(RewardFunction):
         if self.community_peak_import_penalty > 0.0:
             community_peak_import_penalty = (community_import**2) * self.community_peak_import_penalty
 
+        if (
+            self.community_ramping_penalty > 0.0
+            and self._previous_community_net_consumption is not None
+        ):
+            community_ramping_penalty = (
+                abs(
+                    community_net_consumption
+                    - self._previous_community_net_consumption
+                )
+                * self.community_ramping_penalty
+            )
+        self._previous_community_net_consumption = community_net_consumption
+
         if self.community_export_penalty > 0.0:
             community_export_penalty = community_export * self.community_export_penalty
 
-        shared_penalty = community_import_linear_penalty + community_peak_import_penalty + community_export_penalty
+        shared_penalty = (
+            community_import_linear_penalty
+            + community_peak_import_penalty
+            + community_ramping_penalty
+            + community_export_penalty
+        )
         if shared_penalty > 0.0:
             shared_penalty_per_agent = shared_penalty / agent_count if self.community_penalty_divide_by_agents else shared_penalty
             per_building_rewards = [reward - shared_penalty_per_agent for reward in per_building_rewards]
@@ -1507,6 +1543,7 @@ class CostHardConstraintReward(RewardFunction):
                     "community_import_penalty": shared_penalty_per_agent,
                     "community_import_linear_penalty": community_import_linear_penalty,
                     "community_peak_import_penalty": community_peak_import_penalty,
+                    "community_ramping_penalty": community_ramping_penalty,
                     "community_export_penalty": community_export_penalty,
                     "community_shared_penalty": shared_penalty_per_agent,
                     "reward_total": row["reward_total"] - shared_penalty_per_agent,
@@ -1519,9 +1556,14 @@ class CostHardConstraintReward(RewardFunction):
             "community_import_energy": community_import,
             "community_export_energy": community_export,
             "community_net_consumption": community_net_consumption,
+            "community_member_gross_import_energy": member_gross_import,
+            "community_penalty_use_net_exchange": float(
+                self.community_penalty_use_net_exchange
+            ),
             "community_import_penalty": shared_penalty,
             "community_import_linear_penalty": community_import_linear_penalty,
             "community_peak_import_penalty": community_peak_import_penalty,
+            "community_ramping_penalty": community_ramping_penalty,
             "community_export_penalty": community_export_penalty,
             "community_shared_penalty": shared_penalty,
             "community_shared_penalty_per_agent": shared_penalty_per_agent,
@@ -2176,6 +2218,52 @@ class CostServiceCommunityDenseEVResidualRewardV54(CostHardConstraintReward):
         "ev_v2g_service_penalty": 1850.0,
         "ev_v2g_discharge_penalty": 0.12,
         "battery_throughput_penalty": 0.004,
+        "scale_state_penalties_by_time_step": True,
+        "state_penalty_reference_seconds": 3600.0,
+    }
+
+    def __init__(self, env_metadata: Mapping[str, Any], **kwargs: Any) -> None:
+        params = dict(self.DEFAULT_KWARGS)
+        params.update(kwargs)
+        super().__init__(env_metadata, **params)
+
+
+class CostCommunityStorageResidualRewardV55(CostHardConstraintReward):
+    """Storage-only residual objective over an immutable service teacher.
+
+    When EV and deferrable residual authority is exactly zero, their dense
+    schedule penalties are exogenous to the actor. Keeping those large sparse
+    terms in the TD target makes the critic fit noise it cannot control and can
+    swamp the small storage-cost advantage. V55 retains exact member community
+    settlement, grid/power and battery safety, but removes service penalties
+    only for campaigns whose service actions are copied byte-for-byte from the
+    audited SMART teacher.
+    """
+
+    DEFAULT_KWARGS = {
+        "local_cost_weight": 0.0,
+        "export_credit_ratio": 0.0,
+        "community_settlement_cost_weight": 1.25,
+        "community_peak_import_penalty": 0.0008,
+        "community_export_penalty": 0.00015,
+        "community_penalty_divide_by_agents": True,
+        "community_penalty_use_net_exchange": False,
+        "grid_violation_penalty": 120.0,
+        "power_outage_penalty": 120.0,
+        "battery_soc_min": 0.0,
+        "battery_soc_max": 1.0,
+        "use_observed_storage_soc_limits": True,
+        "battery_soc_violation_penalty": 40.0,
+        "battery_throughput_penalty": 0.0005,
+        "ev_connected_deficit_penalty": 0.0,
+        "ev_schedule_deficit_penalty": 0.0,
+        "ev_departure_deficit_penalty": 0.0,
+        "ev_departure_missed_penalty": 0.0,
+        "ev_over_service_penalty": 0.0,
+        "ev_v2g_service_penalty": 0.0,
+        "ev_v2g_discharge_penalty": 0.0,
+        "deferrable_deadline_missed_penalty": 0.0,
+        "deferrable_urgency_penalty": 0.0,
         "scale_state_penalties_by_time_step": True,
         "state_penalty_reference_seconds": 3600.0,
     }

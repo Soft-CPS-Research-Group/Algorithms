@@ -14,6 +14,7 @@ from reward_function.cost_hard_constraint_reward import (
     CostServiceCommunityFeasiblePrecisionRewardV47,
     CostServiceCommunityDeadlineValueRewardV50,
     CostServiceCommunityDenseEVResidualRewardV54,
+    CostCommunityStorageResidualRewardV55,
     CostServiceCommunityPeakDeadlineRewardV52,
     CostServiceCommunityPrecisionValueRewardV51,
     CostServiceCommunityServiceBandRewardV42,
@@ -222,6 +223,106 @@ def test_cc_level2_reward_can_optimize_exact_community_settlement_cost():
     assert reward.last_community_settlement[
         "community_settlement_cost_total"
     ] == pytest.approx(0.7)
+
+
+def test_cc_level2_member_credit_preserves_total_and_distinguishes_members():
+    reward = CCRewardLevel2(
+        env_metadata={
+            "central_agent": False,
+            "community_market": {
+                "local_price_ratio_to_grid_import": 0.8,
+                "grid_export_price": 0.0,
+            },
+        },
+        cost_aggregation="community_settled",
+        credit_assignment="member_decomposed",
+        reference_cost=1.0,
+        w_peak=0.0,
+        w_ramp=0.0,
+        w_export=0.0,
+        w_ev=0.0,
+    )
+    observations = [
+        {"net_electricity_consumption": 2.0, "electricity_pricing": 0.5},
+        {"net_electricity_consumption": -1.0, "electricity_pricing": 0.25},
+    ]
+
+    member_rewards = reward.calculate(observations)
+
+    assert member_rewards == pytest.approx([-0.9, 0.2])
+    assert sum(member_rewards) == pytest.approx(-0.7)
+    assert reward.last_member_components[0]["cost"] == pytest.approx(-0.9)
+    assert reward.last_member_components[1]["cost"] == pytest.approx(0.2)
+
+
+def test_cc_level2_member_ramp_credit_follows_signed_net_contribution():
+    reward = CCRewardLevel2(
+        env_metadata={"central_agent": False},
+        cost_aggregation="member_retail",
+        credit_assignment="member_decomposed",
+        ramp_credit_allocation="causal_net",
+        reference_ramping=1.0,
+        w_cost=0.0,
+        w_peak=0.0,
+        w_ramp=1.0,
+        w_export=0.0,
+        w_violation=0.0,
+        w_ev=0.0,
+    )
+
+    # Begin at zero community import. On the next transition Building 1
+    # reduces its net load while Building 2 raises it by more, so only the
+    # latter causally contributes to the +1 kWh community-import ramp.
+    assert reward.calculate(
+        [
+            {"net_electricity_consumption": 1.0},
+            {"net_electricity_consumption": -1.0},
+        ]
+    ) == pytest.approx([0.0, 0.0])
+    member_rewards = reward.calculate(
+        [
+            {"net_electricity_consumption": 0.0},
+            {"net_electricity_consumption": 1.0},
+        ]
+    )
+
+    assert member_rewards == pytest.approx([0.0, -1.0])
+    assert sum(member_rewards) == pytest.approx(-1.0)
+    assert reward.last_member_components[0]["ramp"] == pytest.approx(0.0)
+    assert reward.last_member_components[1]["ramp"] == pytest.approx(-1.0)
+
+
+def test_cc_level2_reset_clears_member_ramp_history():
+    reward = CCRewardLevel2(
+        env_metadata={"central_agent": False},
+        cost_aggregation="member_retail",
+        credit_assignment="member_decomposed",
+        ramp_credit_allocation="causal_net",
+        reference_ramping=1.0,
+        w_cost=0.0,
+        w_peak=0.0,
+        w_ramp=1.0,
+        w_export=0.0,
+        w_violation=0.0,
+        w_ev=0.0,
+    )
+    observations = [
+        {"net_electricity_consumption": 1.0},
+        {"net_electricity_consumption": -1.0},
+    ]
+
+    reward.calculate(observations)
+    reward.calculate(
+        [
+            {"net_electricity_consumption": 0.0},
+            {"net_electricity_consumption": 1.0},
+        ]
+    )
+    reward.reset()
+
+    # The reset reproduces a fresh reward instance rather than carrying the
+    # previous episode's final import/member state into the next episode.
+    assert reward.calculate(observations) == pytest.approx([0.0, 0.0])
 
 
 def test_cc_level2_exact_settlement_accepts_deferred_environment_metadata():
@@ -1416,3 +1517,83 @@ def test_cost_hard_constraint_reward_can_share_community_peak_penalty_between_ag
     assert components["community"]["community_shared_penalty"] == pytest.approx(3.75)
     assert components["community"]["community_shared_penalty_per_agent"] == pytest.approx(1.875)
     assert components["per_agent"][0]["community_import_penalty"] == pytest.approx(1.875)
+
+
+def test_storage_residual_reward_penalizes_net_community_exchange() -> None:
+    reward = CostCommunityStorageResidualRewardV55(
+        env_metadata={"central_agent": False},
+        community_settlement_cost_weight=0.0,
+        community_import_penalty=0.5,
+        community_peak_import_penalty=0.0,
+        community_export_penalty=0.0,
+        community_penalty_use_net_exchange=True,
+    )
+
+    reward.calculate(
+        [
+            {"net_electricity_consumption": 3.0, "electricity_pricing": 0.2},
+            {"net_electricity_consumption": -2.0, "electricity_pricing": 0.2},
+        ]
+    )
+    components = reward.get_last_components()["community"]
+
+    assert components["community_import_energy"] == pytest.approx(1.0)
+    assert components["community_member_gross_import_energy"] == pytest.approx(3.0)
+    assert components["community_import_penalty"] == pytest.approx(0.5)
+    assert components["community_penalty_use_net_exchange"] == pytest.approx(1.0)
+
+
+def test_community_ramping_penalty_uses_net_exchange_and_resets() -> None:
+    reward = CostHardConstraintReward(
+        env_metadata={"central_agent": False},
+        local_cost_weight=0.0,
+        community_ramping_penalty=0.5,
+        community_penalty_divide_by_agents=True,
+    )
+    first = [
+        {"net_electricity_consumption": 2.0, "electricity_pricing": 0.2},
+        {"net_electricity_consumption": -1.0, "electricity_pricing": 0.2},
+    ]
+    second = [
+        {"net_electricity_consumption": 3.0, "electricity_pricing": 0.2},
+        {"net_electricity_consumption": -1.0, "electricity_pricing": 0.2},
+    ]
+
+    assert reward.calculate(first) == pytest.approx([0.0, 0.0])
+    assert reward.calculate(second) == pytest.approx([-0.25, -0.25])
+    assert reward.get_last_components()["community"][
+        "community_ramping_penalty"
+    ] == pytest.approx(0.5)
+
+    reward.reset()
+    assert reward.calculate(second) == pytest.approx([0.0, 0.0])
+
+
+def test_storage_residual_reward_excludes_uncontrollable_ev_penalties() -> None:
+    reward = CostCommunityStorageResidualRewardV55(
+        env_metadata={"central_agent": False},
+        community_peak_import_penalty=0.0,
+        community_export_penalty=0.0,
+        battery_throughput_penalty=0.0,
+    )
+    observations = [
+        {
+            "net_electricity_consumption": 1.0,
+            "electricity_pricing": 0.2,
+            "electric_vehicles_chargers_dict": {
+                "charger": {
+                    "connected": True,
+                    "battery_soc": 0.1,
+                    "required_soc": 0.9,
+                    "hours_until_departure": 0.0,
+                }
+            },
+        }
+    ]
+
+    rewards = reward.calculate(observations)
+
+    # Only exact settlement remains: -1 kWh * EUR 0.2 * weight 1.25.
+    assert rewards == pytest.approx([-0.25])
+    assert reward.ev_schedule_deficit_penalty == 0.0
+    assert reward.ev_departure_missed_penalty == 0.0

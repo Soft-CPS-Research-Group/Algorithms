@@ -15,6 +15,7 @@ from algorithms.agents.cc_level2_agent import (
     _CC_LEVEL2_DISTRICT_FEATURES,
     _CC_LEVEL2_HEADROOM_FEATURE,
 )
+from utils.entity_adapter import EntityContractAdapter
 from utils.config_schema import CCLevel2Hyperparameters
 
 
@@ -63,6 +64,15 @@ def _attached_agent(*, interval: int = 4, num_steps: int = 8) -> CCLevel2Agent:
 
 def test_cc_level2_requests_its_own_pipeline_observation_profile() -> None:
     assert CCLevel2Agent.observation_encoding_profile == "cc_level2"
+
+
+def test_cc_level2_profile_keeps_causal_community_history() -> None:
+    assert EntityContractAdapter._is_cc_level2_feature(
+        "district__community_net_prev_1_kwh_step"
+    )
+    assert EntityContractAdapter._is_cc_level2_feature(
+        "district__community_net_prev_3_mean_kwh_step"
+    )
 
 
 def test_cc_level2_headroom_and_physical_bc_teacher_are_explicit() -> None:
@@ -188,6 +198,171 @@ def test_vector_policy_honors_initial_log_std() -> None:
     assert value.shape == (5,)
 
 
+def test_member_credit_policy_and_rollout_keep_per_building_advantages() -> None:
+    policy = CommunityMarketMakerNetV2(
+        c_dim=2,
+        num_buildings=3,
+        hidden_dims=[4],
+        value_dimension=3,
+    )
+    _, _, _, value = policy.get_action_and_value(
+        torch.zeros((5, 2), dtype=torch.float32)
+    )
+    assert value.shape == (5, 3)
+
+    buffer = RolloutBufferV2(
+        num_steps=2,
+        c_dim=1,
+        num_buildings=3,
+        member_credit=True,
+    )
+    buffer.values[:] = 0.0
+    buffer.rewards[:] = [[1.0, 0.0, -1.0], [2.0, 0.5, -0.5]]
+    buffer.dones[:] = [0.0, 0.0]
+    buffer.compute_gae(
+        last_value=np.zeros(3, dtype=np.float32),
+        last_done=False,
+        gamma=1.0,
+        gae_lambda=1.0,
+    )
+
+    np.testing.assert_allclose(
+        buffer.returns,
+        [[3.0, 0.5, -1.5], [2.0, 0.5, -0.5]],
+    )
+
+
+def test_member_actor_advantages_ignore_inactive_transitions_when_normalizing() -> None:
+    advantages = torch.tensor(
+        [
+            [1000.0, -1000.0],
+            [1.0, 20.0],
+            [3.0, 40.0],
+            [-1000.0, 1000.0],
+        ]
+    )
+    masks = torch.tensor(
+        [
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [1.0, 1.0],
+            [0.0, 0.0],
+        ]
+    )
+
+    normalized = CCLevel2Agent._normalize_masked_actor_advantages(
+        advantages,
+        masks,
+    )
+
+    np.testing.assert_allclose(normalized[0].numpy(), [0.0, 0.0])
+    np.testing.assert_allclose(normalized[3].numpy(), [0.0, 0.0])
+    np.testing.assert_allclose(normalized[1].numpy(), [-1.0, -1.0])
+    np.testing.assert_allclose(normalized[2].numpy(), [1.0, 1.0])
+
+
+def test_separate_value_encoder_keeps_critic_gradient_out_of_actor_encoder() -> None:
+    policy = CommunityMarketMakerNetV2(
+        c_dim=3,
+        num_buildings=2,
+        hidden_dims=[8],
+        value_dimension=2,
+        separate_value_encoder=True,
+    )
+
+    _, _, _, value = policy.get_action_and_value(torch.ones((4, 3)))
+    value.sum().backward()
+
+    assert policy.value_encoder is not None
+    assert any(parameter.grad is not None for parameter in policy.value_encoder.parameters())
+    assert all(
+        parameter.grad is None or torch.count_nonzero(parameter.grad) == 0
+        for parameter in policy.encoder.parameters()
+    )
+
+
+def test_causal_policy_can_gate_on_physical_price_and_export_context() -> None:
+    count = 2
+    names = [_observation_names(1), _observation_names(2)]
+    agent = CCLevel2Agent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "num_buildings": count,
+                    "c_dim": len(_CC_LEVEL2_DISTRICT_FEATURES)
+                    + 1
+                    + len(_CC_LEVEL2_BUILDING_FEATURES) * count,
+                    "hidden_dims": [8],
+                    "price_min": 0.8,
+                    "price_max": 1.0,
+                    "policy_parameterization": "causal_active_only",
+                    "causal_initial_multiplier": 0.9,
+                    "causal_initial_multipliers": [0.85, 0.9],
+                    "causal_residual_scale": 0.2,
+                    "causal_use_physical_context": True,
+                    "separate_value_encoder": True,
+                    "bc_pretrain_enabled": False,
+                }
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=names,
+        action_names=[[], []],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={"raw_observation_names": names},
+    )
+    encoded = [np.zeros(len(member_names), dtype=np.float32) for member_names in names]
+    raw = [member.copy() for member in encoded]
+    physical = {
+        "district__electricity_pricing": 0.10,
+        "district__electricity_pricing_predicted_1": 0.20,
+        "district__electricity_pricing_predicted_2": 0.22,
+        "district__electricity_pricing_predicted_3": 0.24,
+        "district__community_export_power_kw": 2.0,
+    }
+    for name, value in physical.items():
+        raw[0][names[0].index(name)] = value
+    agent.set_observation_context(raw_observations=raw)
+
+    context = agent._build_context(encoded)
+
+    assert agent._causal_intervention_active(context) is True
+    np.testing.assert_allclose(
+        context[: len(_CC_LEVEL2_DISTRICT_FEATURES)],
+        0.0,
+    )
+    assert context[len(_CC_LEVEL2_DISTRICT_FEATURES)] == pytest.approx(1.0)
+
+    raw_next = [member.copy() for member in raw]
+    raw_next[0][names[0].index("district__community_export_power_kw")] = 0.0
+    agent.set_transition_context(
+        raw_observations=raw,
+        raw_next_observations=raw_next,
+        encoded_observations=encoded,
+        encoded_next_observations=encoded,
+    )
+    next_context = agent._build_context(
+        encoded,
+        raw_observations=agent._latest_raw_next_observations,
+    )
+    assert agent._causal_intervention_active(next_context) is False
+    assert next_context[len(_CC_LEVEL2_DISTRICT_FEATURES)] == pytest.approx(0.0)
+
+    np.testing.assert_allclose(
+        agent.predict(encoded, deterministic=True),
+        [0.85, 0.9],
+        atol=1.0e-6,
+    )
+    half_positive = np.full(2, np.arctanh(0.5), dtype=np.float32)
+    np.testing.assert_allclose(
+        agent._raw_to_multipliers(half_positive, context=context),
+        [0.865, 0.91],
+        atol=1.0e-6,
+    )
+
+
 def test_cc_level2_starts_exactly_at_reference_vector() -> None:
     agent = _attached_agent()
     observations = [
@@ -306,6 +481,279 @@ def test_centered_residual_export_matches_runtime_mapping() -> None:
     exported = inference(torch.zeros((1, agent._c_dim), dtype=torch.float32))
 
     np.testing.assert_allclose(exported.detach().numpy()[0], expected, atol=1e-6)
+
+
+def test_causal_active_only_preserves_neutral_and_exports_same_mapping() -> None:
+    count = 2
+    agent = CCLevel2Agent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "num_buildings": count,
+                    "c_dim": len(_CC_LEVEL2_DISTRICT_FEATURES)
+                    + len(_CC_LEVEL2_BUILDING_FEATURES) * count,
+                    "hidden_dims": [8],
+                    "price_min": 0.82,
+                    "price_max": 1.0,
+                    "reference_multipliers": [1.0, 1.0],
+                    "policy_parameterization": "causal_active_only",
+                    "causal_initial_multiplier": 0.90,
+                    "causal_initial_multipliers": [0.85, 0.95],
+                    "cc_action_interval": 1,
+                    "bc_pretrain_enabled": False,
+                }
+            }
+        }
+    )
+    names = [_observation_names(1), _observation_names(2)]
+    agent.attach_environment(
+        observation_names=names,
+        action_names=[[], []],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={},
+    )
+    observations = [np.zeros(len(names[0]), dtype=np.float32) for _ in range(count)]
+    district = names[0].index
+    observations[0][district("district__electricity_pricing")] = 0.10
+    observations[0][district("district__electricity_pricing_predicted_1")] = 0.20
+    observations[0][district("district__electricity_pricing_predicted_2")] = 0.25
+    observations[0][district("district__electricity_pricing_predicted_3")] = 0.30
+    observations[0][district("district__community_export_power_kw")] = 0.0
+
+    neutral = agent.predict(observations, deterministic=True)
+    np.testing.assert_allclose(neutral, [1.0, 1.0], atol=1e-6)
+    np.testing.assert_allclose(agent._cached_actor_mask, [0.0, 0.0])
+
+    observations[0][district("district__community_export_power_kw")] = 0.5
+    active = agent.predict(observations, deterministic=True)
+    np.testing.assert_allclose(active, [0.85, 0.95], atol=1e-6)
+    np.testing.assert_allclose(agent._cached_actor_mask, [1.0, 1.0])
+
+    inference = DeterministicVectorMultiplierPolicy(
+        agent.policy,
+        agent._price_min,
+        agent._price_max,
+        agent._reference_multipliers,
+        agent._policy_residual_scale,
+        agent._policy_parameterization,
+    )
+    context = agent._build_context(observations)
+    exported = inference(torch.tensor(context).unsqueeze(0))
+    np.testing.assert_allclose(
+        exported.detach().numpy()[0],
+        active,
+        atol=1e-6,
+    )
+
+
+def test_member_reward_normalization_is_independent_per_building() -> None:
+    agent = CCLevel2Agent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "num_buildings": 2,
+                    "c_dim": len(_CC_LEVEL2_DISTRICT_FEATURES)
+                    + len(_CC_LEVEL2_BUILDING_FEATURES) * 2,
+                    "hidden_dims": [8],
+                    "cc_action_interval": 1,
+                    "num_steps": 8,
+                    "credit_assignment": "member_decomposed",
+                    "bc_pretrain_enabled": False,
+                }
+            }
+        }
+    )
+    names = [_observation_names(1), _observation_names(2)]
+    agent.attach_environment(
+        observation_names=names,
+        action_names=[[], []],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={},
+    )
+    observations = [
+        np.zeros(len(_observation_names(1)), dtype=np.float32),
+        np.zeros(len(_observation_names(2)), dtype=np.float32),
+    ]
+    agent.predict(observations, deterministic=True)
+    agent.update(
+        observations,
+        [[], []],
+        [-100.0, -1.0],
+        observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    assert agent._member_reward_rms[0].mean == pytest.approx(-100.0)
+    assert agent._member_reward_rms[1].mean == pytest.approx(-1.0)
+
+
+def test_member_reward_normalization_can_be_disabled_for_raw_credit() -> None:
+    agent = CCLevel2Agent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "num_buildings": 2,
+                    "c_dim": len(_CC_LEVEL2_DISTRICT_FEATURES)
+                    + len(_CC_LEVEL2_BUILDING_FEATURES) * 2,
+                    "hidden_dims": [8],
+                    "cc_action_interval": 1,
+                    "num_steps": 8,
+                    "credit_assignment": "member_decomposed",
+                    "reward_normalization": "none",
+                    "bc_pretrain_enabled": False,
+                }
+            }
+        }
+    )
+    names = [_observation_names(1), _observation_names(2)]
+    agent.attach_environment(
+        observation_names=names,
+        action_names=[[], []],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={},
+    )
+    observations = [
+        np.zeros(len(_observation_names(1)), dtype=np.float32),
+        np.zeros(len(_observation_names(2)), dtype=np.float32),
+    ]
+    agent.predict(observations, deterministic=True)
+    agent.update(
+        observations,
+        [[], []],
+        [-100.0, -1.0],
+        observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    np.testing.assert_allclose(agent.rollout_buffer.rewards[0], [-100.0, -1.0])
+    assert agent._member_reward_rms[0]._n == 0
+    assert agent._member_reward_rms[1]._n == 0
+
+
+def test_raw_member_credit_still_applies_configured_team_mix() -> None:
+    agent = CCLevel2Agent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "num_buildings": 2,
+                    "c_dim": len(_CC_LEVEL2_DISTRICT_FEATURES)
+                    + len(_CC_LEVEL2_BUILDING_FEATURES) * 2,
+                    "hidden_dims": [8],
+                    "cc_action_interval": 1,
+                    "num_steps": 8,
+                    "credit_assignment": "member_decomposed",
+                    "team_reward_mix": 0.25,
+                    "reward_normalization": "none",
+                    "bc_pretrain_enabled": False,
+                }
+            }
+        }
+    )
+    names = [_observation_names(1), _observation_names(2)]
+    agent.attach_environment(
+        observation_names=names,
+        action_names=[[], []],
+        action_space=[None, None],
+        observation_space=[None, None],
+        metadata={},
+    )
+    observations = [
+        np.zeros(len(names[0]), dtype=np.float32),
+        np.zeros(len(names[1]), dtype=np.float32),
+    ]
+    agent.predict(observations, deterministic=True)
+    agent.update(
+        observations,
+        [[], []],
+        [-100.0, -1.0],
+        observations,
+        terminated=False,
+        truncated=False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    np.testing.assert_allclose(
+        agent.rollout_buffer.rewards[0],
+        [-87.625, -13.375],
+    )
+    assert agent._member_reward_rms[0]._n == 0
+    assert agent._member_reward_rms[1]._n == 0
+
+
+def test_cc_level2_teacher_uses_price_semantics_for_battery_soc() -> None:
+    agent = _attached_agent(interval=1)
+    agent._bc_target_import = 1.0
+    agent._bc_reference_peak = 1.0
+    agent._bc_reference_export = 1.0
+    agent._bc_w_cost = 0.0
+    agent._bc_w_peak = 0.0
+    agent._bc_w_export = 0.0
+    agent._bc_w_soc = 0.4
+    agent._bc_w_net = 0.0
+    agent._bc_w_ev = 0.0
+    observations = [
+        np.zeros(len(_observation_names(1)), dtype=np.float32),
+        np.zeros(len(_observation_names(2)), dtype=np.float32),
+    ]
+    observations[0][agent._building_feat_positions[0][0]] = 0.9
+    observations[1][agent._building_feat_positions[1][0]] = 0.1
+    context = agent._build_context(observations)
+
+    multipliers = agent._bc_teacher_multipliers_per_building(
+        context, observations
+    )
+
+    assert multipliers[0] > 1.0  # full battery: expensive/discharge
+    assert multipliers[1] < 1.0  # empty battery: cheap/charge
+
+
+def test_cc_level2_schedule_teacher_reproduces_causal_cheap_export_probe() -> None:
+    agent = _attached_agent(interval=1)
+    agent._bc_target_import = 1.0
+    agent._bc_reference_peak = 1.0
+    agent._bc_reference_export = 1.0
+    agent._bc_teacher_mode = "cheap_and_export"
+    agent._bc_discount_multiplier = 0.90
+    agent._bc_w_soc = 0.10
+    observations = [
+        np.zeros(len(_observation_names(1)), dtype=np.float32),
+        np.zeros(len(_observation_names(2)), dtype=np.float32),
+    ]
+    observations[0][agent._building_feat_positions[0][0]] = 0.2
+    observations[1][agent._building_feat_positions[1][0]] = 0.8
+    context = agent._build_context(observations)
+    index = agent._district_feature_names.index
+    context[index("district__electricity_pricing")] = 0.10
+    context[index("district__electricity_pricing_predicted_1")] = 0.20
+    context[index("district__electricity_pricing_predicted_2")] = 0.25
+    context[index("district__electricity_pricing_predicted_3")] = 0.30
+    context[index("district__community_export_power_kw")] = 2.0
+
+    discounted = agent._bc_teacher_multipliers_per_building(
+        context,
+        observations,
+    )
+    assert discounted[0] < discounted[1] < 1.0
+
+    context[index("district__community_export_power_kw")] = 0.0
+    neutral = agent._bc_teacher_multipliers_per_building(context, observations)
+    np.testing.assert_allclose(neutral, [1.0, 1.0])
 
 
 def test_cc_level2_temporal_abstraction_adds_one_joint_transition() -> None:
@@ -493,3 +941,34 @@ def test_cc_level2_schema_rejects_reference_vector_mismatch() -> None:
 def test_cc_level2_schema_rejects_policy_residual_scale_outside_unit_interval() -> None:
     with pytest.raises(ValueError):
         CCLevel2Hyperparameters.model_validate({"policy_residual_scale": 1.1})
+
+
+def test_cc_level2_schema_protects_causal_active_only_contract() -> None:
+    parsed = CCLevel2Hyperparameters.model_validate(
+        {
+            "price_min": 0.82,
+            "price_max": 1.0,
+            "policy_parameterization": "causal_active_only",
+            "causal_initial_multiplier": 0.90,
+            "bc_pretrain_enabled": False,
+        }
+    )
+    assert parsed.causal_initial_multiplier == pytest.approx(0.90)
+
+    with pytest.raises(ValueError, match="price_max"):
+        CCLevel2Hyperparameters.model_validate(
+            {
+                "price_min": 0.82,
+                "price_max": 1.1,
+                "policy_parameterization": "causal_active_only",
+            }
+        )
+    with pytest.raises(ValueError, match="does not support BC"):
+        CCLevel2Hyperparameters.model_validate(
+            {
+                "price_min": 0.82,
+                "price_max": 1.0,
+                "policy_parameterization": "causal_active_only",
+                "bc_pretrain_enabled": True,
+            }
+        )

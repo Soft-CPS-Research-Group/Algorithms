@@ -37,6 +37,23 @@ class CausalPriceSignalAgent(BaseAgent):
         hyper = config.get("algorithm", {}).get("hyperparameters") or {}
         self.neutral_multiplier = float(hyper.get("neutral_multiplier", 1.0))
         self.discount_multiplier = float(hyper.get("discount_multiplier", 0.95))
+        configured_vector = hyper.get("discount_multipliers")
+        self.discount_multipliers = (
+            None
+            if configured_vector is None
+            else [float(value) for value in configured_vector]
+        )
+        self.vector_min_multiplier = float(
+            hyper.get("vector_min_multiplier", 0.5)
+        )
+        self.vector_max_multiplier = float(
+            hyper.get("vector_max_multiplier", 1.3)
+        )
+        if self.vector_max_multiplier <= self.vector_min_multiplier:
+            raise ValueError(
+                "CausalPriceSignal vector_max_multiplier must be greater than "
+                "vector_min_multiplier"
+            )
         self.cc_action_interval = int(hyper.get("cc_action_interval", 4))
         self.community_export_threshold_kw = float(
             hyper.get("community_export_threshold_kw", 1.0e-9)
@@ -49,7 +66,8 @@ class CausalPriceSignalAgent(BaseAgent):
         self._episode_step_context: Optional[int] = None
         self._step_in_interval = 0
         self._has_decision = False
-        self._cached_multiplier = self.neutral_multiplier
+        self._num_buildings = 0
+        self._cached_multiplier: float | List[float] = self.neutral_multiplier
         self._decision_index = 0
         self._decision_trace: List[Dict[str, Any]] = []
 
@@ -65,6 +83,22 @@ class CausalPriceSignalAgent(BaseAgent):
         _ = action_names, action_space, observation_space, metadata
         if not observation_names or not observation_names[0]:
             raise ValueError("CausalPriceSignal requires named raw observations")
+        self._num_buildings = len(observation_names)
+        if self.discount_multipliers is not None:
+            if len(self.discount_multipliers) != self._num_buildings:
+                raise ValueError(
+                    "CausalPriceSignal discount_multipliers length must match "
+                    "the environment building count"
+                )
+            if any(
+                value < self.vector_min_multiplier
+                or value > self.vector_max_multiplier
+                for value in self.discount_multipliers
+            ):
+                raise ValueError(
+                    "CausalPriceSignal discount_multipliers must lie within "
+                    "the configured vector multiplier range"
+                )
         self._obs_index = {
             str(name): index for index, name in enumerate(observation_names[0])
         }
@@ -93,7 +127,7 @@ class CausalPriceSignalAgent(BaseAgent):
         if normalized == 0 and self._episode_step_context != 0:
             self._step_in_interval = 0
             self._has_decision = False
-            self._cached_multiplier = self.neutral_multiplier
+            self._cached_multiplier = self._neutral_output()
         self._episode_step_context = normalized
 
     @staticmethod
@@ -142,7 +176,19 @@ class CausalPriceSignalAgent(BaseAgent):
             )
         return self._finite(float(observation[index]), name)
 
-    def _new_decision(self, observations: List[np.ndarray]) -> float:
+    def _neutral_output(self) -> float | List[float]:
+        if self.discount_multipliers is None:
+            return self.neutral_multiplier
+        return [self.neutral_multiplier] * len(self.discount_multipliers)
+
+    @staticmethod
+    def _copy_output(value: float | List[float]) -> float | List[float]:
+        return list(value) if isinstance(value, list) else float(value)
+
+    def _new_decision(
+        self,
+        observations: List[np.ndarray],
+    ) -> float | List[float]:
         if not observations:
             raise ValueError("CausalPriceSignal requires at least one observation")
         observation = np.asarray(observations[0], dtype=np.float64).reshape(-1)
@@ -161,13 +207,20 @@ class CausalPriceSignalAgent(BaseAgent):
             spread_floor_ratio=self.spread_floor_ratio,
         )
         exporting = export_kw > self.community_export_threshold_kw
-        multiplier = (
-            self.discount_multiplier
-            if cheap and exporting
-            else self.neutral_multiplier
-        )
-        self._decision_trace.append(
-            {
+        active = bool(cheap and exporting)
+        if self.discount_multipliers is None:
+            multiplier: float | List[float] = (
+                self.discount_multiplier if active else self.neutral_multiplier
+            )
+            trace_multipliers = [float(multiplier)]
+        else:
+            multiplier = (
+                list(self.discount_multipliers)
+                if active
+                else [self.neutral_multiplier] * len(self.discount_multipliers)
+            )
+            trace_multipliers = list(multiplier)
+        trace = {
                 "episode_step": self._episode_step_context,
                 "decision_index": self._decision_index,
                 "price": price,
@@ -177,13 +230,25 @@ class CausalPriceSignalAgent(BaseAgent):
                 "community_export_power_kw": export_kw,
                 "cheap": int(cheap),
                 "exporting": int(exporting),
-                "multiplier": multiplier,
+                "multiplier": (
+                    float(multiplier) if isinstance(multiplier, float) else ""
+                ),
+                "multiplier_mean": float(np.mean(trace_multipliers)),
+                "multiplier_min": float(np.min(trace_multipliers)),
+                "multiplier_max": float(np.max(trace_multipliers)),
             }
-        )
+        if self.discount_multipliers is not None:
+            trace.update(
+                {
+                    f"multiplier_b{index}": value
+                    for index, value in enumerate(trace_multipliers)
+                }
+            )
+        self._decision_trace.append(trace)
         self._decision_index += 1
         self._cached_multiplier = multiplier
         self._has_decision = True
-        return multiplier
+        return self._copy_output(multiplier)
 
     def predict(
         self,
@@ -191,7 +256,7 @@ class CausalPriceSignalAgent(BaseAgent):
         deterministic: bool | None = None,
         *,
         context: Any = None,
-    ) -> float:
+    ) -> float | List[float]:
         _ = deterministic, context
         if self._episode_step_context is None:
             decision_due = not self._has_decision or self._step_in_interval == 0
@@ -205,7 +270,7 @@ class CausalPriceSignalAgent(BaseAgent):
         self._step_in_interval = (
             self._step_in_interval + 1
         ) % self.cc_action_interval
-        return self._cached_multiplier
+        return self._copy_output(self._cached_multiplier)
 
     def update(
         self,
@@ -253,12 +318,24 @@ class CausalPriceSignalAgent(BaseAgent):
             diagnostic_artifacts.append(
                 {"path": path.name, "format": "csv"}
             )
+        vector_output = self.discount_multipliers is not None
         return {
             "format": "causal_price_signal",
-            "output_contract": "causal_global_price_multiplier",
+            "output_contract": (
+                "causal_per_building_price_multiplier_vector"
+                if vector_output
+                else "causal_global_price_multiplier"
+            ),
             "rule": "current_native_cheap_and_current_community_export",
             "neutral_multiplier": self.neutral_multiplier,
             "discount_multiplier": self.discount_multiplier,
+            "discount_multipliers": (
+                list(self.discount_multipliers)
+                if self.discount_multipliers is not None
+                else None
+            ),
+            "vector_min_multiplier": self.vector_min_multiplier,
+            "vector_max_multiplier": self.vector_max_multiplier,
             "cc_action_interval": self.cc_action_interval,
             "community_export_threshold_kw": self.community_export_threshold_kw,
             "forecast_mean_margin": self.forecast_mean_margin,

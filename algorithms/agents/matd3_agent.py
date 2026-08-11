@@ -12,6 +12,11 @@ from loguru import logger
 from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.maddpg_agent import MADDPG
+from algorithms.utils.citylearn_local_action_safety import (
+    CityLearnLocalSafetyAdapter,
+    CityLearnSafetyConfig,
+    preserve_teacher_service_with_storage_fallback,
+)
 from algorithms.utils.networks import build_actor_network, build_critic_network
 from algorithms.utils.price_multiplier_adapter import (
     ForecastMode,
@@ -60,6 +65,55 @@ class MATD3(MADDPG):
         self._joint_local_price_adapters: List[PriceMultiplierObservationAdapter] = []
         self._last_joint_local_price_diagnostics = []
         self._last_joint_local_price_context_non_neutral = False
+        # TD3 owns the equivalent one-building adapter itself.  MATD3 needs one
+        # projector per actor/building after the joint residual action has been
+        # composed and exploration noise has been applied.
+        self._joint_local_action_safety_enabled = bool(
+            exploration_cfg.get("local_action_safety_enabled", False)
+            and not getattr(self, "single_agent_only", False)
+        )
+        self._joint_local_action_safety_fail_on_infeasible = bool(
+            exploration_cfg.get("local_action_safety_fail_on_infeasible", False)
+        )
+        self._joint_local_action_safety_protect_ev_minimum = bool(
+            exploration_cfg.get("local_action_safety_protect_ev_minimum", True)
+        )
+        self._joint_local_action_safety_ev_minimum_mode = str(
+            exploration_cfg.get("local_action_safety_ev_minimum_mode", "average")
+            or "average"
+        )
+        self._joint_local_action_safety_protect_ev_service_target = bool(
+            exploration_cfg.get("local_action_safety_protect_ev_service_target", False)
+        )
+        self._joint_local_action_safety_allow_discretionary_deferrable_start = bool(
+            exploration_cfg.get(
+                "local_action_safety_allow_discretionary_deferrable_start",
+                False,
+            )
+        )
+        self._joint_local_action_safety_protect_deferrable_must_start = bool(
+            exploration_cfg.get(
+                "local_action_safety_protect_deferrable_must_start",
+                True,
+            )
+        )
+        self._joint_local_action_safety_headroom_reserve_kw = max(
+            0.0,
+            float(
+                exploration_cfg.get(
+                    "local_action_safety_headroom_reserve_kw",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        self._joint_local_action_safety_runtime_only_export = bool(
+            exploration_cfg.get("local_action_safety_runtime_only_export", False)
+        )
+        self._joint_local_action_safety_adapters: List[CityLearnLocalSafetyAdapter] = []
+        self._last_joint_local_action_projections = []
+        if self._joint_local_action_safety_enabled:
+            self.requires_raw_observation_context = True
 
     def attach_environment(
         self,
@@ -79,34 +133,84 @@ class MATD3(MADDPG):
         )
         self._joint_local_price_adapters = []
         self._last_joint_local_price_diagnostics = []
-        if not self._joint_local_price_conditioning_enabled:
-            return
-        if len(observation_names) != int(self.num_agents):
-            raise ValueError(
-                "MATD3 local price conditioning requires one observation layout per actor."
-            )
-        for agent_idx in range(int(self.num_agents)):
-            feature_low, feature_high = price_feature_bounds_from_metadata(
-                metadata=metadata,
-                agent_index=agent_idx,
-            )
-            actor_observation_names = price_observation_names_from_metadata(
-                metadata=metadata,
-                agent_index=agent_idx,
-                fallback_observation_names=observation_names[agent_idx],
-            )
-            self._joint_local_price_adapters.append(
-                PriceMultiplierObservationAdapter(
-                    observation_names=actor_observation_names,
-                    feature_low=feature_low,
-                    feature_high=feature_high,
-                    forecast_mode=self.local_price_forecast_mode,
-                    # MATD3 may already include community features in its
-                    # established observation profile.  The adapter neither
-                    # appends nor changes them; it modifies exact price fields.
-                    require_strict_local=False,
+        self._joint_local_action_safety_adapters = []
+        self._last_joint_local_action_projections = []
+
+        if self._joint_local_action_safety_enabled:
+            if not (
+                len(observation_names)
+                == len(action_names)
+                == int(self.num_agents)
+            ):
+                raise ValueError(
+                    "MATD3 local action safety requires one observation/action "
+                    "layout per actor."
                 )
-            )
+            building_names = list((metadata or {}).get("building_names") or [])
+            for agent_idx in range(int(self.num_agents)):
+                agent_metadata = dict(metadata or {})
+                if agent_idx < len(building_names):
+                    agent_metadata["building_names"] = [building_names[agent_idx]]
+                self._joint_local_action_safety_adapters.append(
+                    CityLearnLocalSafetyAdapter(
+                        observation_names=observation_names[agent_idx],
+                        action_names=action_names[agent_idx],
+                        action_low=self._action_low_for_agent(agent_idx),
+                        action_high=self._action_high_for_agent(agent_idx),
+                        metadata=agent_metadata,
+                        config=CityLearnSafetyConfig(
+                            fail_on_infeasible=(
+                                self._joint_local_action_safety_fail_on_infeasible
+                            ),
+                            protect_ev_minimum=(
+                                self._joint_local_action_safety_protect_ev_minimum
+                            ),
+                            ev_minimum_mode=(
+                                self._joint_local_action_safety_ev_minimum_mode
+                            ),
+                            protect_ev_service_target=(
+                                self._joint_local_action_safety_protect_ev_service_target
+                            ),
+                            protect_deferrable_must_start=(
+                                self._joint_local_action_safety_protect_deferrable_must_start
+                            ),
+                            headroom_reserve_kw=(
+                                self._joint_local_action_safety_headroom_reserve_kw
+                            ),
+                            allow_discretionary_deferrable_start=(
+                                self._joint_local_action_safety_allow_discretionary_deferrable_start
+                            ),
+                        ),
+                    )
+                )
+
+        if self._joint_local_price_conditioning_enabled:
+            if len(observation_names) != int(self.num_agents):
+                raise ValueError(
+                    "MATD3 local price conditioning requires one observation layout per actor."
+                )
+            for agent_idx in range(int(self.num_agents)):
+                feature_low, feature_high = price_feature_bounds_from_metadata(
+                    metadata=metadata,
+                    agent_index=agent_idx,
+                )
+                actor_observation_names = price_observation_names_from_metadata(
+                    metadata=metadata,
+                    agent_index=agent_idx,
+                    fallback_observation_names=observation_names[agent_idx],
+                )
+                self._joint_local_price_adapters.append(
+                    PriceMultiplierObservationAdapter(
+                        observation_names=actor_observation_names,
+                        feature_low=feature_low,
+                        feature_high=feature_high,
+                        forecast_mode=self.local_price_forecast_mode,
+                        # MATD3 may already include community features in its
+                        # established observation profile.  The adapter neither
+                        # appends nor changes them; it modifies exact price fields.
+                        require_strict_local=False,
+                    )
+                )
 
     def _apply_joint_local_price_context(
         self,
@@ -156,11 +260,59 @@ class MATD3(MADDPG):
         context: Any = None,
     ) -> List[List[float]]:
         observations = self._apply_joint_local_price_context(observations, context)
-        return super().predict(
+        actions = super().predict(
             observations,
             deterministic=deterministic,
             context=context,
         )
+        return self._project_joint_local_actions(actions)
+
+    def _project_joint_local_actions(
+        self,
+        actions: List[List[float]],
+    ) -> List[List[float]]:
+        self._last_joint_local_action_projections = []
+        if not self._joint_local_action_safety_enabled:
+            return actions
+        if len(self._joint_local_action_safety_adapters) != int(self.num_agents):
+            raise RuntimeError(
+                "MATD3 local action safety is enabled but the environment is not attached."
+            )
+        if (
+            self._latest_raw_observations is None
+            or len(self._latest_raw_observations) != int(self.num_agents)
+            or len(actions) != int(self.num_agents)
+        ):
+            raise RuntimeError(
+                "MATD3 local action safety requires one raw observation and action "
+                "group per actor before predict."
+            )
+
+        base_actions = getattr(self, "_last_warm_start_policy_actions", None)
+        executed_actions: List[List[float]] = []
+        for agent_idx, (adapter, raw_observation, proposed) in enumerate(
+            zip(
+                self._joint_local_action_safety_adapters,
+                self._latest_raw_observations,
+                actions,
+            )
+        ):
+            result = adapter.project(raw_observation, proposed)
+            self._last_joint_local_action_projections.append(result)
+            executed = list(result.executed_actions)
+            fallback = (
+                base_actions[agent_idx]
+                if base_actions is not None and agent_idx < len(base_actions)
+                else None
+            )
+            executed = preserve_teacher_service_with_storage_fallback(
+                action_names=self.action_names[agent_idx],
+                teacher_merged_actions=proposed,
+                projected_actions=executed,
+                storage_fallback_actions=fallback,
+            )
+            executed_actions.append(executed)
+        return executed_actions
 
     def _initialize_networks(self):
         logger.debug("Initializing MATD3 actor and twin critic networks.")
@@ -656,6 +808,7 @@ class MATD3(MADDPG):
 
     def get_diagnostic_metrics(self) -> Dict[str, float]:
         metrics = super().get_diagnostic_metrics()
+        projections = self._last_joint_local_action_projections
         metrics.update(
             {
                 "MATD3/enabled": 1.0,
@@ -673,9 +826,46 @@ class MATD3(MADDPG):
                         for diagnostics in self._last_joint_local_price_diagnostics
                     )
                 ),
+                "MATD3/local_action_safety_enabled": float(
+                    self._joint_local_action_safety_enabled
+                ),
+                "MATD3/local_action_safety_interventions": float(
+                    sum(len(result.interventions) for result in projections)
+                ),
+                "MATD3/local_action_safety_infeasible": float(
+                    sum(len(result.infeasible_reasons) for result in projections)
+                ),
             }
         )
         return metrics
+
+    def export_artifacts(
+        self,
+        output_dir: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if (
+            self._joint_local_action_safety_enabled
+            and not self._joint_local_action_safety_runtime_only_export
+        ):
+            raise RuntimeError(
+                "MATD3 local action safety is not embedded in the ONNX actors. "
+                "Set local_action_safety_runtime_only_export=true only for "
+                "non-deployable experiment evidence, or implement a composite bundle."
+            )
+        metadata = super().export_artifacts(output_dir, context)
+        if self._joint_local_action_safety_enabled:
+            for artifact in metadata.get("artifacts", []):
+                artifact.setdefault("config", {}).update(
+                    {
+                        "deployable": False,
+                        "requires_runtime_local_action_safety": True,
+                        "runtime_only_reason": (
+                            "external_residual_base_policy_and_local_safety_projector"
+                        ),
+                    }
+                )
+        return metadata
 
     def save_checkpoint(self, output_dir: str, step: int) -> str:
         checkpoint_mode = str(getattr(self, "checkpoint_mode", "full") or "full")

@@ -133,6 +133,73 @@ def test_target_policy_smoothing_uses_fractional_action_span_and_clips(monkeypat
     np.testing.assert_allclose(smoothed.numpy(), np.array([[1.0, 2.0]], dtype=np.float32), atol=1e-6)
 
 
+def test_residual_exploration_and_target_noise_respect_action_authority(monkeypatch):
+    agent = _build_agent_for_exploration()
+    agent.num_agents = 1
+    agent.action_dimension = [3]
+    agent.action_names = [[
+        "electrical_storage",
+        "electric_vehicle_storage_charger_1",
+        "deferrable_appliance_1",
+    ]]
+    agent.action_low = [np.array([-1.0, -1.0, 0.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0, 1.0, 1.0], dtype=np.float32)]
+    agent.residual_policy_enabled = True
+    agent.residual_action_scale = 0.2
+    agent.residual_action_final_scale = 0.2
+    agent.residual_action_start_step = 0
+    agent.residual_action_growth_steps = 0
+    agent.residual_storage_action_scale_multiplier = 0.5
+    agent.residual_ev_action_scale_multiplier = 0.0
+    agent.residual_deferrable_action_scale_multiplier = 0.0
+    agent.target_policy_smoothing = True
+    agent.target_policy_noise = 1.0
+    agent.target_policy_noise_clip = 1.0
+    monkeypatch.setattr(torch, "randn_like", lambda tensor: torch.ones_like(tensor))
+
+    exploration = agent._scale_exploration_noise(
+        0, np.ones(3, dtype=np.float64)
+    )
+    smoothed = agent._add_target_policy_smoothing(
+        0, torch.tensor([[0.0, 0.25, 0.5]], dtype=torch.float32)
+    )
+
+    assert exploration.tolist() == pytest.approx([0.1, 0.0, 0.0])
+    # Storage span is 2.0 and authority is 0.2 * 0.5, hence +0.2.
+    np.testing.assert_allclose(
+        smoothed.numpy(),
+        np.array([[0.2, 0.25, 0.5]], dtype=np.float32),
+        atol=1.0e-6,
+    )
+
+
+def test_residual_building_gain_can_freeze_one_maddpg_actor_at_its_teacher():
+    agent = MADDPG.__new__(MADDPG)
+    agent.action_dimension = [1]
+    agent.action_low = [np.array([-1.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0], dtype=np.float32)]
+    agent.action_names = [["electrical_storage"]]
+    agent._building_names = ["Building_15"]
+    agent.residual_building_gain_multipliers = {"Building_15": 0.0}
+    agent.residual_policy_enabled = True
+    agent.residual_action_scale = 0.2
+    agent.residual_action_final_scale = 0.2
+    agent.residual_action_start_step = 0
+    agent.residual_action_growth_steps = 0
+    agent.residual_storage_action_scale_multiplier = 1.0
+    agent.residual_ev_action_scale_multiplier = 0.0
+    agent.residual_deferrable_action_scale_multiplier = 0.0
+    agent.exploration_step = 10
+
+    output = agent._policy_action_from_actor_output(
+        0,
+        torch.tensor([[1.0]], dtype=torch.float32),
+        base_action=torch.tensor([[0.25]], dtype=torch.float32),
+    )
+
+    np.testing.assert_allclose(output.numpy(), [[0.25]], atol=1.0e-7)
+
+
 def test_actor_action_regularization_uses_normalized_bounds():
     agent = _build_agent_for_exploration()
     agent.action_low = [np.array([0.0, -2.0], dtype=np.float32)]
@@ -794,6 +861,27 @@ def test_residual_policy_action_adds_bounded_delta_to_base_action():
     assert action.detach().numpy()[0, 0] == pytest.approx(0.1, abs=1e-6)
     assert action.detach().numpy()[0, 1] == pytest.approx(0.8, abs=1e-6)
     assert agent._last_residual_action_scale == pytest.approx(0.2)
+
+
+def test_zero_authority_residual_policy_returns_teacher_exactly():
+    agent = MADDPG.__new__(MADDPG)
+    agent.action_dimension = [2]
+    agent.action_low = [np.array([-1.0, 0.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0, 2.0], dtype=np.float32)]
+    agent.residual_policy_enabled = True
+    agent.residual_action_final_scale = 0.0
+
+    action = agent._policy_action_from_actor_output(
+        0,
+        torch.tensor([[1.0, -1.0]], dtype=torch.float32),
+        base_action=torch.tensor([[0.25, 1.25]], dtype=torch.float32),
+    )
+
+    np.testing.assert_allclose(
+        action.numpy(),
+        np.array([[0.25, 1.25]], dtype=np.float32),
+        atol=1.0e-6,
+    )
 
 
 def test_maddpg_rejects_single_agent_prioritized_replay_buffer():

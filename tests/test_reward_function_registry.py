@@ -28,6 +28,7 @@ def test_reward_registry_contains_expected_reward_functions():
     assert "CostServiceCommunityPeakDeadlineRewardV52" in names
     assert "CostServiceCommunityResidualConstraintRewardV53" in names
     assert "CostServiceCommunityDenseEVResidualRewardV54" in names
+    assert "CostCommunityStorageResidualRewardV55" in names
     assert "BAReward" in names
     assert "CCReward" in names
     assert "CCRewardLevel1" in names
@@ -81,6 +82,10 @@ def test_reward_registry_contains_expected_reward_functions():
     assert (
         REWARD_FUNCTION_MAP["CostServiceCommunityDenseEVResidualRewardV54"].__name__
         == "CostServiceCommunityDenseEVResidualRewardV54"
+    )
+    assert (
+        REWARD_FUNCTION_MAP["CostCommunityStorageResidualRewardV55"].__name__
+        == "CostCommunityStorageResidualRewardV55"
     )
     assert REWARD_FUNCTION_MAP["BAReward"].__name__ == "BAReward"
     assert REWARD_FUNCTION_MAP["CCReward"].__name__ == "CCReward"

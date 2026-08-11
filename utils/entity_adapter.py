@@ -2142,7 +2142,8 @@ class EntityContractAdapter:
           - charger::*::connected_ev_soc_deficit   max(required-soc, 0) [0, 1]
           - charger::*::connected_ev_departure_urgency_24h  1-hours/24 [0, 1]
 
-        District features (16) are unchanged from cc_level1.
+        District features include the cc_level1 contract plus the causal
+        one-step and three-step community-net history used for ramp control.
         Buildings without chargers receive 0.0 for EV features.
         """
         feature = cls._feature_tail_from_encoded_name(name)
@@ -2152,6 +2153,11 @@ class EntityContractAdapter:
             return False
 
         if name.startswith("district__"):
+            if feature in {
+                "community_net_prev_1_kwh_step",
+                "community_net_prev_3_mean_kwh_step",
+            }:
+                return True
             return cls._is_cc_level1_district_feature(feature)
 
         if name.startswith("storage::"):

@@ -2492,6 +2492,26 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
             0.0,
             float(hyper.get("signal_price_charge_rate", 0.0) or 0.0),
         )
+        self.signal_price_response_mode = str(
+            hyper.get("signal_price_response_mode", "binary") or "binary"
+        ).strip().lower()
+        if self.signal_price_response_mode not in {"binary", "linear_discount"}:
+            raise ValueError(
+                "SignalAwareRBCSmartLocal signal_price_response_mode must be "
+                "'binary' or 'linear_discount'"
+            )
+        self.signal_price_charge_reference_multiplier = float(
+            hyper.get("signal_price_charge_reference_multiplier", 0.90)
+        )
+        if not 0.0 < self.signal_price_charge_reference_multiplier < 1.0:
+            raise ValueError(
+                "signal_price_charge_reference_multiplier must lie within (0, 1)"
+            )
+        self.signal_price_charge_gain_max = float(
+            hyper.get("signal_price_charge_gain_max", 1.5)
+        )
+        if self.signal_price_charge_gain_max <= 0.0:
+            raise ValueError("signal_price_charge_gain_max must be positive")
 
     def _policy_type(self) -> str:
         return "signal_aware_rbc_smart_local_policy"
@@ -2527,7 +2547,29 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
             )
 
         configured_rate = self.price_charge_rate
-        self.price_charge_rate = self.signal_price_charge_rate
+        configured_multiplier = self._price_multiplier
+        effective_signal_rate = self.signal_price_charge_rate
+        if self.signal_price_response_mode == "linear_discount":
+            reference_depth = max(
+                1.0 - self.signal_price_charge_reference_multiplier,
+                self.energy_epsilon,
+            )
+            discount_depth = max(1.0 - self._price_multiplier, 0.0)
+            gain = min(
+                discount_depth / reference_depth,
+                self.signal_price_charge_gain_max,
+            )
+            effective_signal_rate *= gain
+            # The coordinator already gates the signal to a causal
+            # cheap-and-export event.  Do not let the SMART policy's second,
+            # discontinuous cheap-price threshold erase small but explicit
+            # discounts; retain the 0.90 incumbent threshold while the action
+            # magnitude carries the continuous authority.
+            self._price_multiplier = min(
+                self._price_multiplier,
+                self.signal_price_charge_reference_multiplier,
+            )
+        self.price_charge_rate = effective_signal_rate
         try:
             return super()._compute_storage_action(
                 agent_idx,
@@ -2538,3 +2580,4 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
             )
         finally:
             self.price_charge_rate = configured_rate
+            self._price_multiplier = configured_multiplier

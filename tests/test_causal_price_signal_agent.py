@@ -53,6 +53,65 @@ def test_causal_signal_requires_both_cheap_price_and_current_export():
     assert agent.predict(_observation(1.0, 0.0), deterministic=True) == pytest.approx(1.0)
 
 
+def test_causal_signal_can_emit_one_discount_per_building():
+    discounts = [0.89, 0.90, 0.91]
+    agent = CausalPriceSignalAgent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "cc_action_interval": 1,
+                    "discount_multipliers": discounts,
+                }
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=[NAMES, NAMES, NAMES],
+        action_names=[[], [], []],
+        action_space=[],
+        observation_space=[],
+    )
+
+    assert agent.predict(_observation(1.0, 3.0)) == pytest.approx(discounts)
+    assert agent.predict(_observation(3.0, 3.0)) == pytest.approx([1.0] * 3)
+
+
+def test_causal_vector_can_allocate_with_a_per_building_surcharge():
+    multipliers = [0.85, 1.05, 0.95]
+    agent = CausalPriceSignalAgent(
+        {
+            "algorithm": {
+                "hyperparameters": {"discount_multipliers": multipliers}
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=[NAMES, NAMES, NAMES],
+        action_names=[[], [], []],
+        action_space=[],
+        observation_space=[],
+    )
+
+    assert agent.predict(_observation(1.0, 3.0)) == pytest.approx(multipliers)
+
+
+def test_causal_vector_signal_validates_environment_building_count():
+    agent = CausalPriceSignalAgent(
+        {
+            "algorithm": {
+                "hyperparameters": {"discount_multipliers": [0.9, 0.9]}
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="environment building count"):
+        agent.attach_environment(
+            observation_names=[NAMES],
+            action_names=[[]],
+            action_space=[],
+            observation_space=[],
+        )
+
+
 def test_causal_signal_holds_decision_for_the_complete_interval():
     agent = _agent(cc_action_interval=4)
     agent.set_episode_context(episode_step=0)
@@ -88,6 +147,38 @@ def test_causal_signal_manifest_exports_auditable_decision_trace(tmp_path: Path)
     assert rows[0]["exporting"] == "1"
 
 
+def test_causal_vector_manifest_records_every_member(tmp_path: Path):
+    discounts = [0.89, 0.90]
+    agent = CausalPriceSignalAgent(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "cc_action_interval": 1,
+                    "discount_multipliers": discounts,
+                }
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=[NAMES, NAMES],
+        action_names=[[], []],
+        action_space=[],
+        observation_space=[],
+    )
+    agent.set_episode_context(episode_step=0)
+    agent.predict(_observation(1.0, 3.0))
+
+    manifest = agent.export_artifacts(str(tmp_path))
+    rows = list(csv.DictReader((tmp_path / "decision_trace.csv").open()))
+
+    assert manifest["output_contract"] == (
+        "causal_per_building_price_multiplier_vector"
+    )
+    assert manifest["discount_multipliers"] == discounts
+    assert float(rows[0]["multiplier_b0"]) == pytest.approx(0.89)
+    assert float(rows[0]["multiplier_b1"]) == pytest.approx(0.90)
+
+
 def test_causal_signal_fails_fast_when_causal_features_are_missing():
     agent = CausalPriceSignalAgent({"algorithm": {"hyperparameters": {}}})
     with pytest.raises(ValueError, match="missing required observation"):
@@ -104,6 +195,15 @@ def test_causal_signal_schema_rejects_non_discount():
         CausalPriceSignalHyperparameters(
             neutral_multiplier=1.0,
             discount_multiplier=1.0,
+        )
+    CausalPriceSignalHyperparameters(
+        neutral_multiplier=1.0,
+        discount_multipliers=[0.9, 1.05],
+    )
+    with pytest.raises(ValueError, match="vector multiplier range"):
+        CausalPriceSignalHyperparameters(
+            neutral_multiplier=1.0,
+            discount_multipliers=[0.9, 1.31],
         )
 
 
