@@ -181,11 +181,21 @@ class CityLearnLocalSafetyAdapter:
         if np.any(self.action_high < self.action_low):
             raise ValueError("CityLearn safety action high bounds must be >= low bounds.")
 
+        # ``metadata["building_names"]`` describes the whole environment.
+        # Each adapter represents one local vector, so its observation names
+        # are the only reliable source of its building identity.  Using the
+        # first metadata entry makes every adapter act as Building_1 and leaves
+        # every other building without EV or deferrable constraints.
+        inferred_building_id = self._infer_building_id()
         building_names = self.metadata.get("building_names")
         self.building_id = (
-            str(building_names[0])
-            if isinstance(building_names, (list, tuple)) and building_names
-            else self._infer_building_id()
+            inferred_building_id
+            if inferred_building_id is not None
+            else (
+                str(building_names[0])
+                if isinstance(building_names, (list, tuple)) and building_names
+                else "unknown_building"
+            )
         )
 
     def reset_episode(self) -> None:
@@ -193,12 +203,12 @@ class CityLearnLocalSafetyAdapter:
 
         self._electrical_headroom_observed = False
 
-    def _infer_building_id(self) -> str:
+    def _infer_building_id(self) -> str | None:
         for name in self.observation_names:
             if "::Building_" not in name:
                 continue
             return name.split("::", 1)[1].split("/", 1)[0]
-        return "unknown_building"
+        return None
 
     def project(
         self,

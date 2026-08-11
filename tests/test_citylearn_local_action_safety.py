@@ -151,6 +151,22 @@ def test_citylearn_adapter_reserves_both_building_15_ev_minima() -> None:
     assert result.executed_actions[0] == pytest.approx(0.36)
 
 
+def test_citylearn_adapter_uses_local_observation_building_not_global_metadata() -> None:
+    adapter, observation = _adapter_and_observation()
+    adapter = CityLearnLocalSafetyAdapter(
+        observation_names=adapter.observation_names,
+        action_names=adapter.action_names,
+        action_low=adapter.action_low,
+        action_high=adapter.action_high,
+        metadata={"building_names": ["Building_1", "Building_15"]},
+    )
+
+    result = adapter.project(observation, [0.0, 0.0, 0.0])
+
+    assert adapter.building_id == "Building_15"
+    assert result.executed_actions[1:] == pytest.approx((0.5, 0.4))
+
+
 def test_citylearn_adapter_keeps_configured_margin_below_phase_limit() -> None:
     base, observation = _adapter_and_observation()
     adapter = CityLearnLocalSafetyAdapter(
