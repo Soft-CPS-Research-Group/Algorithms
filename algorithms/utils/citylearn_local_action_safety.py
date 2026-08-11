@@ -327,6 +327,7 @@ class CityLearnLocalSafetyAdapter:
                         values=values,
                         prefix=prefix,
                         max_charge_kw=max_charge,
+                        minimum_action=minimum,
                     ),
                     available_discharge_action=self._optional_value(
                         values, prefix, "available_discharge_action_normalized"
@@ -479,6 +480,7 @@ class CityLearnLocalSafetyAdapter:
         values: Mapping[str, float],
         prefix: str,
         max_charge_kw: float,
+        minimum_action: float,
     ) -> float | None:
         physical = self._optional_value(
             values, prefix, "available_charge_action_normalized"
@@ -501,6 +503,7 @@ class CityLearnLocalSafetyAdapter:
                 1.0,
             )
         )
+        target_limited = max(target_limited, minimum_action)
         return target_limited if physical is None else min(physical, target_limited)
 
     def _headroom(self, values: Mapping[str, float]) -> ElectricalHeadroom:
