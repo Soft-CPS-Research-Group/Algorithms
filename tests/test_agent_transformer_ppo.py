@@ -263,7 +263,9 @@ def test_local_action_safety_projection_is_used_for_executed_action() -> None:
     agent, _, _, obs_dim = _make_agent(config=config)
     agent._local_action_safety_adapters[0] = SimpleNamespace(
         project=lambda raw_observation, proposed: SimpleNamespace(
-            executed_actions=tuple(0.0 for _ in proposed)
+            executed_actions=tuple(0.0 for _ in proposed),
+            interventions=(SimpleNamespace(reason_codes=()),),
+            infeasible_reasons=(),
         )
     )
     observation = np.zeros(obs_dim, dtype=np.float64)
@@ -273,6 +275,9 @@ def test_local_action_safety_projection_is_used_for_executed_action() -> None:
     assert actions == [[0.0, 0.0]]
     assert agent._pending_decisions[0] is not None
     assert agent._pending_decisions[0].action.squeeze(-1).tolist() == [0.0, 0.0]
+    diagnostics = agent.get_diagnostic_metrics()
+    assert diagnostics["TPPO/local_action_safety_projections"] == 1.0
+    assert diagnostics["TPPO/local_action_safety_interventions"] >= 1.0
 
 
 def test_predict_deterministic_is_repeatable() -> None:
