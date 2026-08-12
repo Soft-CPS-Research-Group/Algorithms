@@ -400,6 +400,14 @@ class MATD3(MADDPG):
         self._update_reward_normalizer(rewards)
         behavior_actions = self._transition_behavior_actions(actions)
         next_behavior_actions = self._transition_next_behavior_actions(behavior_actions)
+        cloning_actions = self._transition_cloning_actions(
+            actions,
+            base_actions=behavior_actions,
+        )
+        stored_cloning_actions = self._distinct_cloning_actions_for_replay(
+            cloning_actions,
+            behavior_actions,
+        )
         priority_boost = self._transition_observation_event_priority_boost()
         self._store_replay_transition(
             observations=observations,
@@ -409,6 +417,7 @@ class MATD3(MADDPG):
             done=done,
             behavior_actions=behavior_actions,
             next_behavior_actions=next_behavior_actions,
+            cloning_actions=stored_cloning_actions,
             priority_boost=priority_boost,
         )
         self._maybe_run_actor_offline_bc_pretraining(global_learning_step)
@@ -420,19 +429,33 @@ class MATD3(MADDPG):
         if not update_step:
             return
 
-        if hasattr(self.replay_buffer, "sample_with_policy_context_actions"):
+        if hasattr(self.replay_buffer, "sample_with_policy_and_cloning_actions"):
+            (
+                states,
+                actions_all,
+                rewards_all,
+                next_states,
+                dones_all,
+                behavior_actions_all,
+                next_behavior_actions_all,
+                cloning_actions_all,
+            ) = self.replay_buffer.sample_with_policy_and_cloning_actions()
+        elif hasattr(self.replay_buffer, "sample_with_policy_context_actions"):
             states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all, next_behavior_actions_all = (
                 self.replay_buffer.sample_with_policy_context_actions()
             )
+            cloning_actions_all = behavior_actions_all
         elif hasattr(self.replay_buffer, "sample_with_behavior_actions"):
             states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all = (
                 self.replay_buffer.sample_with_behavior_actions()
             )
             next_behavior_actions_all = behavior_actions_all
+            cloning_actions_all = behavior_actions_all
         else:
             states, actions_all, rewards_all, next_states, dones_all = self.replay_buffer.sample()
             behavior_actions_all = actions_all
             next_behavior_actions_all = actions_all
+            cloning_actions_all = behavior_actions_all
 
         raw_rewards_all = torch.stack(rewards_all).to(self.device, dtype=torch.float32, non_blocking=True)
         individual_rewards_all = self._normalize_reward_tensor(raw_rewards_all)
@@ -442,6 +465,7 @@ class MATD3(MADDPG):
         actions_all = [action.to(self.device, non_blocking=True) for action in actions_all]
         behavior_actions_all = [action.to(self.device, non_blocking=True) for action in behavior_actions_all]
         next_behavior_actions_all = [action.to(self.device, non_blocking=True) for action in next_behavior_actions_all]
+        cloning_actions_all = [action.to(self.device, non_blocking=True) for action in cloning_actions_all]
         next_states = [state.to(self.device, non_blocking=True) for state in next_states]
 
         global_state = torch.cat(states, dim=1)
@@ -549,6 +573,8 @@ class MATD3(MADDPG):
         actor_bc_storage_values: List[float] = []
         actor_bc_deferrable_values: List[float] = []
         actor_bc_other_values: List[float] = []
+        actor_bc_extra_loss_values: List[float] = []
+        actor_bc_extra_grad_norm_values: List[float] = []
         actor_reg_values: List[float] = []
         actor_residual_delta_l2_values: List[float] = []
         actor_storage_smoothness_values: List[float] = []
@@ -559,11 +585,33 @@ class MATD3(MADDPG):
         actor_policy_loss_effective_weight = self._actor_policy_loss_effective_weight(
             global_learning_step
         )
+        actor_behavior_cloning_extra_updates = (
+            self._actor_behavior_cloning_extra_updates_for_step(
+                global_learning_step,
+                actor_behavior_cloning_effective_weight,
+            )
+        )
 
         if actor_update_due:
             for agent_idx, (actor, critic, optimizer) in enumerate(
                 zip(self.actors, self.critics, self.actor_optimizers)
             ):
+                extra_losses, extra_grad_norms = (
+                    self._run_actor_behavior_cloning_extra_updates(
+                        agent_num=agent_idx,
+                        actor=actor,
+                        actor_optimizer=optimizer,
+                        observations=states[agent_idx],
+                        behavior_actions=behavior_actions_all[agent_idx],
+                        cloning_actions=cloning_actions_all[agent_idx],
+                        behavior_cloning_weight=(
+                            actor_behavior_cloning_effective_weight
+                        ),
+                        extra_updates=actor_behavior_cloning_extra_updates,
+                    )
+                )
+                actor_bc_extra_loss_values.extend(extra_losses)
+                actor_bc_extra_grad_norm_values.extend(extra_grad_norms)
                 predicted_action = self._policy_action_from_actor_output(
                     agent_idx,
                     actor(states[agent_idx]),
@@ -614,7 +662,8 @@ class MATD3(MADDPG):
                     behavior_cloning_loss = self._actor_behavior_cloning_loss(
                         agent_idx,
                         predicted_action,
-                        behavior_actions_all[agent_idx],
+                        cloning_actions_all[agent_idx],
+                        base_action=behavior_actions_all[agent_idx],
                     )
                     (
                         behavior_cloning_ev_loss,
@@ -624,7 +673,7 @@ class MATD3(MADDPG):
                     ) = self._actor_behavior_cloning_type_losses(
                         agent_idx,
                         predicted_action,
-                        behavior_actions_all[agent_idx],
+                        cloning_actions_all[agent_idx],
                     )
                     residual_delta_l2 = self._residual_delta_l2(
                         agent_idx,
@@ -697,6 +746,11 @@ class MATD3(MADDPG):
             actor_auxiliary_loss_values = [0.0 for _ in range(self.num_agents)]
             actor_grad_norm_values = [0.0 for _ in range(self.num_agents)]
 
+        if not actor_bc_extra_loss_values:
+            actor_bc_extra_loss_values = [0.0]
+        if not actor_bc_extra_grad_norm_values:
+            actor_bc_extra_grad_norm_values = [0.0]
+
         if should_log_step_metrics and self.training_diagnostics_enabled:
             q1_flat = torch.cat([tensor.reshape(-1) for tensor in q1_expected_tensors])
             q2_flat = torch.cat([tensor.reshape(-1) for tensor in q2_expected_tensors])
@@ -743,6 +797,15 @@ class MATD3(MADDPG):
                 "MATD3/actor_behavior_cloning_other_loss_mean": float(np.mean(actor_bc_other_values)),
                 "MATD3/actor_behavior_cloning_effective_weight": float(
                     actor_behavior_cloning_effective_weight
+                ),
+                "MATD3/actor_behavior_cloning_extra_updates": float(
+                    actor_behavior_cloning_extra_updates
+                ),
+                "MATD3/actor_behavior_cloning_extra_loss_mean": float(
+                    np.mean(actor_bc_extra_loss_values)
+                ),
+                "MATD3/actor_behavior_cloning_extra_grad_norm_mean": float(
+                    np.mean(actor_bc_extra_grad_norm_values)
                 ),
                 "MATD3/critic_action_input_mode_final_base_delta": float(
                     getattr(self, "critic_action_input_mode", "final")
@@ -880,11 +943,11 @@ class MATD3(MADDPG):
         }
         for agent_idx in range(self.num_agents):
             checkpoint[f"actor_state_dict_{agent_idx}"] = self.actors[agent_idx].state_dict()
-            checkpoint[f"actor_target_state_dict_{agent_idx}"] = self.actor_targets[agent_idx].state_dict()
             if agent_idx < len(getattr(self, "actor_aux_heads", [])):
                 checkpoint[f"actor_aux_head_state_dict_{agent_idx}"] = self.actor_aux_heads[agent_idx].state_dict()
             if checkpoint_mode == "inference":
                 continue
+            checkpoint[f"actor_target_state_dict_{agent_idx}"] = self.actor_targets[agent_idx].state_dict()
             checkpoint[f"critic_state_dict_{agent_idx}"] = self.critics[agent_idx].state_dict()
             checkpoint[f"critic_2_state_dict_{agent_idx}"] = self.critics_2[agent_idx].state_dict()
             checkpoint[f"critic_target_state_dict_{agent_idx}"] = self.critic_targets[agent_idx].state_dict()

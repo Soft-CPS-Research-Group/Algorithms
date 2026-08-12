@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -21,12 +22,16 @@ class CheckpointManager:
         log_to_mlflow: bool = True,
         require_update_step: bool = True,
         require_initial_exploration_done: bool = True,
+        checkpoint_on_episode_end: bool = False,
+        keep_episode_checkpoints: bool = False,
     ) -> None:
         self.base_dir = Path(base_dir) if base_dir else None
         self.interval = interval if interval and interval > 0 else None
         self.log_to_mlflow = log_to_mlflow
         self.require_update_step = require_update_step
         self.require_initial_exploration_done = require_initial_exploration_done
+        self.checkpoint_on_episode_end = bool(checkpoint_on_episode_end)
+        self.keep_episode_checkpoints = bool(keep_episode_checkpoints)
 
     def maybe_save(
         self,
@@ -55,6 +60,38 @@ class CheckpointManager:
         if step <= 0:
             return None
         return self.save(agent, step)
+
+    def save_episode_end(
+        self,
+        agent: ExecutionUnit,
+        *,
+        step: int,
+        episode: int,
+        deterministic: bool,
+    ) -> Optional[Path]:
+        """Persist a trainable episode boundary independent of step alignment."""
+        if (
+            not self.checkpoint_on_episode_end
+            or not self.base_dir
+            or step <= 0
+            or deterministic
+        ):
+            return None
+        checkpoint_path = self.save(agent, step)
+        if not checkpoint_path or not self.keep_episode_checkpoints:
+            return checkpoint_path
+        if checkpoint_path.is_dir():
+            logger.warning(
+                "Episode checkpoint '{}' is a directory; keeping the agent-managed path only.",
+                checkpoint_path,
+            )
+            return checkpoint_path
+        preserved_path = checkpoint_path.with_name(
+            f"episode_{int(episode) + 1:03d}_step_{int(step)}_{checkpoint_path.name}"
+        )
+        shutil.copy2(checkpoint_path, preserved_path)
+        logger.info("Preserved episode checkpoint: {}", preserved_path)
+        return preserved_path
 
     def save(self, agent: ExecutionUnit, step: int) -> Optional[Path]:
         if not self.base_dir:

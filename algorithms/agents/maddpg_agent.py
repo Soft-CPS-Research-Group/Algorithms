@@ -378,13 +378,43 @@ class MADDPG(BaseAgent):
         self.actor_offline_bc_pretrain_completed_steps = 0
         self._last_offline_bc_pretrain_loss = 0.0
         self._last_offline_bc_pretrain_grad_norm = 0.0
+        self._last_behavior_cloning_target_unreachable_fraction = 0.0
         self.actor_behavior_cloning_source = str(
             exploration_cfg.get("actor_behavior_cloning_source", "replay_action") or "replay_action"
         ).strip().lower()
-        if self.actor_behavior_cloning_source not in {"replay_action", "warm_start_policy"}:
+        if self.actor_behavior_cloning_source not in {
+            "replay_action",
+            "warm_start_policy",
+            "teacher_policy",
+        }:
             raise ValueError(
-                "MADDPG actor_behavior_cloning_source must be 'replay_action' or 'warm_start_policy'."
+                "MADDPG actor_behavior_cloning_source must be 'replay_action', "
+                "'warm_start_policy' or 'teacher_policy'."
             )
+        self.actor_behavior_cloning_teacher_policy_name = self._optional_string(
+            exploration_cfg.get("actor_behavior_cloning_teacher_policy")
+        )
+        self.actor_behavior_cloning_teacher_action_scope = str(
+            exploration_cfg.get(
+                "actor_behavior_cloning_teacher_action_scope",
+                "residual_authority",
+            )
+            or "residual_authority"
+        ).strip().lower()
+        if self.actor_behavior_cloning_teacher_action_scope not in {
+            "all",
+            "residual_authority",
+        }:
+            raise ValueError(
+                "MADDPG actor_behavior_cloning_teacher_action_scope must be "
+                "'all' or 'residual_authority'."
+            )
+        self.actor_behavior_cloning_clip_target_to_residual_authority = bool(
+            exploration_cfg.get(
+                "actor_behavior_cloning_clip_target_to_residual_authority",
+                False,
+            )
+        )
         self.residual_policy_enabled = bool(exploration_cfg.get("residual_policy_enabled", False))
         self.residual_policy_runtime_only_export = bool(
             exploration_cfg.get("residual_policy_runtime_only_export", False)
@@ -401,6 +431,14 @@ class MADDPG(BaseAgent):
             raise ValueError(
                 "MADDPG actor_behavior_cloning_source='warm_start_policy' requires "
                 "warm_start_policy."
+            )
+        if (
+            self.actor_behavior_cloning_source == "teacher_policy"
+            and not self.actor_behavior_cloning_teacher_policy_name
+        ):
+            raise ValueError(
+                "MADDPG actor_behavior_cloning_source='teacher_policy' requires "
+                "actor_behavior_cloning_teacher_policy."
             )
         if self.residual_policy_enabled and not self.warm_start_policy_name:
             raise ValueError(
@@ -639,6 +677,7 @@ class MADDPG(BaseAgent):
         self._episode_schedule_step: Optional[int] = None
         self._next_episode_schedule_step: Optional[int] = None
         self._warm_start_policy = None
+        self._behavior_cloning_teacher_policy = None
         self._warned_missing_raw_context = False
         self._last_warm_start_policy_actions: Optional[List[List[float]]] = None
         self._last_warm_start_next_policy_actions: Optional[List[List[float]]] = None
@@ -648,6 +687,7 @@ class MADDPG(BaseAgent):
         self._noop_actor_initialized = False
         self._replay_push_accepts_behavior_actions: Optional[bool] = None
         self._replay_push_accepts_next_behavior_actions: Optional[bool] = None
+        self._replay_push_accepts_cloning_actions: Optional[bool] = None
         self._replay_push_accepts_priority_boost: Optional[bool] = None
         self._replay_push_count = 0
         self.replay_buffer = self._initialize_replay_buffer()
@@ -754,6 +794,13 @@ class MADDPG(BaseAgent):
         self._rebuild_actor_networks_for_semantic_heads_if_needed()
         self._configure_replay_behavior_action_priority()
         self._initialize_warm_start_policy(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+        self._initialize_behavior_cloning_teacher_policy(
             observation_names=observation_names,
             action_names=action_names,
             action_space=action_space,
@@ -889,6 +936,94 @@ class MADDPG(BaseAgent):
                 self.residual_action_scale,
                 self.residual_action_final_scale,
             )
+
+    def _initialize_behavior_cloning_teacher_policy(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        """Attach a BC teacher that is independent from the residual base.
+
+        Historically ``behavior_actions`` represented both concepts.  That
+        makes BC a no-op whenever the actor starts at the SMART residual base.
+        Keeping this teacher separate allows, for example, SMART to provide EV
+        and appliance service while a fixed-service MILP teaches battery
+        scheduling only.
+        """
+        policy_name = getattr(
+            self,
+            "actor_behavior_cloning_teacher_policy_name",
+            None,
+        )
+        if not policy_name:
+            return
+
+        from algorithms.agents.baseline_policies import (
+            NormalNoBatteryPolicy,
+            NormalPolicy,
+            RBCBasicPolicy,
+            RBCCommunityPolicy,
+            RBCSmartLocalPolicy,
+            RBCSmartPolicy,
+            RandomPolicy,
+        )
+        from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolicy
+        from algorithms.agents.rbc_agent import RuleBasedPolicy
+        from algorithms.agents.total_home_oracle_replay_policy import TotalHomeOracleReplayPolicy
+        from algorithms.agents.total_oracle_replay_policy import TotalOracleReplayPolicy
+
+        policy_registry = {
+            "RuleBasedPolicy": RuleBasedPolicy,
+            "RandomPolicy": RandomPolicy,
+            "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
+            "NormalPolicy": NormalPolicy,
+            "RBCBasicPolicy": RBCBasicPolicy,
+            "RBCCommunityPolicy": RBCCommunityPolicy,
+            "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
+            "RBCSmartPolicy": RBCSmartPolicy,
+            "FixedServiceOracleReplayPolicy": FixedServiceOracleReplayPolicy,
+            "TotalHomeOracleReplayPolicy": TotalHomeOracleReplayPolicy,
+            "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
+        }
+        policy_cls = policy_registry.get(str(policy_name))
+        if policy_cls is None:
+            supported = ", ".join(sorted(policy_registry))
+            raise ValueError(
+                f"Unsupported MADDPG actor_behavior_cloning_teacher_policy "
+                f"'{policy_name}'. Supported policies: {supported}."
+            )
+
+        exploration_cfg = self.config["algorithm"]["exploration"]["params"]
+        policy_hyperparams = exploration_cfg.get(
+            "actor_behavior_cloning_teacher_hyperparameters"
+        ) or {}
+        if not isinstance(policy_hyperparams, dict):
+            raise ValueError(
+                "MADDPG actor_behavior_cloning_teacher_hyperparameters must be "
+                "an object when provided."
+            )
+        policy_config = deepcopy(self.config)
+        policy_config["algorithm"] = {
+            "name": str(policy_name),
+            "hyperparameters": dict(policy_hyperparams),
+        }
+        self._behavior_cloning_teacher_policy = policy_cls(policy_config)
+        self._behavior_cloning_teacher_policy.attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+        logger.info(
+            "MADDPG behavior cloning uses independent teacher '{}' with scope '{}'.",
+            policy_name,
+            self.actor_behavior_cloning_teacher_action_scope,
+        )
 
     def set_observation_context(
         self,
@@ -1389,6 +1524,14 @@ class MADDPG(BaseAgent):
         phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
         behavior_actions = self._transition_behavior_actions(actions)
         next_behavior_actions = self._transition_next_behavior_actions(behavior_actions)
+        cloning_actions = self._transition_cloning_actions(
+            actions,
+            base_actions=behavior_actions,
+        )
+        stored_cloning_actions = self._distinct_cloning_actions_for_replay(
+            cloning_actions,
+            behavior_actions,
+        )
         if should_log_runtime_profile:
             runtime_profile_metrics["MADDPG/runtime_behavior_action_seconds"] = (
                 time.perf_counter() - phase_start_time
@@ -1410,6 +1553,7 @@ class MADDPG(BaseAgent):
             done=done,
             behavior_actions=behavior_actions,
             next_behavior_actions=next_behavior_actions,
+            cloning_actions=stored_cloning_actions,
             priority_boost=priority_boost,
         )
         if should_log_runtime_profile:
@@ -1455,19 +1599,33 @@ class MADDPG(BaseAgent):
             return
 
         phase_start_time = time.perf_counter() if should_log_runtime_profile else 0.0
-        if hasattr(self.replay_buffer, "sample_with_policy_context_actions"):
+        if hasattr(self.replay_buffer, "sample_with_policy_and_cloning_actions"):
+            (
+                states,
+                actions_all,
+                rewards_all,
+                next_states,
+                dones_all,
+                behavior_actions_all,
+                next_behavior_actions_all,
+                cloning_actions_all,
+            ) = self.replay_buffer.sample_with_policy_and_cloning_actions()
+        elif hasattr(self.replay_buffer, "sample_with_policy_context_actions"):
             states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all, next_behavior_actions_all = (
                 self.replay_buffer.sample_with_policy_context_actions()
             )
+            cloning_actions_all = behavior_actions_all
         elif hasattr(self.replay_buffer, "sample_with_behavior_actions"):
             states, actions_all, rewards_all, next_states, dones_all, behavior_actions_all = (
                 self.replay_buffer.sample_with_behavior_actions()
             )
             next_behavior_actions_all = behavior_actions_all
+            cloning_actions_all = behavior_actions_all
         else:
             states, actions_all, rewards_all, next_states, dones_all = self.replay_buffer.sample()
             behavior_actions_all = actions_all
             next_behavior_actions_all = actions_all
+            cloning_actions_all = behavior_actions_all
         if should_log_runtime_profile:
             runtime_profile_metrics["MADDPG/runtime_replay_sample_seconds"] = (
                 time.perf_counter() - phase_start_time
@@ -1482,6 +1640,7 @@ class MADDPG(BaseAgent):
         actions_all = [a.to(self.device, non_blocking=True) for a in actions_all]
         behavior_actions_all = [a.to(self.device, non_blocking=True) for a in behavior_actions_all]
         next_behavior_actions_all = [a.to(self.device, non_blocking=True) for a in next_behavior_actions_all]
+        cloning_actions_all = [a.to(self.device, non_blocking=True) for a in cloning_actions_all]
         next_states = [ns.to(self.device, non_blocking=True) for ns in next_states]
         if should_log_runtime_profile:
             runtime_profile_metrics["MADDPG/runtime_tensor_transfer_seconds"] = (
@@ -1667,6 +1826,7 @@ class MADDPG(BaseAgent):
                     actor_optimizer=actor_optimizer,
                     observations=obs,
                     behavior_actions=behavior_actions_all[agent_num],
+                    cloning_actions=cloning_actions_all[agent_num],
                     behavior_cloning_weight=actor_behavior_cloning_effective_weight,
                     extra_updates=actor_behavior_cloning_extra_updates,
                 )
@@ -1723,7 +1883,8 @@ class MADDPG(BaseAgent):
                     behavior_cloning_loss = self._actor_behavior_cloning_loss(
                         agent_num,
                         predicted_action,
-                        behavior_actions_all[agent_num],
+                        cloning_actions_all[agent_num],
+                        base_action=behavior_actions_all[agent_num],
                     )
                     residual_delta_l2 = self._residual_delta_l2(
                         agent_num,
@@ -1739,7 +1900,7 @@ class MADDPG(BaseAgent):
                         self._actor_behavior_cloning_type_losses(
                             agent_num,
                             predicted_action,
-                            behavior_actions_all[agent_num],
+                            cloning_actions_all[agent_num],
                         )
                     )
                     behavior_cloning_regularization = (
@@ -1911,6 +2072,17 @@ class MADDPG(BaseAgent):
                 "MADDPG/actor_behavior_cloning_source_warm_start_policy": float(
                     getattr(self, "actor_behavior_cloning_source", "replay_action") == "warm_start_policy"
                 ),
+                "MADDPG/actor_behavior_cloning_source_teacher_policy": float(
+                    getattr(self, "actor_behavior_cloning_source", "replay_action")
+                    == "teacher_policy"
+                ),
+                "MADDPG/actor_behavior_cloning_target_unreachable_fraction_last": float(
+                    getattr(
+                        self,
+                        "_last_behavior_cloning_target_unreachable_fraction",
+                        0.0,
+                    )
+                ),
                 "MADDPG/critic_action_input_mode_final_base_delta": float(
                     getattr(self, "critic_action_input_mode", "final")
                     in {"final_base_delta", "final_base_delta_normalized"}
@@ -2034,6 +2206,7 @@ class MADDPG(BaseAgent):
         behavior_actions: List[Any],
         next_behavior_actions: Optional[List[Any]],
         priority_boost: float,
+        cloning_actions: Optional[List[Any]] = None,
     ) -> None:
         if int(getattr(self, "n_step_returns", 1) or 1) <= 1:
             self._push_replay_transition(
@@ -2044,6 +2217,7 @@ class MADDPG(BaseAgent):
                 done=done,
                 behavior_actions=behavior_actions,
                 next_behavior_actions=next_behavior_actions,
+                cloning_actions=cloning_actions,
                 priority_boost=priority_boost,
             )
             self._last_n_step_queue_size = 0
@@ -2058,6 +2232,7 @@ class MADDPG(BaseAgent):
                 "done": bool(done),
                 "behavior_actions": behavior_actions,
                 "next_behavior_actions": next_behavior_actions,
+                "cloning_actions": cloning_actions,
                 "priority_boost": float(priority_boost or 0.0),
             }
         )
@@ -2088,6 +2263,7 @@ class MADDPG(BaseAgent):
             done=bool(last["done"]),
             behavior_actions=first["behavior_actions"],
             next_behavior_actions=last.get("next_behavior_actions"),
+            cloning_actions=first.get("cloning_actions"),
             priority_boost=self._aggregate_n_step_priority_boost(transitions),
         )
         self._n_step_queue.popleft()
@@ -2135,6 +2311,7 @@ class MADDPG(BaseAgent):
         behavior_actions: List[Any],
         priority_boost: float,
         next_behavior_actions: Optional[List[Any]] = None,
+        cloning_actions: Optional[List[Any]] = None,
     ) -> None:
         """Push a transition while preserving compatibility with simple buffers."""
         push = self.replay_buffer.push
@@ -2142,10 +2319,12 @@ class MADDPG(BaseAgent):
 
         accepts_behavior_actions = getattr(self, "_replay_push_accepts_behavior_actions", None)
         accepts_next_behavior_actions = getattr(self, "_replay_push_accepts_next_behavior_actions", None)
+        accepts_cloning_actions = getattr(self, "_replay_push_accepts_cloning_actions", None)
         accepts_priority_boost = getattr(self, "_replay_push_accepts_priority_boost", None)
         if (
             accepts_behavior_actions is None
             or accepts_next_behavior_actions is None
+            or accepts_cloning_actions is None
             or accepts_priority_boost is None
         ):
             try:
@@ -2158,15 +2337,19 @@ class MADDPG(BaseAgent):
             )
             accepts_behavior_actions = accepts_kwargs or "behavior_actions" in parameters
             accepts_next_behavior_actions = accepts_kwargs or "next_behavior_actions" in parameters
+            accepts_cloning_actions = accepts_kwargs or "cloning_actions" in parameters
             accepts_priority_boost = accepts_kwargs or "priority_boost" in parameters
             self._replay_push_accepts_behavior_actions = accepts_behavior_actions
             self._replay_push_accepts_next_behavior_actions = accepts_next_behavior_actions
+            self._replay_push_accepts_cloning_actions = accepts_cloning_actions
             self._replay_push_accepts_priority_boost = accepts_priority_boost
 
         if accepts_behavior_actions:
             kwargs["behavior_actions"] = behavior_actions
         if accepts_next_behavior_actions and next_behavior_actions is not None:
             kwargs["next_behavior_actions"] = next_behavior_actions
+        if accepts_cloning_actions and cloning_actions is not None:
+            kwargs["cloning_actions"] = cloning_actions
         if accepts_priority_boost:
             kwargs["priority_boost"] = priority_boost
 
@@ -2412,6 +2595,17 @@ class MADDPG(BaseAgent):
             ),
             "MADDPG/actor_behavior_cloning_source_warm_start_policy": float(
                 getattr(self, "actor_behavior_cloning_source", "replay_action") == "warm_start_policy"
+            ),
+            "MADDPG/actor_behavior_cloning_source_teacher_policy": float(
+                getattr(self, "actor_behavior_cloning_source", "replay_action")
+                == "teacher_policy"
+            ),
+            "MADDPG/actor_behavior_cloning_target_unreachable_fraction_last": float(
+                getattr(
+                    self,
+                    "_last_behavior_cloning_target_unreachable_fraction",
+                    0.0,
+                )
             ),
             "MADDPG/actor_offline_bc_pretrain_steps": float(
                 getattr(self, "actor_offline_bc_pretrain_steps", 0)
@@ -2961,9 +3155,15 @@ class MADDPG(BaseAgent):
         return random_actions
 
     def _transition_behavior_actions(self, actions: List[Any]) -> List[Any]:
+        # For residual actors this tensor is the policy base used by both the
+        # actor composition and critic targets.  It must not change merely
+        # because supervised cloning uses another source.
         if (
-            getattr(self, "actor_behavior_cloning_source", "replay_action") != "warm_start_policy"
-            or getattr(self, "_warm_start_policy", None) is None
+            not getattr(self, "residual_policy_enabled", False)
+            and getattr(self, "actor_behavior_cloning_source", "replay_action")
+            != "warm_start_policy"
+        ) or (
+            getattr(self, "_warm_start_policy", None) is None
             or getattr(self, "_latest_raw_observations", None) is None
         ):
             return actions
@@ -2974,6 +3174,83 @@ class MADDPG(BaseAgent):
         ) is not None:
             return [list(action) for action in self._last_warm_start_policy_actions]
         return self._predict_warm_start_policy(apply_noise=False, deterministic=True)
+
+    def _transition_cloning_actions(
+        self,
+        fallback_actions: List[Any],
+        *,
+        base_actions: Optional[List[Any]] = None,
+        next_observation: bool = False,
+    ) -> List[Any]:
+        source = getattr(self, "actor_behavior_cloning_source", "replay_action")
+        if source == "replay_action":
+            return fallback_actions
+        policy_base_actions = fallback_actions if base_actions is None else base_actions
+        if source == "warm_start_policy":
+            return policy_base_actions
+
+        observations = getattr(
+            self,
+            "_latest_raw_next_observations" if next_observation else "_latest_raw_observations",
+            None,
+        )
+        teacher_actions = self._predict_behavior_cloning_teacher_for_observations(
+            observations,
+            schedule_step=self._teacher_schedule_step(next_observation=next_observation),
+        )
+        if teacher_actions is None:
+            return policy_base_actions
+        if self.actor_behavior_cloning_teacher_action_scope == "all":
+            return teacher_actions
+
+        merged_actions: List[List[float]] = []
+        for agent_idx, (fallback, teacher) in enumerate(
+            zip(policy_base_actions, teacher_actions)
+        ):
+            fallback_array = np.asarray(fallback, dtype=np.float64).reshape(-1)
+            teacher_array = np.asarray(teacher, dtype=np.float64).reshape(-1)
+            if fallback_array.shape != teacher_array.shape:
+                raise ValueError(
+                    "MADDPG behavior-cloning teacher action dimensions must "
+                    "match the residual base."
+                )
+            mask = self._residual_action_scale_mask(
+                agent_idx,
+                action_dim=fallback_array.shape[0],
+                dtype=torch.float32,
+                device=torch.device("cpu"),
+            ).cpu().numpy()
+            merged = np.where(mask > 0.0, teacher_array, fallback_array)
+            merged_actions.append(self._clip_action_array(agent_idx, merged).tolist())
+        return merged_actions
+
+    def _distinct_cloning_actions_for_replay(
+        self,
+        cloning_actions: List[Any],
+        behavior_actions: List[Any],
+    ) -> Optional[List[Any]]:
+        """Avoid a duplicate action buffer unless BC has a distinct target."""
+        cloning_enabled = any(
+            float(value or 0.0) > 0.0
+            for value in (
+                getattr(self, "actor_behavior_cloning_weight", 0.0),
+                getattr(self, "actor_offline_bc_pretrain_steps", 0),
+                getattr(self, "actor_behavior_cloning_extra_updates", 0),
+            )
+        )
+        if not cloning_enabled:
+            return None
+        if len(cloning_actions) != len(behavior_actions):
+            return cloning_actions
+        for cloning_action, behavior_action in zip(cloning_actions, behavior_actions):
+            cloning_array = np.asarray(cloning_action, dtype=np.float32).reshape(-1)
+            behavior_array = np.asarray(behavior_action, dtype=np.float32).reshape(-1)
+            if cloning_array.shape != behavior_array.shape or not np.array_equal(
+                cloning_array,
+                behavior_array,
+            ):
+                return cloning_actions
+        return None
 
     def _transition_next_behavior_actions(self, fallback_actions: List[Any]) -> List[Any]:
         if (
@@ -3284,6 +3561,32 @@ class MADDPG(BaseAgent):
         for agent_idx, action in enumerate(actions):
             action_array = np.asarray(action, dtype=np.float64).reshape(-1)
             clipped_actions.append(self._clip_action_array(agent_idx, action_array).tolist())
+        return clipped_actions
+
+    def _predict_behavior_cloning_teacher_for_observations(
+        self,
+        observations: Optional[List[np.ndarray]],
+        *,
+        schedule_step: Optional[int],
+    ) -> Optional[List[List[float]]]:
+        policy = getattr(self, "_behavior_cloning_teacher_policy", None)
+        if policy is None or observations is None or schedule_step is None:
+            return None
+        predict_at_step = getattr(policy, "predict_at_step", None)
+        if callable(predict_at_step):
+            actions = predict_at_step(
+                observations,
+                schedule_step=int(schedule_step),
+                deterministic=True,
+            )
+        else:
+            actions = policy.predict(observations, deterministic=True)
+        clipped_actions: List[List[float]] = []
+        for agent_idx, action in enumerate(actions):
+            action_array = np.asarray(action, dtype=np.float64).reshape(-1)
+            clipped_actions.append(
+                self._clip_action_array(agent_idx, action_array).tolist()
+            )
         return clipped_actions
 
     def _teacher_schedule_step(self, *, next_observation: bool) -> Optional[int]:
@@ -3953,18 +4256,34 @@ class MADDPG(BaseAgent):
 
         logger.info("Starting actor offline BC pretraining for {} batch updates.", remaining)
         for _ in range(remaining):
-            if hasattr(self.replay_buffer, "sample_with_policy_context_actions"):
+            if hasattr(self.replay_buffer, "sample_with_policy_and_cloning_actions"):
+                (
+                    states,
+                    _actions,
+                    _rewards,
+                    _next_states,
+                    _dones,
+                    behavior_actions,
+                    _next_behavior_actions,
+                    cloning_actions,
+                ) = self.replay_buffer.sample_with_policy_and_cloning_actions()
+            elif hasattr(self.replay_buffer, "sample_with_policy_context_actions"):
                 states, _actions, _rewards, _next_states, _dones, behavior_actions, _next_behavior_actions = (
                     self.replay_buffer.sample_with_policy_context_actions()
                 )
+                cloning_actions = behavior_actions
             else:
                 states, _actions, _rewards, _next_states, _dones, behavior_actions = (
                     self.replay_buffer.sample_with_behavior_actions()
                 )
+                cloning_actions = behavior_actions
 
             states = [state.to(self.device, non_blocking=True) for state in states]
             behavior_actions = [
                 action.to(self.device, non_blocking=True) for action in behavior_actions
+            ]
+            cloning_actions = [
+                action.to(self.device, non_blocking=True) for action in cloning_actions
             ]
             for agent_idx, (actor, optimizer) in enumerate(zip(self.actors, self.actor_optimizers)):
                 predicted_action = self._policy_action_from_actor_output(
@@ -3977,7 +4296,8 @@ class MADDPG(BaseAgent):
                     bc_loss = self._actor_behavior_cloning_loss(
                         agent_idx,
                         predicted_action,
-                        behavior_actions[agent_idx],
+                        cloning_actions[agent_idx],
+                        base_action=behavior_actions[agent_idx],
                         force=True,
                     )
                     weighted_loss = weight * bc_loss
@@ -4036,12 +4356,14 @@ class MADDPG(BaseAgent):
         behavior_actions: torch.Tensor,
         behavior_cloning_weight: float,
         extra_updates: int,
+        cloning_actions: Optional[torch.Tensor] = None,
     ) -> tuple[List[float], List[float]]:
         if extra_updates <= 0:
             return [], []
 
         loss_values: List[float] = []
         grad_norm_values: List[float] = []
+        cloning_target = behavior_actions if cloning_actions is None else cloning_actions
         for _ in range(extra_updates):
             predicted_action = self._policy_action_from_actor_output(
                 agent_num,
@@ -4052,7 +4374,8 @@ class MADDPG(BaseAgent):
                 behavior_cloning_loss = self._actor_behavior_cloning_loss(
                     agent_num,
                     predicted_action,
-                    behavior_actions,
+                    cloning_target,
+                    base_action=behavior_actions,
                 )
                 weighted_loss = behavior_cloning_weight * behavior_cloning_loss
 
@@ -4074,13 +4397,19 @@ class MADDPG(BaseAgent):
         predicted_action: torch.Tensor,
         replay_action: torch.Tensor,
         *,
+        base_action: Optional[torch.Tensor] = None,
         force: bool = False,
     ) -> torch.Tensor:
         if not force and float(getattr(self, "actor_behavior_cloning_weight", 0.0)) <= 0.0:
             return predicted_action.new_tensor(0.0)
 
+        cloning_target = self._reachable_behavior_cloning_target(
+            agent_idx,
+            replay_action.detach(),
+            base_action=base_action,
+        )
         predicted_normalized = self._normalize_scaled_action_tensor(agent_idx, predicted_action)
-        replay_normalized = self._normalize_scaled_action_tensor(agent_idx, replay_action.detach())
+        replay_normalized = self._normalize_scaled_action_tensor(agent_idx, cloning_target)
         weights = self._actor_behavior_cloning_action_weights(
             agent_idx,
             action_dim=predicted_normalized.shape[1],
@@ -4090,10 +4419,64 @@ class MADDPG(BaseAgent):
         weights = self._actor_behavior_cloning_sample_weights(
             agent_idx,
             base_weights=weights,
-            replay_action=replay_action.detach(),
+            replay_action=cloning_target,
         )
         denominator = torch.clamp(weights.sum(), min=1.0)
         return ((predicted_normalized - replay_normalized).pow(2) * weights).sum() / denominator
+
+    def _reachable_behavior_cloning_target(
+        self,
+        agent_idx: int,
+        cloning_target: torch.Tensor,
+        *,
+        base_action: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Project an oracle target into the current residual action range."""
+        if (
+            not bool(
+                getattr(
+                    self,
+                    "actor_behavior_cloning_clip_target_to_residual_authority",
+                    False,
+                )
+            )
+            or not bool(getattr(self, "residual_policy_enabled", False))
+            or getattr(self, "actor_behavior_cloning_source", "replay_action")
+            != "teacher_policy"
+            or base_action is None
+        ):
+            return cloning_target
+
+        base = base_action.detach().to(
+            dtype=cloning_target.dtype,
+            device=cloning_target.device,
+        )
+        if base.shape != cloning_target.shape:
+            return cloning_target
+        span = torch.as_tensor(
+            self._action_span_for_agent(agent_idx),
+            dtype=cloning_target.dtype,
+            device=cloning_target.device,
+        )
+        authority = self._residual_action_scale_mask(
+            agent_idx,
+            action_dim=int(cloning_target.shape[-1]),
+            dtype=cloning_target.dtype,
+            device=cloning_target.device,
+        ) * float(self._residual_action_effective_scale())
+        maximum_delta = 0.5 * span * authority
+        reachable = torch.maximum(
+            torch.minimum(cloning_target, base + maximum_delta),
+            base - maximum_delta,
+        )
+        self._last_behavior_cloning_target_unreachable_fraction = float(
+            ((reachable - cloning_target).abs() > 1.0e-6)
+            .to(dtype=torch.float32)
+            .mean()
+            .detach()
+            .item()
+        )
+        return reachable
 
     def _actor_behavior_cloning_type_losses(
         self,
@@ -4202,7 +4585,25 @@ class MADDPG(BaseAgent):
                 weights[action_idx] *= storage_multiplier
             if self._is_deferrable_action_name(action_name):
                 weights[action_idx] *= deferrable_multiplier
-        return torch.as_tensor(weights, dtype=dtype, device=device)
+        weight_tensor = torch.as_tensor(weights, dtype=dtype, device=device)
+        if (
+            getattr(self, "actor_behavior_cloning_source", "replay_action")
+            == "teacher_policy"
+            and getattr(
+                self,
+                "actor_behavior_cloning_teacher_action_scope",
+                "residual_authority",
+            )
+            == "residual_authority"
+        ):
+            authority_mask = self._residual_action_scale_mask(
+                agent_idx,
+                action_dim=int(action_dim),
+                dtype=dtype,
+                device=device,
+            )
+            weight_tensor = weight_tensor * (authority_mask > 0.0).to(dtype=dtype)
+        return weight_tensor
 
     def _actor_behavior_cloning_sample_weights(
         self,

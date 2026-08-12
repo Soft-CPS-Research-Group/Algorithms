@@ -91,6 +91,8 @@ class CostHardConstraintReward(RewardFunction):
         community_peak_import_penalty: float = 0.0,
         community_ramping_penalty: float = 0.0,
         community_export_penalty: float = 0.0,
+        community_emissions_penalty: float = 0.0,
+        community_emissions_use_net_exchange: bool = False,
         community_penalty_divide_by_agents: bool = False,
         community_penalty_use_net_exchange: bool = False,
         community_settlement_cost_weight: float = 0.0,
@@ -136,6 +138,17 @@ class CostHardConstraintReward(RewardFunction):
         self.community_peak_import_penalty = float(community_peak_import_penalty)
         self.community_ramping_penalty = float(community_ramping_penalty)
         self.community_export_penalty = float(community_export_penalty)
+        self.community_emissions_penalty = float(community_emissions_penalty)
+        self.community_emissions_use_net_exchange = bool(
+            community_emissions_use_net_exchange
+        )
+        # Preserve compatibility with datasets that have no carbon signal when
+        # the feature is unused. CityLearn reads this instance attribute after
+        # constructing the reward.
+        if self.community_emissions_penalty > 0.0:
+            self.required_observation_names = tuple(
+                dict.fromkeys((*self.required_observation_names, "carbon_intensity"))
+            )
         self.community_penalty_divide_by_agents = bool(community_penalty_divide_by_agents)
         self.community_penalty_use_net_exchange = bool(
             community_penalty_use_net_exchange
@@ -1478,6 +1491,7 @@ class CostHardConstraintReward(RewardFunction):
                 "community_peak_import_penalty": 0.0,
                 "community_ramping_penalty": 0.0,
                 "community_export_penalty": 0.0,
+                "community_emissions_penalty": 0.0,
                 "community_shared_penalty": 0.0,
                 "reward_total": reward,
             }
@@ -1503,6 +1517,7 @@ class CostHardConstraintReward(RewardFunction):
         community_peak_import_penalty = 0.0
         community_ramping_penalty = 0.0
         community_export_penalty = 0.0
+        community_emissions_penalty = 0.0
         shared_penalty = 0.0
         shared_penalty_per_agent = 0.0
 
@@ -1528,11 +1543,56 @@ class CostHardConstraintReward(RewardFunction):
         if self.community_export_penalty > 0.0:
             community_export_penalty = community_export * self.community_export_penalty
 
+        if self.community_emissions_penalty > 0.0:
+            if self.community_emissions_use_net_exchange:
+                carbon_values = [
+                    max(
+                        self._safe_float(
+                            observation.get("carbon_intensity"),
+                            default=0.0,
+                        ),
+                        0.0,
+                    )
+                    for observation in observations
+                ]
+                carbon_intensity = (
+                    sum(carbon_values) / float(len(carbon_values))
+                    if carbon_values
+                    else 0.0
+                )
+                community_emissions = (
+                    max(community_net_consumption, 0.0) * carbon_intensity
+                )
+            else:
+                community_emissions = sum(
+                    max(
+                        self._safe_float(
+                            observation.get("net_electricity_consumption"),
+                            default=0.0,
+                        ),
+                        0.0,
+                    )
+                    * max(
+                        self._safe_float(
+                            observation.get("carbon_intensity"),
+                            default=0.0,
+                        ),
+                        0.0,
+                    )
+                    for observation in observations
+                )
+            community_emissions_penalty = (
+                community_emissions * self.community_emissions_penalty
+            )
+        else:
+            community_emissions = 0.0
+
         shared_penalty = (
             community_import_linear_penalty
             + community_peak_import_penalty
             + community_ramping_penalty
             + community_export_penalty
+            + community_emissions_penalty
         )
         if shared_penalty > 0.0:
             shared_penalty_per_agent = shared_penalty / agent_count if self.community_penalty_divide_by_agents else shared_penalty
@@ -1545,6 +1605,7 @@ class CostHardConstraintReward(RewardFunction):
                     "community_peak_import_penalty": community_peak_import_penalty,
                     "community_ramping_penalty": community_ramping_penalty,
                     "community_export_penalty": community_export_penalty,
+                    "community_emissions_penalty": community_emissions_penalty,
                     "community_shared_penalty": shared_penalty_per_agent,
                     "reward_total": row["reward_total"] - shared_penalty_per_agent,
                 }
@@ -1565,6 +1626,11 @@ class CostHardConstraintReward(RewardFunction):
             "community_peak_import_penalty": community_peak_import_penalty,
             "community_ramping_penalty": community_ramping_penalty,
             "community_export_penalty": community_export_penalty,
+            "community_emissions_kgco2": community_emissions,
+            "community_emissions_penalty": community_emissions_penalty,
+            "community_emissions_use_net_exchange": float(
+                self.community_emissions_use_net_exchange
+            ),
             "community_shared_penalty": shared_penalty,
             "community_shared_penalty_per_agent": shared_penalty_per_agent,
             "community_penalty_divide_by_agents": float(self.community_penalty_divide_by_agents),

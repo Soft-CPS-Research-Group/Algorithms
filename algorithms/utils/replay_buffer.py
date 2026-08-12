@@ -39,10 +39,12 @@ class MultiAgentReplayBuffer:
         self._action_dims: list[int] = []
         self._behavior_action_dims: list[int] = []
         self._next_behavior_action_dims: list[int] = []
+        self._cloning_action_dims: list[int] = []
         self._states: list[np.ndarray] | None = None
         self._actions: list[np.ndarray] | None = None
         self._behavior_actions: list[np.ndarray] | None = None
         self._next_behavior_actions: list[np.ndarray] | None = None
+        self._cloning_actions: list[np.ndarray] | None = None
         self._next_states: list[np.ndarray] | None = None
         self._rewards: np.ndarray | None = None
         self._dones: np.ndarray | None = None
@@ -56,6 +58,7 @@ class MultiAgentReplayBuffer:
         done,
         behavior_actions=None,
         next_behavior_actions=None,
+        cloning_actions=None,
         priority_boost=None,
     ):
         """
@@ -73,6 +76,10 @@ class MultiAgentReplayBuffer:
             next_behavior_actions (list, optional): Optional per-agent action
                 targets for the next state. Residual policies use these as the
                 base policy in critic targets. Defaults to ``behavior_actions``.
+            cloning_actions (list, optional): Independent per-agent supervised
+                actor targets. This lets residual policies keep a safe base
+                while imitating a stronger teacher. Defaults to
+                ``behavior_actions`` for backward compatibility.
             priority_boost (float, optional): Ignored by the uniform buffer.
                 Weighted replay implementations can use it as an external
                 event-priority signal.
@@ -81,8 +88,26 @@ class MultiAgentReplayBuffer:
             behavior_actions = actions
         if next_behavior_actions is None:
             next_behavior_actions = behavior_actions
+        cloning_actions_provided = cloning_actions is not None
 
-        self._ensure_storage(states, actions, next_states, behavior_actions, next_behavior_actions)
+        self._ensure_storage(
+            states,
+            actions,
+            next_states,
+            behavior_actions,
+            next_behavior_actions,
+            cloning_actions if cloning_actions_provided else behavior_actions,
+        )
+        if cloning_actions_provided and self._cloning_actions is None:
+            self._cloning_actions = [
+                np.zeros((self.capacity, dim), dtype=np.float32)
+                for dim in self._cloning_action_dims
+            ]
+            if self.size > 0 and self._behavior_actions is not None:
+                for agent_idx in range(self.num_agents):
+                    self._cloning_actions[agent_idx][: self.size] = (
+                        self._behavior_actions[agent_idx][: self.size]
+                    )
         insert_index = self.position
 
         assert self._states is not None
@@ -114,6 +139,17 @@ class MultiAgentReplayBuffer:
                 self._next_behavior_action_dims[agent_idx],
                 label=f"next_behavior_action[{agent_idx}]",
             )
+            if self._cloning_actions is not None:
+                cloning_target = (
+                    cloning_actions[agent_idx]
+                    if cloning_actions_provided
+                    else behavior_actions[agent_idx]
+                )
+                self._cloning_actions[agent_idx][insert_index] = self._coerce_vector(
+                    cloning_target,
+                    self._cloning_action_dims[agent_idx],
+                    label=f"cloning_action[{agent_idx}]",
+                )
             self._next_states[agent_idx][insert_index] = self._coerce_vector(
                 next_states[agent_idx],
                 self._state_dims[agent_idx],
@@ -127,7 +163,15 @@ class MultiAgentReplayBuffer:
         self.size = min(self.size + 1, self.capacity)
         self._last_insert_index = insert_index
 
-    def _ensure_storage(self, states, actions, next_states, behavior_actions, next_behavior_actions) -> None:
+    def _ensure_storage(
+        self,
+        states,
+        actions,
+        next_states,
+        behavior_actions,
+        next_behavior_actions,
+        cloning_actions,
+    ) -> None:
         if self._states is not None:
             return
 
@@ -151,10 +195,16 @@ class MultiAgentReplayBuffer:
             int(np.asarray(next_behavior_actions[agent_idx], dtype=np.float32).reshape(-1).shape[0])
             for agent_idx in range(self.num_agents)
         ]
+        self._cloning_action_dims = [
+            int(np.asarray(cloning_actions[agent_idx], dtype=np.float32).reshape(-1).shape[0])
+            for agent_idx in range(self.num_agents)
+        ]
         if next_state_dims != self._state_dims:
             raise ValueError("Replay buffer next_state dimensions must match state dimensions.")
         if self._next_behavior_action_dims != self._behavior_action_dims:
             raise ValueError("Replay buffer next_behavior_action dimensions must match behavior_action dimensions.")
+        if self._cloning_action_dims != self._behavior_action_dims:
+            raise ValueError("Replay buffer cloning_action dimensions must match behavior_action dimensions.")
 
         self._states = [
             np.zeros((self.capacity, dim), dtype=np.float32)
@@ -172,6 +222,9 @@ class MultiAgentReplayBuffer:
             np.zeros((self.capacity, dim), dtype=np.float32)
             for dim in self._next_behavior_action_dims
         ]
+        # Cloning storage is lazy: most runs use the residual base itself as
+        # the target and should not pay another full action-buffer allocation.
+        self._cloning_actions = None
         self._next_states = [
             np.zeros((self.capacity, dim), dtype=np.float32)
             for dim in self._state_dims
@@ -239,12 +292,26 @@ class MultiAgentReplayBuffer:
         indices = np.asarray(random.sample(range(self.size), self.batch_size), dtype=np.int64)
         return self._build_sample(indices, include_behavior_actions=True, include_next_behavior_actions=True)
 
+    def sample_with_policy_and_cloning_actions(self):
+        """Sample residual base actions and independent cloning targets."""
+        if len(self) < self.batch_size:
+            raise ValueError("Not enough samples in the buffer to sample a batch.")
+
+        indices = np.asarray(random.sample(range(self.size), self.batch_size), dtype=np.int64)
+        return self._build_sample(
+            indices,
+            include_behavior_actions=True,
+            include_next_behavior_actions=True,
+            include_cloning_actions=True,
+        )
+
     def _build_sample(
         self,
         indices: np.ndarray,
         *,
         include_behavior_actions: bool,
         include_next_behavior_actions: bool = False,
+        include_cloning_actions: bool = False,
     ):
         if self._states is None or self._actions is None or self._next_states is None:
             raise ValueError("Replay buffer storage is not initialized.")
@@ -277,11 +344,26 @@ class MultiAgentReplayBuffer:
             self._tensor_from_array(storage[indices])
             for storage in (self._next_behavior_actions or self._behavior_actions)
         ]
+        cloning_actions = [
+            self._tensor_from_array(storage[indices])
+            for storage in (self._cloning_actions or self._behavior_actions)
+        ]
 
         # Keep historical shape: [num_agents, batch_size, 1].
         done_tensor = self._tensor_from_array(self._dones[indices])
         done_tensor = done_tensor.unsqueeze(0).expand(self.num_agents, -1, -1)
 
+        if include_behavior_actions and include_next_behavior_actions and include_cloning_actions:
+            return (
+                states,
+                actions,
+                rewards,
+                next_states,
+                done_tensor,
+                behavior_actions,
+                next_behavior_actions,
+                cloning_actions,
+            )
         if include_behavior_actions and include_next_behavior_actions:
             return states, actions, rewards, next_states, done_tensor, behavior_actions, next_behavior_actions
         if include_behavior_actions:
@@ -305,17 +387,19 @@ class MultiAgentReplayBuffer:
         """Return a serialisable snapshot of the replay buffer."""
         if self._states is None:
             return {
-                "format": "joint_transitions_compact_v1",
+                "format": "joint_transitions_compact_v2",
                 "position": self.position,
                 "size": self.size,
                 "state_dims": self._state_dims,
                 "action_dims": self._action_dims,
                 "behavior_action_dims": self._behavior_action_dims,
                 "next_behavior_action_dims": self._next_behavior_action_dims,
+                "cloning_action_dims": self._cloning_action_dims,
                 "states": [],
                 "actions": [],
                 "behavior_actions": [],
                 "next_behavior_actions": [],
+                "cloning_actions": [],
                 "next_states": [],
                 "rewards": np.zeros((0, self.num_agents, 1), dtype=np.float32),
                 "dones": np.zeros((0, 1), dtype=np.float32),
@@ -323,17 +407,23 @@ class MultiAgentReplayBuffer:
 
         active = slice(0, self.size)
         return {
-            "format": "joint_transitions_compact_v1",
+            "format": "joint_transitions_compact_v2",
             "position": self.position,
             "size": self.size,
             "state_dims": list(self._state_dims),
             "action_dims": list(self._action_dims),
             "behavior_action_dims": list(self._behavior_action_dims),
             "next_behavior_action_dims": list(self._next_behavior_action_dims),
+            "cloning_action_dims": list(self._cloning_action_dims),
             "states": [array[active].copy() for array in self._states],
             "actions": [array[active].copy() for array in self._actions],
             "behavior_actions": [array[active].copy() for array in self._behavior_actions],
             "next_behavior_actions": [array[active].copy() for array in self._next_behavior_actions],
+            "cloning_actions": (
+                [array[active].copy() for array in self._cloning_actions]
+                if self._cloning_actions is not None
+                else []
+            ),
             "next_states": [array[active].copy() for array in self._next_states],
             "rewards": self._rewards[active].copy(),
             "dones": self._dones[active].copy(),
@@ -345,7 +435,10 @@ class MultiAgentReplayBuffer:
             return
         self._reset_storage()
 
-        if isinstance(state, dict) and state.get("format") == "joint_transitions_compact_v1":
+        if isinstance(state, dict) and state.get("format") in {
+            "joint_transitions_compact_v1",
+            "joint_transitions_compact_v2",
+        }:
             self._set_compact_state(state)
             return
 
@@ -395,10 +488,12 @@ class MultiAgentReplayBuffer:
         self._action_dims = []
         self._behavior_action_dims = []
         self._next_behavior_action_dims = []
+        self._cloning_action_dims = []
         self._states = None
         self._actions = None
         self._behavior_actions = None
         self._next_behavior_actions = None
+        self._cloning_actions = None
         self._next_states = None
         self._rewards = None
         self._dones = None
@@ -414,6 +509,12 @@ class MultiAgentReplayBuffer:
             np.asarray(array, dtype=np.float32)
             for array in state.get("next_behavior_actions", behavior_actions)
         ]
+        raw_cloning_actions = state.get("cloning_actions")
+        cloning_actions = (
+            [np.asarray(array, dtype=np.float32) for array in raw_cloning_actions]
+            if raw_cloning_actions
+            else []
+        )
         next_states = [np.asarray(array, dtype=np.float32) for array in state.get("next_states", [])]
         if not states:
             self._reset_storage()
@@ -425,6 +526,11 @@ class MultiAgentReplayBuffer:
         self._action_dims = [int(array.shape[1]) for array in actions]
         self._behavior_action_dims = [int(array.shape[1]) for array in behavior_actions]
         self._next_behavior_action_dims = [int(array.shape[1]) for array in next_behavior_actions]
+        self._cloning_action_dims = (
+            [int(array.shape[1]) for array in cloning_actions]
+            if cloning_actions
+            else list(self._behavior_action_dims)
+        )
         self._states = [
             np.zeros((self.capacity, dim), dtype=np.float32)
             for dim in self._state_dims
@@ -441,6 +547,14 @@ class MultiAgentReplayBuffer:
             np.zeros((self.capacity, dim), dtype=np.float32)
             for dim in self._next_behavior_action_dims
         ]
+        self._cloning_actions = (
+            [
+                np.zeros((self.capacity, dim), dtype=np.float32)
+                for dim in self._cloning_action_dims
+            ]
+            if cloning_actions
+            else None
+        )
         self._next_states = [
             np.zeros((self.capacity, dim), dtype=np.float32)
             for dim in self._state_dims
@@ -453,6 +567,8 @@ class MultiAgentReplayBuffer:
             self._actions[agent_idx][:size] = actions[agent_idx][:size]
             self._behavior_actions[agent_idx][:size] = behavior_actions[agent_idx][:size]
             self._next_behavior_actions[agent_idx][:size] = next_behavior_actions[agent_idx][:size]
+            if self._cloning_actions is not None:
+                self._cloning_actions[agent_idx][:size] = cloning_actions[agent_idx][:size]
             self._next_states[agent_idx][:size] = next_states[agent_idx][:size]
         rewards = np.asarray(state.get("rewards", []), dtype=np.float32)
         dones = np.asarray(state.get("dones", []), dtype=np.float32)
@@ -641,6 +757,7 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
         done,
         behavior_actions=None,
         next_behavior_actions=None,
+        cloning_actions=None,
         priority_boost=None,
     ):
         super().push(
@@ -651,6 +768,7 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
             done,
             behavior_actions=behavior_actions,
             next_behavior_actions=next_behavior_actions,
+            cloning_actions=cloning_actions,
             priority_boost=priority_boost,
         )
         insert_index = getattr(self, "_last_insert_index", len(self.priorities))
@@ -745,6 +863,18 @@ class RewardWeightedMultiAgentReplayBuffer(MultiAgentReplayBuffer):
             batch_indices,
             include_behavior_actions=True,
             include_next_behavior_actions=True,
+        )
+
+    def sample_with_policy_and_cloning_actions(self):
+        if len(self) < self.batch_size:
+            raise ValueError("Not enough samples in the buffer to sample a batch.")
+
+        batch_indices = np.asarray(self._sample_indices(), dtype=np.int64)
+        return self._build_sample(
+            batch_indices,
+            include_behavior_actions=True,
+            include_next_behavior_actions=True,
+            include_cloning_actions=True,
         )
 
     def _sample_indices(self) -> list[int]:

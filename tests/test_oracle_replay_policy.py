@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 from pathlib import Path
 
 import numpy as np
@@ -20,8 +21,10 @@ def test_oracle_replay_uses_strict_local_service_teacher() -> None:
     assert issubclass(FixedServiceOracleReplayPolicy, RBCSmartLocalPolicy)
 
 
+@pytest.mark.parametrize("compressed", [False, True])
 def test_oracle_replay_converts_kw_to_normalized_action_and_wraps_episode(
     tmp_path: Path,
+    compressed: bool,
 ) -> None:
     schedule = SemanticSchedule(
         problem_id="fixture",
@@ -35,8 +38,11 @@ def test_oracle_replay_converts_kw_to_normalized_action_and_wraps_episode(
             ),
         ),
     )
-    path = tmp_path / "schedule.json"
-    path.write_text(schedule.to_json(), encoding="utf-8")
+    path = tmp_path / ("schedule.json.gz" if compressed else "schedule.json")
+    if compressed:
+        path.write_bytes(gzip.compress(schedule.to_json().encode("utf-8")))
+    else:
+        path.write_text(schedule.to_json(), encoding="utf-8")
     agent = FixedServiceOracleReplayPolicy(
         {
             "algorithm": {
@@ -120,3 +126,41 @@ def test_oracle_replay_applies_schedule_step_offset(tmp_path: Path) -> None:
     assert action[0] == pytest.approx([-0.1])
     metadata = agent.export_artifacts(str(tmp_path / "artifacts-offset"))
     assert metadata["parameters"]["oracle_schedule"]["schedule_step_offset"] == 1
+
+
+def test_oracle_replay_can_delegate_exact_service_policy(tmp_path: Path) -> None:
+    schedule = SemanticSchedule(
+        problem_id="fixture-service-policy",
+        horizon=1,
+        timestep_hours=0.25,
+        series=(
+            SemanticActionSeries(
+                building_id="Building_1",
+                action_name="electrical_storage",
+                values=(0.0,),
+            ),
+        ),
+    )
+    path = tmp_path / "schedule-service-policy.json"
+    path.write_text(schedule.to_json(), encoding="utf-8")
+    agent = FixedServiceOracleReplayPolicy(
+        {
+            "algorithm": {
+                "name": "FixedServiceOracleReplayPolicy",
+                "hyperparameters": {
+                    "schedule_path": str(path),
+                    "service_policy": "SignalAwareRBC",
+                    "local_action_safety_enabled": False,
+                },
+            }
+        }
+    )
+
+    assert agent.service_policy_name == "SignalAwareRBC"
+    metadata = agent.export_artifacts(str(tmp_path / "service-policy-artifacts"))
+    assert metadata["parameters"]["service_teacher"]["algorithm"] == (
+        "SignalAwareRBC"
+    )
+    assert metadata["parameters"]["service_teacher"][
+        "blocked_observation_token"
+    ] is None

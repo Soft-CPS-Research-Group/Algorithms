@@ -225,6 +225,20 @@ class CheckpointingConfig(BaseModel):
     restore_exploration_state: bool = True
     restore_reward_normalizer: bool = True
     checkpoint_interval: Optional[int] = Field(default=None, ge=1)
+    checkpoint_on_episode_end: bool = Field(
+        default=False,
+        description=(
+            "Save after each trainable episode, even when its exact step count "
+            "does not align with checkpoint_interval."
+        ),
+    )
+    keep_episode_checkpoints: bool = Field(
+        default=False,
+        description=(
+            "Preserve a numbered copy of every episode-end checkpoint instead "
+            "of retaining only the agent's latest artifact."
+        ),
+    )
     require_update_step: bool = True
     require_initial_exploration_done: bool = True
 

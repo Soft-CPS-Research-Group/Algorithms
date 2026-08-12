@@ -75,3 +75,42 @@ def test_checkpoint_manager_skips_final_when_disabled(tmp_path):
 
     assert manager.save_final(agent, step=7) is None
     assert agent.saved_steps == []
+
+
+def test_checkpoint_manager_preserves_trainable_episode_boundaries(tmp_path):
+    manager = CheckpointManager(
+        base_dir=str(tmp_path),
+        interval=None,
+        checkpoint_on_episode_end=True,
+        keep_episode_checkpoints=True,
+    )
+    agent = DummyAgent()
+
+    path = manager.save_episode_end(
+        agent,
+        step=35039,
+        episode=0,
+        deterministic=False,
+    )
+
+    assert path is not None
+    assert path.name == "episode_001_step_35039_dummy_35039.pth"
+    assert path.read_text() == "checkpoint"
+    assert agent.saved_steps == [35039]
+
+
+def test_checkpoint_manager_does_not_save_deterministic_episode_boundary(tmp_path):
+    manager = CheckpointManager(
+        base_dir=str(tmp_path),
+        interval=None,
+        checkpoint_on_episode_end=True,
+    )
+    agent = DummyAgent()
+
+    assert manager.save_episode_end(
+        agent,
+        step=35039,
+        episode=0,
+        deterministic=True,
+    ) is None
+    assert agent.saved_steps == []

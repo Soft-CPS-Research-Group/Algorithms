@@ -284,6 +284,43 @@ def test_actor_behavior_cloning_loss_uses_normalized_bounds():
     assert loss.item() == pytest.approx(1.0, abs=1e-6)
 
 
+def test_teacher_bc_target_is_clipped_to_current_residual_authority():
+    agent = _build_agent_for_exploration()
+    agent.num_agents = 1
+    agent.action_dimension = [1]
+    agent.action_names = [["electrical_storage"]]
+    agent.action_low = [np.array([-1.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0], dtype=np.float32)]
+    agent.actor_behavior_cloning_weight = 1.0
+    agent.actor_behavior_cloning_source = "teacher_policy"
+    agent.actor_behavior_cloning_clip_target_to_residual_authority = True
+    agent.residual_policy_enabled = True
+    agent.residual_action_start_step = 0
+    agent.residual_action_scale = 0.2
+    agent.residual_action_final_scale = 0.2
+    agent.residual_action_growth_steps = 0
+    agent.residual_storage_action_scale_multiplier = 1.0
+    agent.residual_ev_action_scale_multiplier = 0.0
+    agent.residual_deferrable_action_scale_multiplier = 0.0
+    agent.residual_building_gain_multipliers = {}
+    agent._building_names = []
+    base = torch.tensor([[0.2]], dtype=torch.float32)
+    teacher = torch.tensor([[0.9]], dtype=torch.float32)
+    reachable = torch.tensor([[0.4]], dtype=torch.float32)
+
+    loss = agent._actor_behavior_cloning_loss(
+        0,
+        reachable,
+        teacher,
+        base_action=base,
+    )
+
+    assert loss.item() == pytest.approx(0.0, abs=1e-6)
+    assert agent._last_behavior_cloning_target_unreachable_fraction == pytest.approx(
+        1.0
+    )
+
+
 def test_critic_action_features_can_include_teacher_and_normalized_delta():
     agent = _build_agent_for_exploration()
     agent.action_low = [
@@ -436,6 +473,68 @@ def test_transition_behavior_actions_can_use_deterministic_warm_start_policy():
 
     assert behavior_actions == [[0.8, -0.8]]
     assert agent._warm_start_policy.deterministic is True
+
+
+def test_residual_base_remains_warm_start_when_bc_uses_independent_teacher():
+    agent = _build_agent_for_exploration()
+    agent.num_agents = 1
+    agent.action_dimension = [2]
+    agent.action_low = [np.array([-1.0, -1.0], dtype=np.float32)]
+    agent.action_high = [np.array([1.0, 1.0], dtype=np.float32)]
+    agent.residual_policy_enabled = True
+    agent.actor_behavior_cloning_source = "teacher_policy"
+    agent.actor_behavior_cloning_teacher_action_scope = "residual_authority"
+    agent._warm_start_policy = object()
+    agent._behavior_cloning_teacher_policy = object()
+    agent._latest_raw_observations = [np.array([42.0])]
+    agent._last_warm_start_policy_actions = [[0.2, 0.8]]
+    agent._episode_clock_is_explicit = True
+    agent._episode_schedule_step = 3
+    agent._next_episode_schedule_step = 4
+    agent._predict_behavior_cloning_teacher_for_observations = (
+        lambda observations, schedule_step: [[-0.6, -0.7]]
+    )
+    agent._residual_action_scale_mask = (
+        lambda agent_idx, action_dim, dtype, device: torch.tensor(
+            [1.0, 0.0], dtype=dtype, device=device
+        )
+    )
+
+    base = agent._transition_behavior_actions([[0.1, 0.2]])
+    cloning = agent._transition_cloning_actions([[0.1, 0.2]], base_actions=base)
+
+    assert base == [[0.2, 0.8]]
+    assert cloning == [[-0.6, 0.8]]
+
+
+def test_teacher_bc_weights_only_dimensions_with_residual_authority():
+    agent = _build_agent_for_exploration()
+    agent.num_agents = 1
+    agent.action_dimension = [3]
+    agent.action_names = [[
+        "electrical_storage",
+        "electric_vehicle_storage_charger_1",
+        "deferrable_appliance_1",
+    ]]
+    agent.actor_behavior_cloning_source = "teacher_policy"
+    agent.actor_behavior_cloning_teacher_action_scope = "residual_authority"
+    agent.actor_storage_behavior_cloning_multiplier = 1.0
+    agent.actor_ev_behavior_cloning_multiplier = 24.0
+    agent.actor_deferrable_behavior_cloning_multiplier = 4.0
+    agent._residual_action_scale_mask = (
+        lambda agent_idx, action_dim, dtype, device: torch.tensor(
+            [0.6, 0.0, 0.0], dtype=dtype, device=device
+        )
+    )
+
+    weights = agent._actor_behavior_cloning_action_weights(
+        0,
+        action_dim=3,
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+    )
+
+    assert weights.tolist() == pytest.approx([1.0, 0.0, 0.0])
 
 
 def test_transition_observation_event_priority_boost_targets_ev_departure_service_windows():

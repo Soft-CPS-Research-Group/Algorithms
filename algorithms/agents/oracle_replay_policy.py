@@ -1,14 +1,20 @@
-"""Replay a semantic MILP battery schedule with strict-local RBC service control."""
+"""Replay a semantic MILP battery schedule over an explicit RBC service policy."""
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from algorithms.agents.baseline_policies import RBCSmartLocalPolicy
+from algorithms.agents.baseline_policies import (
+    RBCSmartLocalPolicy,
+    RBCSmartPolicy,
+    SignalAwareRBC,
+    SignalAwareRBCSmartLocal,
+)
 from algorithms.oracles import SemanticSchedule
 from algorithms.utils.citylearn_local_action_safety import (
     CityLearnLocalSafetyAdapter,
@@ -18,7 +24,7 @@ from algorithms.utils.citylearn_local_action_safety import (
 
 
 class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
-    """Strict-local RBC EV/deferrable service plus foresight BESS replay.
+    """Configured RBC EV/deferrable service plus foresight BESS replay.
 
     This policy is an evaluation instrument, not a deployable online policy:
     its stationary-storage actions come from a perfect-foresight schedule.
@@ -27,13 +33,34 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
         hyper = dict((config.get("algorithm", {}).get("hyperparameters") or {}))
+        service_policy_name = str(
+            hyper.get("service_policy") or "RBCSmartLocalPolicy"
+        ).strip()
+        service_policies = {
+            "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
+            "RBCSmartPolicy": RBCSmartPolicy,
+            "SignalAwareRBC": SignalAwareRBC,
+            "SignalAwareRBCSmartLocal": SignalAwareRBCSmartLocal,
+        }
+        if service_policy_name not in service_policies:
+            raise ValueError(
+                "FixedServiceOracleReplayPolicy service_policy must be one of "
+                f"{sorted(service_policies)}; got {service_policy_name!r}."
+            )
+        self.service_policy_name = service_policy_name
+        self._service_policy = (
+            None
+            if service_policy_name == "RBCSmartLocalPolicy"
+            else service_policies[service_policy_name](config)
+        )
         raw_path = str(hyper.get("schedule_path") or "").strip()
         if not raw_path:
             raise ValueError("FixedServiceOracleReplayPolicy requires schedule_path.")
         self.schedule_path = Path(raw_path).resolve()
         payload = self.schedule_path.read_bytes()
         self.schedule_sha256 = hashlib.sha256(payload).hexdigest()
-        self.schedule = SemanticSchedule.from_json(payload.decode("utf-8"))
+        schedule_payload = gzip.decompress(payload) if self.schedule_path.suffix == ".gz" else payload
+        self.schedule = SemanticSchedule.from_json(schedule_payload.decode("utf-8"))
         if any(series.unit != "kW" for series in self.schedule.series):
             raise ValueError("Oracle replay currently requires all schedule series in kW.")
         self._schedule_series = {
@@ -71,6 +98,14 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
             observation_space=observation_space,
             metadata=metadata,
         )
+        if self._service_policy is not None:
+            self._service_policy.attach_environment(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                observation_space=observation_space,
+                metadata=metadata,
+            )
         metadata = dict(metadata or {})
         self._building_names = [str(item) for item in metadata.get("building_names", ())]
         if len(self._building_names) != len(action_names):
@@ -134,11 +169,18 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
     ) -> List[List[float]]:
         """Replay an explicit step without mutating the standalone counter."""
 
-        rbc_actions = super().predict(
-            observations,
-            deterministic=deterministic,
-            context=context,
-        )
+        if self._service_policy is None:
+            rbc_actions = super().predict(
+                observations,
+                deterministic=deterministic,
+                context=context,
+            )
+        else:
+            rbc_actions = self._service_policy.predict(
+                observations,
+                deterministic=deterministic,
+                context=context,
+            )
         actions = [list(values) for values in rbc_actions]
         schedule_step = (
             int(schedule_step) + self.schedule_step_offset
@@ -203,8 +245,22 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
             "deployable": False,
         }
         metadata["parameters"]["service_teacher"] = {
-            "algorithm": "RBCSmartLocalPolicy",
-            "observation_scope": "building_plus_public_exogenous",
-            "blocked_observation_token": "community",
+            "algorithm": self.service_policy_name,
+            "observation_scope": (
+                "building_plus_public_exogenous"
+                if self.service_policy_name in {
+                    "RBCSmartLocalPolicy",
+                    "SignalAwareRBCSmartLocal",
+                }
+                else "configured_policy_scope"
+            ),
+            "blocked_observation_token": (
+                "community"
+                if self.service_policy_name in {
+                    "RBCSmartLocalPolicy",
+                    "SignalAwareRBCSmartLocal",
+                }
+                else None
+            ),
         }
         return metadata

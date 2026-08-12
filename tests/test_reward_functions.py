@@ -1569,6 +1569,39 @@ def test_community_ramping_penalty_uses_net_exchange_and_resets() -> None:
     assert reward.calculate(second) == pytest.approx([0.0, 0.0])
 
 
+def test_community_emissions_penalty_matches_gross_member_accounting() -> None:
+    reward = CostCommunityStorageResidualRewardV55(
+        env_metadata={"central_agent": False},
+        community_settlement_cost_weight=0.0,
+        community_peak_import_penalty=0.0,
+        community_export_penalty=0.0,
+        community_emissions_penalty=2.0,
+        community_penalty_divide_by_agents=True,
+    )
+
+    rewards = reward.calculate(
+        [
+            {
+                "net_electricity_consumption": 3.0,
+                "electricity_pricing": 0.2,
+                "carbon_intensity": 0.4,
+            },
+            {
+                "net_electricity_consumption": -2.0,
+                "electricity_pricing": 0.2,
+                "carbon_intensity": 0.4,
+            },
+        ]
+    )
+
+    # Gross emissions are 3 * 0.4 = 1.2 kg; weighted penalty 2.4 is shared.
+    assert rewards == pytest.approx([-1.2, -1.2])
+    community = reward.get_last_components()["community"]
+    assert community["community_emissions_kgco2"] == pytest.approx(1.2)
+    assert community["community_emissions_penalty"] == pytest.approx(2.4)
+    assert "carbon_intensity" in reward.required_observation_names
+
+
 def test_storage_residual_reward_excludes_uncontrollable_ev_penalties() -> None:
     reward = CostCommunityStorageResidualRewardV55(
         env_metadata={"central_agent": False},

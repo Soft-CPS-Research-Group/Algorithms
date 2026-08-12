@@ -66,6 +66,21 @@ from algorithms.oracles.individual_total_energy_milp import (
     split_individual_total_energy_problems,
     validate_individual_total_energy_separability,
 )
+from algorithms.oracles.scorecard_battery_milp import (
+    ScorecardBatteryResult,
+    ScorecardShapingOptions,
+    ScorecardSolverInfo,
+    solve_scorecard_battery_schedule,
+)
+from algorithms.oracles.local_dispatch_redistribution import (
+    LocalDispatchRedistributionResult,
+    redistribute_equivalent_battery_schedule,
+)
+from algorithms.oracles.coordinate_battery_optimizer import (
+    CoordinateDispatchMetrics,
+    CoordinateDispatchResult,
+    optimize_physical_battery_schedule_coordinate_descent,
+)
 
 __all__ = [
     "BatteryAsset",
@@ -92,6 +107,9 @@ __all__ = [
     "PerfectForesightProblem",
     "SemanticActionSeries",
     "SemanticSchedule",
+    "ScorecardBatteryResult",
+    "ScorecardShapingOptions",
+    "ScorecardSolverInfo",
     "SolveOptions",
     "SolverInfo",
     "TotalHomeProblem",
@@ -103,6 +121,12 @@ __all__ = [
     "solve_bounded_oracle",
     "solve_conservative_schedule",
     "solve_optimistic_lower_bound",
+    "solve_scorecard_battery_schedule",
+    "LocalDispatchRedistributionResult",
+    "redistribute_equivalent_battery_schedule",
+    "CoordinateDispatchMetrics",
+    "CoordinateDispatchResult",
+    "optimize_physical_battery_schedule_coordinate_descent",
     "solve_bounded_total_energy_oracle",
     "solve_total_energy_relaxation",
     "solve_total_energy_schedule",

@@ -400,6 +400,12 @@ class Wrapper_CityLearn(RLC):
             require_initial_exploration_done=bool(
                 checkpoint_cfg.get("require_initial_exploration_done", True)
             ),
+            checkpoint_on_episode_end=bool(
+                checkpoint_cfg.get("checkpoint_on_episode_end", False)
+            ),
+            keep_episode_checkpoints=bool(
+                checkpoint_cfg.get("keep_episode_checkpoints", False)
+            ),
         )
         self.local_metrics_logger = None
         if not self.mlflow_enabled:
@@ -1224,7 +1230,9 @@ class Wrapper_CityLearn(RLC):
 
         for episode in range(episodes):
             start_episode_time = time.time()
-            deterministic = deterministic or (deterministic_finish and episode >= episodes - 1)
+            episode_deterministic = bool(deterministic) or (
+                deterministic_finish and episode >= episodes - 1
+            )
             export_this_episode = self._configure_episode_exports(episode, episodes)
             self._entity_model_observations_direct = self._can_use_direct_entity_model_observations()
             self._write_phase_progress(
@@ -1303,7 +1311,7 @@ class Wrapper_CityLearn(RLC):
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 actions = self.predict(
                     observations,
-                    deterministic=deterministic,
+                    deterministic=episode_deterministic,
                     episode_step=time_step,
                 )
                 if should_profile_step:
@@ -1427,7 +1435,7 @@ class Wrapper_CityLearn(RLC):
                 rewards_list.append(rewards)
 
                 # Update model if not in deterministic mode
-                if not deterministic:
+                if not episode_deterministic:
                     if self._topology_changed_during_step:
                         logger.debug(
                             "Skipping model.update at global step {} due to mid-step topology change.",
@@ -1647,6 +1655,12 @@ class Wrapper_CityLearn(RLC):
                 export_this_episode,
                 episode=episode,
                 is_final_episode=episode + 1 >= episodes,
+            )
+            self.checkpoint_manager.save_episode_end(
+                self.model,
+                step=self.global_step,
+                episode=episode,
+                deterministic=episode_deterministic,
             )
             self._write_phase_progress(
                 phase="episode_export_end",

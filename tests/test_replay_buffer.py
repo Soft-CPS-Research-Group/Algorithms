@@ -94,6 +94,48 @@ def test_multi_agent_replay_buffer_can_sample_next_behavior_action_targets() -> 
     assert next_behavior_actions[0][0, 0].item() == pytest.approx(0.7)
 
 
+def test_multi_agent_replay_buffer_keeps_base_and_cloning_targets_separate() -> None:
+    buffer = MultiAgentReplayBuffer(capacity=4, num_agents=1, batch_size=1)
+    buffer.push(
+        states=[np.array([1.0], dtype=np.float32)],
+        actions=[np.array([0.1, 0.2], dtype=np.float32)],
+        rewards=[1.0],
+        next_states=[np.array([2.0], dtype=np.float32)],
+        done=False,
+        behavior_actions=[np.array([0.9, 0.8], dtype=np.float32)],
+        next_behavior_actions=[np.array([0.7, 0.6], dtype=np.float32)],
+        cloning_actions=[np.array([-0.4, 0.8], dtype=np.float32)],
+    )
+
+    sample = buffer.sample_with_policy_and_cloning_actions()
+
+    assert len(sample) == 8
+    assert sample[-3][0][0].tolist() == pytest.approx([0.9, 0.8])
+    assert sample[-2][0][0].tolist() == pytest.approx([0.7, 0.6])
+    assert sample[-1][0][0].tolist() == pytest.approx([-0.4, 0.8])
+
+
+def test_replay_v1_checkpoint_defaults_cloning_targets_to_behavior_actions() -> None:
+    buffer = MultiAgentReplayBuffer(capacity=4, num_agents=1, batch_size=1)
+    legacy_state = {
+        "format": "joint_transitions_compact_v1",
+        "position": 1,
+        "size": 1,
+        "states": [np.array([[1.0]], dtype=np.float32)],
+        "actions": [np.array([[0.1]], dtype=np.float32)],
+        "behavior_actions": [np.array([[0.9]], dtype=np.float32)],
+        "next_behavior_actions": [np.array([[0.7]], dtype=np.float32)],
+        "next_states": [np.array([[2.0]], dtype=np.float32)],
+        "rewards": np.array([[[1.0]]], dtype=np.float32),
+        "dones": np.array([[0.0]], dtype=np.float32),
+    }
+
+    buffer.set_state(legacy_state)
+    sample = buffer.sample_with_policy_and_cloning_actions()
+
+    assert sample[-1][0][0, 0].item() == pytest.approx(0.9)
+
+
 def test_multi_agent_replay_buffer_overwrites_oldest_entries() -> None:
     buffer = MultiAgentReplayBuffer(capacity=3, num_agents=1, batch_size=3)
 

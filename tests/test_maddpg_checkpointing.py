@@ -249,6 +249,7 @@ def test_matd3_inference_checkpoint_contains_only_frozen_actor_state(tmp_path):
     assert payload["checkpoint_mode"] == "inference"
     assert payload["num_agents"] == 1
     assert "actor_state_dict_0" in payload
+    assert "actor_target_state_dict_0" not in payload
     assert "critic_state_dict_0" not in payload
     assert "critic_2_state_dict_0" not in payload
     assert "actor_optimizer_state_dict_0" not in payload

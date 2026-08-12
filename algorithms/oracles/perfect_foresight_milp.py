@@ -28,7 +28,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, OptimizeResult, milp
-from scipy.sparse import coo_array
+from scipy.sparse import coo_array, csc_array
 
 try:  # SciPy 1.15.x exposes its bundled HiGHS bindings here.
     from scipy.optimize._highspy import _core as _highs_core
@@ -265,6 +265,7 @@ class SolveOptions:
     mip_relative_gap: Optional[float] = None
     node_limit: Optional[int] = None
     presolve: bool = True
+    solver: str = "choose"
     display_solver_output: bool = False
     throughput_tiebreaker_eur_per_kwh: float = 1.0e-9
     lexicographic_shortfall_tolerance_kwh: float = 1.0e-3
@@ -276,6 +277,10 @@ class SolveOptions:
             raise ValueError("mip_relative_gap must be >= 0 when provided.")
         if self.node_limit is not None and int(self.node_limit) < 0:
             raise ValueError("node_limit must be >= 0 when provided.")
+        solver = str(self.solver).strip().lower()
+        if solver not in {"choose", "simplex", "ipm"}:
+            raise ValueError("solver must be one of: choose, simplex, ipm.")
+        object.__setattr__(self, "solver", solver)
         _finite_non_negative(
             "throughput_tiebreaker_eur_per_kwh",
             self.throughput_tiebreaker_eur_per_kwh,
@@ -553,6 +558,8 @@ def _solver_options(options: SolveOptions) -> dict[str, Any]:
         "presolve": bool(options.presolve),
         "disp": bool(options.display_solver_output),
     }
+    if options.solver != "choose":
+        payload["solver"] = options.solver
     if options.time_limit_seconds is not None:
         payload["time_limit"] = float(options.time_limit_seconds)
     if options.mip_relative_gap is not None:
@@ -569,6 +576,7 @@ def _milp_primal_only(
     bounds: Bounds,
     constraints: LinearConstraint,
     options: Mapping[str, Any],
+    x0: Optional[np.ndarray] = None,
 ) -> OptimizeResult:
     """Run bundled HiGHS without extracting unused LP basis marginals.
 
@@ -593,12 +601,17 @@ def _milp_primal_only(
             options=dict(options),
         )
 
+    prepared_options = dict(options)
+    # ``solver`` is a valid native HiGHS option but not listed by SciPy's
+    # public MILP validator. Route it explicitly to avoid a misleading
+    # unrecognized-option warning on the private fast path.
+    solver_choice = prepared_options.pop("solver", None)
     prepared = _milp_iv(
         c,
         integrality,
         bounds,
         constraints,
-        dict(options),
+        prepared_options,
     )
     (
         objective,
@@ -612,6 +625,8 @@ def _milp_primal_only(
         constraint_upper,
         highs_option_values,
     ) = prepared
+    if solver_choice is not None:
+        highs_option_values["solver"] = solver_choice
 
     model = _highs_core.HighsLp()
     model.num_col_ = int(objective.size)
@@ -662,6 +677,31 @@ def _milp_primal_only(
             mip_dual_bound=None,
             mip_gap=None,
         )
+    if x0 is not None:
+        initial = np.asarray(x0, dtype=np.float64).reshape(-1)
+        if initial.shape != (model.num_col_,) or not np.all(np.isfinite(initial)):
+            return OptimizeResult(
+                status=4,
+                message="Invalid initial primal vector.",
+                x=None,
+                fun=None,
+                mip_dual_bound=None,
+                mip_gap=None,
+            )
+        warm_status = solver.setSolution(
+            model.num_col_,
+            np.arange(model.num_col_, dtype=np.int32),
+            initial,
+        )
+        if warm_status == _highs_core.HighsStatus.kError:
+            return OptimizeResult(
+                status=4,
+                message="HiGHS rejected the initial primal vector.",
+                x=None,
+                fun=None,
+                mip_dual_bound=None,
+                mip_gap=None,
+            )
     if solver.run() == _highs_core.HighsStatus.kError:
         return OptimizeResult(
             status=4,
@@ -693,10 +733,96 @@ def _milp_primal_only(
 
     info = solver.getInfo()
     objective_value = _optional_finite(info.objective_function_value)
-    acceptable_limit = status == 1 and is_mip and objective_value is not None
-    has_solution = status == 0 or acceptable_limit
-    solution = solver.getSolution() if has_solution else None
-    x = None if solution is None else np.asarray(solution.col_value, dtype=np.float64)
+    # HiGHS can hold a valid primal point when either an LP or MIP reaches a
+    # limit.  The old code accepted that point only for MIPs, discarding large
+    # continuous-oracle solutions even when HiGHS reported a finite objective.
+    candidate_solution = solver.getSolution() if status in {0, 1} else None
+    candidate_vector = (
+        None
+        if candidate_solution is None
+        or not getattr(candidate_solution, "value_valid", False)
+        else np.asarray(candidate_solution.col_value, dtype=np.float64)
+    )
+    matrix = csc_array(
+        (data, indices, indptr),
+        shape=(int(constraint_upper.size), int(objective.size)),
+    )
+
+    def primal_feasible(vector: Optional[np.ndarray]) -> bool:
+        if (
+            vector is None
+            or vector.shape != objective.shape
+            or not np.all(np.isfinite(vector))
+        ):
+            return False
+        finite_lower = np.isfinite(lower_bounds)
+        finite_upper = np.isfinite(upper_bounds)
+        lower_tolerance = 1.0e-5 + 1.0e-8 * np.maximum(
+            1.0,
+            np.abs(lower_bounds[finite_lower]),
+        )
+        upper_tolerance = 1.0e-5 + 1.0e-8 * np.maximum(
+            1.0,
+            np.abs(upper_bounds[finite_upper]),
+        )
+        if np.any(
+            vector[finite_lower]
+            < lower_bounds[finite_lower] - lower_tolerance
+        ) or np.any(
+            vector[finite_upper]
+            > upper_bounds[finite_upper] + upper_tolerance
+        ):
+            return False
+        integer_columns = np.flatnonzero(np.asarray(variable_types) != 0)
+        if integer_columns.size and np.any(
+            np.abs(vector[integer_columns] - np.rint(vector[integer_columns]))
+            > 1.0e-5
+        ):
+            return False
+        lhs = np.asarray(matrix @ vector).reshape(-1)
+        finite_row_lower = np.isfinite(constraint_lower)
+        finite_row_upper = np.isfinite(constraint_upper)
+        row_lower_tolerance = 1.0e-5 + 1.0e-8 * np.maximum(
+            1.0,
+            np.abs(constraint_lower[finite_row_lower]),
+        )
+        row_upper_tolerance = 1.0e-5 + 1.0e-8 * np.maximum(
+            1.0,
+            np.abs(constraint_upper[finite_row_upper]),
+        )
+        return bool(
+            not np.any(
+                lhs[finite_row_lower]
+                < constraint_lower[finite_row_lower]
+                - row_lower_tolerance
+            )
+            and not np.any(
+                lhs[finite_row_upper]
+                > constraint_upper[finite_row_upper]
+                + row_upper_tolerance
+            )
+        )
+
+    initial_vector = None if x0 is None else np.asarray(x0, dtype=np.float64)
+    candidate_primal_feasible = primal_feasible(candidate_vector)
+    initial_primal_feasible = primal_feasible(initial_vector)
+    feasible_candidates = []
+    if candidate_primal_feasible:
+        feasible_candidates.append(("solver", candidate_vector))
+    if initial_primal_feasible:
+        feasible_candidates.append(("initial", initial_vector))
+    selected = (
+        min(
+            feasible_candidates,
+            key=lambda item: float(np.dot(objective, item[1])),
+        )
+        if feasible_candidates
+        else None
+    )
+    selected_primal_source = "none" if selected is None else selected[0]
+    x = None if selected is None else selected[1]
+    if x is not None:
+        objective_value = float(np.dot(objective, x))
     return OptimizeResult(
         status=status,
         message=message,
@@ -706,6 +832,9 @@ def _milp_primal_only(
             _optional_finite(info.mip_dual_bound) if is_mip else None
         ),
         mip_gap=_optional_finite(info.mip_gap) if is_mip else None,
+        candidate_primal_feasible=candidate_primal_feasible,
+        initial_primal_feasible=initial_primal_feasible,
+        selected_primal_source=selected_primal_source,
     )
 
 
