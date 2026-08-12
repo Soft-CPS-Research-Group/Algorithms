@@ -893,10 +893,17 @@ class _PPOBase(BaseAgent):
         next_episode_step: Optional[int] = None,
     ) -> None:
         del next_episode_step
-        self._episode_clock_is_explicit = episode_step is not None
-        self._episode_schedule_step = (
+        normalized_step = (
             None if episode_step is None else max(int(episode_step), 0)
         )
+        if normalized_step == 0 and self._episode_schedule_step != 0:
+            for adapter in self._local_action_safety_adapters:
+                adapter.reset_episode()
+            self._last_local_action_projections = []
+            self._last_residual_neutral_safety_bypass = False
+            self._last_policy_samples = None
+        self._episode_clock_is_explicit = normalized_step is not None
+        self._episode_schedule_step = normalized_step
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return global_learning_step >= self.end_initial_exploration_time_step

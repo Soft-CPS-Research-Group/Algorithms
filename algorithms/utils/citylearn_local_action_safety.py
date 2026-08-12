@@ -188,6 +188,11 @@ class CityLearnLocalSafetyAdapter:
             else self._infer_building_id()
         )
 
+    def reset_episode(self) -> None:
+        """Forget evidence that is valid only within the previous episode."""
+
+        self._electrical_headroom_observed = False
+
     def _infer_building_id(self) -> str:
         for name in self.observation_names:
             if "::Building_" not in name:

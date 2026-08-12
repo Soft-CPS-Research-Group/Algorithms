@@ -156,6 +156,9 @@ class Wrapper_CityLearn(RLC):
             simulator_cfg.get("topology_mode", getattr(env, "topology_mode", "static"))
         ).strip().lower() or "static"
         self._entity_dynamic_mode = self._entity_interface_mode and self._entity_topology_mode == "dynamic"
+        self._repeat_episode_scenario = bool(
+            simulator_cfg.get("repeat_episode_scenario", False)
+        )
         # Names of every algorithm that appears anywhere in the pipeline.
         # Used to gate behaviour (e.g. MADDPG cannot run with dynamic
         # entity topology) without depending on a single-algorithm model.
@@ -1213,6 +1216,28 @@ class Wrapper_CityLearn(RLC):
         self._profiled_observation_cache_value = encoded
         return encoded
 
+    def _prepare_episode_reset(self) -> None:
+        """Optionally replay one identical exogenous CityLearn scenario.
+
+        CityLearn derives EV drift from ``random_seed + episode_index`` even
+        when the time-series window itself is unchanged. Replaying the episode
+        index makes repeated policy evaluations genuinely paired instead of
+        comparing different EV realizations. This is opt-in because ordinary
+        multi-episode training should retain CityLearn's default progression.
+        """
+
+        if not self._repeat_episode_scenario:
+            self._deferrable_wait_steps.clear()
+            return
+        tracker = getattr(self.env.unwrapped, "episode_tracker", None)
+        reset_index = getattr(tracker, "reset_episode_index", None)
+        if not callable(reset_index):
+            raise RuntimeError(
+                "simulator.repeat_episode_scenario requires a CityLearn "
+                "episode tracker with reset_episode_index()"
+            )
+        reset_index()
+        self._deferrable_wait_steps.clear()
 
     def learn(self, episodes=None, deterministic=None, deterministic_finish=None):
         """
@@ -1243,6 +1268,7 @@ class Wrapper_CityLearn(RLC):
                 step_total=None,
                 global_step_total=None,
             )
+            self._prepare_episode_reset()
             raw_observations, _ = self.env.reset()
             if self._entity_interface_mode:
                 observations = self._apply_entity_layout(

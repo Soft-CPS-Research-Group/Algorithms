@@ -351,6 +351,7 @@ class SimulatorConfig(BaseModel):
     reward_function_kwargs: Dict[str, Any] = Field(default_factory=dict)
     episodes: int = Field(default=1, ge=1)
     deterministic_finish: bool = False
+    repeat_episode_scenario: bool = False
     simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
     simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
@@ -634,8 +635,12 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
     reference_multipliers: Optional[List[float]] = None
     policy_residual_scale: float = Field(default=1.0, ge=0.0, le=1.0)
     policy_parameterization: Literal[
-        "absolute_blend", "centered_residual", "causal_active_only"
+        "absolute_blend",
+        "centered_residual",
+        "sparse_centered_residual",
+        "causal_active_only",
     ] = "absolute_blend"
+    policy_deadband: float = Field(default=0.0, ge=0.0, lt=1.0)
     causal_initial_multiplier: float = Field(default=0.90, gt=0.0, le=1.0)
     causal_initial_multipliers: Optional[List[float]] = None
     causal_residual_scale: Optional[float] = Field(default=None, ge=0.0, le=1.0)
@@ -660,6 +665,14 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
     credit_assignment: Literal["global", "member_decomposed"] = "global"
     team_reward_mix: float = Field(default=0.0, ge=0.0, le=1.0)
     reward_normalization: Literal["running_zscore", "none"] = "running_zscore"
+    neutral_baseline_enabled: bool = False
+    neutral_warmup_episodes: int = Field(default=0, ge=0)
+    counterfactual_baseline_weight: float = Field(default=1.0, ge=0.0, le=1.0)
+    training_episodes_per_validation: int = Field(default=0, ge=0)
+    rollback_rejected_validation: bool = False
+    restore_best_policy_for_deterministic: bool = False
+    best_policy_min_improvement: float = Field(default=0.0, ge=0.0)
+    train_log_std: bool = True
 
     @model_validator(mode="after")
     def validate_price_contract(self) -> "CCLevel2Hyperparameters":
@@ -678,6 +691,47 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
         if self.bc_discount_multiplier < self.price_min:
             raise ValueError(
                 "CCLevel2 bc_discount_multiplier must not be below price_min"
+            )
+        if (
+            self.policy_parameterization != "sparse_centered_residual"
+            and self.policy_deadband > 0.0
+        ):
+            raise ValueError(
+                "CCLevel2 policy_deadband is only supported by "
+                "sparse_centered_residual"
+            )
+        if self.neutral_baseline_enabled and self.bc_pretrain_enabled:
+            raise ValueError(
+                "CCLevel2 neutral baseline collection and BC pretraining are "
+                "mutually exclusive"
+            )
+        if self.neutral_warmup_episodes > 0 and not self.neutral_baseline_enabled:
+            raise ValueError(
+                "CCLevel2 neutral warm-up episodes require "
+                "neutral_baseline_enabled"
+            )
+        if (
+            self.training_episodes_per_validation > 0
+            and not self.neutral_baseline_enabled
+        ):
+            raise ValueError(
+                "CCLevel2 validation episodes require neutral_baseline_enabled"
+            )
+        if (
+            self.restore_best_policy_for_deterministic
+            and self.training_episodes_per_validation <= 0
+        ):
+            raise ValueError(
+                "CCLevel2 best-policy restore requires deterministic validation "
+                "episodes"
+            )
+        if (
+            self.rollback_rejected_validation
+            and self.training_episodes_per_validation <= 0
+        ):
+            raise ValueError(
+                "CCLevel2 validation rollback requires deterministic "
+                "validation episodes"
             )
         if self.policy_parameterization == "causal_active_only":
             if self.price_max > 1.0:

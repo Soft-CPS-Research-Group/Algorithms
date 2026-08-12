@@ -94,6 +94,15 @@ def _deadline_ev_adapter(*, reserve_kw: float) -> CityLearnLocalSafetyAdapter:
     return adapter
 
 
+def test_episode_reset_forgets_observed_electrical_headroom() -> None:
+    adapter = _deadline_ev_adapter(reserve_kw=0.1)
+    adapter._electrical_headroom_observed = True
+
+    adapter.reset_episode()
+
+    assert adapter._electrical_headroom_observed is False
+
+
 def _deadline_ev_observation(
     *,
     raw_headroom_kw: float,

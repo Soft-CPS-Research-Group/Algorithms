@@ -269,6 +269,7 @@ class DeterministicVectorMultiplierPolicy(nn.Module):
         reference_multipliers: np.ndarray,
         policy_residual_scale: float,
         policy_parameterization: str = "absolute_blend",
+        policy_deadband: float = 0.0,
         causal_initial_multipliers: Optional[np.ndarray] = None,
         causal_residual_scale: Optional[float] = None,
         causal_active_index: Optional[int] = None,
@@ -287,6 +288,7 @@ class DeterministicVectorMultiplierPolicy(nn.Module):
             torch.tensor(float(policy_residual_scale)),
         )
         self.policy_parameterization = str(policy_parameterization)
+        self.policy_deadband = float(policy_deadband)
         self.causal_residual_scale = causal_residual_scale
         self.causal_active_index = causal_active_index
         self.register_buffer(
@@ -348,8 +350,19 @@ class DeterministicVectorMultiplierPolicy(nn.Module):
                 active_multiplier,
                 torch.ones_like(active_multiplier),
             )
-        if self.policy_parameterization == "centered_residual":
+        if self.policy_parameterization in {
+            "centered_residual",
+            "sparse_centered_residual",
+        }:
             unit = torch.tanh(raw)
+            if self.policy_parameterization == "sparse_centered_residual":
+                magnitude = torch.clamp(
+                    (unit.abs() - self.policy_deadband)
+                    / max(1.0 - self.policy_deadband, 1.0e-8),
+                    min=0.0,
+                    max=1.0,
+                )
+                unit = torch.sign(unit) * magnitude
             upward_distance = self.price_min + self.price_span - self.reference_multipliers
             downward_distance = self.reference_multipliers - self.price_min
             distance = torch.where(unit >= 0.0, upward_distance, downward_distance)
@@ -530,11 +543,24 @@ class CCLevel2Agent(BaseAgent):
         if self._policy_parameterization not in {
             "absolute_blend",
             "centered_residual",
+            "sparse_centered_residual",
             "causal_active_only",
         }:
             raise ValueError(
                 "CCLevel2 policy_parameterization must be 'absolute_blend' or "
-                "'centered_residual' or 'causal_active_only'"
+                "'centered_residual' or 'sparse_centered_residual' or "
+                "'causal_active_only'"
+            )
+        self._policy_deadband = float(hyper.get("policy_deadband", 0.0))
+        if not 0.0 <= self._policy_deadband < 1.0:
+            raise ValueError("CCLevel2 policy_deadband must lie within [0, 1)")
+        if (
+            self._policy_parameterization != "sparse_centered_residual"
+            and self._policy_deadband > 0.0
+        ):
+            raise ValueError(
+                "CCLevel2 policy_deadband is only supported by "
+                "sparse_centered_residual"
             )
         self._causal_use_physical_context = bool(
             hyper.get("causal_use_physical_context", False)
@@ -630,6 +656,7 @@ class CCLevel2Agent(BaseAgent):
         self._hidden_dims = list(hyper.get("hidden_dims", [256, 256]))
         self._lr = float(hyper.get("lr", 1e-4))
         self._initial_log_std = float(hyper.get("initial_log_std", -2.5))
+        self._train_log_std = bool(hyper.get("train_log_std", True))
         self._separate_value_encoder = bool(
             hyper.get("separate_value_encoder", False)
         )
@@ -642,6 +669,7 @@ class CCLevel2Agent(BaseAgent):
             separate_value_encoder=self._separate_value_encoder,
         )
         self._initialize_policy_at_reference()
+        self.policy.log_std.requires_grad_(self._train_log_std)
         self.ppo_optim = Adam(self.policy.parameters(), lr=self._lr)
 
         self._reward_rms = RunningMeanStd()
@@ -694,6 +722,74 @@ class CCLevel2Agent(BaseAgent):
 
         # BC warm-start
         self._bc_enabled       = bool(hyper.get("bc_pretrain_enabled", False))
+        self._neutral_baseline_enabled = bool(
+            hyper.get("neutral_baseline_enabled", False)
+        )
+        self._neutral_warmup_episodes = int(
+            hyper.get("neutral_warmup_episodes", 0)
+        )
+        if self._neutral_warmup_episodes < 0:
+            raise ValueError(
+                "CCLevel2 neutral_warmup_episodes must be non-negative"
+            )
+        self._counterfactual_baseline_weight = float(
+            hyper.get("counterfactual_baseline_weight", 1.0)
+        )
+        if not 0.0 <= self._counterfactual_baseline_weight <= 1.0:
+            raise ValueError(
+                "CCLevel2 counterfactual_baseline_weight must lie within [0, 1]"
+            )
+        self._training_episodes_per_validation = int(
+            hyper.get("training_episodes_per_validation", 0)
+        )
+        if self._training_episodes_per_validation < 0:
+            raise ValueError(
+                "CCLevel2 training_episodes_per_validation must be non-negative"
+            )
+        self._rollback_rejected_validation = bool(
+            hyper.get("rollback_rejected_validation", False)
+        )
+        self._restore_best_policy_for_deterministic = bool(
+            hyper.get("restore_best_policy_for_deterministic", False)
+        )
+        self._best_policy_min_improvement = float(
+            hyper.get("best_policy_min_improvement", 0.0)
+        )
+        if self._best_policy_min_improvement < 0.0:
+            raise ValueError(
+                "CCLevel2 best_policy_min_improvement must be non-negative"
+            )
+        if self._neutral_baseline_enabled and self._bc_enabled:
+            raise ValueError(
+                "CCLevel2 neutral baseline collection and BC pretraining are "
+                "mutually exclusive"
+            )
+        if self._neutral_warmup_episodes > 0 and not self._neutral_baseline_enabled:
+            raise ValueError(
+                "CCLevel2 neutral warm-up episodes require neutral baseline "
+                "collection"
+            )
+        if (
+            self._training_episodes_per_validation > 0
+            and not self._neutral_baseline_enabled
+        ):
+            raise ValueError(
+                "CCLevel2 validation episodes require neutral baseline collection"
+            )
+        if (
+            self._restore_best_policy_for_deterministic
+            and self._training_episodes_per_validation <= 0
+        ):
+            raise ValueError(
+                "CCLevel2 best-policy restore requires validation episodes"
+            )
+        if (
+            self._rollback_rejected_validation
+            and self._training_episodes_per_validation <= 0
+        ):
+            raise ValueError(
+                "CCLevel2 validation rollback requires validation episodes"
+            )
         if self._policy_parameterization == "causal_active_only" and self._bc_enabled:
             raise ValueError(
                 "CCLevel2 causal_active_only starts from its causal incumbent "
@@ -800,6 +896,196 @@ class CCLevel2Agent(BaseAgent):
         self._global_cc_step = 0
         self._decision_trace: List[dict] = []
         self._completed_decision_traces: List[dict] = []
+        self._protocol_episode_index = -1
+        self._protocol_episode_mode = "training"
+        self._episode_decision_index = 0
+        self._episode_absolute_objective = 0.0
+        self._neutral_baseline_rewards: List[float | np.ndarray] = []
+        self._neutral_baseline_objective: Optional[float] = None
+        self._best_validation_objective: Optional[float] = None
+        self._best_validation_episode: Optional[int] = None
+        self._best_policy_source: Optional[str] = None
+        self._best_policy_state: Optional[Dict[str, torch.Tensor]] = None
+        self._validation_history: List[Dict[str, Any]] = []
+        self._best_policy_restored = False
+
+    def _clone_policy_state(self) -> Dict[str, torch.Tensor]:
+        """Return an immutable CPU snapshot suitable for later evaluation."""
+
+        return {
+            name: value.detach().cpu().clone()
+            for name, value in self.policy.state_dict().items()
+        }
+
+    def _mode_for_protocol_episode(self, episode_index: int) -> str:
+        if not self._neutral_baseline_enabled:
+            return "training"
+        if episode_index < self._neutral_warmup_episodes:
+            return "neutral_warmup"
+        shifted_index = episode_index - self._neutral_warmup_episodes
+        if shifted_index == 0:
+            return "neutral_baseline"
+        if self._training_episodes_per_validation <= 0:
+            return "training"
+        position = (shifted_index - 1) % (
+            self._training_episodes_per_validation + 1
+        )
+        if position == self._training_episodes_per_validation:
+            return "validation"
+        return "training"
+
+    def _restore_best_policy(self) -> None:
+        if self._best_policy_restored:
+            return
+        if self._best_policy_state is not None:
+            self.policy.load_state_dict(self._best_policy_state)
+            logger.info(
+                "CC-L2 restored selected {} policy from episode {} "
+                "(objective={}) for deterministic evaluation",
+                self._best_policy_source,
+                self._best_validation_episode,
+                self._best_validation_objective,
+            )
+        else:
+            logger.warning(
+                "CC-L2 deterministic evaluation requested before a validated "
+                "policy was available; retaining the current policy"
+            )
+        self._best_policy_restored = True
+
+    def _set_reference_decision(self, observations: List[np.ndarray]) -> None:
+        """Emit the exact PPO-neutral vector without sampling the CC policy."""
+
+        ctx = self._build_context(observations)
+        self._cached_action = self._multipliers_to_raw(
+            self._reference_multipliers
+        )
+        self._cached_multipliers = self._reference_multipliers.copy()
+        self._cached_community = ctx
+        self._cached_logprob = np.zeros(
+            self._num_buildings, dtype=np.float32
+        )
+        self._cached_actor_mask = np.zeros(
+            self._num_buildings, dtype=np.float32
+        )
+        self._cached_value = (
+            np.zeros(self._num_buildings, dtype=np.float32)
+            if self._member_credit
+            else 0.0
+        )
+        self._cached_policy_sample = False
+        self._log_decision()
+
+    def _record_absolute_decision_reward(
+        self,
+        reward: float | np.ndarray,
+    ) -> None:
+        value = (
+            np.asarray(reward, dtype=np.float64).copy()
+            if self._member_credit
+            else float(reward)
+        )
+        self._episode_absolute_objective += float(np.asarray(value).sum())
+        if self._protocol_episode_mode == "neutral_baseline":
+            self._neutral_baseline_rewards.append(value)
+
+    def _counterfactual_reward_for_current_decision(
+        self,
+    ) -> float | np.ndarray:
+        if not self._neutral_baseline_enabled:
+            return (
+                np.zeros(self._num_buildings, dtype=np.float64)
+                if self._member_credit
+                else 0.0
+            )
+        if not self._neutral_baseline_rewards:
+            raise RuntimeError(
+                "CCLevel2 counterfactual training started before the neutral "
+                "baseline episode completed"
+            )
+        if self._episode_decision_index >= len(self._neutral_baseline_rewards):
+            raise RuntimeError(
+                "CCLevel2 episode has more decisions than its neutral baseline"
+            )
+        baseline = self._neutral_baseline_rewards[self._episode_decision_index]
+        return (
+            np.asarray(baseline, dtype=np.float64)
+            if self._member_credit
+            else float(baseline)
+        )
+
+    def _finish_protocol_episode(self) -> None:
+        objective = float(self._episode_absolute_objective)
+        mode = self._protocol_episode_mode
+        if mode == "neutral_warmup":
+            logger.info(
+                "CC-L2 neutral warm-up episode {} completed | objective={:.6f}",
+                self._protocol_episode_index,
+                objective,
+            )
+        elif mode == "neutral_baseline":
+            self._neutral_baseline_objective = objective
+            self._best_validation_objective = objective
+            self._best_validation_episode = self._protocol_episode_index
+            self._best_policy_source = "neutral_baseline"
+            self._best_policy_state = self._clone_policy_state()
+            logger.info(
+                "CC-L2 neutral PPO baseline captured | decisions={} objective={:.6f}",
+                len(self._neutral_baseline_rewards),
+                objective,
+            )
+        elif mode == "validation":
+            incumbent = self._best_validation_objective
+            promote = incumbent is None or objective > (
+                incumbent + self._best_policy_min_improvement
+            )
+            if promote:
+                self._best_validation_objective = objective
+                self._best_validation_episode = self._protocol_episode_index
+                self._best_policy_source = "validation"
+                self._best_policy_state = self._clone_policy_state()
+            self._validation_history.append(
+                {
+                    "episode": self._protocol_episode_index,
+                    "objective": objective,
+                    "incumbent_objective": incumbent,
+                    "promoted": promote,
+                }
+            )
+            if (
+                not promote
+                and self._rollback_rejected_validation
+                and self._best_policy_state is not None
+            ):
+                self.policy.load_state_dict(self._best_policy_state)
+                self.ppo_optim = Adam(self.policy.parameters(), lr=self._lr)
+                logger.info(
+                    "CC-L2 rejected validation episode {}; rolled training "
+                    "back to selected {} policy from episode {}",
+                    self._protocol_episode_index,
+                    self._best_policy_source,
+                    self._best_validation_episode,
+                )
+            logger.info(
+                "CC-L2 validation episode {} | objective={:.6f} incumbent={} "
+                "promoted={}",
+                self._protocol_episode_index,
+                objective,
+                incumbent,
+                promote,
+            )
+        elif mode == "deterministic_evaluation":
+            delta = (
+                None
+                if self._neutral_baseline_objective is None
+                else objective - self._neutral_baseline_objective
+            )
+            logger.info(
+                "CC-L2 deterministic evaluation | objective={:.6f} "
+                "delta_to_neutral={}",
+                objective,
+                delta,
+            )
 
     def _multipliers_to_raw(self, multipliers: np.ndarray) -> np.ndarray:
         values = np.asarray(multipliers, dtype=np.float64)
@@ -828,7 +1114,10 @@ class CCLevel2Agent(BaseAgent):
                 )
             return np.arctanh(np.clip(unit, -0.999, 0.999)).astype(np.float32)
         reference = self._reference_multipliers.astype(np.float64)
-        if self._policy_parameterization == "centered_residual":
+        if self._policy_parameterization in {
+            "centered_residual",
+            "sparse_centered_residual",
+        }:
             delta = values - reference
             distance = np.where(
                 delta >= 0.0,
@@ -842,6 +1131,17 @@ class CCLevel2Agent(BaseAgent):
                 out=np.zeros_like(delta, dtype=np.float64),
                 where=denominator > 1.0e-12,
             )
+            if self._policy_parameterization == "sparse_centered_residual":
+                non_neutral = np.abs(unit) > 1.0e-12
+                unit = np.where(
+                    non_neutral,
+                    np.sign(unit)
+                    * (
+                        self._policy_deadband
+                        + (1.0 - self._policy_deadband) * np.abs(unit)
+                    ),
+                    0.0,
+                )
         else:
             if self._policy_residual_scale <= 1.0e-12:
                 full = reference
@@ -859,7 +1159,10 @@ class CCLevel2Agent(BaseAgent):
 
     def _initialize_policy_at_reference(self) -> None:
         """Start deterministic inference at a measured safe/reference signal."""
-        if self._policy_parameterization == "centered_residual":
+        if self._policy_parameterization in {
+            "centered_residual",
+            "sparse_centered_residual",
+        }:
             raw_reference = np.zeros_like(
                 self._reference_multipliers, dtype=np.float32
             )
@@ -993,8 +1296,19 @@ class CCLevel2Agent(BaseAgent):
                 * (np.tanh(raw) + 1.0)
                 / 2.0
             )
-        if self._policy_parameterization == "centered_residual":
+        if self._policy_parameterization in {
+            "centered_residual",
+            "sparse_centered_residual",
+        }:
             unit = np.tanh(raw)
+            if self._policy_parameterization == "sparse_centered_residual":
+                magnitude = np.clip(
+                    (np.abs(unit) - self._policy_deadband)
+                    / max(1.0 - self._policy_deadband, 1.0e-8),
+                    0.0,
+                    1.0,
+                )
+                unit = np.sign(unit) * magnitude
             reference = self._reference_multipliers
             distance = np.where(
                 unit >= 0.0,
@@ -1177,6 +1491,7 @@ class CCLevel2Agent(BaseAgent):
                 "causal_initial_multipliers"
             )
         self._initialize_policy_at_reference()
+        self.policy.log_std.requires_grad_(self._train_log_std)
         self.ppo_optim = Adam(self.policy.parameters(), lr=self._lr)
         self.rollout_buffer = RolloutBufferV2(
             self.rollout_buffer.num_steps,
@@ -1201,6 +1516,12 @@ class CCLevel2Agent(BaseAgent):
             RunningMeanStd() for _ in range(self._num_buildings)
         ]
         self._cached_policy_sample = False
+        self._best_policy_state = None
+        self._best_validation_objective = None
+        self._best_validation_episode = None
+        self._best_policy_source = None
+        self._validation_history = []
+        self._best_policy_restored = False
 
     # ───────────────────────── Per-step interaction ──────────────────────────
 
@@ -1213,7 +1534,32 @@ class CCLevel2Agent(BaseAgent):
     ) -> List[float]:
         """Return list of N price multipliers (one per building)."""
         if self._step_in_interval == 0:
-            if not self._bc_pretrain_done:
+            wrapper_evaluation = bool(deterministic) and (
+                self._protocol_episode_index >= 0
+            )
+            if wrapper_evaluation:
+                self._protocol_episode_mode = "deterministic_evaluation"
+                if self._restore_best_policy_for_deterministic:
+                    self._restore_best_policy()
+
+            if self._protocol_episode_mode in {
+                "neutral_warmup",
+                "neutral_baseline",
+            }:
+                self._set_reference_decision(observations)
+            elif self._protocol_episode_mode in {
+                "validation",
+                "deterministic_evaluation",
+            }:
+                self._sample_new_decision(observations, deterministic=True)
+                # Evaluation trajectories must never enter a subsequent PPO
+                # update. Previously the final deterministic year could alter
+                # its own policy every time the rollout buffer filled.
+                self._cached_policy_sample = False
+                self._cached_actor_mask = np.zeros(
+                    self._num_buildings, dtype=np.float32
+                )
+            elif not self._bc_pretrain_done:
                 ctx = self._build_context(observations)
                 teacher_ctx = self._build_teacher_context(ctx)
                 # Compute teacher targets per building.
@@ -1286,6 +1632,13 @@ class CCLevel2Agent(BaseAgent):
         _ = next_episode_step
         normalized_step = None if episode_step is None else int(episode_step)
         if normalized_step == 0 and self._episode_step_context != 0:
+            self._protocol_episode_index += 1
+            self._protocol_episode_mode = self._mode_for_protocol_episode(
+                self._protocol_episode_index
+            )
+            self._episode_decision_index = 0
+            self._episode_absolute_objective = 0.0
+            self._best_policy_restored = False
             self._step_in_interval = 0
             self._decision_interval_complete = False
             self._reset_accumulated_reward()
@@ -1323,11 +1676,15 @@ class CCLevel2Agent(BaseAgent):
         assert self._cached_community is not None, "predict() must run before update()"
 
         if not self._bc_pretrain_done or not self._cached_policy_sample:
+            self._record_absolute_decision_reward(self._accumulated_reward)
+            self._episode_decision_index += 1
             self._decision_interval_complete = False
             self._reset_accumulated_reward()
             if done:
                 self._step_in_interval = 0
+                self._episode_step_context = None
                 self._prev_multipliers = None
+                self._finish_protocol_episode()
                 self._flush_decision_trace()
             return
 
@@ -1352,7 +1709,18 @@ class CCLevel2Agent(BaseAgent):
             )
         self._prev_multipliers = self._cached_multipliers.copy()
 
-        raw = self._accumulated_reward + aux
+        absolute_reward = (
+            np.asarray(self._accumulated_reward, dtype=np.float64).copy()
+            if self._member_credit
+            else float(self._accumulated_reward)
+        )
+        self._record_absolute_decision_reward(absolute_reward)
+        baseline_reward = self._counterfactual_reward_for_current_decision()
+        raw = (
+            absolute_reward
+            - self._counterfactual_baseline_weight * baseline_reward
+            + aux
+        )
         if self._member_credit:
             raw = np.asarray(raw, dtype=np.float64)
             team_share = float(raw.sum()) / self._num_buildings
@@ -1391,12 +1759,15 @@ class CCLevel2Agent(BaseAgent):
             value=self._cached_value,
             actor_mask=self._cached_actor_mask,
         )
+        self._episode_decision_index += 1
 
         self._decision_interval_complete = False
         self._reset_accumulated_reward()
         if done:
             self._step_in_interval = 0
+            self._episode_step_context = None
             self._prev_multipliers = None
+            self._finish_protocol_episode()
             self._flush_decision_trace()
 
         if self.rollout_buffer.full:
@@ -1843,11 +2214,16 @@ class CCLevel2Agent(BaseAgent):
             if self._policy_parameterization == "causal_active_only"
             else True
         )
-        self._cached_actor_mask = np.full(
-            self._num_buildings,
-            float(active),
-            dtype=np.float32,
-        )
+        if self._policy_parameterization == "sparse_centered_residual":
+            self._cached_actor_mask = (
+                np.abs(mults - self._reference_multipliers) > 1.0e-7
+            ).astype(np.float32)
+        else:
+            self._cached_actor_mask = np.full(
+                self._num_buildings,
+                float(active),
+                dtype=np.float32,
+            )
 
         self._log_decision()
 
@@ -2055,6 +2431,7 @@ class CCLevel2Agent(BaseAgent):
 
         record: dict = {
             "timestep":        self._global_cc_step,
+            "protocol_mode":   self._protocol_episode_mode,
             "causal_active": int(
                 self._causal_intervention_active(ctx)
                 if self._policy_parameterization == "causal_active_only"
@@ -2171,15 +2548,16 @@ class CCLevel2Agent(BaseAgent):
         onnx_dir.mkdir(parents=True, exist_ok=True)
         export_path = onnx_dir / "cc2_market_maker.onnx"
         deterministic_policy = DeterministicVectorMultiplierPolicy(
-            self.policy,
-            self._price_min,
-            self._price_max,
-            self._reference_multipliers,
-            self._policy_residual_scale,
-            self._policy_parameterization,
-            self._causal_initial_multipliers,
-            self._causal_residual_scale,
-            (
+            policy=self.policy,
+            price_min=self._price_min,
+            price_max=self._price_max,
+            reference_multipliers=self._reference_multipliers,
+            policy_residual_scale=self._policy_residual_scale,
+            policy_parameterization=self._policy_parameterization,
+            policy_deadband=self._policy_deadband,
+            causal_initial_multipliers=self._causal_initial_multipliers,
+            causal_residual_scale=self._causal_residual_scale,
+            causal_active_index=(
                 self._n_district
                 if self._causal_use_physical_context
                 else None
@@ -2230,6 +2608,7 @@ class CCLevel2Agent(BaseAgent):
             "reference_multipliers": self._reference_multipliers.tolist(),
             "policy_residual_scale": self._policy_residual_scale,
             "policy_parameterization": self._policy_parameterization,
+            "policy_deadband": self._policy_deadband,
             "causal_initial_multiplier": self._causal_initial_multiplier,
             "causal_initial_multipliers": (
                 self._causal_initial_multipliers.tolist()
@@ -2248,6 +2627,24 @@ class CCLevel2Agent(BaseAgent):
             ),
             "causal_use_physical_context": self._causal_use_physical_context,
             "separate_value_encoder": self._separate_value_encoder,
+            "neutral_baseline_enabled": self._neutral_baseline_enabled,
+            "neutral_warmup_episodes": self._neutral_warmup_episodes,
+            "counterfactual_baseline_weight": (
+                self._counterfactual_baseline_weight
+            ),
+            "training_episodes_per_validation": (
+                self._training_episodes_per_validation
+            ),
+            "rollback_rejected_validation": self._rollback_rejected_validation,
+            "restore_best_policy_for_deterministic": (
+                self._restore_best_policy_for_deterministic
+            ),
+            "best_validation_objective": self._best_validation_objective,
+            "best_validation_episode": self._best_validation_episode,
+            "best_policy_source": self._best_policy_source,
+            "validation_history": list(self._validation_history),
+            "neutral_baseline_objective": self._neutral_baseline_objective,
+            "train_log_std": self._train_log_std,
             "artifacts": artifacts,
             "diagnostic_artifacts": diagnostic_artifacts,
         }
@@ -2279,12 +2676,35 @@ class CCLevel2Agent(BaseAgent):
                 "credit_assignment": self._credit_assignment,
                 "team_reward_mix": self._team_reward_mix,
                 "policy_parameterization": self._policy_parameterization,
+                "policy_deadband": self._policy_deadband,
                 "causal_initial_multipliers": (
                     self._causal_initial_multipliers.tolist()
                 ),
                 "causal_residual_scale": self._causal_residual_scale,
                 "causal_use_physical_context": self._causal_use_physical_context,
                 "separate_value_encoder": self._separate_value_encoder,
+                "neutral_baseline_enabled": self._neutral_baseline_enabled,
+                "neutral_warmup_episodes": self._neutral_warmup_episodes,
+                "counterfactual_baseline_weight": (
+                    self._counterfactual_baseline_weight
+                ),
+                "training_episodes_per_validation": (
+                    self._training_episodes_per_validation
+                ),
+                "rollback_rejected_validation": (
+                    self._rollback_rejected_validation
+                ),
+                "restore_best_policy_for_deterministic": (
+                    self._restore_best_policy_for_deterministic
+                ),
+                "neutral_baseline_rewards": self._neutral_baseline_rewards,
+                "neutral_baseline_objective": self._neutral_baseline_objective,
+                "best_validation_objective": self._best_validation_objective,
+                "best_validation_episode": self._best_validation_episode,
+                "best_policy_source": self._best_policy_source,
+                "best_policy_state": self._best_policy_state,
+                "validation_history": self._validation_history,
+                "train_log_std": self._train_log_std,
                 "bc_pretrain_done":   self._bc_pretrain_done,
                 "bc_target_import":   self._bc_target_import,
                 "bc_reference_peak":  self._bc_reference_peak,
@@ -2332,6 +2752,11 @@ class CCLevel2Agent(BaseAgent):
             raise ValueError(
                 "CC-L2 checkpoint policy_parameterization does not match the current config"
             )
+        checkpoint_deadband = float(ckpt.get("policy_deadband", 0.0))
+        if checkpoint_deadband != self._policy_deadband:
+            raise ValueError(
+                "CC-L2 checkpoint policy_deadband does not match the current config"
+            )
         checkpoint_causal_initial = ckpt.get("causal_initial_multipliers")
         if checkpoint_causal_initial is not None and not np.allclose(
             np.asarray(checkpoint_causal_initial, dtype=np.float32),
@@ -2352,6 +2777,11 @@ class CCLevel2Agent(BaseAgent):
         if checkpoint_separate_value != self._separate_value_encoder:
             raise ValueError(
                 "CC-L2 checkpoint separate_value_encoder does not match the current config"
+            )
+        checkpoint_train_log_std = bool(ckpt.get("train_log_std", True))
+        if checkpoint_train_log_std != self._train_log_std:
+            raise ValueError(
+                "CC-L2 checkpoint train_log_std does not match the current config"
             )
         self.policy.load_state_dict(ckpt["policy"])
         self.ppo_optim.load_state_dict(ckpt["optimizer"])
@@ -2375,6 +2805,45 @@ class CCLevel2Agent(BaseAgent):
         self._global_cc_step    = int(ckpt.get("global_cc_step", 0))
         if "bc_pretrain_done" in ckpt:
             self._bc_pretrain_done = bool(ckpt["bc_pretrain_done"])
+        baseline_rewards = ckpt.get("neutral_baseline_rewards")
+        if isinstance(baseline_rewards, list):
+            self._neutral_baseline_rewards = [
+                (
+                    np.asarray(value, dtype=np.float64)
+                    if self._member_credit
+                    else float(value)
+                )
+                for value in baseline_rewards
+            ]
+        self._neutral_baseline_objective = ckpt.get(
+            "neutral_baseline_objective",
+            self._neutral_baseline_objective,
+        )
+        self._best_validation_objective = ckpt.get(
+            "best_validation_objective",
+            self._best_validation_objective,
+        )
+        self._best_validation_episode = ckpt.get(
+            "best_validation_episode",
+            self._best_validation_episode,
+        )
+        self._best_policy_source = ckpt.get(
+            "best_policy_source",
+            self._best_policy_source,
+        )
+        validation_history = ckpt.get("validation_history")
+        if isinstance(validation_history, list):
+            self._validation_history = [
+                dict(item)
+                for item in validation_history
+                if isinstance(item, dict)
+            ]
+        best_policy_state = ckpt.get("best_policy_state")
+        if isinstance(best_policy_state, dict):
+            self._best_policy_state = {
+                str(name): value.detach().cpu().clone()
+                for name, value in best_policy_state.items()
+            }
         for key in ("bc_target_import", "bc_reference_peak", "bc_reference_export"):
             if key in ckpt and ckpt[key] is not None:
                 setattr(self, f"_{key}", float(ckpt[key]))
