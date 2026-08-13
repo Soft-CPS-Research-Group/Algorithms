@@ -1615,7 +1615,10 @@ class Wrapper_CityLearn(RLC):
                                     global_learning_step=self.global_step,
                                 )
                                 topology_transition_recorded = True
-                        self._attach_model_environment_metadata()
+                        if episode_deterministic:
+                            self._attach_model_environment_metadata()
+                        else:
+                            self._pending_model_environment_attach = True
                     except Exception:
                         if model_topology_snapshot is not None and callable(restore_model_topology):
                             restore_model_topology(model_topology_snapshot)
