@@ -170,6 +170,34 @@ def test_fixed_price_schedule_requires_ordered_entries_from_step_zero():
             ]
         )
 
+    vector = FixedPriceSignalHyperparameters(
+        vector_schedule=[
+            {"start_step": 0, "multipliers": [1.0, 1.0]},
+            {"start_step": 96, "multipliers": [0.7, 1.3]},
+        ]
+    )
+    assert vector.vector_schedule is not None
+    assert vector.vector_schedule[1].multipliers == [0.7, 1.3]
+
+    with pytest.raises(ValueError, match="equal widths"):
+        FixedPriceSignalHyperparameters(
+            vector_schedule=[
+                {"start_step": 0, "multipliers": [1.0, 1.0]},
+                {"start_step": 96, "multipliers": [0.7]},
+            ]
+        )
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        FixedPriceSignalHyperparameters(vector_schedule=[])
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        FixedPriceSignalHyperparameters(
+            multipliers=[1.0, 1.0],
+            vector_schedule=[
+                {"start_step": 0, "multipliers": [1.0, 1.0]},
+            ],
+        )
+
 
 def test_to_dict_removes_none_network_optional_layers_from_pipeline(base_config):
     config = copy.deepcopy(base_config)

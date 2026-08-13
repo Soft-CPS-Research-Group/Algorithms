@@ -655,11 +655,26 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
     bc_progress_interval: int = Field(default=250, ge=1)
     bc_lr: float = Field(default=1.0e-3, gt=0)
     bc_use_physical_teacher_context: bool = False
-    bc_teacher_mode: Literal["continuous_score", "cheap_and_export"] = (
+    bc_teacher_mode: Literal[
+        "continuous_score",
+        "cheap_and_export",
+        "oracle_storage_schedule",
+    ] = (
         "continuous_score"
+    )
+    bc_collection_policy: Literal["teacher_rollout", "neutral_label_only"] = (
+        "teacher_rollout"
     )
     bc_discount_multiplier: float = Field(default=0.90, gt=0.0, le=1.0)
     bc_export_activation_kw: float = Field(default=1.0e-9, ge=0.0)
+    bc_oracle_schedule_path: Optional[str] = None
+    bc_oracle_schedule_step_offset: int = Field(default=0, ge=0)
+    bc_oracle_deadband_kw: float = Field(default=0.02, ge=0.0)
+    bc_oracle_power_scale_kw: float = Field(default=1.0, gt=0.0)
+    bc_anchor_weight: float = Field(default=0.0, ge=0.0)
+    bc_anchor_min_weight: float = Field(default=0.0, ge=0.0)
+    bc_anchor_decay_updates: int = Field(default=0, ge=0)
+    bc_anchor_batch_size: int = Field(default=64, ge=1)
     w_factor: float = Field(default=0.3, ge=0)
     w_smoothness: float = Field(default=0.02, ge=0)
     credit_assignment: Literal["global", "member_decomposed"] = "global"
@@ -700,10 +715,37 @@ class CCLevel2Hyperparameters(ExperimentalPPOHyperparameters):
                 "CCLevel2 policy_deadband is only supported by "
                 "sparse_centered_residual"
             )
-        if self.neutral_baseline_enabled and self.bc_pretrain_enabled:
+        if (
+            self.neutral_baseline_enabled
+            and self.bc_pretrain_enabled
+            and self.bc_collection_policy != "neutral_label_only"
+        ):
             raise ValueError(
                 "CCLevel2 neutral baseline collection and BC pretraining are "
-                "mutually exclusive"
+                "compatible only with bc_collection_policy='neutral_label_only'"
+            )
+        if (
+            self.bc_pretrain_enabled
+            and self.bc_collection_policy == "neutral_label_only"
+            and self.neutral_warmup_episodes < 1
+        ):
+            raise ValueError(
+                "CCLevel2 neutral-label BC collection requires at least one "
+                "neutral warm-up episode"
+            )
+        if self.bc_teacher_mode == "oracle_storage_schedule":
+            if not self.bc_pretrain_enabled:
+                raise ValueError(
+                    "CCLevel2 oracle_storage_schedule requires bc_pretrain_enabled"
+                )
+            if not str(self.bc_oracle_schedule_path or "").strip():
+                raise ValueError(
+                    "CCLevel2 oracle_storage_schedule requires "
+                    "bc_oracle_schedule_path"
+                )
+        if self.bc_anchor_min_weight > self.bc_anchor_weight:
+            raise ValueError(
+                "CCLevel2 bc_anchor_min_weight must not exceed bc_anchor_weight"
             )
         if self.neutral_warmup_episodes > 0 and not self.neutral_baseline_enabled:
             raise ValueError(
@@ -769,10 +811,29 @@ class FixedPriceScheduleEntry(BaseModel):
     multiplier: float = Field(gt=0)
 
 
+class FixedPriceVectorScheduleEntry(BaseModel):
+    start_step: int = Field(ge=0)
+    multipliers: List[float]
+
+    @field_validator("multipliers")
+    @classmethod
+    def validate_multipliers(cls, values: List[float]) -> List[float]:
+        if not values:
+            raise ValueError(
+                "FixedPriceSignal vector schedule multipliers must not be empty"
+            )
+        if any(value <= 0 for value in values):
+            raise ValueError(
+                "FixedPriceSignal vector schedule multipliers must all be positive"
+            )
+        return values
+
+
 class FixedPriceSignalHyperparameters(BaseModel):
     multiplier: float = Field(default=1.0, gt=0)
     multipliers: Optional[List[float]] = None
     schedule: Optional[List[FixedPriceScheduleEntry]] = None
+    vector_schedule: Optional[List[FixedPriceVectorScheduleEntry]] = None
 
     @field_validator("multipliers")
     @classmethod
@@ -787,21 +848,35 @@ class FixedPriceSignalHyperparameters(BaseModel):
 
     @model_validator(mode="after")
     def validate_schedule(self) -> "FixedPriceSignalHyperparameters":
-        if self.schedule is None:
-            return self
-        if self.multipliers is not None:
+        configured_modes = sum(
+            value is not None
+            for value in (self.multipliers, self.schedule, self.vector_schedule)
+        )
+        if configured_modes > 1:
             raise ValueError(
-                "FixedPriceSignal schedule and per-member multipliers are mutually exclusive"
+                "FixedPriceSignal multipliers, schedule and vector_schedule "
+                "are mutually exclusive"
             )
-        if not self.schedule:
+        configured_schedule = (
+            self.schedule if self.schedule is not None else self.vector_schedule
+        )
+        if configured_schedule is None:
+            return self
+        if not configured_schedule:
             raise ValueError("FixedPriceSignal schedule must not be empty")
-        starts = [entry.start_step for entry in self.schedule]
+        starts = [entry.start_step for entry in configured_schedule]
         if starts[0] != 0:
             raise ValueError("FixedPriceSignal schedule must start at step 0")
         if starts != sorted(set(starts)):
             raise ValueError(
                 "FixedPriceSignal schedule start_step values must be strictly increasing"
             )
+        if self.vector_schedule is not None:
+            widths = {len(entry.multipliers) for entry in self.vector_schedule}
+            if len(widths) != 1:
+                raise ValueError(
+                    "FixedPriceSignal vector_schedule entries must have equal widths"
+                )
         return self
 
 

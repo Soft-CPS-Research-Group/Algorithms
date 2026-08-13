@@ -2495,10 +2495,14 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
         self.signal_price_response_mode = str(
             hyper.get("signal_price_response_mode", "binary") or "binary"
         ).strip().lower()
-        if self.signal_price_response_mode not in {"binary", "linear_discount"}:
+        if self.signal_price_response_mode not in {
+            "binary",
+            "linear_discount",
+            "linear_bidirectional",
+        }:
             raise ValueError(
                 "SignalAwareRBCSmartLocal signal_price_response_mode must be "
-                "'binary' or 'linear_discount'"
+                "'binary', 'linear_discount' or 'linear_bidirectional'"
             )
         self.signal_price_charge_reference_multiplier = float(
             hyper.get("signal_price_charge_reference_multiplier", 0.90)
@@ -2512,6 +2516,22 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
         )
         if self.signal_price_charge_gain_max <= 0.0:
             raise ValueError("signal_price_charge_gain_max must be positive")
+        self.signal_price_discharge_rate = max(
+            0.0,
+            float(hyper.get("signal_price_discharge_rate", 0.0) or 0.0),
+        )
+        self.signal_price_discharge_reference_multiplier = float(
+            hyper.get("signal_price_discharge_reference_multiplier", 1.10)
+        )
+        if self.signal_price_discharge_reference_multiplier <= 1.0:
+            raise ValueError(
+                "signal_price_discharge_reference_multiplier must be greater than 1"
+            )
+        self.signal_price_discharge_gain_max = float(
+            hyper.get("signal_price_discharge_gain_max", 1.5)
+        )
+        if self.signal_price_discharge_gain_max <= 0.0:
+            raise ValueError("signal_price_discharge_gain_max must be positive")
 
     def _policy_type(self) -> str:
         return "signal_aware_rbc_smart_local_policy"
@@ -2534,6 +2554,55 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
         authority without modifying actor observations.
         """
         if (
+            self.signal_price_response_mode == "linear_bidirectional"
+            and self.signal_price_discharge_rate > self.energy_epsilon
+            and self._price_multiplier > 1.0
+        ):
+            soc = self._get_storage_soc(obs, obs_map)
+            min_soc, _ = self._storage_strategy_limits(obs, obs_map)
+            local_surplus = self._budget_value(
+                agent_idx,
+                "local_surplus_kw",
+                self._pv_surplus_kw(obs, obs_map),
+            )
+            import_power = self._budget_value(
+                agent_idx,
+                "local_import_kw",
+                self._get_import_power(obs, obs_map),
+            )
+            surcharge_reference = max(
+                self.signal_price_discharge_reference_multiplier - 1.0,
+                self.energy_epsilon,
+            )
+            surcharge_depth = max(self._price_multiplier - 1.0, 0.0)
+            gain = min(
+                surcharge_depth / surcharge_reference,
+                self.signal_price_discharge_gain_max,
+            )
+            requested_rate = self.signal_price_discharge_rate * gain
+            reserve_soc = max(min_soc, self.storage_price_discharge_soc_floor)
+            if (
+                local_surplus <= self.pv_surplus_threshold_kw
+                and import_power > self.storage_discharge_import_threshold_kw
+                and soc > reserve_soc
+                and requested_rate > self.energy_epsilon
+            ):
+                discharge_rate = self._storage_power_limited_discharge_rate(
+                    agent_idx,
+                    import_power,
+                    requested_rate,
+                    obs=obs,
+                    obs_map=obs_map,
+                    reserve_soc=reserve_soc,
+                )
+                return self._clip_storage_action(
+                    -discharge_rate,
+                    obs,
+                    obs_map,
+                    bounds,
+                )
+
+        if (
             self.price_charge_rate > self.energy_epsilon
             or self.signal_price_charge_rate <= self.energy_epsilon
             or self._price_multiplier >= 1.0
@@ -2549,7 +2618,10 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
         configured_rate = self.price_charge_rate
         configured_multiplier = self._price_multiplier
         effective_signal_rate = self.signal_price_charge_rate
-        if self.signal_price_response_mode == "linear_discount":
+        if self.signal_price_response_mode in {
+            "linear_discount",
+            "linear_bidirectional",
+        }:
             reference_depth = max(
                 1.0 - self.signal_price_charge_reference_multiplier,
                 self.energy_epsilon,

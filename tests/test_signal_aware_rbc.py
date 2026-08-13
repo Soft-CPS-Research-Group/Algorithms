@@ -225,3 +225,52 @@ def test_signal_aware_strict_local_linear_discount_has_continuous_authority():
     assert agent.predict(observations, context=0.85) == [[pytest.approx(0.9)]]
     assert agent.predict(observations, context=0.50) == [[pytest.approx(0.9)]]
     assert agent.price_charge_rate == 0.0
+
+
+def test_signal_aware_strict_local_bidirectional_price_has_symmetric_authority():
+    agent = SignalAwareRBCSmartLocal(
+        {
+            "algorithm": {
+                "hyperparameters": {
+                    "control_evs": False,
+                    "control_deferrables": False,
+                    "signal_price_charge_rate": 0.6,
+                    "signal_price_discharge_rate": 0.6,
+                    "signal_price_response_mode": "linear_bidirectional",
+                    "signal_price_charge_reference_multiplier": 0.85,
+                    "signal_price_discharge_reference_multiplier": 1.15,
+                    "signal_price_charge_gain_max": 1.5,
+                    "signal_price_discharge_gain_max": 1.5,
+                }
+            }
+        }
+    )
+    agent.attach_environment(
+        observation_names=[
+            [
+                "electrical_storage_soc_ratio",
+                "electricity_pricing",
+                "electricity_pricing_predicted_1",
+                "electricity_pricing_predicted_2",
+                "electricity_pricing_predicted_3",
+                "import_power_kw",
+            ]
+        ],
+        action_names=[["electrical_storage"]],
+        action_space=[_Box(low=[-1.0], high=[1.0])],
+        observation_space=[],
+        metadata={"seconds_per_time_step": 3600},
+    )
+    charging = [
+        np.asarray([0.5, 0.10, 0.08, 0.10, 0.12, 0.0], dtype=np.float32)
+    ]
+    importing = [
+        np.asarray([0.7, 0.10, 0.08, 0.10, 0.12, 8.0], dtype=np.float32)
+    ]
+
+    assert agent.predict(charging, context=1.0) == [[0.0]]
+    assert agent.predict(charging, context=0.925) == [[pytest.approx(0.3)]]
+    assert agent.predict(charging, context=0.85) == [[pytest.approx(0.6)]]
+    assert agent.predict(importing, context=1.075)[0][0] == pytest.approx(-0.3)
+    assert agent.predict(importing, context=1.15)[0][0] == pytest.approx(-0.6)
+    assert agent.predict(importing, context=1.30)[0][0] == pytest.approx(-0.9)

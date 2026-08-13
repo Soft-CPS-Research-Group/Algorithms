@@ -102,6 +102,33 @@ def test_fixed_price_signal_can_emit_a_step_schedule():
     assert artifact["output_contract"] == "scheduled_global_price_multiplier"
 
 
+def test_fixed_price_signal_can_emit_a_per_member_step_schedule():
+    unit = ALGORITHM_REGISTRY["FixedPriceSignal"](
+        config={
+            "algorithm": {
+                "hyperparameters": {
+                    "vector_schedule": [
+                        {"start_step": 0, "multipliers": [1.0, 1.0]},
+                        {"start_step": 96, "multipliers": [0.7, 1.3]},
+                        {"start_step": 100, "multipliers": [1.0, 1.0]},
+                    ]
+                }
+            }
+        }
+    )
+
+    unit.set_episode_context(episode_step=99)
+    assert unit.predict([], deterministic=True) == [0.7, 1.3]
+    unit.set_episode_context(episode_step=100)
+    assert unit.predict([], deterministic=True) == [1.0, 1.0]
+    artifact = unit.export_artifacts("unused")
+    assert artifact["vector_schedule"][1]["multipliers"] == [0.7, 1.3]
+    assert (
+        artifact["output_contract"]
+        == "scheduled_per_member_price_multiplier_vector"
+    )
+
+
 def test_hierarchical_raw_observation_agents_are_registered():
     for name in (
         "BuildingAgent",

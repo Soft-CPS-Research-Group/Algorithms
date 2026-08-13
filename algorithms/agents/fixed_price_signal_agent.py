@@ -37,6 +37,17 @@ class FixedPriceSignalAgent(BaseAgent):
             for entry in configured_schedule
         ]
         self._schedule_starts = [entry[0] for entry in self.schedule]
+        configured_vector_schedule = hyperparameters.get("vector_schedule") or []
+        self.vector_schedule = [
+            (
+                int(entry["start_step"]),
+                [float(value) for value in entry["multipliers"]],
+            )
+            for entry in configured_vector_schedule
+        ]
+        self._vector_schedule_starts = [
+            entry[0] for entry in self.vector_schedule
+        ]
         self._episode_step = 0
 
     def set_episode_context(
@@ -59,6 +70,12 @@ class FixedPriceSignalAgent(BaseAgent):
         _ = observations, deterministic, context
         if self.multipliers is not None:
             return list(self.multipliers)
+        if self.vector_schedule:
+            index = bisect_right(
+                self._vector_schedule_starts,
+                self._episode_step,
+            ) - 1
+            return list(self.vector_schedule[max(index, 0)][1])
         if self.schedule:
             index = bisect_right(self._schedule_starts, self._episode_step) - 1
             return self.schedule[max(index, 0)][1]
@@ -105,6 +122,14 @@ class FixedPriceSignalAgent(BaseAgent):
         if self.multipliers is not None:
             manifest["multipliers"] = list(self.multipliers)
             manifest["output_contract"] = "per_member_price_multiplier_vector"
+        elif self.vector_schedule:
+            manifest["vector_schedule"] = [
+                {"start_step": start_step, "multipliers": list(multipliers)}
+                for start_step, multipliers in self.vector_schedule
+            ]
+            manifest["output_contract"] = (
+                "scheduled_per_member_price_multiplier_vector"
+            )
         elif self.schedule:
             manifest["schedule"] = [
                 {"start_step": start_step, "multiplier": multiplier}

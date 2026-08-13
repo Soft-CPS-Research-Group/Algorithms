@@ -59,6 +59,8 @@ Pipeline integration:
 from __future__ import annotations
 
 import csv
+import gzip
+import hashlib
 import tempfile
 import time
 from pathlib import Path
@@ -73,6 +75,7 @@ from torch.optim import Adam
 
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.constants import DEFAULT_ONNX_OPSET
+from algorithms.oracles import SemanticSchedule
 
 # ── District features (identical to cc_level1) ───────────────────────────────
 _CC_LEVEL2_DISTRICT_FEATURES = (
@@ -669,6 +672,10 @@ class CCLevel2Agent(BaseAgent):
             separate_value_encoder=self._separate_value_encoder,
         )
         self._initialize_policy_at_reference()
+        # Immutable safety fallback. A training-only teacher may later move the
+        # live actor away from neutral, but a rejected policy must still be
+        # able to restore the exact no-CC vector rather than the BC warm start.
+        self._reference_policy_state = self._clone_policy_state()
         self.policy.log_std.requires_grad_(self._train_log_std)
         self.ppo_optim = Adam(self.policy.parameters(), lr=self._lr)
 
@@ -759,10 +766,34 @@ class CCLevel2Agent(BaseAgent):
             raise ValueError(
                 "CCLevel2 best_policy_min_improvement must be non-negative"
             )
-        if self._neutral_baseline_enabled and self._bc_enabled:
+        self._bc_collection_policy = str(
+            hyper.get("bc_collection_policy", "teacher_rollout")
+        ).strip().lower()
+        if self._bc_collection_policy not in {
+            "teacher_rollout",
+            "neutral_label_only",
+        }:
+            raise ValueError(
+                "CCLevel2 bc_collection_policy must be 'teacher_rollout' or "
+                "'neutral_label_only'"
+            )
+        if (
+            self._neutral_baseline_enabled
+            and self._bc_enabled
+            and self._bc_collection_policy != "neutral_label_only"
+        ):
             raise ValueError(
                 "CCLevel2 neutral baseline collection and BC pretraining are "
-                "mutually exclusive"
+                "compatible only with neutral-label collection"
+            )
+        if (
+            self._bc_enabled
+            and self._bc_collection_policy == "neutral_label_only"
+            and self._neutral_warmup_episodes < 1
+        ):
+            raise ValueError(
+                "CCLevel2 neutral-label BC collection requires at least one "
+                "neutral warm-up episode"
             )
         if self._neutral_warmup_episodes > 0 and not self._neutral_baseline_enabled:
             raise ValueError(
@@ -852,10 +883,11 @@ class CCLevel2Agent(BaseAgent):
         if self._bc_teacher_mode not in {
             "continuous_score",
             "cheap_and_export",
+            "oracle_storage_schedule",
         }:
             raise ValueError(
-                "CCLevel2 bc_teacher_mode must be 'continuous_score' or "
-                "'cheap_and_export'"
+                "CCLevel2 bc_teacher_mode must be 'continuous_score', "
+                "'cheap_and_export' or 'oracle_storage_schedule'"
             )
         self._bc_discount_multiplier = float(
             hyper.get("bc_discount_multiplier", 0.90)
@@ -868,6 +900,77 @@ class CCLevel2Agent(BaseAgent):
             float(hyper.get("bc_export_activation_kw", 1.0e-9)),
             0.0,
         )
+        self._bc_oracle_schedule_step_offset = int(
+            hyper.get("bc_oracle_schedule_step_offset", 0) or 0
+        )
+        self._bc_oracle_deadband_kw = max(
+            float(hyper.get("bc_oracle_deadband_kw", 0.02) or 0.0),
+            0.0,
+        )
+        self._bc_oracle_power_scale_kw = float(
+            hyper.get("bc_oracle_power_scale_kw", 1.0) or 1.0
+        )
+        if self._bc_oracle_power_scale_kw <= 0.0:
+            raise ValueError("CCLevel2 bc_oracle_power_scale_kw must be positive")
+        self._bc_oracle_schedule: Optional[SemanticSchedule] = None
+        self._bc_oracle_schedule_path: Optional[Path] = None
+        self._bc_oracle_schedule_sha256: Optional[str] = None
+        self._bc_oracle_problem_id: Optional[str] = None
+        self._bc_oracle_series: Dict[str, np.ndarray] = {}
+        if self._bc_teacher_mode == "oracle_storage_schedule":
+            raw_schedule_path = str(
+                hyper.get("bc_oracle_schedule_path") or ""
+            ).strip()
+            if not raw_schedule_path:
+                raise ValueError(
+                    "CCLevel2 oracle_storage_schedule requires "
+                    "bc_oracle_schedule_path"
+                )
+            schedule_path = Path(raw_schedule_path).resolve()
+            payload = schedule_path.read_bytes()
+            decoded = gzip.decompress(payload) if schedule_path.suffix == ".gz" else payload
+            schedule = SemanticSchedule.from_json(decoded.decode("utf-8"))
+            if any(series.unit != "kW" for series in schedule.series):
+                raise ValueError(
+                    "CCLevel2 oracle storage teacher requires schedule values in kW"
+                )
+            self._bc_oracle_schedule = schedule
+            self._bc_oracle_schedule_path = schedule_path
+            self._bc_oracle_schedule_sha256 = hashlib.sha256(payload).hexdigest()
+            self._bc_oracle_problem_id = schedule.problem_id
+            self._bc_oracle_series = {
+                str(series.building_id): np.asarray(
+                    series.values,
+                    dtype=np.float64,
+                )
+                for series in schedule.series
+                if series.action_name == "electrical_storage"
+            }
+            if len(self._bc_oracle_series) != self._num_buildings:
+                raise ValueError(
+                    "CCLevel2 oracle storage teacher requires exactly one "
+                    "electrical-storage series per building"
+                )
+        self._bc_anchor_weight = float(hyper.get("bc_anchor_weight", 0.0))
+        self._bc_anchor_min_weight = float(
+            hyper.get("bc_anchor_min_weight", 0.0)
+        )
+        self._bc_anchor_decay_updates = int(
+            hyper.get("bc_anchor_decay_updates", 0) or 0
+        )
+        self._bc_anchor_batch_size = int(
+            hyper.get("bc_anchor_batch_size", 64) or 64
+        )
+        if self._bc_anchor_weight < 0.0 or self._bc_anchor_min_weight < 0.0:
+            raise ValueError("CCLevel2 BC anchor weights must be non-negative")
+        if self._bc_anchor_min_weight > self._bc_anchor_weight:
+            raise ValueError(
+                "CCLevel2 bc_anchor_min_weight must not exceed bc_anchor_weight"
+            )
+        if self._bc_anchor_decay_updates < 0 or self._bc_anchor_batch_size <= 0:
+            raise ValueError("CCLevel2 BC anchor schedule is invalid")
+        self._bc_anchor_inputs: Optional[torch.Tensor] = None
+        self._bc_anchor_targets: Optional[torch.Tensor] = None
         # Per-building modulation weights for BC teacher (mirror CCRewardLevel2)
         self._bc_w_soc    = float(hyper.get("bc_w_soc",  0.2))
         self._bc_w_net    = float(hyper.get("bc_w_net",  0.1))   # legacy; TODO: remove after EV redesign
@@ -1018,17 +1121,41 @@ class CCLevel2Agent(BaseAgent):
         objective = float(self._episode_absolute_objective)
         mode = self._protocol_episode_mode
         if mode == "neutral_warmup":
+            if (
+                self._bc_enabled
+                and self._bc_collection_policy == "neutral_label_only"
+                and not self._bc_pretrain_done
+                and self._bc_train_inputs is None
+                and self._bc_contexts
+            ):
+                # A horizon may end one decision before bc_collect_steps due
+                # to wrapper boundary semantics. Use every causally aligned
+                # label collected in the neutral year instead of silently
+                # carrying an incomplete teacher into the next phase.
+                self._prepare_bc_pretraining()
             logger.info(
                 "CC-L2 neutral warm-up episode {} completed | objective={:.6f}",
                 self._protocol_episode_index,
                 objective,
             )
         elif mode == "neutral_baseline":
+            if (
+                self._bc_enabled
+                and self._bc_collection_policy == "neutral_label_only"
+                and not self._bc_pretrain_done
+            ):
+                raise RuntimeError(
+                    "CC-L2 neutral baseline ended before teacher pretraining "
+                    "completed"
+                )
             self._neutral_baseline_objective = objective
             self._best_validation_objective = objective
             self._best_validation_episode = self._protocol_episode_index
             self._best_policy_source = "neutral_baseline"
-            self._best_policy_state = self._clone_policy_state()
+            self._best_policy_state = {
+                name: value.detach().cpu().clone()
+                for name, value in self._reference_policy_state.items()
+            }
             logger.info(
                 "CC-L2 neutral PPO baseline captured | decisions={} objective={:.6f}",
                 len(self._neutral_baseline_rewards),
@@ -1333,8 +1460,37 @@ class CCLevel2Agent(BaseAgent):
         observation_space: List[Any],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        metadata = dict(metadata or {})
         # Keep a flat name→index map from building 0 for any legacy BC lookups.
         self._obs_index = {n: i for i, n in enumerate(observation_names[0])}
+
+        self._building_names = [
+            str(name) for name in metadata.get("building_names", ())
+        ]
+        if self._bc_oracle_schedule is not None:
+            if len(self._building_names) != self._num_buildings:
+                raise ValueError(
+                    "CCLevel2 oracle teacher requires stable building_names metadata"
+                )
+            missing = sorted(
+                set(self._building_names) - set(self._bc_oracle_series)
+            )
+            if missing:
+                raise ValueError(
+                    "CCLevel2 oracle teacher schedule is missing buildings: "
+                    f"{missing}"
+                )
+            expected_step_hours = float(
+                metadata.get("seconds_per_time_step") or 0.0
+            ) / 3600.0
+            if not np.isclose(
+                expected_step_hours,
+                self._bc_oracle_schedule.timestep_hours,
+            ):
+                raise ValueError(
+                    "CCLevel2 oracle teacher timestep does not match the "
+                    "attached environment"
+                )
 
         # --- District feature positions (same names across all buildings) ------
         obs0_idx = self._obs_index
@@ -1355,11 +1511,7 @@ class CCLevel2Agent(BaseAgent):
                 f"observation profile: {missing_district}"
             )
 
-        raw_observation_names = (
-            (metadata or {}).get("raw_observation_names")
-            if isinstance(metadata, dict)
-            else None
-        )
+        raw_observation_names = metadata.get("raw_observation_names")
         self._raw_obs_indices = []
         if isinstance(raw_observation_names, list):
             self._raw_obs_indices = [
@@ -1489,8 +1641,9 @@ class CCLevel2Agent(BaseAgent):
             raise ValueError(
                 "CCLevel2 environment building count does not match "
                 "causal_initial_multipliers"
-            )
+        )
         self._initialize_policy_at_reference()
+        self._reference_policy_state = self._clone_policy_state()
         self.policy.log_std.requires_grad_(self._train_log_std)
         self.ppo_optim = Adam(self.policy.parameters(), lr=self._lr)
         self.rollout_buffer = RolloutBufferV2(
@@ -1547,6 +1700,23 @@ class CCLevel2Agent(BaseAgent):
                 "neutral_baseline",
             }:
                 self._set_reference_decision(observations)
+                if (
+                    self._bc_enabled
+                    and self._bc_collection_policy == "neutral_label_only"
+                    and not self._bc_pretrain_done
+                ):
+                    if self._bc_train_inputs is None:
+                        assert self._cached_community is not None
+                        teacher_ctx = self._build_teacher_context(
+                            self._cached_community
+                        )
+                        self._collect_bc_training_example(
+                            context=self._cached_community,
+                            teacher_context=teacher_ctx,
+                            observations=observations,
+                        )
+                    if self._bc_train_inputs is not None:
+                        self._run_bc_pretraining_chunk()
             elif self._protocol_episode_mode in {
                 "validation",
                 "deterministic_evaluation",
@@ -1562,10 +1732,10 @@ class CCLevel2Agent(BaseAgent):
             elif not self._bc_pretrain_done:
                 ctx = self._build_context(observations)
                 teacher_ctx = self._build_teacher_context(ctx)
-                # Compute teacher targets per building.
-                teacher_targets = self._bc_teacher_multipliers_per_building(
-                    teacher_ctx,
-                    observations,
+                teacher_targets = self._collect_bc_training_example(
+                    context=ctx,
+                    teacher_context=teacher_ctx,
+                    observations=observations,
                 )
                 # Use per-building teacher as cached output.
                 self._cached_action = self._multipliers_to_raw(teacher_targets)
@@ -1588,31 +1758,6 @@ class CCLevel2Agent(BaseAgent):
                 # when this same decision completes BC collection, it must not
                 # enter the PPO rollout as an on-policy transition.
                 self._cached_policy_sample = False
-                if self._bc_train_inputs is None:
-                    self._bc_contexts.append(ctx.copy())
-                    self._bc_teacher_contexts.append(teacher_ctx.copy())
-                    self._bc_targets.append(teacher_targets.copy())
-                    # Accumulate community import/export for BC calibration.
-                    _idx = self._district_feature_names.index
-                    dt = self._bc_dt_hours
-                    self._bc_import_samples.append(
-                        float(
-                            teacher_ctx[
-                                _idx("district__community_import_power_kw")
-                            ]
-                        )
-                        * dt
-                    )
-                    self._bc_export_samples.append(
-                        float(
-                            teacher_ctx[
-                                _idx("district__community_export_power_kw")
-                            ]
-                        )
-                        * dt
-                    )
-                    if len(self._bc_contexts) >= self._bc_collect_steps:
-                        self._prepare_bc_pretraining()
                 if self._bc_train_inputs is not None:
                     self._run_bc_pretraining_chunk()
             else:
@@ -1847,6 +1992,46 @@ class CCLevel2Agent(BaseAgent):
         )
         return float(np.clip(multiplier, self._price_min, 1.0))
 
+    def _oracle_storage_teacher_multipliers(self) -> np.ndarray:
+        """Translate a training-only MILP battery dispatch into price labels.
+
+        Positive schedule power means charge and is mapped below one; negative
+        power means discharge and is mapped above one.  The target is averaged
+        over the CC hold interval so one hourly price does not imitate only the
+        first 15-minute action.  This is a supervision label, never an action
+        schedule read by deterministic evaluation.
+        """
+
+        schedule = self._bc_oracle_schedule
+        if schedule is None or not self._building_names:
+            raise RuntimeError("CCLevel2 oracle teacher is not attached")
+        episode_step = int(self._episode_step_context or 0)
+        start = episode_step + self._bc_oracle_schedule_step_offset
+        indices = [
+            (start + offset) % schedule.horizon
+            for offset in range(self._cc_action_interval)
+        ]
+        multipliers = np.ones(self._num_buildings, dtype=np.float32)
+        for index, building_name in enumerate(self._building_names):
+            target_power_kw = float(
+                np.mean(self._bc_oracle_series[building_name][indices])
+            )
+            if abs(target_power_kw) <= self._bc_oracle_deadband_kw:
+                continue
+            magnitude = min(
+                abs(target_power_kw) / self._bc_oracle_power_scale_kw,
+                1.0,
+            )
+            if target_power_kw > 0.0:
+                multipliers[index] = float(
+                    1.0 - magnitude * (1.0 - self._price_min)
+                )
+            else:
+                multipliers[index] = float(
+                    1.0 + magnitude * (self._price_max - 1.0)
+                )
+        return multipliers
+
     def _bc_teacher_multipliers_per_building(
         self,
         ctx: np.ndarray,
@@ -1866,6 +2051,8 @@ class CCLevel2Agent(BaseAgent):
             [4] connected_ev_soc_deficit           = max(req - soc, 0) ∈ [0, 1]
             [5] connected_ev_departure_urgency_24h = 1 - hours/24 ∈ [0, 1]
         """
+        if self._bc_teacher_mode == "oracle_storage_schedule":
+            return self._oracle_storage_teacher_multipliers()
         if self._bc_target_import is None or self._bc_reference_peak is None:
             return np.ones(self._num_buildings, dtype=np.float32)
 
@@ -1914,34 +2101,85 @@ class CCLevel2Agent(BaseAgent):
                 ))
         return mults
 
+    def _collect_bc_training_example(
+        self,
+        *,
+        context: np.ndarray,
+        teacher_context: np.ndarray,
+        observations: List[np.ndarray],
+    ) -> np.ndarray:
+        targets = self._bc_teacher_multipliers_per_building(
+            teacher_context,
+            observations,
+        )
+        if self._bc_train_inputs is None:
+            self._bc_contexts.append(context.copy())
+            self._bc_teacher_contexts.append(teacher_context.copy())
+            self._bc_targets.append(targets.copy())
+            if self._bc_teacher_mode != "oracle_storage_schedule":
+                dt = self._bc_dt_hours
+                idx = self._district_feature_names.index
+                self._bc_import_samples.append(
+                    float(
+                        teacher_context[
+                            idx("district__community_import_power_kw")
+                        ]
+                    )
+                    * dt
+                )
+                self._bc_export_samples.append(
+                    float(
+                        teacher_context[
+                            idx("district__community_export_power_kw")
+                        ]
+                    )
+                    * dt
+                )
+            if len(self._bc_contexts) >= self._bc_collect_steps:
+                self._prepare_bc_pretraining()
+        return targets
+
     def _prepare_bc_pretraining(self) -> None:
         """Prepare supervised BC tensors without running a long optimizer loop."""
         X = np.stack(self._bc_contexts)          # (N_steps, c_dim)
         teacher_X = np.stack(self._bc_teacher_contexts)
         T = np.stack(self._bc_targets)            # (N_steps, num_buildings)
 
-        # Auto-calibrate reference values from community import/export distribution.
-        imp_arr = np.array(self._bc_import_samples, dtype=np.float64)
-        exp_arr = np.array(self._bc_export_samples, dtype=np.float64)
+        # Auto-calibrate heuristic references from the neutral rollout. The
+        # MILP teacher already carries explicit physical targets and does not
+        # use these aggregate thresholds.
+        if self._bc_teacher_mode != "oracle_storage_schedule":
+            imp_arr = np.array(self._bc_import_samples, dtype=np.float64)
+            exp_arr = np.array(self._bc_export_samples, dtype=np.float64)
 
-        if self._bc_target_import is None:
-            self._bc_target_import = float(np.percentile(imp_arr, 75))
-        if self._bc_reference_peak is None:
-            excess_sq = np.maximum(0.0, imp_arr - self._bc_target_import) ** 2
-            self._bc_reference_peak = max(float(np.percentile(excess_sq, 90)), 1e-6)
-        if self._bc_reference_export is None:
-            self._bc_reference_export = max(float(np.percentile(exp_arr, 90)), 1e-6)
+            if self._bc_target_import is None:
+                self._bc_target_import = float(np.percentile(imp_arr, 75))
+            if self._bc_reference_peak is None:
+                excess_sq = np.maximum(0.0, imp_arr - self._bc_target_import) ** 2
+                self._bc_reference_peak = max(
+                    float(np.percentile(excess_sq, 90)),
+                    1e-6,
+                )
+            if self._bc_reference_export is None:
+                self._bc_reference_export = max(
+                    float(np.percentile(exp_arr, 90)),
+                    1e-6,
+                )
 
         logger.info(
             "CC-L2 BC | collected {} contexts | "
             "target_import={:.3f} ref_peak={:.4f} ref_export={:.3f}",
             len(X),
-            self._bc_target_import, self._bc_reference_peak, self._bc_reference_export,
+            float(self._bc_target_import or 0.0),
+            float(self._bc_reference_peak or 0.0),
+            float(self._bc_reference_export or 0.0),
         )
 
         # Re-compute targets now that reference values are calibrated.
         # Per-building block: [soc, pv, net, ev_conn, soc_deficit, urgency_24h]
         for j in range(len(X)):
+            if self._bc_teacher_mode == "oracle_storage_schedule":
+                continue
             base = self._community_signal(teacher_X[j])
             d_start = self._building_context_start
             for i in range(self._num_buildings):
@@ -1982,6 +2220,9 @@ class CCLevel2Agent(BaseAgent):
 
         self._bc_train_inputs = torch.tensor(X, dtype=torch.float32)
         self._bc_train_targets = torch.tensor(T_raw, dtype=torch.float32)
+        if self._bc_anchor_weight > 0.0:
+            self._bc_anchor_inputs = self._bc_train_inputs.clone()
+            self._bc_anchor_targets = self._bc_train_targets.clone()
 
         bc_params = (list(self.policy.encoder.parameters())
                      + list(self.policy.mean_head.parameters()))
@@ -2274,7 +2515,8 @@ class CCLevel2Agent(BaseAgent):
         num_steps = self.rollout_buffer.num_steps
         kl_stop   = False
         approx_kl = 0.0
-        pg_loss = v_loss = ent_loss = torch.tensor(0.0)
+        pg_loss = v_loss = ent_loss = bc_anchor_loss = torch.tensor(0.0)
+        bc_anchor_weight = self._current_bc_anchor_weight()
 
         for _ in range(self._num_epochs):
             if kl_stop:
@@ -2325,7 +2567,31 @@ class CCLevel2Agent(BaseAgent):
                 )
                 v_loss = 0.5 * torch.max(v_unclipped, (v_clipped - returns[mb]) ** 2).mean()
 
-                loss     = pg_loss + self._vf_coef * v_loss - self._ent_coef * ent_loss
+                bc_anchor_loss = new_logprobs.sum() * 0.0
+                if (
+                    bc_anchor_weight > 0.0
+                    and self._bc_anchor_inputs is not None
+                    and self._bc_anchor_targets is not None
+                ):
+                    anchor_size = len(self._bc_anchor_inputs)
+                    anchor_indices = np.random.randint(
+                        0,
+                        anchor_size,
+                        size=min(self._bc_anchor_batch_size, anchor_size),
+                    )
+                    anchor_context = self._bc_anchor_inputs[anchor_indices]
+                    anchor_target = self._bc_anchor_targets[anchor_indices]
+                    anchor_pred = self.policy.mean_head(
+                        self.policy.encoder(anchor_context)
+                    )
+                    bc_anchor_loss = (anchor_pred - anchor_target).pow(2).mean()
+
+                loss = (
+                    pg_loss
+                    + self._vf_coef * v_loss
+                    - self._ent_coef * ent_loss
+                    + bc_anchor_weight * bc_anchor_loss
+                )
 
                 self.ppo_optim.zero_grad()
                 loss.backward()
@@ -2335,8 +2601,16 @@ class CCLevel2Agent(BaseAgent):
         self._ppo_update_count += 1
         log_std_mean = float(self.policy.log_std.mean().item())
         logger.info(
-            "CC-L2 PPO | pg={:.4f} v={:.4f} ent={:.4f} kl={:.4f} log_std={:.3f} kl_stop={}",
-            pg_loss.item(), v_loss.item(), ent_loss.item(), approx_kl, log_std_mean, kl_stop,
+            "CC-L2 PPO | pg={:.4f} v={:.4f} ent={:.4f} bc={:.4f} "
+            "bc_w={:.4f} kl={:.4f} log_std={:.3f} kl_stop={}",
+            pg_loss.item(),
+            v_loss.item(),
+            ent_loss.item(),
+            bc_anchor_loss.item(),
+            bc_anchor_weight,
+            approx_kl,
+            log_std_mean,
+            kl_stop,
         )
         if mlflow.active_run():
             mlflow.log_metrics(
@@ -2344,6 +2618,8 @@ class CCLevel2Agent(BaseAgent):
                     "CC2/PPO_pg_loss":    pg_loss.item(),
                     "CC2/PPO_v_loss":     v_loss.item(),
                     "CC2/PPO_entropy":    ent_loss.item(),
+                    "CC2/PPO_bc_anchor_loss": bc_anchor_loss.item(),
+                    "CC2/PPO_bc_anchor_weight": bc_anchor_weight,
                     "CC2/PPO_approx_kl":  approx_kl,
                     "CC2/PPO_kl_stop":    float(kl_stop),
                     "CC2/PPO_log_std":    log_std_mean,
@@ -2360,6 +2636,22 @@ class CCLevel2Agent(BaseAgent):
                 },
                 step=self._ppo_update_count,
             )
+
+    def _current_bc_anchor_weight(self) -> float:
+        if self._bc_anchor_weight <= 0.0:
+            return 0.0
+        if self._bc_anchor_decay_updates <= 0:
+            return self._bc_anchor_weight
+        fraction = min(
+            self._ppo_update_count / self._bc_anchor_decay_updates,
+            1.0,
+        )
+        return max(
+            self._bc_anchor_min_weight,
+            self._bc_anchor_weight
+            + fraction
+            * (self._bc_anchor_min_weight - self._bc_anchor_weight),
+        )
 
     @staticmethod
     def _normalize_masked_actor_advantages(
@@ -2625,6 +2917,27 @@ class CCLevel2Agent(BaseAgent):
             "bc_use_physical_teacher_context": (
                 self._bc_use_physical_teacher_context
             ),
+            "bc_teacher_mode": self._bc_teacher_mode,
+            "bc_collection_policy": self._bc_collection_policy,
+            "bc_anchor_weight": self._bc_anchor_weight,
+            "bc_anchor_min_weight": self._bc_anchor_min_weight,
+            "bc_anchor_decay_updates": self._bc_anchor_decay_updates,
+            "training_teacher": (
+                {
+                    "type": "perfect_foresight_storage_schedule",
+                    "problem_id": self._bc_oracle_problem_id,
+                    "path": (
+                        str(self._bc_oracle_schedule_path)
+                        if self._bc_oracle_schedule_path is not None
+                        else None
+                    ),
+                    "sha256": self._bc_oracle_schedule_sha256,
+                    "evaluation_access": False,
+                    "deployable": False,
+                }
+                if self._bc_oracle_schedule is not None
+                else None
+            ),
             "causal_use_physical_context": self._causal_use_physical_context,
             "separate_value_encoder": self._separate_value_encoder,
             "neutral_baseline_enabled": self._neutral_baseline_enabled,
@@ -2706,6 +3019,10 @@ class CCLevel2Agent(BaseAgent):
                 "validation_history": self._validation_history,
                 "train_log_std": self._train_log_std,
                 "bc_pretrain_done":   self._bc_pretrain_done,
+                "bc_teacher_mode": self._bc_teacher_mode,
+                "bc_collection_policy": self._bc_collection_policy,
+                "bc_anchor_inputs": self._bc_anchor_inputs,
+                "bc_anchor_targets": self._bc_anchor_targets,
                 "bc_target_import":   self._bc_target_import,
                 "bc_reference_peak":  self._bc_reference_peak,
                 "bc_reference_export": self._bc_reference_export,
@@ -2783,6 +3100,22 @@ class CCLevel2Agent(BaseAgent):
             raise ValueError(
                 "CC-L2 checkpoint train_log_std does not match the current config"
             )
+        checkpoint_teacher_mode = ckpt.get("bc_teacher_mode")
+        if (
+            checkpoint_teacher_mode is not None
+            and checkpoint_teacher_mode != self._bc_teacher_mode
+        ):
+            raise ValueError(
+                "CC-L2 checkpoint BC teacher mode does not match the current config"
+            )
+        checkpoint_collection_policy = ckpt.get("bc_collection_policy")
+        if (
+            checkpoint_collection_policy is not None
+            and checkpoint_collection_policy != self._bc_collection_policy
+        ):
+            raise ValueError(
+                "CC-L2 checkpoint BC collection policy does not match the current config"
+            )
         self.policy.load_state_dict(ckpt["policy"])
         self.ppo_optim.load_state_dict(ckpt["optimizer"])
         self._reward_rms._n    = ckpt.get("reward_rms_n",    0)
@@ -2805,6 +3138,12 @@ class CCLevel2Agent(BaseAgent):
         self._global_cc_step    = int(ckpt.get("global_cc_step", 0))
         if "bc_pretrain_done" in ckpt:
             self._bc_pretrain_done = bool(ckpt["bc_pretrain_done"])
+        anchor_inputs = ckpt.get("bc_anchor_inputs")
+        anchor_targets = ckpt.get("bc_anchor_targets")
+        if isinstance(anchor_inputs, torch.Tensor):
+            self._bc_anchor_inputs = anchor_inputs.detach().cpu().clone()
+        if isinstance(anchor_targets, torch.Tensor):
+            self._bc_anchor_targets = anchor_targets.detach().cpu().clone()
         baseline_rewards = ckpt.get("neutral_baseline_rewards")
         if isinstance(baseline_rewards, list):
             self._neutral_baseline_rewards = [
