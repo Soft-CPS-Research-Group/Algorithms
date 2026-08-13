@@ -1648,9 +1648,16 @@ class Wrapper_CityLearn(RLC):
                         self._synchronize_model_cuda_for_timing()
                         phase_start_time = time.perf_counter()
                         if self._pending_model_environment_attach:
-                            self._pending_model_environment_attach = False
-                            self._refresh_update_schedule()
-                            self._attach_model_environment_metadata()
+                            try:
+                                self._pending_model_environment_attach = False
+                                self._refresh_update_schedule()
+                                self._attach_model_environment_metadata()
+                            except Exception:
+                                if model_topology_snapshot is not None and callable(restore_model_topology):
+                                    restore_model_topology(model_topology_snapshot)
+                                if entity_layout_snapshot is not None:
+                                    self._restore_entity_layout_state(entity_layout_snapshot)
+                                raise
                         else:
                             self.update(
                                 observations,
