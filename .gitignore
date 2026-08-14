@@ -31,6 +31,7 @@
 /tests/test_cc_frozen_leaf_scorecard.py
 /tests/test_cc_level2_smart_settlement.py
 /tests/test_matd3_*_v*.py
+/tests/test_matd3_v*_campaign.py
 /tests/test_ppo_cc_*.py
 
 # Result-bearing research notes kept locally.
