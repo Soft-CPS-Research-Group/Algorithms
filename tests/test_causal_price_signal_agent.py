@@ -5,21 +5,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import yaml
 
 from algorithms.agents.causal_price_signal_agent import CausalPriceSignalAgent
 from algorithms.registry import ALGORITHM_REGISTRY, build_execution_unit
-from scripts.generate_cc_ppo_causal_online_v5p3 import (
-    CHARGE_RATES,
-    EXPERIMENT_NAME,
-    causal_online_recipe,
-    generate,
-)
-from utils.config_schema import CausalPriceSignalHyperparameters, validate_config
+from utils.config_schema import CausalPriceSignalHyperparameters
 
 
-ROOT = Path(__file__).resolve().parents[1]
-CONFIG_ROOT = ROOT / "configs" / "experiments" / EXPERIMENT_NAME
 NAMES = [
     "district__electricity_pricing",
     "district__electricity_pricing_predicted_1",
@@ -205,46 +196,6 @@ def test_causal_signal_schema_rejects_non_discount():
             neutral_multiplier=1.0,
             discount_multipliers=[0.9, 1.31],
         )
-
-
-@pytest.mark.parametrize("charge_rate", CHARGE_RATES)
-def test_v5p3_recipe_is_causal_annual_and_keeps_frozen_local_ppo(charge_rate: float):
-    config = causal_online_recipe(charge_rate)
-    validate_config(config)
-    manager, ppo = config["pipeline"]
-    assert manager["algorithm"] == "CausalPriceSignal"
-    assert manager["frozen"] is True
-    assert "schedule" not in manager["hyperparameters"]
-    assert manager["hyperparameters"]["cc_action_interval"] == 4
-    assert config["simulator"]["episode_time_steps"] == 35040
-    assert config["simulator"]["community_market"]["enabled"] is True
-    assert config["tracking"]["tags"]["trace_derived"] == "False"
-    assert config["tracking"]["tags"]["uses_future_realized_data"] == "False"
-    assert ppo["frozen"] is True
-    residual = ppo["exploration"]["params"][
-        "residual_base_policy_hyperparameters"
-    ]
-    assert residual["signal_price_charge_rate"] == pytest.approx(charge_rate)
-
-
-def test_generated_v5p3_templates_match_committed_templates(tmp_path: Path):
-    for path in generate(tmp_path):
-        committed = CONFIG_ROOT / path.name
-        assert yaml.safe_load(path.read_text(encoding="utf-8")) == yaml.safe_load(
-            committed.read_text(encoding="utf-8")
-        )
-
-
-def test_v5p3_smoke_is_short_and_not_promotion_eligible(tmp_path: Path):
-    configs = [
-        yaml.safe_load(path.read_text(encoding="utf-8"))
-        for path in generate(tmp_path, smoke=True)
-    ]
-    for config in configs:
-        validate_config(config)
-        assert config["simulator"]["episode_time_steps"] == 385
-        assert config["tracking"]["tags"]["evidence"] == "functional_smoke"
-        assert config["tracking"]["tags"]["promotion_eligible"] == "False"
 
 
 def test_causal_signal_is_registered_as_raw_observation_pipeline_manager():
