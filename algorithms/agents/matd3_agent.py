@@ -941,6 +941,16 @@ class MATD3(MADDPG):
             "action_dimensions": list(getattr(self, "action_dimension", [])),
             "step": int(step),
         }
+        if checkpoint_mode == "inference":
+            # The actors are only one part of a residual MATD3 policy.  Its
+            # deterministic action authority is scheduled from
+            # ``exploration_step`` as well, so an actor-only checkpoint that
+            # resets this value to zero does not reproduce the exported leaf.
+            # Keep this small operational state separate from trainable
+            # replay/optimizer/exploration state.
+            checkpoint["inference_policy_state"] = {
+                "exploration_step": int(getattr(self, "exploration_step", step)),
+            }
         for agent_idx in range(self.num_agents):
             checkpoint[f"actor_state_dict_{agent_idx}"] = self.actors[agent_idx].state_dict()
             if agent_idx < len(getattr(self, "actor_aux_heads", [])):
@@ -1044,7 +1054,30 @@ class MATD3(MADDPG):
                 )
 
         if checkpoint_mode == "inference":
-            logger.info("Frozen MATD3 actors loaded from inference checkpoint {}", checkpoint_file)
+            inference_policy_state = checkpoint.get("inference_policy_state")
+            if isinstance(inference_policy_state, dict):
+                inference_step = int(
+                    inference_policy_state.get(
+                        "exploration_step",
+                        checkpoint.get("step", 0),
+                    )
+                    or 0
+                )
+            else:
+                # Backward compatibility for the historical actor-only V5
+                # checkpoint.  Its top-level step is sufficient to recover
+                # the saturated residual-authority schedule.
+                inference_step = int(checkpoint.get("step", 0) or 0)
+            self.exploration_step = max(
+                int(getattr(self, "exploration_step", 0) or 0),
+                inference_step,
+            )
+            logger.info(
+                "Frozen MATD3 actors loaded from inference checkpoint {} "
+                "with operational step {}",
+                checkpoint_file,
+                self.exploration_step,
+            )
             return
 
         if "replay_buffer" in checkpoint and bool(

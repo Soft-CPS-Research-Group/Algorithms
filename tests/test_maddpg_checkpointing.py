@@ -238,6 +238,7 @@ def test_matd3_inference_checkpoint_contains_only_frozen_actor_state(tmp_path):
     source.observation_dimension = [2]
     source.action_dimension = [1]
     source.checkpoint_artifact = "matd3_leaf.pth"
+    source.exploration_step = 314
     with torch.no_grad():
         source.actors[0].weight.fill_(0.75)
         source.actors[0].bias.fill_(-0.25)
@@ -254,6 +255,7 @@ def test_matd3_inference_checkpoint_contains_only_frozen_actor_state(tmp_path):
     assert "critic_2_state_dict_0" not in payload
     assert "actor_optimizer_state_dict_0" not in payload
     assert "replay_buffer" not in payload
+    assert payload["inference_policy_state"] == {"exploration_step": 314}
 
     restored = _build_matd3_agent_for_load()
     restored.frozen = True
@@ -267,6 +269,26 @@ def test_matd3_inference_checkpoint_contains_only_frozen_actor_state(tmp_path):
         assert torch.equal(restored.actor_targets[0].state_dict()[key], value)
     for key, value in critic_before.items():
         assert torch.equal(restored.critics[0].state_dict()[key], value)
+    assert restored.exploration_step == 314
+
+
+def test_matd3_historical_inference_checkpoint_restores_operational_step(tmp_path):
+    source = _build_matd3_agent_for_load()
+    source.checkpoint_mode = "inference"
+    source.observation_dimension = [2]
+    source.action_dimension = [1]
+    checkpoint_path = source.save_checkpoint(str(tmp_path), step=70078)
+
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    payload.pop("inference_policy_state")
+    torch.save(payload, checkpoint_path)
+
+    restored = _build_matd3_agent_for_load()
+    restored.frozen = True
+    restored.exploration_step = 0
+    restored.load_checkpoint(checkpoint_path)
+
+    assert restored.exploration_step == 70078
 
 
 def test_matd3_inference_checkpoint_rejects_trainable_stage(tmp_path):

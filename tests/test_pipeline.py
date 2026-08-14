@@ -371,6 +371,27 @@ class TestPipelineLifecycle:
 
         assert leaf_member.attach_calls[0]["observation_names"] == raw_names
 
+    def test_attach_environment_routes_raw_names_to_warm_start_leaf(self) -> None:
+        manager = RecordingUnit("manager", use_raw_observations=False)
+        leaf = RecordingUnit("leaf", use_raw_observations=False)
+        leaf.warm_start_policy_name = "RBCSmartPolicy"
+        raw_names = [["raw_required_soc", "raw_departure_time"]]
+        encoded_names = [["encoded_feature"]]
+
+        Pipeline([manager, leaf]).attach_environment(
+            observation_names=raw_names,
+            action_names=[["electric_vehicle_storage"]],
+            action_space=["space"],
+            observation_space=["obs_space"],
+            metadata={
+                "raw_observation_names": raw_names,
+                "encoded_observation_names": encoded_names,
+            },
+        )
+
+        assert manager.attach_calls[0]["observation_names"] == encoded_names
+        assert leaf.attach_calls[0]["observation_names"] == raw_names
+
     def test_attach_environment_routes_profiled_names_to_requesting_stage(self) -> None:
         manager = RecordingUnit("manager")
         manager.observation_encoding_profile = "cc_level1"

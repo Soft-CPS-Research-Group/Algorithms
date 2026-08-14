@@ -286,6 +286,8 @@ class Pipeline(ExecutionUnit):
             elif (
                 stage.use_raw_observations
                 or bool(getattr(stage, "requires_raw_observation_context", False))
+                or getattr(stage, "_warm_start_policy", None) is not None
+                or bool(getattr(stage, "warm_start_policy_name", None))
             ) and raw_observation_names is not None:
                 stage_kwargs["observation_names"] = raw_observation_names
             elif not stage.use_raw_observations and encoded_observation_names is not None:
