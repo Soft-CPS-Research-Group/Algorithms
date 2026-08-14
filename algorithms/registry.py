@@ -78,7 +78,7 @@ from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolic
 from algorithms.agents.total_home_oracle_replay_policy import TotalHomeOracleReplayPolicy
 from algorithms.agents.total_oracle_replay_policy import TotalOracleReplayPolicy
 _registry_trace("before AgentTransformerPPO agents import")
-from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.transformer_ppo.agent import AgentTransformerPPO
 _registry_trace("after AgentTransformerPPO agents import")
 _registry_trace("before RuleBasedPolicy import")
 from algorithms.agents.rbc_agent import RuleBasedPolicy
@@ -190,7 +190,7 @@ def _stage_to_agent_view(global_config: Dict[str, Any], stage_cfg: Dict[str, Any
         "name": stage_cfg["algorithm"],
         "hyperparameters": stage_cfg.get("hyperparameters", {}) or {},
     }
-    for optional_key in ("networks", "replay_buffer", "exploration", "policy", "tokenizer_config_path", "transformer"):
+    for optional_key in ("networks", "replay_buffer", "exploration", "policy", "tokenizer_config_path", "transformer", "behavior_cloning"):
         if optional_key in stage_cfg and stage_cfg[optional_key] is not None:
             algorithm_block[optional_key] = stage_cfg[optional_key]
     agent_view["algorithm"] = algorithm_block
@@ -279,6 +279,8 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
             raise ValueError(
                 f"Stage '{algorithm_name}' has count={count}; must be >= 1."
             )
+        if algorithm_name == "AgentTransformerPPO" and count != 1:
+            raise ValueError("AgentTransformerPPO pipeline stages require count=1")
 
         frozen = bool(stage_cfg.get("frozen", False))
 

@@ -151,6 +151,22 @@ def test_citylearn_adapter_reserves_both_building_15_ev_minima() -> None:
     assert result.executed_actions[0] == pytest.approx(0.36)
 
 
+def test_citylearn_adapter_uses_local_observation_building_not_global_metadata() -> None:
+    adapter, observation = _adapter_and_observation()
+    adapter = CityLearnLocalSafetyAdapter(
+        observation_names=adapter.observation_names,
+        action_names=adapter.action_names,
+        action_low=adapter.action_low,
+        action_high=adapter.action_high,
+        metadata={"building_names": ["Building_1", "Building_15"]},
+    )
+
+    result = adapter.project(observation, [0.0, 0.0, 0.0])
+
+    assert adapter.building_id == "Building_15"
+    assert result.executed_actions[1:] == pytest.approx((0.5, 0.4))
+
+
 def test_citylearn_adapter_keeps_configured_margin_below_phase_limit() -> None:
     base, observation = _adapter_and_observation()
     adapter = CityLearnLocalSafetyAdapter(
@@ -594,6 +610,41 @@ def test_ev_service_target_cap_prevents_policy_overcharge() -> None:
     )
 
     assert result.executed_actions[0] == pytest.approx(0.25)
+
+
+def test_ev_service_target_cap_never_lowers_mandatory_minimum() -> None:
+    building = "Building_4"
+    prefix = f"charger::{building}/charger_4_1::"
+    names = [
+        f"{prefix}connected_state",
+        f"{prefix}max_charging_power_kw",
+        f"{prefix}max_discharging_power_kw",
+        f"{prefix}min_charging_power_kw",
+        f"{prefix}available_charge_action_normalized",
+        f"{prefix}available_discharge_action_normalized",
+        f"{prefix}min_required_action_normalized",
+        f"{prefix}energy_to_required_soc_kwh",
+        f"{prefix}charger_efficiency_ratio",
+    ]
+    adapter = CityLearnLocalSafetyAdapter(
+        observation_names=names,
+        action_names=["electric_vehicle_storage_charger_4_1"],
+        action_low=[-1.0],
+        action_high=[1.0],
+        metadata={"building_names": [building], "seconds_per_time_step": 900},
+        config=CityLearnSafetyConfig(
+            protect_ev_minimum=True,
+            protect_ev_service_target=True,
+        ),
+    )
+
+    result = adapter.project(
+        [1.0, 22.0, 22.0, 3.7, 1.0, 1.0, 0.5, 1.2375, 0.9],
+        [0.0],
+    )
+
+    assert result.feasible
+    assert result.executed_actions[0] == pytest.approx(0.5)
 
 
 def test_zero_filled_headroom_is_unconfigured_until_positive_envelope_seen() -> None:

@@ -168,11 +168,14 @@ The adapter (`utils/entity_adapter.py`) returns:
 ```python
 {
   "tables": {
-    "building": np.zeros((n_buildings, len(building_action_features)), dtype=np.float32),
-    "charger": np.zeros((n_chargers, len(charger_action_features)), dtype=np.float32),
+    "building": np.zeros((n_buildings, len(building_action_features)), dtype=np.float64),
+    "charger": np.zeros((n_chargers, len(charger_action_features)), dtype=np.float64),
   }
 }
 ```
+
+The adapter preserves float64 action values through the entity payload. This
+keeps the executed action identical to the affine action retained by PPO.
 
 It does **not** emit a `"map"` field today. The schema in `softcpsrecsimulator
 0.3.0`’s example uses `tables + map`, but the env accepts the tables-only
@@ -551,7 +554,7 @@ The startup check in §9.1 then becomes a pure post-condition assertion.
 
 - No imports from `algorithms.*`, `utils.*`, no torch/numpy.
 - Pure stdlib + `typing` + `re`.
-- File location: `algorithms/utils/entity_token_layout.py`.
+- File location: `algorithms/transformer_ppo/entity_token_layout.py`.
 
 ### Tests (`tests/test_entity_token_layout.py`)
 
@@ -694,7 +697,7 @@ above.)
 
 ## 8. TransformerBackbone
 
-`algorithms/utils/transformer_backbone.py`:
+`algorithms/transformer_ppo/transformer_backbone.py`:
 
 - Type embedding table size = **3**: `SRO=0`, `NFC=1`, `CA=2`.
 - `forward(sros, nfc, cas)` takes three tensors:
@@ -768,9 +771,9 @@ is rebuilt (see §11.2).
 
 ### 9.3 Action range and clipping
 
-`predict()` returns values in `[-1, 1]`. The wrapper clips to per-agent
-action-space bounds via the existing `_clip_actions`
-(`utils/wrapper_citylearn.py`).
+The actor samples in `[-1, 1]`, then `predict()` maps each component
+affinely to its finite environment range `[low, high]`. Bounds must have
+exactly one value per action and satisfy `low < high`.
 
 ---
 
@@ -843,6 +846,11 @@ class AgentTransformerPPO(BaseAgent):
 
 Each building owns: tokenizer, backbone, actor, critic, rollout buffer,
 optimizer, cached `BuildingTokenLayout`.
+
+`AgentTransformerPPO` must be the final pipeline stage. It stores the exact
+action returned by `predict()` and accepts only that action in `update()`.
+Earlier stages may transform the leaf action, so TPPO cannot safely learn
+from a downstream stage's environment action.
 
 ### Tests (`tests/test_agent_transformer_ppo.py`)
 
@@ -939,6 +947,14 @@ owns layout reconstruction. Sequence (must run in this order):
 > `update_step` window is handled here (the buffer is force-flushed). The
 > next regularly-scheduled `update_step` will then operate on a fresh
 > buffer.
+
+When the building count changes, each existing building is flushed before
+the complete per-building state rebuild.
+
+Episode end uses the same boundary flush. A one-sample rollout is trained
+with a one-sample batch so its transition and reward are never discarded.
+The wrapper consumes training metrics after this hook, including on the
+last episode.
 
 ### 11.3 No-op steps
 
@@ -1325,7 +1341,7 @@ simulator:
 
 training:
   seed: 22
-  steps_between_training_updates: 1
+  steps_between_training_updates: 256
   target_update_interval: 0
 
 topology:
@@ -1343,7 +1359,7 @@ pipeline:
       nhead: 4
       num_layers: 2
       dim_feedforward: 128
-      dropout: 0.1
+      dropout: 0.0
     hyperparameters:
       learning_rate: 3.0e-4
       gamma: 0.99
@@ -1467,9 +1483,78 @@ Validation is performed in a single authoritative place
 
 ---
 
-## 13. Export & Checkpoint Contract (dynamic topology)
+## 13. Behavior Cloning
 
-### 13.1 ONNX export
+`AgentTransformerPPO` can add a behavior-cloning (BC) regularizer through
+the pipeline stage's `behavior_cloning` block. Separate demonstration episodes
+are collected before PPO rollouts: deterministic `RBCSmartPolicy` episodes
+populate a bounded per-building demonstration set before training. PPO rollout
+transitions always come from the Transformer actor. The teacher never changes
+an environment action during PPO collection or evaluation.
+
+The BC loss is an auxiliary actor-only loss. The critic uses only PPO value
+targets and receives no demonstration loss. Per-CA imitation uses weighted
+squared error. Each CA uses `ev_multiplier` or `storage_multiplier`; the
+scheduled BC `weight` then scales the loss. The agent runs one separate BC
+optimizer step after all PPO epochs for a rollout. It does not add BC loss to
+the PPO actor objective. Demonstrations never update value normalization
+statistics.
+
+```yaml
+behavior_cloning:
+  enabled: true
+  demonstration_episodes: 1
+  max_samples_per_building: 3400
+  pretraining_epochs: 4
+  batch_size: 64
+  weight: 0.42
+  min_weight: 0.24
+  decay_start_step: 512
+  decay_steps: 3584
+  ev_multiplier: 24.0
+  storage_multiplier: 0.18
+  teacher:
+    policy: RBCSmartPolicy
+    hyperparameters: {}
+```
+
+`weight` decays linearly toward `min_weight` after `decay_start_step` for
+`decay_steps`. The schedule uses persisted post-demonstration actor-training
+steps. Teacher collection and evaluation do not advance this clock.
+`min_weight` must not exceed `weight`.
+`demonstration_episodes` controls deterministic teacher collection;
+`max_samples_per_building` bounds retained examples; and `pretraining_epochs`
+plus `batch_size` control actor-only pretraining before the first PPO rollout.
+
+On topology changes, the wrapper rebuilds the entity layout and reattaches the
+agent. BC rebuilds its teacher while retaining demonstrations with their layout
+signatures, so compatible historical topology groups remain available for
+pretraining.
+
+Checkpoints persist whether BC pretraining completed and the BC actor-training
+clock. A resumed run therefore
+does not restart teacher collection when the wrapper restarts episode numbering
+at zero. Version 2 checkpoints infer completion from their stored pretraining
+metrics.
+
+BC diagnostics include `behavior_cloning_teacher_enabled`,
+`behavior_cloning_demonstration_samples`,
+`behavior_cloning_effective_weight`, `behavior_cloning_loss`,
+`behavior_cloning_weighted_loss`, `behavior_cloning_valid_samples`,
+`behavior_cloning_pretraining_epochs`,
+`behavior_cloning_incompatible_demonstration_samples`, and
+`behavior_cloning_rejected_at_record`. Pretraining also reports
+`behavior_cloning_pretraining_batches` and per-building
+`behavior_cloning_building_<building_id>_usable_samples` and
+`behavior_cloning_building_<building_id>_trained_batches`. The implementation
+does not provide dedicated skipped-batch diagnostics or final actor-only
+evaluation metrics.
+
+---
+
+## 14. Export & Checkpoint Contract (dynamic topology)
+
+### 14.1 ONNX export
 
 Per-building, per call to `export_artifacts(output_dir, context=...)`. For
 each building `b`:
@@ -1490,7 +1575,7 @@ each building `b`:
   valid if encoded length changes inside the same topology, which it
   doesn’t today but is cheap to guard against).
 
-### 13.2 Manifest entries
+### 14.2 Manifest entries
 
 `export_artifacts` MUST return the canonical artifact payload required
 by `utils/artifact_manifest.py` and validated by
@@ -1571,7 +1656,7 @@ used by debugging and tooling and are passed through verbatim by
 We export **only the topology version current at export time**; no
 cross-topology weight portability is required for production.
 
-### 13.3 Checkpoints
+### 14.3 Checkpoints
 
 - File: `<output_dir>/checkpoints/transformer_ppo_step<step>.pt`.
 - Payload (`torch.save`):
@@ -1607,11 +1692,11 @@ Run on `citylearn_three_phase_dynamic_assets_only_demo` for a small horizon.
 | `test_actions_in_valid_range` | All actions in `[-1, 1]`, no NaN |
 | `test_topology_changes_observed_during_run` | At least one `topology_version` increment in 200 steps (the assets-only demo guarantees this) |
 | `test_kpi_files_generated` | `runs/jobs/<id>/results/{result,summary}.json` exist |
-| `test_artifact_manifest_includes_onnx_per_building` | `artifact_manifest.json` lists per-building ONNX with the naming from §13.2 |
+| `test_artifact_manifest_includes_onnx_per_building` | `artifact_manifest.json` lists per-building ONNX with the naming from §14.2 |
 | `test_buffer_flush_on_topology_change_does_not_crash` | The PPO update triggered by topology change runs and the agent continues training |
 
 ---
-## 14. Decisions Log
+## 15. Decisions Log
 
 | # | Question | Decision |
 |---|---|---|

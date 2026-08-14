@@ -9,11 +9,15 @@ the dummy env's feature schema.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict, List
 
+import numpy as np
 import pytest
+import torch
+from gymnasium import spaces
 
-from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+from algorithms.transformer_ppo.agent import AgentTransformerPPO
 from tests.test_wrapper_entity_mode import _DummyEntityEnv, _entity_config
 from utils.wrapper_citylearn import Wrapper_CityLearn
 
@@ -37,6 +41,44 @@ class _DummyEntityEnvForPPO(_DummyEntityEnv):
             ["electrical_storage", "electric_vehicle_storage"],
             ["electrical_storage", "electric_vehicle_storage"],
         ]
+
+    @property
+    def flat_action_space(self) -> List[spaces.Box]:  # type: ignore[override]
+        building_count = 1 if self._version == 0 else 2
+        return [
+            spaces.Box(
+                low=np.array([-1.0, 0.0], dtype=np.float32),
+                high=np.array([1.0, 1.0], dtype=np.float32),
+                dtype=np.float32,
+            )
+            for _ in range(building_count)
+        ]
+
+class _TerminalTopologyChangeEntityEnvForPPO(_DummyEntityEnvForPPO):
+    """Changes topology on the terminal transition of a two-step episode."""
+
+    def __init__(self, *, truncated: bool = False) -> None:
+        super().__init__()
+        self._steps = 0
+        self._truncated = truncated
+
+    def reset(self):
+        self._version = 0
+        self._steps = 0
+        return self._observation_payload(version=0), {}
+
+    def step(self, _actions):
+        self._steps += 1
+        if self._steps == 2:
+            self._version = 1
+            return (
+                self._observation_payload(version=1),
+                [0.1],
+                not self._truncated,
+                self._truncated,
+                {},
+            )
+        return self._observation_payload(version=0), [0.1], False, False, {}
 
 
 def _ppo_algo_config() -> Dict[str, Any]:
@@ -107,6 +149,84 @@ def test_wrapper_predict_returns_per_building_per_ca_actions() -> None:
         assert -1.0 <= v <= 1.0
 
 
+@pytest.mark.parametrize("truncated", [False, True], ids=["terminal", "truncated"])
+def test_demo_topology_transition_rejects_building_without_demonstrations(
+    monkeypatch: pytest.MonkeyPatch,
+    truncated: bool,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO(truncated=truncated)
+    wrapper_config = _entity_config()
+    wrapper_config["training"]["steps_between_training_updates"] = 4
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-entity-terminal-topology"
+    )
+    agent_config = deepcopy(_ppo_full_config())
+    agent_config["algorithm"]["hyperparameters"]["minibatch_size"] = 2
+    agent_config["algorithm"]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+        "max_samples_per_building": 8,
+        "pretraining_epochs": 2,
+        "batch_size": 2,
+        "weight": 0.4,
+        "min_weight": 0.1,
+        "decay_start_step": 0,
+        "decay_steps": 100,
+        "ev_multiplier": 2.0,
+        "storage_multiplier": 1.0,
+        "teacher": {
+            "policy": "RBCSmartPolicy",
+            "deterministic": True,
+            "hyperparameters": {},
+        },
+    }
+    agent = AgentTransformerPPO(agent_config)
+    wrapper.set_model(agent)
+    assert agent._bc is not None
+
+    ppo_updates: list[tuple[int, int, int, torch.Tensor]] = []
+    original_update = agent._run_ppo_update_with_last_value
+
+    def record_ppo_update(state, last_value, *, building_idx):
+        ppo_updates.append(
+            (agent._current_episode, building_idx, len(state.buffer), last_value.detach().clone())
+        )
+        return original_update(state, last_value, building_idx=building_idx)
+
+    monkeypatch.setattr(agent, "_run_ppo_update_with_last_value", record_ppo_update)
+    pretraining_calls = 0
+    pretraining_metrics: list[dict[str, float]] = []
+    original_pretraining = agent._run_bc_pretraining
+
+    def record_pretraining() -> None:
+        nonlocal pretraining_calls
+        pretraining_calls += 1
+        original_pretraining()
+        pretraining_metrics.append(agent._bc.snapshot_metrics())
+
+    monkeypatch.setattr(agent, "_run_bc_pretraining", record_pretraining)
+    teacher_calls: list[int] = []
+
+    def teacher_actions(observations):
+        teacher_calls.append(agent._current_episode)
+        return [
+            [0.9] * state.layout.n_ca
+            for state in agent._per_building[: len(observations)]
+        ]
+
+    agent._bc.compute_teacher_actions = teacher_actions
+    with pytest.raises(RuntimeError, match=r"zero compatible demonstrations.*B2"):
+        wrapper.learn(episodes=2, deterministic=False)
+
+    assert pretraining_calls == 1
+    assert teacher_calls == [0, 0]
+    assert pretraining_metrics == []
+    assert ppo_updates == []
+    assert len(agent._per_building) == 2
+    assert agent._bc.demonstration_count(0) == 2
+    assert agent._bc.demonstration_count(1) == 0
+
+
 def test_wrapper_topology_change_triggers_agent_rebuild() -> None:
     """Bump ``_version`` to add a second building; the wrapper re-attaches
     on the next ``_apply_entity_layout``, and the agent rebuilds its stacks
@@ -126,6 +246,77 @@ def test_wrapper_topology_change_triggers_agent_rebuild() -> None:
     assert len(agent._per_building) == 2
     for state in agent._per_building:
         assert state.layout.n_ca == 2
+
+
+def test_learn_rolls_back_wrapper_and_agent_when_deferred_attach_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO()
+    wrapper_config = _entity_config()
+    wrapper_config["training"]["steps_between_training_updates"] = 4
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-entity-rollback"
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+    wrapper.set_model(agent)
+    original_attach = agent.attach_environment
+
+    def fail_after_new_topology_is_attached(**kwargs):
+        original_attach(**kwargs)
+        if len(kwargs["observation_names"]) == 2:
+            raise RuntimeError("deferred reattachment failed")
+
+    monkeypatch.setattr(agent, "attach_environment", fail_after_new_topology_is_attached)
+
+    with pytest.raises(RuntimeError, match="deferred reattachment failed"):
+        wrapper.learn(episodes=1)
+
+    assert wrapper._entity_topology_version == 0
+    assert wrapper._entity_adapter is not None
+    assert wrapper._entity_adapter.topology_version == 0
+    assert len(wrapper.action_names) == 1
+    assert len(agent._per_building) == 1
+    assert agent._per_building[0].topology_version == 0
+    assert len(agent._per_building[0].buffer) == 1
+    assert agent._per_building[0].raw_rewards == [0.1]
+    assert agent._pending_decisions[0] is not None
+
+    monkeypatch.setattr(agent, "attach_environment", original_attach)
+    adapted = wrapper._apply_entity_layout(
+        env._observation_payload(version=1), force_attach=False
+    )
+    assert len(adapted) == 2
+    assert len(agent._per_building) == 2
+
+
+def test_learn_rolls_back_wrapper_when_agent_snapshot_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _TerminalTopologyChangeEntityEnvForPPO()
+    wrapper_config = _entity_config()
+    wrapper_config["training"]["steps_between_training_updates"] = 4
+    wrapper = Wrapper_CityLearn(
+        env=env, config=wrapper_config, job_id="ppo-entity-snapshot-rollback"
+    )
+    agent = AgentTransformerPPO(_ppo_full_config())
+    wrapper.set_model(agent)
+
+    def fail_snapshot():
+        raise RuntimeError("topology snapshot failed")
+
+    monkeypatch.setattr(agent, "snapshot_topology_state", fail_snapshot)
+
+    with pytest.raises(RuntimeError, match="topology snapshot failed"):
+        wrapper.learn(episodes=1)
+
+    assert wrapper._entity_topology_version == 0
+    assert wrapper._entity_adapter is not None
+    assert wrapper._entity_adapter.topology_version == 0
+    assert len(wrapper.action_names) == 1
+    assert len(agent._per_building) == 1
+    assert len(agent._per_building[0].buffer) == 0
+    assert agent._per_building[0].raw_rewards == []
+    assert agent._pending_decisions[0] is None
 
 
 def test_wrapper_to_env_actions_round_trips_ppo_output() -> None:

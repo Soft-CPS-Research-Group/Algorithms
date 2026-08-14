@@ -23,12 +23,27 @@ def test_template_passes_schema_validation() -> None:
 
 
 def test_template_resolves_to_registered_agent() -> None:
-    from algorithms.agents.agent_transformer_ppo import AgentTransformerPPO
+    from algorithms.transformer_ppo.agent import AgentTransformerPPO
     from algorithms.registry import ALGORITHM_REGISTRY
 
     cfg = _load_template()
     assert cfg["pipeline"][0]["algorithm"] == "AgentTransformerPPO"
     assert ALGORITHM_REGISTRY["AgentTransformerPPO"] is AgentTransformerPPO
+
+
+def test_template_uses_storage_safe_run_defaults() -> None:
+    cfg = _load_template()
+    tracking = cfg["tracking"]
+    export = cfg["simulator"]["export"]
+
+    assert tracking["mlflow_enabled"] is False
+    assert tracking["log_level"] == "INFO"
+    assert tracking["log_frequency"] == cfg["training"]["steps_between_training_updates"]
+    assert tracking["mlflow_step_sample_interval"] == tracking["log_frequency"]
+    assert cfg["checkpointing"]["checkpoint_interval"] is None
+    assert export["final_episode_only"] is True
+    assert export["include_business_as_usual"] is True
+    assert export["export_business_as_usual_timeseries"] is False
 
 
 def test_template_tokenizer_path_validates_against_bundled_sample() -> None:

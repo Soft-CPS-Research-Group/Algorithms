@@ -27,6 +27,7 @@ class _DummyEntityEnv:
         self.unwrapped = self
         self.time_steps = 24
         self._version = 0
+        self._step_count = 0
         self._expose_building_names = True
 
     @property
@@ -113,7 +114,20 @@ class _DummyEntityEnv:
 
     def reset(self):
         self._version = 0
+        self._step_count = 0
         return self._observation_payload(version=0), {}
+
+    def step(self, _actions):
+        self._step_count += 1
+        if self._step_count == 2:
+            self._version = 1
+        return (
+            self._observation_payload(version=self._version),
+            [0.0 for _ in self._building_ids(self._version)],
+            self._step_count >= 2,
+            False,
+            {},
+        )
 
     @staticmethod
     def _building_ids(version: int) -> List[str]:
@@ -207,6 +221,30 @@ class _DummyModel:
         return True
 
 
+class _TopologyTimingModel(_DummyModel):
+    def __init__(self, phase: Dict[str, Any]):
+        super().__init__()
+        self.phase = phase
+        self.schedule_source = None
+        self.attach_phases: List[int | None] = []
+        self.attach_update_steps: List[bool | None] = []
+        self.update_phases: List[int | None] = []
+
+    def attach_environment(self, **kwargs):
+        self.attach_phases.append(self.phase["active_model_update"])
+        self.attach_update_steps.append(
+            None if self.schedule_source is None else self.schedule_source.update_step
+        )
+        super().attach_environment(**kwargs)
+
+    def update(self, **_kwargs):
+        self.update_phases.append(self.phase["active_model_update"])
+
+    def predict(self, observations, deterministic=None):
+        _ = deterministic
+        return [[0.0, 0.0, 0.0] for _ in observations]
+
+
 class _EncodedDummyModel(_DummyModel):
     def __init__(self):
         super().__init__()
@@ -286,6 +324,83 @@ def test_wrapper_entity_rebuilds_and_reattaches_on_topology_change():
     assert len(adapted) == 2
     assert len(wrapper.action_space) == 2
     assert model.attach_calls == 2
+
+
+def test_wrapper_training_defers_runtime_topology_reattach_to_model_update_phase():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["tracking"]["progress_updates_enabled"] = False
+    wrapper = Wrapper_CityLearn(env=env, config=config, job_id="entity-topology-timing")
+    phase: Dict[str, Any] = {"model_update_count": 0, "active_model_update": None}
+    model = _TopologyTimingModel(phase)
+    wrapper.set_model(model)
+
+    def record_phase(**kwargs):
+        if kwargs["phase"] == "model_update_start":
+            phase["model_update_count"] += 1
+            phase["active_model_update"] = phase["model_update_count"]
+        elif kwargs["phase"] == "model_update_end":
+            phase["active_model_update"] = None
+
+    wrapper._write_phase_progress = record_phase
+
+    wrapper.learn(episodes=1, deterministic=False)
+
+    assert model.attach_phases == [None, None, 2]
+    assert model.update_phases == [1]
+
+
+def test_wrapper_training_refreshes_schedule_before_deferred_topology_reattach():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["training"]["steps_between_training_updates"] = 2
+    config["tracking"]["progress_updates_enabled"] = False
+    wrapper = Wrapper_CityLearn(env=env, config=config, job_id="entity-topology-schedule")
+    phase: Dict[str, Any] = {"model_update_count": 0, "active_model_update": None}
+    model = _TopologyTimingModel(phase)
+    model.schedule_source = wrapper
+    wrapper.set_model(model)
+    checkpoint_schedules: List[bool] = []
+
+    def record_phase(**kwargs):
+        if kwargs["phase"] == "model_update_start":
+            phase["model_update_count"] += 1
+            phase["active_model_update"] = phase["model_update_count"]
+        elif kwargs["phase"] == "model_update_end":
+            phase["active_model_update"] = None
+
+    wrapper._write_phase_progress = record_phase
+    wrapper.checkpoint_manager.maybe_save = lambda **kwargs: checkpoint_schedules.append(
+        kwargs["update_step"]
+    )
+
+    wrapper.learn(episodes=1, deterministic=False)
+
+    assert model.update_phases == [1]
+    assert model.attach_update_steps == [False, False, True]
+    assert checkpoint_schedules == [False, True]
+
+
+def test_wrapper_restores_metadata_when_model_reattachment_fails():
+    class _FailingOnSecondAttach(_DummyModel):
+        def attach_environment(self, **kwargs):
+            super().attach_environment(**kwargs)
+            if self.attach_calls == 2:
+                raise RuntimeError("reattachment failed")
+
+    env = _DummyEntityEnv()
+    wrapper = Wrapper_CityLearn(env=env, config=_entity_config(), job_id="entity-rollback")
+    model = _FailingOnSecondAttach()
+    wrapper.set_model(model)
+    old_version = wrapper._entity_topology_version
+    old_action_names = wrapper.action_names
+
+    env._version = 1
+    with pytest.raises(RuntimeError, match="reattachment failed"):
+        wrapper._apply_entity_layout(env._observation_payload(version=1), force_attach=False)
+
+    assert wrapper._entity_topology_version == old_version
+    assert wrapper.action_names == old_action_names
 
 
 def test_wrapper_entity_converts_flat_actions_into_entity_tables():

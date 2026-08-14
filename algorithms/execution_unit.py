@@ -21,10 +21,23 @@ keep working unchanged once :class:`BaseAgent` adopts this interface.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
+
+
+@runtime_checkable
+class TopologyTransactional(Protocol):
+    """Capability contract for units that can roll back topology changes."""
+
+    def snapshot_topology_state(self) -> Any:
+        """Capture all state that topology attachment may mutate."""
+        ...
+
+    def restore_topology_state(self, snapshot: Any) -> None:
+        """Restore a snapshot after topology attachment fails."""
+        ...
 
 
 class ExecutionUnit(ABC):
@@ -50,6 +63,10 @@ class ExecutionUnit(ABC):
     # When True, this unit's update() is skipped by Pipeline so its weights
     # remain frozen (useful for two-phase HIRO training).
     frozen: bool = False
+
+    # Learners that retain their own emitted environment action may only be
+    # used as the leaf of a Pipeline.
+    requires_final_pipeline_stage: bool = False
 
     # ------------------------------------------------------------------
     # Core interaction loop
@@ -120,6 +137,27 @@ class ExecutionUnit(ABC):
     # ------------------------------------------------------------------
     # Lifecycle hooks
     # ------------------------------------------------------------------
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        """Observe the start of an episode."""
+        _ = episode, training
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        """Observe the end of an episode."""
+        _ = episode, training
+
+    def record_topology_transition(
+        self,
+        *,
+        observations: List[npt.NDArray[np.float64]],
+        actions: List[npt.NDArray[np.float64]],
+        rewards: List[float],
+        terminated: bool,
+        truncated: bool,
+        global_learning_step: int,
+    ) -> None:
+        """Record a transition whose successor has a different topology."""
+        _ = observations, actions, rewards, terminated, truncated, global_learning_step
+
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         """Return whether warm-up is complete. Default: always ``True``."""
         _ = global_learning_step

@@ -3042,15 +3042,15 @@ class EntityContractAdapter:
 
         building_table = np.zeros(
             (len(self._building_action_ids), len(self._building_action_features)),
-            dtype=np.float32,
+            dtype=np.float64,
         )
         charger_table = np.zeros(
             (len(self._charger_action_ids), len(self._charger_action_features)),
-            dtype=np.float32,
+            dtype=np.float64,
         )
         deferrable_table = np.zeros(
             (len(self._deferrable_action_ids), len(self._deferrable_action_features)),
-            dtype=np.float32,
+            dtype=np.float64,
         )
 
         cache_key = self._entity_action_cache_key(action_names)
@@ -3062,7 +3062,7 @@ class EntityContractAdapter:
             if building_index >= len(self._entity_action_routes):
                 continue
 
-            action_values = np.asarray(building_actions, dtype=np.float32).reshape(-1)
+            action_values = np.asarray(building_actions, dtype=np.float64).reshape(-1)
             if action_values.size > 0:
                 action_values = np.nan_to_num(action_values, nan=0.0, posinf=0.0, neginf=0.0)
 

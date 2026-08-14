@@ -286,7 +286,7 @@ def test_excluded_pattern_matches_topology_version():
 
 def test_excluded_feature_pattern_removes_topology_version():
     """The exclusion regex removes the ``topology_version`` feature."""
-    from algorithms.utils.entity_token_layout import EntityTokenLayoutBuilder
+    from algorithms.transformer_ppo.entity_token_layout import EntityTokenLayoutBuilder
     from tests._entity_sample_obs_names import (
         load_sample_observation_names_for_first_building,
     )
@@ -394,7 +394,7 @@ def _make_minimal_transformer_ppo_cfg(
                     "nhead": 4,
                     "num_layers": 2,
                     "dim_feedforward": 128,
-                    "dropout": 0.1,
+                    "dropout": 0.0,
                 },
                 "hyperparameters": {
                     "learning_rate": 3.0e-4,
@@ -417,6 +417,38 @@ def test_validate_config_accepts_transformer_ppo_algorithm():
     from utils.config_schema import validate_config
 
     validate_config(_make_minimal_transformer_ppo_cfg())
+
+
+def test_validate_config_rejects_behavior_cloning_min_weight_above_weight():
+    from utils.config_schema import validate_config
+
+    config = _make_minimal_transformer_ppo_cfg()
+    config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+        "weight": 0.1,
+        "min_weight": 0.2,
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="behavior_cloning.min_weight must be less than or equal to behavior_cloning.weight",
+    ):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_project_config_rejects_transformer_ppo_stage_count_other_than_one(count: int):
+    from utils.config_schema import ProjectConfig
+
+    config = _make_minimal_transformer_ppo_cfg()
+    config["pipeline"][0]["count"] = count
+
+    with pytest.raises(
+        ValueError,
+        match="AgentTransformerPPO pipeline stages require count=1",
+    ):
+        ProjectConfig.model_validate(config)
 
 
 def test_validate_config_loads_tokenizer_json(tmp_path):

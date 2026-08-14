@@ -41,12 +41,12 @@
     "storage": {
       "entity_table": "storage",
       "action_field": "electrical_storage",
-      "input_dim_fallback": 49
+      "input_dim_fallback": 9
     },
     "charger": {
       "entity_table": "charger",
       "action_field": "electric_vehicle_storage",
-      "input_dim_fallback": 63
+      "input_dim_fallback": 16
     }
   },
 

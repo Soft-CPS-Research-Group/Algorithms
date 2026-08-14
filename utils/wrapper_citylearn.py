@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import inspect
 import json
 import faulthandler
@@ -169,6 +170,8 @@ class Wrapper_CityLearn(RLC):
         }
         self._entity_topology_version: Optional[int] = None
         self._topology_changed_during_step: bool = False
+        self._pending_model_environment_attach: bool = False
+        self._defer_model_environment_attach: bool = False
         self._entity_adapter: Optional[EntityContractAdapter] = None
         self._entity_profile_adapters: Dict[str, EntityContractAdapter] = {}
         self._profiled_observation_cache_key: Optional[tuple[int, ...]] = None
@@ -305,6 +308,9 @@ class Wrapper_CityLearn(RLC):
         )
         self.max_step_seconds = self._coerce_positive_float(
             tracking_cfg.get("max_step_seconds")
+        )
+        self.max_update_seconds = self._coerce_positive_float(
+            tracking_cfg.get("max_update_seconds")
         )
         self.stall_watchdog_enabled = bool(tracking_cfg.get("stall_watchdog_enabled", False))
         self.stall_watchdog_timeout_seconds = self._coerce_positive_float(
@@ -466,65 +472,131 @@ class Wrapper_CityLearn(RLC):
         force_attach: bool,
         *,
         model_observations: bool = False,
+        attach_model: bool = True,
     ) -> List[np.ndarray]:
         if not self._entity_interface_mode or self._entity_adapter is None:
             return []
 
         previous_version = self._entity_topology_version
-        if model_observations:
-            agent_observations, observation_names, observation_spaces = (
-                self._entity_adapter.to_agent_encoded_observations(observation_payload)
-            )
-        else:
-            agent_observations, observation_names, observation_spaces = (
-                self._entity_adapter.to_agent_observations(observation_payload)
-            )
-        self._entity_topology_version = self._entity_adapter.topology_version
-
-        self.episode_time_steps = int(getattr(self.episode_tracker, "episode_time_steps", self.episode_time_steps))
-
-        topology_changed = (
-            force_attach
-            or previous_version is None
-            or self._entity_topology_version != previous_version
+        candidate_topology_change = force_attach or self._entity_adapter.needs_rebuild(
+            observation_payload
         )
-        self._topology_changed_during_step = (
-            topology_changed and not force_attach and previous_version is not None
+        previous_layout_state = (
+            self._snapshot_entity_layout_state() if candidate_topology_change else None
         )
-        if topology_changed:
-            self.observation_names = observation_names
-            self.observation_space = observation_spaces
-            self.action_space = list(getattr(self.env, "flat_action_space", []))
-            self.action_names = [list(names) for names in getattr(self.env, "action_names", [])]
-            if len(self.action_names) < len(self.action_space):
-                self.action_names.extend([[] for _ in range(len(self.action_space) - len(self.action_names))])
-            elif len(self.action_names) > len(self.action_space):
-                self.action_names = self.action_names[: len(self.action_space)]
-            self.encoders = self.set_encoders()
-            self._action_bounds_cache = None
-
-        if topology_changed and self._entity_dynamic_mode and previous_version is not None:
-            from algorithms.registry import ALGORITHM_REGISTRY
-            offenders = [
-                name for name in self._algorithm_names
-                if (cls := ALGORITHM_REGISTRY.get(name)) is not None
-                and not bool(getattr(cls, "supports_dynamic_topology", False))
-            ]
-            if offenders:
-                if "MADDPG" in offenders:
-                    raise ValueError(
-                        "MADDPG supports entity interface only with topology_mode='static'. "
-                        "Detected topology change during runtime."
+        model_topology_snapshot = None
+        restore_model_topology = None
+        try:
+            if model_observations:
+                agent_observations, observation_names, observation_spaces = (
+                    self._entity_adapter.to_agent_encoded_observations(
+                        observation_payload
                     )
-                raise ValueError(
-                    f"{sorted(offenders)} do not support dynamic topology "
-                    "(supports_dynamic_topology=False). Detected topology change during runtime."
                 )
+            else:
+                agent_observations, observation_names, observation_spaces = (
+                    self._entity_adapter.to_agent_observations(observation_payload)
+                )
+            self._entity_topology_version = self._entity_adapter.topology_version
 
-        if topology_changed and self.model is not None:
-            self._attach_model_environment_metadata()
+            self.episode_time_steps = int(getattr(self.episode_tracker, "episode_time_steps", self.episode_time_steps))
+
+            topology_changed = (
+                force_attach
+                or previous_version is None
+                or self._entity_topology_version != previous_version
+            )
+            self._topology_changed_during_step = (
+                topology_changed and not force_attach and previous_version is not None
+            )
+            if topology_changed:
+                self.observation_names = observation_names
+                self.observation_space = observation_spaces
+                self.action_space = list(getattr(self.env, "flat_action_space", []))
+                self.action_names = [list(names) for names in getattr(self.env, "action_names", [])]
+                if len(self.action_names) < len(self.action_space):
+                    self.action_names.extend([[] for _ in range(len(self.action_space) - len(self.action_names))])
+                elif len(self.action_names) > len(self.action_space):
+                    self.action_names = self.action_names[: len(self.action_space)]
+                self.encoders = self.set_encoders()
+                self._action_bounds_cache = None
+
+            if topology_changed and self._entity_dynamic_mode and previous_version is not None:
+                from algorithms.registry import ALGORITHM_REGISTRY
+                offenders = [
+                    name for name in self._algorithm_names
+                    if (cls := ALGORITHM_REGISTRY.get(name)) is not None
+                    and not bool(getattr(cls, "supports_dynamic_topology", False))
+                ]
+                if offenders:
+                    if "MADDPG" in offenders:
+                        raise ValueError(
+                            "MADDPG supports entity interface only with topology_mode='static'. "
+                            "Detected topology change during runtime."
+                        )
+                    raise ValueError(
+                        f"{sorted(offenders)} do not support dynamic topology "
+                        "(supports_dynamic_topology=False). Detected topology change during runtime."
+                    )
+
+            if topology_changed and attach_model and self.model is not None:
+                if previous_version is not None and self._entity_dynamic_mode:
+                    snapshot_model_topology = getattr(self.model, "snapshot_topology_state", None)
+                    restore_model_topology = getattr(self.model, "restore_topology_state", None)
+                    if callable(snapshot_model_topology) != callable(restore_model_topology):
+                        raise RuntimeError(
+                            "Model topology rollback requires both snapshot_topology_state() "
+                            "and restore_topology_state()."
+                        )
+                    if callable(snapshot_model_topology):
+                        model_topology_snapshot = snapshot_model_topology()
+                self._attach_model_environment_metadata()
+        except Exception:
+            if model_topology_snapshot is not None and callable(restore_model_topology):
+                restore_model_topology(model_topology_snapshot)
+            if previous_layout_state is not None:
+                self._restore_entity_layout_state(previous_layout_state)
+            raise
 
         return [np.asarray(obs, dtype=np.float64) for obs in agent_observations]
+
+    def _snapshot_entity_layout_state(self) -> Dict[str, Any]:
+        """Capture wrapper and adapter metadata changed during layout rebuild."""
+        adapter_state = None
+        if self._entity_adapter is not None:
+            adapter_state = {
+                name: deepcopy(value)
+                for name, value in self._entity_adapter.__dict__.items()
+                if name != "env"
+            }
+        return {
+            "wrapper": {
+                "_entity_topology_version": self._entity_topology_version,
+                "_topology_changed_during_step": self._topology_changed_during_step,
+                "episode_time_steps": self.episode_time_steps,
+                "observation_names": deepcopy(self.observation_names),
+                "observation_space": deepcopy(self.observation_space),
+                "action_space": deepcopy(self.action_space),
+                "action_names": deepcopy(self.action_names),
+                "encoders": deepcopy(getattr(self, "encoders", None)),
+                "_action_bounds_cache": deepcopy(
+                    getattr(self, "_action_bounds_cache", None)
+                ),
+            },
+            "adapter": adapter_state,
+        }
+
+    def _restore_entity_layout_state(self, snapshot: Mapping[str, Any]) -> None:
+        """Restore wrapper and adapter metadata after a failed rebuild."""
+        for name, value in snapshot["wrapper"].items():
+            setattr(self, name, deepcopy(value))
+        adapter_state = snapshot.get("adapter")
+        if self._entity_adapter is None or adapter_state is None:
+            return
+        for name in list(self._entity_adapter.__dict__):
+            if name != "env":
+                del self._entity_adapter.__dict__[name]
+        self._entity_adapter.__dict__.update(deepcopy(adapter_state))
 
     def _model_requires_raw_observation_context(self) -> bool:
         if self.model is None:
@@ -582,7 +654,7 @@ class Wrapper_CityLearn(RLC):
             "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "building_names": building_names,
             "interface": getattr(self.env, "interface", None),
-            "topology_mode": getattr(self.env, "topology_mode", None),
+            "topology_mode": self._entity_topology_mode if self._entity_interface_mode else getattr(self.env, "topology_mode", None),
             "entity_specs": getattr(self.env, "entity_specs", None) if self._entity_interface_mode else None,
             "raw_observation_names": raw_observation_names,
             "encoded_observation_names": encoded_observation_names,
@@ -1096,6 +1168,48 @@ class Wrapper_CityLearn(RLC):
         self._cancel_stall_watchdog()
         raise TimeoutError(message)
 
+    def _enforce_update_duration_guard(
+        self,
+        *,
+        update_duration: float,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+        rewards: Optional[List[float]],
+    ) -> None:
+        if self.max_update_seconds is None or update_duration <= self.max_update_seconds:
+            return
+
+        message = (
+            f"Update duration {update_duration:.3f}s exceeded configured limit "
+            f"{self.max_update_seconds:.3f}s at global step {self.global_step}."
+        )
+        self._write_phase_progress(
+            phase="update_duration_guard",
+            episode=episode,
+            step=step,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            rewards=rewards,
+            status="failed",
+            force=True,
+            extra={
+                "error_type": "UpdateDurationGuardError",
+                "error_message": message,
+                "update_duration_seconds": round(float(update_duration), 6),
+                "max_update_seconds": round(float(self.max_update_seconds), 6),
+            },
+        )
+        self._cancel_stall_watchdog()
+        raise TimeoutError(message)
+
+    def _synchronize_model_cuda_for_timing(self) -> None:
+        if getattr(getattr(self.model, "device", None), "type", None) == "cuda":
+            torch.cuda.synchronize()
+
     def _configure_episode_exports(self, episode: int, episodes: int) -> bool:
         """Enable KPI export and timeseries rendering independently per episode."""
 
@@ -1278,6 +1392,9 @@ class Wrapper_CityLearn(RLC):
                 )
             else:
                 observations = raw_observations
+            on_episode_start = getattr(self.model, "on_episode_start", None)
+            if callable(on_episode_start):
+                on_episode_start(episode=episode, training=not deterministic)
             self.episode_time_steps = self.episode_tracker.episode_time_steps
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             self._write_phase_progress(
@@ -1302,6 +1419,7 @@ class Wrapper_CityLearn(RLC):
                 )
                 step_profile_start_time = time.perf_counter() if should_profile_step else 0.0
                 runtime_profile_metrics: Dict[str, float] = {}
+                model_update_duration = 0.0
                 logger.debug(
                     "Global step {} (episode {}, timestep {})",
                     self.global_step,
@@ -1413,11 +1531,19 @@ class Wrapper_CityLearn(RLC):
                     rewards=rewards,
                 )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
+                entity_layout_snapshot = None
+                model_topology_snapshot = None
+                restore_model_topology = None
                 if self._entity_interface_mode:
+                    if self._entity_adapter is not None and self._entity_adapter.needs_rebuild(
+                        next_observations_raw
+                    ):
+                        entity_layout_snapshot = self._snapshot_entity_layout_state()
                     next_observations = self._apply_entity_layout(
                         next_observations_raw,
                         force_attach=False,
                         model_observations=self._entity_model_observations_direct,
+                        attach_model=False,
                     )
                 else:
                     next_observations = next_observations_raw
@@ -1460,11 +1586,52 @@ class Wrapper_CityLearn(RLC):
                 )
                 rewards_list.append(rewards)
 
+                topology_transition_recorded = False
+                if self._topology_changed_during_step:
+                    snapshot_model_topology = getattr(self.model, "snapshot_topology_state", None)
+                    restore_model_topology = getattr(self.model, "restore_topology_state", None)
+                    try:
+                        if callable(snapshot_model_topology) != callable(restore_model_topology):
+                            raise RuntimeError(
+                                "Model topology rollback requires both snapshot_topology_state() "
+                                "and restore_topology_state()."
+                            )
+                        if callable(snapshot_model_topology):
+                            model_topology_snapshot = snapshot_model_topology()
+                        if not deterministic:
+                            transition_hook = getattr(self.model, "record_topology_transition", None)
+                            if callable(transition_hook):
+                                transition_observations = (
+                                    [np.asarray(obs, dtype=np.float64) for obs in observations]
+                                    if self._entity_model_observations_direct
+                                    else self._encode_observations_for_model(observations)
+                                )
+                                transition_hook(
+                                    observations=transition_observations,
+                                    actions=actions,
+                                    rewards=rewards,
+                                    terminated=terminated,
+                                    truncated=truncated,
+                                    global_learning_step=self.global_step,
+                                )
+                                topology_transition_recorded = True
+                        if episode_deterministic:
+                            self._attach_model_environment_metadata()
+                        else:
+                            self._pending_model_environment_attach = True
+                    except Exception:
+                        if model_topology_snapshot is not None and callable(restore_model_topology):
+                            restore_model_topology(model_topology_snapshot)
+                        if entity_layout_snapshot is not None:
+                            self._restore_entity_layout_state(entity_layout_snapshot)
+                        raise
+
                 # Update model if not in deterministic mode
                 if not episode_deterministic:
-                    if self._topology_changed_during_step:
+                    if self._topology_changed_during_step and not self._pending_model_environment_attach:
                         logger.debug(
-                            "Skipping model.update at global step {} due to mid-step topology change.",
+                            "{} model.update at global step {} due to mid-step topology change.",
+                            "Recorded old-layout transition before" if topology_transition_recorded else "Skipping",
                             self.global_step,
                         )
                         self._topology_changed_during_step = False
@@ -1478,18 +1645,43 @@ class Wrapper_CityLearn(RLC):
                             global_step_total=global_step_total,
                             rewards=rewards,
                         )
-                        phase_start_time = time.perf_counter() if should_profile_step else 0.0
-                        self.update(
-                            observations,
-                            actions,
-                            rewards,
-                            next_observations,
-                            terminated=terminated,
-                            truncated=truncated,
+                        self._synchronize_model_cuda_for_timing()
+                        phase_start_time = time.perf_counter()
+                        if self._pending_model_environment_attach:
+                            try:
+                                self._pending_model_environment_attach = False
+                                self._refresh_update_schedule()
+                                self._attach_model_environment_metadata()
+                            except Exception:
+                                if model_topology_snapshot is not None and callable(restore_model_topology):
+                                    restore_model_topology(model_topology_snapshot)
+                                if entity_layout_snapshot is not None:
+                                    self._restore_entity_layout_state(entity_layout_snapshot)
+                                raise
+                        else:
+                            self.update(
+                                observations,
+                                actions,
+                                rewards,
+                                next_observations,
+                                terminated=terminated,
+                                truncated=truncated,
+                            )
+                        self._synchronize_model_cuda_for_timing()
+                        model_update_duration = time.perf_counter() - phase_start_time
+                        self._last_model_update_seconds = model_update_duration
+                        self._enforce_update_duration_guard(
+                            update_duration=model_update_duration,
+                            episode=episode,
+                            step=time_step,
+                            episode_total=episodes,
+                            step_total=episode_step_total,
+                            global_step_total=global_step_total,
+                            rewards=rewards,
                         )
                         if should_profile_step:
                             runtime_profile_metrics["Runtime/agent_update_seconds"] = (
-                                time.perf_counter() - phase_start_time
+                                model_update_duration
                             )
                             runtime_profile_metrics["Runtime/model_observation_encoding_seconds"] = float(
                                 getattr(self, "_last_model_observation_encoding_seconds", 0.0) or 0.0
@@ -1507,6 +1699,7 @@ class Wrapper_CityLearn(RLC):
                             global_step_total=global_step_total,
                             rewards=rewards,
                         )
+                        self._topology_changed_during_step = False
 
                     self._write_phase_progress(
                         phase="checkpoint_start",
@@ -1576,6 +1769,7 @@ class Wrapper_CityLearn(RLC):
 
                 # Step duration calculation
                 step_duration = time.time() - step_start_time
+                normal_step_duration = max(0.0, step_duration - model_update_duration)
                 self._enforce_resource_guards(
                     phase="step_end",
                     episode=episode,
@@ -1585,7 +1779,7 @@ class Wrapper_CityLearn(RLC):
                     global_step_total=global_step_total,
                 )
                 self._enforce_step_duration_guard(
-                    step_duration=step_duration,
+                    step_duration=normal_step_duration,
                     episode=episode,
                     step=time_step,
                     episode_total=episodes,
@@ -1601,10 +1795,16 @@ class Wrapper_CityLearn(RLC):
                     step_total=episode_step_total,
                     global_step_total=global_step_total,
                     rewards=rewards,
-                    extra={"step_duration_seconds": round(float(step_duration), 6)},
+                    extra={
+                        "step_duration_seconds": round(float(step_duration), 6),
+                        "normal_step_duration_seconds": round(float(normal_step_duration), 6),
+                        "update_duration_seconds": round(float(model_update_duration), 6),
+                    },
                 )
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/step_seconds"] = step_duration
+                    runtime_profile_metrics["Runtime/normal_step_seconds"] = normal_step_duration
+                    runtime_profile_metrics["Runtime/update_seconds"] = model_update_duration
                     runtime_profile_metrics["Runtime/step_perf_seconds"] = (
                         time.perf_counter() - step_profile_start_time
                     )
@@ -1626,8 +1826,7 @@ class Wrapper_CityLearn(RLC):
                     metrics.update(self._collect_model_status_metrics())
                     metrics.update(self._build_action_diagnostic_metrics(actions, step_observations))
                     metrics.update(self._build_reward_component_metrics())
-                    if not mlflow.active_run():
-                        metrics.update(self._consume_model_training_metrics())
+                    metrics.update(self._consume_model_training_metrics())
                     if should_profile_step:
                         metrics["Runtime/diagnostics_build_seconds"] = (
                             time.perf_counter() - diagnostics_start_time
@@ -1662,10 +1861,27 @@ class Wrapper_CityLearn(RLC):
                     step_total=episode_step_total,
                     global_step_total=global_step_total,
                     rewards=rewards,
-                    extra={"step_duration_seconds": round(float(step_duration), 6)},
+                    extra={
+                        "step_duration_seconds": round(float(step_duration), 6),
+                        "normal_step_duration_seconds": round(float(normal_step_duration), 6),
+                        "update_duration_seconds": round(float(model_update_duration), 6),
+                    },
                 )
 
                 time_step += 1
+
+            on_episode_end = getattr(self.model, "on_episode_end", None)
+            if callable(on_episode_end):
+                on_episode_end(episode=episode, training=not deterministic)
+            boundary_training_metrics = self._consume_model_training_metrics()
+            if boundary_training_metrics:
+                if mlflow.active_run():
+                    mlflow.log_metrics(boundary_training_metrics, step=self.global_step)
+                elif self.local_metrics_logger:
+                    self.local_metrics_logger.log(
+                        boundary_training_metrics,
+                        self.global_step,
+                    )
 
             last_rewards = rewards_list[-1] if rewards_list else None
             self._write_phase_progress(
@@ -2457,28 +2673,7 @@ class Wrapper_CityLearn(RLC):
             logger.error("Model is not set. Use `set_model` to provide a model.")
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        # Determine whether to update
-        if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
-            self.update_step = True
-        else:
-            self.update_step = self.global_step % self.steps_between_training_updates == 0
-        logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
-
-        # Exploration phase ownership belongs to the algorithm.
-        self.initial_exploration_done = bool(self.model.is_initial_exploration_done(self.global_step))
-        logger.debug(
-            "Initial exploration done: {} (global step={})",
-            self.initial_exploration_done,
-            self.global_step,
-        )
-
-        # Determine whether to update the target networks
-        if not self.target_update_interval:
-            self.update_target_step = False
-        else:
-            self.update_target_step = self.global_step % self.target_update_interval == 0
-        logger.debug(
-            "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
+        self._refresh_update_schedule()
 
         phase_start_time = time.perf_counter()
         direct_entity_model_observations = bool(
@@ -2549,6 +2744,30 @@ class Wrapper_CityLearn(RLC):
         )
         self._last_model_update_seconds = time.perf_counter() - phase_start_time
         return update_result
+
+    def _refresh_update_schedule(self) -> None:
+        """Refresh per-step training and checkpoint scheduling state."""
+        if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
+            self.update_step = True
+        else:
+            self.update_step = self.global_step % self.steps_between_training_updates == 0
+        logger.debug("Time step - Doing Update" if self.update_step else "Time step - Skipping Update")
+
+        # Exploration phase ownership belongs to the algorithm.
+        self.initial_exploration_done = bool(self.model.is_initial_exploration_done(self.global_step))
+        logger.debug(
+            "Initial exploration done: {} (global step={})",
+            self.initial_exploration_done,
+            self.global_step,
+        )
+
+        # Determine whether to update the target networks
+        if not self.target_update_interval:
+            self.update_target_step = False
+        else:
+            self.update_target_step = self.global_step % self.target_update_interval == 0
+        logger.debug(
+            "Time step - Doing Target Update" if self.update_target_step else "Time step - Skipping Target Update")
 
     def _should_log_step(self, step: int) -> bool:
         return step % self.step_metric_interval == 0

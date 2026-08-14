@@ -899,6 +899,27 @@ def test_entity_adapter_decodes_agent_actions_to_entity_tables():
     assert charger_table[1, 0] == pytest.approx(0.10, abs=1e-6)
 
 
+def test_entity_adapter_preserves_float64_action_payload_precision():
+    env = _DummyEntityEnv()
+    adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)
+    actions = [
+        [1.0e8, 0.75],
+        [1.0e8 + 1.0, 0.10],
+    ]
+
+    action_payload = adapter.to_entity_actions(
+        actions=actions,
+        action_names=env.action_names,
+    )
+
+    building_table = action_payload["tables"]["building"]
+    assert building_table.dtype == np.float64
+    np.testing.assert_array_equal(
+        building_table[:, 0],
+        np.asarray([1.0e8, 1.0e8 + 1.0], dtype=np.float64),
+    )
+
+
 def test_entity_adapter_decodes_namespaced_charger_actions():
     env = _DummyEntityEnv()
     adapter = EntityContractAdapter(env, normalization_enabled=True, clip=True)

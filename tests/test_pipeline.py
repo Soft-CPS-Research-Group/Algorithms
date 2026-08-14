@@ -39,6 +39,7 @@ class RecordingUnit(ExecutionUnit):
         self.export_calls: List[Dict[str, Any]] = []
         self.observation_context_calls: List[Dict[str, Any]] = []
         self.transition_context_calls: List[Dict[str, Any]] = []
+        self.topology_transition_calls: List[Dict[str, Any]] = []
 
     def predict(self, observations, deterministic=None, *, context=None):
         self.predict_calls.append(
@@ -91,6 +92,9 @@ class RecordingUnit(ExecutionUnit):
     def set_transition_context(self, **kwargs) -> None:
         self.transition_context_calls.append(kwargs)
 
+    def record_topology_transition(self, **kwargs) -> None:
+        self.topology_transition_calls.append(kwargs)
+
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
         self.save_calls.append({"output_dir": output_dir, "step": step})
         return str(Path(output_dir) / f"{self.name}.pth")
@@ -107,6 +111,13 @@ class RecordingUnit(ExecutionUnit):
 # Pipeline
 # ----------------------------------------------------------------------
 class TestPipelinePredict:
+    def test_rejects_action_retaining_non_leaf_stage(self) -> None:
+        action_retaining = RecordingUnit("action_retaining")
+        action_retaining.requires_final_pipeline_stage = True
+
+        with pytest.raises(ValueError, match="must be the final stage"):
+            Pipeline([action_retaining, RecordingUnit("leaf")])
+
     def test_threads_context_top_to_bottom(self) -> None:
         manager = RecordingUnit("manager", predict_output="signal_from_manager")
         leaf = RecordingUnit("leaf", predict_output=[[0.5]])
@@ -420,12 +431,12 @@ class TestPipelinePersistence:
     def test_save_creates_subdir_per_stage(self, tmp_path: Path) -> None:
         a = RecordingUnit("a")
         b = RecordingUnit("b")
-        Pipeline([a, b]).save_checkpoint(str(tmp_path), step=7)
+        path = Pipeline([a, b]).save_checkpoint(str(tmp_path), step=7)
 
-        assert (tmp_path / "stage_0").is_dir()
-        assert (tmp_path / "stage_1").is_dir()
-        assert a.save_calls[0]["output_dir"] == str(tmp_path / "stage_0")
-        assert b.save_calls[0]["output_dir"] == str(tmp_path / "stage_1")
+        assert path == str(tmp_path / "step_7")
+        assert (tmp_path / "step_7" / ".complete").is_file()
+        assert (tmp_path / "step_7" / "stage_0").is_dir()
+        assert (tmp_path / "step_7" / "stage_1").is_dir()
 
     def test_save_skips_frozen_pipeline_stage(self, tmp_path: Path) -> None:
         manager = RecordingUnit("manager")
@@ -434,11 +445,10 @@ class TestPipelinePersistence:
 
         Pipeline([manager, leaf]).save_checkpoint(str(tmp_path), step=7)
 
-        assert manager.save_calls == [
-            {"output_dir": str(tmp_path / "stage_0"), "step": 7}
-        ]
+        assert len(manager.save_calls) == 1
+        assert manager.save_calls[0]["step"] == 7
         assert leaf.save_calls == []
-        assert not (tmp_path / "stage_1").exists()
+        assert not (tmp_path / "step_7" / "stage_1").exists()
 
     def test_load_routes_each_stage_subdir(self, tmp_path: Path) -> None:
         a = RecordingUnit("a")
@@ -461,6 +471,16 @@ class TestPipelinePersistence:
 
         assert len(a.load_calls) == 1
         assert b.load_calls == []
+
+    def test_load_uses_highest_numeric_completed_step(self, tmp_path: Path) -> None:
+        a = RecordingUnit("a")
+        pipeline = Pipeline([a])
+
+        pipeline.save_checkpoint(str(tmp_path), step=9)
+        pipeline.save_checkpoint(str(tmp_path), step=10)
+        pipeline.load_checkpoint(str(tmp_path))
+
+        assert a.load_calls == [str(tmp_path / "step_10" / "stage_0")]
 
     def test_load_stage_checkpoint_routes_only_selected_stage(self, tmp_path: Path) -> None:
         manager = RecordingUnit("manager")
@@ -558,6 +578,23 @@ class TestEnsembleUpdate:
 
 
 class TestEnsembleLifecycle:
+    def test_topology_transition_rejects_short_actions_before_dispatch(self) -> None:
+        a = RecordingUnit("a")
+        b = RecordingUnit("b")
+
+        with pytest.raises(RuntimeError, match="actions length"):
+            Ensemble([a, b]).record_topology_transition(
+                observations=[[1.0], [2.0]],
+                actions=[[0.1]],
+                rewards=[0.5, 0.6],
+                terminated=False,
+                truncated=False,
+                global_learning_step=1,
+            )
+
+        assert a.topology_transition_calls == []
+        assert b.topology_transition_calls == []
+
     def test_context_hooks_route_raw_and_encoded_slices(self) -> None:
         a = RecordingUnit("a")
         b = RecordingUnit("b")

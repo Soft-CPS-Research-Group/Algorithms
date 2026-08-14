@@ -43,6 +43,18 @@ def test_validate_config_accepts_strict_local_rbc_policy(base_config):
     validate_config(config)
 
 
+def test_validate_config_rejects_non_leaf_transformer_ppo() -> None:
+    config_path = Path("configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml")
+    with config_path.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+    config["pipeline"].append(
+        {"algorithm": "RuleBasedPolicy", "count": 1, "hyperparameters": {}}
+    )
+
+    with pytest.raises(ValueError, match="must be the final pipeline stage"):
+        validate_config(config)
+
+
 def test_validate_config_rejects_legacy_algorithm_key(base_config):
     config = copy.deepcopy(base_config)
     config.pop("pipeline", None)
@@ -402,6 +414,73 @@ def test_validate_config_accepts_runtime_safety_guards(base_config):
     config["tracking"]["max_process_rss_mb"] = 12000.0
     config["tracking"]["min_available_ram_mb"] = 1024.0
     validate_config(config)
+
+
+def test_validate_config_accepts_max_update_seconds(base_config):
+    config = copy.deepcopy(base_config)
+    config["tracking"]["max_update_seconds"] = 2400.0
+
+    resolved = validate_config(config).to_dict()
+
+    assert resolved["tracking"]["max_update_seconds"] == 2400.0
+
+
+@pytest.mark.parametrize("value", [0, -1.0])
+def test_validate_config_rejects_non_positive_max_update_seconds(base_config, value):
+    config = copy.deepcopy(base_config)
+    config["tracking"]["max_update_seconds"] = value
+
+    with pytest.raises(Exception):
+        validate_config(config)
+
+
+@pytest.fixture
+def transformer_ppo_template_config():
+    config_path = Path("configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml")
+    with config_path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def test_validate_config_accepts_transformer_ppo_require_cuda(transformer_ppo_template_config):
+    transformer_ppo_template_config["pipeline"][0]["hyperparameters"]["require_cuda"] = True
+
+    resolved = validate_config(transformer_ppo_template_config).to_dict()
+
+    assert resolved["pipeline"][0]["hyperparameters"]["require_cuda"] is True
+
+
+def test_validate_config_rejects_enabled_transformer_ppo_bc_without_demonstrations(
+    transformer_ppo_template_config,
+):
+    transformer_ppo_template_config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 0,
+    }
+
+    with pytest.raises(ValueError, match="demonstration_episodes.*at least 1"):
+        validate_config(transformer_ppo_template_config)
+
+
+def test_validate_config_accepts_disabled_transformer_ppo_bc_without_demonstrations(
+    transformer_ppo_template_config,
+):
+    transformer_ppo_template_config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": False,
+        "demonstration_episodes": 0,
+    }
+
+    validate_config(transformer_ppo_template_config)
+
+
+def test_validate_config_accepts_enabled_transformer_ppo_bc_with_demonstrations(
+    transformer_ppo_template_config,
+):
+    transformer_ppo_template_config["pipeline"][0]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+    }
+
+    validate_config(transformer_ppo_template_config)
 
 
 def test_validate_config_rejects_invalid_runtime_safety_guards(base_config):

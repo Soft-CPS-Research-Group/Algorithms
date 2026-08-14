@@ -250,6 +250,7 @@ class TestStageToAgentView:
             "networks": {"actor": {"layers": [8]}},
             "replay_buffer": {"class": "MultiAgentReplayBuffer", "capacity": 10, "batch_size": 2},
             "exploration": {"strategy": "GaussianNoise", "params": {}},
+            "behavior_cloning": {"enabled": True},
         }
         view = _stage_to_agent_view({}, stage)
 
@@ -257,6 +258,7 @@ class TestStageToAgentView:
         assert algorithm_block["networks"] == {"actor": {"layers": [8]}}
         assert algorithm_block["replay_buffer"]["class"] == "MultiAgentReplayBuffer"
         assert algorithm_block["exploration"]["strategy"] == "GaussianNoise"
+        assert algorithm_block["behavior_cloning"] == {"enabled": True}
 
     def test_does_not_mutate_input_global_config(self) -> None:
         global_config = {"metadata": {"experiment_name": "exp"}}
