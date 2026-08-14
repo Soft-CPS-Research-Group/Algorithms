@@ -121,6 +121,10 @@ def test_registered_under_canonical_name() -> None:
     assert ALGORITHM_REGISTRY.get("AgentTransformerPPO") is AgentTransformerPPO
 
 
+def test_agent_uses_canonical_transformer_ppo_package() -> None:
+    assert AgentTransformerPPO.__module__ == "algorithms.transformer_ppo.agent"
+
+
 def test_create_agent_via_registry() -> None:
     base = _base_config()
     algo = base.pop("algorithm")
