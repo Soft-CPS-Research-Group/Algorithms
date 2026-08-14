@@ -237,10 +237,9 @@ def test_maddpg_family_reports_actor_architecture_diagnostics(agent_cls):
     assert metrics["MADDPG/actor_parameter_count_mean"] > 0.0
 
 
-@pytest.mark.parametrize("algorithm_name", ["MATD3", "MASAC", "IPPO", "MAPPO", "HAPPO"])
+@pytest.mark.parametrize("algorithm_name", ["MASAC", "IPPO", "MAPPO", "HAPPO"])
 def test_config_schema_accepts_new_rl_templates(algorithm_name):
     config_path = {
-        "MATD3": Path("configs/templates/rl/matd3_local.yaml"),
         "MASAC": Path("configs/templates/rl/masac_local.yaml"),
         "IPPO": Path("configs/templates/rl/ippo_local.yaml"),
         "MAPPO": Path("configs/templates/rl/mappo_local.yaml"),

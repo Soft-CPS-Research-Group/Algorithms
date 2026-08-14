@@ -150,17 +150,13 @@ Use this diagram as the mental model when wiring CI or new algorithms.
 - Templates under `configs/templates/` provide algorithm x environment
   starting points, grouped by purpose:
   `maddpg/maddpg_local.yaml`,
-  `rl/ppo_distributed_local.yaml`,
   `rl/td3_distributed_local.yaml`,
   `baselines/rbc_community_local.yaml`,
   `baselines/rbc_smart_local.yaml`,
   `dynamic/rule_based_entity_dynamic_local.yaml`.
   Executor/runtime specifics are chosen at launch time (UI/payload), not in template YAML.
-- Replay-validated teachers that must exist inside remote images live under
-  `configs/demonstrations/`. Use
-  `scripts/package_total_energy_demonstration.py` to remove machine-local
-  paths, record hashes and refuse unvalidated schedules; do not point remote
-  configs at ignored artefacts under `runs/`.
+- Project-specific experiment recipes, demonstrations and result evidence are
+  intentionally kept outside the tracked repository.
 
 Important knobs:
 

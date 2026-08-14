@@ -8,6 +8,39 @@
 /datasets/*_15s/
 /datasets/citylearn_three_phase_electrical_service_demo_15s.zip
 *.log
+
+# Private research material. Keep recipes, teachers, campaign validation and
+# experimental evidence on the local workstation; do not publish them.
+/configs/experiments/
+/configs/demonstrations/
+/docs/experiment_history/
+/configs/templates/cc_local.yaml
+/configs/templates/cc_level2_local.yaml
+/configs/templates/rl/matd3_15min_residual_local.yaml
+/configs/templates/rl/matd3_local.yaml
+/configs/templates/rl/ppo_distributed_local.yaml
+/configs/templates/rl/ppo_distributed_local_total_energy_bc_smoke.yaml
+/scripts/build_cc_matd3_level1_v1.py
+/scripts/build_cc_matd3_level2_v1.py
+/scripts/build_cc_ppo_online_v6.py
+/scripts/build_cc_ppo_schedule_probes.py
+/scripts/generate_cc_*.py
+/scripts/generate_matd3_*.py
+/scripts/generate_ppo_cc_*.py
+/tests/test_cc_*_v*.py
+/tests/test_cc_frozen_leaf_scorecard.py
+/tests/test_cc_level2_smart_settlement.py
+/tests/test_matd3_*_v*.py
+/tests/test_ppo_cc_*.py
+
+# Result-bearing research notes kept locally.
+/docs/milp_local_community_contract_20260729_pt.md
+/docs/phase10_remote_cleanup_20260710.md
+/docs/phase10_remote_cleanup_plan_20260710.csv
+/docs/phase10_remote_kpi_archive_20260710.csv
+/docs/phase10_w6_guided_training_plan_pt.md
+/docs/single_agent_rl_audit_20260729_pt.md
+/docs/team_update_baselines_maddpg_performance_pt.md
 # Virtual env
 venv/
 .venv/

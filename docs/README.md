@@ -9,12 +9,8 @@ intermedios foram removidos do repo. Resultados brutos devem ficar em
 
 ## Leitura Principal
 
-- `team_update_baselines_maddpg_performance_pt.md` - estado atual para a equipa:
-  baselines, MADDPG/MATD3, Simulator 1.5.3, dynamic datasets e proximos passos.
 - `community_optimization_success_scorecard_pt.md` - gates e KPIs para decidir
   se um controlador e candidato serio.
-- `phase10_w6_guided_training_plan_pt.md` - plano atual de treino guiado para
-  MADDPG/MATD3 contra os RBCs fortes.
 
 ## Contratos E Plataforma
 
@@ -35,12 +31,9 @@ intermedios foram removidos do repo. Resultados brutos devem ficar em
 ## Regra De Organizacao
 
 - `docs/` guarda estado atual, contratos e decisoes.
-- `docs/experiment_history/` guarda o ledger e os resumos curados de campanhas
-  remotas; payloads, logs e resultados brutos continuam em `runs/`.
 - `configs/templates/` guarda templates reutilizaveis.
-- `configs/experiments/` so deve receber configs ativos de uma ronda nova.
-- `runs/` guarda outputs locais/remotos gerados e pode ser limpo sem afetar o
-  codigo versionado.
+- Receitas de campanha, demonstrações e evidência experimental ficam locais e
+  são ignoradas pelo Git, tal como os outputs em `runs/`.
 
 O ciclo remoto pode ser preparado, submetido, acompanhado e arquivado com
 `scripts/manage_remote_experiment.py`. A submissao exige sempre

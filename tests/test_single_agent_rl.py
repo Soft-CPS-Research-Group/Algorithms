@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 
 import numpy as np
@@ -212,11 +210,6 @@ def test_distributed_export_keeps_global_agent_indices(name, tmp_path: Path):
 @pytest.mark.parametrize(
     ("template", "reward_name"),
     [
-        ("ppo_distributed_local.yaml", "LocalCostServiceRewardV1"),
-        (
-            "ppo_distributed_local_total_energy_bc_smoke.yaml",
-            "LocalEconomicSafetyRewardV3",
-        ),
         ("td3_distributed_local.yaml", "LocalEconomicSafetyRewardV3"),
     ],
 )
@@ -232,85 +225,14 @@ def test_distributed_templates_validate(template, reward_name):
     assert model.simulator.entity_encoding.profile == "building_local_v1"
     assert "/home/" not in text
     assert "runs/" not in text
-    if template.startswith("td3_"):
-        actor = model.pipeline[0].networks.actor
-        params = model.pipeline[0].exploration.params
-        assert actor.class_name == "SemanticMultiHeadActor"
-        assert actor.head_layers == [64]
-        assert params["local_action_safety_enabled"] is True
-        assert params["local_action_safety_ev_minimum_mode"] == "deadline_feasible"
-        assert params["local_action_safety_service_teacher_enabled"] is False
-        assert params["local_price_conditioning_enabled"] is True
-
-
-def test_ppo_total_energy_bc_smoke_is_autonomous_rollout_with_verified_local_teacher():
-    path = Path("configs/templates/rl/ppo_distributed_local_total_energy_bc_smoke.yaml")
-    text = path.read_text(encoding="utf-8")
-    model = validate_config(yaml.safe_load(text))
-    simulator = model.simulator
+    actor = model.pipeline[0].networks.actor
     params = model.pipeline[0].exploration.params
-
-    assert model.pipeline[0].algorithm == "PPO"
-    assert model.pipeline[0].count == 17
-    assert simulator.central_agent is False
-    assert simulator.entity_encoding.profile == "building_local_v1"
-    assert simulator.community_market.enabled is False
-    assert simulator.simulation_end_time_step - simulator.simulation_start_time_step == 672
-
-    # The MILP labels states visited by the PPO actor. It cannot control,
-    # blend, or replace actions in either training or deterministic finish.
-    assert params["warm_start_policy"] == "TotalOracleReplayPolicy"
-    assert params["random_exploration_steps"] == 0
-    assert params["end_initial_exploration_time_step"] == 0
-    assert params["warm_start_policy_phaseout_steps"] == 0
-    assert params["actor_behavior_cloning_weight"] > 0.0
-    assert params["actor_behavior_cloning_replay_capacity"] >= 672
+    assert actor.class_name == "SemanticMultiHeadActor"
+    assert actor.head_layers == [64]
     assert params["local_action_safety_enabled"] is True
-    assert params["local_action_safety_headroom_reserve_kw"] == pytest.approx(0.1)
     assert params["local_action_safety_ev_minimum_mode"] == "deadline_feasible"
     assert params["local_action_safety_service_teacher_enabled"] is False
-    assert params["local_action_safety_service_teacher_eval_enabled"] is False
-
-    schedule_path = Path(params["warm_start_policy_hyperparameters"]["schedule_path"])
-    assert schedule_path.is_file()
-    assert params["warm_start_policy_hyperparameters"]["allow_attached_action_subset"] is True
-    assert params["warm_start_policy_hyperparameters"]["repeat_schedule_for_training"] is True
-
-    manifest_path = schedule_path.with_name("manifest.json")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["settlement"] == "individual"
-    assert manifest["audit"]["all_buildings_pass_local_gates"] is True
-    assert manifest["audit"]["building_count"] == 17
-    assert manifest["source_window"]["horizon"] == 672
-    assert manifest["diagnostic_only"] is True
-    assert hashlib.sha256(schedule_path.read_bytes()).hexdigest() == manifest["artifacts"][
-        "replay_schedule"
-    ]["sha256"]
-
-
-def test_exact_local_total_energy_training_demonstration_is_portable_and_verified():
-    root = Path(
-        "configs/demonstrations/local_total_energy_v1/train_0_1316_exact"
-    )
-    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    schedule_path = root / manifest["artifacts"]["replay_schedule"]["path"]
-
-    assert manifest["portable"] is True
-    assert manifest["diagnostic_only"] is False
-    assert manifest["boundary_service_exact"] is True
-    assert manifest["settlement"] == "individual"
-    assert manifest["source_window"] == {
-        "start_time_step": 0,
-        "end_time_step_exclusive": 1316,
-        "horizon": 1316,
-    }
-    assert manifest["audit"]["building_count"] == 17
-    assert manifest["audit"]["local_gate_pass_count"] == 17
-    assert manifest["audit"]["all_buildings_pass_local_gates"] is True
-    assert schedule_path.is_file()
-    assert hashlib.sha256(schedule_path.read_bytes()).hexdigest() == manifest["artifacts"][
-        "replay_schedule"
-    ]["sha256"]
+    assert params["local_price_conditioning_enabled"] is True
 
 
 def test_local_cost_service_reward_has_no_cross_building_terms():

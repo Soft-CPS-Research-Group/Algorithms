@@ -14,9 +14,9 @@ Templates are grouped by purpose:
 - `baselines/rbc_basic_15min_local.yaml`
 - `baselines/rbc_smart_15min_local.yaml`
 - `baselines/rbc_community_15min_local.yaml`
-- `rl/matd3_15min_residual_local.yaml`
 
 Use `simulator.entity_encoding.profile` to switch MADDPG observation profiles, e.g. `maddpg_v1`, `maddpg_v2_compact`, `maddpg_v3_operational`, or `maddpg_v3_realtime`, instead of creating duplicate templates for each profile.
 
 Generated remote batches should live under `runs/remote_configs/`, not in
-`configs/templates/` or `configs/experiments/`.
+`configs/templates/`. Project-specific recipes, demonstrations and results are
+local research material and are intentionally ignored by Git.

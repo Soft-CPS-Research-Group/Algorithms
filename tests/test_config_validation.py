@@ -115,34 +115,12 @@ def test_validate_config_accepts_late_fusion_critic_layers(base_config):
 @pytest.mark.parametrize(
     "config_path",
     [
-        Path("configs/templates/cc_local.yaml"),
         Path("configs/templates/hiro_local.yaml"),
     ],
 )
 def test_validate_config_accepts_hierarchical_templates(config_path):
     with config_path.open("r", encoding="utf-8") as handle:
         validate_config(yaml.safe_load(handle))
-
-
-@pytest.mark.parametrize(
-    "config_path",
-    [
-        Path("configs/templates/cc_local.yaml"),
-        Path("configs/templates/cc_level2_local.yaml"),
-    ],
-)
-def test_cc_templates_use_complete_annual_horizon(config_path):
-    with config_path.open("r", encoding="utf-8") as handle:
-        config = yaml.safe_load(handle)
-
-    assert config["simulator"]["episode_time_steps"] == 35040
-
-
-def test_cc_level1_bc_collection_matches_complete_annual_horizon():
-    with Path("configs/templates/cc_local.yaml").open("r", encoding="utf-8") as handle:
-        config = yaml.safe_load(handle)
-
-    assert config["pipeline"][0]["hyperparameters"]["bc_collect_steps"] == 8760
 
 
 def test_fixed_price_schedule_requires_ordered_entries_from_step_zero():
