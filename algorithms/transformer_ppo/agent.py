@@ -1828,7 +1828,11 @@ class AgentTransformerPPO(BaseAgent):
             return
         for parameter_state in optimizer.state.values():
             for key, value in parameter_state.items():
-                if isinstance(value, torch.Tensor):
+                # Adam deliberately keeps its scalar step counter on CPU when
+                # capturable/fused mode is disabled.  Preserve that native
+                # placement so checkpoint application and rollback remain
+                # exact transactions on CUDA hosts.
+                if isinstance(value, torch.Tensor) and key != "step":
                     parameter_state[key] = value.to(self.device)
 
     @staticmethod

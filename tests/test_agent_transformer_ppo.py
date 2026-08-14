@@ -95,14 +95,16 @@ def _make_agent(
 
 def _run_minimal_ppo_update(agent: AgentTransformerPPO, obs_dim: int) -> None:
     """Run exactly one PPO update using the configured minibatch size."""
-    state = agent._per_building[0]
     rng = np.random.default_rng(0)
     for step in range(agent._minibatch_size):
+        observation = rng.standard_normal(obs_dim)
+        next_observation = rng.standard_normal(obs_dim)
+        actions = agent.predict([observation])
         agent.update(
-            observations=[rng.standard_normal(obs_dim)],
-            actions=[rng.uniform(-0.5, 0.5, size=state.layout.n_ca)],
+            observations=[observation],
+            actions=actions,
             rewards=[0.1],
-            next_observations=[rng.standard_normal(obs_dim)],
+            next_observations=[next_observation],
             terminated=False,
             truncated=False,
             update_target_step=False,
@@ -217,11 +219,14 @@ def test_tppo_keeps_rollouts_on_cpu_and_moves_ppo_batches_to_cuda(
     rng = np.random.default_rng(0)
 
     for step in range(2):
+        observation = rng.standard_normal(obs_dim)
+        next_observation = rng.standard_normal(obs_dim)
+        actions = agent.predict([observation])
         agent.update(
-            observations=[rng.standard_normal(obs_dim)],
-            actions=[rng.uniform(-0.5, 0.5, size=state.layout.n_ca)],
+            observations=[observation],
+            actions=actions,
             rewards=[0.1],
-            next_observations=[rng.standard_normal(obs_dim)],
+            next_observations=[next_observation],
             terminated=False,
             truncated=False,
             update_target_step=False,
@@ -752,8 +757,15 @@ def test_cuda_checkpoint_restores_optimizer_state_on_cuda(tmp_path: Path) -> Non
     assert all(
         value.device.type == "cuda"
         for parameter_state in state.optimizer.state.values()
-        for value in parameter_state.values()
+        for key, value in parameter_state.items()
+        if key != "step"
         if isinstance(value, torch.Tensor)
+    )
+    assert all(
+        value.device.type == "cpu"
+        for parameter_state in state.optimizer.state.values()
+        for key, value in parameter_state.items()
+        if key == "step" and isinstance(value, torch.Tensor)
     )
 
 
