@@ -1,0 +1,11 @@
+claim_id,claim,required_evidence,status,blocking_gate
+TI-01,Known instance changes do not resize networks,parameter-count and dynamic-topology tests,planned,yes
+TI-02,Entity-bound actions never target the wrong session,binding and session-replacement tests,planned,yes
+TI-03,Fault cause remains distinct from derived health,Simulator contract and TIC derivation tests,planned,yes
+TI-04,Health closure is scoped and causal,closure conflict scope and recovery tests,planned,yes
+TI-05,Local bundle feasibility preserves measurable policy intent,raw-final intervention and constraint metrics,planned,yes
+TI-06,Central critic supports variable populations,permutation and join-leave-bootstrap tests,planned,yes
+TI-07,Execution is decentralised,actor-input audit and exported policy inspection,planned,yes
+TI-08,Typed traces match actual execution,end-to-end trace reconciliation,planned,yes
+TI-09,TI interface outperforms fixed masking under reconfiguration,multi-seed structural baseline,planned,no
+TI-10,Health-aware recompilation adds value over missingness features,health-stress ablation,planned,no
