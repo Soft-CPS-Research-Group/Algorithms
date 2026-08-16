@@ -60,9 +60,16 @@ The adapter emits names in this order for each building:
 2. Building features, unprefixed.
 3. Storage blocks, `storage::<asset_id>::<feature>`.
 4. PV blocks, `pv::<asset_id>::<feature>`.
-5. Charger blocks, then connected-EV and incoming-EV context blocks.
-6. Active-asset counters.
-7. Legacy charger aliases, retained for compatibility.
+5. Deferrable-appliance blocks,
+   `deferrable_appliance::<asset_id>::<feature>`.
+6. Charger blocks, followed by connected-EV and incoming-EV context blocks for
+   each charger.
+7. The four active-asset counters for chargers, storage, PV, and deferrable
+   appliances.
+8. Legacy charger aliases, or their zero-valued defaults when no charger is
+   active, followed by `electric_vehicle_is_flexible`.
+9. Conditional `minute` and `solar_generation` compatibility aliases when the
+   corresponding canonical names are absent.
 
 The exact list is topology-dependent. The tokenizer layout uses feature-origin
 names, not numeric values, to map these names to token segments. Excluded names
@@ -81,9 +88,11 @@ This position invariant applies to every controller using this contract.
 | CA | Controllable asset | Variable | One value per token |
 
 Examples of SRO types include district time, weather, pricing, building energy,
-PV, connected EV, and incoming EV. Current CA types are `storage` and
-`charger`. The NFC type is `building_nfc`, computed as
-`non_shiftable_load - solar_generation`.
+PV, deferrable appliances, connected EV, and incoming EV. The current tokenizer
+classifies deferrable appliances as SRO context. Current CA types are `storage`
+and `charger`. A future controller that acts on deferrable appliances must add
+an explicit CA type and action-order contract. The NFC type is `building_nfc`,
+computed as `non_shiftable_load - solar_generation`.
 
 The backbone uses three fixed type IDs: `SRO=0`, `NFC=1`, and `CA=2`.
 
@@ -108,26 +117,45 @@ The layout records segment family, type, instance ID, feature indices, feature
 names, the NFC expression, excluded names, and CA action fields. Non-contiguous
 feature indices are valid and are selected with `torch.index_select`.
 
-The tokenizer configuration uses strict Pydantic models. The startup validator
-checks five rules against the pinned fixture:
+The tokenizer configuration uses strict Pydantic models. The validator defines
+five rules:
 
-1. Every emitted feature is covered by an exclusion, NFC source, or SRO rule.
+1. Every feature in the NFC table and singleton-SRO tables is covered by an
+   exclusion, NFC source, or singleton-SRO rule.
 2. Singleton SRO patterns are not ambiguous.
 3. Both NFC source features exist.
 4. All configured regular expressions compile.
-5. Every declared CA action field is present in the startup action names.
+5. Every declared CA action field is covered by the supplied action-field set.
+
+`validate_config` runs the feature rules against the pinned fixture. It supplies
+the configured CA action fields as a synthetic action-field set for rule 5; it
+does not inspect live simulator action names. On environment attachment, the
+layout builder enforces actual CA count, order, and exact-or-prefixed field
+matching against each building's active `action_names`.
+
+Rule 1 does not validate each per-asset SRO or CA column. The layout builder
+classifies those blocks by their adapter prefixes. Tokenizer construction and
+runtime topology handling then reject a per-type feature width that does not
+match the existing projection.
 
 At runtime, a changed layout re-runs the layout checks against the active names.
-The wrapper and controller intentionally skip startup-only rule 5 on runtime
-mutation. An asset can disappear while its configured CA type remains valid.
+The controller intentionally skips startup-only rule 5 on runtime mutation. An
+asset can disappear while its configured CA type remains valid.
 Feature-schema drift still fails.
 
 ## 5. Encoding and tokenizer contract
 
-The wrapper preserves feature order and width between its entity observation
-vector and the controller input. Entity normalization, when enabled, changes
-values but not feature positions. The layout indices therefore index the
-controller's encoded vector directly.
+The current TPPO templates use the `minmax_space` encoding profile. This profile,
+and disabled normalization, preserve feature order and width between the entity
+observation vector and the controller input. Min-max normalization changes
+values but not feature positions. A layout built from raw observation names can
+therefore index the TPPO encoded vector directly.
+
+MADDPG-style encoding profiles do not have this guarantee. They can derive,
+remove, or rename features. A future Transformer controller that uses one of
+these profiles must define tokenizer coverage over the encoded feature set and
+build its layout from `metadata.encoded_observation_names` or the matching entry
+in `metadata.profiled_encoded_observation_names`.
 
 `EntityObservationTokenizer` has one linear projection per declared type, not
 per asset instance. A new instance of an existing type reuses the type weights.
@@ -158,8 +186,10 @@ The shared sequence is:
 The backbone accepts `[batch, token_count, d_model]` banks with variable SRO and
 CA counts. It returns CA embeddings in CA order and a mean-pooled representation
 over all tokens. The CA embeddings drive a controller's action head. The pooled
-representation is available for a controller's state or centralized context
-head, but its learning semantics are algorithm-specific.
+representation is a per-building state representation. It is not a joint
+community representation and is not sufficient by itself for a centralized
+multi-agent critic. An algorithm with a centralized critic must define how it
+combines buildings, actions, and any community context.
 
 The backbone has no fixed asset-count parameter. `d_model`, attention heads,
 layer count, feed-forward width, and other neural settings remain fixed for a
@@ -195,7 +225,10 @@ order of buildings changes unless the algorithm defines an explicit remapping.
 - Action output order equals the environment action-name order.
 - Action values are passed back through the adapter without changing building
   or asset row ownership.
-- Layout signatures include the ordered segments and action names.
+- Compatibility signatures are algorithm-specific. Current BC signatures
+  include ordered segments and CA action names. Current TPPO checkpoint layout
+  signatures use sorted observation names and validate action names and bounds
+  separately.
 - Feature-schema changes are not silently adapted.
 - An exported graph must declare its input feature width and layout metadata.
   Layout indices are topology-specific; a deployment target must select a model
