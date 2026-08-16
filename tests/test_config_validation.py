@@ -43,6 +43,59 @@ def test_validate_config_accepts_strict_local_rbc_policy(base_config):
     validate_config(config)
 
 
+def _ti_marl_stage():
+    return {
+        "algorithm": "TIMARL",
+        "count": 1,
+        "hyperparameters": {
+            "contract_version": "ti_marl_v1",
+            "agent_schema_path": "configs/ti_marl/agent_schema_v1.yaml",
+            "type_registry_path": "configs/ti_marl/type_registry_v1.yaml",
+            "health_rules_path": "configs/ti_marl/health_rules_v1.yaml",
+            "backbone": {"name": "mappo"},
+            "actor": {
+                "d_model": 128,
+                "attention_heads": 4,
+                "relation_layers": 2,
+            },
+            "critic": {"kind": "set"},
+            "feasibility": {"kind": "analytic_projection"},
+        },
+    }
+
+
+def test_validate_config_accepts_ti_marl_entity_dynamic(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["topology_mode"] = "dynamic"
+    config["simulator"]["central_agent"] = False
+    config["pipeline"] = [_ti_marl_stage()]
+    parsed = validate_config(config)
+    assert parsed.pipeline[0].algorithm == "TIMARL"
+
+
+@pytest.mark.parametrize(
+    ("interface", "central_agent", "message"),
+    [
+        ("flat", False, "interface='entity'"),
+        ("entity", True, "central_agent=false"),
+    ],
+)
+def test_validate_config_rejects_invalid_ti_marl_environment(
+    base_config,
+    interface,
+    central_agent,
+    message,
+):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = interface
+    config["simulator"]["topology_mode"] = "static"
+    config["simulator"]["central_agent"] = central_agent
+    config["pipeline"] = [_ti_marl_stage()]
+    with pytest.raises(ValueError, match=message):
+        validate_config(config)
+
+
 def test_validate_config_rejects_non_leaf_transformer_ppo() -> None:
     config_path = Path("configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml")
     with config_path.open("r", encoding="utf-8") as handle:

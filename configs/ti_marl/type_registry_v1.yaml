@@ -1,0 +1,150 @@
+version: ti_marl_type_registry_v1
+feature_width: 16
+
+entity_types:
+  district:
+    role: community
+    semantic_type: community_signal
+    features:
+      - hour
+      - day_type
+      - electricity_pricing
+      - electricity_pricing_predicted_1
+      - electricity_pricing_predicted_2
+      - electricity_pricing_predicted_3
+      - carbon_intensity
+      - community_net_power_kw
+      - community_import_power_kw
+      - community_export_power_kw
+      - community_pv_power_kw
+      - community_building_headroom_kw
+      - community_building_export_headroom_kw
+      - active_buildings_count
+      - active_chargers_count
+      - topology_version
+  building:
+    role: agent
+    semantic_type: local_energy
+    features:
+      - non_shiftable_load
+      - solar_generation
+      - net_electricity_consumption
+      - net_power_kw
+      - import_power_kw
+      - export_power_kw
+      - load_power_kw
+      - pv_power_kw
+      - bess_power_kw
+      - ev_charging_power_kw
+      - electrical_storage_soc_ratio
+      - charging_building_headroom_kw
+      - charging_building_export_headroom_kw
+      - charging_constraint_violation_kwh
+      - net_energy_prev_1_kwh_step
+      - net_energy_prev_3_mean_kwh_step
+  storage:
+    role: controllable_module
+    semantic_type: storage_state
+    features:
+      - soc
+      - capacity_kwh
+      - nominal_power_kw
+      - electricity_consumption_kwh
+      - min_charge_power_kw
+      - min_discharge_power_kw
+      - efficiency_ratio
+      - round_trip_efficiency_ratio
+      - electrical_storage_soc_ratio
+      - max_charge_power_kw
+      - max_discharge_power_kw
+      - energy_to_full_kwh
+      - energy_above_minimum_kwh
+      - available_charge_action_normalized
+      - available_discharge_action_normalized
+  charger:
+    role: controllable_module
+    semantic_type: ev_service
+    features:
+      - connected_state
+      - incoming_state
+      - connected_ev_soc
+      - connected_ev_required_soc_departure
+      - connected_ev_battery_capacity_kwh
+      - connected_ev_departure_time_step
+      - incoming_ev_estimated_soc_arrival
+      - incoming_ev_estimated_arrival_time_step
+      - last_charged_kwh
+      - max_charging_power_kw
+      - max_discharging_power_kw
+      - min_charging_power_kw
+      - min_discharging_power_kw
+      - available_charge_action_normalized
+      - available_discharge_action_normalized
+      - departure_service_margin_kwh
+  ev:
+    role: session_entity
+    semantic_type: ev_service
+    features:
+      - soc
+      - battery_capacity_kwh
+      - depth_of_discharge_ratio
+      - soc_ratio
+      - soc_min_ratio
+      - soc_max_ratio
+      - energy_available_kwh
+      - energy_to_full_kwh
+      - energy_above_minimum_kwh
+  deferrable_appliance:
+    role: controllable_module
+    semantic_type: deferrable_state
+    features:
+      - pending
+      - running
+      - can_start
+      - deadline_missed
+      - earliest_start_time_step
+      - latest_start_time_step
+      - deadline_time_step
+      - hours_until_latest_start
+      - hours_until_deadline
+      - slack_steps
+      - slack_ratio
+      - urgency_ratio
+      - required_energy_kwh
+      - required_duration_steps
+      - nominal_power_kw
+      - available_start_action_normalized
+  pv:
+    role: observable_module
+    semantic_type: local_energy
+    features:
+      - generation_power_kw
+      - generation_energy_kwh_step
+      - installed_power_kw
+      - generation_capacity_factor_ratio
+
+relation_types:
+  - district_to_building
+  - building_to_storage
+  - building_to_charger
+  - building_to_deferrable_appliance
+  - building_to_pv
+  - charger_to_ev_connected
+  - charger_to_ev_incoming
+
+action_group_types:
+  stationary_storage:
+    entity_type: storage
+    action_table: building
+    action_name: electrical_storage
+    modes: [IDLE, CHARGE_STATIONARY, DISCHARGE_STATIONARY]
+  ev_session:
+    entity_type: charger
+    action_table: charger
+    action_name: electric_vehicle_storage
+    modes: [IDLE, CHARGE_EV, DISCHARGE_EV]
+  deferrable:
+    entity_type: deferrable_appliance
+    action_table: deferrable_appliance
+    action_name: start
+    modes: [IDLE, START]

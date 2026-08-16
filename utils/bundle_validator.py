@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from loguru import logger
 
-SUPPORTED_ARTIFACT_FORMATS = {"onnx", "rule_based"}
+SUPPORTED_ARTIFACT_FORMATS = {"onnx", "rule_based", "ti_marl_torch"}
 
 
 class BundleValidationError(ValueError):
@@ -117,6 +117,11 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
         raise BundleValidationError("agent.artifacts must be a non-empty list")
 
     hierarchical_pipeline = bool(agent.get("stages"))
+    shared_ti_marl_artifact = top_level_format == "ti_marl_torch"
+    if shared_ti_marl_artifact and agent.get("deployable") is not False:
+        raise BundleValidationError(
+            "ti_marl_torch bundles must declare agent.deployable=false"
+        )
     seen_agent_indices: set[int] = set()
 
     for idx, raw_artifact in enumerate(artifacts):
@@ -160,13 +165,27 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
                     f"rule_based artifact for agent {agent_index} must be named {expected_name}, "
                     f"got {artifact_path.name}"
                 )
+        elif artifact_format == "ti_marl_torch":
+            if artifact_path.suffix.lower() not in {".pth", ".pt"}:
+                raise BundleValidationError(
+                    f"ti_marl_torch artifact must end with .pth or .pt, got {artifact_path_value}"
+                )
+            if artifact.get("deployable") is not False:
+                raise BundleValidationError(
+                    "ti_marl_torch artifacts must explicitly declare deployable=false"
+                )
 
         if num_agents is not None and agent_index >= num_agents:
             raise BundleValidationError(
                 f"agent.artifacts[{idx}].agent_index={agent_index} is outside topology.num_agents={num_agents}"
             )
 
-    if num_agents is not None and not hierarchical_pipeline and len(artifacts) != num_agents:
+    if (
+        num_agents is not None
+        and not hierarchical_pipeline
+        and not shared_ti_marl_artifact
+        and len(artifacts) != num_agents
+    ):
         raise BundleValidationError(
             "Number of exported artifacts must match topology.num_agents "
             f"(artifacts={len(artifacts)}, num_agents={num_agents})"

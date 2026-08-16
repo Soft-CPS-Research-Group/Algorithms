@@ -1,0 +1,88 @@
+version: ti_marl_health_rules_v1
+
+defaults:
+  degraded_after_steps: 1
+  stale_after_steps: 4
+  missing_after_steps: 8
+  recovery_hysteresis_steps: 2
+  cache_allowed: true
+
+criticality:
+  safety:
+    degraded_after_steps: 0
+    stale_after_steps: 2
+    missing_after_steps: 4
+    recovery_hysteresis_steps: 3
+  operational:
+    degraded_after_steps: 1
+    stale_after_steps: 4
+    missing_after_steps: 8
+    recovery_hysteresis_steps: 2
+  advisory:
+    degraded_after_steps: 2
+    stale_after_steps: 8
+    missing_after_steps: 16
+    recovery_hysteresis_steps: 1
+
+semantic_types:
+  actuator_channel:
+    criticality: safety
+    cache_allowed: false
+    stale_after_steps: 1
+    missing_after_steps: 1
+  asset_availability:
+    criticality: safety
+    cache_allowed: false
+    stale_after_steps: 1
+    missing_after_steps: 1
+  asset_connection:
+    criticality: operational
+    cache_allowed: false
+    stale_after_steps: 1
+    missing_after_steps: 1
+  ev_service:
+    criticality: safety
+    stale_after_steps: 2
+    missing_after_steps: 4
+  local_constraint:
+    criticality: safety
+    stale_after_steps: 2
+    missing_after_steps: 3
+  local_energy:
+    criticality: operational
+    stale_after_steps: 4
+    missing_after_steps: 8
+  storage_state:
+    criticality: operational
+    stale_after_steps: 4
+    missing_after_steps: 8
+  deferrable_state:
+    criticality: operational
+    stale_after_steps: 4
+    missing_after_steps: 8
+  community_signal:
+    criticality: advisory
+    stale_after_steps: 8
+    missing_after_steps: 12
+  exogenous_forecast:
+    criticality: advisory
+    stale_after_steps: 8
+    missing_after_steps: 16
+
+fault_modes:
+  stuck:
+    initial_state: DEGRADED
+  noise:
+    initial_state: DEGRADED
+  bias:
+    initial_state: DEGRADED
+  clip:
+    initial_state: DEGRADED
+  delay:
+    initial_state: DEGRADED
+  missing:
+    initial_state: MISSING
+  dropout:
+    initial_state: MISSING
+  unavailable:
+    initial_state: FAILED

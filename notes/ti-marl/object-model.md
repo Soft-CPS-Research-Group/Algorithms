@@ -1,16 +1,16 @@
 # TI-MARL object model
 
 Runtime semantic objects are immutable and instance-bound. Configuration
-models may use Pydantic; per-step objects use frozen, slotted dataclasses.
+models may use Pydantic; per-step objects use frozen dataclasses.
 
 ## Capability and runtime objects
 
-- `AgentSchema`: potential compatible roles, module/entity types, observations,
-  groups, ports, constraints, timing and fallback.
+- `AgentSchema`: versioned compatible agent entity, module, observation and
+  action-group types.
 - `ModuleInstance`: installed functional module and its availability evidence.
 - `EntityInstance`: physical/logical target such as an EV session.
-- `TypedRelation`: validated ownership, containment, connection, observation,
-  control, dependency and resource relation.
+- Simulator edge tables are validated during binding; the compiled
+  `Dependency` objects encode versioned health consequences.
 
 ## Runtime evidence and health
 
@@ -25,15 +25,16 @@ change over time while the underlying cause remains unchanged.
 
 ## Decision objects
 
-- `ObservationPart`: semantic feature bound to entity and source, including
-  unit, scope, timestamp, provenance and derived health.
+- `ObservationPart`: stable typed feature slots bound to entity, source,
+  owner, semantic type and derived health.
 - `ActionGroupInstance`: exactly-one port family bound to one module/entity.
 - `ActionPortInstance`: port type, continuous parameters, validity, bounds,
   dependencies and resource effects.
 - `LocalConstraint`: typed local hard/soft constraint.
 - `SharedResource`: community resource visible to rewards/critic/trace.
-- `InterfaceSnapshot`: complete immutable compiler result and compatibility
-  signature for one agent and step.
+- `InterfaceSnapshot`: complete immutable compiler result for one population
+  and step. The compiler owns the composition-independent compatibility
+  signature used by checkpoints.
 - `LocalActionBundle`: selected port/parameter per active group.
 - `TypedTransition`: current/next snapshots, raw/final/executed bundles,
   rewards, termination and runtime events.
@@ -45,4 +46,3 @@ change over time while the underlying cause remains unchanged.
 - Every port has one owner, one target and one executable simulator route.
 - Every observation identifies entity, source and scope.
 - Unknown action semantics are never executed automatically.
-

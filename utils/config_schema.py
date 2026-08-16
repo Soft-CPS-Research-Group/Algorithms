@@ -1155,7 +1155,70 @@ class TransformerPPOStageConfig(BaseModel):
         return value
 
 
+class TIMARLBackboneConfig(BaseModel):
+    name: Literal["mappo"] = "mappo"
+
+
+class TIMARLActorConfig(BaseModel):
+    d_model: int = Field(default=128, ge=16)
+    attention_heads: int = Field(default=4, ge=1)
+    relation_layers: int = Field(default=2, ge=1)
+
+    @model_validator(mode="after")
+    def validate_attention_width(self) -> "TIMARLActorConfig":
+        if self.d_model % self.attention_heads != 0:
+            raise ValueError("TIMARL actor.d_model must be divisible by attention_heads")
+        return self
+
+
+class TIMARLCriticConfig(BaseModel):
+    kind: Literal["set"] = "set"
+
+
+class TIMARLFeasibilityConfig(BaseModel):
+    kind: Literal["analytic_projection"] = "analytic_projection"
+
+
+class TIMARLTraceConfig(BaseModel):
+    enabled: bool = True
+    chunk_size: int = Field(default=256, ge=1)
+    snapshot_interval: int = Field(default=256, ge=1)
+
+
+class TIMARLHyperparameters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: Literal["ti_marl_v1"] = "ti_marl_v1"
+    agent_schema_path: str = Field(min_length=1)
+    type_registry_path: str = Field(min_length=1)
+    health_rules_path: str = Field(min_length=1)
+    require_cuda: bool = False
+    backbone: TIMARLBackboneConfig = TIMARLBackboneConfig()
+    actor: TIMARLActorConfig = TIMARLActorConfig()
+    critic: TIMARLCriticConfig = TIMARLCriticConfig()
+    feasibility: TIMARLFeasibilityConfig = TIMARLFeasibilityConfig()
+    learning_rate: float = Field(default=3.0e-4, gt=0)
+    gamma: float = Field(default=0.99, gt=0, le=1)
+    gae_lambda: float = Field(default=0.95, gt=0, le=1)
+    clip_eps: float = Field(default=0.2, gt=0)
+    ppo_epochs: int = Field(default=4, ge=1)
+    entropy_coeff: float = Field(default=0.01, ge=0)
+    value_coeff: float = Field(default=0.5, ge=0)
+    max_grad_norm: float = Field(default=0.5, gt=0)
+    target_kl: Optional[float] = Field(default=0.03, gt=0)
+    rollout_steps: int = Field(default=256, ge=1)
+    trace: TIMARLTraceConfig = TIMARLTraceConfig()
+
+
+class TIMARLStageConfig(BaseModel):
+    algorithm: Literal["TIMARL"]
+    count: Literal[1] = 1
+    frozen: bool = False
+    hyperparameters: TIMARLHyperparameters
+
+
 PipelineStageConfig = Union[
+    TIMARLStageConfig,
     BuildingAgentStageConfig,
     CCLevel1AlgorithmConfig,
     CausalPriceSignalAlgorithmConfig,
@@ -1279,6 +1342,15 @@ class ProjectConfig(BaseModel):
                 raise ValueError(
                     "AgentTransformerPPO must be the final pipeline stage because it learns from its own executed actions."
                 )
+            if isinstance(stage, TIMARLStageConfig):
+                if len(self.pipeline) != 1:
+                    raise ValueError("TIMARL v1 must run as a standalone single-stage pipeline")
+                if index != len(self.pipeline) - 1:
+                    raise ValueError("TIMARL must be the final pipeline stage")
+                if self.simulator.interface != "entity":
+                    raise ValueError("TIMARL requires simulator.interface='entity'")
+                if self.simulator.central_agent:
+                    raise ValueError("TIMARL requires simulator.central_agent=false")
 
         stage_checkpoint_paths = self.checkpointing.stage_checkpoint_local_paths
         if stage_checkpoint_paths:

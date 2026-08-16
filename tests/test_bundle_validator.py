@@ -96,3 +96,47 @@ def test_validate_bundle_contract_rejects_wrong_rule_based_filename(tmp_path):
 
     with pytest.raises(BundleValidationError):
         validate_bundle_contract(manifest, bundle_dir)
+
+
+def test_validate_bundle_contract_accepts_shared_non_deployable_ti_marl(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir(parents=True)
+    (bundle_dir / "ti_marl_model.pth").write_bytes(b"placeholder")
+    manifest = _base_manifest()
+    manifest["topology"]["num_agents"] = 17
+    manifest["agent"] = {
+        "format": "ti_marl_torch",
+        "deployable": False,
+        "artifacts": [
+            {
+                "agent_index": 0,
+                "path": "ti_marl_model.pth",
+                "format": "ti_marl_torch",
+                "deployable": False,
+                "config": {"deployable": False},
+            }
+        ],
+    }
+    validate_bundle_contract(manifest, bundle_dir)
+
+
+def test_validate_bundle_contract_rejects_deployable_ti_marl(tmp_path):
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir(parents=True)
+    (bundle_dir / "ti_marl_model.pth").write_bytes(b"placeholder")
+    manifest = _base_manifest()
+    manifest["agent"] = {
+        "format": "ti_marl_torch",
+        "deployable": True,
+        "artifacts": [
+            {
+                "agent_index": 0,
+                "path": "ti_marl_model.pth",
+                "format": "ti_marl_torch",
+                "deployable": False,
+                "config": {},
+            }
+        ],
+    }
+    with pytest.raises(BundleValidationError, match="deployable=false"):
+        validate_bundle_contract(manifest, bundle_dir)

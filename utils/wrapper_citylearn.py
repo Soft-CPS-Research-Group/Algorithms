@@ -172,6 +172,10 @@ class Wrapper_CityLearn(RLC):
         self._topology_changed_during_step: bool = False
         self._pending_model_environment_attach: bool = False
         self._defer_model_environment_attach: bool = False
+        self._entity_current_payload: Optional[Mapping[str, Any]] = None
+        self._entity_current_info: Mapping[str, Any] = {}
+        self._entity_next_payload: Optional[Mapping[str, Any]] = None
+        self._entity_step_info: Mapping[str, Any] = {}
         self._entity_adapter: Optional[EntityContractAdapter] = None
         self._entity_profile_adapters: Dict[str, EntityContractAdapter] = {}
         self._profiled_observation_cache_key: Optional[tuple[int, ...]] = None
@@ -604,6 +608,8 @@ class Wrapper_CityLearn(RLC):
         if bool(getattr(self.model, "use_raw_observations", False)):
             return True
         if bool(getattr(self.model, "requires_raw_observation_context", False)):
+            return True
+        if bool(getattr(self.model, "requires_entity_observation_context", False)):
             return True
         if getattr(self.model, "_warm_start_policy", None) is not None:
             return True
@@ -1383,8 +1389,12 @@ class Wrapper_CityLearn(RLC):
                 global_step_total=None,
             )
             self._prepare_episode_reset()
-            raw_observations, _ = self.env.reset()
+            raw_observations, reset_info = self.env.reset()
             if self._entity_interface_mode:
+                self._entity_current_payload = raw_observations
+                self._entity_current_info = dict(reset_info or {})
+                self._entity_next_payload = None
+                self._entity_step_info = {}
                 observations = self._apply_entity_layout(
                     raw_observations,
                     force_attach=True,
@@ -1507,7 +1517,10 @@ class Wrapper_CityLearn(RLC):
                     global_step_total=global_step_total,
                 )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
-                next_observations_raw, rewards, terminated, truncated, _ = self.env.step(env_actions)
+                next_observations_raw, rewards, terminated, truncated, step_info = self.env.step(env_actions)
+                if self._entity_interface_mode:
+                    self._entity_next_payload = next_observations_raw
+                    self._entity_step_info = dict(step_info or {})
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/env_step_seconds"] = (
                         time.perf_counter() - phase_start_time
@@ -1571,6 +1584,12 @@ class Wrapper_CityLearn(RLC):
                 )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 rewards = self._shape_rewards(rewards, next_observations)
+                if self._entity_interface_mode:
+                    self._entity_step_info = dict(self._entity_step_info)
+                    self._entity_step_info.setdefault(
+                        "reward_components",
+                        self._get_reward_components_payload(),
+                    )
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/reward_shaping_seconds"] = (
                         time.perf_counter() - phase_start_time
@@ -1588,6 +1607,9 @@ class Wrapper_CityLearn(RLC):
 
                 topology_transition_recorded = False
                 if self._topology_changed_during_step:
+                    handles_cross_topology = bool(
+                        getattr(self.model, "handles_cross_topology_transitions", False)
+                    )
                     snapshot_model_topology = getattr(self.model, "snapshot_topology_state", None)
                     restore_model_topology = getattr(self.model, "restore_topology_state", None)
                     try:
@@ -1598,7 +1620,7 @@ class Wrapper_CityLearn(RLC):
                             )
                         if callable(snapshot_model_topology):
                             model_topology_snapshot = snapshot_model_topology()
-                        if not deterministic:
+                        if not episode_deterministic and not handles_cross_topology:
                             transition_hook = getattr(self.model, "record_topology_transition", None)
                             if callable(transition_hook):
                                 transition_observations = (
@@ -1652,6 +1674,21 @@ class Wrapper_CityLearn(RLC):
                                 self._pending_model_environment_attach = False
                                 self._refresh_update_schedule()
                                 self._attach_model_environment_metadata()
+                                if bool(
+                                    getattr(
+                                        self.model,
+                                        "handles_cross_topology_transitions",
+                                        False,
+                                    )
+                                ):
+                                    self.update(
+                                        observations,
+                                        actions,
+                                        rewards,
+                                        next_observations,
+                                        terminated=terminated,
+                                        truncated=truncated,
+                                    )
                             except Exception:
                                 if model_topology_snapshot is not None and callable(restore_model_topology):
                                     restore_model_topology(model_topology_snapshot)
@@ -1747,6 +1784,11 @@ class Wrapper_CityLearn(RLC):
                     )
 
                 observations = [o for o in next_observations]
+                if self._entity_interface_mode:
+                    self._entity_current_payload = self._entity_next_payload
+                    self._entity_current_info = self._entity_step_info
+                    self._entity_next_payload = None
+                    self._entity_step_info = {}
 
                 # Reduce system monitoring frequency
                 cpu_usage = None
@@ -2089,6 +2131,11 @@ class Wrapper_CityLearn(RLC):
             )
 
         observation_context_hook = getattr(self.model, "set_observation_context", None)
+        entity_observation_context_hook = getattr(
+            self.model,
+            "set_entity_observation_context",
+            None,
+        )
         profiled_observation_context_hook = getattr(
             self.model,
             "set_profiled_observation_context",
@@ -2106,6 +2153,15 @@ class Wrapper_CityLearn(RLC):
                 if direct_entity_model_observations
                 else observations,
                 encoded_observations=encoded_observations,
+            )
+        if callable(entity_observation_context_hook):
+            if self._entity_current_payload is None:
+                raise RuntimeError(
+                    "Model requested entity observation context but no entity payload is active."
+                )
+            entity_observation_context_hook(
+                observation_payload=self._entity_current_payload,
+                info=self._entity_current_info,
             )
 
         actions = self.model.predict(encoded_observations, deterministic)
@@ -2537,6 +2593,24 @@ class Wrapper_CityLearn(RLC):
 
         return metrics
 
+    def _get_reward_components_payload(self) -> Mapping[str, Any]:
+        """Return the unflattened reward evidence for typed transition traces."""
+
+        reward_fn = getattr(self.env, "reward_function", None)
+        if reward_fn is None and hasattr(self.env, "unwrapped"):
+            reward_fn = getattr(self.env.unwrapped, "reward_function", None)
+        if reward_fn is None:
+            return {}
+        components_hook = getattr(reward_fn, "get_last_components", None)
+        if callable(components_hook):
+            components = components_hook()
+        else:
+            components = {
+                "per_agent": getattr(reward_fn, "last_components_by_agent", []),
+                "community": getattr(reward_fn, "last_community_components", {}),
+            }
+        return deepcopy(components) if isinstance(components, Mapping) else {}
+
     def _build_observation_lookup(self, agent_index: int, observation: List[float]) -> Dict[str, float]:
         names: List[str] = []
         if agent_index < len(self.observation_names):
@@ -2693,6 +2767,11 @@ class Wrapper_CityLearn(RLC):
             self._last_model_observation_encoding_seconds = time.perf_counter() - phase_start_time
 
         transition_context_hook = getattr(self.model, "set_transition_context", None)
+        entity_transition_context_hook = getattr(
+            self.model,
+            "set_entity_transition_context",
+            None,
+        )
         profiled_transition_context_hook = getattr(
             self.model,
             "set_profiled_transition_context",
@@ -2719,6 +2798,16 @@ class Wrapper_CityLearn(RLC):
                 else next_observations,
                 encoded_observations=encoded_observations,
                 encoded_next_observations=encoded_next_observations,
+            )
+        if callable(entity_transition_context_hook):
+            if self._entity_current_payload is None or self._entity_next_payload is None:
+                raise RuntimeError(
+                    "Model requested entity transition context but current/next payloads are incomplete."
+                )
+            entity_transition_context_hook(
+                observation_payload=self._entity_current_payload,
+                next_observation_payload=self._entity_next_payload,
+                info=self._entity_step_info,
             )
         if callable(profiled_transition_context_hook):
             profiled_transition_context_hook(

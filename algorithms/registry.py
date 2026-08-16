@@ -80,6 +80,7 @@ from algorithms.agents.total_oracle_replay_policy import TotalOracleReplayPolicy
 _registry_trace("before AgentTransformerPPO agents import")
 from algorithms.transformer_ppo.agent import AgentTransformerPPO
 _registry_trace("after AgentTransformerPPO agents import")
+from algorithms.ti_marl.agent import TIMARL
 _registry_trace("before RuleBasedPolicy import")
 from algorithms.agents.rbc_agent import RuleBasedPolicy
 _registry_trace("after RuleBasedPolicy import")
@@ -119,6 +120,7 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "TotalHomeOracleReplayPolicy": TotalHomeOracleReplayPolicy,
     "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
     "AgentTransformerPPO": AgentTransformerPPO,
+    "TIMARL": TIMARL,
 }
 
 PLACEHOLDER_ALGORITHMS = {
