@@ -86,6 +86,9 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
 | `SingleAgentRL` | Schema placeholder only |
 
 The Transformer PPO implementation lives in `algorithms/transformer_ppo/`.
+Use the [shared Transformer/entity contract](docs/transformer_entity_controller.md)
+for reusable invariants and the [TPPO specification](docs/transformer_ppo_spec.md)
+for PPO-specific lifecycle and deployment details.
 
 ## Runtime Flow
 
@@ -115,6 +118,10 @@ export_artifacts() → runs/jobs/<job_id>/
 > Encoders keep training and serving consistent; usually unchanged after initial setup.
 
 ## Entity Interface (New Contract)
+
+The shared contract is algorithm-independent. TPPO-specific rules, including
+pending-action validation, on-policy flushing, BC, safety, checkpoints, and
+ONNX export, are in the TPPO specification.
 
 When `simulator.interface: entity`, the wrapper uses the CityLearn entity contract
 instead of legacy flat vectors.

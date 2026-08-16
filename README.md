@@ -20,6 +20,10 @@ orchestration, logging, and packaging.
   this phase (resume, stepping contracts, next backlog).
 - 🧱 [Entity Interface Playbook (PT)](docs/entity_interface_playbook_pt.md):
   practical guide for `interface=entity` (including dynamic topology).
+- 🧩 [Transformer Entity Controller Contract](docs/transformer_entity_controller.md):
+  shared entity, token, layout, topology, and deployment invariants.
+- 🎯 [AgentTransformerPPO Specification](docs/transformer_ppo_spec.md): current
+  TPPO lifecycle, BC, safety, configuration, metrics, checkpoints, and export.
 
 ## Prerequisites
 
@@ -225,7 +229,7 @@ Bundle the manifest, ONNX directory, and optional alias map as described in
 4. Extend `configs/templates/` and `utils/config_schema.py` if new
    hyperparameters are needed.
 5. Implement `export_artifacts` so ONNX + metadata are written under the run
-   directory. Use the shared `DEFAULT_ONNX_OPSET` (13).
+   directory. Use the algorithm's validated ONNX opset; TPPO uses opset 17.
 6. Add unit tests (`pytest`) for new utilities or encoders.
 
 The [Training Platform Guide](docs/platform_guide.md) walks through this process
