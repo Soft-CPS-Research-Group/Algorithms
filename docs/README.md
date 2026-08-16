@@ -1,6 +1,6 @@
 # Documentacao Ativa
 
-Snapshot: 2026-06-04
+Snapshot: 2026-08-16
 
 Este diretorio fica reduzido aos documentos que ainda ajudam trabalho futuro.
 Historico de fases antigas, configs remotos ja executados e relatorios
@@ -21,6 +21,10 @@ intermedios foram removidos do repo. Resultados brutos devem ficar em
 - `entity_encoding_profiles_v1_pt.md` - perfis de encoding ativos para
   Simulator 1.5.3.
 - `simulator_limits.md` - limites e cuidados conhecidos do simulador.
+- `transformer_entity_controller.md` - contrato partilhado entity/Transformer,
+  layout, tokenizer, topologia e deployment.
+- `transformer_ppo_spec.md` - especificacao atual do AgentTransformerPPO,
+  incluindo BC, safety, checkpoints, metricas e export.
 
 ## Algoritmos E Comparadores
 
