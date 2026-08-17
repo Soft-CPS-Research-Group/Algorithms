@@ -1,6 +1,7 @@
 # TI-MARL implementation RFC v1
 
-Status: approved for implementation on 2026-08-16.
+Status: approved for implementation on 2026-08-16; deployment-neutral
+per-agent interface revision approved on 2026-08-17.
 
 ## Purpose
 
@@ -19,11 +20,39 @@ Community Coordinator agents are outside this method. Community coordination
 is learned through authorised aggregate observations, coupled rewards, joint
 transitions and a training-only variable-cardinality critic.
 
+## Public agent interface and adapter boundary
+
+The public contract is `typed_agent_interface_v1`: one human-editable YAML
+document per registered building agent.  It describes stable agent identity,
+role, building type, installed or pre-registered sensor/asset instances,
+channels, typed observations, actuators, actions, local constraints and
+explicit health dependencies.  It contains no Simulator, CityLearn, MQTT,
+Modbus or endpoint-specific names.
+
+An observation is addressed by the stable path
+`agent/sensor/channel/observation`.  Every available field is typed and
+classified as policy input, safety dependency, runtime bound, trace-only or
+explicitly excluded with a reason.  Community aggregates use exactly the same
+model as local telemetry: `community` is a sensor with `scope=community`.
+Only fields declared `policy_input=true` enter the local actor.
+
+Capability profiles keep repeated definitions compact.  The resolved
+interface expands every inherited semantic type, unit, shape, default and
+health consequence and is the auditable contract used by compatibility,
+learning, safety and traces.  Profiles are packaged with the policy; new
+instances of known compatible types do not resize a network.  Unknown action
+semantics are never executed automatically.
+
+Technology-specific adapters produce a neutral `TypedRuntimeFrame` and
+consume neutral `TypedActionCommand` objects.  The Simulator adapter is one
+such adapter; real deployments may provide MQTT, Modbus or service adapters
+without changing the public interface or the TIC.
+
 ## Simulator boundary
 
-CityLearn `entity_v1` remains the source of truth for active entities,
-relations, observation/action features, ordering, units and bounds. Simulator
-1.7.0 adds two backward-compatible subcontracts:
+CityLearn `entity_v1` remains the source of runtime facts for simulated runs.
+The Simulator adapter binds those facts to the deployment-neutral registered
+interfaces. Simulator 1.7.0 adds two backward-compatible subcontracts:
 
 - `runtime_status_v1`: raw events, connection, availability, channel quality,
   timestamps and freshness evidence;
@@ -44,17 +73,25 @@ The runtime contract distinguishes:
 5. community/cloud communication state; and
 6. value-quality perturbations.
 
-The Simulator exposes facts and real execution. Algorithms owns dependency
+The Simulator exposes facts and real execution. The adapter owns technological
+bindings. Algorithms owns semantic validation, health derivation, dependency
 closure, port validity, bound contraction, degraded operating modes and
 fallback.
 
 ## Typed execution model
 
-For every active building and step, the TIC deterministically produces an
-immutable `InterfaceSnapshot` containing entity-bound observations, modules,
-entities, relations, health assessments, grouped ports, dynamic bounds, local
-constraints, authorised community observations, operational mode and a
-compatibility signature.
+For every active building and decision boundary, the TIC deterministically
+updates an immutable `InterfaceSnapshot`. Static structure is compiled only at
+registration, atomic reload, topology or session boundaries; current values,
+freshness, health and bounds are updated incrementally from each
+`TypedRuntimeFrame`. Thresholds use physical duration rather than timestep
+counts.
+
+The observation encoder is hierarchical: typed observations are aggregated
+into channel representations, then sensor/asset representations, before local
+asset/group interaction and pooling into one local latent. An EV session is a
+runtime entity distinct from its persistent charger and never inherits cached
+state from a previous session.
 
 The initial action groups are:
 
@@ -80,17 +117,39 @@ Local feasibility converts the raw bundle into a final locally feasible
 bundle using deterministic typed bounds and the existing analytic projection
 semantics. It records every adjustment and does no community optimisation.
 
+## Health and fail-safe policy
+
+Health is assessed per observation/channel. Each action dependency explicitly
+defines consequences for non-nominal states; there is no universal
+`DEGRADED -> lower power` translation. Supported consequences include port
+invalidation, bound contraction, degraded-mode selection, declared fallback,
+group suspension and agent safe mode. Constraint and channel safety precedes
+service preservation, which precedes optimisation.
+
+The initial fail-safe profile includes: agent isolation when the main/grid
+meter is unavailable; no charging without trustworthy site/phase headroom; no
+export without trustworthy export headroom; no charger action without a
+confirmed connection and actuator capability; no V2G under uncertain EV SoC
+or schedule; service-priority maximum safe charging under explicitly declared
+uncertain-SoC rules; no stationary storage action without trustworthy SoC and
+bounds; local continuation without community/price/forecast telemetry; and
+deterministic deferrable behaviour only when start/running evidence is safe.
+Every fallback remains subject to physical, BMS, grid, phase and local
+feasibility bounds.
+
 ## Algorithms integration
 
-The registry name is `TIMARL`. Configuration requires entity interface,
-decentralised CityLearn agents and one versioned `typed_interface_v1` YAML.
-That public file contains fixed semantics/dependencies, the ordered editable
-observation and action view, and health rules. It may be authored by hand or
-enriched with a generated Simulator observation/action catalog; every form is
-validated against live `entity_specs` before execution. The compiler may split
-it internally, but users do not coordinate separate schema/type/health files.
-One `TIMARL` execution unit internally manages the changing population of
-logical building agents.
+The registry name is `TIMARL`. Configuration uses `typed_interfaces_dir`, with
+one `typed_agent_interface_v1` file per registered logical building. The
+prototype global `typed_interface_v1` is rejected rather than maintained as a
+second runtime representation. One `TIMARL` execution unit may manage the
+changing population during central simulation/training; the same actor, TIC,
+profiles, normalisation and feasibility components run per edge agent during
+deployment. The training-only critic is not deployed.
+
+The interface registry provides all-or-nothing reload. Invalid changes retain
+the previous generation. Polling is optional and disabled by default, so YAML
+parsing and filesystem access are absent from the steady-state inference path.
 
 The wrapper gains optional structured entity observation/transition hooks.
 Existing agents keep the current vector path. TI-MARL stores current and next
@@ -98,9 +157,10 @@ snapshots across topology changes: joining agents have no predecessor,
 departing agents terminate individually and surviving agents bootstrap.
 
 Checkpoints contain policy/critic/optimiser state, partial rollout, RNG state,
-normalisers, compiler/schema/rule hashes and simulator/repository versions.
-The first bundle format is `ti_marl_torch` with `deployable=false`; dynamic
-inference export is a later milestone.
+normalisers, capability/profile/compiler hashes and resolved interface hashes.
+Compatibility signatures depend on semantic types and contracts, not concrete
+instance IDs. Deployment bundles contain the actor, TIC, profiles,
+normalisation and feasibility components but exclude the central critic.
 
 Typed traces are buffered and snapshot-deduplicated. Every transition remains
 reconstructable without per-object/per-step filesystem writes.
@@ -110,10 +170,13 @@ reconstructable without per-object/per-step filesystem writes.
 1. Freeze this RFC, the decision log and evidence plan.
 2. Implement, test, document and release Simulator 1.7.0.
 3. Pin Algorithms to that published release.
-4. Implement typed contracts, compiler and health closure.
-5. Implement typed actor, grouped decoder, codec and local feasibility.
-6. Implement TI-MAPPO, the variable set critic and population-aware rollout.
-7. Complete the multi-agent dynamic/health vertical slice.
+4. Replace the prototype with per-agent contracts, registry and neutral runtime
+   frames/commands.
+5. Implement the Simulator adapter, hierarchical compiler/actor and fail-safe
+   closure.
+6. Generate and validate interfaces for the canonical static 15-minute and
+   dynamic-topology datasets.
+7. Complete static annual, dynamic, health, deployment-parity and scale gates.
 8. Validate CI, Docker, Union and Deucalion artefacts.
 9. Run development and confirmatory experiment campaigns.
 

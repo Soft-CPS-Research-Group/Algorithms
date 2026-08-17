@@ -5,9 +5,13 @@ models may use Pydantic; per-step objects use frozen dataclasses.
 
 ## Capability and runtime objects
 
-- `TypedInterfaceDefinition`: the single versioned, editable source containing
-  fixed semantics, observation/action selection and health rules; it validates
-  both manual and Simulator-catalog-enriched forms.
+- `TypedAgentInterface`: one versioned, editable, technology-neutral contract
+  for a registered agent, its sensor/channel/observation hierarchy, actuators,
+  constraints and explicit dependencies.
+- `InterfaceRegistry`: immutable generation of agent interfaces with atomic
+  directory reload and composition-independent compatibility validation.
+- `CapabilityProfile`: policy-packaged reusable observation/action semantics,
+  units, shapes and fail-safe defaults expanded into a resolved interface.
 - `AgentSchema`: versioned compatible agent entity, module, observation and
   action-group types.
 - `ModuleInstance`: installed functional module and its availability evidence.
@@ -22,14 +26,23 @@ models may use Pydantic; per-step objects use frozen dataclasses.
 - `ChannelStatus`: sensor, actuator or communication-channel evidence.
 - `FaultEvidence`: immutable cause, domain, target, timing and quality facts.
 - `HealthAssessment`: TIC-derived health plus rule/evidence references.
+- `TypedObservationSample`: one timestamped, unit-bearing observation value.
+- `TypedHealthEvidence`: adapter-neutral cause, quality, availability and
+  freshness evidence.
+- `TypedRuntimeFrame`: one decision-boundary population frame containing the
+  latest samples, runtime entities, membership/topology events and evidence.
 
 `FaultEvidence.fault_mode` is never a `HealthState`. Health assessments may
 change over time while the underlying cause remains unchanged.
 
 ## Decision objects
 
-- `ObservationPart`: stable typed feature slots bound to entity, source,
-  owner, semantic type and derived health.
+- `ObservationPart`: stable typed scalar/vector observation bound to agent,
+  sensor, channel, entity/session, semantic type and independently derived
+  health.
+- `ChannelInstance`: related observation parts with shared source/channel
+  provenance and optional channel-level health evidence.
+- `SensorInstance`: local or community observation source containing channels.
 - `ActionGroupInstance`: exactly-one port family bound to one module/entity.
 - `ActionPortInstance`: port type, continuous parameters, validity, bounds,
   dependencies and resource effects.
@@ -41,6 +54,8 @@ change over time while the underlying cause remains unchanged.
 - `LocalActionBundle`: selected port/parameter per active group.
 - `TypedTransition`: current/next snapshots, raw/final/executed bundles,
   rewards, termination and runtime events.
+- `TypedActionCommand`: technology-neutral selected action and physical unit.
+- `TypedExecutionFeedback`: requested, limited and applied execution evidence.
 
 ## Identity invariants
 
@@ -48,4 +63,6 @@ change over time while the underlying cause remains unchanged.
 - Session replacement creates a new entity identity.
 - Every port has one owner, one target and one executable simulator route.
 - Every observation identifies entity, source and scope.
+- Community observations use the same sensor/channel model as local data.
+- A registered but inactive member/asset remains distinct from an unknown one.
 - Unknown action semantics are never executed automatically.

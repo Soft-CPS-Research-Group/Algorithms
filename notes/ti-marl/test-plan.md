@@ -17,6 +17,11 @@
 - Session replacement without stale identity leakage.
 - Health derivation across duration/criticality thresholds and recovery.
 - Scoped closure, conflict/cycle rejection and unknown-type fallback.
+- Per-agent directory loading, duplicate/reference/unit validation and atomic
+  reload rollback.
+- Independent observation/channel health and hierarchical resolved snapshots.
+- Full field classification: policy, safety, runtime-bound, trace-only or
+  reasoned exclusion.
 
 ## Policy/critic gates
 
@@ -34,3 +39,14 @@ crosses degraded-to-stale, sensor loss, actuator loss, community-link loss and
 recovery. Verify trace-to-execution correspondence, local feasibility,
 parameter-count invariance and baseline regressions.
 
+## Canonical dataset gates
+
+- Generate 17 interfaces and replay all 35,040 steps of
+  `citylearn_three_phase_electrical_service_demo_15min_parquet`.
+- Generate registered interfaces for all members/assets in
+  `citylearn_three_phase_dynamic_topology_demo` and cross all eight member,
+  charger, PV and storage events.
+- Move asset events into a short window of the 15-second dynamic dataset and
+  measure incremental-update overhead.
+- Compare Simulator frames/snapshots/commands with an equivalent mock real
+  adapter and exercise 1, 17, 50 and 100-agent compatible compositions.

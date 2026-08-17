@@ -1,10 +1,13 @@
-# CityLearn to TI-MARL contract map
+# CityLearn adapter to deployment-neutral TI-MARL contract map
+
+This mapping is adapter-owned. None of these CityLearn names or versions
+appears in a public `typed_agent_interface_v1` file.
 
 ## Existing entity contract
 
 | CityLearn object | TI-MARL role |
 |---|---|
-| district table | exogenous and authorised community observations |
+| district table | `community` sensor channels and exogenous observations |
 | building table | local meter/load/PV/headroom observations and logical agent |
 | charger table | charger module features and EV-service evidence |
 | EV table | EV/session entity state |
@@ -40,8 +43,7 @@ channel loss unless an explicit event says so.
 | EV storage scalar per charger | EV charger mode | idle, charge, discharge |
 | deferrable start scalar | deferrable operation | idle, start |
 
-The port parameter is a non-negative fraction. The codec uses the current
-signed CityLearn bounds and availability-normalised observations; it does not
-reinterpret the simulator input as kW. Resource effects use the physical kW
-metadata separately.
-
+The public port parameter uses its declared physical unit. The Simulator
+adapter/codec converts the final value to CityLearn's signed normalised scalar
+using the current runtime bounds; resource effects and traces retain physical
+kW separately.

@@ -50,6 +50,30 @@ must not be silently reinterpreted in code.
     fixed semantics, ordered observation view, action groups and health rules
     remain reviewable. Schema/type/health splits are compiler internals, not
     separate user configuration surfaces.
+22. Decision 21 is superseded in composition, not purpose: the public contract
+    is one `typed_agent_interface_v1` YAML per registered agent, loaded from a
+    directory. The prior global `typed_interface_v1` prototype is rejected.
+23. Public agent interfaces are technology-neutral. Simulator, MQTT, Modbus
+    and endpoint bindings belong to adapters and never to the public YAML.
+24. Sensors contain channels and channels contain independently typed and
+    health-assessed observations. `community` is a normal aggregate sensor
+    with community scope, not a privileged special section.
+25. All available fields are typed and classified, while only explicit
+    `policy_input` observations reach the actor. Trace-only or excluded fields
+    remain auditable and require a reason.
+26. Health thresholds use physical duration. Each action dependency declares
+    the effects of non-nominal observation/channel states; no universal health
+    consequence is inferred from the state name alone.
+27. Registration is persistent and distinct from runtime activity. Registry
+    reload is atomic; new/removed agents and known asset instances preserve
+    stable-ID transition semantics and do not resize networks.
+28. The same actor, TIC, profiles, normalisation, feasibility and compatibility
+    semantics are deployed. Central critics and privileged training context are
+    not part of decentralised deployment.
+29. The canonical validation surfaces are
+    `citylearn_three_phase_electrical_service_demo_15min_parquet`,
+    `citylearn_three_phase_dynamic_topology_demo` and the 15-second dynamic
+    asset stress fixture.
 
 ## Initial implementation choices
 
@@ -63,7 +87,8 @@ must not be silently reinterpreted in code.
 - Shared hard monitor: disabled in the first slice.
 - Unknown optional type: observed-only/uncontrolled; unknown safety-critical
   semantics: compatibility rejection and approved safe fallback.
-- First artefact: non-deployable versioned PyTorch research bundle.
+- First research artefact remains versioned PyTorch; a deployment bundle must
+  explicitly exclude the central critic and include the actor/TIC contract.
 
 ## Open experimental decisions
 
