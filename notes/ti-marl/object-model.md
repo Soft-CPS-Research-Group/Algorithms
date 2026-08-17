@@ -5,6 +5,9 @@ models may use Pydantic; per-step objects use frozen dataclasses.
 
 ## Capability and runtime objects
 
+- `TypedInterfaceDefinition`: the single versioned, editable source containing
+  fixed semantics, observation/action selection and health rules; it validates
+  both manual and Simulator-catalog-enriched forms.
 - `AgentSchema`: versioned compatible agent entity, module, observation and
   action-group types.
 - `ModuleInstance`: installed functional module and its availability evidence.

@@ -7,6 +7,10 @@ from algorithms.ti_marl.contracts.enums import (
     HealthState,
     QualityState,
 )
+from algorithms.ti_marl.contracts.interface_definition import (
+    TYPED_INTERFACE_VERSION,
+    TypedInterfaceDefinition,
+)
 from algorithms.ti_marl.contracts.models import (
     ActionDecision,
     ActionGroupInstance,
@@ -50,4 +54,6 @@ __all__ = [
     "QualityState",
     "SharedResource",
     "TypedTransition",
+    "TYPED_INTERFACE_VERSION",
+    "TypedInterfaceDefinition",
 ]

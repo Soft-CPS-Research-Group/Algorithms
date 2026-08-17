@@ -1,8 +1,4 @@
 {
-  "schema": "/home/tiago/dev/Simulator/data/datasets/citylearn_three_phase_dynamic_topology_demo/schema.json",
-  "time_step": 2200,
-  "episode": 0,
-  "topology_version": 7,
   "tables": {
     "district": {
       "features": [
@@ -30,6 +26,8 @@
         "electricity_pricing_predicted_1",
         "electricity_pricing_predicted_2",
         "electricity_pricing_predicted_3",
+        "minutes",
+        "seconds",
         "community_net_power_kw",
         "community_net_energy_kwh_step",
         "community_import_power_kw",
@@ -46,60 +44,47 @@
         "community_building_export_headroom_kw",
         "community_phase_headroom_kw",
         "community_phase_export_headroom_kw",
+        "community_flexible_charge_power_capacity_kw",
+        "community_flexible_discharge_power_capacity_kw",
+        "community_flexible_charge_energy_capacity_kwh_step",
+        "community_flexible_discharge_energy_capacity_kwh_step",
+        "community_flexible_energy_to_full_kwh",
+        "community_flexible_energy_available_kwh",
         "active_buildings_count",
         "active_chargers_count",
         "active_evs_count",
         "topology_version",
         "community_net_prev_1_kwh_step",
-        "community_net_prev_3_mean_kwh_step"
-      ],
-      "units": [
-        "index",
-        "index",
-        "index",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kw",
-        "kw",
-        "kw",
-        "count",
-        "count",
-        "count",
-        "scalar",
-        "kwh_step",
-        "kwh_step"
+        "community_net_prev_3_mean_kwh_step",
+        "hour_sin",
+        "hour_cos",
+        "day_type_sin",
+        "day_type_cos",
+        "month_sin",
+        "month_cos",
+        "seconds_of_day_sin",
+        "seconds_of_day_cos",
+        "is_weekend",
+        "forecast_price_next_15m",
+        "forecast_community_load_next_15m_kw",
+        "forecast_community_pv_next_15m_kw",
+        "forecast_community_net_next_15m_kw",
+        "forecast_price_next_1h",
+        "forecast_community_load_next_1h_kw",
+        "forecast_community_pv_next_1h_kw",
+        "forecast_community_net_next_1h_kw",
+        "forecast_price_next_3h",
+        "forecast_community_load_next_3h_kw",
+        "forecast_community_pv_next_3h_kw",
+        "forecast_community_net_next_3h_kw",
+        "forecast_price_next_6h",
+        "forecast_community_load_next_6h_kw",
+        "forecast_community_pv_next_6h_kw",
+        "forecast_community_net_next_6h_kw",
+        "forecast_price_next_24h",
+        "forecast_community_load_next_24h_kw",
+        "forecast_community_pv_next_24h_kw",
+        "forecast_community_net_next_24h_kw"
       ],
       "rows": [
         {
@@ -113,12 +98,6 @@
         "solar_generation",
         "electrical_storage_soc",
         "net_electricity_consumption",
-        "charging_phase_one_hot_charger_15_1_L1",
-        "charging_phase_one_hot_charger_15_1_L2",
-        "charging_phase_one_hot_charger_15_1_L3",
-        "charging_phase_one_hot_charger_15_2_L1",
-        "charging_phase_one_hot_charger_15_2_L2",
-        "charging_phase_one_hot_charger_15_2_L3",
         "charging_building_headroom_kw",
         "charging_phase_L1_headroom_kw",
         "charging_phase_L2_headroom_kw",
@@ -138,55 +117,55 @@
         "load_energy_kwh_step",
         "pv_power_kw",
         "pv_energy_kwh_step",
+        "pv_surplus_power_kw",
+        "pv_surplus_energy_kwh_step",
         "bess_power_kw",
         "bess_energy_kwh_step",
         "ev_charging_power_kw",
         "ev_charging_energy_kwh_step",
         "electrical_storage_soc_ratio",
+        "charging_total_service_power_kw",
+        "building_import_headroom_kw",
+        "building_export_headroom_kw",
+        "import_phase_headroom_kw",
+        "export_phase_headroom_kw",
+        "flexible_charge_power_capacity_kw",
+        "flexible_discharge_power_capacity_kw",
+        "flexible_charge_energy_capacity_kwh_step",
+        "flexible_discharge_energy_capacity_kwh_step",
+        "flexible_energy_to_full_kwh",
+        "flexible_energy_available_kwh",
+        "charging_phase_L1_power_kw",
+        "charging_phase_L2_power_kw",
+        "charging_phase_L3_power_kw",
         "net_energy_prev_1_kwh_step",
         "net_energy_prev_3_mean_kwh_step",
         "import_energy_prev_1_kwh_step",
-        "export_energy_prev_1_kwh_step"
-      ],
-      "units": [
-        "scalar",
-        "kwh",
-        "ratio",
-        "kwh",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "scalar",
-        "kw",
-        "kw",
-        "kw",
-        "kw",
-        "kw",
-        "kw",
-        "kw",
-        "kw",
-        "kwh",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "kw",
-        "kwh_step",
-        "ratio",
-        "kwh_step",
-        "kwh_step",
-        "kwh_step",
-        "kwh_step"
+        "export_energy_prev_1_kwh_step",
+        "hour_sin",
+        "hour_cos",
+        "day_type_sin",
+        "day_type_cos",
+        "month_sin",
+        "month_cos",
+        "seconds_of_day_sin",
+        "seconds_of_day_cos",
+        "is_weekend",
+        "forecast_load_next_15m_kw",
+        "forecast_pv_next_15m_kw",
+        "forecast_net_next_15m_kw",
+        "forecast_load_next_1h_kw",
+        "forecast_pv_next_1h_kw",
+        "forecast_net_next_1h_kw",
+        "forecast_load_next_3h_kw",
+        "forecast_pv_next_3h_kw",
+        "forecast_net_next_3h_kw",
+        "forecast_load_next_6h_kw",
+        "forecast_pv_next_6h_kw",
+        "forecast_net_next_6h_kw",
+        "forecast_load_next_24h_kw",
+        "forecast_pv_next_24h_kw",
+        "forecast_net_next_24h_kw"
       ],
       "rows": [
         {
@@ -239,9 +218,6 @@
         },
         {
           "id": "Building_17"
-        },
-        {
-          "id": "Building_18"
         }
       ]
     },
@@ -258,39 +234,68 @@
         "last_charged_kwh",
         "max_charging_power_kw",
         "max_discharging_power_kw",
+        "min_charging_power_kw",
+        "min_discharging_power_kw",
+        "charger_efficiency_ratio",
         "commanded_power_kw",
         "applied_power_kw",
         "applied_energy_kwh_step",
+        "hours_until_departure",
+        "time_until_departure_ratio",
         "energy_to_required_soc_kwh",
-        "avg_power_to_departure_kw"
-      ],
-      "units": [
-        "scalar",
-        "scalar",
-        "ratio",
-        "scalar",
-        "kwh",
-        "time_step",
-        "scalar",
-        "time_step",
-        "kwh",
-        "kw",
-        "kw",
-        "kw",
-        "kw",
-        "kwh_step",
-        "kwh",
-        "scalar"
+        "required_average_power_kw",
+        "avg_power_to_departure_kw",
+        "charging_slack_kw",
+        "charging_priority_ratio",
+        "connected_ev_soc_min_ratio",
+        "connected_ev_energy_available_kwh",
+        "connected_ev_energy_to_full_kwh",
+        "can_charge",
+        "can_discharge",
+        "available_charge_power_kw",
+        "available_discharge_power_kw",
+        "available_charge_action_normalized",
+        "available_discharge_action_normalized",
+        "max_deliverable_energy_until_departure_kwh",
+        "departure_energy_margin_kwh",
+        "departure_feasibility_ratio",
+        "min_required_action_normalized",
+        "charge_efficiency_at_max_ratio",
+        "discharge_efficiency_at_max_ratio",
+        "incoming_ev_required_soc_departure",
+        "incoming_ev_departure_time_step",
+        "incoming_ev_hours_until_departure",
+        "incoming_ev_time_until_departure_ratio",
+        "last_requested_action_normalized",
+        "last_limited_action_normalized",
+        "last_requested_power_kw",
+        "last_limited_power_kw",
+        "last_applied_power_kw",
+        "last_projection_error_kw",
+        "applied_energy_prev_15m_kwh",
+        "applied_power_mean_prev_15m_kw",
+        "time_since_last_nonzero_action_hours",
+        "clip_reason_availability",
+        "clip_reason_power_limit",
+        "clip_reason_soc_limit",
+        "clip_reason_building_headroom",
+        "clip_reason_phase_headroom",
+        "clip_reason_export_headroom",
+        "clip_reason_outage",
+        "clip_reason_deferrable_window",
+        "phase_connection_L1",
+        "phase_connection_L2",
+        "phase_connection_L3"
       ],
       "rows": [
         {
           "id": "Building_1/charger_1_1"
         },
         {
-          "id": "Building_2/charger_2_dyn_1"
+          "id": "Building_4/charger_4_1"
         },
         {
-          "id": "Building_4/charger_4_1"
+          "id": "Building_5/charger_5_1"
         },
         {
           "id": "Building_7/charger_7_1"
@@ -306,9 +311,6 @@
         },
         {
           "id": "Building_15/charger_15_2"
-        },
-        {
-          "id": "Building_18/charger_18_1"
         }
       ]
     },
@@ -323,17 +325,10 @@
         "energy_available_kwh",
         "energy_to_full_kwh"
       ],
-      "units": [
-        "scalar",
-        "kwh",
-        "ratio",
-        "ratio",
-        "ratio",
-        "ratio",
-        "kwh",
-        "kwh"
-      ],
       "rows": [
+        {
+          "id": "Electric_Vehicle_1"
+        },
         {
           "id": "Electric_Vehicle_2"
         },
@@ -354,9 +349,6 @@
         },
         {
           "id": "Electric_Vehicle_8"
-        },
-        {
-          "id": "Electric_Vehicle_9"
         }
       ]
     },
@@ -366,22 +358,51 @@
         "capacity_kwh",
         "nominal_power_kw",
         "electricity_consumption_kwh",
+        "min_charge_power_kw",
+        "min_discharge_power_kw",
+        "efficiency_ratio",
+        "round_trip_efficiency_ratio",
         "electrical_storage_soc_ratio",
         "max_charge_power_kw",
         "max_discharge_power_kw",
         "energy_to_full_kwh",
-        "energy_available_kwh"
-      ],
-      "units": [
-        "scalar",
-        "kwh",
-        "kw",
-        "kwh",
-        "ratio",
-        "kw",
-        "kw",
-        "kwh",
-        "kwh"
+        "energy_available_kwh",
+        "can_charge",
+        "can_discharge",
+        "available_charge_power_kw",
+        "available_discharge_power_kw",
+        "available_charge_action_normalized",
+        "available_discharge_action_normalized",
+        "available_charge_energy_kwh_step",
+        "available_discharge_energy_kwh_step",
+        "max_charge_energy_kwh_step",
+        "max_discharge_energy_kwh_step",
+        "charge_headroom_ratio",
+        "discharge_available_ratio",
+        "usable_soc_ratio",
+        "current_efficiency_ratio",
+        "degraded_capacity_kwh",
+        "soc_min_ratio",
+        "last_requested_action_normalized",
+        "last_limited_action_normalized",
+        "last_requested_power_kw",
+        "last_limited_power_kw",
+        "last_applied_power_kw",
+        "last_projection_error_kw",
+        "applied_energy_prev_15m_kwh",
+        "applied_power_mean_prev_15m_kw",
+        "time_since_last_nonzero_action_hours",
+        "clip_reason_availability",
+        "clip_reason_power_limit",
+        "clip_reason_soc_limit",
+        "clip_reason_building_headroom",
+        "clip_reason_phase_headroom",
+        "clip_reason_export_headroom",
+        "clip_reason_outage",
+        "clip_reason_deferrable_window",
+        "phase_connection_L1",
+        "phase_connection_L2",
+        "phase_connection_L3"
       ],
       "rows": [
         {
@@ -389,9 +410,6 @@
         },
         {
           "id": "Building_2/electrical_storage"
-        },
-        {
-          "id": "Building_3/electrical_storage"
         },
         {
           "id": "Building_4/electrical_storage"
@@ -418,6 +436,9 @@
           "id": "Building_11/electrical_storage"
         },
         {
+          "id": "Building_12/electrical_storage"
+        },
+        {
           "id": "Building_13/electrical_storage"
         },
         {
@@ -431,9 +452,6 @@
         },
         {
           "id": "Building_17/electrical_storage"
-        },
-        {
-          "id": "Building_18/electrical_storage"
         }
       ]
     },
@@ -441,12 +459,8 @@
       "features": [
         "generation_power_kw",
         "generation_energy_kwh_step",
-        "installed_power_kw"
-      ],
-      "units": [
-        "kw",
-        "kwh_step",
-        "kw"
+        "installed_power_kw",
+        "generation_capacity_factor_ratio"
       ],
       "rows": [
         {
@@ -465,9 +479,6 @@
           "id": "Building_5/pv"
         },
         {
-          "id": "Building_6/pv"
-        },
-        {
           "id": "Building_7/pv"
         },
         {
@@ -478,6 +489,9 @@
         },
         {
           "id": "Building_10/pv"
+        },
+        {
+          "id": "Building_11/pv"
         },
         {
           "id": "Building_12/pv"
@@ -496,17 +510,62 @@
         },
         {
           "id": "Building_17/pv"
-        },
-        {
-          "id": "Building_18/pv"
         }
       ]
+    },
+    "deferrable_appliance": {
+      "features": [
+        "pending",
+        "running",
+        "can_start",
+        "deadline_missed",
+        "earliest_start_time_step",
+        "latest_start_time_step",
+        "deadline_time_step",
+        "hours_until_latest_start",
+        "hours_until_deadline",
+        "slack_steps",
+        "slack_ratio",
+        "urgency_ratio",
+        "cycle_duration_steps",
+        "cycle_energy_kwh",
+        "remaining_energy_kwh",
+        "current_step_energy_kwh",
+        "priority",
+        "must_run",
+        "cycle_average_power_kw",
+        "cycle_peak_power_kw",
+        "cycle_load_factor_ratio",
+        "cycle_peak_step_offset_ratio",
+        "remaining_duration_steps",
+        "remaining_duration_hours",
+        "cycle_remaining_fraction_ratio",
+        "hours_until_earliest_start",
+        "start_window_width_hours",
+        "start_energy_kwh_step",
+        "start_power_kw",
+        "must_start_now",
+        "remaining_average_power_kw",
+        "current_step_power_kw",
+        "last_start_requested",
+        "last_start_applied",
+        "start_blocked",
+        "clip_reason_availability",
+        "clip_reason_power_limit",
+        "clip_reason_soc_limit",
+        "clip_reason_building_headroom",
+        "clip_reason_phase_headroom",
+        "clip_reason_export_headroom",
+        "clip_reason_outage",
+        "clip_reason_deferrable_window"
+      ],
+      "rows": []
     }
   },
   "edges": {
     "district_to_building": {
-      "source_table": null,
-      "target_table": null,
+      "source_table": "district",
+      "target_table": "building",
       "edges": [
         {
           "source_index": 0,
@@ -607,20 +666,14 @@
         {
           "source_index": 0,
           "target_index": 16,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 0,
-          "target_index": 17,
           "source_id": null,
           "target_id": null
         }
       ]
     },
     "building_to_charger": {
-      "source_table": null,
-      "target_table": null,
+      "source_table": "building",
+      "target_table": "charger",
       "edges": [
         {
           "source_index": 0,
@@ -629,13 +682,13 @@
           "target_id": null
         },
         {
-          "source_index": 1,
+          "source_index": 3,
           "target_index": 1,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 3,
+          "source_index": 4,
           "target_index": 2,
           "source_id": null,
           "target_id": null
@@ -667,20 +720,14 @@
         {
           "source_index": 14,
           "target_index": 7,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 17,
-          "target_index": 8,
           "source_id": null,
           "target_id": null
         }
       ]
     },
     "building_to_storage": {
-      "source_table": null,
-      "target_table": null,
+      "source_table": "building",
+      "target_table": "storage",
       "edges": [
         {
           "source_index": 0,
@@ -695,157 +742,49 @@
           "target_id": null
         },
         {
-          "source_index": 2,
+          "source_index": 3,
           "target_index": 2,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 3,
+          "source_index": 4,
           "target_index": 3,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 4,
+          "source_index": 5,
           "target_index": 4,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 5,
+          "source_index": 6,
           "target_index": 5,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 6,
+          "source_index": 7,
           "target_index": 6,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 7,
+          "source_index": 8,
           "target_index": 7,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 8,
-          "target_index": 8,
-          "source_id": null,
-          "target_id": null
-        },
-        {
           "source_index": 9,
-          "target_index": 9,
+          "target_index": 8,
           "source_id": null,
           "target_id": null
         },
         {
           "source_index": 10,
-          "target_index": 10,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 12,
-          "target_index": 11,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 13,
-          "target_index": 12,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 14,
-          "target_index": 13,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 15,
-          "target_index": 14,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 16,
-          "target_index": 15,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 17,
-          "target_index": 16,
-          "source_id": null,
-          "target_id": null
-        }
-      ]
-    },
-    "building_to_pv": {
-      "source_table": null,
-      "target_table": null,
-      "edges": [
-        {
-          "source_index": 0,
-          "target_index": 0,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 1,
-          "target_index": 1,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 2,
-          "target_index": 2,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 3,
-          "target_index": 3,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 4,
-          "target_index": 4,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 5,
-          "target_index": 5,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 6,
-          "target_index": 6,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 7,
-          "target_index": 7,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 8,
-          "target_index": 8,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 9,
           "target_index": 9,
           "source_id": null,
           "target_id": null
@@ -885,18 +824,173 @@
           "target_index": 15,
           "source_id": null,
           "target_id": null
+        }
+      ]
+    },
+    "building_to_pv": {
+      "source_table": "building",
+      "target_table": "pv",
+      "edges": [
+        {
+          "source_index": 0,
+          "target_index": 0,
+          "source_id": null,
+          "target_id": null
         },
         {
-          "source_index": 17,
-          "target_index": 16,
+          "source_index": 1,
+          "target_index": 1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 2,
+          "target_index": 2,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 3,
+          "target_index": 3,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 4,
+          "target_index": 4,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 6,
+          "target_index": 5,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 7,
+          "target_index": 6,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 8,
+          "target_index": 7,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 9,
+          "target_index": 8,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 10,
+          "target_index": 9,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 11,
+          "target_index": 10,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 12,
+          "target_index": 11,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 13,
+          "target_index": 12,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 14,
+          "target_index": 13,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 15,
+          "target_index": 14,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 16,
+          "target_index": 15,
           "source_id": null,
           "target_id": null
         }
       ]
     },
+    "building_to_deferrable_appliance": {
+      "source_table": "building",
+      "target_table": "deferrable_appliance",
+      "edges": []
+    },
     "charger_to_ev_connected": {
-      "source_table": null,
-      "target_table": null,
+      "source_table": "charger",
+      "target_table": "ev",
+      "edges": [
+        {
+          "source_index": 0,
+          "target_index": 6,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 1,
+          "target_index": 7,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 2,
+          "target_index": 0,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 3,
+          "target_index": 1,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 4,
+          "target_index": 2,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 5,
+          "target_index": 3,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 6,
+          "target_index": 4,
+          "source_id": null,
+          "target_id": null
+        },
+        {
+          "source_index": 7,
+          "target_index": 5,
+          "source_id": null,
+          "target_id": null
+        }
+      ]
+    },
+    "charger_to_ev_incoming": {
+      "source_table": "charger",
+      "target_table": "ev",
       "edges": [
         {
           "source_index": -1,
@@ -911,38 +1005,32 @@
           "target_id": null
         },
         {
-          "source_index": 2,
-          "target_index": 6,
+          "source_index": -1,
+          "target_index": -1,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 3,
-          "target_index": 0,
+          "source_index": -1,
+          "target_index": -1,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 4,
-          "target_index": 1,
+          "source_index": -1,
+          "target_index": -1,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 5,
-          "target_index": 2,
+          "source_index": -1,
+          "target_index": -1,
           "source_id": null,
           "target_id": null
         },
         {
-          "source_index": 6,
-          "target_index": 3,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": 7,
-          "target_index": 4,
+          "source_index": -1,
+          "target_index": -1,
           "source_id": null,
           "target_id": null
         },
@@ -959,66 +1047,6 @@
       "target_table": null,
       "edges": []
     },
-    "charger_to_ev_incoming": {
-      "source_table": null,
-      "target_table": null,
-      "edges": [
-        {
-          "source_index": -1,
-          "target_index": -1,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": -1,
-          "target_index": -1,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": -1,
-          "target_index": -1,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": -1,
-          "target_index": -1,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": -1,
-          "target_index": -1,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": -1,
-          "target_index": -1,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": -1,
-          "target_index": -1,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": -1,
-          "target_index": -1,
-          "source_id": null,
-          "target_id": null
-        },
-        {
-          "source_index": -1,
-          "target_index": -1,
-          "source_id": null,
-          "target_id": null
-        }
-      ]
-    },
     "charger_to_ev_incoming_mask": {
       "source_table": null,
       "target_table": null,
@@ -1026,13 +1054,7 @@
     }
   },
   "meta": {
-    "time_step": 2200,
-    "endogenous_time_step": 2199,
     "spec_version": "entity_v1",
-    "temporal_semantics": {
-      "exogenous": "t",
-      "endogenous": "t_minus_1_settled"
-    },
-    "topology_version": 7
+    "topology_version": 0
   }
 }

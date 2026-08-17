@@ -13,6 +13,7 @@ import yaml
 from algorithms.ti_marl.compiler.closure import apply_closure, validate_dependency_graph
 from algorithms.ti_marl.compiler.health import HealthDeriver
 from algorithms.ti_marl.contracts.compatibility import CompatibilitySignature
+from algorithms.ti_marl.contracts.interface_definition import TypedInterfaceDefinition
 from algorithms.ti_marl.contracts.enums import (
     AvailabilityState,
     ConnectionState,
@@ -56,16 +57,39 @@ class TypedInterfaceCompiler:
         self,
         *,
         contract_version: str,
-        agent_schema_path: str,
-        type_registry_path: str,
-        health_rules_path: str,
+        typed_interface_path: str | None = None,
+        agent_schema_path: str | None = None,
+        type_registry_path: str | None = None,
+        health_rules_path: str | None = None,
     ) -> None:
         self.contract_version = str(contract_version)
         if self.contract_version != "ti_marl_v1":
             raise ValueError(f"Unsupported TI-MARL contract version: {self.contract_version!r}")
-        self.agent_schema_config = load_versioned_yaml(agent_schema_path)
-        self.type_registry = load_versioned_yaml(type_registry_path)
-        self.health_rules = load_versioned_yaml(health_rules_path)
+        self.interface_definition: TypedInterfaceDefinition | None = None
+        legacy_paths = (agent_schema_path, type_registry_path, health_rules_path)
+        if typed_interface_path is not None:
+            if any(path is not None for path in legacy_paths):
+                raise ValueError(
+                    "Use typed_interface_path or the three legacy TI-MARL paths, not both"
+                )
+            definition = TypedInterfaceDefinition.load(typed_interface_path)
+            if definition.contract_version != self.contract_version:
+                raise ValueError(
+                    "TIMARL contract_version differs from the typed interface"
+                )
+            self.interface_definition = definition
+            self.agent_schema_config = deepcopy(dict(definition.agent_schema))
+            self.type_registry = deepcopy(dict(definition.type_registry))
+            self.health_rules = deepcopy(dict(definition.health_rules))
+        else:
+            if not all(path is not None for path in legacy_paths):
+                raise ValueError(
+                    "TIMARL requires typed_interface_path (recommended) or all three "
+                    "legacy schema/type/health paths"
+                )
+            self.agent_schema_config = load_versioned_yaml(str(agent_schema_path))
+            self.type_registry = load_versioned_yaml(str(type_registry_path))
+            self.health_rules = load_versioned_yaml(str(health_rules_path))
         validate_dependency_graph(self.agent_schema_config.get("dependencies", []))
         self.health_deriver = HealthDeriver(self.health_rules)
         self.entity_specs: Dict[str, Any] = {}
@@ -80,6 +104,8 @@ class TypedInterfaceCompiler:
 
     def attach_entity_specs(self, entity_specs: Mapping[str, Any]) -> None:
         specs = deepcopy(dict(entity_specs or {}))
+        if self.interface_definition is not None:
+            self.interface_definition.validate_entity_specs(specs)
         if str(specs.get("version")) != "entity_v1":
             raise ValueError("TIMARL requires Simulator entity_specs version='entity_v1'")
         status_contract = specs.get("runtime_status_contract", {})
@@ -98,6 +124,25 @@ class TypedInterfaceCompiler:
         if unknown:
             raise ValueError(f"TI-MARL type registry does not classify entity types: {unknown}")
         self.entity_specs = specs
+
+    def resolved_typed_interface(self) -> Mapping[str, Any]:
+        """Return the single public definition, optionally with the live catalog."""
+
+        if self.interface_definition is None:
+            return {
+                "version": "legacy_split_interface",
+                "contract_version": self.contract_version,
+                "agent_schema": deepcopy(self.agent_schema_config),
+                "type_registry": deepcopy(self.type_registry),
+                "health_rules": deepcopy(self.health_rules),
+            }
+        if not self.entity_specs:
+            return deepcopy(dict(self.interface_definition.raw))
+        return self.interface_definition.with_simulator_catalog(
+            self.entity_specs,
+            source="runtime entity_specs",
+            policy="compatible",
+        )
 
     def snapshot_state(self) -> Mapping[str, Any]:
         return {

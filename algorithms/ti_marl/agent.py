@@ -12,8 +12,10 @@ from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 import torch
+import yaml
 
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.agents.maddpg_agent import _select_torch_device
 from algorithms.ti_marl.compiler.compiler import TypedInterfaceCompiler
 from algorithms.ti_marl.contracts.compatibility import CompatibilitySignature
 from algorithms.ti_marl.contracts.models import TypedTransition, canonical_value
@@ -46,18 +48,21 @@ class TIMARL(BaseAgent):
         random.seed(self.seed)
         np.random.seed(self.seed)
         torch.manual_seed(self.seed)
-        if torch.cuda.is_available():
+        cuda_usable = bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
+        if cuda_usable:
             torch.cuda.manual_seed_all(self.seed)
         require_cuda = bool(hyper.get("require_cuda", False))
-        if require_cuda and not torch.cuda.is_available():
-            raise RuntimeError("TIMARL require_cuda=true but CUDA is unavailable")
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = _select_torch_device(
+            require_cuda=require_cuda,
+            algorithm_name="TIMARL",
+        )
 
         self.compiler = TypedInterfaceCompiler(
             contract_version=str(hyper.get("contract_version", "ti_marl_v1")),
-            agent_schema_path=str(hyper["agent_schema_path"]),
-            type_registry_path=str(hyper["type_registry_path"]),
-            health_rules_path=str(hyper["health_rules_path"]),
+            typed_interface_path=hyper.get("typed_interface_path"),
+            agent_schema_path=hyper.get("agent_schema_path"),
+            type_registry_path=hyper.get("type_registry_path"),
+            health_rules_path=hyper.get("health_rules_path"),
         )
         actor_cfg = dict(hyper.get("actor", {}))
         d_model = int(actor_cfg.get("d_model", 128))
@@ -443,6 +448,14 @@ class TIMARL(BaseAgent):
         root.mkdir(parents=True, exist_ok=True)
         self.trace_writer.close()
         model_path = root / "ti_marl_model.pth"
+        interface_path = root / "typed_interface.resolved.yaml"
+        with interface_path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(
+                self.compiler.resolved_typed_interface(),
+                handle,
+                sort_keys=False,
+                allow_unicode=True,
+            )
         torch.save(
             {
                 "format": "ti_marl_torch",
@@ -458,6 +471,14 @@ class TIMARL(BaseAgent):
             "format": "ti_marl_torch",
             "deployable": False,
             "model_path": model_path.name,
+            "typed_interface_path": interface_path.name,
+            "auxiliary_files": [
+                {
+                    "path": interface_path.name,
+                    "format": "typed_interface_v1",
+                    "editable": True,
+                }
+            ],
             "contract_version": self.compiler.contract_version,
             "compatibility_signature": asdict(self.compiler.compatibility_signature),
             "trace": dict(self.trace_writer.manifest()),

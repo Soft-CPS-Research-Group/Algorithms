@@ -42,11 +42,49 @@ stage with `simulator.interface: entity`, `central_agent: false` and a static
 or dynamic topology. `TIMARL.supports_dynamic_topology` and
 `TIMARL.handles_cross_topology_transitions` are both true.
 
-The three generic versioned inputs live in [`configs/ti_marl`](../../configs/ti_marl):
+The public interface is one versioned, editable document:
+[`typed_interface_v1.yaml`](../../configs/ti_marl/typed_interface_v1.yaml).
+It has three readable sections:
 
-- `agent_schema_v1.yaml`;
-- `type_registry_v1.yaml`;
-- `health_rules_v1.yaml`.
+- `fixed`: agent/module types, relations, dependencies, local constraints and
+  shared resources;
+- `observations` and `actions`: the ordered network view and controllable
+  groups;
+- `health`: semantic thresholds, criticality and recovery hysteresis.
+
+The compiler internally derives its former schema/type/health views from this
+one file. The split three-path constructor remains temporarily accepted for
+old external configurations, but new runs use only:
+
+```yaml
+hyperparameters:
+  contract_version: ti_marl_v1
+  typed_interface_path: configs/ti_marl/typed_interface_v1.yaml
+```
+
+The observation list is intentionally hand-editable. `features` fixes the
+network slot order; `required_features` turns a Simulator mismatch into a
+setup error. Features selected but not marked required keep stable optional
+zero slots across compositions.
+
+To pin the observations/actions exposed by a saved or live Simulator contract
+into a reviewable copy of the same file:
+
+```bash
+python scripts/generate_typed_interface.py \
+  --entity-specs /tmp/entity_specs.yaml \
+  --output /tmp/my_typed_interface.yaml
+
+python scripts/generate_typed_interface.py \
+  --config /path/to/entity_run.yaml \
+  --output /tmp/my_typed_interface.yaml
+```
+
+Generation does not invent control semantics: it preserves the editable fixed
+and health sections and appends an auditable Simulator catalog. The generated
+YAML is reloaded and validated before the command succeeds. Every exported
+TI-MARL artifact also contains `typed_interface.resolved.yaml` with the live
+catalog used by that run.
 
 Experiment configurations are intentionally not stored here. Campaign YAML,
 checkpoints, traces and scorecards remain under ignored local experiment/run
@@ -101,7 +139,6 @@ types, member join/leave, sensor/actuator/asset/community failures, a long
 `stuck` event, recovery hysteresis, fixed parameter count, training across
 topology changes and command-to-execution trace reconciliation.
 
-Until `softcpsrecsimulator==1.7.0` is published, that end-to-end test must be
-run against the adjacent Simulator checkout via `PYTHONPATH`. Algorithms must
-only update its dependency pin after the release package has passed a clean
-installation check.
+`softcpsrecsimulator==1.7.0` is the pinned minimum runtime for TI-MARL. The
+end-to-end vertical slice runs against the installed package; using an adjacent
+Simulator checkout is only a deliberate development override.

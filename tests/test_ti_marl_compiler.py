@@ -10,17 +10,13 @@ from algorithms.ti_marl.contracts.enums import EventDomain, HealthState
 from tests.ti_marl_fixtures import entity_payload, entity_specs, stuck_sensor_status
 
 
-SCHEMA = "configs/ti_marl/agent_schema_v1.yaml"
-REGISTRY = "configs/ti_marl/type_registry_v1.yaml"
-HEALTH = "configs/ti_marl/health_rules_v1.yaml"
+INTERFACE = "configs/ti_marl/typed_interface_v1.yaml"
 
 
 def compiler(specs=None):
     instance = TypedInterfaceCompiler(
         contract_version="ti_marl_v1",
-        agent_schema_path=SCHEMA,
-        type_registry_path=REGISTRY,
-        health_rules_path=HEALTH,
+        typed_interface_path=INTERFACE,
     )
     instance.attach_entity_specs(specs or entity_specs())
     return instance

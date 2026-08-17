@@ -156,9 +156,7 @@ def test_ti_marl_trains_across_member_join_and_leave_without_resize(tmp_path):
                 "count": 1,
                 "hyperparameters": {
                     "contract_version": "ti_marl_v1",
-                    "agent_schema_path": "configs/ti_marl/agent_schema_v1.yaml",
-                    "type_registry_path": "configs/ti_marl/type_registry_v1.yaml",
-                    "health_rules_path": "configs/ti_marl/health_rules_v1.yaml",
+                    "typed_interface_path": "configs/ti_marl/typed_interface_v1.yaml",
                     "backbone": {"name": "mappo"},
                     "actor": {"d_model": 32, "attention_heads": 4, "relation_layers": 1},
                     "critic": {"kind": "set"},

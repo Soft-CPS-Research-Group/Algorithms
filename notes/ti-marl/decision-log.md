@@ -45,6 +45,11 @@ must not be silently reinterpreted in code.
     contraction, degraded modes and fallback.
 20. A public Simulator contract change requires tests, documentation, release
     notes and a published version before Algorithms updates its dependency pin.
+21. The public typed interface is one versioned, human-editable YAML document.
+    It may be written manually or enriched from Simulator `entity_specs`; its
+    fixed semantics, ordered observation view, action groups and health rules
+    remain reviewable. Schema/type/health splits are compiler internals, not
+    separate user configuration surfaces.
 
 ## Initial implementation choices
 
@@ -69,4 +74,3 @@ must not be silently reinterpreted in code.
 - Dynamic deployment format after the research bundle is validated.
 
 None of these choices blocks the first vertical slice.
-

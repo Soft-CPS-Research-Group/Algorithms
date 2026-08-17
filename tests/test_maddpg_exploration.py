@@ -51,6 +51,16 @@ def test_select_torch_device_fails_when_cuda_is_required_but_unavailable(monkeyp
     assert _select_torch_device(require_cuda=False).type == "cpu"
 
 
+def test_select_torch_device_rejects_stale_cuda_availability_without_devices(
+    monkeypatch,
+):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    assert _select_torch_device(require_cuda=False).type == "cpu"
+    with pytest.raises(RuntimeError, match="no CUDA device is usable"):
+        _select_torch_device(require_cuda=True, algorithm_name="TPPO")
+
+
 def test_predict_with_exploration_uses_random_actions_during_warmup():
     agent = _build_agent_for_exploration()
     agent.random_exploration_steps = 2

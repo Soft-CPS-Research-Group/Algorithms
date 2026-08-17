@@ -1,11 +1,11 @@
 claim_id,claim,required_evidence,status,blocking_gate
-TI-01,Known instance changes do not resize networks,parameter-count plus real dynamic join/leave test,local-pass,Simulator 1.7.0 publication and CI
-TI-02,Entity-bound actions never target the wrong session,binding ambiguity plus session-replacement and command-order tests,local-pass,Simulator 1.7.0 publication and CI
-TI-03,Fault cause remains distinct from derived health,Simulator facts-only contract plus TIC duration/criticality derivation,local-pass,Simulator 1.7.0 publication and CI
-TI-04,Health closure is scoped and causal,domain separation plus closure scope conflict cycle and recovery tests,local-pass,Simulator 1.7.0 publication and CI
+TI-01,Known instance changes do not resize networks,parameter-count plus real dynamic join/leave test,published-package-pass,Algorithms CI
+TI-02,Entity-bound actions never target the wrong session,binding ambiguity plus session-replacement and command-order tests,published-package-pass,Algorithms CI
+TI-03,Fault cause remains distinct from derived health,Simulator facts-only contract plus TIC duration/criticality derivation,published-package-pass,Algorithms CI
+TI-04,Health closure is scoped and causal,domain separation plus closure scope conflict cycle and recovery tests,published-package-pass,Algorithms CI
 TI-05,Local bundle feasibility preserves measurable policy intent,raw-final interventions joint headroom and single bound application tests,local-pass,Algorithms CI
 TI-06,Central critic supports variable populations,permutation cardinality and stable-ID join/leave/bootstrap tests,local-pass,Algorithms CI
 TI-07,Execution is decentralised,actor local-input isolation plus central critic context test,local-pass,Algorithms CI
-TI-08,Typed traces match actual execution,real Simulator requested-command-execution and snapshot reconciliation,local-pass,Simulator 1.7.0 publication and CI
+TI-08,Typed traces match actual execution,real Simulator requested-command-execution and snapshot reconciliation,published-package-pass,Algorithms CI
 TI-09,TI interface outperforms fixed masking under reconfiguration,multi-seed structural baseline,planned,development campaign
 TI-10,Health-aware recompilation adds value over missingness features,health-stress ablation,planned,development campaign

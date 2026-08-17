@@ -6,6 +6,10 @@ Add `runtime_status_v1` and `entity_action_execution_v1` as additive entity
 contracts, with tests, documentation, release notes and package version 1.7.0.
 Algorithms changes its pin only after clean installation validation.
 
+Status (2026-08-17): Simulator 1.7.0 is published, installed from its PyPI
+wheel, and validated locally. Algorithms now pins that release in its standard
+and Jetson dependency paths.
+
 ## Algorithms
 
 - New `algorithms/ti_marl` package and registry entry `TIMARL`.
@@ -23,4 +27,3 @@ Design documents, source, tests and generic templates are versioned. Campaign
 configs, checkpoints, traces and numerical results remain in ignored local
 paths until publication is explicitly authorised. Changes are delivered in
 small subsystem-focused commits on the user-selected branch.
-

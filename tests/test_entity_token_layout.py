@@ -307,31 +307,10 @@ def test_ca_count_mismatch_raises(cfg):
 
 
 
-def test_sro_segment_order_follows_config_declaration(builder_and_obs):
+def test_sro_segment_order_follows_config_declaration(builder_and_obs, cfg):
     _, _, layout = builder_and_obs
     sros = [s for s in layout.segments if s.family == "sro"]
-    declared = [
-        "district_time",
-        "district_weather_current",
-        "district_weather_forecast",
-        "district_carbon",
-        "district_pricing_current",
-        "district_pricing_forecast",
-        "district_community_energy",
-        "district_community_headroom",
-        "district_community_history",
-        "district_meta",
-        "building_storage_state",
-        "building_charging_phase_onehot",
-        "building_charging_headroom",
-        "building_charging_violation",
-        "building_energy_current",
-        "building_energy_history",
-        "building_meta",
-        "pv",
-        "ev_connected",
-        "ev_incoming",
-    ]
+    declared = list(cfg.sro_types)
 
     def first_occurrence(seq):
         out, seen = [], set()
@@ -408,22 +387,24 @@ def test_coverage_accounting_matches_spec(builder_and_obs):
                 counts.get(s.type_name, 0) + len(s.feature_indices)
             )
     expected = {
-        "district_time": 3,
+        "district_time": 5,
         "district_weather_current": 4,
         "district_weather_forecast": 12,
         "district_carbon": 1,
         "district_pricing_current": 1,
-        "district_pricing_forecast": 3,
+        "district_pricing_forecast": 8,
         "district_community_energy": 12,
         "district_community_headroom": 4,
         "district_community_history": 2,
+        "district_community_forecast": 15,
         "district_meta": 3,
         "building_storage_state": 2,
-        "building_charging_phase_onehot": 6,
         "building_charging_headroom": 8,
         "building_charging_violation": 1,
         "building_energy_current": 15,
         "building_energy_history": 4,
+        "building_energy_forecast": 15,
+        "building_meta": 3,
     }
     for k, v in expected.items():
         assert counts.get(k) == v, (

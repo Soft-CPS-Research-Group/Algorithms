@@ -1,0 +1,348 @@
+# This is the complete user-facing TI-MARL interface. It is intentionally one
+# editable file: the compiler derives its internal schema, type registry and
+# health rules from the sections below.
+version: typed_interface_v1
+contract_version: ti_marl_v1
+description: >-
+  Building-local typed control interface for CityLearn storage, EV sessions
+  and deferrable appliances, with community observations and derived health.
+
+simulator:
+  entity_contract: entity_v1
+  runtime_status_contract: runtime_status_v1
+  action_execution_contract: entity_action_execution_v1
+
+# The fixed part says what the interface means and how faults affect control.
+fixed:
+  schema_version: ti_marl_agent_schema_v1
+  agent_entity_type: building
+
+  module_types:
+    - building
+    - storage
+    - charger
+    - ev
+    - deferrable_appliance
+    - pv
+    - meter
+
+  observation_semantic_types:
+    - local_energy
+    - storage_state
+    - ev_service
+    - deferrable_state
+    - local_constraint
+    - community_signal
+    - exogenous_forecast
+
+  relations:
+    - district_to_building
+    - building_to_storage
+    - building_to_charger
+    - building_to_deferrable_appliance
+    - building_to_pv
+    - charger_to_ev_connected
+    - charger_to_ev_incoming
+
+  dependencies:
+    - dependency_id: storage_asset_to_group
+      source_kind: asset_availability
+      source_type: storage
+      target_group_type: stationary_storage
+      consequence: disable_group
+      condition_states: [FAILED, MISSING]
+    - dependency_id: storage_actuator_to_ports
+      source_kind: actuator_channel
+      source_type: storage
+      target_group_type: stationary_storage
+      consequence: invalidate_non_idle_ports
+      condition_states: [FAILED, MISSING, STALE]
+    - dependency_id: charger_connection_to_group
+      source_kind: asset_connection
+      source_type: charger
+      target_group_type: ev_session
+      consequence: invalidate_non_idle_ports
+      condition_states: [MISSING]
+    - dependency_id: charger_actuator_to_ports
+      source_kind: actuator_channel
+      source_type: charger
+      target_group_type: ev_session
+      consequence: invalidate_non_idle_ports
+      condition_states: [FAILED, MISSING, STALE]
+    - dependency_id: deferrable_actuator_to_ports
+      source_kind: actuator_channel
+      source_type: deferrable_appliance
+      target_group_type: deferrable
+      consequence: invalidate_non_idle_ports
+      condition_states: [FAILED, MISSING, STALE]
+    - dependency_id: sensor_channel_to_observations
+      source_kind: sensor_channel
+      source_type: "*"
+      target_semantic_type: "*"
+      consequence: remove_observation_part
+      condition_states: [MISSING, FAILED]
+    - dependency_id: community_link_to_observations
+      source_kind: communication_link
+      source_type: district
+      target_semantic_type: community_signal
+      consequence: remove_observation_part
+      condition_states: [MISSING, STALE, FAILED]
+
+  local_constraints:
+    - constraint_type: charging_headroom_kw
+      source_feature: charging_building_headroom_kw
+    - constraint_type: export_headroom_kw
+      source_feature: charging_building_export_headroom_kw
+
+  shared_resources:
+    - resource_id: community_meter
+      resource_type: community_observation
+      observable_only: true
+
+# The observation part is the explicit, editable view given to the networks.
+# "features" fixes slot order. Optional missing slots become zero; entries in
+# "required_features" must exist in the live Simulator contract or setup fails.
+observations:
+  registry_version: ti_marl_type_registry_v1
+  feature_width: 16
+  entities:
+    district:
+      role: community
+      semantic_type: community_signal
+      required_features: [hour, electricity_pricing, community_net_power_kw]
+      features:
+        - hour
+        - day_type
+        - electricity_pricing
+        - electricity_pricing_predicted_1
+        - electricity_pricing_predicted_2
+        - electricity_pricing_predicted_3
+        - carbon_intensity
+        - community_net_power_kw
+        - community_import_power_kw
+        - community_export_power_kw
+        - community_pv_power_kw
+        - community_building_headroom_kw
+        - community_building_export_headroom_kw
+        - active_buildings_count
+        - active_chargers_count
+        - topology_version
+    building:
+      role: agent
+      semantic_type: local_energy
+      required_features:
+        - non_shiftable_load
+        - solar_generation
+        - net_power_kw
+        - charging_building_headroom_kw
+        - charging_building_export_headroom_kw
+      features:
+        - non_shiftable_load
+        - solar_generation
+        - net_electricity_consumption
+        - net_power_kw
+        - import_power_kw
+        - export_power_kw
+        - load_power_kw
+        - pv_power_kw
+        - bess_power_kw
+        - ev_charging_power_kw
+        - electrical_storage_soc_ratio
+        - charging_building_headroom_kw
+        - charging_building_export_headroom_kw
+        - charging_constraint_violation_kwh
+        - net_energy_prev_1_kwh_step
+        - net_energy_prev_3_mean_kwh_step
+    storage:
+      role: controllable_module
+      semantic_type: storage_state
+      required_features:
+        - soc
+        - max_charge_power_kw
+        - max_discharge_power_kw
+        - available_charge_action_normalized
+        - available_discharge_action_normalized
+      features:
+        - soc
+        - capacity_kwh
+        - nominal_power_kw
+        - electricity_consumption_kwh
+        - min_charge_power_kw
+        - min_discharge_power_kw
+        - efficiency_ratio
+        - round_trip_efficiency_ratio
+        - electrical_storage_soc_ratio
+        - max_charge_power_kw
+        - max_discharge_power_kw
+        - energy_to_full_kwh
+        - energy_above_minimum_kwh
+        - available_charge_action_normalized
+        - available_discharge_action_normalized
+    charger:
+      role: controllable_module
+      semantic_type: ev_service
+      required_features:
+        - connected_state
+        - max_charging_power_kw
+        - max_discharging_power_kw
+        - available_charge_action_normalized
+        - available_discharge_action_normalized
+      features:
+        - connected_state
+        - incoming_state
+        - connected_ev_soc
+        - connected_ev_required_soc_departure
+        - connected_ev_battery_capacity_kwh
+        - connected_ev_departure_time_step
+        - incoming_ev_estimated_soc_arrival
+        - incoming_ev_estimated_arrival_time_step
+        - last_charged_kwh
+        - max_charging_power_kw
+        - max_discharging_power_kw
+        - min_charging_power_kw
+        - min_discharging_power_kw
+        - available_charge_action_normalized
+        - available_discharge_action_normalized
+        - departure_service_margin_kwh
+    ev:
+      role: session_entity
+      semantic_type: ev_service
+      required_features: [soc, soc_ratio, energy_to_full_kwh]
+      features:
+        - soc
+        - battery_capacity_kwh
+        - depth_of_discharge_ratio
+        - soc_ratio
+        - soc_min_ratio
+        - soc_max_ratio
+        - energy_available_kwh
+        - energy_to_full_kwh
+        - energy_above_minimum_kwh
+    deferrable_appliance:
+      role: controllable_module
+      semantic_type: deferrable_state
+      required_features: [pending, running, can_start, slack_steps]
+      features:
+        - pending
+        - running
+        - can_start
+        - deadline_missed
+        - earliest_start_time_step
+        - latest_start_time_step
+        - deadline_time_step
+        - hours_until_latest_start
+        - hours_until_deadline
+        - slack_steps
+        - slack_ratio
+        - urgency_ratio
+        - required_energy_kwh
+        - required_duration_steps
+        - nominal_power_kw
+        - available_start_action_normalized
+    pv:
+      role: observable_module
+      semantic_type: local_energy
+      required_features: [generation_power_kw]
+      features:
+        - generation_power_kw
+        - generation_energy_kwh_step
+        - installed_power_kw
+        - generation_capacity_factor_ratio
+
+actions:
+  groups:
+    stationary_storage:
+      entity_type: storage
+      action_table: building
+      action_name: electrical_storage
+      modes: [IDLE, CHARGE_STATIONARY, DISCHARGE_STATIONARY]
+    ev_session:
+      entity_type: charger
+      action_table: charger
+      action_name: electric_vehicle_storage
+      modes: [IDLE, CHARGE_EV, DISCHARGE_EV]
+    deferrable:
+      entity_type: deferrable_appliance
+      action_table: deferrable_appliance
+      action_name: start
+      modes: [IDLE, START]
+
+# Health is derived in Algorithms. These thresholds can be reviewed and
+# changed here without changing the Simulator or the policy implementation.
+health:
+  version: ti_marl_health_rules_v1
+  defaults:
+    degraded_after_steps: 1
+    stale_after_steps: 4
+    missing_after_steps: 8
+    recovery_hysteresis_steps: 2
+    cache_allowed: true
+  criticality:
+    safety:
+      degraded_after_steps: 0
+      stale_after_steps: 2
+      missing_after_steps: 4
+      recovery_hysteresis_steps: 3
+    operational:
+      degraded_after_steps: 1
+      stale_after_steps: 4
+      missing_after_steps: 8
+      recovery_hysteresis_steps: 2
+    advisory:
+      degraded_after_steps: 2
+      stale_after_steps: 8
+      missing_after_steps: 16
+      recovery_hysteresis_steps: 1
+  semantic_types:
+    actuator_channel:
+      criticality: safety
+      cache_allowed: false
+      stale_after_steps: 1
+      missing_after_steps: 1
+    asset_availability:
+      criticality: safety
+      cache_allowed: false
+      stale_after_steps: 1
+      missing_after_steps: 1
+    asset_connection:
+      criticality: operational
+      cache_allowed: false
+      stale_after_steps: 1
+      missing_after_steps: 1
+    ev_service:
+      criticality: safety
+      stale_after_steps: 2
+      missing_after_steps: 4
+    local_constraint:
+      criticality: safety
+      stale_after_steps: 2
+      missing_after_steps: 3
+    local_energy:
+      criticality: operational
+      stale_after_steps: 4
+      missing_after_steps: 8
+    storage_state:
+      criticality: operational
+      stale_after_steps: 4
+      missing_after_steps: 8
+    deferrable_state:
+      criticality: operational
+      stale_after_steps: 4
+      missing_after_steps: 8
+    community_signal:
+      criticality: advisory
+      stale_after_steps: 8
+      missing_after_steps: 12
+    exogenous_forecast:
+      criticality: advisory
+      stale_after_steps: 8
+      missing_after_steps: 16
+  fault_modes:
+    stuck: {initial_state: DEGRADED}
+    noise: {initial_state: DEGRADED}
+    bias: {initial_state: DEGRADED}
+    clip: {initial_state: DEGRADED}
+    delay: {initial_state: DEGRADED}
+    missing: {initial_state: MISSING}
+    dropout: {initial_state: MISSING}
+    unavailable: {initial_state: FAILED}

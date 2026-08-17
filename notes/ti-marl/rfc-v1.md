@@ -83,7 +83,12 @@ semantics. It records every adjustment and does no community optimisation.
 ## Algorithms integration
 
 The registry name is `TIMARL`. Configuration requires entity interface,
-decentralised CityLearn agents and versioned schema/type/health-rule files.
+decentralised CityLearn agents and one versioned `typed_interface_v1` YAML.
+That public file contains fixed semantics/dependencies, the ordered editable
+observation and action view, and health rules. It may be authored by hand or
+enriched with a generated Simulator observation/action catalog; every form is
+validated against live `entity_specs` before execution. The compiler may split
+it internally, but users do not coordinate separate schema/type/health files.
 One `TIMARL` execution unit internally manages the changing population of
 logical building agents.
 
@@ -115,4 +120,3 @@ reconstructable without per-object/per-step filesystem writes.
 Campaign configs, checkpoints and numerical results remain local until
 explicitly approved for publication. Design documents, generic templates and
 tests are versioned.
-

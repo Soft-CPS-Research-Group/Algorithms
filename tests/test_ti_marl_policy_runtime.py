@@ -8,6 +8,7 @@ from gymnasium import spaces
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from algorithms.ti_marl.agent import TIMARL
 from algorithms.ti_marl.compiler import TypedInterfaceCompiler
@@ -24,19 +25,17 @@ from algorithms.ti_marl.runtime import (
     CityLearnTypedActionCodec,
 )
 from tests.ti_marl_fixtures import entity_payload, entity_specs
+from utils.artifact_manifest import build_manifest
+from utils.bundle_validator import validate_bundle_contract
 
 
-SCHEMA = "configs/ti_marl/agent_schema_v1.yaml"
-REGISTRY = "configs/ti_marl/type_registry_v1.yaml"
-HEALTH = "configs/ti_marl/health_rules_v1.yaml"
+INTERFACE = "configs/ti_marl/typed_interface_v1.yaml"
 
 
 def compile_snapshot(buildings=("Building_1", "Building_2"), *, time_step=0, topology_version=0):
     compiler = TypedInterfaceCompiler(
         contract_version="ti_marl_v1",
-        agent_schema_path=SCHEMA,
-        type_registry_path=REGISTRY,
-        health_rules_path=HEALTH,
+        typed_interface_path=INTERFACE,
     )
     compiler.attach_entity_specs(entity_specs(buildings))
     return compiler, compiler.compile(
@@ -269,9 +268,7 @@ def agent_config(tmp_path):
             "name": "TIMARL",
             "hyperparameters": {
                 "contract_version": "ti_marl_v1",
-                "agent_schema_path": SCHEMA,
-                "type_registry_path": REGISTRY,
-                "health_rules_path": HEALTH,
+                "typed_interface_path": INTERFACE,
                 "backbone": {"name": "mappo"},
                 "actor": {"d_model": 32, "attention_heads": 4, "relation_layers": 1},
                 "rollout_steps": 4,
@@ -325,3 +322,40 @@ def test_checkpoint_round_trip_accepts_a_different_compatible_composition(tmp_pa
     )
     actions = restored.predict([], deterministic=True)
     assert len(actions) == 1
+
+
+def test_export_includes_resolved_editable_interface_without_extra_model_artifact(
+    tmp_path,
+):
+    agent = TIMARL(agent_config(tmp_path / "job"))
+    attach_agent(agent, ("Building_1", "Building_2"))
+    output = tmp_path / "bundle"
+    metadata = agent.export_artifacts(str(output))
+    assert len(metadata["artifacts"]) == 1
+    assert metadata["artifacts"][0]["format"] == "ti_marl_torch"
+    assert metadata["typed_interface_path"] == "typed_interface.resolved.yaml"
+    resolved = output / metadata["typed_interface_path"]
+    payload = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+    assert payload["version"] == "typed_interface_v1"
+    assert "building" in payload["catalog"]["observations"]
+    manifest = build_manifest(
+        {
+            "metadata": {"experiment_name": "ti", "run_name": "export"},
+            "simulator": {"central_agent": False},
+            "training": {"seed": 9},
+            "topology": {"num_agents": 2},
+            "pipeline": [
+                {"algorithm": "TIMARL", "count": 1, "hyperparameters": {}}
+            ],
+        },
+        {
+            "observation_names": [["entity"], ["entity"]],
+            "encoders": [[{"type": "NoNormalization", "params": {}}]],
+            "action_names_by_agent": {
+                "0": ["electrical_storage"],
+                "1": ["electrical_storage"],
+            },
+        },
+        metadata,
+    )
+    validate_bundle_contract(manifest, output)
