@@ -42,6 +42,7 @@ def replay(
     simulator_bindings_path: Path | None = None,
     max_steps: int | None = None,
     measure_memory: bool = False,
+    progress_every: int = 0,
 ):
     config = validate_config(
         yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -72,6 +73,12 @@ def replay(
             frame_count += 1
             topology_versions.add(snapshot.topology_version)
             topology_events.extend(snapshot.topology_events)
+            if progress_every > 0 and frame_count % progress_every == 0:
+                print(
+                    f"TI-MARL replay progress: {frame_count} frames",
+                    file=sys.stderr,
+                    flush=True,
+                )
             if max_steps is not None and frame_count >= max_steps:
                 break
             outcome = env.step(_zero_actions(env))
@@ -81,14 +88,30 @@ def replay(
                 for item in info.get("topology_events_applied", []) or []
                 if isinstance(item, dict)
             )
-            if terminated or truncated:
-                break
             # Dynamic topology changes rebuild the public catalog.
             if env.entity_specs != compiler.entity_specs:
                 compiler.attach_entity_specs(
                     env.entity_specs,
                     seconds_per_time_step=float(env.seconds_per_time_step),
                 )
+            if terminated or truncated:
+                # The terminal observation is still part of the dataset and
+                # must pass adapter/TIC validation even though no action is
+                # selected from it.  This makes a 35,040-row annual dataset
+                # report exactly 35,040 validated frames.
+                before = time.perf_counter()
+                snapshot = compiler.compile(payload)
+                latencies.append((time.perf_counter() - before) * 1000.0)
+                frame_count += 1
+                topology_versions.add(snapshot.topology_version)
+                topology_events.extend(snapshot.topology_events)
+                if progress_every > 0:
+                    print(
+                        f"TI-MARL replay progress: {frame_count} frames (terminal)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                break
         peak_memory = (
             tracemalloc.get_traced_memory()[1]
             if measure_memory
@@ -144,6 +167,12 @@ def main() -> int:
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--measure-memory", action="store_true")
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=0,
+        help="Write a progress line to stderr every N validated frames.",
+    )
     args = parser.parse_args()
     result = replay(
         args.config.expanduser().resolve(),
@@ -155,6 +184,7 @@ def main() -> int:
         ),
         max_steps=args.max_steps,
         measure_memory=args.measure_memory,
+        progress_every=max(int(args.progress_every), 0),
     )
     rendered = json.dumps(result, indent=2) + "\n"
     if args.output is not None:

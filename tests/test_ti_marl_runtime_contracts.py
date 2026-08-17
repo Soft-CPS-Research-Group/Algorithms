@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from pathlib import Path
 
+from gymnasium import spaces
+import numpy as np
 import pytest
 import yaml
 
@@ -10,6 +12,7 @@ from algorithms.ti_marl.compiler import TypedInterfaceCompiler
 from algorithms.ti_marl.contracts.models import canonical_value
 from algorithms.ti_marl.policy.networks import CentralSetCritic, TypedActor, parameter_count
 from algorithms.ti_marl.runtime import MappingTelemetryAdapter
+from scripts import validate_ti_marl_interfaces as replay_module
 from tests.ti_marl_fixtures import (
     entity_payload,
     entity_specs,
@@ -359,3 +362,58 @@ def test_runtime_unit_shape_and_duplicate_samples_fail_safely(tmp_path):
     duplicate = replace(frame, samples=frame.samples + (frame.samples[0],))
     with pytest.raises(ValueError, match="duplicate observation samples"):
         compiler.compile_frame(duplicate)
+
+
+def test_replay_validates_and_counts_the_terminal_observation(tmp_path, monkeypatch):
+    interfaces = write_typed_interfaces(
+        tmp_path / "interfaces",
+        ("Building_1", "Building_2"),
+    )
+
+    class Validated:
+        def to_dict(self):
+            return {"simulator": {"dataset_path": "fake-three-frame-dataset"}}
+
+    class FakeEnv:
+        entity_specs = entity_specs()
+        seconds_per_time_step = 900
+        action_space = spaces.Dict(
+            {
+                "tables": spaces.Dict(
+                    {
+                        "building": spaces.Box(
+                            low=-np.ones((2, 1), dtype=np.float32),
+                            high=np.ones((2, 1), dtype=np.float32),
+                        )
+                    }
+                )
+            }
+        )
+
+        def __init__(self):
+            self.time_step = 0
+
+        def reset(self):
+            self.time_step = 0
+            return entity_payload(time_step=0), {}
+
+        def step(self, _actions):
+            self.time_step += 1
+            return (
+                entity_payload(time_step=self.time_step),
+                [0.0, 0.0],
+                self.time_step == 2,
+                False,
+                {},
+            )
+
+        def close(self):
+            return None
+
+    config_path = tmp_path / "fake.yaml"
+    config_path.write_text("simulator: {}\n", encoding="utf-8")
+    monkeypatch.setattr(replay_module, "validate_config", lambda _raw: Validated())
+    monkeypatch.setattr(replay_module, "_build_env", lambda _config: FakeEnv())
+    result = replay_module.replay(config_path, interfaces)
+    assert result["frames"] == 3
+    assert result["final_active_agents"] == 2
