@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Sequence, Tuple
 import numpy as np
 
 from algorithms.ti_marl.contracts.models import InterfaceSnapshot, LocalActionBundle
+from algorithms.ti_marl.runtime.contracts import TypedActionCommand
 
 
 class CityLearnTypedActionCodec:
@@ -54,7 +55,10 @@ class CityLearnTypedActionCodec:
                     group = groups.get(decision.group_id)
                     if group is None:
                         continue
-                    action_name = self._flat_action_name(group.group_type, group.module_id)
+                    action_name = self._flat_action_name(
+                        group.group_type,
+                        group.adapter_target_entity_id or group.module_id,
+                    )
                     if action_name not in names:
                         if decision.mode != "IDLE":
                             raise ValueError(
@@ -74,6 +78,60 @@ class CityLearnTypedActionCodec:
             vector = np.clip(vector, low, high) if len(vector) else vector
             commands.append(vector.tolist())
         return commands
+
+    def encode_typed(
+        self,
+        snapshot: InterfaceSnapshot,
+        typed_commands: Sequence[TypedActionCommand],
+    ) -> list[list[float]]:
+        """Simulator-adapter translation from neutral commands to flat slots."""
+
+        if not self.building_names:
+            raise RuntimeError("CityLearnTypedActionCodec.attach() must be called first")
+        groups = {
+            (group.owner_agent_id, group.module_id): group
+            for group in snapshot.action_groups
+        }
+        by_agent: Dict[str, list[TypedActionCommand]] = {}
+        for command in typed_commands:
+            by_agent.setdefault(command.agent_id, []).append(command)
+        result = []
+        for index, agent_id in enumerate(self.building_names):
+            names = self.action_names[index] if index < len(self.action_names) else ()
+            low, high = self.action_bounds[index] if index < len(self.action_bounds) else (
+                np.zeros(len(names)),
+                np.zeros(len(names)),
+            )
+            vector = np.zeros(len(names), dtype=np.float64)
+            for command in by_agent.get(agent_id, []):
+                group = groups.get((agent_id, str(command.target_entity_id)))
+                if group is None:
+                    continue
+                slot = self._flat_action_name(
+                    group.group_type,
+                    group.adapter_target_entity_id or group.module_id,
+                )
+                if slot not in names:
+                    if command.mode != "IDLE":
+                        raise ValueError(f"No CityLearn action slot {slot!r} for {agent_id}")
+                    continue
+                position = names.index(slot)
+                if command.mode.startswith("CHARGE_"):
+                    rated = group.max_charge_power_kw
+                elif command.mode.startswith("DISCHARGE_"):
+                    rated = group.max_discharge_power_kw
+                else:
+                    rated = 1.0
+                fraction = 0.0 if rated <= 0.0 else float(command.value) / float(rated)
+                vector[position] = self._scalar(
+                    command.mode,
+                    fraction,
+                    1.0,
+                    low[position],
+                    high[position],
+                )
+            result.append(np.clip(vector, low, high).tolist() if len(vector) else [])
+        return result
 
     @staticmethod
     def _flat_action_name(group_type: str, module_id: str) -> str:

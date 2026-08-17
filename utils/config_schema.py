@@ -1189,13 +1189,9 @@ class TIMARLHyperparameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     contract_version: Literal["ti_marl_v1"] = "ti_marl_v1"
-    typed_interface_path: Optional[str] = Field(default=None, min_length=1)
-    # Temporary compatibility for configurations written before the public
-    # single-file typed_interface_v1 contract. New configurations should use
-    # only typed_interface_path.
-    agent_schema_path: Optional[str] = Field(default=None, min_length=1)
-    type_registry_path: Optional[str] = Field(default=None, min_length=1)
-    health_rules_path: Optional[str] = Field(default=None, min_length=1)
+    typed_interfaces_dir: str = Field(min_length=1)
+    interface_polling: bool = False
+    simulator_bindings_path: Optional[str] = Field(default=None, min_length=1)
     require_cuda: bool = False
     backbone: TIMARLBackboneConfig = TIMARLBackboneConfig()
     actor: TIMARLActorConfig = TIMARLActorConfig()
@@ -1212,27 +1208,6 @@ class TIMARLHyperparameters(BaseModel):
     target_kl: Optional[float] = Field(default=0.03, gt=0)
     rollout_steps: int = Field(default=256, ge=1)
     trace: TIMARLTraceConfig = TIMARLTraceConfig()
-
-    @model_validator(mode="after")
-    def validate_interface_source(self) -> "TIMARLHyperparameters":
-        legacy = (
-            self.agent_schema_path,
-            self.type_registry_path,
-            self.health_rules_path,
-        )
-        if self.typed_interface_path is not None:
-            if any(path is not None for path in legacy):
-                raise ValueError(
-                    "TIMARL typed_interface_path cannot be combined with legacy "
-                    "schema/type/health paths"
-                )
-        elif not all(path is not None for path in legacy):
-            raise ValueError(
-                "TIMARL requires typed_interface_path or all three legacy "
-                "schema/type/health paths"
-            )
-        return self
-
 
 class TIMARLStageConfig(BaseModel):
     algorithm: Literal["TIMARL"]

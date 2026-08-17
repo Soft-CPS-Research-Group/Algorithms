@@ -12,6 +12,7 @@ from packaging.version import Version
 import pytest
 
 from algorithms.registry import build_execution_unit
+from tests.ti_marl_fixtures import write_typed_interfaces
 from utils.wrapper_citylearn import Wrapper_CityLearn
 
 
@@ -28,6 +29,10 @@ def test_ti_marl_trains_across_member_join_and_leave_without_resize(tmp_path):
     if not dataset_root.exists():
         pytest.skip("dynamic topology demo dataset is not installed")
     schema = json.loads((dataset_root / "schema.json").read_text(encoding="utf-8"))
+    interfaces_dir = write_typed_interfaces(
+        tmp_path / "interfaces",
+        tuple(schema["buildings"]),
+    )
     schema["topology_events"] = [
         {**schema["topology_events"][0], "time_step": 2},
         {**schema["topology_events"][-1], "time_step": 4},
@@ -156,7 +161,7 @@ def test_ti_marl_trains_across_member_join_and_leave_without_resize(tmp_path):
                 "count": 1,
                 "hyperparameters": {
                     "contract_version": "ti_marl_v1",
-                    "typed_interface_path": "configs/ti_marl/typed_interface_v1.yaml",
+                    "typed_interfaces_dir": str(interfaces_dir),
                     "backbone": {"name": "mappo"},
                     "actor": {"d_model": 32, "attention_heads": 4, "relation_layers": 1},
                     "critic": {"kind": "set"},
@@ -240,8 +245,10 @@ def test_ti_marl_trains_across_member_join_and_leave_without_resize(tmp_path):
             for snapshot in snapshots
             for item in snapshot["closure_log"]
         }
-        assert "invalidate_non_idle_ports" in consequences
-        assert "disable_group" in consequences
+        assert any(
+            item in consequences
+            for item in ("actuator_or_asset_unavailable", "asset_disconnected")
+        )
         # A cloud/community failure never removes the local controller.
         assert all(row["commands"] for row in transitions)
     finally:

@@ -49,7 +49,7 @@ def _ti_marl_stage():
         "count": 1,
         "hyperparameters": {
             "contract_version": "ti_marl_v1",
-            "typed_interface_path": "configs/ti_marl/typed_interface_v1.yaml",
+            "typed_interfaces_dir": "local/generated_interfaces",
             "backbone": {"name": "mappo"},
             "actor": {
                 "d_model": 128,
@@ -72,16 +72,14 @@ def test_validate_config_accepts_ti_marl_entity_dynamic(base_config):
     assert parsed.pipeline[0].algorithm == "TIMARL"
 
 
-def test_validate_config_rejects_mixed_ti_marl_interface_sources(base_config):
+def test_validate_config_rejects_retired_ti_marl_interface_sources(base_config):
     config = copy.deepcopy(base_config)
     config["simulator"]["interface"] = "entity"
     config["simulator"]["central_agent"] = False
     stage = _ti_marl_stage()
-    stage["hyperparameters"]["agent_schema_path"] = "legacy-schema.yaml"
-    stage["hyperparameters"]["type_registry_path"] = "legacy-registry.yaml"
-    stage["hyperparameters"]["health_rules_path"] = "legacy-health.yaml"
+    stage["hyperparameters"]["typed_interface_path"] = "retired-global.yaml"
     config["pipeline"] = [stage]
-    with pytest.raises(ValueError, match="cannot be combined"):
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         validate_config(config)
 
 

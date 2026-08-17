@@ -106,6 +106,15 @@ class FaultEvidence:
     last_fresh_time_step: Optional[int] = None
     age_steps: Optional[int] = None
     event_ids: Tuple[str, ...] = ()
+    start_time_seconds: Optional[float] = None
+    active_duration_seconds: float = 0.0
+    last_update_seconds: Optional[float] = None
+    last_fresh_seconds: Optional[float] = None
+    age_seconds: Optional[float] = None
+    agent_id: Optional[str] = None
+    sensor_id: Optional[str] = None
+    channel_name: Optional[str] = None
+    observation_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +146,8 @@ class HealthAssessment:
     since_time_step: Optional[int] = None
     recovery_pending_steps: int = 0
     explanation: str = ""
+    since_seconds: Optional[float] = None
+    recovery_pending_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -148,8 +159,20 @@ class ObservationPart:
     feature_names: Tuple[str, ...]
     values: Tuple[float, ...]
     health: HealthState
+    shape: Tuple[int, ...] = (1,)
     valid: bool = True
+    validity_reasons: Tuple[str, ...] = ()
     estimated: bool = False
+    sensor_id: str = "unknown_sensor"
+    channel_id: str = "state"
+    observation_id: str = "value"
+    unit: str = "scalar"
+    scope: str = "local"
+    use: str = "policy_input"
+    policy_input: bool = True
+    criticality: str = "operational"
+    age_seconds: float = 0.0
+    normalisation: str = "signed_log1p"
 
 
 @dataclass(frozen=True)
@@ -177,6 +200,10 @@ class ActionGroupInstance:
     fallback_mode: str = "IDLE"
     max_charge_power_kw: float = 0.0
     max_discharge_power_kw: float = 0.0
+    forced_mode: Optional[str] = None
+    forced_fraction: Optional[float] = None
+    fallback_reason: Optional[str] = None
+    adapter_target_entity_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -201,6 +228,10 @@ class HealthRule:
     missing_after_steps: int
     recovery_hysteresis_steps: int
     cache_allowed: bool = True
+    degraded_after_seconds: float = 0.0
+    stale_after_seconds: float = 0.0
+    missing_after_seconds: float = 0.0
+    recovery_hysteresis_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -239,6 +270,12 @@ class InterfaceSnapshot:
     constraints: Tuple[LocalConstraint, ...]
     shared_resources: Tuple[SharedResource, ...]
     closure_log: Tuple[Mapping[str, Any], ...] = ()
+    timestamp_seconds: float = 0.0
+    registered_agent_ids: Tuple[str, ...] = ()
+    agent_metadata: Tuple[Tuple[str, str, str], ...] = ()
+    registry_hash: str = ""
+    execution_feedback: Tuple[Mapping[str, Any], ...] = ()
+    topology_events: Tuple[Mapping[str, Any], ...] = ()
 
     @property
     def snapshot_hash(self) -> str:
@@ -283,6 +320,7 @@ class TypedTransition:
     bootstrap_agent_ids: Tuple[str, ...]
     health_events: Tuple[Mapping[str, Any], ...] = ()
     topology_events: Tuple[Mapping[str, Any], ...] = ()
+    typed_commands: Tuple[Mapping[str, Any], ...] = ()
 
 
 def tuple_of_strings(values: Sequence[Any]) -> Tuple[str, ...]:

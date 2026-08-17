@@ -7,28 +7,41 @@ import pytest
 import yaml
 
 from algorithms.ti_marl.compiler import TypedInterfaceCompiler
-from algorithms.ti_marl.contracts.interface_definition import TypedInterfaceDefinition
-from scripts.generate_typed_interface import generate
-from tests.ti_marl_fixtures import entity_payload, entity_specs
+from algorithms.ti_marl.contracts.interface_definition import (
+    InterfaceRegistry,
+    TypedAgentInterface,
+)
+from scripts.generate_typed_interfaces import generate, write_generated
+from tests.ti_marl_fixtures import (
+    entity_payload,
+    entity_specs,
+    typed_interface_payload,
+    write_typed_interfaces,
+)
 
 
-INTERFACE = Path("configs/ti_marl/typed_interface_v1.yaml")
-
-
-def _write_yaml(path: Path, payload) -> Path:
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(payload, handle, sort_keys=False)
+def _write(path: Path, payload) -> Path:
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return path
 
 
-def test_single_file_definition_compiles_the_vertical_slice():
-    definition = TypedInterfaceDefinition.load(INTERFACE)
-    definition.validate_entity_specs(entity_specs())
+def test_per_agent_interface_is_human_readable_and_compiles(tmp_path):
+    directory = write_typed_interfaces(tmp_path / "interfaces", ("Building_1", "Building_2"))
+    definition = TypedAgentInterface.load(directory / "Building_1.yaml")
+    assert definition.agent_id == "Building_1"
+    assert definition.role == "prosumer"
+    assert any(sensor.sensor_id == "community" for sensor in definition.sensors)
+    charger = next(sensor for sensor in definition.sensors if sensor.sensor_id == "charger_1")
+    assert {item.channel_id for item in charger.observations} >= {
+        "connection",
+        "ev_state",
+        "capability",
+    }
     compiler = TypedInterfaceCompiler(
         contract_version="ti_marl_v1",
-        typed_interface_path=str(INTERFACE),
+        typed_interfaces_dir=directory,
     )
-    compiler.attach_entity_specs(entity_specs())
+    compiler.attach_entity_specs(entity_specs(), seconds_per_time_step=900)
     snapshot = compiler.compile(entity_payload())
     assert snapshot.agent_ids == ("Building_1", "Building_2")
     assert {group.group_type for group in snapshot.action_groups} == {
@@ -36,89 +49,173 @@ def test_single_file_definition_compiles_the_vertical_slice():
         "ev_session",
         "deferrable",
     }
+    assert all(part.sensor_id and part.channel_id for part in snapshot.observation_parts)
 
 
-def test_manually_editing_observations_changes_the_compiled_view(tmp_path):
-    raw = yaml.safe_load(INTERFACE.read_text(encoding="utf-8"))
-    building = raw["observations"]["entities"]["building"]
-    building["features"] = ["net_power_kw"]
-    building["required_features"] = ["net_power_kw"]
-    manual = _write_yaml(tmp_path / "manual_interface.yaml", raw)
+def test_retired_global_document_is_rejected_without_runtime_compatibility(tmp_path):
+    old = _write(
+        tmp_path / "old.yaml",
+        {"version": "typed_interface_v1", "contract_version": "ti_marl_v1"},
+    )
+    with pytest.raises(ValueError, match="retired"):
+        TypedAgentInterface.load(old)
 
+
+def test_dependencies_are_exact_and_must_cover_every_non_nominal_health_state(tmp_path):
+    payload = typed_interface_payload("Building_1")
+    dependency = payload["actuators"]["charger_1"]["actions"]["charge"]["dependencies"]
+    dependency["charger_1.connection.connected_state"].pop("UNKNOWN")
+    path = _write(tmp_path / "Building_1.yaml", payload)
+    with pytest.raises(ValueError, match="must declare outcomes"):
+        TypedAgentInterface.load(path)
+
+    payload = typed_interface_payload("Building_1")
+    payload["actuators"]["charger_1"]["actions"]["charge"]["dependencies"] = {
+        "charger_1.ev_state.does_not_exist": {
+            state: "safe_idle"
+            for state in ("DEGRADED", "STALE", "MISSING", "FAILED", "UNKNOWN")
+        }
+    }
+    path = _write(tmp_path / "Building_1.yaml", payload)
+    with pytest.raises(ValueError, match="unknown observation"):
+        TypedAgentInterface.load(path)
+
+
+def test_excluded_observation_requires_a_reason(tmp_path):
+    payload = typed_interface_payload("Building_1")
+    observation = payload["sensors"]["self"]["channels"]["energy"]["observations"]["net_power_kw"]
+    observation.update({"use": "excluded", "policy_input": False})
+    path = _write(tmp_path / "Building_1.yaml", payload)
+    with pytest.raises(ValueError, match="requires a justification"):
+        TypedAgentInterface.load(path)
+
+
+def test_registry_reload_is_atomic_and_reports_join_leave(tmp_path):
+    directory = write_typed_interfaces(tmp_path / "interfaces", ("Building_1", "Building_2"))
+    registry = InterfaceRegistry(directory)
+    original_hash = registry.registry_hash
+    invalid = typed_interface_payload("Building_2")
+    invalid["agent"]["role"] = "invalid-role"
+    _write(directory / "Building_2.yaml", invalid)
+    with pytest.raises(ValueError, match="agent.role"):
+        registry.reload_interfaces()
+    assert registry.registry_hash == original_hash
+    assert registry.agent_ids == ("Building_1", "Building_2")
+
+    _write(directory / "Building_2.yaml", typed_interface_payload("Building_2"))
+    _write(directory / "Building_3.yaml", typed_interface_payload("Building_3"))
+    (directory / "Building_1.yaml").unlink()
+    delta = registry.reload_interfaces()
+    assert delta.added_agent_ids == ("Building_3",)
+    assert delta.removed_agent_ids == ("Building_1",)
+    assert registry.agent_ids == ("Building_2", "Building_3")
+
+
+def test_registry_rejects_a_mixed_generation_during_concurrent_edit(
+    tmp_path,
+    monkeypatch,
+):
+    directory = write_typed_interfaces(
+        tmp_path / "interfaces",
+        ("Building_1", "Building_2"),
+    )
+    registry = InterfaceRegistry(directory)
+    original_hash = registry.registry_hash
+    original_fingerprint = registry._directory_fingerprint
+    calls = 0
+
+    def racing_fingerprint(files):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            changed = typed_interface_payload("Building_1")
+            changed["description"] = "concurrent replacement"
+            _write(directory / "Building_1.yaml", changed)
+        return original_fingerprint(files)
+
+    monkeypatch.setattr(registry, "_directory_fingerprint", racing_fingerprint)
+    with pytest.raises(RuntimeError, match="changed during atomic reload"):
+        registry.reload_interfaces()
+    assert registry.registry_hash == original_hash
+
+
+def test_compatibility_shape_does_not_depend_on_concrete_agent_id(tmp_path):
+    first_payload = typed_interface_payload("Building_1")
+    second_payload = deepcopy(first_payload)
+    second_payload["agent"]["id"] = "Building_99"
+    first = TypedAgentInterface.load(_write(tmp_path / "Building_1.yaml", first_payload))
+    second = TypedAgentInterface.load(_write(tmp_path / "Building_99.yaml", second_payload))
+    assert first.compatibility_shape == second.compatibility_shape
+
+
+def test_generator_classifies_every_supported_simulator_field(tmp_path):
+    specs = entity_specs()
+    interfaces, coverage = generate(specs, entity_payload())
+    expected = sum(
+        len(table.get("features", []))
+        for entity_type, table in specs["tables"].items()
+        if entity_type in {
+            "district",
+            "building",
+            "storage",
+            "charger",
+            "ev",
+            "deferrable_appliance",
+            "pv",
+        }
+    )
+    assert len(coverage) == expected
+    assert all(row["classification"] for row in coverage)
+    output = tmp_path / "generated"
+    write_generated(output, interfaces, coverage, source="unit fixture")
+    registry = InterfaceRegistry(output)
+    assert registry.agent_ids == ("Building_1", "Building_2")
+    assert (output / "observation_coverage.csv").is_file()
+    assert (output / "interface_manifest.json").is_file()
+
+
+def test_public_yaml_contains_no_simulator_contract_section(tmp_path):
+    path = _write(tmp_path / "Building_1.yaml", typed_interface_payload("Building_1"))
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert "simulator" not in raw
+    assert "entity_v1" not in path.read_text(encoding="utf-8")
+
+
+def test_unknown_unit_is_rejected_before_control(tmp_path):
+    payload = typed_interface_payload("Building_1")
+    payload["sensors"]["self"]["channels"]["energy"]["observations"]["net_power_kw"]["unit"] = "mystery"
+    path = _write(tmp_path / "Building_1.yaml", payload)
+    with pytest.raises(ValueError, match="unknown unit"):
+        TypedAgentInterface.load(path)
+
+
+def test_unknown_profile_and_constraint_unit_are_rejected(tmp_path):
+    payload = typed_interface_payload("Building_1")
+    payload["sensors"]["self"]["profile"] = "unregistered_meter_v9"
+    path = _write(tmp_path / "Building_1.yaml", payload)
+    with pytest.raises(ValueError, match="Unknown TI-MARL profile"):
+        TypedAgentInterface.load(path)
+
+    payload = typed_interface_payload("Building_1")
+    payload["constraints"]["grid_import"]["unit"] = "mystery"
+    path = _write(tmp_path / "Building_1.yaml", payload)
+    with pytest.raises(ValueError, match="constraint.*unknown unit"):
+        TypedAgentInterface.load(path)
+
+
+def test_yaml_is_not_parsed_in_the_decision_hot_path(tmp_path, monkeypatch):
+    directory = write_typed_interfaces(tmp_path / "interfaces", ("Building_1", "Building_2"))
     compiler = TypedInterfaceCompiler(
         contract_version="ti_marl_v1",
-        typed_interface_path=str(manual),
+        typed_interfaces_dir=directory,
+        interface_polling=False,
     )
-    compiler.attach_entity_specs(entity_specs())
-    snapshot = compiler.compile(entity_payload())
-    part = next(
-        item
-        for item in snapshot.parts_for("Building_1")
-        if item.source_entity_id == "Building_1"
-    )
-    assert part.feature_names == ("net_power_kw",)
-    assert part.values == (2.0,)
+    compiler.attach_entity_specs(entity_specs(), seconds_per_time_step=900)
 
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("YAML parser entered the decision hot path")
 
-def test_required_manual_observation_must_exist_in_simulator(tmp_path):
-    raw = yaml.safe_load(INTERFACE.read_text(encoding="utf-8"))
-    raw["observations"]["entities"]["building"]["features"].append("manual_required")
-    raw["observations"]["entities"]["building"]["required_features"].append(
-        "manual_required"
-    )
-    manual = _write_yaml(tmp_path / "invalid_interface.yaml", raw)
-    definition = TypedInterfaceDefinition.load(manual)
-    with pytest.raises(ValueError, match="missing required 'building' observations"):
-        definition.validate_entity_specs(entity_specs())
-
-
-def test_optional_inactive_module_does_not_require_an_action_table():
-    specs = deepcopy(entity_specs())
-    specs["tables"]["deferrable_appliance"]["ids"] = []
-    specs["tables"]["deferrable_appliance"]["features"] = []
-    specs["actions"].pop("deferrable_appliance")
-    TypedInterfaceDefinition.load(INTERFACE).validate_entity_specs(specs)
-
-
-def test_active_module_requires_its_declared_action():
-    specs = deepcopy(entity_specs())
-    specs["actions"]["deferrable_appliance"]["features"] = []
-    with pytest.raises(ValueError, match="requires Simulator action"):
-        TypedInterfaceDefinition.load(INTERFACE).validate_entity_specs(specs)
-
-
-def test_generated_file_contains_catalog_and_is_still_editable(tmp_path):
-    output = generate(
-        base_path=INTERFACE,
-        entity_specs=entity_specs(),
-        output_path=tmp_path / "generated.yaml",
-        source="unit-test entity_specs",
-    )
-    generated = TypedInterfaceDefinition.load(output)
-    assert generated.catalog["generated_from"] == "unit-test entity_specs"
-    assert "net_power_kw" in generated.catalog["observations"]["building"]
-    assert generated.catalog["actions"]["building"] == ["electrical_storage"]
-    generated.validate_entity_specs(entity_specs())
-
-    changed_specs = deepcopy(entity_specs())
-    changed_specs["tables"]["building"]["features"].remove("net_power_kw")
-    with pytest.raises(ValueError, match="missing required 'building' observations"):
-        generated.validate_entity_specs(changed_specs)
-
-
-def test_single_file_and_legacy_split_have_same_semantic_signature(tmp_path):
-    definition = TypedInterfaceDefinition.load(INTERFACE)
-    schema = _write_yaml(tmp_path / "schema.yaml", definition.agent_schema)
-    registry = _write_yaml(tmp_path / "registry.yaml", definition.type_registry)
-    health = _write_yaml(tmp_path / "health.yaml", definition.health_rules)
-    unified = TypedInterfaceCompiler(
-        contract_version="ti_marl_v1",
-        typed_interface_path=str(INTERFACE),
-    )
-    legacy = TypedInterfaceCompiler(
-        contract_version="ti_marl_v1",
-        agent_schema_path=str(schema),
-        type_registry_path=str(registry),
-        health_rules_path=str(health),
-    )
-    assert unified.compatibility_signature == legacy.compatibility_signature
+    monkeypatch.setattr(yaml, "safe_load", fail_if_called)
+    compiler.compile(entity_payload())
+    compiler.compile(entity_payload(time_step=1))
+    assert compiler.structure_recompilations == 1

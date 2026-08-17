@@ -23,28 +23,36 @@ from algorithms.ti_marl.runtime import (
     AnalyticLocalProjector,
     BufferedTraceWriter,
     CityLearnTypedActionCodec,
+    TypedCommandBuilder,
 )
-from tests.ti_marl_fixtures import entity_payload, entity_specs
+from tests.ti_marl_fixtures import entity_payload, entity_specs, write_typed_interfaces
 from utils.artifact_manifest import build_manifest
 from utils.bundle_validator import validate_bundle_contract
 
 
-INTERFACE = "configs/ti_marl/typed_interface_v1.yaml"
-
-
-def compile_snapshot(buildings=("Building_1", "Building_2"), *, time_step=0, topology_version=0):
+def compile_snapshot(
+    tmp_path,
+    buildings=("Building_1", "Building_2"),
+    *,
+    time_step=0,
+    topology_version=0,
+):
+    interfaces = write_typed_interfaces(
+        tmp_path / "interfaces",
+        ("Building_1", "Building_2", "Building_3"),
+    )
     compiler = TypedInterfaceCompiler(
         contract_version="ti_marl_v1",
-        typed_interface_path=INTERFACE,
+        typed_interfaces_dir=interfaces,
     )
-    compiler.attach_entity_specs(entity_specs(buildings))
+    compiler.attach_entity_specs(entity_specs(buildings), seconds_per_time_step=900)
     return compiler, compiler.compile(
         entity_payload(buildings, time_step=time_step, topology_version=topology_version)
     )
 
 
-def test_actor_and_critic_are_permutation_equivariant_and_cardinality_independent():
-    compiler, snapshot = compile_snapshot()
+def test_actor_and_critic_are_permutation_equivariant_and_cardinality_independent(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
     torch.manual_seed(3)
     actor = TypedActor(compiler.type_registry, d_model=32, attention_heads=4, relation_layers=1)
     critic = CentralSetCritic(compiler.type_registry, d_model=32, relation_layers=1)
@@ -74,8 +82,8 @@ def test_actor_and_critic_are_permutation_equivariant_and_cardinality_independen
     assert parameter_count(actor) + parameter_count(critic) == initial_parameters
 
 
-def test_actor_is_local_while_set_critic_observes_other_agents():
-    compiler, snapshot = compile_snapshot()
+def test_actor_is_local_while_set_critic_observes_other_agents(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
     torch.manual_seed(5)
     actor = TypedActor(compiler.type_registry, d_model=32, attention_heads=4, relation_layers=1)
     critic = CentralSetCritic(compiler.type_registry, d_model=32, relation_layers=1)
@@ -105,8 +113,43 @@ def test_actor_is_local_while_set_critic_observes_other_agents():
     assert not torch.allclose(baseline_value, changed_value)
 
 
-def test_local_projection_jointly_enforces_headroom_and_deferrable_deadline():
-    _compiler, snapshot = compile_snapshot()
+def test_trace_only_observations_are_auditable_but_never_enter_the_actor(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    trace_part = next(
+        part
+        for part in snapshot.parts_for("Building_1")
+        if part.observation_id == "topology_version"
+    )
+    assert trace_part.use == "trace_only"
+    assert not trace_part.policy_input
+    changed = replace(
+        snapshot,
+        observation_parts=tuple(
+            replace(part, values=(9999.0,))
+            if part.part_id == trace_part.part_id
+            else part
+            for part in snapshot.observation_parts
+        ),
+    )
+    torch.manual_seed(6)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    actor.eval()
+    with torch.no_grad():
+        baseline = actor(snapshot, deterministic=True)
+        modified = actor(changed, deterministic=True)
+    assert torch.equal(
+        baseline.latent_by_agent["Building_1"],
+        modified.latent_by_agent["Building_1"],
+    )
+
+
+def test_local_projection_jointly_enforces_headroom_and_deferrable_deadline(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
     groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
     raw = LocalActionBundle(
         agent_id="Building_1",
@@ -133,8 +176,50 @@ def test_local_projection_jointly_enforces_headroom_and_deferrable_deadline():
     assert any(item["reason"] == "deferrable_must_start" for item in final.interventions)
 
 
-def test_codec_applies_a_dynamic_port_bound_exactly_once():
-    _compiler, snapshot = compile_snapshot()
+def test_required_deferrable_with_unknown_deadline_starts_once_when_safe(tmp_path):
+    interfaces = write_typed_interfaces(
+        tmp_path / "interfaces",
+        ("Building_1", "Building_2"),
+    )
+    compiler = TypedInterfaceCompiler(
+        contract_version="ti_marl_v1",
+        typed_interfaces_dir=interfaces,
+    )
+    compiler.attach_entity_specs(entity_specs(), seconds_per_time_step=900)
+    payload = entity_payload()
+    payload["meta"]["runtime_status"]["sensor_channels"] = [
+        {
+            "event_id": f"missing-{feature}",
+            "event_ids": [f"missing-{feature}"],
+            "fault_mode": "missing",
+            "target_type": "deferrable_appliance",
+            "target_id": "Building_1/washer",
+            "target_feature": feature,
+            "availability": "UNAVAILABLE",
+            "quality": "INVALID",
+        }
+        for feature in ("deadline_time_step", "slack_steps")
+    ]
+    snapshot = compiler.compile(payload)
+    group = next(
+        item
+        for item in snapshot.groups_for("Building_1")
+        if item.group_type == "deferrable"
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(ActionDecision(group.group_id, "IDLE", 0.0, 0),),
+    )
+    final = AnalyticLocalProjector().project(snapshot, (raw,))[0]
+    assert final.decisions[0].mode == "START"
+    assert any(
+        item["reason"] == "required_deferrable_unknown_deadline"
+        for item in final.interventions
+    )
+
+
+def test_codec_applies_a_dynamic_port_bound_exactly_once(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
     ev_group = next(
         group
         for group in snapshot.groups_for("Building_1")
@@ -196,10 +281,75 @@ def test_codec_applies_a_dynamic_port_bound_exactly_once():
     assert commands[0][1] == pytest.approx(0.5)
 
 
-def test_rollout_gae_handles_leave_and_does_not_create_predecessor_for_join():
-    _c1, first = compile_snapshot(("Building_1", "Building_2"), time_step=0)
-    _c2, second = compile_snapshot(("Building_1",), time_step=1, topology_version=1)
-    _c3, third = compile_snapshot(("Building_1", "Building_3"), time_step=2, topology_version=2)
+def test_discharge_uses_its_own_bound_and_keeps_a_negative_simulator_sign(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    ev_group = replace(
+        ev_group,
+        max_charge_power_kw=11.0,
+        max_discharge_power_kw=7.2,
+        ports=tuple(
+            replace(port, upper_bound=0.5)
+            if port.mode == "DISCHARGE_EV"
+            else replace(port, upper_bound=1.0)
+            if port.mode == "CHARGE_EV"
+            else port
+            for port in ev_group.ports
+        ),
+    )
+    snapshot = replace(
+        snapshot,
+        action_groups=tuple(
+            ev_group if group.group_id == ev_group.group_id else group
+            for group in snapshot.action_groups
+        ),
+        constraints=tuple(
+            replace(constraint, upper_bound=100.0)
+            if constraint.owner_agent_id == "Building_1"
+            and constraint.constraint_type == "export_headroom_kw"
+            else constraint
+            for constraint in snapshot.constraints
+        ),
+    )
+    bundle = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(ev_group.group_id, "DISCHARGE_EV", 1.0, 2),
+        ),
+    )
+    projected = AnalyticLocalProjector().project(snapshot, (bundle,))[0]
+    commands = TypedCommandBuilder().build(snapshot, (projected,))
+    assert commands[0].action_id == "discharge"
+    assert commands[0].value == pytest.approx(3.6)
+
+    codec = CityLearnTypedActionCodec()
+    codec.attach(
+        building_names=("Building_1", "Building_2"),
+        action_names=(
+            (
+                "electrical_storage",
+                "electric_vehicle_storage_charger_1",
+                "deferrable_appliance_washer",
+            ),
+            ("electrical_storage",),
+        ),
+        action_space=(
+            spaces.Box(low=-np.ones(3), high=np.ones(3)),
+            spaces.Box(low=-np.ones(1), high=np.ones(1)),
+        ),
+    )
+    encoded = codec.encode_typed(snapshot, commands)
+    assert encoded[0][1] == pytest.approx(-0.5)
+
+
+def test_rollout_gae_handles_leave_and_does_not_create_predecessor_for_join(tmp_path):
+    _c1, first = compile_snapshot(tmp_path / "first", ("Building_1", "Building_2"), time_step=0)
+    _c2, second = compile_snapshot(tmp_path / "second", ("Building_1",), time_step=1, topology_version=1)
+    _c3, third = compile_snapshot(tmp_path / "third", ("Building_1", "Building_3"), time_step=2, topology_version=2)
     buffer = TypedRolloutBuffer()
     buffer.add(
         RolloutStep(
@@ -235,8 +385,8 @@ def test_rollout_gae_handles_leave_and_does_not_create_predecessor_for_join():
 
 
 def test_buffered_trace_contains_every_referenced_snapshot_once(tmp_path):
-    _compiler, first = compile_snapshot(time_step=0)
-    _compiler, second = compile_snapshot(time_step=1)
+    _compiler, first = compile_snapshot(tmp_path / "first", time_step=0)
+    _compiler, second = compile_snapshot(tmp_path / "second", time_step=1)
     transition = TypedTransition(
         snapshot_hash=first.snapshot_hash,
         next_snapshot_hash=second.snapshot_hash,
@@ -263,12 +413,16 @@ def test_buffered_trace_contains_every_referenced_snapshot_once(tmp_path):
 
 
 def agent_config(tmp_path):
+    interfaces = write_typed_interfaces(
+        tmp_path / "interfaces",
+        ("Building_1", "Building_2", "Building_3"),
+    )
     return {
         "algorithm": {
             "name": "TIMARL",
             "hyperparameters": {
                 "contract_version": "ti_marl_v1",
-                "typed_interface_path": INTERFACE,
+                "typed_interfaces_dir": str(interfaces),
                 "backbone": {"name": "mappo"},
                 "actor": {"d_model": 32, "attention_heads": 4, "relation_layers": 1},
                 "rollout_steps": 4,
@@ -300,6 +454,7 @@ def attach_agent(agent, buildings):
             "topology_mode": "dynamic",
             "entity_specs": specs,
             "building_names": list(buildings),
+            "seconds_per_time_step": 900,
         },
     )
 
@@ -333,11 +488,14 @@ def test_export_includes_resolved_editable_interface_without_extra_model_artifac
     metadata = agent.export_artifacts(str(output))
     assert len(metadata["artifacts"]) == 1
     assert metadata["artifacts"][0]["format"] == "ti_marl_torch"
-    assert metadata["typed_interface_path"] == "typed_interface.resolved.yaml"
-    resolved = output / metadata["typed_interface_path"]
+    assert metadata["typed_interfaces_path"] == "typed_interfaces.resolved.yaml"
+    resolved = output / metadata["typed_interfaces_path"]
     payload = yaml.safe_load(resolved.read_text(encoding="utf-8"))
-    assert payload["version"] == "typed_interface_v1"
-    assert "building" in payload["catalog"]["observations"]
+    assert payload["version"] == "typed_interface_registry_v1"
+    assert set(payload["interfaces"]) >= {"Building_1", "Building_2"}
+    deployment = torch.load(output / metadata["deployment_bundle_path"], weights_only=False)
+    assert "actor" in deployment
+    assert "critic" not in deployment
     manifest = build_manifest(
         {
             "metadata": {"experiment_name": "ti", "run_name": "export"},

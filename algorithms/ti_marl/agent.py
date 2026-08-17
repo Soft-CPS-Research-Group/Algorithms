@@ -23,6 +23,7 @@ from algorithms.ti_marl.learning.mappo import TIMAPPO
 from algorithms.ti_marl.learning.rollout import RolloutStep
 from algorithms.ti_marl.policy.networks import CentralSetCritic, TypedActor, parameter_count
 from algorithms.ti_marl.runtime.codec import CityLearnTypedActionCodec
+from algorithms.ti_marl.runtime.commands import TypedCommandBuilder
 from algorithms.ti_marl.runtime.feasibility import AnalyticLocalProjector
 from algorithms.ti_marl.runtime.traces import BufferedTraceWriter
 
@@ -59,10 +60,9 @@ class TIMARL(BaseAgent):
 
         self.compiler = TypedInterfaceCompiler(
             contract_version=str(hyper.get("contract_version", "ti_marl_v1")),
-            typed_interface_path=hyper.get("typed_interface_path"),
-            agent_schema_path=hyper.get("agent_schema_path"),
-            type_registry_path=hyper.get("type_registry_path"),
-            health_rules_path=hyper.get("health_rules_path"),
+            typed_interfaces_dir=str(hyper.get("typed_interfaces_dir", "")),
+            interface_polling=bool(hyper.get("interface_polling", False)),
+            simulator_bindings_path=hyper.get("simulator_bindings_path"),
         )
         actor_cfg = dict(hyper.get("actor", {}))
         d_model = int(actor_cfg.get("d_model", 128))
@@ -95,6 +95,7 @@ class TIMARL(BaseAgent):
         )
         self.projector = AnalyticLocalProjector()
         self.codec = CityLearnTypedActionCodec()
+        self.command_builder = TypedCommandBuilder()
 
         trace_cfg = dict(hyper.get("trace", {}))
         job_dir = config.get("runtime", {}).get("job_dir")
@@ -133,7 +134,10 @@ class TIMARL(BaseAgent):
         entity_specs = metadata.get("entity_specs")
         if not isinstance(entity_specs, Mapping):
             raise ValueError("TIMARL attach_environment requires entity_specs")
-        self.compiler.attach_entity_specs(entity_specs)
+        self.compiler.attach_entity_specs(
+            entity_specs,
+            seconds_per_time_step=float(metadata.get("seconds_per_time_step", 1.0)),
+        )
         building_names = metadata.get("building_names") or entity_specs.get("tables", {}).get("building", {}).get("ids", [])
         self._building_names = tuple(str(item) for item in building_names)
         self.codec.attach(
@@ -220,7 +224,11 @@ class TIMARL(BaseAgent):
         raw_bundles = evaluation.bundles
         final_bundles = self.projector.project(self._current_snapshot, raw_bundles)
         self.projector.assert_feasible(self._current_snapshot, final_bundles)
-        commands = self.codec.encode(self._current_snapshot, final_bundles)
+        typed_commands = self.command_builder.build(
+            self._current_snapshot,
+            final_bundles,
+        )
+        commands = self.codec.encode_typed(self._current_snapshot, typed_commands)
         intervention_count = sum(len(bundle.interventions) for bundle in final_bundles)
         intervention_magnitude = sum(
             float(item.get("magnitude", 0.0))
@@ -229,18 +237,21 @@ class TIMARL(BaseAgent):
         )
         total_groups = max(sum(len(bundle.decisions) for bundle in raw_bundles), 1)
         active_durations = [
-            float(item.active_duration_steps)
+            float(item.active_duration_seconds)
             for item in self._current_snapshot.fault_evidence
             if item.fault_mode is not None
         ]
         recovery_pending = [
-            float(item.recovery_pending_steps)
+            float(item.recovery_pending_seconds)
             for item in self._current_snapshot.health
-            if item.recovery_pending_steps > 0
+            if item.recovery_pending_seconds > 0
         ]
         self._latest_diagnostics = {
             **self._latest_diagnostics,
             "TI_MARL/agents": float(len(self._current_snapshot.agent_ids)),
+            "TI_MARL/registered_agents": float(
+                len(self._current_snapshot.registered_agent_ids)
+            ),
             "TI_MARL/groups": float(sum(len(self._current_snapshot.groups_for(agent)) for agent in self._current_snapshot.agent_ids)),
             "TI_MARL/ports": float(
                 sum(len(group.ports) for group in self._current_snapshot.action_groups)
@@ -253,11 +264,19 @@ class TIMARL(BaseAgent):
                 sum(item.get("reason") == "invalid_port_fallback" for bundle in final_bundles for item in bundle.interventions)
             ) / float(total_groups),
             "TI_MARL/parameter_count": float(self._parameter_count),
-            "TI_MARL/binding_errors": 0.0,
-            "TI_MARL/detection_latency_steps": (
+            "TI_MARL/structure_recompilations": float(
+                self.compiler.structure_recompilations
+            ),
+            "TI_MARL/binding_errors": float(
+                sum(
+                    bool(part.validity_reasons)
+                    for part in self._current_snapshot.observation_parts
+                )
+            ),
+            "TI_MARL/detection_latency_seconds": (
                 float(np.mean(active_durations)) if active_durations else 0.0
             ),
-            "TI_MARL/recovery_latency_steps": (
+            "TI_MARL/recovery_latency_seconds": (
                 float(np.max(recovery_pending)) if recovery_pending else 0.0
             ),
         }
@@ -266,6 +285,7 @@ class TIMARL(BaseAgent):
             "raw_bundles": raw_bundles,
             "final_bundles": final_bundles,
             "commands": commands,
+            "typed_commands": typed_commands,
             "old_log_probs": {
                 key: float(value.detach().cpu()) for key, value in evaluation.log_prob_by_agent.items()
             },
@@ -341,6 +361,9 @@ class TIMARL(BaseAgent):
             topology_events=tuple(
                 canonical_value(item) for item in self._transition_info.get("topology_events_applied", []) or []
             ),
+            typed_commands=tuple(
+                canonical_value(item) for item in self._pending["typed_commands"]
+            ),
         )
         self.trace_writer.record(current, following, typed_transition)
         execution = self._transition_info.get("entity_action_execution", {})
@@ -375,7 +398,7 @@ class TIMARL(BaseAgent):
 
     def on_episode_start(self, *, episode: int, training: bool) -> None:
         del episode, training
-        self.compiler.health_deriver.reset()
+        self.compiler.reset_runtime_state()
         self._current_snapshot = None
         self._next_snapshot = None
         self._pending = None
@@ -448,7 +471,8 @@ class TIMARL(BaseAgent):
         root.mkdir(parents=True, exist_ok=True)
         self.trace_writer.close()
         model_path = root / "ti_marl_model.pth"
-        interface_path = root / "typed_interface.resolved.yaml"
+        deployment_path = root / "ti_marl_deployment_bundle.pth"
+        interface_path = root / "typed_interfaces.resolved.yaml"
         with interface_path.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(
                 self.compiler.resolved_typed_interface(),
@@ -467,17 +491,42 @@ class TIMARL(BaseAgent):
             },
             model_path,
         )
+        # Actor-only, technology-neutral handoff. The critic and optimizers are
+        # intentionally absent; adapters provide runtime frames in deployment.
+        torch.save(
+            {
+                "format": "ti_marl_deployment_bundle_v1",
+                "actor": self.actor.state_dict(),
+                "typed_interfaces": self.compiler.resolved_typed_interface(),
+                "compiler": {
+                    "version": self._versions()["algorithms"],
+                    "contract_version": self.compiler.contract_version,
+                    "health_rules": deepcopy(self.compiler.health_rules),
+                },
+                "feasibility": {"kind": "analytic_projection"},
+                "normalisation": {"kind": "per_observation_declared"},
+                "compatibility_signature": asdict(self.compiler.compatibility_signature),
+                "versions": self._versions(),
+            },
+            deployment_path,
+        )
         return {
             "format": "ti_marl_torch",
             "deployable": False,
             "model_path": model_path.name,
-            "typed_interface_path": interface_path.name,
+            "typed_interfaces_path": interface_path.name,
+            "deployment_bundle_path": deployment_path.name,
             "auxiliary_files": [
                 {
                     "path": interface_path.name,
-                    "format": "typed_interface_v1",
+                    "format": "typed_interface_registry_v1",
                     "editable": True,
-                }
+                },
+                {
+                    "path": deployment_path.name,
+                    "format": "ti_marl_deployment_bundle_v1",
+                    "contains_critic": False,
+                },
             ],
             "contract_version": self.compiler.contract_version,
             "compatibility_signature": asdict(self.compiler.compatibility_signature),

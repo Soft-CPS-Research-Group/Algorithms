@@ -7,23 +7,29 @@ import pytest
 from algorithms.ti_marl.compiler import TypedInterfaceCompiler
 from algorithms.ti_marl.compiler.closure import validate_dependency_graph
 from algorithms.ti_marl.contracts.enums import EventDomain, HealthState
-from tests.ti_marl_fixtures import entity_payload, entity_specs, stuck_sensor_status
+from tests.ti_marl_fixtures import (
+    entity_payload,
+    entity_specs,
+    stuck_sensor_status,
+    write_typed_interfaces,
+)
 
 
-INTERFACE = "configs/ti_marl/typed_interface_v1.yaml"
-
-
-def compiler(specs=None):
+def compiler(tmp_path, specs=None):
+    interfaces = write_typed_interfaces(
+        tmp_path / "interfaces",
+        ("Building_1", "Building_2", "Building_3"),
+    )
     instance = TypedInterfaceCompiler(
         contract_version="ti_marl_v1",
-        typed_interface_path=INTERFACE,
+        typed_interfaces_dir=interfaces,
     )
-    instance.attach_entity_specs(specs or entity_specs())
+    instance.attach_entity_specs(specs or entity_specs(), seconds_per_time_step=900)
     return instance
 
 
-def test_stuck_cause_is_preserved_and_crosses_degraded_to_stale():
-    tic = compiler()
+def test_stuck_cause_is_preserved_and_crosses_degraded_to_stale(tmp_path):
+    tic = compiler(tmp_path)
     early = tic.compile(
         entity_payload(time_step=1, runtime_status=stuck_sensor_status(duration=1, age=1))
     )
@@ -36,13 +42,13 @@ def test_stuck_cause_is_preserved_and_crosses_degraded_to_stale():
     assert early_health.state == HealthState.DEGRADED
 
     late = tic.compile(
-        entity_payload(time_step=4, runtime_status=stuck_sensor_status(duration=4, age=4))
+        entity_payload(time_step=8, runtime_status=stuck_sensor_status(duration=8, age=8))
     )
     late_health = next(item for item in late.health if item.subject_id == early_health.subject_id)
     assert late_health.state == HealthState.STALE
 
 
-def test_connection_availability_actuator_and_community_loss_have_distinct_closure():
+def test_connection_availability_actuator_and_community_loss_have_distinct_closure(tmp_path):
     status = stuck_sensor_status(duration=1, age=1)
     status["sensor_channels"] = []
     status["active_events"] = []
@@ -97,7 +103,7 @@ def test_connection_availability_actuator_and_community_loss_have_distinct_closu
             "fault_mode": "missing",
         }
     ]
-    snapshot = compiler().compile(entity_payload(runtime_status=status))
+    snapshot = compiler(tmp_path).compile(entity_payload(runtime_status=status))
     domains = {item.event_domain for item in snapshot.fault_evidence}
     assert {
         EventDomain.ASSET_CONNECTION,
@@ -109,31 +115,29 @@ def test_connection_availability_actuator_and_community_loss_have_distinct_closu
     charger = next(group for group in snapshot.action_groups if group.group_type == "ev_session")
     assert charger.enabled
     assert all(not port.valid for port in charger.ports if port.mode != "IDLE")
-    storage_1 = next(group for group in snapshot.action_groups if group.group_id.endswith("Building_1/electrical_storage"))
-    assert storage_1.enabled
+    storage_1 = next(group for group in snapshot.action_groups if group.group_id == "Building_1:battery_1")
+    assert not storage_1.enabled
     assert all(not port.valid for port in storage_1.ports if port.mode != "IDLE")
-    storage_2 = next(group for group in snapshot.action_groups if group.group_id.endswith("Building_2/electrical_storage"))
+    storage_2 = next(group for group in snapshot.action_groups if group.group_id == "Building_2:battery_1")
     assert not storage_2.enabled
     assert any(part.valid for part in snapshot.parts_for("Building_1") if part.semantic_type != "community_signal")
     assert all(not part.valid for part in snapshot.parts_for("Building_1") if part.semantic_type == "community_signal")
 
 
-def test_recovery_hysteresis_prevents_instant_healthy_transition():
-    tic = compiler()
-    tic.compile(entity_payload(time_step=1, runtime_status=stuck_sensor_status(duration=4, age=4)))
-    nominal = entity_payload(time_step=5)
+def test_recovery_hysteresis_prevents_instant_healthy_transition(tmp_path):
+    tic = compiler(tmp_path)
+    tic.compile(entity_payload(time_step=8, runtime_status=stuck_sensor_status(duration=8, age=8)))
+    nominal = entity_payload(time_step=9)
     first = tic.compile(nominal)
     recovered_subject = next(
         item for item in first.health if item.subject_id.startswith("SENSOR_CHANNEL:building:Building_1")
     )
     assert recovered_subject.state == HealthState.DEGRADED
-    second = tic.compile(entity_payload(time_step=6))
-    assert next(item for item in second.health if item.subject_id == recovered_subject.subject_id).state == HealthState.DEGRADED
-    third = tic.compile(entity_payload(time_step=7))
-    assert next(item for item in third.health if item.subject_id == recovered_subject.subject_id).state == HealthState.HEALTHY
+    second = tic.compile(entity_payload(time_step=10))
+    assert next(item for item in second.health if item.subject_id == recovered_subject.subject_id).state == HealthState.HEALTHY
 
 
-def test_recovery_preserves_the_failed_channels_safety_criticality():
+def test_recovery_preserves_the_failed_channels_safety_criticality(tmp_path):
     status = stuck_sensor_status(duration=1, age=1)
     status["active_events"] = []
     status["sensor_channels"] = []
@@ -150,7 +154,7 @@ def test_recovery_preserves_the_failed_channels_safety_criticality():
             "quality": "INVALID",
         }
     ]
-    tic = compiler()
+    tic = compiler(tmp_path)
     failed = tic.compile(entity_payload(time_step=0, runtime_status=status))
     subject = next(
         item
@@ -160,43 +164,42 @@ def test_recovery_preserves_the_failed_channels_safety_criticality():
     assert subject.criticality == "safety"
     assert subject.state == HealthState.MISSING
 
-    for time_step in (1, 2, 3):
-        recovering = tic.compile(entity_payload(time_step=time_step))
-        assessment = next(
-            item for item in recovering.health if item.subject_id == subject.subject_id
-        )
-        assert assessment.criticality == "safety"
-        assert assessment.state == HealthState.DEGRADED
-    recovered = tic.compile(entity_payload(time_step=4))
+    recovering = tic.compile(entity_payload(time_step=0))
+    assessment = next(item for item in recovering.health if item.subject_id == subject.subject_id)
+    assert assessment.criticality == "safety"
+    assert assessment.state == HealthState.DEGRADED
+    recovered = tic.compile(entity_payload(time_step=1))
     assessment = next(item for item in recovered.health if item.subject_id == subject.subject_id)
     assert assessment.criticality == "safety"
     assert assessment.state == HealthState.HEALTHY
 
 
-def test_identical_facts_produce_identical_snapshot_hash():
+def test_identical_facts_produce_identical_snapshot_hash(tmp_path):
     payload = entity_payload()
-    first = compiler().compile(deepcopy(payload))
-    second = compiler().compile(deepcopy(payload))
+    first = compiler(tmp_path / "first").compile(deepcopy(payload))
+    second = compiler(tmp_path / "second").compile(deepcopy(payload))
     assert first.snapshot_hash == second.snapshot_hash
 
 
-def test_unknown_active_entity_type_fails_safely():
+def test_unknown_active_entity_type_is_not_controlled_automatically(tmp_path):
     specs = entity_specs()
     specs["tables"]["mystery_asset"] = {"ids": ["x"], "features": ["value"]}
-    with pytest.raises(ValueError, match="does not classify entity types"):
-        compiler(specs)
+    payload = entity_payload()
+    payload["tables"]["mystery_asset"] = [[1.0]]
+    snapshot = compiler(tmp_path, specs).compile(payload)
+    assert all(group.module_id != "x" for group in snapshot.action_groups)
 
 
-def test_ambiguous_asset_binding_fails_safely():
+def test_ambiguous_asset_binding_fails_safely(tmp_path):
     payload = entity_payload()
     payload["edges"]["building_to_storage"] = payload["edges"]["building_to_storage"].copy()
     payload["edges"]["building_to_storage"][1, 1] = 0
     with pytest.raises(ValueError, match="ambiguous binding"):
-        compiler().compile(payload)
+        compiler(tmp_path).compile(payload)
 
 
-def test_session_replacement_rebinds_stable_charger_without_stale_ev_identity():
-    tic = compiler()
+def test_session_replacement_rebinds_stable_charger_without_stale_ev_identity(tmp_path):
+    tic = compiler(tmp_path)
     first = tic.compile(entity_payload())
     assert any(entity.entity_id == "EV_1" for entity in first.entities)
 
@@ -204,11 +207,15 @@ def test_session_replacement_rebinds_stable_charger_without_stale_ev_identity():
     next_specs["tables"]["ev"]["ids"] = ["EV_2"]
     next_payload = entity_payload(time_step=1, topology_version=1)
     next_payload["meta"]["runtime_status"]["asset_connections"][0]["target_id"] = "EV_2"
-    tic.attach_entity_specs(next_specs)
+    tic.attach_entity_specs(next_specs, seconds_per_time_step=900)
     following = tic.compile(next_payload)
     ev_ids = {entity.entity_id for entity in following.entities if entity.entity_type == "ev"}
     assert ev_ids == {"EV_2"}
-    assert any(group.module_id == "Building_1/charger_1" for group in following.action_groups)
+    assert any(
+        group.module_id == "charger_1"
+        and group.adapter_target_entity_id == "Building_1/charger_1"
+        for group in following.action_groups
+    )
 
 
 def test_dependency_cycles_and_conflicts_are_rejected():

@@ -27,7 +27,8 @@ document per registered building agent.  It describes stable agent identity,
 role, building type, installed or pre-registered sensor/asset instances,
 channels, typed observations, actuators, actions, local constraints and
 explicit health dependencies.  It contains no Simulator, CityLearn, MQTT,
-Modbus or endpoint-specific names.
+Modbus or endpoint-specific bindings; logical names may coincide with a
+technology when that adapter requires no translation.
 
 An observation is addressed by the stable path
 `agent/sensor/channel/observation`.  Every available field is typed and

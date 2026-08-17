@@ -41,6 +41,43 @@ class AnalyticLocalProjector:
                     self._intervention(decision.group_id, "removed_group", decision.mode, "IDLE", decision.fraction, 0.0)
                 )
                 continue
+            if group.forced_mode is not None:
+                forced_port = next(
+                    (item for item in group.ports if item.mode == group.forced_mode),
+                    None,
+                )
+                forced_fraction = float(group.forced_fraction or 0.0)
+                if forced_port is None or not forced_port.valid:
+                    forced_mode = "IDLE"
+                    forced_fraction = 0.0
+                    forced_index = 0
+                else:
+                    forced_mode = group.forced_mode
+                    forced_index = next(
+                        (
+                            index
+                            for index, item in enumerate(group.ports)
+                            if item.mode == forced_mode
+                        ),
+                        0,
+                    )
+                decisions[group.group_id] = replace(
+                    decision,
+                    mode=forced_mode,
+                    fraction=forced_fraction,
+                    mode_index=forced_index,
+                )
+                interventions.append(
+                    self._intervention(
+                        group.group_id,
+                        group.fallback_reason or "typed_failsafe",
+                        decision.mode,
+                        forced_mode,
+                        decision.fraction,
+                        forced_fraction,
+                    )
+                )
+                continue
             port = next((item for item in group.ports if item.mode == decision.mode), None)
             if not group.enabled or port is None or not port.valid:
                 decisions[group.group_id] = replace(decision, mode="IDLE", fraction=0.0, mode_index=0)
@@ -95,15 +132,23 @@ class AnalyticLocalProjector:
         decisions: Dict[str, ActionDecision],
         interventions: list[Mapping[str, object]],
     ) -> None:
-        parts = {part.source_entity_id: part for part in snapshot.parts_for(agent_id) if part.valid}
         for group_id, decision in tuple(decisions.items()):
             group = groups[group_id]
             if group.group_type != "deferrable":
                 continue
-            part = parts.get(group.module_id)
-            if part is None:
+            module_parts = [
+                part
+                for part in snapshot.parts_for(agent_id)
+                if part.sensor_id == group.module_id
+            ]
+            if not module_parts:
                 continue
-            values = dict(zip(part.feature_names, part.values))
+            values = {
+                feature: value
+                for part in module_parts
+                if part.valid
+                for feature, value in zip(part.feature_names, part.values)
+            }
             must_start = (
                 values.get("pending", 0.0) > 0.5
                 and values.get("can_start", 0.0) > 0.5
@@ -114,6 +159,44 @@ class AnalyticLocalProjector:
                 decisions[group_id] = replace(decision, mode="START", fraction=1.0, mode_index=1)
                 interventions.append(
                     self._intervention(group_id, "deferrable_must_start", decision.mode, "START", decision.fraction, 1.0)
+                )
+                continue
+            schedule_parts = [
+                part
+                for part in module_parts
+                if any(
+                    token in part.observation_id.lower()
+                    for token in ("deadline", "latest_start", "slack")
+                )
+            ]
+            unknown_deadline = bool(schedule_parts) and not any(
+                part.valid for part in schedule_parts
+            )
+            urgent_without_deadline = (
+                values.get("must_run", 0.0) > 0.5
+                and values.get("pending", 0.0) > 0.5
+                and values.get("can_start", 0.0) > 0.5
+                and values.get("running", 0.0) <= 0.5
+                and values.get("last_start_requested", 0.0) <= 0.5
+                and values.get("last_start_applied", 0.0) <= 0.5
+                and unknown_deadline
+            )
+            if urgent_without_deadline and start_port is not None:
+                decisions[group_id] = replace(
+                    decision,
+                    mode="START",
+                    fraction=1.0,
+                    mode_index=1,
+                )
+                interventions.append(
+                    self._intervention(
+                        group_id,
+                        "required_deferrable_unknown_deadline",
+                        decision.mode,
+                        "START",
+                        decision.fraction,
+                        1.0,
+                    )
                 )
 
     def _scale_direction(
@@ -140,7 +223,11 @@ class AnalyticLocalProjector:
         selected = []
         total_power = 0.0
         for group_id, decision in decisions.items():
-            expected = "CHARGE" in decision.mode if direction == "charge" else "DISCHARGE" in decision.mode
+            expected = (
+                decision.mode.startswith("CHARGE_")
+                if direction == "charge"
+                else decision.mode.startswith("DISCHARGE_")
+            )
             if not expected:
                 continue
             group = groups[group_id]
@@ -184,8 +271,12 @@ class AnalyticLocalProjector:
                     continue
                 total = 0.0
                 for decision in bundle.decisions:
-                    if (direction == "charge" and "CHARGE" not in decision.mode) or (
-                        direction == "discharge" and "DISCHARGE" not in decision.mode
+                    if (
+                        direction == "charge"
+                        and not decision.mode.startswith("CHARGE_")
+                    ) or (
+                        direction == "discharge"
+                        and not decision.mode.startswith("DISCHARGE_")
                     ):
                         continue
                     group = groups[decision.group_id]

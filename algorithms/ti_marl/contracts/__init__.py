@@ -8,8 +8,10 @@ from algorithms.ti_marl.contracts.enums import (
     QualityState,
 )
 from algorithms.ti_marl.contracts.interface_definition import (
-    TYPED_INTERFACE_VERSION,
-    TypedInterfaceDefinition,
+    TYPED_AGENT_INTERFACE_VERSION,
+    InterfaceRegistry,
+    RegistryDelta,
+    TypedAgentInterface,
 )
 from algorithms.ti_marl.contracts.models import (
     ActionDecision,
@@ -54,6 +56,8 @@ __all__ = [
     "QualityState",
     "SharedResource",
     "TypedTransition",
-    "TYPED_INTERFACE_VERSION",
-    "TypedInterfaceDefinition",
+    "TYPED_AGENT_INTERFACE_VERSION",
+    "InterfaceRegistry",
+    "RegistryDelta",
+    "TypedAgentInterface",
 ]

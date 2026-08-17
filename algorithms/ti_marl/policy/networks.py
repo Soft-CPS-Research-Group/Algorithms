@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from typing import Dict, Mapping, Tuple
 
 import numpy as np
@@ -57,83 +58,119 @@ class RelationalMessageLayer(nn.Module):
 
 
 class TypedSnapshotEncoder(nn.Module):
-    """Encode typed observation parts into one latent per building."""
+    """Hierarchical observation → channel → sensor → local latent encoder."""
 
     def __init__(self, type_registry: Mapping[str, object], d_model: int, relation_layers: int):
         super().__init__()
-        entity_types = dict(type_registry.get("entity_types", {}))
-        if not entity_types:
-            raise ValueError("TI-MARL type registry must define entity_types")
-        self.feature_width = int(type_registry.get("feature_width", 16))
+        semantic_types = tuple(
+            sorted(str(item) for item in type_registry.get("semantic_types", []))
+        )
+        if not semantic_types:
+            raise ValueError("TI-MARL type registry must define semantic_types")
         self.d_model = int(d_model)
-        input_width = self.feature_width + len(HealthState) + 2
-        self.type_encoders = nn.ModuleDict(
-            {
-                entity_type: nn.Sequential(
-                    nn.Linear(input_width, d_model),
-                    nn.LayerNorm(d_model),
-                    nn.GELU(),
-                    nn.Linear(d_model, d_model),
-                )
-                for entity_type in sorted(entity_types)
-            }
+        input_width = 4 + len(HealthState) + 2 + 1 + 1 + 3
+        self.observation_encoder = nn.Sequential(
+            nn.Linear(input_width, d_model),
+            nn.LayerNorm(d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
         )
-        self.relation_index = {
-            entity_type: index for index, entity_type in enumerate(sorted(entity_types))
-        }
-        self.relation_embedding = nn.Embedding(len(self.relation_index), d_model)
-        self.semantic_types = sorted(
-            {str(config.get("semantic_type", "local_energy")) for config in entity_types.values()}
-        )
+        self.semantic_types = list(semantic_types)
         self.semantic_index = {name: index for index, name in enumerate(self.semantic_types)}
         self.semantic_embedding = nn.Embedding(len(self.semantic_types), d_model)
+        self.channel_encoder = RelationalMessageLayer(d_model)
+        self.sensor_encoder = RelationalMessageLayer(d_model)
         self.layers = nn.ModuleList(
             [RelationalMessageLayer(d_model) for _ in range(int(relation_layers))]
         )
+        self.role_embedding = nn.Embedding(3, d_model)
+        self.agent_type_embedding = nn.Embedding(5, d_model)
         self.pool_query = nn.Parameter(torch.zeros(d_model))
         nn.init.normal_(self.pool_query, std=0.02)
         self.pool_projection = nn.Sequential(nn.Linear(d_model, d_model), nn.Tanh())
 
     def forward(self, snapshot: InterfaceSnapshot, agent_id: str, device: torch.device) -> Tensor:
-        entity_type_by_id = {entity.entity_id: entity.entity_type for entity in snapshot.entities}
-        parts = tuple(part for part in snapshot.parts_for(agent_id) if part.valid)
-        tokens = []
-        for part in parts:
-            entity_type = entity_type_by_id.get(part.source_entity_id)
-            if entity_type not in self.type_encoders:
-                continue
-            features = self._feature_tensor(part, device)
-            encoded = self.type_encoders[entity_type](features)
-            # Every per-agent token is connected through the local building
-            # star; the entity type identifies the declared relation role
-            # (district/building/storage/charger/EV/deferrable/PV).
-            encoded = encoded + self.relation_embedding(
-                torch.tensor(self.relation_index[entity_type], dtype=torch.long, device=device)
+        # Missing/invalid samples remain explicit tokens: health and validity
+        # are policy inputs, while the value itself is zero-filled by the TIC.
+        parts = tuple(
+            part for part in snapshot.parts_for(agent_id) if part.policy_input
+        )
+        observations: Dict[tuple[str, str], list[Tensor]] = {}
+        if parts:
+            feature_batch = torch.stack(
+                [self._feature_tensor(part, device) for part in parts],
+                dim=0,
             )
-            semantic_index = self.semantic_index.get(part.semantic_type, 0)
-            encoded = encoded + self.semantic_embedding(
-                torch.tensor(semantic_index, dtype=torch.long, device=device)
+            semantic_indices = torch.tensor(
+                [self.semantic_index.get(part.semantic_type, 0) for part in parts],
+                dtype=torch.long,
+                device=device,
             )
-            tokens.append(encoded)
-        if not tokens:
+            encoded_batch = self.observation_encoder(feature_batch) + self.semantic_embedding(
+                semantic_indices
+            )
+        else:
+            encoded_batch = torch.empty((0, self.d_model), device=device)
+        for part, encoded in zip(parts, encoded_batch):
+            observations.setdefault((part.sensor_id, part.channel_id), []).append(encoded)
+        if not observations:
             return torch.zeros(self.d_model, dtype=torch.float32, device=device)
-        token_tensor = torch.stack(tokens, dim=0)
+
+        channels_by_sensor: Dict[str, list[Tensor]] = {}
+        for (sensor_id, _channel_id), tokens in sorted(observations.items()):
+            observation_tokens = self.channel_encoder(torch.stack(tokens, dim=0))
+            channels_by_sensor.setdefault(sensor_id, []).append(observation_tokens.mean(dim=0))
+        sensor_tokens = []
+        for _sensor_id, channels in sorted(channels_by_sensor.items()):
+            channel_tokens = self.sensor_encoder(torch.stack(channels, dim=0))
+            sensor_tokens.append(channel_tokens.mean(dim=0))
+        token_tensor = torch.stack(sensor_tokens, dim=0)
         for layer in self.layers:
             token_tensor = layer(token_tensor)
         scores = (token_tensor * self.pool_query).sum(dim=-1) / np.sqrt(float(self.d_model))
         weights = torch.softmax(scores, dim=0)
-        return self.pool_projection((weights.unsqueeze(-1) * token_tensor).sum(dim=0))
+        pooled = (weights.unsqueeze(-1) * token_tensor).sum(dim=0)
+        metadata = {
+            row[0]: (row[1], row[2]) for row in snapshot.agent_metadata
+        }.get(agent_id, ("consumer", "other"))
+        role_index = {"consumer": 0, "producer": 1, "prosumer": 2}.get(metadata[0], 0)
+        type_index = {
+            "residential": 0,
+            "office": 1,
+            "commercial": 2,
+            "industrial": 3,
+            "other": 4,
+        }.get(metadata[1], 4)
+        pooled = pooled + self.role_embedding(
+            torch.tensor(role_index, dtype=torch.long, device=device)
+        ) + self.agent_type_embedding(
+            torch.tensor(type_index, dtype=torch.long, device=device)
+        )
+        return self.pool_projection(pooled)
 
     def _feature_tensor(self, part: ObservationPart, device: torch.device) -> Tensor:
-        values = torch.zeros(self.feature_width, dtype=torch.float32, device=device)
-        count = min(len(part.values), self.feature_width)
-        if count:
-            raw = torch.tensor(part.values[:count], dtype=torch.float32, device=device)
-            values[:count] = torch.sign(raw) * torch.log1p(torch.abs(raw))
+        raw = torch.tensor(part.values or (0.0,), dtype=torch.float32, device=device)
+        transformed = torch.sign(raw) * torch.log1p(torch.abs(raw))
+        values = torch.stack(
+            (transformed[0], transformed.mean(), transformed.min(), transformed.max())
+        )
         health = torch.zeros(len(HealthState), dtype=torch.float32, device=device)
         health[HEALTH_INDEX[part.health]] = 1.0
         flags = torch.tensor([float(part.valid), float(part.estimated)], device=device)
-        return torch.cat((values, health, flags), dim=0)
+        age = torch.tensor(
+            [np.log1p(max(part.age_seconds, 0.0))],
+            dtype=torch.float32,
+            device=device,
+        )
+        unit_hash = int(hashlib.sha256(part.unit.encode("utf-8")).hexdigest()[:8], 16)
+        unit = torch.tensor(
+            [(unit_hash % 1000) / 999.0],
+            dtype=torch.float32,
+            device=device,
+        )
+        criticality = torch.zeros(3, dtype=torch.float32, device=device)
+        criticality[{"advisory": 0, "operational": 1, "safety": 2}.get(part.criticality, 1)] = 1.0
+        return torch.cat((values, health, flags, age, unit, criticality), dim=0)
 
 
 class TypedActor(nn.Module):
@@ -265,7 +302,7 @@ class TypedActor(nn.Module):
             torch.tensor(mode_index, dtype=torch.long, device=context.device)
         )
         categorical_entropy = categorical.entropy()
-        parameterized = "CHARGE" in mode or "DISCHARGE" in mode
+        parameterized = mode.startswith(("CHARGE_", "DISCHARGE_"))
         if mode == "IDLE" or not parameterized:
             fraction_value = 0.0 if mode == "IDLE" else 1.0
             log_prob = categorical_log_prob
