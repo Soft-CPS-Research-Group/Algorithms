@@ -200,6 +200,7 @@ class ActionGroupInstance:
     fallback_mode: str = "IDLE"
     max_charge_power_kw: float = 0.0
     max_discharge_power_kw: float = 0.0
+    activation_power_kw: float = 0.0
     forced_mode: Optional[str] = None
     forced_fraction: Optional[float] = None
     fallback_reason: Optional[str] = None
@@ -242,6 +243,7 @@ class LocalConstraint:
     lower_bound: Optional[float] = None
     upper_bound: Optional[float] = None
     member_group_ids: Tuple[str, ...] = ()
+    member_group_coefficients: Tuple[Tuple[str, float], ...] = ()
     active: bool = True
 
 

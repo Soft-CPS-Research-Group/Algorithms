@@ -64,6 +64,9 @@ class TIMARL(BaseAgent):
             interface_polling=bool(hyper.get("interface_polling", False)),
             simulator_bindings_path=hyper.get("simulator_bindings_path"),
         )
+        self.allow_checkpoint_compiler_migration = bool(
+            hyper.get("allow_checkpoint_compiler_migration", False)
+        )
         actor_cfg = dict(hyper.get("actor", {}))
         d_model = int(actor_cfg.get("d_model", 128))
         relation_layers = int(actor_cfg.get("relation_layers", 2))
@@ -92,8 +95,28 @@ class TIMARL(BaseAgent):
             max_grad_norm=float(hyper.get("max_grad_norm", 0.5)),
             target_kl=(None if hyper.get("target_kl", 0.03) is None else float(hyper.get("target_kl", 0.03))),
             rollout_steps=int(hyper.get("rollout_steps", 256)),
+            normalize_value_targets=bool(hyper.get("normalize_value_targets", True)),
+            value_target_scale_floor=float(
+                hyper.get("value_target_scale_floor", 1.0)
+            ),
+            critic_loss=str(hyper.get("critic_loss", "huber")),
         )
-        self.projector = AnalyticLocalProjector()
+        feasibility_cfg = dict(hyper.get("feasibility", {}))
+        self.projector = AnalyticLocalProjector(
+            enforce_ev_service=bool(feasibility_cfg.get("enforce_ev_service", True)),
+            ev_service_margin_ratio=float(
+                feasibility_cfg.get("ev_service_margin_ratio", 0.05)
+            ),
+            ev_service_strategy=str(
+                feasibility_cfg.get("ev_service_strategy", "average")
+            ),
+            ev_service_tolerance_ratio=float(
+                feasibility_cfg.get("ev_service_tolerance_ratio", 0.05)
+            ),
+            headroom_reserve_kw=float(
+                feasibility_cfg.get("headroom_reserve_kw", 0.0)
+            ),
+        )
         self.codec = CityLearnTypedActionCodec()
         self.command_builder = TypedCommandBuilder()
 
@@ -137,6 +160,9 @@ class TIMARL(BaseAgent):
         self.compiler.attach_entity_specs(
             entity_specs,
             seconds_per_time_step=float(metadata.get("seconds_per_time_step", 1.0)),
+        )
+        self.projector.set_seconds_per_time_step(
+            float(metadata.get("seconds_per_time_step", 1.0))
         )
         building_names = metadata.get("building_names") or entity_specs.get("tables", {}).get("building", {}).get("ids", [])
         self._building_names = tuple(str(item) for item in building_names)
@@ -447,7 +473,16 @@ class TIMARL(BaseAgent):
         for key in ("supported_module_types", "supported_action_group_types"):
             raw_signature[key] = tuple(raw_signature[key])
         checkpoint_signature = CompatibilitySignature(**raw_signature)
-        if not self.compiler.compatibility_signature.accepts(checkpoint_signature):
+        compatible = self.compiler.compatibility_signature.accepts(
+            checkpoint_signature
+        )
+        compiler_migration = (
+            self.allow_checkpoint_compiler_migration
+            and self.compiler.compatibility_signature.accepts_explicit_compiler_migration(
+                checkpoint_signature
+            )
+        )
+        if not compatible and not compiler_migration:
             raise ValueError("TIMARL checkpoint compatibility signature is not accepted")
         self.actor.load_state_dict(payload["actor"])
         self.critic.load_state_dict(payload["critic"])
@@ -503,7 +538,7 @@ class TIMARL(BaseAgent):
                     "contract_version": self.compiler.contract_version,
                     "health_rules": deepcopy(self.compiler.health_rules),
                 },
-                "feasibility": {"kind": "analytic_projection"},
+                "feasibility": dict(self.projector.configuration()),
                 "normalisation": {"kind": "per_observation_declared"},
                 "compatibility_signature": asdict(self.compiler.compatibility_signature),
                 "versions": self._versions(),

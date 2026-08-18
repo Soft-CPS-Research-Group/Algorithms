@@ -634,6 +634,102 @@ def test_resolve_citylearn_schema_input_applies_community_market_overlay(tmp_pat
     assert schema_input["community_market"]["intra_community_sell_ratio"] == 0.7
 
 
+def test_resolve_citylearn_schema_input_applies_external_service_contract_and_subset(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    schema_path = dataset_dir / "schema.json"
+    original = {
+        "root_directory": "stale/path",
+        "buildings": {
+            "Building_1": {"include": True},
+            "Building_2": {"include": True},
+            "Building_15": {
+                "include": True,
+                "electrical_service": {
+                    "mode": "three_phase",
+                    "limits": {"total": {"import_kw": 12.0}},
+                },
+            },
+        },
+    }
+    schema_path.write_text(json.dumps(original), encoding="utf-8")
+    service = {
+        "mode": "three_phase",
+        "default_split": "balanced",
+        "limits": {
+            "total": {"import_kw": 15.0, "export_kw": 15.0},
+            "per_phase": {
+                phase: {"import_kw": 5.0, "export_kw": 5.0}
+                for phase in ("L1", "L2", "L3")
+            },
+        },
+    }
+    overlay_path = tmp_path / "service-overrides.yaml"
+    overlay_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": "electrical_service_overrides_v1",
+                "buildings": {"Building_1": service, "Building_2": service},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    schema_input = runner._resolve_citylearn_schema_input(
+        str(schema_path),
+        {
+            "building_ids": ["Building_1", "Building_2", "Building_15"],
+            "electrical_service_overrides_path": str(overlay_path),
+        },
+    )
+
+    assert list(schema_input["buildings"]) == ["Building_1", "Building_2", "Building_15"]
+    assert schema_input["buildings"]["Building_1"]["electrical_service"] == service
+    assert schema_input["buildings"]["Building_2"]["electrical_service"] == service
+    assert schema_input["buildings"]["Building_15"]["electrical_service"] == original["buildings"]["Building_15"]["electrical_service"]
+    assert json.loads(schema_path.read_text(encoding="utf-8")) == original
+
+
+def test_resolve_citylearn_schema_input_rejects_service_override_of_dataset_fact(tmp_path):
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "buildings": {
+                    "Building_15": {
+                        "electrical_service": {
+                            "mode": "three_phase",
+                            "limits": {"total": {"import_kw": 12.0}},
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    overlay_path = tmp_path / "service-overrides.yaml"
+    overlay_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": "electrical_service_overrides_v1",
+                "buildings": {
+                    "Building_15": {
+                        "mode": "three_phase",
+                        "limits": {"total": {"import_kw": 99.0}},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="refuses to replace dataset limits"):
+        runner._resolve_citylearn_schema_input(
+            str(schema_path),
+            {"electrical_service_overrides_path": str(overlay_path)},
+        )
+
+
 def test_run_experiment_refreshes_topology_after_dynamic_changes(monkeypatch, tmp_path):
     config = _build_enabled_config(artifact_profile="minimal")
     config["tracking"]["mlflow_enabled"] = False

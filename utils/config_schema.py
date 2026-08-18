@@ -349,6 +349,8 @@ class CommunityMarketConfig(BaseModel):
 class SimulatorConfig(BaseModel):
     dataset_name: str
     dataset_path: str
+    building_ids: Optional[List[str]] = None
+    electrical_service_overrides_path: Optional[str] = None
     central_agent: bool = False
     interface: Literal["flat", "entity"] = "flat"
     topology_mode: Literal["static", "dynamic"] = "static"
@@ -383,6 +385,18 @@ class SimulatorConfig(BaseModel):
             if end < start:
                 raise ValueError("simulator.episode_time_steps range end must be >= start")
         return value
+
+    @field_validator("building_ids")
+    @classmethod
+    def validate_building_ids(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return value
+        cleaned = [str(item).strip() for item in value]
+        if not cleaned or any(not item for item in cleaned):
+            raise ValueError("simulator.building_ids must contain non-empty IDs")
+        if len(cleaned) != len(set(cleaned)):
+            raise ValueError("simulator.building_ids must contain unique IDs")
+        return cleaned
 
     @model_validator(mode="after")
     def validate_time_window(self) -> "SimulatorConfig":
@@ -1177,6 +1191,15 @@ class TIMARLCriticConfig(BaseModel):
 
 class TIMARLFeasibilityConfig(BaseModel):
     kind: Literal["analytic_projection"] = "analytic_projection"
+    enforce_ev_service: bool = True
+    ev_service_margin_ratio: float = Field(default=0.05, ge=0.0, le=0.5)
+    ev_service_strategy: Literal[
+        "average",
+        "minimum_average",
+        "just_in_time",
+    ] = "average"
+    ev_service_tolerance_ratio: float = Field(default=0.05, ge=0.0, le=0.2)
+    headroom_reserve_kw: float = Field(default=0.0, ge=0.0)
 
 
 class TIMARLTraceConfig(BaseModel):
@@ -1193,6 +1216,7 @@ class TIMARLHyperparameters(BaseModel):
     interface_polling: bool = False
     simulator_bindings_path: Optional[str] = Field(default=None, min_length=1)
     require_cuda: bool = False
+    allow_checkpoint_compiler_migration: bool = False
     backbone: TIMARLBackboneConfig = TIMARLBackboneConfig()
     actor: TIMARLActorConfig = TIMARLActorConfig()
     critic: TIMARLCriticConfig = TIMARLCriticConfig()
@@ -1207,6 +1231,9 @@ class TIMARLHyperparameters(BaseModel):
     max_grad_norm: float = Field(default=0.5, gt=0)
     target_kl: Optional[float] = Field(default=0.03, gt=0)
     rollout_steps: int = Field(default=256, ge=1)
+    normalize_value_targets: bool = True
+    value_target_scale_floor: float = Field(default=1.0, gt=0)
+    critic_loss: Literal["mse", "huber"] = "huber"
     trace: TIMARLTraceConfig = TIMARLTraceConfig()
 
 class TIMARLStageConfig(BaseModel):

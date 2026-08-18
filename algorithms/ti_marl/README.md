@@ -22,6 +22,33 @@ The typed interface compiler (TIC) owns control meaning:
 - dynamic bound contraction and local degraded modes;
 - local feasibility projection and fallback.
 
+The TIC is deliberately **not** a neural network and contains no learned
+weights.  It deterministically converts the registered typed interfaces and
+runtime facts into an immutable `InterfaceSnapshot`.  The learned boundary
+starts only after that snapshot:
+
+```text
+typed_agent_interface_v1 + TypedRuntimeFrame
+                    ↓
+       deterministic TIC compilation
+  (health, validity, bounds and constraints)
+                    ↓
+       neural hierarchical encoder
+ (observation → channel → sensor → local latent)
+                    ↓
+        neural grouped action actor
+       (categorical mode + Beta fraction)
+                    ↓
+     deterministic local feasibility
+                    ↓
+          adapter action command
+```
+
+The actor and encoder are trained jointly and share parameters across
+compatible agents and asset instances.  The `CentralSetCritic` is a separate
+neural component used only during training; neither it nor privileged training
+context belongs to the deployment bundle.
+
 `fault_mode` is retained as evidence. It is never treated as a Simulator
 health label and there is deliberately no universal `fault_mode → HealthState`
 mapping.
@@ -89,6 +116,14 @@ constraints from the selected dataset when they are declared. It never fills
 unknown site or phase limits with invented defaults. The resolved registry
 expands the compact profile-based YAML for audit.
 
+For a deliberately synthetic development scenario, `simulator.building_ids`
+may select a dataset subset and `simulator.electrical_service_overrides_path`
+may supply an external `electrical_service_overrides_v1` contract.  The runner
+applies that contract only to an in-memory schema copy, refuses to replace a
+different electrical-service fact already present in the dataset, and never
+modifies `schema.json`.  Such overlays and the interfaces generated from them
+are experimental inputs and remain under ignored local run paths.
+
 Experiment configurations are intentionally not stored here. Campaign YAML,
 checkpoints, traces and scorecards remain under ignored local experiment/run
 paths.
@@ -101,10 +136,19 @@ applicable, a Beta-distributed fraction in `[0, 1]`. The fraction is relative
 to the currently compiled port; its dynamic bound is applied exactly once by
 the CityLearn codec.
 
-Before encoding, the analytic projector enforces compiled validity,
-deferrable must-start and joint local import/export headroom. It performs no
-community optimisation. Raw and final bundles plus interventions remain in
-the typed trace.
+Before action encoding, the analytic projector enforces compiled validity,
+causal EV service, deferrable must-start and joint local import/export
+headroom.  Total and per-phase constraints are kept separate and projected
+using each action group's declared phase incidence.  A deferrable `START` is
+treated as a binary first-step demand rather than a fractionally scalable
+action.  Optional headroom reserve absorbs explicitly configured uncertainty;
+it is zero by default.  The projector performs no community optimisation. Raw
+and final bundles plus interventions remain in the typed trace.
+
+TI-MAPPO supports normalized value targets and a Huber critic loss so large
+service penalties remain visible without numerically dominating every critic
+update.  These options stabilize learning; they do not change reward or
+feasibility semantics.
 
 Initial fail-safe closure also isolates invalid site meters and actuator
 channels, blocks charge/EV-V2G/deferrable start during a grid outage, preserves
@@ -129,6 +173,11 @@ lost.
 normalisers/compiler state, resolved configuration, versions and compatibility
 hashes. A checkpoint may be restored into another composition when its
 composition-independent compatibility signature matches.
+
+A compiler-version change is rejected by default.  A diagnostic or migration
+run must opt in explicitly with `allow_checkpoint_compiler_migration: true`,
+and all contract, schema, type-registry and health-rule hashes must still
+match.  The option is not an implicit compatibility bypass.
 
 Traces use buffered gzip JSONL chunks and content-addressed snapshot
 deduplication. Every transition references complete current/next snapshots

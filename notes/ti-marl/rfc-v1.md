@@ -88,6 +88,14 @@ freshness, health and bounds are updated incrementally from each
 `TypedRuntimeFrame`. Thresholds use physical duration rather than timestep
 counts.
 
+The TIC is not a latent model and has no learned parameters. Its output is the
+typed, causal snapshot consumed by the learned policy. The neural boundary is
+therefore explicit: the hierarchical encoder learns representations from
+snapshot observations, health and metadata; the grouped actor learns action
+mode and continuous-fraction distributions; and the centralized set critic is
+used only to learn values during training. Safety closure and final local
+feasibility remain deterministic on both training and deployment paths.
+
 The observation encoder is hierarchical: typed observations are aggregated
 into channel representations, then sensor/asset representations, before local
 asset/group interaction and pooling into one local latent. An EV session is a
@@ -116,7 +124,12 @@ stable agent ID. It is absent from decentralised execution.
 
 Local feasibility converts the raw bundle into a final locally feasible
 bundle using deterministic typed bounds and the existing analytic projection
-semantics. It records every adjustment and does no community optimisation.
+semantics. Total-service and per-phase constraints are represented separately,
+including action-group phase incidence and replacement of the previously
+applied controllable power. Causal EV-service reservations precede
+discretionary charging, and binary deferrable starts are admitted only when
+their complete first-step demand fits. It records every adjustment and does no
+community optimisation.
 
 ## Health and fail-safe policy
 
@@ -184,3 +197,9 @@ reconstructable without per-object/per-step filesystem writes.
 Campaign configs, checkpoints and numerical results remain local until
 explicitly approved for publication. Design documents, generic templates and
 tests are versioned.
+
+Development-only electrical-service scenarios follow the same provenance
+boundary. An external versioned overlay may populate missing site/phase limits
+on an in-memory schema copy, but it cannot replace conflicting dataset facts
+and is never written back into the dataset. Canonical results must state
+whether limits came from the dataset or from such an explicit local overlay.

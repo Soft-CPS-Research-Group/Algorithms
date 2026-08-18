@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 import gzip
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 from gymnasium import spaces
 import numpy as np
@@ -14,9 +16,13 @@ from algorithms.ti_marl.agent import TIMARL
 from algorithms.ti_marl.compiler import TypedInterfaceCompiler
 from algorithms.ti_marl.contracts.models import (
     ActionDecision,
+    LocalConstraint,
     LocalActionBundle,
+    ObservationPart,
     TypedTransition,
 )
+from algorithms.ti_marl.contracts.enums import HealthState
+from algorithms.ti_marl.learning.mappo import TIMAPPO
 from algorithms.ti_marl.learning.rollout import RolloutStep, TypedRolloutBuffer
 from algorithms.ti_marl.policy.networks import CentralSetCritic, TypedActor, parameter_count
 from algorithms.ti_marl.runtime import (
@@ -174,6 +180,525 @@ def test_local_projection_jointly_enforces_headroom_and_deferrable_deadline(tmp_
     assert charge_power == pytest.approx(4.0)
     assert decisions[groups["deferrable"].group_id].mode == "START"
     assert any(item["reason"] == "deferrable_must_start" for item in final.interventions)
+
+
+def test_compiler_keeps_total_and_phase_headroom_separate(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
+    parts = []
+    for observation_id, value in (
+        ("charging_building_headroom_kw", 8.0),
+        ("charging_phase_L1_headroom_kw", 3.0),
+        ("charging_phase_L2_headroom_kw", 5.0),
+        ("charging_phase_L3_headroom_kw", 4.0),
+    ):
+        parts.append(
+            ObservationPart(
+                part_id=f"Building_1:self.grid.{observation_id}",
+                owner_agent_id="Building_1",
+                source_entity_id="Building_1",
+                semantic_type="grid_headroom",
+                feature_names=(observation_id,),
+                values=(value,),
+                health=HealthState.HEALTHY,
+                sensor_id="self",
+                channel_id="grid",
+                observation_id=observation_id,
+                unit="kW",
+                scope="local",
+                use="runtime_bound",
+                policy_input=True,
+                criticality="safety",
+            )
+        )
+    parts.append(
+        ObservationPart(
+            part_id=f"Building_1:{groups['ev_session'].module_id}.execution_feedback.last_applied_power_kw",
+            owner_agent_id="Building_1",
+            source_entity_id=groups["ev_session"].module_id,
+            semantic_type="execution_feedback",
+            feature_names=("last_applied_power_kw",),
+            values=(4.0,),
+            health=HealthState.HEALTHY,
+            sensor_id=groups["ev_session"].module_id,
+            channel_id="execution_feedback",
+            observation_id="last_applied_power_kw",
+            unit="kW",
+            scope="local",
+            use="runtime_bound",
+            policy_input=True,
+            criticality="safety",
+        )
+    )
+    for module_id, active_phases in (
+        (groups["ev_session"].module_id, ("L1",)),
+        (groups["stationary_storage"].module_id, ("L1", "L2", "L3")),
+    ):
+        for phase in ("L1", "L2", "L3"):
+            observation_id = f"phase_connection_{phase}"
+            parts.append(
+                ObservationPart(
+                    part_id=f"Building_1:{module_id}.connection.{observation_id}",
+                    owner_agent_id="Building_1",
+                    source_entity_id=module_id,
+                    semantic_type="phase_connection",
+                    feature_names=(observation_id,),
+                    values=(1.0 if phase in active_phases else 0.0,),
+                    health=HealthState.HEALTHY,
+                    sensor_id=module_id,
+                    channel_id="connection",
+                    observation_id=observation_id,
+                    unit="scalar",
+                    scope="local",
+                    use="runtime_bound",
+                    policy_input=True,
+                    criticality="safety",
+                )
+            )
+
+    assert compiler._headroom(parts, "Building_1", export=False) == pytest.approx(8.0)
+    assert compiler._phase_headrooms(
+        parts,
+        "Building_1",
+        export=False,
+    ) == {"L1": 3.0, "L2": 5.0, "L3": 4.0}
+    weights = compiler._group_phase_weights(
+        parts,
+        "Building_1",
+        snapshot.action_groups,
+    )
+    assert weights[groups["ev_session"].group_id] == {"L1": 1.0}
+    assert weights[groups["stationary_storage"].group_id] == {
+        "L1": pytest.approx(1.0 / 3.0),
+        "L2": pytest.approx(1.0 / 3.0),
+        "L3": pytest.approx(1.0 / 3.0),
+    }
+    assert compiler._current_direction_power(
+        parts,
+        "Building_1",
+        snapshot.action_groups,
+        export=False,
+    ) == {groups["ev_session"].group_id: 4.0}
+    constraints = compiler._constraints(
+        SimpleNamespace(active_agent_ids=("Building_1",)),
+        {},
+        snapshot.action_groups,
+        parts,
+    )
+    by_id = {item.constraint_id: item for item in constraints}
+    assert by_id["Building_1:charging_headroom_kw"].upper_bound == pytest.approx(12.0)
+    assert by_id[
+        "Building_1:charging_phase_L1_headroom_kw"
+    ].upper_bound == pytest.approx(7.0)
+    assert by_id[
+        "Building_1:charging_phase_L2_headroom_kw"
+    ].upper_bound == pytest.approx(5.0)
+    assert by_id[
+        "Building_1:charging_phase_L3_headroom_kw"
+    ].upper_bound == pytest.approx(4.0)
+
+
+def test_phase_projection_does_not_apply_unrelated_weakest_phase_globally(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
+    battery_id = groups["stationary_storage"].group_id
+    ev_id = groups["ev_session"].group_id
+    constraints = (
+        LocalConstraint(
+            constraint_id="Building_1:charging_headroom_kw",
+            owner_agent_id="Building_1",
+            constraint_type="charging_headroom_kw",
+            upper_bound=12.0,
+            member_group_ids=(battery_id, ev_id),
+        ),
+        LocalConstraint(
+            constraint_id="Building_1:charging_phase_L1_headroom_kw",
+            owner_agent_id="Building_1",
+            constraint_type="charging_phase_headroom_kw",
+            upper_bound=7.0,
+            member_group_ids=(battery_id, ev_id),
+            member_group_coefficients=((battery_id, 1.0 / 3.0), (ev_id, 1.0)),
+        ),
+        LocalConstraint(
+            constraint_id="Building_1:charging_phase_L2_headroom_kw",
+            owner_agent_id="Building_1",
+            constraint_type="charging_phase_headroom_kw",
+            upper_bound=5.0,
+            member_group_ids=(battery_id,),
+            member_group_coefficients=((battery_id, 1.0 / 3.0),),
+        ),
+        LocalConstraint(
+            constraint_id="Building_1:charging_phase_L3_headroom_kw",
+            owner_agent_id="Building_1",
+            constraint_type="charging_phase_headroom_kw",
+            upper_bound=4.0,
+            member_group_ids=(battery_id,),
+            member_group_coefficients=((battery_id, 1.0 / 3.0),),
+        ),
+    )
+    snapshot = replace(snapshot, constraints=constraints)
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(battery_id, "CHARGE_STATIONARY", 1.0, 1),
+            ActionDecision(ev_id, "CHARGE_EV", 1.0, 1),
+        ),
+    )
+    projector = AnalyticLocalProjector(enforce_ev_service=False)
+    final = projector.project(snapshot, (raw,))[0]
+    projector.assert_feasible(snapshot, (final,))
+    decisions = {item.group_id: item for item in final.decisions}
+    total_power = 0.0
+    for group_id in (battery_id, ev_id):
+        group = next(item for item in snapshot.action_groups if item.group_id == group_id)
+        decision = decisions[group_id]
+        port = next(item for item in group.ports if item.mode == decision.mode)
+        total_power += group.max_charge_power_kw * decision.fraction * port.upper_bound
+    assert total_power > 4.0
+    assert total_power <= 12.0 + 1.0e-6
+
+
+def _snapshot_with_ev_service_requirement(
+    snapshot,
+    ev_group,
+    *,
+    required_average_power_kw: float,
+    hours_until_departure: float,
+    efficiency: float,
+    headroom_kw: float,
+):
+    parts = list(snapshot.observation_parts)
+    for observation_id, value, unit in (
+        ("hours_until_departure", hours_until_departure, "h"),
+        ("required_average_power_kw", required_average_power_kw, "kW"),
+        ("charge_efficiency_at_max_ratio", efficiency, "fraction"),
+    ):
+        parts.append(
+            ObservationPart(
+                part_id=f"Building_1:{ev_group.module_id}.service.{observation_id}",
+                owner_agent_id="Building_1",
+                source_entity_id=ev_group.adapter_target_entity_id or ev_group.module_id,
+                semantic_type="ev_service",
+                feature_names=(observation_id,),
+                values=(float(value),),
+                health=HealthState.HEALTHY,
+                sensor_id=ev_group.module_id,
+                channel_id="service",
+                observation_id=observation_id,
+                unit=unit,
+                scope="local",
+                use="safety_dependency",
+                policy_input=True,
+                criticality="service",
+            )
+        )
+    return replace(
+        snapshot,
+        observation_parts=tuple(parts),
+        constraints=tuple(
+            replace(constraint, upper_bound=headroom_kw)
+            if constraint.owner_agent_id == "Building_1"
+            and constraint.constraint_type == "charging_headroom_kw"
+            else constraint
+            for constraint in snapshot.constraints
+        ),
+    )
+
+
+def test_ev_service_floor_precedes_discretionary_charge(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
+    snapshot = _snapshot_with_ev_service_requirement(
+        snapshot,
+        groups["ev_session"],
+        required_average_power_kw=2.0,
+        hours_until_departure=2.0,
+        efficiency=0.8,
+        headroom_kw=3.0,
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(
+                groups["stationary_storage"].group_id,
+                "CHARGE_STATIONARY",
+                1.0,
+                1,
+            ),
+            ActionDecision(groups["ev_session"].group_id, "IDLE", 0.0, 0),
+            ActionDecision(groups["deferrable"].group_id, "IDLE", 0.0, 0),
+        ),
+    )
+    projector = AnalyticLocalProjector(ev_service_margin_ratio=0.0)
+    final = projector.project(snapshot, (raw,))[0]
+    projector.assert_feasible(snapshot, (final,))
+    decisions = {item.group_id: item for item in final.decisions}
+
+    def power(group_type):
+        group = groups[group_type]
+        decision = decisions[group.group_id]
+        port = next(item for item in group.ports if item.mode == decision.mode)
+        return group.max_charge_power_kw * decision.fraction * port.upper_bound
+
+    assert decisions[groups["ev_session"].group_id].mode == "CHARGE_EV"
+    assert power("ev_session") == pytest.approx(2.5)
+    assert power("stationary_storage") == pytest.approx(0.5)
+    assert any(
+        item["reason"] == "ev_service_minimum_charge"
+        for item in final.interventions
+    )
+
+
+def test_ev_service_floor_records_insufficient_local_headroom(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
+    snapshot = _snapshot_with_ev_service_requirement(
+        snapshot,
+        groups["ev_session"],
+        required_average_power_kw=2.0,
+        hours_until_departure=1.0,
+        efficiency=0.8,
+        headroom_kw=1.0,
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(
+                groups["stationary_storage"].group_id,
+                "CHARGE_STATIONARY",
+                1.0,
+                1,
+            ),
+            ActionDecision(groups["ev_session"].group_id, "IDLE", 0.0, 0),
+            ActionDecision(groups["deferrable"].group_id, "IDLE", 0.0, 0),
+        ),
+    )
+    projector = AnalyticLocalProjector(ev_service_margin_ratio=0.0)
+    final = projector.project(snapshot, (raw,))[0]
+    projector.assert_feasible(snapshot, (final,))
+    decisions = {item.group_id: item for item in final.decisions}
+    ev = decisions[groups["ev_session"].group_id]
+    ev_port = next(item for item in groups["ev_session"].ports if item.mode == ev.mode)
+    ev_power = (
+        groups["ev_session"].max_charge_power_kw
+        * ev.fraction
+        * ev_port.upper_bound
+    )
+    assert ev_power == pytest.approx(1.0)
+    assert decisions[groups["stationary_storage"].group_id].fraction == pytest.approx(0.0)
+    assert any(
+        item["reason"] == "ev_service_headroom_limited"
+        for item in final.interventions
+    )
+
+
+def test_projector_can_reserve_headroom_for_next_step_base_load(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
+    snapshot = _snapshot_with_ev_service_requirement(
+        snapshot,
+        groups["ev_session"],
+        required_average_power_kw=0.0,
+        hours_until_departure=2.0,
+        efficiency=1.0,
+        headroom_kw=3.0,
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(
+                groups["stationary_storage"].group_id,
+                "CHARGE_STATIONARY",
+                1.0,
+                1,
+            ),
+            ActionDecision(groups["ev_session"].group_id, "IDLE", 0.0, 0),
+            ActionDecision(groups["deferrable"].group_id, "IDLE", 0.0, 0),
+        ),
+    )
+    projector = AnalyticLocalProjector(
+        enforce_ev_service=False,
+        headroom_reserve_kw=0.25,
+    )
+    final = projector.project(snapshot, (raw,))[0]
+    projector.assert_feasible(snapshot, (final,))
+    battery = next(
+        item
+        for item in final.decisions
+        if item.group_id == groups["stationary_storage"].group_id
+    )
+    port = next(
+        item
+        for item in groups["stationary_storage"].ports
+        if item.mode == battery.mode
+    )
+    power_kw = (
+        groups["stationary_storage"].max_charge_power_kw
+        * battery.fraction
+        * port.upper_bound
+    )
+    assert power_kw == pytest.approx(2.75)
+    assert projector.configuration()["headroom_reserve_kw"] == pytest.approx(0.25)
+
+
+def test_projector_defers_binary_deferrable_start_when_headroom_is_insufficient(
+    tmp_path,
+):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
+    deferrable = replace(groups["deferrable"], activation_power_kw=4.0)
+    snapshot = replace(
+        snapshot,
+        action_groups=tuple(
+            deferrable if group.group_id == deferrable.group_id else group
+            for group in snapshot.action_groups
+        ),
+        constraints=tuple(
+            replace(
+                constraint,
+                upper_bound=3.0,
+                member_group_ids=(deferrable.group_id,),
+            )
+            if constraint.owner_agent_id == "Building_1"
+            and constraint.constraint_type == "charging_headroom_kw"
+            else constraint
+            for constraint in snapshot.constraints
+        ),
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(
+                groups["stationary_storage"].group_id,
+                "IDLE",
+                0.0,
+                0,
+            ),
+            ActionDecision(groups["ev_session"].group_id, "IDLE", 0.0, 0),
+            ActionDecision(deferrable.group_id, "START", 1.0, 1),
+        ),
+    )
+    projector = AnalyticLocalProjector(enforce_ev_service=False)
+    final = projector.project(snapshot, (raw,))[0]
+    projector.assert_feasible(snapshot, (final,))
+    start = next(
+        item for item in final.decisions if item.group_id == deferrable.group_id
+    )
+    assert start.mode == "IDLE"
+    assert start.fraction == pytest.approx(0.0)
+    assert any(
+        item["reason"] == "deferrable_headroom_limited"
+        for item in final.interventions
+    )
+
+
+def test_just_in_time_ev_service_uses_laxity_before_forcing_charge(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
+    ev_group = groups["ev_session"]
+    snapshot = _snapshot_with_ev_service_requirement(
+        snapshot,
+        ev_group,
+        required_average_power_kw=2.0,
+        hours_until_departure=4.0,
+        efficiency=1.0,
+        headroom_kw=20.0,
+    )
+    state_parts = []
+    for observation_id, value, unit in (
+        ("connected_ev_soc", 0.5, "fraction"),
+        ("connected_ev_required_soc_departure", 0.8, "fraction"),
+        ("connected_ev_battery_capacity_kwh", 60.0, "kWh"),
+    ):
+        state_parts.append(
+            ObservationPart(
+                part_id=f"Building_1:{ev_group.module_id}.ev_state.{observation_id}",
+                owner_agent_id="Building_1",
+                source_entity_id=ev_group.adapter_target_entity_id or ev_group.module_id,
+                semantic_type="ev_service",
+                feature_names=(observation_id,),
+                values=(value,),
+                health=HealthState.HEALTHY,
+                sensor_id=ev_group.module_id,
+                channel_id="ev_state",
+                observation_id=observation_id,
+                unit=unit,
+                scope="local",
+                use="safety_dependency",
+                policy_input=True,
+                criticality="service",
+            )
+        )
+    snapshot = replace(
+        snapshot,
+        observation_parts=snapshot.observation_parts + tuple(state_parts),
+    )
+    idle = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(ActionDecision(ev_group.group_id, "IDLE", 0.0, 0),),
+    )
+    projector = AnalyticLocalProjector(
+        ev_service_strategy="just_in_time",
+        ev_service_margin_ratio=0.0,
+        ev_service_tolerance_ratio=0.05,
+    )
+    projector.set_seconds_per_time_step(900.0)
+    with_slack = projector.project(snapshot, (idle,))[0]
+    assert with_slack.decisions[0].mode == "IDLE"
+
+    minimum_average = AnalyticLocalProjector(
+        ev_service_strategy="minimum_average",
+        ev_service_margin_ratio=0.0,
+        ev_service_tolerance_ratio=0.05,
+    ).project(snapshot, (idle,))[0]
+    minimum_decision = minimum_average.decisions[0]
+    minimum_port = next(
+        item for item in ev_group.ports if item.mode == minimum_decision.mode
+    )
+    minimum_power = (
+        ev_group.max_charge_power_kw
+        * minimum_decision.fraction
+        * minimum_port.upper_bound
+    )
+    assert minimum_power == pytest.approx(3.75)
+
+    urgent_parts = tuple(
+        replace(part, values=(0.5,))
+        if part.observation_id == "hours_until_departure"
+        else part
+        for part in snapshot.observation_parts
+    )
+    urgent = projector.project(
+        replace(snapshot, observation_parts=urgent_parts),
+        (idle,),
+    )[0]
+    assert urgent.decisions[0].mode == "CHARGE_EV"
+    assert urgent.decisions[0].fraction == pytest.approx(1.0)
+    assert any(
+        item["reason"] == "ev_service_capacity_limited"
+        for item in urgent.interventions
+    )
+
+
+def test_mappo_value_loss_normalizes_large_targets_and_keeps_raw_diagnostic():
+    learner = TIMAPPO(
+        torch.nn.Linear(1, 1),
+        torch.nn.Linear(1, 1),
+        normalize_value_targets=True,
+        value_target_scale_floor=1.0,
+        critic_loss="huber",
+    )
+    predictions = torch.zeros(3, requires_grad=True)
+    targets = torch.tensor([-1000.0, 0.0, 1000.0])
+
+    loss, mean, scale, raw_mse = learner._value_loss(predictions, targets)
+
+    assert mean == pytest.approx(0.0)
+    assert scale == pytest.approx(float(targets.std(unbiased=False)))
+    assert loss < 1.0
+    assert raw_mse == pytest.approx(2_000_000.0 / 3.0)
+    loss.backward()
+    assert torch.isfinite(predictions.grad).all()
 
 
 def test_required_deferrable_with_unknown_deadline_starts_once_when_safe(tmp_path):
@@ -477,6 +1002,29 @@ def test_checkpoint_round_trip_accepts_a_different_compatible_composition(tmp_pa
     )
     actions = restored.predict([], deterministic=True)
     assert len(actions) == 1
+
+
+def test_checkpoint_compiler_migration_requires_explicit_opt_in(tmp_path):
+    source = TIMARL(agent_config(tmp_path / "source"))
+    attach_agent(source, ("Building_1",))
+    checkpoint = Path(source.save_checkpoint(str(tmp_path / "checkpoint"), step=3))
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    payload["compatibility_signature"]["compiler_hash"] = "older-compiler"
+    torch.save(payload, checkpoint)
+
+    rejected = TIMARL(agent_config(tmp_path / "rejected"))
+    attach_agent(rejected, ("Building_1",))
+    with pytest.raises(ValueError, match="compatibility signature"):
+        rejected.load_checkpoint(checkpoint)
+
+    migration_config = agent_config(tmp_path / "migration")
+    migration_config["algorithm"]["hyperparameters"][
+        "allow_checkpoint_compiler_migration"
+    ] = True
+    migrated = TIMARL(migration_config)
+    attach_agent(migrated, ("Building_1",))
+    migrated.load_checkpoint(checkpoint)
+    assert migrated.allow_checkpoint_compiler_migration is True
 
 
 def test_export_includes_resolved_editable_interface_without_extra_model_artifact(

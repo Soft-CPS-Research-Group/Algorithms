@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
+import re
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -58,7 +59,7 @@ from algorithms.ti_marl.runtime.contracts import (
 )
 
 
-COMPILER_VERSION = "tic_v2"
+COMPILER_VERSION = "tic_v4"
 
 
 class TypedInterfaceCompiler:
@@ -668,6 +669,17 @@ class TypedInterfaceCompiler:
                 ),
                 default=0.0,
             )
+            activation_power = 0.0
+            if actuator.group_type == "deferrable":
+                for name in (
+                    "start_power_kw",
+                    "cycle_peak_power_kw",
+                    "cycle_average_power_kw",
+                ):
+                    value = values.get(name)
+                    if value is not None and np.isfinite(value) and value > 0.0:
+                        activation_power = float(value)
+                        break
             groups.append(
                 ActionGroupInstance(
                     group_id=f"{agent_id}:{actuator.actuator_id}",
@@ -677,6 +689,7 @@ class TypedInterfaceCompiler:
                     ports=tuple(ports),
                     max_charge_power_kw=max_charge,
                     max_discharge_power_kw=max_discharge,
+                    activation_power_kw=activation_power,
                     adapter_target_entity_id=entity.entity_id,
                 )
             )
@@ -1109,6 +1122,19 @@ class TypedInterfaceCompiler:
         for agent_id in frame.active_agent_ids:
             interface = self.interface_registry.for_agent(agent_id)
             member_ids = tuple(group.group_id for group in groups if group.owner_agent_id == agent_id)
+            phase_weights = self._group_phase_weights(parts, agent_id, groups)
+            current_charge_power = self._current_direction_power(
+                parts,
+                agent_id,
+                groups,
+                export=False,
+            )
+            current_export_power = self._current_direction_power(
+                parts,
+                agent_id,
+                groups,
+                export=True,
+            )
             charge_headroom = self._headroom(parts, agent_id, export=False)
             export_headroom = self._headroom(parts, agent_id, export=True)
             configured_grid = interface.constraints.get("grid_import", {})
@@ -1126,10 +1152,14 @@ class TypedInterfaceCompiler:
             )
             if charge_headroom is None:
                 charge_headroom = 0.0
+            else:
+                charge_headroom += sum(current_charge_power.values())
             if configured_max is not None:
                 charge_headroom = min(charge_headroom, max(configured_max, 0.0))
             if export_headroom is None:
                 export_headroom = 0.0
+            else:
+                export_headroom += sum(current_export_power.values())
             if configured_export_max is not None:
                 export_headroom = min(
                     export_headroom,
@@ -1153,6 +1183,56 @@ class TypedInterfaceCompiler:
                     ),
                 )
             )
+            for phase, upper_bound in sorted(
+                self._phase_headrooms(parts, agent_id, export=False).items()
+            ):
+                coefficients = tuple(
+                    sorted(
+                        (group_id, weights[phase])
+                        for group_id, weights in phase_weights.items()
+                        if weights.get(phase, 0.0) > 0.0
+                    )
+                )
+                if coefficients:
+                    upper_bound += sum(
+                        current_charge_power.get(group_id, 0.0) * coefficient
+                        for group_id, coefficient in coefficients
+                    )
+                    constraints.append(
+                        LocalConstraint(
+                            constraint_id=f"{agent_id}:charging_phase_{phase}_headroom_kw",
+                            owner_agent_id=agent_id,
+                            constraint_type="charging_phase_headroom_kw",
+                            upper_bound=upper_bound,
+                            member_group_ids=tuple(item[0] for item in coefficients),
+                            member_group_coefficients=coefficients,
+                        )
+                    )
+            for phase, upper_bound in sorted(
+                self._phase_headrooms(parts, agent_id, export=True).items()
+            ):
+                coefficients = tuple(
+                    sorted(
+                        (group_id, weights[phase])
+                        for group_id, weights in phase_weights.items()
+                        if weights.get(phase, 0.0) > 0.0
+                    )
+                )
+                if coefficients:
+                    upper_bound += sum(
+                        current_export_power.get(group_id, 0.0) * coefficient
+                        for group_id, coefficient in coefficients
+                    )
+                    constraints.append(
+                        LocalConstraint(
+                            constraint_id=f"{agent_id}:export_phase_{phase}_headroom_kw",
+                            owner_agent_id=agent_id,
+                            constraint_type="export_phase_headroom_kw",
+                            upper_bound=upper_bound,
+                            member_group_ids=tuple(item[0] for item in coefficients),
+                            member_group_coefficients=coefficients,
+                        )
+                    )
         return tuple(constraints)
 
     @staticmethod
@@ -1174,10 +1254,125 @@ class TypedInterfaceCompiler:
             name = part.observation_id.lower()
             if "headroom" not in name:
                 continue
+            if "phase" in name:
+                continue
             is_export = "export" in name or "discharge" in name
             if is_export == export:
                 candidates.append(max(float(part.values[0]), 0.0))
         return min(candidates) if candidates else None
+
+    @staticmethod
+    def _phase_headrooms(
+        parts: Sequence[ObservationPart],
+        agent_id: str,
+        *,
+        export: bool,
+    ) -> Mapping[str, float]:
+        candidates: Dict[str, list[float]] = {}
+        pattern = re.compile(
+            r"^charging_phase_([^_]+)_(export_)?headroom_kw$",
+            flags=re.IGNORECASE,
+        )
+        for part in parts:
+            if (
+                part.owner_agent_id != agent_id
+                or not part.valid
+                or part.scope != "local"
+                or part.unit != "kW"
+                or len(part.values) != 1
+            ):
+                continue
+            match = pattern.match(part.observation_id)
+            if match is None or bool(match.group(2)) != export:
+                continue
+            value = float(part.values[0])
+            if np.isfinite(value):
+                candidates.setdefault(match.group(1).upper(), []).append(
+                    max(value, 0.0)
+                )
+        return {
+            phase: min(values)
+            for phase, values in candidates.items()
+            if values
+        }
+
+    @staticmethod
+    def _group_phase_weights(
+        parts: Sequence[ObservationPart],
+        agent_id: str,
+        groups: Sequence[ActionGroupInstance],
+    ) -> Mapping[str, Mapping[str, float]]:
+        result: Dict[str, Mapping[str, float]] = {}
+        known_phases = {
+            match.group(1).upper()
+            for part in parts
+            if part.owner_agent_id == agent_id
+            for match in (
+                re.match(
+                    r"^charging_phase_([^_]+)_(?:export_)?headroom_kw$",
+                    part.observation_id,
+                    flags=re.IGNORECASE,
+                ),
+            )
+            if match is not None
+        }
+        for group in groups:
+            if group.owner_agent_id != agent_id:
+                continue
+            phases = {
+                part.observation_id[len("phase_connection_") :].upper()
+                for part in parts
+                if part.owner_agent_id == agent_id
+                and part.sensor_id == group.module_id
+                and part.valid
+                and part.observation_id.lower().startswith("phase_connection_")
+                and len(part.values) == 1
+                and np.isfinite(float(part.values[0]))
+                and float(part.values[0]) > 0.5
+            }
+            if not phases and group.group_type == "deferrable":
+                # Deferrables have no physical phase-connection feature in
+                # the public contract.  The Simulator's default service
+                # semantics distribute that non-controllable load across the
+                # available phases, so represent the START demand likewise.
+                phases = set(known_phases)
+            if not phases:
+                continue
+            weight = 1.0 / len(phases)
+            result[group.group_id] = {
+                phase: weight for phase in sorted(phases)
+            }
+        return result
+
+    @staticmethod
+    def _current_direction_power(
+        parts: Sequence[ObservationPart],
+        agent_id: str,
+        groups: Sequence[ActionGroupInstance],
+        *,
+        export: bool,
+    ) -> Mapping[str, float]:
+        result: Dict[str, float] = {}
+        for group in groups:
+            if group.owner_agent_id != agent_id:
+                continue
+            applied = next(
+                (
+                    float(part.values[0])
+                    for part in parts
+                    if part.owner_agent_id == agent_id
+                    and part.sensor_id == group.module_id
+                    and part.observation_id == "last_applied_power_kw"
+                    and part.valid
+                    and len(part.values) == 1
+                    and np.isfinite(float(part.values[0]))
+                ),
+                0.0,
+            )
+            directional = max(-applied if export else applied, 0.0)
+            if directional > 0.0:
+                result[group.group_id] = directional
+        return result
 
     def _dependencies(self) -> Tuple[Dependency, ...]:
         result = []

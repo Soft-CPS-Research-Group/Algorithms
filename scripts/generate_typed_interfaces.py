@@ -28,6 +28,7 @@ from algorithms.ti_marl.contracts.profile_registry import (
     SENSOR_ENTITY_TYPES,
     channel_for,
 )
+from run_experiment import _resolve_citylearn_schema_input
 from scripts.dump_entity_obs_sample import _build_env
 from utils.config_schema import validate_config
 
@@ -685,12 +686,12 @@ def main() -> int:
     args = parser.parse_args()
     raw = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     config = validate_config(raw).to_dict()
-    dataset_path = Path(str(config["simulator"]["dataset_path"])).expanduser()
-    if dataset_path.is_dir():
-        dataset_path = dataset_path / "schema.json"
-    schema: Mapping[str, Any] = {}
-    if dataset_path.is_file():
-        schema = json.loads(dataset_path.read_text(encoding="utf-8"))
+    schema = _resolve_citylearn_schema_input(
+        config["simulator"]["dataset_path"],
+        config["simulator"],
+    )
+    if not isinstance(schema, Mapping):
+        schema = {}
     env = _build_env(config)
     payload, _ = env.reset()
     interfaces, coverage = generate(env.entity_specs, payload, schema)

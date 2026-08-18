@@ -52,3 +52,19 @@ class CompatibilitySignature:
             and self.supported_module_types == other.supported_module_types
             and self.supported_action_group_types == other.supported_action_group_types
         )
+
+    def accepts_explicit_compiler_migration(
+        self,
+        other: "CompatibilitySignature",
+    ) -> bool:
+        """Accept only a compiler-version change on an otherwise identical surface."""
+
+        return (
+            self.contract_version == other.contract_version
+            and self.agent_schema_hash == other.agent_schema_hash
+            and self.type_registry_hash == other.type_registry_hash
+            and self.health_rules_hash == other.health_rules_hash
+            and self.supported_module_types == other.supported_module_types
+            and self.supported_action_group_types
+            == other.supported_action_group_types
+        )

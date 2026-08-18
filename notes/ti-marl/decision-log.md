@@ -74,6 +74,15 @@ must not be silently reinterpreted in code.
     `citylearn_three_phase_electrical_service_demo_15min_parquet`,
     `citylearn_three_phase_dynamic_topology_demo` and the 15-second dynamic
     asset stress fixture.
+30. The TIC is deterministic and contains no learned parameters. It compiles
+    typed interfaces and runtime facts into health, validity, bounds,
+    constraints and snapshots. Neural processing begins in the hierarchical
+    snapshot encoder; action selection is performed by the grouped actor, and
+    the central set critic exists only during training.
+31. Synthetic electrical-service contracts used for development remain
+    external experiment inputs. They are applied to an in-memory dataset copy,
+    may fill only buildings without an existing conflicting service fact, and
+    never rewrite or silently override the canonical dataset schema.
 
 ## Initial implementation choices
 

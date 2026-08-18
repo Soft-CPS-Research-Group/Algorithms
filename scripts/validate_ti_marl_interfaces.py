@@ -188,7 +188,9 @@ def main() -> int:
     )
     rendered = json.dumps(result, indent=2) + "\n"
     if args.output is not None:
-        args.output.expanduser().resolve().write_text(rendered, encoding="utf-8")
+        output = args.output.expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered, encoding="utf-8")
     print(rendered, end="")
     return 0
 

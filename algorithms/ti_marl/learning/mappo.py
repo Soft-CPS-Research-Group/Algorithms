@@ -8,6 +8,7 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 from algorithms.ti_marl.learning.rollout import TypedRolloutBuffer
 from algorithms.ti_marl.policy.networks import CentralSetCritic, TypedActor
@@ -29,6 +30,9 @@ class TIMAPPO:
         max_grad_norm: float = 0.5,
         target_kl: float | None = 0.03,
         rollout_steps: int = 256,
+        normalize_value_targets: bool = True,
+        value_target_scale_floor: float = 1.0,
+        critic_loss: str = "huber",
     ) -> None:
         self.actor = actor
         self.critic = critic
@@ -41,6 +45,11 @@ class TIMAPPO:
         self.max_grad_norm = float(max_grad_norm)
         self.target_kl = None if target_kl is None else float(target_kl)
         self.rollout_steps = int(rollout_steps)
+        self.normalize_value_targets = bool(normalize_value_targets)
+        self.value_target_scale_floor = float(value_target_scale_floor)
+        if critic_loss not in {"mse", "huber"}:
+            raise ValueError("TIMAPPO critic_loss must be one of {'mse', 'huber'}")
+        self.critic_loss = str(critic_loss)
         self.actor_optimizer = torch.optim.Adam(actor.parameters(), lr=float(learning_rate))
         self.critic_optimizer = torch.optim.Adam(critic.parameters(), lr=float(learning_rate))
         self.rollout = TypedRolloutBuffer()
@@ -68,7 +77,8 @@ class TIMAPPO:
         epochs_completed = 0
         for _epoch in range(self.ppo_epochs):
             actor_losses: list[Tensor] = []
-            critic_losses: list[Tensor] = []
+            critic_predictions: list[Tensor] = []
+            critic_targets: list[Tensor] = []
             entropies: list[Tensor] = []
             kls: list[Tensor] = []
             for step_index, step in enumerate(self.rollout.steps):
@@ -95,14 +105,18 @@ class TIMAPPO:
                     actor_losses.append(-torch.minimum(unclipped, clipped))
                     entropies.append(evaluation.entropy_by_agent[agent_id])
                     target = torch.tensor(returns[key], device=values[agent_id].device)
-                    critic_losses.append((values[agent_id] - target).pow(2))
+                    critic_predictions.append(values[agent_id])
+                    critic_targets.append(target)
                     kls.append(old_log_prob - new_log_prob)
 
             if not actor_losses:
                 break
             actor_loss = torch.stack(actor_losses).mean()
             entropy = torch.stack(entropies).mean()
-            critic_loss = torch.stack(critic_losses).mean()
+            critic_loss, target_mean, target_scale, raw_mse = self._value_loss(
+                torch.stack(critic_predictions),
+                torch.stack(critic_targets),
+            )
             approximate_kl = torch.stack(kls).mean()
 
             self.actor_optimizer.zero_grad(set_to_none=True)
@@ -121,6 +135,9 @@ class TIMAPPO:
             metrics["approx_kl"] += float(approximate_kl.detach().cpu())
             metrics["actor_grad_norm"] += float(torch.as_tensor(actor_grad).detach().cpu())
             metrics["critic_grad_norm"] += float(torch.as_tensor(critic_grad).detach().cpu())
+            metrics["critic_target_mean"] += float(target_mean.detach().cpu())
+            metrics["critic_target_scale"] += float(target_scale.detach().cpu())
+            metrics["critic_raw_mse"] += float(raw_mse.detach().cpu())
             epochs_completed += 1
             if self.target_kl is not None and float(approximate_kl.detach().cpu()) > self.target_kl:
                 break
@@ -137,6 +154,33 @@ class TIMAPPO:
             }
         )
         return result
+
+    def _value_loss(
+        self,
+        predictions: Tensor,
+        targets: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        target_mean = targets.detach().mean()
+        target_scale = targets.detach().std(unbiased=False)
+        if not self.normalize_value_targets:
+            target_mean = torch.zeros_like(target_mean)
+            target_scale = torch.ones_like(target_scale)
+        else:
+            target_scale = torch.clamp(
+                target_scale,
+                min=self.value_target_scale_floor,
+            )
+        normalized_predictions = (predictions - target_mean) / target_scale
+        normalized_targets = (targets - target_mean) / target_scale
+        if self.critic_loss == "huber":
+            loss = F.smooth_l1_loss(
+                normalized_predictions,
+                normalized_targets,
+            )
+        else:
+            loss = F.mse_loss(normalized_predictions, normalized_targets)
+        raw_mse = F.mse_loss(predictions.detach(), targets.detach())
+        return loss, target_mean, target_scale, raw_mse
 
     def state_dict(self) -> Mapping[str, Any]:
         return {
