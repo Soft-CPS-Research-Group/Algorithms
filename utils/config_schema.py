@@ -359,6 +359,14 @@ class SimulatorConfig(BaseModel):
     episodes: int = Field(default=1, ge=1)
     deterministic_finish: bool = False
     repeat_episode_scenario: bool = False
+    random_seed: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Simulator/exogenous-process seed. This is deliberately separate "
+            "from training.seed, which initializes the learning algorithm."
+        ),
+    )
     simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
     simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
@@ -1339,6 +1347,59 @@ class BundleConfig(BaseModel):
         return normalized
 
 
+class ExperimentProtocolConfig(BaseModel):
+    """Immutable provenance for train/development/confirmation separation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["ti_marl_experiment_protocol_v1"] = (
+        "ti_marl_experiment_protocol_v1"
+    )
+    protocol_id: str = Field(min_length=1)
+    phase: Literal["train", "development", "confirmation"]
+    role: Literal["candidate", "reference"] = "candidate"
+    data_split: str = Field(min_length=1)
+    window_id: str = Field(min_length=1)
+    candidate_id: str = Field(min_length=1)
+    paired_reference_id: Optional[str] = Field(default=None, min_length=1)
+    selection_rules_sha256: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    selection_record_sha256: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    selected_checkpoint_sha256: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @model_validator(mode="after")
+    def validate_phase_evidence(self) -> "ExperimentProtocolConfig":
+        if self.phase == "development" and self.selection_rules_sha256 is None:
+            raise ValueError(
+                "development phase requires the pre-frozen selection_rules_sha256"
+            )
+        if self.phase == "confirmation" and self.selection_record_sha256 is None:
+            raise ValueError(
+                "confirmation phase requires selection_record_sha256"
+            )
+        if (
+            self.phase == "confirmation"
+            and self.role == "candidate"
+            and self.selected_checkpoint_sha256 is None
+        ):
+            raise ValueError(
+                "confirmation candidates require selected_checkpoint_sha256"
+            )
+        if self.role == "candidate" and self.phase != "train" and not self.paired_reference_id:
+            raise ValueError(
+                "evaluated candidates require paired_reference_id"
+            )
+        return self
+
+
 class ProjectConfig(BaseModel):
     metadata: MetadataConfig
     runtime: RuntimeConfig = RuntimeConfig()
@@ -1358,6 +1419,7 @@ class ProjectConfig(BaseModel):
     )
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
+    experiment_protocol: Optional[ExperimentProtocolConfig] = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1409,6 +1471,60 @@ class ProjectConfig(BaseModel):
                         f"algorithm={stage.algorithm!r} does not support "
                         "simulator.topology_mode='dynamic' (supports_dynamic_topology=False)."
                     )
+
+        protocol = self.experiment_protocol
+        if protocol is not None:
+            is_evaluation = protocol.phase in {"development", "confirmation"}
+            if is_evaluation:
+                if self.simulator.random_seed is None:
+                    raise ValueError(
+                        "development/confirmation requires explicit simulator.random_seed"
+                    )
+                if self.simulator.episodes != 1 or not self.simulator.deterministic_finish:
+                    raise ValueError(
+                        "development/confirmation must be one deterministic episode"
+                    )
+                export = self.simulator.export
+                if not export.export_kpis_on_episode_end or not export.final_episode_only:
+                    raise ValueError(
+                        "development/confirmation must export final-episode KPIs"
+                    )
+                if (
+                    self.checkpointing.checkpoint_interval is not None
+                    or self.checkpointing.checkpoint_on_episode_end
+                ):
+                    raise ValueError(
+                        "evaluation runs must not write training checkpoints"
+                    )
+                if protocol.role == "candidate":
+                    has_source = bool(
+                        self.checkpointing.checkpoint_local_path
+                        or self.checkpointing.checkpoint_run_id
+                    )
+                    if not self.checkpointing.resume_training or not has_source:
+                        raise ValueError(
+                            "evaluated candidates require one explicit checkpoint source"
+                        )
+                    for stage in self.pipeline:
+                        if isinstance(stage, TIMARLStageConfig) and not stage.frozen:
+                            raise ValueError(
+                                "TIMARL evaluation requires pipeline stage frozen=true"
+                            )
+            else:
+                if protocol.role != "candidate":
+                    raise ValueError("train phase only supports role='candidate'")
+                if self.simulator.deterministic_finish:
+                    raise ValueError(
+                        "protocol train phase must not mix a deterministic evaluation episode"
+                    )
+                if any(isinstance(stage, TIMARLStageConfig) for stage in self.pipeline):
+                    if not (
+                        self.checkpointing.checkpoint_on_episode_end
+                        and self.checkpointing.keep_episode_checkpoints
+                    ):
+                        raise ValueError(
+                            "TIMARL protocol training must preserve every episode-end checkpoint"
+                        )
 
         return self
 

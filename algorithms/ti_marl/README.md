@@ -213,3 +213,9 @@ python scripts/validate_ti_marl_interfaces.py \
 `softcpsrecsimulator==1.7.0` is the pinned minimum runtime for TI-MARL. The
 end-to-end vertical slice runs against the installed package; using an adjacent
 Simulator checkout is only a deliberate development override.
+
+Training, development checkpoint selection and confirmation follow
+[`notes/ti-marl/experiment-protocol-v1.md`](../../notes/ti-marl/experiment-protocol-v1.md).
+The protocol separates neural and Simulator seeds, fingerprints every paired
+evaluation surface and prevents confirmation results from influencing model
+selection.

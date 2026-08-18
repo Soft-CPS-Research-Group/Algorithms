@@ -18,6 +18,11 @@ Development uses three seeds and paired short windows. Confirmatory runs use
 five frozen seeds and the final annual protocol. Reward weights and authorised
 community observations are frozen on a development split before confirmation.
 
+The exact windows, distinct neural and Simulator seed semantics, checkpoint
+promotion rule, pairing fingerprint and annual/transductive claim boundary are
+frozen in `experiment-protocol-v1.md`. Confirmation data can never be consumed
+by checkpoint selection.
+
 Control metrics retain cost, settlement, import/export, peak, ramping, solar,
 emissions, EV feasibility, V2G, throughput, fairness and network violations.
 TI metrics add binding/invalid-port rates, raw/final infeasibility, compiler and
@@ -27,4 +32,3 @@ cardinality, parameter-count stability and trace completeness.
 Mandatory structural comparisons include fixed masked output, health as a
 feature without closure, independent heads, per-port clipping, fixed critic and
 disabled compatibility checks.
-

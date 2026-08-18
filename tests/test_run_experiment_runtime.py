@@ -10,6 +10,7 @@ import run_experiment as runner
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.pipeline import Pipeline
 from utils.local_metrics import LocalMetricsLogger
+from utils.experiment_protocol import file_sha256
 
 
 def test_local_checkpoint_resolution_supports_ensemble_and_legacy_layout(tmp_path):
@@ -70,6 +71,55 @@ def test_resume_supports_selected_pipeline_stage_checkpoint(tmp_path):
     assert resolved is None
     assert manager.loaded_checkpoint_paths == []
     assert leaf.loaded_checkpoint_paths == [str(checkpoint_root.resolve())]
+
+
+def test_confirmation_resume_verifies_selected_checkpoint_hash(tmp_path):
+    checkpoint = tmp_path / "selected.pth"
+    checkpoint.write_bytes(b"selected-checkpoint")
+    agent = _DummyResumeAgent()
+    config = {
+        "checkpointing": {
+            "resume_training": True,
+            "checkpoint_local_path": str(checkpoint),
+            "checkpoint_artifact": "latest_checkpoint.pth",
+        },
+        "experiment_protocol": {
+            "selected_checkpoint_sha256": file_sha256(checkpoint),
+        },
+    }
+
+    runner._resume_agent_from_checkpoint(
+        agent=agent,
+        config=config,
+        tracking_uri="",
+        checkpoints_dir=tmp_path / "new-job" / "checkpoints",
+    )
+
+    assert agent.loaded_checkpoint_paths == [str(checkpoint.resolve())]
+
+
+def test_confirmation_resume_rejects_wrong_checkpoint_hash(tmp_path):
+    checkpoint = tmp_path / "wrong.pth"
+    checkpoint.write_bytes(b"wrong-checkpoint")
+    agent = _DummyResumeAgent()
+    config = {
+        "checkpointing": {
+            "resume_training": True,
+            "checkpoint_local_path": str(checkpoint),
+            "checkpoint_artifact": "latest_checkpoint.pth",
+        },
+        "experiment_protocol": {"selected_checkpoint_sha256": "a" * 64},
+    }
+
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        runner._resume_agent_from_checkpoint(
+            agent=agent,
+            config=config,
+            tracking_uri="",
+            checkpoints_dir=tmp_path / "new-job" / "checkpoints",
+        )
+
+    assert agent.loaded_checkpoint_paths == []
 
 
 class _DummyConfigModel:

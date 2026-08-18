@@ -1,0 +1,34 @@
+version: ti_marl_selection_rules_v1
+description: >-
+  Cost-first development checkpoint selection with predeclared safety and
+  physical scorecard guardrails. Confirmation results are not valid inputs.
+
+aggregation:
+  cost_eur: sum
+  electrical_violation_kwh: sum
+  battery_throughput_kwh: sum
+  v2g_export_kwh: sum
+  community_import_kwh: sum
+  community_export_kwh: sum
+  ev_min_acceptable_feasible_rate: min
+  ev_within_tolerance_feasible_rate: min
+
+hard_gates:
+  electrical_violation_kwh: {max: 0.5}
+  ev_min_acceptable_feasible_rate: {min: 0.99}
+
+reference_guardrails:
+  peak_daily_ratio_to_bau: {max_relative_increase: 0.05}
+  ramping_ratio_to_bau: {max_relative_increase: 0.05}
+  solar_self_consumption_rate: {max_absolute_decrease: 0.02}
+
+promotion:
+  metric: cost_eur
+  direction: minimize
+  minimum_improvement: 0.0
+  minimum_relative_improvement: 0.001
+
+tie_breakers:
+  - {metric: peak_daily_ratio_to_bau, direction: minimize}
+  - {metric: ramping_ratio_to_bau, direction: minimize}
+  - {metric: solar_self_consumption_rate, direction: maximize}

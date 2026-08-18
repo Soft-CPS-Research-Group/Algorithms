@@ -35,6 +35,7 @@ _startup_trace("module import started")
 import mlflow
 import numpy as np
 import yaml
+import citylearn
 from loguru import logger
 from pydantic import ValidationError
 
@@ -75,6 +76,7 @@ _startup_trace("before artifact imports")
 from utils.artifact_manifest import build_manifest, write_manifest
 from utils.bundle_validator import validate_bundle_contract
 from utils.config_schema import validate_config
+from utils.experiment_protocol import build_pairing_fingerprint, file_sha256
 _startup_trace("after artifact imports")
 
 _startup_trace("project imports loaded")
@@ -658,6 +660,24 @@ def _resume_agent_from_checkpoint(
             checkpoints_dir=checkpoints_dir,
         )
 
+    protocol = config.get("experiment_protocol") or {}
+    expected_checkpoint_sha256 = protocol.get("selected_checkpoint_sha256")
+    if expected_checkpoint_sha256:
+        checkpoint_file = checkpoint_path
+        if checkpoint_file.is_dir():
+            checkpoint_file = checkpoint_file / checkpoint_artifact
+        if not checkpoint_file.is_file():
+            raise RuntimeError(
+                "Cannot verify selected checkpoint hash because the resolved "
+                f"checkpoint is not a file: {checkpoint_file}"
+            )
+        actual_checkpoint_sha256 = file_sha256(checkpoint_file)
+        if actual_checkpoint_sha256 != str(expected_checkpoint_sha256):
+            raise RuntimeError(
+                "Selected checkpoint SHA-256 mismatch: "
+                f"expected {expected_checkpoint_sha256}, got {actual_checkpoint_sha256}"
+            )
+
     agent.load_checkpoint(str(checkpoint_path))
     logger.info("Agent '{}' resumed from checkpoint {}", agent.__class__.__name__, checkpoint_path)
     return checkpoint_path
@@ -862,6 +882,8 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "export_only_final_episode": export_cfg.get("final_episode_only", True),
             "render_directory": str(path_info["simulation_data_dir"]),
         }
+        if simulator_cfg.get("random_seed") is not None:
+            env_kwargs["random_seed"] = int(simulator_cfg["random_seed"])
         reward_function_kwargs = simulator_cfg.get("reward_function_kwargs")
         if isinstance(reward_function_kwargs, dict) and reward_function_kwargs:
             env_kwargs["reward_function_kwargs"] = reward_function_kwargs
@@ -1002,6 +1024,15 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             else {}
         )
 
+        experiment_protocol = config.get("experiment_protocol")
+        pairing_fingerprint = (
+            build_pairing_fingerprint(
+                config,
+                simulator_version=str(getattr(citylearn, "__version__", "unknown")),
+            )
+            if experiment_protocol
+            else None
+        )
         result_payload = {
             "status": "completed",
             "kpi_source": kpi_source,
@@ -1022,6 +1053,8 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "wrapper_reward_enabled": bool(wrapper_reward_metadata.get("enabled", False)),
             "wrapper_reward_profile": wrapper_reward_metadata.get("profile"),
             "wrapper_reward_version": wrapper_reward_metadata.get("version"),
+            "experiment_protocol": experiment_protocol,
+            "pairing_fingerprint": pairing_fingerprint,
         }
 
         result_path = path_info["result_path"]
@@ -1062,6 +1095,12 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "kpi_metric_count": 0,
             "bundle_dir": str(path_info["bundle_dir"]),
             "timestamp": datetime.utcnow().isoformat() + "Z",
+            "experiment_protocol": experiment_protocol,
+            "pairing_fingerprint_sha256": (
+                pairing_fingerprint.get("sha256")
+                if isinstance(pairing_fingerprint, Mapping)
+                else None
+            ),
         }
         summary_path = path_info["summary_path"]
         with open(summary_path, "w", encoding="utf-8") as summary_file:

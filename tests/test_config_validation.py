@@ -72,6 +72,77 @@ def test_validate_config_accepts_ti_marl_entity_dynamic(base_config):
     assert parsed.pipeline[0].algorithm == "TIMARL"
 
 
+def _ti_marl_protocol_config(base_config, *, phase: str):
+    config = copy.deepcopy(base_config)
+    config["simulator"].update(
+        {
+            "interface": "entity",
+            "topology_mode": "static",
+            "central_agent": False,
+            "random_seed": 101,
+            "episodes": 1,
+            "deterministic_finish": phase != "train",
+        }
+    )
+    config["simulator"]["export"].update(
+        {"export_kpis_on_episode_end": True, "final_episode_only": True}
+    )
+    stage = _ti_marl_stage()
+    stage["frozen"] = phase != "train"
+    config["pipeline"] = [stage]
+    config["checkpointing"].update(
+        {
+            "checkpoint_interval": None,
+            "checkpoint_on_episode_end": phase == "train",
+            "keep_episode_checkpoints": phase == "train",
+            "resume_training": phase != "train",
+            "checkpoint_local_path": (
+                "runs/local/checkpoint.pth" if phase != "train" else None
+            ),
+        }
+    )
+    config["experiment_protocol"] = {
+        "version": "ti_marl_experiment_protocol_v1",
+        "protocol_id": "ti-marl-v1",
+        "phase": phase,
+        "role": "candidate",
+        "data_split": phase,
+        "window_id": "winter",
+        "candidate_id": "candidate-1",
+        "paired_reference_id": "smart-winter" if phase != "train" else None,
+        "selection_rules_sha256": "a" * 64 if phase == "development" else None,
+        "selection_record_sha256": "b" * 64 if phase == "confirmation" else None,
+        "selected_checkpoint_sha256": "c" * 64 if phase == "confirmation" else None,
+    }
+    return config
+
+
+@pytest.mark.parametrize("phase", ["train", "development", "confirmation"])
+def test_validate_config_accepts_explicit_ti_marl_protocol_phases(base_config, phase):
+    validate_config(_ti_marl_protocol_config(base_config, phase=phase))
+
+
+def test_validate_config_requires_explicit_simulator_seed_for_evaluation(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="development")
+    config["simulator"]["random_seed"] = None
+    with pytest.raises(ValueError, match="simulator.random_seed"):
+        validate_config(config)
+
+
+def test_validate_config_prevents_confirmation_without_selection_record(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="confirmation")
+    config["experiment_protocol"]["selection_record_sha256"] = None
+    with pytest.raises(ValueError, match="selection_record_sha256"):
+        validate_config(config)
+
+
+def test_validate_config_requires_selected_checkpoint_hash_for_confirmation(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="confirmation")
+    config["experiment_protocol"]["selected_checkpoint_sha256"] = None
+    with pytest.raises(ValueError, match="selected_checkpoint_sha256"):
+        validate_config(config)
+
+
 def test_validate_config_rejects_retired_ti_marl_interface_sources(base_config):
     config = copy.deepcopy(base_config)
     config["simulator"]["interface"] = "entity"

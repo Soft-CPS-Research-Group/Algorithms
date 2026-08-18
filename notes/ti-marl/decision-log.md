@@ -83,6 +83,16 @@ must not be silently reinterpreted in code.
     external experiment inputs. They are applied to an in-memory dataset copy,
     may fill only buildings without an existing conflicting service fact, and
     never rewrite or silently override the canonical dataset schema.
+32. `training.seed` and `simulator.random_seed` are independent experimental
+    variables. Paired policy comparisons require identical explicit Simulator
+    seeds and a matching content-addressed simulator-surface fingerprint.
+33. TI-MARL checkpoints are selected only through deterministic replays on the
+    frozen development split. Confirmation records are invalid selector inputs;
+    the selected checkpoint and the rules are bound by SHA-256 before
+    confirmation starts.
+34. A full-year replay of a policy trained on the same yearly trace is labelled
+    a transductive annual control benchmark. Generalization claims require the
+    separate held-out time, composition, topology or fault protocols.
 
 ## Initial implementation choices
 
