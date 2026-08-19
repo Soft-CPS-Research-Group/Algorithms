@@ -1178,7 +1178,7 @@ class TransformerPPOStageConfig(BaseModel):
 
 
 class TIMARLBackboneConfig(BaseModel):
-    name: Literal["mappo"] = "mappo"
+    name: Literal["ppo", "mappo"] = "mappo"
 
 
 class TIMARLActorConfig(BaseModel):
@@ -1194,7 +1194,7 @@ class TIMARLActorConfig(BaseModel):
 
 
 class TIMARLCriticConfig(BaseModel):
-    kind: Literal["set"] = "set"
+    kind: Literal["local", "set"] = "set"
 
 
 class TIMARLFeasibilityConfig(BaseModel):
@@ -1243,6 +1243,17 @@ class TIMARLHyperparameters(BaseModel):
     value_target_scale_floor: float = Field(default=1.0, gt=0)
     critic_loss: Literal["mse", "huber"] = "huber"
     trace: TIMARLTraceConfig = TIMARLTraceConfig()
+
+    @model_validator(mode="after")
+    def validate_learning_architecture(self) -> "TIMARLHyperparameters":
+        expected = {"ppo": "local", "mappo": "set"}[self.backbone.name]
+        if self.critic.kind != expected:
+            raise ValueError(
+                f"TIMARL backbone.name={self.backbone.name!r} requires "
+                f"critic.kind={expected!r}"
+            )
+        return self
+
 
 class TIMARLStageConfig(BaseModel):
     algorithm: Literal["TIMARL"]

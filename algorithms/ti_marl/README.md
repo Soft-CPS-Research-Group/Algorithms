@@ -2,8 +2,13 @@
 
 `TIMARL` is a first-class Algorithms agent that compiles deployment-neutral
 typed runtime frames into a health-aware local control interface.
-Its first learning backbone is TI-MAPPO: a shared decentralised actor and a
-centralised variable-set critic.
+Its first learning family is PPO with a shared decentralised actor. Two
+explicit training variants isolate the value of centralised training:
+
+- `backbone.name: ppo` with `critic.kind: local` (TI-PPO);
+- `backbone.name: mappo` with `critic.kind: set` (TI-MAPPO).
+
+Both deploy exactly the same local actor contract. The critic is training-only.
 
 ## Runtime boundary
 
@@ -45,9 +50,10 @@ typed_agent_interface_v1 + TypedRuntimeFrame
 ```
 
 The actor and encoder are trained jointly and share parameters across
-compatible agents and asset instances.  The `CentralSetCritic` is a separate
-neural component used only during training; neither it nor privileged training
-context belongs to the deployment bundle.
+compatible agents and asset instances. The critic is either a shared local
+critic or a centralised variable-set critic. It is a separate neural component
+used only during training; neither it nor privileged training context belongs
+to the deployment bundle.
 
 `fault_mode` is retained as evidence. It is never treated as a Simulator
 health label and there is deliberately no universal `fault_mode → HealthState`
@@ -58,8 +64,8 @@ mapping.
 ```text
 contracts/   immutable object model, enums and compatibility signatures
 compiler/    discovery, binding, health derivation, closure and snapshots
-policy/      type-shared relational actor and variable-group decoder
-learning/    set critic, stable-ID rollout/GAE and hybrid-action MAPPO
+policy/      type-shared relational actor plus local and set critics
+learning/    stable-ID rollout/GAE and hybrid-action PPO optimisation
 runtime/     local projection, CityLearn codec and buffered typed traces
 agent.py     BaseAgent, checkpoint and artifact integration
 ```
@@ -84,6 +90,8 @@ hyperparameters:
   typed_interfaces_dir: /local/path/generated_interfaces
   interface_polling: false
   simulator_bindings_path: /local/path/generated_interfaces/technology_bindings/simulator.yaml
+  backbone: {name: mappo}  # or ppo
+  critic: {kind: set}      # local when backbone.name is ppo
 ```
 
 Every observation is classified as policy input, safety dependency, runtime
@@ -145,10 +153,11 @@ action.  Optional headroom reserve absorbs explicitly configured uncertainty;
 it is zero by default.  The projector performs no community optimisation. Raw
 and final bundles plus interventions remain in the typed trace.
 
-TI-MAPPO supports normalized value targets and a Huber critic loss so large
+Both PPO variants support normalized value targets and a Huber critic loss so large
 service penalties remain visible without numerically dominating every critic
-update.  These options stabilize learning; they do not change reward or
-feasibility semantics.
+update. PPO ratio clipping, approximate KL, clip fraction, explained variance
+and finite-gradient guards are reported explicitly. These options stabilize
+learning; they do not change reward or feasibility semantics.
 
 Initial fail-safe closure also isolates invalid site meters and actuator
 channels, blocks charge/EV-V2G/deferrable start during a grid outage, preserves
@@ -171,8 +180,10 @@ lost.
 
 `ti_marl_checkpoint_v1` stores model/optimizer state, the rollout, RNG state,
 normalisers/compiler state, resolved configuration, versions and compatibility
-hashes. A checkpoint may be restored into another composition when its
-composition-independent compatibility signature matches.
+hashes. It also pins the backbone and critic kind, so a TI-PPO checkpoint cannot
+be loaded accidentally into TI-MAPPO or vice versa. A checkpoint may be
+restored into another composition when its composition-independent
+compatibility signature matches.
 
 A compiler-version change is rejected by default.  A diagnostic or migration
 run must opt in explicitly with `allow_checkpoint_compiler_migration: true`,

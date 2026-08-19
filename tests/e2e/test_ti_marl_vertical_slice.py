@@ -22,7 +22,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_ti_marl_trains_across_member_join_and_leave_without_resize(tmp_path):
+@pytest.mark.parametrize(
+    ("backbone", "critic_kind"),
+    [("ppo", "local"), ("mappo", "set")],
+)
+def test_ti_marl_trains_across_member_join_and_leave_without_resize(
+    tmp_path,
+    backbone,
+    critic_kind,
+):
     from citylearn.citylearn import CityLearnEnv
 
     dataset_root = Path("datasets/citylearn_three_phase_dynamic_topology_demo").resolve()
@@ -162,9 +170,9 @@ def test_ti_marl_trains_across_member_join_and_leave_without_resize(tmp_path):
                 "hyperparameters": {
                     "contract_version": "ti_marl_v1",
                     "typed_interfaces_dir": str(interfaces_dir),
-                    "backbone": {"name": "mappo"},
+                    "backbone": {"name": backbone},
                     "actor": {"d_model": 32, "attention_heads": 4, "relation_layers": 1},
-                    "critic": {"kind": "set"},
+                    "critic": {"kind": critic_kind},
                     "feasibility": {"kind": "analytic_projection"},
                     "rollout_steps": 64,
                     "ppo_epochs": 1,

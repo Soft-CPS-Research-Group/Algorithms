@@ -21,7 +21,12 @@ from algorithms.ti_marl.contracts.compatibility import CompatibilitySignature
 from algorithms.ti_marl.contracts.models import TypedTransition, canonical_value
 from algorithms.ti_marl.learning.mappo import TIMAPPO
 from algorithms.ti_marl.learning.rollout import RolloutStep
-from algorithms.ti_marl.policy.networks import CentralSetCritic, TypedActor, parameter_count
+from algorithms.ti_marl.policy.networks import (
+    CentralSetCritic,
+    LocalTypedCritic,
+    TypedActor,
+    parameter_count,
+)
 from algorithms.ti_marl.runtime.codec import CityLearnTypedActionCodec
 from algorithms.ti_marl.runtime.commands import TypedCommandBuilder
 from algorithms.ti_marl.runtime.feasibility import AnalyticLocalProjector
@@ -29,7 +34,7 @@ from algorithms.ti_marl.runtime.traces import BufferedTraceWriter
 
 
 class TIMARL(BaseAgent):
-    """Typed Interface MARL with a TI-MAPPO first backbone."""
+    """Typed-interface control with PPO or MAPPO learning backbones."""
 
     supports_dynamic_topology = True
     handles_cross_topology_transitions = True
@@ -42,8 +47,19 @@ class TIMARL(BaseAgent):
         self.config = deepcopy(config)
         hyper = dict(config.get("algorithm", {}).get("hyperparameters", {}))
         backbone = dict(hyper.get("backbone", {}))
-        if str(backbone.get("name", "mappo")).lower() != "mappo":
-            raise ValueError("TIMARL v1 supports backbone.name='mappo' only")
+        critic_cfg = dict(hyper.get("critic", {}))
+        self.backbone_name = str(backbone.get("name", "mappo")).lower()
+        self.critic_kind = str(critic_cfg.get("kind", "set")).lower()
+        expected_critic = {"ppo": "local", "mappo": "set"}.get(
+            self.backbone_name
+        )
+        if expected_critic is None:
+            raise ValueError("TIMARL v1 supports backbone.name in {'ppo', 'mappo'}")
+        if self.critic_kind != expected_critic:
+            raise ValueError(
+                f"TIMARL backbone.name={self.backbone_name!r} requires "
+                f"critic.kind={expected_critic!r}"
+            )
 
         self.seed = int(config.get("training", {}).get("seed", 22))
         random.seed(self.seed)
@@ -76,7 +92,10 @@ class TIMARL(BaseAgent):
             attention_heads=int(actor_cfg.get("attention_heads", 4)),
             relation_layers=relation_layers,
         ).to(self.device)
-        self.critic = CentralSetCritic(
+        critic_class = (
+            CentralSetCritic if self.critic_kind == "set" else LocalTypedCritic
+        )
+        self.critic = critic_class(
             self.compiler.type_registry,
             d_model=d_model,
             relation_layers=relation_layers,
@@ -444,6 +463,10 @@ class TIMARL(BaseAgent):
         payload = {
             "format": "ti_marl_checkpoint_v1",
             "step": int(step),
+            "learning_architecture": {
+                "backbone": self.backbone_name,
+                "critic": self.critic_kind,
+            },
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
             "learner": self.learner.state_dict(),
@@ -469,6 +492,21 @@ class TIMARL(BaseAgent):
         payload = torch.load(path, map_location=self.device, weights_only=False)
         if payload.get("format") != "ti_marl_checkpoint_v1":
             raise ValueError("Unsupported TIMARL checkpoint format")
+        architecture = dict(
+            payload.get(
+                "learning_architecture",
+                {"backbone": "mappo", "critic": "set"},
+            )
+        )
+        expected_architecture = {
+            "backbone": self.backbone_name,
+            "critic": self.critic_kind,
+        }
+        if architecture != expected_architecture:
+            raise ValueError(
+                "TIMARL checkpoint learning architecture does not match: "
+                f"checkpoint={architecture}, configured={expected_architecture}"
+            )
         raw_signature = dict(payload["compatibility_signature"])
         for key in ("supported_module_types", "supported_action_group_types"):
             raw_signature[key] = tuple(raw_signature[key])
@@ -519,6 +557,10 @@ class TIMARL(BaseAgent):
             {
                 "format": "ti_marl_torch",
                 "deployable": False,
+                "learning_architecture": {
+                    "backbone": self.backbone_name,
+                    "critic": self.critic_kind,
+                },
                 "actor": self.actor.state_dict(),
                 "critic": self.critic.state_dict(),
                 "compatibility_signature": asdict(self.compiler.compatibility_signature),
@@ -532,6 +574,7 @@ class TIMARL(BaseAgent):
             {
                 "format": "ti_marl_deployment_bundle_v1",
                 "actor": self.actor.state_dict(),
+                "training_backbone": self.backbone_name,
                 "typed_interfaces": self.compiler.resolved_typed_interface(),
                 "compiler": {
                     "version": self._versions()["algorithms"],
@@ -564,6 +607,10 @@ class TIMARL(BaseAgent):
                 },
             ],
             "contract_version": self.compiler.contract_version,
+            "learning_architecture": {
+                "backbone": self.backbone_name,
+                "critic": self.critic_kind,
+            },
             "compatibility_signature": asdict(self.compiler.compatibility_signature),
             "trace": dict(self.trace_writer.manifest()),
             "artifacts": [

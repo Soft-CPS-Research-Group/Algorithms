@@ -11,14 +11,14 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from algorithms.ti_marl.learning.rollout import TypedRolloutBuffer
-from algorithms.ti_marl.policy.networks import CentralSetCritic, TypedActor
+from algorithms.ti_marl.policy.networks import TypedActor
 
 
 class TIMAPPO:
     def __init__(
         self,
         actor: TypedActor,
-        critic: CentralSetCritic,
+        critic: nn.Module,
         *,
         learning_rate: float = 3.0e-4,
         gamma: float = 0.99,
@@ -80,7 +80,8 @@ class TIMAPPO:
             critic_predictions: list[Tensor] = []
             critic_targets: list[Tensor] = []
             entropies: list[Tensor] = []
-            kls: list[Tensor] = []
+            log_ratios: list[Tensor] = []
+            ratios: list[Tensor] = []
             for step_index, step in enumerate(self.rollout.steps):
                 decisions = {
                     bundle.agent_id: {decision.group_id: decision for decision in bundle.decisions}
@@ -98,7 +99,8 @@ class TIMAPPO:
                         device=evaluation.log_prob_by_agent[agent_id].device,
                     )
                     new_log_prob = evaluation.log_prob_by_agent[agent_id]
-                    ratio = torch.exp(new_log_prob - old_log_prob)
+                    log_ratio = torch.clamp(new_log_prob - old_log_prob, -20.0, 20.0)
+                    ratio = torch.exp(log_ratio)
                     advantage = torch.tensor(normalized[key], device=ratio.device)
                     unclipped = ratio * advantage
                     clipped = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * advantage
@@ -107,7 +109,8 @@ class TIMAPPO:
                     target = torch.tensor(returns[key], device=values[agent_id].device)
                     critic_predictions.append(values[agent_id])
                     critic_targets.append(target)
-                    kls.append(old_log_prob - new_log_prob)
+                    log_ratios.append(log_ratio)
+                    ratios.append(ratio)
 
             if not actor_losses:
                 break
@@ -117,16 +120,52 @@ class TIMAPPO:
                 torch.stack(critic_predictions),
                 torch.stack(critic_targets),
             )
-            approximate_kl = torch.stack(kls).mean()
+            ratio_tensor = torch.stack(ratios)
+            log_ratio_tensor = torch.stack(log_ratios)
+            # Schulman's non-negative sample estimator: (r - 1) - log(r).
+            approximate_kl = ((ratio_tensor - 1.0) - log_ratio_tensor).mean()
+            clip_fraction = (
+                torch.abs(ratio_tensor - 1.0) > self.clip_eps
+            ).float().mean()
+            ratio_error_max = torch.abs(ratio_tensor - 1.0).max()
+            prediction_tensor = torch.stack(critic_predictions)
+            target_tensor = torch.stack(critic_targets)
+            target_variance = torch.var(target_tensor, unbiased=False)
+            explained_variance = torch.where(
+                target_variance > 1.0e-8,
+                1.0
+                - torch.var(
+                    target_tensor - prediction_tensor.detach(), unbiased=False
+                )
+                / target_variance,
+                torch.zeros_like(target_variance),
+            )
+
+            actor_objective = actor_loss - self.entropy_coeff * entropy
+            critic_objective = self.value_coeff * critic_loss
+            for name, value in {
+                "actor_objective": actor_objective,
+                "critic_objective": critic_objective,
+                "approximate_kl": approximate_kl,
+            }.items():
+                if not bool(torch.isfinite(value).all()):
+                    raise FloatingPointError(f"Non-finite TI-PPO {name}")
 
             self.actor_optimizer.zero_grad(set_to_none=True)
-            (actor_loss - self.entropy_coeff * entropy).backward()
-            actor_grad = nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-            self.actor_optimizer.step()
-
             self.critic_optimizer.zero_grad(set_to_none=True)
-            (self.value_coeff * critic_loss).backward()
+            actor_objective.backward()
+            critic_objective.backward()
+            actor_grad = nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
             critic_grad = nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+            if not bool(torch.isfinite(torch.as_tensor(actor_grad))):
+                self.actor_optimizer.zero_grad(set_to_none=True)
+                self.critic_optimizer.zero_grad(set_to_none=True)
+                raise FloatingPointError("Non-finite TI-PPO actor gradient")
+            if not bool(torch.isfinite(torch.as_tensor(critic_grad))):
+                self.actor_optimizer.zero_grad(set_to_none=True)
+                self.critic_optimizer.zero_grad(set_to_none=True)
+                raise FloatingPointError("Non-finite TI-PPO critic gradient")
+            self.actor_optimizer.step()
             self.critic_optimizer.step()
 
             metrics["actor_loss"] += float(actor_loss.detach().cpu())
@@ -138,6 +177,15 @@ class TIMAPPO:
             metrics["critic_target_mean"] += float(target_mean.detach().cpu())
             metrics["critic_target_scale"] += float(target_scale.detach().cpu())
             metrics["critic_raw_mse"] += float(raw_mse.detach().cpu())
+            metrics["clip_fraction"] += float(clip_fraction.detach().cpu())
+            metrics["ratio_error_max"] += float(ratio_error_max.detach().cpu())
+            metrics["explained_variance"] += float(explained_variance.detach().cpu())
+            metrics["advantage_mean"] += float(np.mean(advantages))
+            metrics["advantage_std"] += float(np.std(advantages))
+            metrics["return_mean"] += float(target_tensor.detach().mean().cpu())
+            metrics["return_std"] += float(
+                target_tensor.detach().std(unbiased=False).cpu()
+            )
             epochs_completed += 1
             if self.target_kl is not None and float(approximate_kl.detach().cpu()) > self.target_kl:
                 break

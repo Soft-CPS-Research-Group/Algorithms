@@ -1,4 +1,4 @@
-"""Type-shared relational actor and centralized set critic."""
+"""Type-shared relational actor and local/centralized critics."""
 
 from __future__ import annotations
 
@@ -355,6 +355,34 @@ class CentralSetCritic(nn.Module):
         return {
             agent_id: self.value_head(torch.cat((latent, community), dim=-1)).squeeze(-1)
             for agent_id, latent in local.items()
+        }
+
+
+class LocalTypedCritic(nn.Module):
+    """Parameter-shared critic whose value depends only on the local interface."""
+
+    def __init__(
+        self,
+        type_registry: Mapping[str, object],
+        *,
+        d_model: int = 128,
+        relation_layers: int = 2,
+    ) -> None:
+        super().__init__()
+        self.encoder = TypedSnapshotEncoder(type_registry, d_model, relation_layers)
+        self.value_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 1),
+        )
+
+    def forward(self, snapshot: InterfaceSnapshot) -> Mapping[str, Tensor]:
+        device = next(self.parameters()).device
+        return {
+            agent_id: self.value_head(
+                self.encoder(snapshot, agent_id, device)
+            ).squeeze(-1)
+            for agent_id in snapshot.agent_ids
         }
 
 

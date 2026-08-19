@@ -24,7 +24,12 @@ from algorithms.ti_marl.contracts.models import (
 from algorithms.ti_marl.contracts.enums import HealthState
 from algorithms.ti_marl.learning.mappo import TIMAPPO
 from algorithms.ti_marl.learning.rollout import RolloutStep, TypedRolloutBuffer
-from algorithms.ti_marl.policy.networks import CentralSetCritic, TypedActor, parameter_count
+from algorithms.ti_marl.policy.networks import (
+    CentralSetCritic,
+    LocalTypedCritic,
+    TypedActor,
+    parameter_count,
+)
 from algorithms.ti_marl.runtime import (
     AnalyticLocalProjector,
     BufferedTraceWriter,
@@ -117,6 +122,50 @@ def test_actor_is_local_while_set_critic_observes_other_agents(tmp_path):
     )
     assert baseline_bundle.decisions == changed_bundle.decisions
     assert not torch.allclose(baseline_value, changed_value)
+
+
+def test_local_critic_is_independent_of_other_agents_and_cardinality(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    torch.manual_seed(7)
+    critic = LocalTypedCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+    )
+    initial_parameters = parameter_count(critic)
+    changed = replace(
+        snapshot,
+        observation_parts=tuple(
+            replace(part, values=tuple(value + 100.0 for value in part.values))
+            if part.owner_agent_id == "Building_2"
+            else part
+            for part in snapshot.observation_parts
+        ),
+    )
+    only_first = replace(
+        snapshot,
+        agent_ids=("Building_1",),
+        observation_parts=tuple(
+            part
+            for part in snapshot.observation_parts
+            if part.owner_agent_id == "Building_1"
+        ),
+        action_groups=tuple(
+            group
+            for group in snapshot.action_groups
+            if group.owner_agent_id == "Building_1"
+        ),
+    )
+
+    critic.eval()
+    with torch.no_grad():
+        baseline = critic(snapshot)["Building_1"]
+        other_changed = critic(changed)["Building_1"]
+        smaller = critic(only_first)["Building_1"]
+
+    assert torch.equal(baseline, other_changed)
+    assert torch.equal(baseline, smaller)
+    assert parameter_count(critic) == initial_parameters
 
 
 def test_trace_only_observations_are_auditable_but_never_enter_the_actor(tmp_path):
@@ -701,6 +750,70 @@ def test_mappo_value_loss_normalizes_large_targets_and_keeps_raw_diagnostic():
     assert torch.isfinite(predictions.grad).all()
 
 
+@pytest.mark.parametrize("critic_kind", ["local", "set"])
+def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
+    tmp_path,
+    critic_kind,
+):
+    compiler, first = compile_snapshot(tmp_path / "first", time_step=0)
+    _compiler, second = compile_snapshot(tmp_path / "second", time_step=1)
+    torch.manual_seed(13)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    critic_class = LocalTypedCritic if critic_kind == "local" else CentralSetCritic
+    critic = critic_class(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+    )
+    learner = TIMAPPO(
+        actor,
+        critic,
+        rollout_steps=1,
+        ppo_epochs=2,
+        target_kl=None,
+    )
+    with torch.no_grad():
+        evaluation = actor(first, deterministic=True)
+        values = critic(first)
+        next_values = critic(second)
+    learner.rollout.add(
+        RolloutStep(
+            snapshot=first,
+            next_snapshot=second,
+            bundles=evaluation.bundles,
+            old_log_probs={
+                key: float(value) for key, value in evaluation.log_prob_by_agent.items()
+            },
+            values={key: float(value) for key, value in values.items()},
+            next_values={key: float(value) for key, value in next_values.items()},
+            rewards={key: 1.0 for key in first.agent_ids},
+            terminated_agent_ids=first.agent_ids,
+            truncated=False,
+        )
+    )
+
+    metrics = learner.update()
+
+    for name in (
+        "actor_loss",
+        "critic_loss",
+        "approx_kl",
+        "clip_fraction",
+        "ratio_error_max",
+        "explained_variance",
+        "actor_grad_norm",
+        "critic_grad_norm",
+    ):
+        assert np.isfinite(metrics[name]), name
+    assert metrics["approx_kl"] >= -1.0e-7
+    assert 0.0 <= metrics["clip_fraction"] <= 1.0
+
+
 def test_required_deferrable_with_unknown_deadline_starts_once_when_safe(tmp_path):
     interfaces = write_typed_interfaces(
         tmp_path / "interfaces",
@@ -959,6 +1072,13 @@ def agent_config(tmp_path):
     }
 
 
+def ti_ppo_agent_config(tmp_path):
+    config = agent_config(tmp_path)
+    config["algorithm"]["hyperparameters"]["backbone"] = {"name": "ppo"}
+    config["algorithm"]["hyperparameters"]["critic"] = {"kind": "local"}
+    return config
+
+
 def attach_agent(agent, buildings):
     specs = entity_specs(buildings)
     names = []
@@ -1002,6 +1122,17 @@ def test_checkpoint_round_trip_accepts_a_different_compatible_composition(tmp_pa
     )
     actions = restored.predict([], deterministic=True)
     assert len(actions) == 1
+
+
+def test_checkpoint_rejects_a_different_learning_architecture(tmp_path):
+    source = TIMARL(agent_config(tmp_path / "source"))
+    attach_agent(source, ("Building_1",))
+    checkpoint = source.save_checkpoint(str(tmp_path / "checkpoint"), step=1)
+
+    local_ppo = TIMARL(ti_ppo_agent_config(tmp_path / "local"))
+    attach_agent(local_ppo, ("Building_1",))
+    with pytest.raises(ValueError, match="learning architecture"):
+        local_ppo.load_checkpoint(checkpoint)
 
 
 def test_checkpoint_compiler_migration_requires_explicit_opt_in(tmp_path):

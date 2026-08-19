@@ -72,6 +72,42 @@ def test_validate_config_accepts_ti_marl_entity_dynamic(base_config):
     assert parsed.pipeline[0].algorithm == "TIMARL"
 
 
+def test_validate_config_accepts_ti_ppo_with_local_critic(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["backbone"] = {"name": "ppo"}
+    stage["hyperparameters"]["critic"] = {"kind": "local"}
+    config["pipeline"] = [stage]
+
+    parsed = validate_config(config)
+
+    assert parsed.pipeline[0].hyperparameters.backbone.name == "ppo"
+    assert parsed.pipeline[0].hyperparameters.critic.kind == "local"
+
+
+@pytest.mark.parametrize(
+    ("backbone", "critic"),
+    [("ppo", "set"), ("mappo", "local")],
+)
+def test_validate_config_rejects_mismatched_ti_marl_critic(
+    base_config,
+    backbone,
+    critic,
+):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["backbone"] = {"name": backbone}
+    stage["hyperparameters"]["critic"] = {"kind": critic}
+    config["pipeline"] = [stage]
+
+    with pytest.raises(ValueError, match="requires critic.kind"):
+        validate_config(config)
+
+
 def _ti_marl_protocol_config(base_config, *, phase: str):
     config = copy.deepcopy(base_config)
     config["simulator"].update(
