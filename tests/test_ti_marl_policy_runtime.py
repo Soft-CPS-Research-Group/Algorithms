@@ -23,6 +23,9 @@ from algorithms.ti_marl.contracts.models import (
 )
 from algorithms.ti_marl.contracts.enums import HealthState
 from algorithms.ti_marl.learning.mappo import TIMAPPO
+from algorithms.ti_marl.learning.behavior_cloning import (
+    TypedBehaviorCloningWarmStart,
+)
 from algorithms.ti_marl.learning.rollout import RolloutStep, TypedRolloutBuffer
 from algorithms.ti_marl.policy.networks import (
     CentralSetCritic,
@@ -315,6 +318,194 @@ def test_actor_replay_skips_bundle_materialization_without_changing_density(tmp_
             packed.entropy_by_step[0][agent_id],
             atol=1.0e-6,
         )
+        assert torch.allclose(
+            packed.log_prob_by_step[0][agent_id],
+            torch.stack(
+                tuple(packed.log_prob_by_group_step[0][agent_id].values())
+            ).sum(),
+            atol=1.0e-6,
+        )
+
+
+def test_action_conditioned_actor_replays_group_densities_and_relations(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    torch.manual_seed(23)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+        group_context_kind="action_conditioned",
+    )
+    sampled = actor(snapshot, deterministic=True)
+    decisions = {
+        bundle.agent_id: {
+            decision.group_id: decision for decision in bundle.decisions
+        }
+        for bundle in sampled.bundles
+    }
+    packed = actor.evaluate_actions_many(((snapshot, decisions),))
+
+    for agent_id in snapshot.agent_ids:
+        assert torch.allclose(
+            sampled.log_prob_by_agent[agent_id],
+            packed.log_prob_by_step[0][agent_id],
+            atol=1.0e-6,
+        )
+    group = snapshot.action_groups[0]
+    own_part = next(
+        part
+        for part in snapshot.parts_for(group.owner_agent_id)
+        if part.sensor_id == group.module_id
+    )
+    community_part = next(
+        part
+        for part in snapshot.parts_for(group.owner_agent_id)
+        if part.scope == "community"
+    )
+    assert actor._group_part_relation(group, own_part) == 0
+    assert actor._group_part_relation(group, community_part) == 3
+
+
+def test_behavior_cloning_balances_rare_action_modes_per_group_type(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    warm_start = TypedBehaviorCloningWarmStart(
+        demonstration_episodes=1,
+        max_samples=16,
+        pretraining_epochs=1,
+        batch_size=4,
+        learning_rate=1.0e-4,
+        balance_action_modes=True,
+        mode_balance_exponent=0.5,
+        max_mode_weight=3.0,
+        seed=7,
+    )
+    target_group = next(
+        group
+        for group in snapshot.action_groups
+        if any(port.valid and port.mode != "IDLE" for port in group.ports)
+    )
+    target_mode = next(
+        port.mode
+        for port in target_group.ports
+        if port.valid and port.mode != "IDLE"
+    )
+    for sample_index in range(10):
+        bundles = []
+        for agent_id in snapshot.agent_ids:
+            decisions = []
+            for group in snapshot.groups_for(agent_id):
+                mode = (
+                    target_mode
+                    if sample_index == 9 and group.group_id == target_group.group_id
+                    else "IDLE"
+                )
+                decisions.append(
+                    ActionDecision(
+                        group_id=group.group_id,
+                        mode=mode,
+                        fraction=0.5 if mode != "IDLE" else 0.0,
+                        mode_index=actor.group_modes[group.group_type].index(mode),
+                    )
+                )
+            bundles.append(LocalActionBundle(agent_id, tuple(decisions)))
+        warm_start.record(snapshot, bundles)
+
+    weights = warm_start._build_mode_weights()
+    assert weights[(target_group.group_type, target_mode)] > weights[
+        (target_group.group_type, "IDLE")
+    ]
+    assert weights[(target_group.group_type, target_mode)] <= 3.0
+
+
+def test_behavior_cloning_mode_counts_follow_the_retained_reservoir(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    warm_start = TypedBehaviorCloningWarmStart(
+        demonstration_episodes=1,
+        max_samples=1,
+        pretraining_epochs=1,
+        batch_size=1,
+        learning_rate=1.0e-4,
+        balance_action_modes=True,
+        mode_balance_exponent=0.5,
+        max_mode_weight=3.0,
+        seed=1,
+        calibration_epochs=1,
+        calibration_learning_rate=5.0e-5,
+    )
+    target_group = next(
+        group
+        for group in snapshot.action_groups
+        if any(port.valid and port.mode != "IDLE" for port in group.ports)
+    )
+    target_mode = next(
+        port.mode
+        for port in target_group.ports
+        if port.valid and port.mode != "IDLE"
+    )
+
+    def bundles_with_target(mode):
+        return tuple(
+            LocalActionBundle(
+                agent_id,
+                tuple(
+                    ActionDecision(
+                        group.group_id,
+                        mode if group.group_id == target_group.group_id else "IDLE",
+                        0.5 if group.group_id == target_group.group_id else 0.0,
+                        (
+                            actor.group_modes[group.group_type].index(mode)
+                            if group.group_id == target_group.group_id
+                            else 0
+                        ),
+                    )
+                    for group in snapshot.groups_for(agent_id)
+                ),
+            )
+            for agent_id in snapshot.agent_ids
+        )
+
+    warm_start.record(snapshot, bundles_with_target("IDLE"))
+    warm_start.record(snapshot, bundles_with_target(target_mode))
+
+    assert warm_start.seen_samples == 2
+    assert len(warm_start._demonstrations) == 1
+    assert warm_start.mode_counts[(target_group.group_type, target_mode)] == 1
+    retained_group_type_count = sum(
+        group.group_type == target_group.group_type
+        for group in snapshot.action_groups
+    )
+    assert warm_start.mode_counts[(target_group.group_type, "IDLE")] == (
+        retained_group_type_count - 1
+    )
+    metrics = warm_start.pretrain(actor, max_grad_norm=0.5)
+    assert metrics["bc_balanced_batches"] == 1.0
+    assert metrics["bc_calibration_batches"] == 1.0
+    assert metrics["bc_calibration_loss"] > 0.0
+    target_prefix = (
+        f"bc_mode_{target_group.group_type.lower()}_{target_mode.lower()}"
+    )
+    assert 0.0 <= metrics[f"{target_prefix}_recall"] <= 1.0
+    assert 0.0 < metrics[f"{target_prefix}_target_probability"] <= 1.0
+    predicted_count = sum(
+        value
+        for key, value in metrics.items()
+        if key.startswith(f"bc_mode_{target_group.group_type.lower()}_")
+        and key.endswith("_predicted_count")
+    )
+    assert predicted_count == float(retained_group_type_count)
 
 
 @pytest.mark.parametrize("critic_class", [LocalTypedCritic, CentralSetCritic])
@@ -1450,6 +1641,21 @@ def test_checkpoint_rejects_a_different_learning_architecture(tmp_path):
     attach_agent(local_ppo, ("Building_1",))
     with pytest.raises(ValueError, match="learning architecture"):
         local_ppo.load_checkpoint(checkpoint)
+
+
+def test_checkpoint_rejects_a_different_actor_group_context(tmp_path):
+    source = TIMARL(agent_config(tmp_path / "source"))
+    attach_agent(source, ("Building_1",))
+    checkpoint = source.save_checkpoint(str(tmp_path / "checkpoint"), step=1)
+
+    conditioned_config = agent_config(tmp_path / "conditioned")
+    conditioned_config["algorithm"]["hyperparameters"]["actor"][
+        "group_context_kind"
+    ] = "action_conditioned"
+    conditioned = TIMARL(conditioned_config)
+    attach_agent(conditioned, ("Building_1",))
+    with pytest.raises(ValueError, match="learning architecture"):
+        conditioned.load_checkpoint(checkpoint)
 
 
 def test_checkpoint_compiler_migration_requires_explicit_opt_in(tmp_path):

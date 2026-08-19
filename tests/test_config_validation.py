@@ -77,6 +77,7 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     config["simulator"]["interface"] = "entity"
     config["simulator"]["central_agent"] = False
     stage = _ti_marl_stage()
+    stage["hyperparameters"]["actor"]["group_context_kind"] = "action_conditioned"
     stage["hyperparameters"]["behavior_cloning"] = {
         "enabled": True,
         "demonstration_episodes": 1,
@@ -84,6 +85,11 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         "pretraining_epochs": 2,
         "batch_size": 32,
         "learning_rate": 1.0e-4,
+        "balance_action_modes": True,
+        "mode_balance_exponent": 0.5,
+        "max_mode_weight": 3.0,
+        "calibration_epochs": 2,
+        "calibration_learning_rate": 5.0e-5,
         "teacher": {
             "policy": "RBCSmartPolicy",
             "hyperparameters": {"allow_v2g": True},
@@ -97,6 +103,15 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     assert behavior_cloning is not None
     assert behavior_cloning.teacher.policy == "RBCSmartPolicy"
     assert behavior_cloning.max_samples == 672
+    assert behavior_cloning.balance_action_modes
+    assert behavior_cloning.mode_balance_exponent == 0.5
+    assert behavior_cloning.max_mode_weight == 3.0
+    assert behavior_cloning.calibration_epochs == 2
+    assert behavior_cloning.calibration_learning_rate == 5.0e-5
+    assert (
+        parsed.pipeline[0].hyperparameters.actor.group_context_kind
+        == "action_conditioned"
+    )
 
 
 def test_validate_config_accepts_ti_ppo_with_local_critic(base_config):

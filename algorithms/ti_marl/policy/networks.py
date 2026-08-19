@@ -39,6 +39,10 @@ class ActorEvaluation:
 class ActorReplayEvaluation:
     log_prob_by_step: Tuple[Mapping[str, Tensor], ...]
     entropy_by_step: Tuple[Mapping[str, Tensor], ...]
+    log_prob_by_group_step: Tuple[Mapping[str, Mapping[str, Tensor]], ...]
+    entropy_by_group_step: Tuple[Mapping[str, Mapping[str, Tensor]], ...]
+    mode_log_prob_by_group_step: Tuple[Mapping[str, Mapping[str, Tensor]], ...]
+    predicted_mode_by_group_step: Tuple[Mapping[str, Mapping[str, Tensor]], ...]
 
 
 class RelationalMessageLayer(nn.Module):
@@ -177,46 +181,7 @@ class TypedSnapshotEncoder(nn.Module):
                 (request_count, self.d_model), dtype=torch.float32, device=device
             )
 
-        feature_batch = torch.as_tensor(
-            np.stack([self._feature_array(part) for part in all_parts]),
-            dtype=torch.float32,
-            device=device,
-        )
-        semantic_indices = self._indices(
-            all_parts,
-            self.semantic_index,
-            lambda part: part.semantic_type,
-            "semantic type",
-            device,
-        )
-        unit_indices = self._indices(
-            all_parts,
-            self.unit_index,
-            lambda part: part.unit,
-            "unit",
-            device,
-        )
-        use_indices = self._indices(
-            all_parts,
-            self.use_index,
-            lambda part: part.use,
-            "observation use",
-            device,
-        )
-        scope_indices = self._indices(
-            all_parts,
-            self.scope_index,
-            lambda part: part.scope,
-            "scope",
-            device,
-        )
-        encoded_batch = (
-            self.observation_encoder(feature_batch)
-            + self.semantic_embedding(semantic_indices)
-            + self.unit_embedding(unit_indices)
-            + self.use_embedding(use_indices)
-            + self.scope_embedding(scope_indices)
-        )
+        encoded_batch = self.encode_observation_parts(all_parts, device)
 
         channel_lookup: Dict[tuple[int, str, str], int] = {}
         channel_request_indices: list[int] = []
@@ -373,6 +338,56 @@ class TypedSnapshotEncoder(nn.Module):
         active[sensor_requests] = True
         return torch.where(active.unsqueeze(-1), encoded, torch.zeros_like(encoded))
 
+    def encode_observation_parts(
+        self,
+        parts: Sequence[ObservationPart],
+        device: torch.device,
+    ) -> Tensor:
+        """Encode typed samples without pooling away their individual identity."""
+
+        if not parts:
+            return torch.empty((0, self.d_model), dtype=torch.float32, device=device)
+        feature_batch = torch.as_tensor(
+            np.stack([self._feature_array(part) for part in parts]),
+            dtype=torch.float32,
+            device=device,
+        )
+        semantic_indices = self._indices(
+            parts,
+            self.semantic_index,
+            lambda part: part.semantic_type,
+            "semantic type",
+            device,
+        )
+        unit_indices = self._indices(
+            parts,
+            self.unit_index,
+            lambda part: part.unit,
+            "unit",
+            device,
+        )
+        use_indices = self._indices(
+            parts,
+            self.use_index,
+            lambda part: part.use,
+            "observation use",
+            device,
+        )
+        scope_indices = self._indices(
+            parts,
+            self.scope_index,
+            lambda part: part.scope,
+            "scope",
+            device,
+        )
+        return (
+            self.observation_encoder(feature_batch)
+            + self.semantic_embedding(semantic_indices)
+            + self.unit_embedding(unit_indices)
+            + self.use_embedding(use_indices)
+            + self.scope_embedding(scope_indices)
+        )
+
     @staticmethod
     def _typed_embedding(
         type_registry: Mapping[str, object],
@@ -521,9 +536,16 @@ class TypedActor(nn.Module):
         d_model: int = 128,
         attention_heads: int = 4,
         relation_layers: int = 2,
+        group_context_kind: str = "local",
     ) -> None:
         super().__init__()
         self.d_model = int(d_model)
+        self.group_context_kind = str(group_context_kind)
+        if self.group_context_kind not in {"local", "action_conditioned"}:
+            raise ValueError(
+                "TI-MARL actor group_context_kind must be 'local' or "
+                "'action_conditioned'"
+            )
         self.encoder = TypedSnapshotEncoder(type_registry, d_model, relation_layers)
         action_types = dict(type_registry.get("action_group_types", {}))
         if not action_types:
@@ -534,6 +556,18 @@ class TypedActor(nn.Module):
         }
         self.group_index = {name: index for index, name in enumerate(self.group_modes)}
         self.group_embedding = nn.Embedding(len(self.group_modes), d_model)
+        if self.group_context_kind == "action_conditioned":
+            self.group_observation_relation_embedding = nn.Embedding(4, d_model)
+            self.group_observation_attention = nn.MultiheadAttention(
+                embed_dim=d_model,
+                num_heads=int(attention_heads),
+                batch_first=True,
+            )
+            self.group_observation_norm = nn.LayerNorm(d_model)
+        else:
+            self.group_observation_relation_embedding = None
+            self.group_observation_attention = None
+            self.group_observation_norm = None
         self.group_attention = nn.MultiheadAttention(
             embed_dim=d_model,
             num_heads=int(attention_heads),
@@ -561,26 +595,23 @@ class TypedActor(nn.Module):
         entropies: Dict[str, Tensor] = {}
         latents: Dict[str, Tensor] = {}
         agent_ids = tuple(snapshot.agent_ids)
-        local_latents = self.encoder.forward_many(
-            tuple((snapshot, agent_id) for agent_id in agent_ids),
+        requests = tuple((snapshot, agent_id) for agent_id in agent_ids)
+        local_latents = self.encoder.forward_many(requests, device)
+        groups_by_request = tuple(snapshot.groups_for(agent_id) for agent_id in agent_ids)
+        flat_contexts = self._group_contexts_many(
+            requests,
+            groups_by_request,
+            local_latents,
             device,
         )
-        for agent_id, local_latent in zip(agent_ids, local_latents):
+        context_offset = 0
+        for request_index, (agent_id, local_latent) in enumerate(
+            zip(agent_ids, local_latents)
+        ):
             latents[agent_id] = local_latent
-            groups = snapshot.groups_for(agent_id)
-            if groups:
-                group_indices = torch.tensor(
-                    [self.group_index[group.group_type] for group in groups],
-                    dtype=torch.long,
-                    device=device,
-                )
-                contexts = (
-                    local_latent.unsqueeze(0) + self.group_embedding(group_indices)
-                ).unsqueeze(0)
-                attended, _ = self.group_attention(contexts, contexts, contexts, need_weights=False)
-                contexts = self.group_norm(contexts + attended).squeeze(0)
-            else:
-                contexts = torch.empty((0, self.d_model), device=device)
+            groups = groups_by_request[request_index]
+            contexts = flat_contexts[context_offset : context_offset + len(groups)]
+            context_offset += len(groups)
 
             agent_decisions = []
             agent_log_prob = torch.zeros((), device=device)
@@ -632,7 +663,7 @@ class TypedActor(nn.Module):
         ]
         if not requests:
             empty = tuple({} for _item in items)
-            return ActorReplayEvaluation(empty, empty)
+            return ActorReplayEvaluation(empty, empty, empty, empty, empty, empty)
 
         latents = self.encoder.forward_many(requests, device)
         group_entries: list[
@@ -654,69 +685,38 @@ class TypedActor(nn.Module):
 
         request_log_probs = torch.zeros(len(requests), device=device)
         request_entropies = torch.zeros(len(requests), device=device)
+        group_log_prob_by_step: list[Dict[str, Dict[str, Tensor]]] = [
+            {} for _item in items
+        ]
+        group_entropy_by_step: list[Dict[str, Dict[str, Tensor]]] = [
+            {} for _item in items
+        ]
+        group_mode_log_prob_by_step: list[Dict[str, Dict[str, Tensor]]] = [
+            {} for _item in items
+        ]
+        group_predicted_mode_by_step: list[Dict[str, Dict[str, Tensor]]] = [
+            {} for _item in items
+        ]
         if group_entries:
-            max_groups = max(group_counts)
-            positions = []
-            seen = [0] * len(requests)
-            for request_index, _group, _expected in group_entries:
-                positions.append(seen[request_index])
-                seen[request_index] += 1
+            groups_by_request = tuple(
+                tuple(
+                    entry[1]
+                    for entry in group_entries
+                    if entry[0] == request_index
+                )
+                for request_index in range(len(requests))
+            )
+            flat_contexts = self._group_contexts_many(
+                requests,
+                groups_by_request,
+                latents,
+                device,
+            )
             request_indices = torch.tensor(
                 [entry[0] for entry in group_entries],
                 dtype=torch.long,
                 device=device,
             )
-            position_indices = torch.tensor(
-                positions, dtype=torch.long, device=device
-            )
-            type_indices = torch.tensor(
-                [self.group_index[entry[1].group_type] for entry in group_entries],
-                dtype=torch.long,
-                device=device,
-            )
-            flat_contexts = (
-                latents[request_indices] + self.group_embedding(type_indices)
-            )
-            padded = torch.zeros(
-                (len(requests), max_groups, self.d_model),
-                dtype=flat_contexts.dtype,
-                device=device,
-            )
-            padded[request_indices, position_indices] = flat_contexts
-            padding_mask = torch.ones(
-                (len(requests), max_groups), dtype=torch.bool, device=device
-            )
-            padding_mask[request_indices, position_indices] = False
-            active_request_values = [
-                index for index, count in enumerate(group_counts) if count
-            ]
-            active_request_indices = torch.tensor(
-                active_request_values,
-                dtype=torch.long,
-                device=device,
-            )
-            attended, _ = self.group_attention(
-                padded[active_request_indices],
-                padded[active_request_indices],
-                padded[active_request_indices],
-                key_padding_mask=padding_mask[active_request_indices],
-                need_weights=False,
-            )
-            attended = self.group_norm(
-                padded[active_request_indices] + attended
-            )
-            active_row_by_request = {
-                int(request_index): row_index
-                for row_index, request_index in enumerate(
-                    active_request_values
-                )
-            }
-            active_rows = torch.tensor(
-                [active_row_by_request[entry[0]] for entry in group_entries],
-                dtype=torch.long,
-                device=device,
-            )
-            flat_contexts = attended[active_rows, position_indices]
 
             for group_type, modes in self.group_modes.items():
                 selected = [
@@ -757,16 +757,16 @@ class TypedActor(nn.Module):
                 mask = torch.tensor(
                     mask_values, dtype=torch.bool, device=device
                 )
-                categorical = Categorical(
-                    logits=logits.masked_fill(
-                        ~mask, torch.finfo(logits.dtype).min
-                    )
+                masked_logits = logits.masked_fill(
+                    ~mask, torch.finfo(logits.dtype).min
                 )
+                categorical = Categorical(logits=masked_logits)
                 selected_modes = torch.tensor(
                     mode_indices, dtype=torch.long, device=device
                 )
-                log_prob = categorical.log_prob(selected_modes)
+                mode_log_prob = categorical.log_prob(selected_modes)
                 entropy = categorical.entropy()
+                predicted_modes = torch.argmax(masked_logits, dim=1)
                 beta_params = F.softplus(self.beta_heads[group_type](contexts)) + 1.0
                 beta_distribution = Beta(beta_params[:, 0], beta_params[:, 1])
                 fractions = torch.tensor(
@@ -785,16 +785,30 @@ class TypedActor(nn.Module):
                     dtype=torch.bool,
                     device=device,
                 )
-                log_prob = log_prob + torch.where(
+                log_prob = mode_log_prob + torch.where(
                     parameterized,
                     beta_distribution.log_prob(fractions),
-                    torch.zeros_like(log_prob),
+                    torch.zeros_like(mode_log_prob),
                 )
                 entropy = entropy + torch.where(
                     parameterized,
                     beta_distribution.entropy(),
                     torch.zeros_like(entropy),
                 )
+                for row, (_request_index, group, _expected) in enumerate(entries):
+                    step_index, agent_id = request_keys[_request_index]
+                    group_log_prob_by_step[step_index].setdefault(agent_id, {})[
+                        group.group_id
+                    ] = log_prob[row]
+                    group_entropy_by_step[step_index].setdefault(agent_id, {})[
+                        group.group_id
+                    ] = entropy[row]
+                    group_mode_log_prob_by_step[step_index].setdefault(
+                        agent_id, {}
+                    )[group.group_id] = mode_log_prob[row]
+                    group_predicted_mode_by_step[step_index].setdefault(
+                        agent_id, {}
+                    )[group.group_id] = predicted_modes[row]
                 target_requests = request_indices[selected_tensor]
                 request_log_probs = request_log_probs.index_add(
                     0, target_requests, log_prob
@@ -809,8 +823,164 @@ class TypedActor(nn.Module):
             log_prob_by_step[step_index][agent_id] = request_log_probs[request_index]
             entropy_by_step[step_index][agent_id] = request_entropies[request_index]
         return ActorReplayEvaluation(
-            tuple(log_prob_by_step), tuple(entropy_by_step)
+            tuple(log_prob_by_step),
+            tuple(entropy_by_step),
+            tuple(group_log_prob_by_step),
+            tuple(group_entropy_by_step),
+            tuple(group_mode_log_prob_by_step),
+            tuple(group_predicted_mode_by_step),
         )
+
+    def _group_contexts_many(
+        self,
+        requests: Sequence[tuple[InterfaceSnapshot, str]],
+        groups_by_request: Sequence[Sequence[ActionGroupInstance]],
+        local_latents: Tensor,
+        device: torch.device,
+    ) -> Tensor:
+        """Build action-conditioned contexts without using concrete asset IDs."""
+
+        flat_groups = [group for groups in groups_by_request for group in groups]
+        if not flat_groups:
+            return torch.empty((0, self.d_model), device=device)
+        flat_request_indices = [
+            request_index
+            for request_index, groups in enumerate(groups_by_request)
+            for _group in groups
+        ]
+        request_indices = torch.tensor(
+            flat_request_indices,
+            dtype=torch.long,
+            device=device,
+        )
+        type_indices = torch.tensor(
+            [self.group_index[group.group_type] for group in flat_groups],
+            dtype=torch.long,
+            device=device,
+        )
+        base_contexts = local_latents[request_indices] + self.group_embedding(type_indices)
+
+        if self.group_context_kind == "action_conditioned":
+            parts_by_request: list[tuple[ObservationPart, ...]] = []
+            relation_by_group: list[tuple[int, ...]] = []
+            for request_index, groups in enumerate(groups_by_request):
+                snapshot, agent_id = requests[request_index]
+                parts = tuple(
+                    part for part in snapshot.parts_for(agent_id) if part.policy_input
+                )
+                parts_by_request.append(parts)
+                for group in groups:
+                    relation_by_group.append(
+                        tuple(self._group_part_relation(group, part) for part in parts)
+                    )
+            max_parts = max((len(parts) for parts in parts_by_request), default=0)
+        else:
+            parts_by_request = []
+            relation_by_group = []
+            max_parts = 0
+        if max_parts:
+            assert self.group_observation_relation_embedding is not None
+            assert self.group_observation_attention is not None
+            assert self.group_observation_norm is not None
+            unique_request_parts = [
+                part for parts in parts_by_request for part in parts
+            ]
+            encoded_parts = self.encoder.encode_observation_parts(
+                unique_request_parts, device
+            )
+            request_offsets = []
+            offset = 0
+            for parts in parts_by_request:
+                request_offsets.append(offset)
+                offset += len(parts)
+            padded = torch.zeros(
+                (len(flat_groups), max_parts, self.d_model),
+                dtype=encoded_parts.dtype,
+                device=device,
+            )
+            padding_mask = torch.ones(
+                (len(flat_groups), max_parts), dtype=torch.bool, device=device
+            )
+            for group_index, (request_index, relations) in enumerate(
+                zip(flat_request_indices, relation_by_group)
+            ):
+                parts = parts_by_request[request_index]
+                count = len(parts)
+                if not count:
+                    continue
+                relation_indices = torch.tensor(
+                    relations, dtype=torch.long, device=device
+                )
+                padded[group_index, :count] = (
+                    encoded_parts[
+                        request_offsets[request_index] :
+                        request_offsets[request_index] + count
+                    ]
+                    + self.group_observation_relation_embedding(relation_indices)
+                )
+                padding_mask[group_index, :count] = False
+            active = ~padding_mask.all(dim=1)
+            attended = torch.zeros_like(base_contexts)
+            if bool(active.any()):
+                cross, _ = self.group_observation_attention(
+                    base_contexts[active].unsqueeze(1),
+                    padded[active],
+                    padded[active],
+                    key_padding_mask=padding_mask[active],
+                    need_weights=False,
+                )
+                attended[active] = cross.squeeze(1)
+            base_contexts = self.group_observation_norm(base_contexts + attended)
+
+        max_groups = max((len(groups) for groups in groups_by_request), default=0)
+        positions = []
+        for groups in groups_by_request:
+            positions.extend(range(len(groups)))
+        position_indices = torch.tensor(positions, dtype=torch.long, device=device)
+        padded_groups = torch.zeros(
+            (len(requests), max_groups, self.d_model),
+            dtype=base_contexts.dtype,
+            device=device,
+        )
+        padded_groups[request_indices, position_indices] = base_contexts
+        group_padding = torch.ones(
+            (len(requests), max_groups), dtype=torch.bool, device=device
+        )
+        group_padding[request_indices, position_indices] = False
+        active_requests = ~group_padding.all(dim=1)
+        output = torch.zeros_like(padded_groups)
+        self_attended, _ = self.group_attention(
+            padded_groups[active_requests],
+            padded_groups[active_requests],
+            padded_groups[active_requests],
+            key_padding_mask=group_padding[active_requests],
+            need_weights=False,
+        )
+        output[active_requests] = self.group_norm(
+            padded_groups[active_requests] + self_attended
+        )
+        return output[request_indices, position_indices]
+
+    @staticmethod
+    def _group_part_relation(
+        group: ActionGroupInstance,
+        part: ObservationPart,
+    ) -> int:
+        if part.sensor_id == group.module_id:
+            return 0
+        group_suffix = group.module_id.rsplit("_", 1)[-1]
+        sensor_suffix = part.sensor_id.rsplit("_", 1)[-1]
+        if (
+            group.group_type == "ev_session"
+            and part.sensor_type == "ev_session"
+            and group_suffix == sensor_suffix
+        ):
+            return 0
+        if part.scope == "community":
+            return 3
+        if part.scope == "local":
+            return 2
+        return 1
 
     def _group_decision(
         self,

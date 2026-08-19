@@ -89,11 +89,15 @@ class TIMARL(BaseAgent):
         actor_cfg = dict(hyper.get("actor", {}))
         d_model = int(actor_cfg.get("d_model", 128))
         relation_layers = int(actor_cfg.get("relation_layers", 2))
+        self.actor_group_context_kind = str(
+            actor_cfg.get("group_context_kind", "local")
+        )
         self.actor = TypedActor(
             self.compiler.type_registry,
             d_model=d_model,
             attention_heads=int(actor_cfg.get("attention_heads", 4)),
             relation_layers=relation_layers,
+            group_context_kind=self.actor_group_context_kind,
         ).to(self.device)
         critic_class = (
             CentralSetCritic if self.critic_kind == "set" else LocalTypedCritic
@@ -139,7 +143,20 @@ class TIMARL(BaseAgent):
                 pretraining_epochs=int(bc_cfg.get("pretraining_epochs", 4)),
                 batch_size=int(bc_cfg.get("batch_size", 64)),
                 learning_rate=float(bc_cfg.get("learning_rate", 3.0e-4)),
+                balance_action_modes=bool(
+                    bc_cfg.get("balance_action_modes", True)
+                ),
+                mode_balance_exponent=float(
+                    bc_cfg.get("mode_balance_exponent", 0.5)
+                ),
+                max_mode_weight=float(bc_cfg.get("max_mode_weight", 4.0)),
                 seed=self.seed,
+                calibration_epochs=int(bc_cfg.get("calibration_epochs", 0)),
+                calibration_learning_rate=(
+                    None
+                    if bc_cfg.get("calibration_learning_rate") is None
+                    else float(bc_cfg["calibration_learning_rate"])
+                ),
             )
             self._bc_teacher_spec = teacher
         self.requires_raw_observation_context = self.behavior_cloning is not None
@@ -570,6 +587,7 @@ class TIMARL(BaseAgent):
             "learning_architecture": {
                 "backbone": self.backbone_name,
                 "critic": self.critic_kind,
+                "actor_group_context": self.actor_group_context_kind,
             },
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
@@ -610,7 +628,9 @@ class TIMARL(BaseAgent):
         expected_architecture = {
             "backbone": self.backbone_name,
             "critic": self.critic_kind,
+            "actor_group_context": self.actor_group_context_kind,
         }
+        architecture.setdefault("actor_group_context", "local")
         if architecture != expected_architecture:
             raise ValueError(
                 "TIMARL checkpoint learning architecture does not match: "
@@ -686,6 +706,7 @@ class TIMARL(BaseAgent):
                 "format": "ti_marl_deployment_bundle_v1",
                 "actor": self.actor.state_dict(),
                 "training_backbone": self.backbone_name,
+                "actor_group_context": self.actor_group_context_kind,
                 "behavior_cloning_warm_start": self.behavior_cloning is not None,
                 "typed_interfaces": self.compiler.resolved_typed_interface(),
                 "compiler": {

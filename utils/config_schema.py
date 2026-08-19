@@ -1185,6 +1185,7 @@ class TIMARLActorConfig(BaseModel):
     d_model: int = Field(default=128, ge=16)
     attention_heads: int = Field(default=4, ge=1)
     relation_layers: int = Field(default=2, ge=1)
+    group_context_kind: Literal["local", "action_conditioned"] = "local"
 
     @model_validator(mode="after")
     def validate_attention_width(self) -> "TIMARLActorConfig":
@@ -1228,6 +1229,11 @@ class TIMARLBehaviorCloningConfig(BaseModel):
     pretraining_epochs: int = Field(default=4, ge=1)
     batch_size: int = Field(default=64, ge=1)
     learning_rate: float = Field(default=3.0e-4, gt=0)
+    balance_action_modes: bool = True
+    mode_balance_exponent: float = Field(default=0.5, ge=0.0, le=1.0)
+    max_mode_weight: float = Field(default=4.0, ge=1.0)
+    calibration_epochs: int = Field(default=0, ge=0)
+    calibration_learning_rate: Optional[float] = Field(default=None, gt=0)
     teacher: TIMARLBehaviorCloningTeacherConfig = Field(
         default_factory=TIMARLBehaviorCloningTeacherConfig
     )

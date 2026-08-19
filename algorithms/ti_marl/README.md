@@ -101,6 +101,8 @@ hyperparameters:
   interface_polling: false
   simulator_bindings_path: /local/path/generated_interfaces/technology_bindings/simulator.yaml
   backbone: {name: mappo}  # or ppo
+  actor:
+    group_context_kind: action_conditioned  # or local
   critic: {kind: set}      # local when backbone.name is ppo
 ```
 
@@ -178,6 +180,28 @@ and the teacher never mixes actions into an on-policy episode.  After
 pretraining, full demonstration snapshots are discarded; checkpoints retain
 only the learned actor and an auditable summary of the warm start.  This is an
 initialisation strategy, not evidence that TI-MARL outperforms its teacher.
+
+The default `actor.group_context_kind: local` decodes every local action group
+from the shared agent latent plus its group type.  The optional
+`action_conditioned` variant lets each group query the same typed observation
+tokens again before the groups interact.  Four instance-free structural
+relations distinguish observations owned by that module, other observations,
+local observations and community observations.  It does not embed concrete
+building or asset IDs, so adding agents or another instance of a known asset
+type still does not resize the actor.  The selected context kind is part of the
+checkpoint architecture contract and cannot be changed silently on restore.
+
+SMART demonstrations are strongly mode-imbalanced because `IDLE` is normally
+far more common than charge, discharge or start.  The warm start may therefore
+apply bounded inverse-frequency weights independently within each action-group
+type using `balance_action_modes`, `mode_balance_exponent` and
+`max_mode_weight`.  Counts and effective weights are exported as diagnostics.
+An optional final `calibration_epochs` phase then optimises the original,
+unweighted demonstration likelihood (at `calibration_learning_rate`) to restore
+the observed action prior after rare-mode representation learning. Balanced and
+calibration losses/batches are reported separately. These settings alter only
+actor initialisation; they do not reweight PPO rewards or the subsequent
+on-policy objective.
 
 During PPO updates, observation, channel, sensor, agent and action-group sets
 from the rollout are packed by stable indices and evaluated in batches. This
