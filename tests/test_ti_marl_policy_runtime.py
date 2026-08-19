@@ -1203,6 +1203,104 @@ def test_discharge_uses_its_own_bound_and_keeps_a_negative_simulator_sign(tmp_pa
     assert encoded[0][1] == pytest.approx(-0.5)
 
 
+def test_codec_teacher_round_trip_preserves_typed_safe_action(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    codec = CityLearnTypedActionCodec()
+    codec.attach(
+        building_names=("Building_1", "Building_2"),
+        action_names=(
+            (
+                "electrical_storage",
+                "electric_vehicle_storage_charger_1",
+                "deferrable_appliance_washer",
+            ),
+            ("electrical_storage",),
+        ),
+        action_space=(
+            spaces.Box(low=np.asarray([-1.0, -1.0, 0.0]), high=np.ones(3)),
+            spaces.Box(low=np.asarray([-1.0]), high=np.ones(1)),
+        ),
+    )
+    teacher = ((0.25, -0.4, 1.0), (-0.3,))
+
+    bundles = codec.decode_teacher_actions(
+        snapshot,
+        teacher,
+        group_modes=actor.group_modes,
+    )
+    encoded = codec.encode(snapshot, bundles)
+
+    assert encoded[0] == pytest.approx(teacher[0])
+    assert encoded[1] == pytest.approx(teacher[1])
+
+
+def test_ti_marl_typed_teacher_episode_never_enters_ppo_rollout(tmp_path):
+    config = agent_config(tmp_path / "job")
+    config["algorithm"]["hyperparameters"]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+        "max_samples": 8,
+        "pretraining_epochs": 1,
+        "batch_size": 2,
+        "learning_rate": 1.0e-4,
+        "teacher": {"policy": "RBCSmartPolicy", "hyperparameters": {}},
+    }
+    agent = TIMARL(config)
+    attach_agent(agent, ("Building_1", "Building_2"))
+    teacher_actions = [[0.25, 0.0, 0.0], [-0.25]]
+    assert agent._bc_teacher is not None
+    agent._bc_teacher.predict = lambda observations, deterministic: teacher_actions
+    critic_before = {
+        key: value.detach().clone() for key, value in agent.critic.state_dict().items()
+    }
+    agent.on_episode_start(episode=0, training=True)
+    agent.set_observation_context(
+        raw_observations=[np.zeros(1), np.zeros(1)],
+        encoded_observations=None,
+    )
+    agent.set_entity_observation_context(
+        observation_payload=entity_payload(time_step=0), info={}
+    )
+
+    actions = agent.predict([], deterministic=False)
+    agent.set_entity_transition_context(
+        observation_payload=entity_payload(time_step=0),
+        next_observation_payload=entity_payload(time_step=1),
+        info={},
+    )
+    agent.update(
+        [],
+        [np.asarray(row) for row in actions],
+        [0.0, 0.0],
+        [],
+        False,
+        False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    assert len(agent.learner.rollout) == 0
+    assert agent.behavior_cloning is not None
+    assert agent.behavior_cloning.seen_samples == 1
+    agent.on_episode_end(episode=0, training=True)
+    assert agent.behavior_cloning.pretraining_complete
+    assert agent.behavior_cloning.training_samples == 1
+    cloning_state = agent.behavior_cloning.state_dict()
+    assert cloning_state["demonstrations"] == ()
+    assert all(
+        torch.equal(value, critic_before[key])
+        for key, value in agent.critic.state_dict().items()
+    )
+
+
 def test_rollout_gae_handles_leave_and_does_not_create_predecessor_for_join(tmp_path):
     _c1, first = compile_snapshot(tmp_path / "first", ("Building_1", "Building_2"), time_step=0)
     _c2, second = compile_snapshot(tmp_path / "second", ("Building_1",), time_step=1, topology_version=1)

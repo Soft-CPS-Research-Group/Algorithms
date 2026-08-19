@@ -20,6 +20,9 @@ from algorithms.ti_marl.compiler.compiler import TypedInterfaceCompiler
 from algorithms.ti_marl.contracts.compatibility import CompatibilitySignature
 from algorithms.ti_marl.contracts.models import TypedTransition, canonical_value
 from algorithms.ti_marl.learning.mappo import TIMAPPO
+from algorithms.ti_marl.learning.behavior_cloning import (
+    TypedBehaviorCloningWarmStart,
+)
 from algorithms.ti_marl.learning.rollout import RolloutStep
 from algorithms.ti_marl.policy.networks import (
     CentralSetCritic,
@@ -120,6 +123,26 @@ class TIMARL(BaseAgent):
             ),
             critic_loss=str(hyper.get("critic_loss", "huber")),
         )
+        bc_cfg = hyper.get("behavior_cloning")
+        self.behavior_cloning = None
+        self._bc_teacher = None
+        self._bc_teacher_spec: Mapping[str, Any] = {}
+        if isinstance(bc_cfg, Mapping) and bool(bc_cfg.get("enabled", True)):
+            teacher = dict(bc_cfg.get("teacher") or {})
+            if str(teacher.get("policy", "RBCSmartPolicy")) != "RBCSmartPolicy":
+                raise ValueError(
+                    "TIMARL behavior_cloning.teacher.policy must be 'RBCSmartPolicy'"
+                )
+            self.behavior_cloning = TypedBehaviorCloningWarmStart(
+                demonstration_episodes=int(bc_cfg.get("demonstration_episodes", 1)),
+                max_samples=int(bc_cfg.get("max_samples", 4096)),
+                pretraining_epochs=int(bc_cfg.get("pretraining_epochs", 4)),
+                batch_size=int(bc_cfg.get("batch_size", 64)),
+                learning_rate=float(bc_cfg.get("learning_rate", 3.0e-4)),
+                seed=self.seed,
+            )
+            self._bc_teacher_spec = teacher
+        self.requires_raw_observation_context = self.behavior_cloning is not None
         feasibility_cfg = dict(hyper.get("feasibility", {}))
         self.projector = AnalyticLocalProjector(
             enforce_ev_service=bool(feasibility_cfg.get("enforce_ev_service", True)),
@@ -156,6 +179,9 @@ class TIMARL(BaseAgent):
         self._building_names: tuple[str, ...] = ()
         self._latest_training_metrics: Dict[str, float] = {}
         self._latest_diagnostics: Dict[str, float] = {}
+        self._latest_raw_observations: Optional[List[np.ndarray]] = None
+        self._current_episode = 0
+        self._current_episode_is_training = False
 
     def attach_environment(
         self,
@@ -166,7 +192,6 @@ class TIMARL(BaseAgent):
         observation_space: List[Any],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        del observation_names, observation_space
         metadata = dict(metadata or {})
         if metadata.get("interface") != "entity":
             raise ValueError("TIMARL requires simulator.interface='entity'")
@@ -190,6 +215,24 @@ class TIMARL(BaseAgent):
             action_names=action_names,
             action_space=action_space,
         )
+        if self.behavior_cloning is not None:
+            from algorithms.agents.baseline_policies import RBCSmartPolicy
+
+            teacher_config = deepcopy(self.config)
+            teacher_config["algorithm"] = {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": deepcopy(
+                    dict(self._bc_teacher_spec.get("hyperparameters") or {})
+                ),
+            }
+            self._bc_teacher = RBCSmartPolicy(teacher_config)
+            self._bc_teacher.attach_environment(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=action_space,
+                observation_space=observation_space,
+                metadata=metadata,
+            )
         if parameter_count(self.actor) + parameter_count(self.critic) != self._parameter_count:
             raise AssertionError("TIMARL parameter count changed during topology attachment")
 
@@ -231,6 +274,21 @@ class TIMARL(BaseAgent):
             ) * 1000.0
         self._next_snapshot = None
 
+    def set_observation_context(
+        self,
+        *,
+        raw_observations: Optional[List[np.ndarray]] = None,
+        encoded_observations: Optional[List[np.ndarray]] = None,
+    ) -> None:
+        """Keep physical observations exclusively for the optional teacher."""
+
+        del encoded_observations
+        self._latest_raw_observations = (
+            [np.asarray(item, dtype=np.float64) for item in raw_observations]
+            if raw_observations is not None
+            else None
+        )
+
     def set_entity_transition_context(
         self,
         *,
@@ -258,6 +316,17 @@ class TIMARL(BaseAgent):
         del observations, context
         if self._current_snapshot is None:
             raise RuntimeError("TIMARL predict requires set_entity_observation_context")
+        if self._in_demonstration_phase():
+            if self._bc_teacher is None or self._latest_raw_observations is None:
+                raise RuntimeError(
+                    "TIMARL behavior cloning requires an attached SMART teacher "
+                    "and raw physical observation context"
+                )
+            self._pending = None
+            return self._bc_teacher.predict(
+                self._latest_raw_observations,
+                deterministic=True,
+            )
         self.actor.eval()
         self.critic.eval()
         with torch.no_grad():
@@ -352,9 +421,31 @@ class TIMARL(BaseAgent):
         update_step: bool,
         initial_exploration_done: bool,
     ) -> None:
-        del observations, actions, next_observations, update_target_step, global_learning_step, initial_exploration_done
-        if self._pending is None or self._next_snapshot is None:
+        del observations, next_observations, update_target_step, global_learning_step, initial_exploration_done
+        if self._next_snapshot is None:
             raise RuntimeError("TIMARL update requires a complete typed transition context")
+        if self._in_demonstration_phase():
+            assert self.behavior_cloning is not None
+            assert self._current_snapshot is not None
+            bundles = self.codec.decode_teacher_actions(
+                self._current_snapshot,
+                actions,
+                group_modes=self.actor.group_modes,
+            )
+            self.behavior_cloning.record(self._current_snapshot, bundles)
+            self._latest_training_metrics = {
+                "TI_MARL/teacher_action_execution": 1.0,
+                **{
+                    f"TI_MARL/{key}": float(value)
+                    for key, value in self.behavior_cloning.metrics().items()
+                },
+            }
+            self._current_snapshot = self._next_snapshot
+            self._next_snapshot = None
+            self._pending = None
+            return
+        if self._pending is None:
+            raise RuntimeError("TIMARL update requires a pending actor decision")
         current = self._pending["snapshot"]
         following = self._next_snapshot
         reward_by_agent = {
@@ -431,7 +522,19 @@ class TIMARL(BaseAgent):
         self._pending = None
 
     def on_episode_end(self, *, episode: int, training: bool) -> None:
-        del episode
+        if (
+            self.behavior_cloning is not None
+            and training
+            and not self.behavior_cloning.pretraining_complete
+            and int(episode) + 1 == self.behavior_cloning.demonstration_episodes
+        ):
+            metrics = self.behavior_cloning.pretrain(
+                self.actor,
+                max_grad_norm=self.learner.max_grad_norm,
+            )
+            self._latest_training_metrics.update(
+                {f"TI_MARL/{key}": float(value) for key, value in metrics.items()}
+            )
         if training and len(self.learner.rollout):
             self.actor.train()
             self.critic.train()
@@ -442,7 +545,8 @@ class TIMARL(BaseAgent):
         self.trace_writer.flush()
 
     def on_episode_start(self, *, episode: int, training: bool) -> None:
-        del episode, training
+        self._current_episode = int(episode)
+        self._current_episode_is_training = bool(training)
         self.compiler.reset_runtime_state()
         self._current_snapshot = None
         self._next_snapshot = None
@@ -481,6 +585,11 @@ class TIMARL(BaseAgent):
                 "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
             },
             "normalizers": {},
+            "behavior_cloning": (
+                None
+                if self.behavior_cloning is None
+                else self.behavior_cloning.state_dict()
+            ),
         }
         torch.save(payload, path)
         return str(path)
@@ -526,6 +635,8 @@ class TIMARL(BaseAgent):
         self.critic.load_state_dict(payload["critic"])
         self.learner.load_state_dict(payload["learner"])
         self.compiler.load_checkpoint_state(payload.get("compiler_state", {}))
+        if self.behavior_cloning is not None and payload.get("behavior_cloning") is not None:
+            self.behavior_cloning.load_state_dict(payload["behavior_cloning"])
         rng = payload.get("rng", {})
         if rng:
             random.setstate(rng["python"])
@@ -575,6 +686,7 @@ class TIMARL(BaseAgent):
                 "format": "ti_marl_deployment_bundle_v1",
                 "actor": self.actor.state_dict(),
                 "training_backbone": self.backbone_name,
+                "behavior_cloning_warm_start": self.behavior_cloning is not None,
                 "typed_interfaces": self.compiler.resolved_typed_interface(),
                 "compiler": {
                     "version": self._versions()["algorithms"],
@@ -627,6 +739,15 @@ class TIMARL(BaseAgent):
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         del global_learning_step
         return True
+
+    def _in_demonstration_phase(self) -> bool:
+        return bool(
+            self.behavior_cloning is not None
+            and self.behavior_cloning.in_demonstration_phase(
+                episode=self._current_episode,
+                training=self._current_episode_is_training,
+            )
+        )
 
     @staticmethod
     def _invalid_port_rate(snapshot) -> float:

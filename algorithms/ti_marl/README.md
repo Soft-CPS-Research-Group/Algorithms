@@ -169,6 +169,16 @@ update. PPO ratio clipping, approximate KL, clip fraction, explained variance
 and finite-gradient guards are reported explicitly. These options stabilize
 learning; they do not change reward or feasibility semantics.
 
+An optional typed behavior-cloning warm start can execute deterministic
+`RBCSmartPolicy` actions for complete demonstration episodes and decode those
+actions back into the same valid typed action groups used by the actor.  It
+pretrains only the shared actor before PPO begins: demonstration transitions
+never enter the PPO rollout, the central critic is not trained by the teacher,
+and the teacher never mixes actions into an on-policy episode.  After
+pretraining, full demonstration snapshots are discarded; checkpoints retain
+only the learned actor and an auditable summary of the warm start.  This is an
+initialisation strategy, not evidence that TI-MARL outperforms its teacher.
+
 During PPO updates, observation, channel, sensor, agent and action-group sets
 from the rollout are packed by stable indices and evaluated in batches. This
 preserves the same typed set reductions and hybrid-action densities while

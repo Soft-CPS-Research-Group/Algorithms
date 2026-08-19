@@ -72,6 +72,33 @@ def test_validate_config_accepts_ti_marl_entity_dynamic(base_config):
     assert parsed.pipeline[0].algorithm == "TIMARL"
 
 
+def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+        "max_samples": 672,
+        "pretraining_epochs": 2,
+        "batch_size": 32,
+        "learning_rate": 1.0e-4,
+        "teacher": {
+            "policy": "RBCSmartPolicy",
+            "hyperparameters": {"allow_v2g": True},
+        },
+    }
+    config["pipeline"] = [stage]
+
+    parsed = validate_config(config)
+
+    behavior_cloning = parsed.pipeline[0].hyperparameters.behavior_cloning
+    assert behavior_cloning is not None
+    assert behavior_cloning.teacher.policy == "RBCSmartPolicy"
+    assert behavior_cloning.max_samples == 672
+
+
 def test_validate_config_accepts_ti_ppo_with_local_critic(base_config):
     config = copy.deepcopy(base_config)
     config["simulator"]["interface"] = "entity"

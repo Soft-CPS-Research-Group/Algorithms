@@ -1216,6 +1216,23 @@ class TIMARLTraceConfig(BaseModel):
     snapshot_interval: int = Field(default=256, ge=1)
 
 
+class TIMARLBehaviorCloningTeacherConfig(BaseModel):
+    policy: Literal["RBCSmartPolicy"] = "RBCSmartPolicy"
+    hyperparameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TIMARLBehaviorCloningConfig(BaseModel):
+    enabled: bool = True
+    demonstration_episodes: int = Field(default=1, ge=1)
+    max_samples: int = Field(default=4096, ge=1)
+    pretraining_epochs: int = Field(default=4, ge=1)
+    batch_size: int = Field(default=64, ge=1)
+    learning_rate: float = Field(default=3.0e-4, gt=0)
+    teacher: TIMARLBehaviorCloningTeacherConfig = Field(
+        default_factory=TIMARLBehaviorCloningTeacherConfig
+    )
+
+
 class TIMARLHyperparameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1243,6 +1260,7 @@ class TIMARLHyperparameters(BaseModel):
     value_target_scale_floor: float = Field(default=1.0, gt=0)
     critic_loss: Literal["mse", "huber"] = "huber"
     trace: TIMARLTraceConfig = TIMARLTraceConfig()
+    behavior_cloning: Optional[TIMARLBehaviorCloningConfig] = None
 
     @model_validator(mode="after")
     def validate_learning_architecture(self) -> "TIMARLHyperparameters":

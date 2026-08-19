@@ -6,7 +6,11 @@ from typing import Any, Dict, Mapping, Sequence, Tuple
 
 import numpy as np
 
-from algorithms.ti_marl.contracts.models import InterfaceSnapshot, LocalActionBundle
+from algorithms.ti_marl.contracts.models import (
+    ActionDecision,
+    InterfaceSnapshot,
+    LocalActionBundle,
+)
 from algorithms.ti_marl.runtime.contracts import TypedActionCommand
 
 
@@ -132,6 +136,109 @@ class CityLearnTypedActionCodec:
                 )
             result.append(np.clip(vector, low, high).tolist() if len(vector) else [])
         return result
+
+    def decode_teacher_actions(
+        self,
+        snapshot: InterfaceSnapshot,
+        actions: Sequence[Sequence[float]],
+        *,
+        group_modes: Mapping[str, Sequence[str]],
+    ) -> Tuple[LocalActionBundle, ...]:
+        """Translate flat teacher actions into valid typed actor targets.
+
+        The conversion is deliberately the inverse of :meth:`encode`: the
+        target fraction is relative to the port bound compiled by the TIC.
+        A teacher command that targets a disabled or invalid port becomes
+        ``IDLE`` instead of teaching the actor to bypass health or safety.
+        """
+
+        if not self.building_names:
+            raise RuntimeError("CityLearnTypedActionCodec.attach() must be called first")
+        action_rows = [np.asarray(row, dtype=np.float64).reshape(-1) for row in actions]
+        result = []
+        for agent_id in snapshot.agent_ids:
+            if agent_id not in self.building_names:
+                continue
+            building_index = self.building_names.index(agent_id)
+            names = self.action_names[building_index]
+            low, high = self.action_bounds[building_index]
+            row = (
+                action_rows[building_index]
+                if building_index < len(action_rows)
+                else np.zeros(len(names), dtype=np.float64)
+            )
+            if len(row) != len(names):
+                raise ValueError(
+                    f"Teacher action width for {agent_id!r} is {len(row)}; "
+                    f"expected {len(names)}"
+                )
+            decisions = []
+            for group in snapshot.groups_for(agent_id):
+                modes = tuple(str(item) for item in group_modes[group.group_type])
+                idle_index = modes.index("IDLE")
+                mode = "IDLE"
+                fraction = 0.0
+                slot = self._flat_action_name(
+                    group.group_type,
+                    group.adapter_target_entity_id or group.module_id,
+                )
+                if slot in names and group.enabled:
+                    position = names.index(slot)
+                    value = float(np.clip(row[position], low[position], high[position]))
+                    if group.group_type == "deferrable":
+                        candidate_mode = "START" if value > 0.0 else "IDLE"
+                    elif value > 1.0e-9:
+                        candidate_mode = (
+                            "CHARGE_STATIONARY"
+                            if group.group_type == "stationary_storage"
+                            else "CHARGE_EV"
+                        )
+                    elif value < -1.0e-9:
+                        candidate_mode = (
+                            "DISCHARGE_STATIONARY"
+                            if group.group_type == "stationary_storage"
+                            else "DISCHARGE_EV"
+                        )
+                    else:
+                        candidate_mode = "IDLE"
+                    port = next(
+                        (item for item in group.ports if item.mode == candidate_mode),
+                        None,
+                    )
+                    if candidate_mode == "START" and port is not None and port.valid:
+                        mode = candidate_mode
+                        fraction = 1.0
+                    elif (
+                        candidate_mode != "IDLE"
+                        and port is not None
+                        and port.valid
+                        and float(port.upper_bound) > 0.0
+                    ):
+                        scale = (
+                            max(float(high[position]), 0.0)
+                            if value > 0.0
+                            else abs(min(float(low[position]), 0.0))
+                        )
+                        denominator = scale * float(port.upper_bound)
+                        if denominator > 0.0:
+                            mode = candidate_mode
+                            fraction = float(
+                                np.clip(abs(value) / denominator, 0.0, 1.0)
+                            )
+                mode_index = modes.index(mode) if mode in modes else idle_index
+                decisions.append(
+                    ActionDecision(
+                        group_id=group.group_id,
+                        mode=mode,
+                        fraction=fraction,
+                        mode_index=mode_index,
+                        raw_log_prob=0.0,
+                    )
+                )
+            result.append(
+                LocalActionBundle(agent_id=agent_id, decisions=tuple(decisions))
+            )
+        return tuple(result)
 
     @staticmethod
     def _flat_action_name(group_type: str, module_id: str) -> str:
