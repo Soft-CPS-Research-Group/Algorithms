@@ -1211,5 +1211,116 @@ class LocalTypedCritic(nn.Module):
         return tuple(result)
 
 
+class TypedGroupCritic(nn.Module):
+    """Typed value baseline per action group with invariant parameters."""
+
+    def __init__(
+        self,
+        type_registry: Mapping[str, object],
+        *,
+        d_model: int = 128,
+        relation_layers: int = 2,
+        centralized: bool = True,
+    ) -> None:
+        super().__init__()
+        self.centralized = bool(centralized)
+        self.encoder = TypedSnapshotEncoder(
+            type_registry, d_model, relation_layers
+        )
+        group_types = tuple(
+            sorted(
+                str(item)
+                for item in dict(
+                    type_registry.get("action_group_types", {})
+                )
+            )
+        )
+        if not group_types:
+            raise ValueError(
+                "TI-MARL type registry must define action_group_types"
+            )
+        self.group_index = {
+            name: index for index, name in enumerate(group_types)
+        }
+        self.group_embedding = nn.Embedding(len(group_types), d_model)
+        input_width = d_model * (3 if self.centralized else 2)
+        self.value_head = nn.Sequential(
+            nn.Linear(input_width, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 1),
+        )
+
+    def forward(
+        self,
+        snapshot: InterfaceSnapshot,
+    ) -> Mapping[str, Mapping[str, Tensor]]:
+        return self.forward_many((snapshot,))[0]
+
+    def forward_many(
+        self,
+        snapshots: Sequence[InterfaceSnapshot],
+    ) -> Tuple[Mapping[str, Mapping[str, Tensor]], ...]:
+        device = next(self.parameters()).device
+        requests = [
+            (snapshot, agent_id)
+            for snapshot in snapshots
+            for agent_id in snapshot.agent_ids
+        ]
+        result: list[Dict[str, Dict[str, Tensor]]] = [
+            {} for _snapshot in snapshots
+        ]
+        if not requests:
+            return tuple(result)
+        local = self.encoder.forward_many(requests, device)
+        snapshot_indices = torch.tensor(
+            [
+                snapshot_index
+                for snapshot_index, snapshot in enumerate(snapshots)
+                for _agent_id in snapshot.agent_ids
+            ],
+            dtype=torch.long,
+            device=device,
+        )
+        community = _group_mean(local, snapshot_indices, len(snapshots))
+
+        request_entries: list[tuple[int, int, str, ActionGroupInstance]] = []
+        request_index = 0
+        for snapshot_index, snapshot in enumerate(snapshots):
+            for agent_id in snapshot.agent_ids:
+                result[snapshot_index][agent_id] = {}
+                request_entries.extend(
+                    (request_index, snapshot_index, agent_id, group)
+                    for group in snapshot.groups_for(agent_id)
+                )
+                request_index += 1
+        if not request_entries:
+            return tuple(result)
+        request_indices = torch.tensor(
+            [item[0] for item in request_entries],
+            dtype=torch.long,
+            device=device,
+        )
+        group_indices = torch.tensor(
+            [self.group_index[item[3].group_type] for item in request_entries],
+            dtype=torch.long,
+            device=device,
+        )
+        features = [
+            local[request_indices],
+            self.group_embedding(group_indices),
+        ]
+        if self.centralized:
+            features.insert(
+                1,
+                community[snapshot_indices[request_indices]],
+            )
+        values = self.value_head(torch.cat(features, dim=-1)).squeeze(-1)
+        for index, (_request, snapshot_index, agent_id, group) in enumerate(
+            request_entries
+        ):
+            result[snapshot_index][agent_id][group.group_id] = values[index]
+        return tuple(result)
+
+
 def parameter_count(module: nn.Module) -> int:
     return sum(parameter.numel() for parameter in module.parameters())

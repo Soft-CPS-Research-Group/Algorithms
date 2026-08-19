@@ -104,6 +104,7 @@ hyperparameters:
   actor:
     group_context_kind: action_conditioned  # or local
   critic: {kind: set}      # local when backbone.name is ppo
+  policy_credit_assignment: typed_group  # or joint_agent
 ```
 
 Every observation is classified as policy input, safety dependency, runtime
@@ -177,6 +178,18 @@ gradient. Exploration can likewise be assigned by typed action family through
 `entropy_coeff_by_group_type`: for example, stationary storage can retain more
 entropy while EV and deferrable decisions remain conservative. The default is
 the original global normalization and one shared entropy coefficient.
+
+`policy_credit_assignment: typed_group` uses the interface dependency graph
+for actor credit. PPO clipping is applied to each stored action-group
+log-probability instead of one joint agent ratio, and a penalty is routed only
+to the typed family that can cause it: EV service evidence does not directly
+update storage or deferrable choices, for example. Every group still receives
+the complete economic and shared-grid reward. A parameter-shared typed group
+critic supplies the matching baseline while the centralized set critic still
+learns the authoritative total member return. Both critics accept variable
+populations and asset counts. Typed routing changes the actor estimator and is
+reported as a separate experimental ablation.
+`joint_agent` remains the backward-compatible default.
 
 An optional typed behavior-cloning warm start can execute deterministic
 `RBCSmartPolicy` actions for complete demonstration episodes and decode those

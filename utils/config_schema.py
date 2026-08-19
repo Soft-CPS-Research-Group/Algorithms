@@ -1260,6 +1260,9 @@ class TIMARLHyperparameters(BaseModel):
     entropy_coeff: float = Field(default=0.01, ge=0)
     entropy_coeff_by_group_type: Dict[str, float] = Field(default_factory=dict)
     advantage_normalization: Literal["global", "per_agent"] = "global"
+    policy_credit_assignment: Literal["joint_agent", "typed_group"] = (
+        "joint_agent"
+    )
     value_coeff: float = Field(default=0.5, ge=0)
     max_grad_norm: float = Field(default=0.5, gt=0)
     target_kl: Optional[float] = Field(default=0.03, gt=0)

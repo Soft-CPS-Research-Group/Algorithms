@@ -4,6 +4,12 @@ from algorithms.ti_marl.policy.networks import (
     CentralSetCritic,
     LocalTypedCritic,
     TypedActor,
+    TypedGroupCritic,
 )
 
-__all__ = ["CentralSetCritic", "LocalTypedCritic", "TypedActor"]
+__all__ = [
+    "CentralSetCritic",
+    "LocalTypedCritic",
+    "TypedActor",
+    "TypedGroupCritic",
+]

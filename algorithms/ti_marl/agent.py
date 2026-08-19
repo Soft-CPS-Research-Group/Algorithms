@@ -28,6 +28,7 @@ from algorithms.ti_marl.policy.networks import (
     CentralSetCritic,
     LocalTypedCritic,
     TypedActor,
+    TypedGroupCritic,
     parameter_count,
 )
 from algorithms.ti_marl.runtime.codec import CityLearnTypedActionCodec
@@ -92,6 +93,9 @@ class TIMARL(BaseAgent):
         self.actor_group_context_kind = str(
             actor_cfg.get("group_context_kind", "local")
         )
+        self.policy_credit_assignment = str(
+            hyper.get("policy_credit_assignment", "joint_agent")
+        )
         self.actor = TypedActor(
             self.compiler.type_registry,
             d_model=d_model,
@@ -107,10 +111,21 @@ class TIMARL(BaseAgent):
             d_model=d_model,
             relation_layers=relation_layers,
         ).to(self.device)
-        self._parameter_count = parameter_count(self.actor) + parameter_count(self.critic)
+        self.group_critic = (
+            TypedGroupCritic(
+                self.compiler.type_registry,
+                d_model=d_model,
+                relation_layers=relation_layers,
+                centralized=self.critic_kind == "set",
+            ).to(self.device)
+            if self.policy_credit_assignment == "typed_group"
+            else None
+        )
+        self._parameter_count = self._current_parameter_count()
         self.learner = TIMAPPO(
             self.actor,
             self.critic,
+            group_critic=self.group_critic,
             learning_rate=float(hyper.get("learning_rate", 3.0e-4)),
             gamma=float(hyper.get("gamma", 0.99)),
             gae_lambda=float(hyper.get("gae_lambda", 0.95)),
@@ -123,6 +138,7 @@ class TIMARL(BaseAgent):
             advantage_normalization=str(
                 hyper.get("advantage_normalization", "global")
             ),
+            policy_credit_assignment=self.policy_credit_assignment,
             value_coeff=float(hyper.get("value_coeff", 0.5)),
             max_grad_norm=float(hyper.get("max_grad_norm", 0.5)),
             target_kl=(None if hyper.get("target_kl", 0.03) is None else float(hyper.get("target_kl", 0.03))),
@@ -206,6 +222,17 @@ class TIMARL(BaseAgent):
         self._current_episode = 0
         self._current_episode_is_training = False
 
+    def _current_parameter_count(self) -> int:
+        return (
+            parameter_count(self.actor)
+            + parameter_count(self.critic)
+            + (
+                0
+                if self.group_critic is None
+                else parameter_count(self.group_critic)
+            )
+        )
+
     def attach_environment(
         self,
         *,
@@ -256,7 +283,7 @@ class TIMARL(BaseAgent):
                 observation_space=observation_space,
                 metadata=metadata,
             )
-        if parameter_count(self.actor) + parameter_count(self.critic) != self._parameter_count:
+        if self._current_parameter_count() != self._parameter_count:
             raise AssertionError("TIMARL parameter count changed during topology attachment")
 
     def snapshot_topology_state(self) -> Mapping[str, Any]:
@@ -352,12 +379,19 @@ class TIMARL(BaseAgent):
             )
         self.actor.eval()
         self.critic.eval()
+        if self.group_critic is not None:
+            self.group_critic.eval()
         with torch.no_grad():
             evaluation = self.actor(
                 self._current_snapshot,
                 deterministic=bool(deterministic),
             )
             values = self.critic(self._current_snapshot)
+            group_values = (
+                {}
+                if self.group_critic is None
+                else self.group_critic(self._current_snapshot)
+            )
         raw_bundles = evaluation.bundles
         final_bundles = self.projector.project(self._current_snapshot, raw_bundles)
         self.projector.assert_feasible(self._current_snapshot, final_bundles)
@@ -427,8 +461,36 @@ class TIMARL(BaseAgent):
                 key: float(value.detach().cpu()) for key, value in evaluation.log_prob_by_agent.items()
             },
             "values": {key: float(value.detach().cpu()) for key, value in values.items()},
+            "group_values": {
+                agent_id: {
+                    group_id: float(value.detach().cpu())
+                    for group_id, value in values_by_group.items()
+                }
+                for agent_id, values_by_group in group_values.items()
+            },
         }
         return commands
+
+    def _reward_components_by_agent(
+        self,
+        snapshot,
+    ) -> Mapping[str, Mapping[str, float]]:
+        """Align unflattened reward evidence with stable typed agent IDs."""
+
+        payload = self._transition_info.get("reward_components", {})
+        rows = payload.get("per_agent", []) if isinstance(payload, Mapping) else []
+        if not isinstance(rows, (list, tuple)):
+            return {}
+        aligned: dict[str, dict[str, float]] = {}
+        for index, agent_id in enumerate(snapshot.agent_ids):
+            if index >= len(rows) or not isinstance(rows[index], Mapping):
+                continue
+            numeric: dict[str, float] = {}
+            for key, value in rows[index].items():
+                if isinstance(value, (int, float, np.integer, np.floating)):
+                    numeric[str(key)] = float(value)
+            aligned[agent_id] = numeric
+        return aligned
 
     def update(
         self,
@@ -479,6 +541,19 @@ class TIMARL(BaseAgent):
             next_values = {
                 key: float(value.detach().cpu()) for key, value in self.critic(following).items()
             }
+            next_group_values = (
+                {}
+                if self.group_critic is None
+                else {
+                    agent_id: {
+                        group_id: float(value.detach().cpu())
+                        for group_id, value in values_by_group.items()
+                    }
+                    for agent_id, values_by_group in self.group_critic(
+                        following
+                    ).items()
+                }
+            )
         removed = set(current.agent_ids) - set(following.agent_ids)
         if terminated:
             removed.update(current.agent_ids)
@@ -493,11 +568,16 @@ class TIMARL(BaseAgent):
             rewards=reward_by_agent,
             terminated_agent_ids=tuple(sorted(removed)),
             truncated=bool(truncated),
+            reward_components_by_agent=self._reward_components_by_agent(current),
+            group_values=dict(self._pending.get("group_values", {})),
+            next_group_values=next_group_values,
         )
         self.learner.rollout.add(step)
         if update_step and self.learner.ready():
             self.actor.train()
             self.critic.train()
+            if self.group_critic is not None:
+                self.group_critic.train()
             metrics = self.learner.update()
             self._latest_training_metrics = {
                 f"TI_MARL/train_{key}": float(value) for key, value in metrics.items()
@@ -561,6 +641,8 @@ class TIMARL(BaseAgent):
         if training and len(self.learner.rollout):
             self.actor.train()
             self.critic.train()
+            if self.group_critic is not None:
+                self.group_critic.train()
             metrics = self.learner.update()
             self._latest_training_metrics = {
                 f"TI_MARL/train_{key}": float(value) for key, value in metrics.items()
@@ -594,9 +676,15 @@ class TIMARL(BaseAgent):
                 "backbone": self.backbone_name,
                 "critic": self.critic_kind,
                 "actor_group_context": self.actor_group_context_kind,
+                "policy_credit_assignment": self.policy_credit_assignment,
             },
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
+            "group_critic": (
+                None
+                if self.group_critic is None
+                else self.group_critic.state_dict()
+            ),
             "learner": self.learner.state_dict(),
             "compiler_state": self.compiler.checkpoint_state(),
             "compatibility_signature": asdict(self.compiler.compatibility_signature),
@@ -635,8 +723,10 @@ class TIMARL(BaseAgent):
             "backbone": self.backbone_name,
             "critic": self.critic_kind,
             "actor_group_context": self.actor_group_context_kind,
+            "policy_credit_assignment": self.policy_credit_assignment,
         }
         architecture.setdefault("actor_group_context", "local")
+        architecture.setdefault("policy_credit_assignment", "joint_agent")
         if architecture != expected_architecture:
             raise ValueError(
                 "TIMARL checkpoint learning architecture does not match: "
@@ -659,6 +749,13 @@ class TIMARL(BaseAgent):
             raise ValueError("TIMARL checkpoint compatibility signature is not accepted")
         self.actor.load_state_dict(payload["actor"])
         self.critic.load_state_dict(payload["critic"])
+        if self.group_critic is not None:
+            group_critic_state = payload.get("group_critic")
+            if group_critic_state is None:
+                raise ValueError(
+                    "TIMARL typed group checkpoint is missing its critic"
+                )
+            self.group_critic.load_state_dict(group_critic_state)
         self.learner.load_state_dict(payload["learner"])
         self.compiler.load_checkpoint_state(payload.get("compiler_state", {}))
         if self.behavior_cloning is not None and payload.get("behavior_cloning") is not None:
@@ -697,9 +794,15 @@ class TIMARL(BaseAgent):
                 "learning_architecture": {
                     "backbone": self.backbone_name,
                     "critic": self.critic_kind,
+                    "policy_credit_assignment": self.policy_credit_assignment,
                 },
                 "actor": self.actor.state_dict(),
                 "critic": self.critic.state_dict(),
+                "group_critic": (
+                    None
+                    if self.group_critic is None
+                    else self.group_critic.state_dict()
+                ),
                 "compatibility_signature": asdict(self.compiler.compatibility_signature),
                 "versions": self._versions(),
             },
@@ -713,6 +816,7 @@ class TIMARL(BaseAgent):
                 "actor": self.actor.state_dict(),
                 "training_backbone": self.backbone_name,
                 "actor_group_context": self.actor_group_context_kind,
+                "policy_credit_assignment": self.policy_credit_assignment,
                 "behavior_cloning_warm_start": self.behavior_cloning is not None,
                 "typed_interfaces": self.compiler.resolved_typed_interface(),
                 "compiler": {
@@ -749,6 +853,7 @@ class TIMARL(BaseAgent):
             "learning_architecture": {
                 "backbone": self.backbone_name,
                 "critic": self.critic_kind,
+                "policy_credit_assignment": self.policy_credit_assignment,
             },
             "compatibility_signature": asdict(self.compiler.compatibility_signature),
             "trace": dict(self.trace_writer.manifest()),

@@ -35,6 +35,7 @@ from algorithms.ti_marl.policy.networks import (
     CentralSetCritic,
     LocalTypedCritic,
     TypedActor,
+    TypedGroupCritic,
     parameter_count,
 )
 from algorithms.ti_marl.runtime import (
@@ -108,6 +109,38 @@ def test_actor_and_critic_are_permutation_equivariant_and_cardinality_independen
         assert set(actor(smaller, deterministic=True).latent_by_agent) == {"Building_1"}
         assert set(critic(smaller)) == {"Building_1"}
     assert parameter_count(actor) + parameter_count(critic) == initial_parameters
+
+
+def test_typed_group_critic_is_equivariant_and_cardinality_independent(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    torch.manual_seed(31)
+    critic = TypedGroupCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+        centralized=True,
+    )
+    initial_parameters = parameter_count(critic)
+
+    with torch.no_grad():
+        baseline = critic(snapshot)
+        permuted = replace(snapshot, agent_ids=tuple(reversed(snapshot.agent_ids)))
+        reordered = critic(permuted)
+    assert baseline.keys() == reordered.keys()
+    for agent_id, values_by_group in baseline.items():
+        assert values_by_group.keys() == reordered[agent_id].keys()
+        for group_id, value in values_by_group.items():
+            assert torch.allclose(
+                value, reordered[agent_id][group_id], atol=1.0e-6
+            )
+
+    compiler.attach_entity_specs(entity_specs(("Building_1",)))
+    smaller = compiler.compile(
+        entity_payload(("Building_1",), topology_version=1)
+    )
+    with torch.no_grad():
+        assert set(critic(smaller)) == {"Building_1"}
+    assert parameter_count(critic) == initial_parameters
 
 
 def test_typed_encoder_distinguishes_load_pv_and_exact_observation_identity(tmp_path):
@@ -1179,9 +1212,13 @@ def test_mappo_can_normalize_advantages_per_agent_without_scale_leakage():
 
 
 @pytest.mark.parametrize("critic_kind", ["local", "set"])
+@pytest.mark.parametrize(
+    "policy_credit_assignment", ["joint_agent", "typed_group"]
+)
 def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
     tmp_path,
     critic_kind,
+    policy_credit_assignment,
 ):
     compiler, first = compile_snapshot(tmp_path / "first", time_step=0)
     _compiler, second = compile_snapshot(tmp_path / "second", time_step=1)
@@ -1198,14 +1235,26 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
         d_model=32,
         relation_layers=1,
     )
+    group_critic = (
+        TypedGroupCritic(
+            compiler.type_registry,
+            d_model=32,
+            relation_layers=1,
+            centralized=critic_kind == "set",
+        )
+        if policy_credit_assignment == "typed_group"
+        else None
+    )
     learner = TIMAPPO(
         actor,
         critic,
+        group_critic=group_critic,
         rollout_steps=1,
         ppo_epochs=2,
         target_kl=None,
         advantage_normalization="per_agent",
         entropy_coeff_by_group_type={"stationary_storage": 0.05},
+        policy_credit_assignment=policy_credit_assignment,
     )
     with torch.no_grad():
         evaluation = actor(first, deterministic=True)
@@ -1224,6 +1273,36 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
             rewards={key: 1.0 for key in first.agent_ids},
             terminated_agent_ids=first.agent_ids,
             truncated=False,
+            reward_components_by_agent={
+                agent_id: {
+                    "battery_safety_penalty": 0.0,
+                    "ev_service_penalty": 2.0,
+                    "deferrable_service_penalty": 0.0,
+                }
+                for agent_id in first.agent_ids
+            },
+            group_values=(
+                {}
+                if group_critic is None
+                else {
+                    agent_id: {
+                        group_id: float(value)
+                        for group_id, value in values_by_group.items()
+                    }
+                    for agent_id, values_by_group in group_critic(first).items()
+                }
+            ),
+            next_group_values=(
+                {}
+                if group_critic is None
+                else {
+                    agent_id: {
+                        group_id: float(value)
+                        for group_id, value in values_by_group.items()
+                    }
+                    for agent_id, values_by_group in group_critic(second).items()
+                }
+            ),
         )
     )
 
@@ -1248,6 +1327,49 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
     assert metrics["evaluated_samples_per_second"] > 0.0
     assert np.isfinite(metrics["entropy_bonus"])
     assert np.isfinite(metrics["entropy_stationary_storage"])
+    if policy_credit_assignment == "typed_group":
+        assert metrics["actor_samples"] >= metrics["samples"]
+    else:
+        assert metrics["actor_samples"] == metrics["samples"]
+
+
+def test_typed_group_advantage_routes_only_related_constraint_penalties(
+    tmp_path,
+):
+    _compiler, first = compile_snapshot(tmp_path / "first", time_step=0)
+    _compiler, second = compile_snapshot(tmp_path / "second", time_step=1)
+    buffer = TypedRolloutBuffer()
+    components = {
+        agent_id: {
+            "battery_safety_penalty": 1.0,
+            "ev_service_penalty": 100.0,
+            "deferrable_service_penalty": 3.0,
+        }
+        for agent_id in first.agent_ids
+    }
+    buffer.add(
+        RolloutStep(
+            snapshot=first,
+            next_snapshot=second,
+            bundles=(),
+            old_log_probs={agent_id: 0.0 for agent_id in first.agent_ids},
+            values={agent_id: 0.0 for agent_id in first.agent_ids},
+            next_values={agent_id: 0.0 for agent_id in first.agent_ids},
+            rewards={agent_id: -104.0 for agent_id in first.agent_ids},
+            terminated_agent_ids=first.agent_ids,
+            truncated=False,
+            reward_components_by_agent=components,
+        )
+    )
+
+    samples = buffer.typed_group_advantages(gamma=0.99, gae_lambda=0.95)
+    advantages_by_type = {
+        sample.group_type: sample.advantage for sample in samples
+    }
+
+    assert advantages_by_type["stationary_storage"] == pytest.approx(-1.0)
+    assert advantages_by_type["ev_session"] == pytest.approx(-100.0)
+    assert advantages_by_type["deferrable"] == pytest.approx(-3.0)
 
 
 def test_required_deferrable_with_unknown_deadline_starts_once_when_safe(tmp_path):
@@ -1518,6 +1640,58 @@ def test_ti_marl_typed_teacher_episode_never_enters_ppo_rollout(tmp_path):
     )
 
 
+def test_ti_marl_aligns_typed_credit_evidence_with_stable_agent_ids(tmp_path):
+    config = agent_config(tmp_path / "job")
+    config["algorithm"]["hyperparameters"][
+        "policy_credit_assignment"
+    ] = "typed_group"
+    config["algorithm"]["hyperparameters"]["rollout_steps"] = 64
+    agent = TIMARL(config)
+    attach_agent(agent, ("Building_1", "Building_2"))
+    agent.on_episode_start(episode=0, training=True)
+    agent.set_entity_observation_context(
+        observation_payload=entity_payload(time_step=0), info={}
+    )
+    actions = agent.predict([], deterministic=False)
+    agent.set_entity_transition_context(
+        observation_payload=entity_payload(time_step=0),
+        next_observation_payload=entity_payload(time_step=1),
+        info={
+            "reward_components": {
+                "per_agent": [
+                    {
+                        "battery_safety_penalty": 1.0,
+                        "ev_service_penalty": 2.0,
+                    },
+                    {"battery_safety_penalty": 3.0},
+                ]
+            }
+        },
+    )
+    agent.update(
+        [],
+        [np.asarray(row) for row in actions],
+        [-3.0, -3.0],
+        [],
+        False,
+        False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=True,
+    )
+
+    step = agent.learner.rollout.steps[0]
+    assert step.reward_components_by_agent["Building_1"][
+        "ev_service_penalty"
+    ] == pytest.approx(2.0)
+    assert step.reward_components_by_agent["Building_2"][
+        "battery_safety_penalty"
+    ] == pytest.approx(3.0)
+    assert step.group_values["Building_1"]
+    assert step.next_group_values["Building_1"]
+
+
 def test_rollout_gae_handles_leave_and_does_not_create_predecessor_for_join(tmp_path):
     _c1, first = compile_snapshot(tmp_path / "first", ("Building_1", "Building_2"), time_step=0)
     _c2, second = compile_snapshot(tmp_path / "second", ("Building_1",), time_step=1, topology_version=1)
@@ -1682,6 +1856,31 @@ def test_checkpoint_rejects_a_different_actor_group_context(tmp_path):
     attach_agent(conditioned, ("Building_1",))
     with pytest.raises(ValueError, match="learning architecture"):
         conditioned.load_checkpoint(checkpoint)
+
+
+def test_checkpoint_pins_typed_group_credit_and_restores_its_critic(tmp_path):
+    typed_config = agent_config(tmp_path / "typed")
+    typed_config["algorithm"]["hyperparameters"][
+        "policy_credit_assignment"
+    ] = "typed_group"
+    source = TIMARL(typed_config)
+    attach_agent(source, ("Building_1",))
+    checkpoint = source.save_checkpoint(str(tmp_path / "checkpoint"), step=1)
+
+    restored_config = agent_config(tmp_path / "restored")
+    restored_config["algorithm"]["hyperparameters"][
+        "policy_credit_assignment"
+    ] = "typed_group"
+    restored = TIMARL(restored_config)
+    attach_agent(restored, ("Building_1",))
+    restored.load_checkpoint(checkpoint)
+    assert restored.group_critic is not None
+    assert restored._parameter_count == source._parameter_count
+
+    joint = TIMARL(agent_config(tmp_path / "joint"))
+    attach_agent(joint, ("Building_1",))
+    with pytest.raises(ValueError, match="learning architecture"):
+        joint.load_checkpoint(checkpoint)
 
 
 def test_checkpoint_compiler_migration_requires_explicit_opt_in(tmp_path):
