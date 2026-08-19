@@ -1258,6 +1258,8 @@ class TIMARLHyperparameters(BaseModel):
     clip_eps: float = Field(default=0.2, gt=0)
     ppo_epochs: int = Field(default=4, ge=1)
     entropy_coeff: float = Field(default=0.01, ge=0)
+    entropy_coeff_by_group_type: Dict[str, float] = Field(default_factory=dict)
+    advantage_normalization: Literal["global", "per_agent"] = "global"
     value_coeff: float = Field(default=0.5, ge=0)
     max_grad_norm: float = Field(default=0.5, gt=0)
     target_kl: Optional[float] = Field(default=0.03, gt=0)
@@ -1275,6 +1277,10 @@ class TIMARLHyperparameters(BaseModel):
             raise ValueError(
                 f"TIMARL backbone.name={self.backbone.name!r} requires "
                 f"critic.kind={expected!r}"
+            )
+        if any(value < 0.0 for value in self.entropy_coeff_by_group_type.values()):
+            raise ValueError(
+                "TIMARL entropy_coeff_by_group_type values must be non-negative"
             )
         return self
 

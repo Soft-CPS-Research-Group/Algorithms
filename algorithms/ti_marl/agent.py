@@ -117,6 +117,12 @@ class TIMARL(BaseAgent):
             clip_eps=float(hyper.get("clip_eps", 0.2)),
             ppo_epochs=int(hyper.get("ppo_epochs", 4)),
             entropy_coeff=float(hyper.get("entropy_coeff", 0.01)),
+            entropy_coeff_by_group_type=dict(
+                hyper.get("entropy_coeff_by_group_type", {})
+            ),
+            advantage_normalization=str(
+                hyper.get("advantage_normalization", "global")
+            ),
             value_coeff=float(hyper.get("value_coeff", 0.5)),
             max_grad_norm=float(hyper.get("max_grad_norm", 0.5)),
             target_kl=(None if hyper.get("target_kl", 0.03) is None else float(hyper.get("target_kl", 0.03))),

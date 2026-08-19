@@ -78,6 +78,11 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     config["simulator"]["central_agent"] = False
     stage = _ti_marl_stage()
     stage["hyperparameters"]["actor"]["group_context_kind"] = "action_conditioned"
+    stage["hyperparameters"]["advantage_normalization"] = "per_agent"
+    stage["hyperparameters"]["entropy_coeff_by_group_type"] = {
+        "stationary_storage": 0.05,
+        "ev_session": 0.005,
+    }
     stage["hyperparameters"]["behavior_cloning"] = {
         "enabled": True,
         "demonstration_episodes": 1,
@@ -108,6 +113,11 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     assert behavior_cloning.max_mode_weight == 3.0
     assert behavior_cloning.calibration_epochs == 2
     assert behavior_cloning.calibration_learning_rate == 5.0e-5
+    assert parsed.pipeline[0].hyperparameters.advantage_normalization == "per_agent"
+    assert parsed.pipeline[0].hyperparameters.entropy_coeff_by_group_type == {
+        "stationary_storage": 0.05,
+        "ev_session": 0.005,
+    }
     assert (
         parsed.pipeline[0].hyperparameters.actor.group_context_kind
         == "action_conditioned"

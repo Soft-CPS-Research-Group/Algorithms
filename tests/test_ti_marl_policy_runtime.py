@@ -26,7 +26,11 @@ from algorithms.ti_marl.learning.mappo import TIMAPPO
 from algorithms.ti_marl.learning.behavior_cloning import (
     TypedBehaviorCloningWarmStart,
 )
-from algorithms.ti_marl.learning.rollout import RolloutStep, TypedRolloutBuffer
+from algorithms.ti_marl.learning.rollout import (
+    AdvantageSample,
+    RolloutStep,
+    TypedRolloutBuffer,
+)
 from algorithms.ti_marl.policy.networks import (
     CentralSetCritic,
     LocalTypedCritic,
@@ -1156,6 +1160,24 @@ def test_mappo_value_loss_normalizes_large_targets_and_keeps_raw_diagnostic():
     assert torch.isfinite(predictions.grad).all()
 
 
+def test_mappo_can_normalize_advantages_per_agent_without_scale_leakage():
+    learner = TIMAPPO(
+        torch.nn.Linear(1, 1),
+        torch.nn.Linear(1, 1),
+        advantage_normalization="per_agent",
+    )
+    samples = (
+        AdvantageSample(0, "small", 1.0, 1.0),
+        AdvantageSample(1, "small", 3.0, 3.0),
+        AdvantageSample(0, "large", 100.0, 100.0),
+        AdvantageSample(1, "large", 300.0, 300.0),
+    )
+
+    normalized = learner._normalize_advantages(samples)
+
+    assert normalized == pytest.approx((-1.0, 1.0, -1.0, 1.0))
+
+
 @pytest.mark.parametrize("critic_kind", ["local", "set"])
 def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
     tmp_path,
@@ -1182,6 +1204,8 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
         rollout_steps=1,
         ppo_epochs=2,
         target_kl=None,
+        advantage_normalization="per_agent",
+        entropy_coeff_by_group_type={"stationary_storage": 0.05},
     )
     with torch.no_grad():
         evaluation = actor(first, deterministic=True)
@@ -1222,6 +1246,8 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
     assert 0.0 <= metrics["clip_fraction"] <= 1.0
     assert metrics["update_seconds"] > 0.0
     assert metrics["evaluated_samples_per_second"] > 0.0
+    assert np.isfinite(metrics["entropy_bonus"])
+    assert np.isfinite(metrics["entropy_stationary_storage"])
 
 
 def test_required_deferrable_with_unknown_deadline_starts_once_when_safe(tmp_path):

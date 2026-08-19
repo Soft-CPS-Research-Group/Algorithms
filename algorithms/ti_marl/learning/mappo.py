@@ -27,6 +27,8 @@ class TIMAPPO:
         clip_eps: float = 0.2,
         ppo_epochs: int = 4,
         entropy_coeff: float = 0.01,
+        entropy_coeff_by_group_type: Mapping[str, float] | None = None,
+        advantage_normalization: str = "global",
         value_coeff: float = 0.5,
         max_grad_norm: float = 0.5,
         target_kl: float | None = 0.03,
@@ -42,6 +44,25 @@ class TIMAPPO:
         self.clip_eps = float(clip_eps)
         self.ppo_epochs = int(ppo_epochs)
         self.entropy_coeff = float(entropy_coeff)
+        self.entropy_coeff_by_group_type = {
+            str(key): float(value)
+            for key, value in dict(entropy_coeff_by_group_type or {}).items()
+        }
+        unknown_group_types = sorted(
+            set(self.entropy_coeff_by_group_type) - set(actor.group_modes)
+        ) if hasattr(actor, "group_modes") else []
+        if unknown_group_types:
+            raise ValueError(
+                "Unknown TI-MAPPO entropy action-group type(s): "
+                f"{unknown_group_types}"
+            )
+        if any(value < 0.0 for value in self.entropy_coeff_by_group_type.values()):
+            raise ValueError("TI-MAPPO entropy coefficients must be non-negative")
+        self.advantage_normalization = str(advantage_normalization)
+        if self.advantage_normalization not in {"global", "per_agent"}:
+            raise ValueError(
+                "TI-MAPPO advantage_normalization must be 'global' or 'per_agent'"
+            )
         self.value_coeff = float(value_coeff)
         self.max_grad_norm = float(max_grad_norm)
         self.target_kl = None if target_kl is None else float(target_kl)
@@ -64,8 +85,7 @@ class TIMAPPO:
         samples = self.rollout.advantages(gamma=self.gamma, gae_lambda=self.gae_lambda)
         if not samples:
             return {}
-        advantages = np.asarray([sample.advantage for sample in samples], dtype=np.float32)
-        advantages = (advantages - advantages.mean()) / max(float(advantages.std()), 1.0e-6)
+        advantages = self._normalize_advantages(samples)
         normalized = {
             (sample.step_index, sample.agent_id): float(value)
             for sample, value in zip(samples, advantages)
@@ -82,6 +102,8 @@ class TIMAPPO:
             critic_predictions: list[Tensor] = []
             critic_targets: list[Tensor] = []
             entropies: list[Tensor] = []
+            entropy_bonuses: list[Tensor] = []
+            entropies_by_group_type: dict[str, list[Tensor]] = defaultdict(list)
             log_ratios: list[Tensor] = []
             ratios: list[Tensor] = []
             decisions_by_step = [
@@ -126,6 +148,25 @@ class TIMAPPO:
                     clipped = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * advantage
                     actor_losses.append(-torch.minimum(unclipped, clipped))
                     entropies.append(entropy_by_agent[agent_id])
+                    group_types = {
+                        group.group_id: group.group_type
+                        for group in step.snapshot.groups_for(agent_id)
+                    }
+                    agent_entropy_bonus = torch.zeros((), device=ratio.device)
+                    for group_id, group_entropy in (
+                        evaluation.entropy_by_group_step[step_index]
+                        .get(agent_id, {})
+                        .items()
+                    ):
+                        group_type = group_types[group_id]
+                        coefficient = self.entropy_coeff_by_group_type.get(
+                            group_type, self.entropy_coeff
+                        )
+                        agent_entropy_bonus = (
+                            agent_entropy_bonus + coefficient * group_entropy
+                        )
+                        entropies_by_group_type[group_type].append(group_entropy)
+                    entropy_bonuses.append(agent_entropy_bonus)
                     target = torch.tensor(returns[key], device=values[agent_id].device)
                     critic_predictions.append(values[agent_id])
                     critic_targets.append(target)
@@ -136,6 +177,7 @@ class TIMAPPO:
                 break
             actor_loss = torch.stack(actor_losses).mean()
             entropy = torch.stack(entropies).mean()
+            entropy_bonus = torch.stack(entropy_bonuses).mean()
             critic_loss, target_mean, target_scale, raw_mse = self._value_loss(
                 torch.stack(critic_predictions),
                 torch.stack(critic_targets),
@@ -161,7 +203,7 @@ class TIMAPPO:
                 torch.zeros_like(target_variance),
             )
 
-            actor_objective = actor_loss - self.entropy_coeff * entropy
+            actor_objective = actor_loss - entropy_bonus
             critic_objective = self.value_coeff * critic_loss
             for name, value in {
                 "actor_objective": actor_objective,
@@ -191,6 +233,11 @@ class TIMAPPO:
             metrics["actor_loss"] += float(actor_loss.detach().cpu())
             metrics["critic_loss"] += float(critic_loss.detach().cpu())
             metrics["entropy"] += float(entropy.detach().cpu())
+            metrics["entropy_bonus"] += float(entropy_bonus.detach().cpu())
+            for group_type, values in entropies_by_group_type.items():
+                metrics[f"entropy_{group_type}"] += float(
+                    torch.stack(values).mean().detach().cpu()
+                )
             metrics["approx_kl"] += float(approximate_kl.detach().cpu())
             metrics["actor_grad_norm"] += float(torch.as_tensor(actor_grad).detach().cpu())
             metrics["critic_grad_norm"] += float(torch.as_tensor(critic_grad).detach().cpu())
@@ -227,6 +274,25 @@ class TIMAPPO:
             / max(result["update_seconds"], 1.0e-9)
         )
         return result
+
+    def _normalize_advantages(self, samples) -> np.ndarray:
+        advantages = np.asarray(
+            [sample.advantage for sample in samples], dtype=np.float32
+        )
+        if self.advantage_normalization == "global":
+            return (advantages - advantages.mean()) / max(
+                float(advantages.std()), 1.0e-6
+            )
+        normalized = np.zeros_like(advantages)
+        indices_by_agent: dict[str, list[int]] = defaultdict(list)
+        for index, sample in enumerate(samples):
+            indices_by_agent[sample.agent_id].append(index)
+        for indices in indices_by_agent.values():
+            values = advantages[indices]
+            normalized[indices] = (values - values.mean()) / max(
+                float(values.std()), 1.0e-6
+            )
+        return normalized
 
     def _value_loss(
         self,

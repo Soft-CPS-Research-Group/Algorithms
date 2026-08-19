@@ -171,6 +171,13 @@ update. PPO ratio clipping, approximate KL, clip fraction, explained variance
 and finite-gradient guards are reported explicitly. These options stabilize
 learning; they do not change reward or feasibility semantics.
 
+Shared policies may use `advantage_normalization: per_agent` so a building with
+many EV service terms does not set the scale of every other building's policy
+gradient. Exploration can likewise be assigned by typed action family through
+`entropy_coeff_by_group_type`: for example, stationary storage can retain more
+entropy while EV and deferrable decisions remain conservative. The default is
+the original global normalization and one shared entropy coefficient.
+
 An optional typed behavior-cloning warm start can execute deterministic
 `RBCSmartPolicy` actions for complete demonstration episodes and decode those
 actions back into the same valid typed action groups used by the actor.  It
