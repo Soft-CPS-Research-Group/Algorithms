@@ -87,6 +87,7 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     stage["hyperparameters"]["actor"]["group_context_kind"] = "action_conditioned"
     stage["hyperparameters"]["advantage_normalization"] = "per_agent"
     stage["hyperparameters"]["policy_credit_assignment"] = "typed_group"
+    stage["hyperparameters"]["policy_anchor_coeff"] = 0.05
     stage["hyperparameters"]["entropy_coeff_by_group_type"] = {
         "stationary_storage": 0.05,
         "ev_session": 0.005,
@@ -114,6 +115,7 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     parsed = validate_config(config)
 
     behavior_cloning = parsed.pipeline[0].hyperparameters.behavior_cloning
+    assert parsed.pipeline[0].hyperparameters.policy_anchor_coeff == 0.05
     assert behavior_cloning is not None
     assert behavior_cloning.teacher.policy == "RBCSmartPolicy"
     assert behavior_cloning.max_samples == 672

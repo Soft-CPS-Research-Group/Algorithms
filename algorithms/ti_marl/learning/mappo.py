@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import deepcopy
 import time
 from typing import Any, Mapping
 
@@ -31,6 +32,7 @@ class TIMAPPO:
         entropy_coeff_by_group_type: Mapping[str, float] | None = None,
         advantage_normalization: str = "global",
         policy_credit_assignment: str = "joint_agent",
+        policy_anchor_coeff: float = 0.0,
         value_coeff: float = 0.5,
         max_grad_norm: float = 0.5,
         target_kl: float | None = 0.03,
@@ -79,6 +81,12 @@ class TIMAPPO:
             raise ValueError(
                 "TI-MAPPO typed_group credit requires a typed group critic"
             )
+        self.policy_anchor_coeff = float(policy_anchor_coeff)
+        if self.policy_anchor_coeff < 0.0:
+            raise ValueError("TI-MAPPO policy_anchor_coeff must be non-negative")
+        self.policy_anchor_actor: TypedActor | None = None
+        if self.policy_anchor_coeff > 0.0:
+            self.reset_policy_anchor()
         self.value_coeff = float(value_coeff)
         self.max_grad_norm = float(max_grad_norm)
         self.target_kl = None if target_kl is None else float(target_kl)
@@ -102,6 +110,17 @@ class TIMAPPO:
 
     def ready(self) -> bool:
         return len(self.rollout) >= self.rollout_steps
+
+    def reset_policy_anchor(self) -> None:
+        """Freeze the current actor as the conservative PPO reference policy."""
+
+        if self.policy_anchor_coeff <= 0.0:
+            self.policy_anchor_actor = None
+            return
+        anchor = deepcopy(self.actor).eval()
+        for parameter in anchor.parameters():
+            parameter.requires_grad_(False)
+        self.policy_anchor_actor = anchor
 
     def update(self) -> Mapping[str, float]:
         update_started = time.perf_counter()
@@ -142,8 +161,32 @@ class TIMAPPO:
 
         metrics = defaultdict(float)
         epochs_completed = 0
+        decisions_by_step = [
+            {
+                bundle.agent_id: {
+                    decision.group_id: decision
+                    for decision in bundle.decisions
+                }
+                for bundle in step.bundles
+            }
+            for step in self.rollout.steps
+        ]
+        anchor_evaluation = None
+        if self.policy_anchor_coeff > 0.0:
+            if self.policy_anchor_actor is None:
+                raise RuntimeError("TI-MAPPO policy anchor is not initialized")
+            with torch.no_grad():
+                anchor_evaluation = self.policy_anchor_actor.evaluate_actions_many(
+                    tuple(
+                        (step.snapshot, decisions)
+                        for step, decisions in zip(
+                            self.rollout.steps, decisions_by_step
+                        )
+                    )
+                )
         for _epoch in range(self.ppo_epochs):
             actor_losses: list[Tensor] = []
+            policy_anchor_losses: list[Tensor] = []
             critic_predictions: list[Tensor] = []
             critic_targets: list[Tensor] = []
             group_critic_predictions: list[Tensor] = []
@@ -153,16 +196,6 @@ class TIMAPPO:
             entropies_by_group_type: dict[str, list[Tensor]] = defaultdict(list)
             log_ratios: list[Tensor] = []
             ratios: list[Tensor] = []
-            decisions_by_step = [
-                {
-                    bundle.agent_id: {
-                        decision.group_id: decision
-                        for decision in bundle.decisions
-                    }
-                    for bundle in step.bundles
-                }
-                for step in self.rollout.steps
-            ]
             evaluation = self.actor.evaluate_actions_many(
                 tuple(
                     (step.snapshot, decisions)
@@ -212,6 +245,13 @@ class TIMAPPO:
                             ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps
                         ) * advantage
                         actor_losses.append(-torch.minimum(unclipped, clipped))
+                        if anchor_evaluation is not None:
+                            anchor_log_prob = anchor_evaluation.log_prob_by_step[
+                                step_index
+                            ][agent_id]
+                            policy_anchor_losses.append(
+                                (new_log_prob - anchor_log_prob).pow(2)
+                            )
                         entropies.append(entropy_by_agent[agent_id])
                         agent_entropy_bonus = torch.zeros((), device=ratio.device)
                         for group_id, group_entropy in (
@@ -266,6 +306,15 @@ class TIMAPPO:
                             actor_losses.append(
                                 -torch.minimum(unclipped, clipped)
                             )
+                            if anchor_evaluation is not None:
+                                anchor_log_prob = (
+                                    anchor_evaluation.log_prob_by_group_step[
+                                        step_index
+                                    ][agent_id][group_id]
+                                )
+                                policy_anchor_losses.append(
+                                    (new_log_prob - anchor_log_prob).pow(2)
+                                )
                             group_entropy = current_entropies[group_id]
                             entropies.append(group_entropy)
                             coefficient = self.entropy_coeff_by_group_type.get(
@@ -298,6 +347,11 @@ class TIMAPPO:
             if not actor_losses:
                 break
             actor_loss = torch.stack(actor_losses).mean()
+            policy_anchor_loss = (
+                torch.stack(policy_anchor_losses).mean()
+                if policy_anchor_losses
+                else actor_loss.new_zeros(())
+            )
             entropy = torch.stack(entropies).mean()
             entropy_bonus = torch.stack(entropy_bonuses).mean()
             critic_loss, target_mean, target_scale, raw_mse = self._value_loss(
@@ -339,7 +393,11 @@ class TIMAPPO:
                 torch.zeros_like(target_variance),
             )
 
-            actor_objective = actor_loss - entropy_bonus
+            actor_objective = (
+                actor_loss
+                - entropy_bonus
+                + self.policy_anchor_coeff * policy_anchor_loss
+            )
             critic_objective = self.value_coeff * critic_loss
             group_critic_objective = (
                 None
@@ -400,6 +458,9 @@ class TIMAPPO:
                 self.group_critic_optimizer.step()
 
             metrics["actor_loss"] += float(actor_loss.detach().cpu())
+            metrics["policy_anchor_loss"] += float(
+                policy_anchor_loss.detach().cpu()
+            )
             metrics["critic_loss"] += float(critic_loss.detach().cpu())
             metrics["entropy"] += float(entropy.detach().cpu())
             metrics["entropy_bonus"] += float(entropy_bonus.detach().cpu())
@@ -457,6 +518,7 @@ class TIMAPPO:
                 "actor_samples": float(
                     len(group_samples) if group_samples else len(samples)
                 ),
+                "policy_anchor_coeff": float(self.policy_anchor_coeff),
                 "update_seconds": float(time.perf_counter() - update_started),
             }
         )
@@ -546,17 +608,45 @@ class TIMAPPO:
             ),
             "rollout": self.rollout.state_dict(),
             "update_count": self.update_count,
+            "policy_anchor_actor": (
+                None
+                if self.policy_anchor_actor is None
+                else self.policy_anchor_actor.state_dict()
+            ),
         }
 
-    def load_state_dict(self, payload: Mapping[str, Any]) -> None:
-        self.actor_optimizer.load_state_dict(payload["actor_optimizer"])
-        self.critic_optimizer.load_state_dict(payload["critic_optimizer"])
-        if self.group_critic_optimizer is not None:
+    def load_state_dict(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        restore_optimizers: bool = True,
+        restore_rollout: bool = True,
+    ) -> None:
+        if restore_optimizers:
+            self.actor_optimizer.load_state_dict(payload["actor_optimizer"])
+            self.critic_optimizer.load_state_dict(payload["critic_optimizer"])
+        if self.group_critic_optimizer is not None and restore_optimizers:
             group_optimizer = payload.get("group_critic_optimizer")
             if group_optimizer is None:
                 raise ValueError(
                     "TI-MARL typed group checkpoint is missing its optimizer"
                 )
             self.group_critic_optimizer.load_state_dict(group_optimizer)
-        self.rollout.load_state_dict(payload.get("rollout", {"format": "ti_marl_rollout_v1", "steps": []}))
+        if restore_rollout:
+            self.rollout.load_state_dict(
+                payload.get(
+                    "rollout",
+                    {"format": "ti_marl_rollout_v1", "steps": []},
+                )
+            )
+        else:
+            self.rollout.clear()
         self.update_count = int(payload.get("update_count", 0))
+        if self.policy_anchor_coeff > 0.0:
+            anchor_state = payload.get("policy_anchor_actor")
+            self.reset_policy_anchor()
+            if anchor_state is not None:
+                assert self.policy_anchor_actor is not None
+                self.policy_anchor_actor.load_state_dict(anchor_state)
+        else:
+            self.policy_anchor_actor = None

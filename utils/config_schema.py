@@ -1268,6 +1268,7 @@ class TIMARLHyperparameters(BaseModel):
     policy_credit_assignment: Literal["joint_agent", "typed_group"] = (
         "joint_agent"
     )
+    policy_anchor_coeff: float = Field(default=0.0, ge=0)
     value_coeff: float = Field(default=0.5, ge=0)
     max_grad_norm: float = Field(default=0.5, gt=0)
     target_kl: Optional[float] = Field(default=0.03, gt=0)

@@ -51,6 +51,13 @@ class TIMARL(BaseAgent):
         super().__init__()
         self.config = deepcopy(config)
         hyper = dict(config.get("algorithm", {}).get("hyperparameters", {}))
+        checkpoint_cfg = dict(config.get("checkpointing") or {})
+        self.restore_optimizers = bool(
+            checkpoint_cfg.get("restore_optimizers", True)
+        )
+        self.restore_rollout = bool(
+            checkpoint_cfg.get("restore_replay_buffer", True)
+        )
         backbone = dict(hyper.get("backbone", {}))
         critic_cfg = dict(hyper.get("critic", {}))
         self.backbone_name = str(backbone.get("name", "mappo")).lower()
@@ -140,6 +147,7 @@ class TIMARL(BaseAgent):
                 hyper.get("advantage_normalization", "global")
             ),
             policy_credit_assignment=self.policy_credit_assignment,
+            policy_anchor_coeff=float(hyper.get("policy_anchor_coeff", 0.0)),
             value_coeff=float(hyper.get("value_coeff", 0.5)),
             max_grad_norm=float(hyper.get("max_grad_norm", 0.5)),
             target_kl=(None if hyper.get("target_kl", 0.03) is None else float(hyper.get("target_kl", 0.03))),
@@ -763,6 +771,7 @@ class TIMARL(BaseAgent):
                 self.actor,
                 max_grad_norm=self.learner.max_grad_norm,
             )
+            self.learner.reset_policy_anchor()
             self._latest_training_metrics.update(
                 {f"TI_MARL/{key}": float(value) for key, value in metrics.items()}
             )
@@ -886,7 +895,11 @@ class TIMARL(BaseAgent):
                     "TIMARL typed group checkpoint is missing its critic"
                 )
             self.group_critic.load_state_dict(group_critic_state)
-        self.learner.load_state_dict(payload["learner"])
+        self.learner.load_state_dict(
+            payload["learner"],
+            restore_optimizers=self.restore_optimizers,
+            restore_rollout=self.restore_rollout,
+        )
         self.compiler.load_checkpoint_state(payload.get("compiler_state", {}))
         if self.behavior_cloning is not None and payload.get("behavior_cloning") is not None:
             self.behavior_cloning.load_state_dict(payload["behavior_cloning"])

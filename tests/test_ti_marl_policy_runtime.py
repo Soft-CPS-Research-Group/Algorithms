@@ -1357,6 +1357,7 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
         advantage_normalization="per_agent",
         entropy_coeff_by_group_type={"stationary_storage": 0.05},
         policy_credit_assignment=policy_credit_assignment,
+        policy_anchor_coeff=0.1,
     )
     with torch.no_grad():
         evaluation = actor(first, deterministic=True)
@@ -1418,12 +1419,16 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
         "ratio_error_max",
         "explained_variance",
         "actor_grad_norm",
+        "policy_anchor_loss",
+        "policy_anchor_coeff",
         "critic_grad_norm",
         "update_seconds",
         "evaluated_samples_per_second",
     ):
         assert np.isfinite(metrics[name]), name
     assert metrics["approx_kl"] >= -1.0e-7
+    assert metrics["policy_anchor_loss"] >= 0.0
+    assert metrics["policy_anchor_coeff"] == pytest.approx(0.1)
     assert 0.0 <= metrics["clip_fraction"] <= 1.0
     assert metrics["update_seconds"] > 0.0
     assert metrics["evaluated_samples_per_second"] > 0.0
@@ -1433,6 +1438,69 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
         assert metrics["actor_samples"] >= metrics["samples"]
     else:
         assert metrics["actor_samples"] == metrics["samples"]
+
+
+def test_ti_mappo_policy_anchor_is_frozen_and_checkpointed(tmp_path):
+    compiler, _snapshot = compile_snapshot(tmp_path / "anchor", time_step=0)
+    torch.manual_seed(23)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    critic = CentralSetCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+    )
+    learner = TIMAPPO(actor, critic, policy_anchor_coeff=0.25)
+    assert learner.policy_anchor_actor is not None
+    frozen = {
+        key: value.detach().clone()
+        for key, value in learner.policy_anchor_actor.state_dict().items()
+    }
+
+    with torch.no_grad():
+        next(actor.parameters()).add_(1.0)
+    assert any(
+        not torch.equal(value, actor.state_dict()[key])
+        for key, value in frozen.items()
+    )
+
+    restored_actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    restored_critic = CentralSetCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+    )
+    restored = TIMAPPO(
+        restored_actor,
+        restored_critic,
+        learning_rate=1.0e-4,
+        policy_anchor_coeff=0.25,
+    )
+    restored.load_state_dict(
+        learner.state_dict(),
+        restore_optimizers=False,
+        restore_rollout=False,
+    )
+
+    assert restored.policy_anchor_actor is not None
+    assert all(
+        torch.equal(value, restored.policy_anchor_actor.state_dict()[key])
+        for key, value in frozen.items()
+    )
+    assert all(
+        not parameter.requires_grad
+        for parameter in restored.policy_anchor_actor.parameters()
+    )
+    assert restored.actor_optimizer.param_groups[0]["lr"] == pytest.approx(1.0e-4)
 
 
 def test_typed_group_advantage_routes_only_related_constraint_penalties(
