@@ -159,6 +159,13 @@ update. PPO ratio clipping, approximate KL, clip fraction, explained variance
 and finite-gradient guards are reported explicitly. These options stabilize
 learning; they do not change reward or feasibility semantics.
 
+During PPO updates, observation, channel, sensor, agent and action-group sets
+from the rollout are packed by stable indices and evaluated in batches. This
+preserves the same typed set reductions and hybrid-action densities while
+avoiding per-observation device transfers and discarded runtime bundles.
+Update duration and evaluated samples per second are exported with the training
+diagnostics.
+
 Initial fail-safe closure also isolates invalid site meters and actuator
 channels, blocks charge/EV-V2G/deferrable start during a grid outage, preserves
 reliable stationary discharge, prioritises safe EV service under uncertain

@@ -124,6 +124,74 @@ def test_actor_is_local_while_set_critic_observes_other_agents(tmp_path):
     assert not torch.allclose(baseline_value, changed_value)
 
 
+def test_actor_replay_skips_bundle_materialization_without_changing_density(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    torch.manual_seed(17)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    sampled = actor(snapshot, deterministic=True)
+    decisions = {
+        bundle.agent_id: {
+            decision.group_id: decision for decision in bundle.decisions
+        }
+        for bundle in sampled.bundles
+    }
+
+    replayed = actor(
+        snapshot,
+        decisions=decisions,
+        materialize_bundles=False,
+    )
+    packed = actor.evaluate_actions_many(((snapshot, decisions),))
+
+    assert replayed.bundles == ()
+    for agent_id in snapshot.agent_ids:
+        assert torch.equal(
+            sampled.log_prob_by_agent[agent_id],
+            replayed.log_prob_by_agent[agent_id],
+        )
+        assert torch.equal(
+            sampled.entropy_by_agent[agent_id],
+            replayed.entropy_by_agent[agent_id],
+        )
+        assert torch.allclose(
+            sampled.log_prob_by_agent[agent_id],
+            packed.log_prob_by_step[0][agent_id],
+            atol=1.0e-6,
+        )
+        assert torch.allclose(
+            sampled.entropy_by_agent[agent_id],
+            packed.entropy_by_step[0][agent_id],
+            atol=1.0e-6,
+        )
+
+
+@pytest.mark.parametrize("critic_class", [LocalTypedCritic, CentralSetCritic])
+def test_packed_critic_matches_individual_snapshots(tmp_path, critic_class):
+    compiler, first = compile_snapshot(tmp_path / "first", time_step=0)
+    _compiler, second = compile_snapshot(tmp_path / "second", time_step=1)
+    torch.manual_seed(19)
+    critic = critic_class(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+    )
+
+    individual = (critic(first), critic(second))
+    packed = critic.forward_many((first, second))
+
+    for individual_step, packed_step in zip(individual, packed):
+        assert individual_step.keys() == packed_step.keys()
+        for agent_id in individual_step:
+            assert torch.allclose(
+                individual_step[agent_id], packed_step[agent_id], atol=1.0e-6
+            )
+
+
 def test_local_critic_is_independent_of_other_agents_and_cardinality(tmp_path):
     compiler, snapshot = compile_snapshot(tmp_path)
     torch.manual_seed(7)
@@ -808,10 +876,14 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
         "explained_variance",
         "actor_grad_norm",
         "critic_grad_norm",
+        "update_seconds",
+        "evaluated_samples_per_second",
     ):
         assert np.isfinite(metrics[name]), name
     assert metrics["approx_kl"] >= -1.0e-7
     assert 0.0 <= metrics["clip_fraction"] <= 1.0
+    assert metrics["update_seconds"] > 0.0
+    assert metrics["evaluated_samples_per_second"] > 0.0
 
 
 def test_required_deferrable_with_unknown_deadline_starts_once_when_safe(tmp_path):

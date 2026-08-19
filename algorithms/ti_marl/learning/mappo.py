@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import time
 from typing import Any, Mapping
 
 import numpy as np
@@ -59,6 +60,7 @@ class TIMAPPO:
         return len(self.rollout) >= self.rollout_steps
 
     def update(self) -> Mapping[str, float]:
+        update_started = time.perf_counter()
         samples = self.rollout.advantages(gamma=self.gamma, gae_lambda=self.gae_lambda)
         if not samples:
             return {}
@@ -82,13 +84,31 @@ class TIMAPPO:
             entropies: list[Tensor] = []
             log_ratios: list[Tensor] = []
             ratios: list[Tensor] = []
-            for step_index, step in enumerate(self.rollout.steps):
-                decisions = {
-                    bundle.agent_id: {decision.group_id: decision for decision in bundle.decisions}
+            decisions_by_step = [
+                {
+                    bundle.agent_id: {
+                        decision.group_id: decision
+                        for decision in bundle.decisions
+                    }
                     for bundle in step.bundles
                 }
-                evaluation = self.actor(step.snapshot, decisions=decisions)
-                values = self.critic(step.snapshot)
+                for step in self.rollout.steps
+            ]
+            evaluation = self.actor.evaluate_actions_many(
+                tuple(
+                    (step.snapshot, decisions)
+                    for step, decisions in zip(
+                        self.rollout.steps, decisions_by_step
+                    )
+                )
+            )
+            values_by_step = self.critic.forward_many(
+                tuple(step.snapshot for step in self.rollout.steps)
+            )
+            for step_index, step in enumerate(self.rollout.steps):
+                log_prob_by_agent = evaluation.log_prob_by_step[step_index]
+                entropy_by_agent = evaluation.entropy_by_step[step_index]
+                values = values_by_step[step_index]
                 for agent_id in step.snapshot.agent_ids:
                     key = (step_index, agent_id)
                     if key not in normalized:
@@ -96,16 +116,16 @@ class TIMAPPO:
                     old_log_prob = torch.tensor(
                         float(step.old_log_probs[agent_id]),
                         dtype=torch.float32,
-                        device=evaluation.log_prob_by_agent[agent_id].device,
+                        device=log_prob_by_agent[agent_id].device,
                     )
-                    new_log_prob = evaluation.log_prob_by_agent[agent_id]
+                    new_log_prob = log_prob_by_agent[agent_id]
                     log_ratio = torch.clamp(new_log_prob - old_log_prob, -20.0, 20.0)
                     ratio = torch.exp(log_ratio)
                     advantage = torch.tensor(normalized[key], device=ratio.device)
                     unclipped = ratio * advantage
                     clipped = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * advantage
                     actor_losses.append(-torch.minimum(unclipped, clipped))
-                    entropies.append(evaluation.entropy_by_agent[agent_id])
+                    entropies.append(entropy_by_agent[agent_id])
                     target = torch.tensor(returns[key], device=values[agent_id].device)
                     critic_predictions.append(values[agent_id])
                     critic_targets.append(target)
@@ -199,7 +219,12 @@ class TIMAPPO:
                 "epochs": float(epochs_completed),
                 "updates": float(self.update_count),
                 "samples": float(len(samples)),
+                "update_seconds": float(time.perf_counter() - update_started),
             }
+        )
+        result["evaluated_samples_per_second"] = (
+            float(len(samples) * epochs_completed)
+            / max(result["update_seconds"], 1.0e-9)
         )
         return result
 
