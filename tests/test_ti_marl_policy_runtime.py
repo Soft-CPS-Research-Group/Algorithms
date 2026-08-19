@@ -82,7 +82,17 @@ def test_actor_and_critic_are_permutation_equivariant_and_cardinality_independen
     reordered_bundles = {bundle.agent_id: bundle for bundle in reordered.bundles}
     assert baseline_bundles.keys() == reordered_bundles.keys()
     for agent_id in baseline_bundles:
-        assert baseline_bundles[agent_id].decisions == reordered_bundles[agent_id].decisions
+        baseline_decisions = baseline_bundles[agent_id].decisions
+        reordered_decisions = reordered_bundles[agent_id].decisions
+        assert len(baseline_decisions) == len(reordered_decisions)
+        for first, second in zip(baseline_decisions, reordered_decisions):
+            assert first.group_id == second.group_id
+            assert first.mode == second.mode
+            assert first.mode_index == second.mode_index
+            assert first.fraction == pytest.approx(second.fraction, abs=1.0e-6)
+            assert first.raw_log_prob == pytest.approx(
+                second.raw_log_prob, abs=1.0e-6
+            )
         assert torch.allclose(baseline_values[agent_id], reordered_values[agent_id], atol=1e-6)
 
     compiler.attach_entity_specs(entity_specs(("Building_1",)))
@@ -91,6 +101,143 @@ def test_actor_and_critic_are_permutation_equivariant_and_cardinality_independen
         assert set(actor(smaller, deterministic=True).latent_by_agent) == {"Building_1"}
         assert set(critic(smaller)) == {"Building_1"}
     assert parameter_count(actor) + parameter_count(critic) == initial_parameters
+
+
+def test_typed_encoder_distinguishes_load_pv_and_exact_observation_identity(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    parts = {
+        part.observation_id: part
+        for part in snapshot.parts_for("Building_1")
+    }
+    load = replace(parts["non_shiftable_load"], values=(2.0,))
+    pv = replace(parts["solar_generation"], values=(2.0,))
+    same_family_other_identity = replace(
+        load,
+        part_id=f"{load.part_id}:alternative",
+        observation_id="alternative_load_signal",
+        feature_names=("alternative_load_signal",),
+    )
+    assert load.semantic_type == "local_load"
+    assert pv.semantic_type == "local_pv_generation"
+    assert load.sensor_type == pv.sensor_type == "building_meter"
+
+    torch.manual_seed(29)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    actor.eval()
+    device = next(actor.parameters()).device
+
+    def encoded(part):
+        isolated = replace(snapshot, observation_parts=(part,))
+        return actor.encoder(isolated, "Building_1", device)
+
+    with torch.no_grad():
+        load_latent = encoded(load)
+        pv_latent = encoded(pv)
+        alternative_latent = encoded(same_family_other_identity)
+    assert not torch.allclose(load_latent, pv_latent)
+    assert not torch.allclose(load_latent, alternative_latent)
+
+
+def test_typed_encoder_is_invariant_to_sensor_and_observation_order(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    torch.manual_seed(31)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    actor.eval()
+    reordered = replace(
+        snapshot,
+        observation_parts=tuple(reversed(snapshot.observation_parts)),
+    )
+    device = next(actor.parameters()).device
+    with torch.no_grad():
+        baseline = actor.encoder(snapshot, "Building_1", device)
+        changed_order = actor.encoder(reordered, "Building_1", device)
+    assert torch.allclose(baseline, changed_order, atol=1.0e-6)
+
+
+def test_typed_encoder_rejects_unknown_semantic_types_safely(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    first = snapshot.observation_parts[0]
+    invalid = replace(
+        snapshot,
+        observation_parts=(replace(first, semantic_type="unknown_new_signal"),),
+    )
+    with pytest.raises(ValueError, match="Unknown TI-MARL semantic type"):
+        actor.encoder(invalid, first.owner_agent_id, next(actor.parameters()).device)
+
+
+def test_known_charger_instance_can_be_added_without_resizing_the_model(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    initial_parameters = parameter_count(actor)
+    charger_parts = tuple(
+        part
+        for part in snapshot.parts_for("Building_1")
+        if part.sensor_type == "bidirectional_ev_charger"
+    )
+    second_charger_parts = tuple(
+        replace(
+            part,
+            part_id=part.part_id.replace("charger_1", "charger_2"),
+            sensor_id="charger_2",
+            source_entity_id=part.source_entity_id.replace(
+                "charger_1", "charger_2"
+            ),
+        )
+        for part in charger_parts
+    )
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    second_group = replace(
+        ev_group,
+        group_id=ev_group.group_id.replace("charger_1", "charger_2"),
+        module_id="charger_2",
+        ports=tuple(
+            replace(
+                port,
+                port_id=port.port_id.replace("charger_1", "charger_2"),
+                target_entity_id=port.target_entity_id.replace(
+                    "charger_1", "charger_2"
+                ),
+            )
+            for port in ev_group.ports
+        ),
+    )
+    expanded = replace(
+        snapshot,
+        observation_parts=snapshot.observation_parts + second_charger_parts,
+        action_groups=snapshot.action_groups + (second_group,),
+    )
+    with torch.no_grad():
+        result = actor(expanded, deterministic=True)
+    building = next(
+        bundle for bundle in result.bundles if bundle.agent_id == "Building_1"
+    )
+    assert len(building.decisions) == len(snapshot.groups_for("Building_1")) + 1
+    assert parameter_count(actor) == initial_parameters
 
 
 def test_actor_is_local_while_set_critic_observes_other_agents(tmp_path):
@@ -232,7 +379,7 @@ def test_local_critic_is_independent_of_other_agents_and_cardinality(tmp_path):
         smaller = critic(only_first)["Building_1"]
 
     assert torch.equal(baseline, other_changed)
-    assert torch.equal(baseline, smaller)
+    assert torch.allclose(baseline, smaller, atol=1.0e-6)
     assert parameter_count(critic) == initial_parameters
 
 

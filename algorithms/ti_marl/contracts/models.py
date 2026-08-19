@@ -164,6 +164,7 @@ class ObservationPart:
     validity_reasons: Tuple[str, ...] = ()
     estimated: bool = False
     sensor_id: str = "unknown_sensor"
+    sensor_type: str = "unknown_sensor"
     channel_id: str = "state"
     observation_id: str = "value"
     unit: str = "scalar"

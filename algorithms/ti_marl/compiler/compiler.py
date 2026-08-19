@@ -24,6 +24,7 @@ from algorithms.ti_marl.contracts.interface_definition import (
     ActionDefinition,
     ActuatorDefinition,
     InterfaceRegistry,
+    OBSERVATION_USES,
     ObservationDefinition,
     RegistryDelta,
     TypedAgentInterface,
@@ -46,6 +47,7 @@ from algorithms.ti_marl.contracts.models import (
 from algorithms.ti_marl.contracts.profile_registry import (
     ACTION_PROFILES,
     SENSOR_ENTITY_TYPES,
+    SUPPORTED_UNITS,
     CapabilityProfileRegistry,
 )
 from algorithms.ti_marl.runtime.adapters import SimulatorAdapter
@@ -59,7 +61,7 @@ from algorithms.ti_marl.runtime.contracts import (
 )
 
 
-COMPILER_VERSION = "tic_v4"
+COMPILER_VERSION = "tic_v5"
 
 
 class TypedInterfaceCompiler:
@@ -111,17 +113,12 @@ class TypedInterfaceCompiler:
 
     def _generic_agent_schema(self) -> Mapping[str, Any]:
         return {
-            "version": "ti_marl_agent_schema_v2",
+            "version": "ti_marl_agent_schema_v3",
             "agent_entity_type": "building",
             "module_types": sorted(set(SENSOR_ENTITY_TYPES.values())),
-            "observation_semantic_types": [
-                "local_energy",
-                "local_constraint",
-                "storage_state",
-                "ev_service",
-                "deferrable_state",
-                "community_signal",
-            ],
+            "observation_semantic_types": list(
+                self.profiles.supported_semantic_types
+            ),
             "action_group_types": sorted(
                 set(str(profile["group_type"]) for profile in ACTION_PROFILES.values())
             ),
@@ -148,9 +145,13 @@ class TypedInterfaceCompiler:
                     "modes": list(modes),
                 }
         return {
-            "version": "ti_marl_type_registry_v2",
+            "version": "ti_marl_type_registry_v3",
             "entity_types": entity_types,
-            "sensor_types": sorted(SENSOR_ENTITY_TYPES),
+            "sensor_types": ["unknown_sensor", *sorted(SENSOR_ENTITY_TYPES)],
+            "channel_types": list(self.profiles.supported_channel_types),
+            "unit_types": sorted(SUPPORTED_UNITS),
+            "observation_uses": sorted(OBSERVATION_USES),
+            "scopes": ["community", "local"],
             "semantic_types": self._generic_agent_schema()["observation_semantic_types"],
             "action_group_types": action_groups,
             "hierarchy": ["observation", "channel", "sensor", "agent"],
@@ -478,6 +479,7 @@ class TypedInterfaceCompiler:
                     validity_reasons=validity_reasons,
                     estimated=False if sample is None else sample.estimated,
                     sensor_id=sensor_id,
+                    sensor_type=definition.sensor_type,
                     channel_id=definition.channel_id,
                     observation_id=definition.observation_id,
                     unit=definition.unit,

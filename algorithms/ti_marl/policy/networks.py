@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
+import re
 from typing import Dict, Mapping, Sequence, Tuple
 
 import numpy as np
@@ -104,7 +106,17 @@ class TypedSnapshotEncoder(nn.Module):
         if not semantic_types:
             raise ValueError("TI-MARL type registry must define semantic_types")
         self.d_model = int(d_model)
-        input_width = 4 + len(HealthState) + 2 + 1 + 1 + 3
+        identity_width = 8
+        temporal_width = 3
+        input_width = (
+            4
+            + len(HealthState)
+            + 2
+            + 1
+            + 3
+            + identity_width
+            + temporal_width
+        )
         self.observation_encoder = nn.Sequential(
             nn.Linear(input_width, d_model),
             nn.LayerNorm(d_model),
@@ -114,6 +126,21 @@ class TypedSnapshotEncoder(nn.Module):
         self.semantic_types = list(semantic_types)
         self.semantic_index = {name: index for index, name in enumerate(self.semantic_types)}
         self.semantic_embedding = nn.Embedding(len(self.semantic_types), d_model)
+        self.sensor_types, self.sensor_index, self.sensor_type_embedding = (
+            self._typed_embedding(type_registry, "sensor_types", d_model)
+        )
+        self.channel_types, self.channel_index, self.channel_type_embedding = (
+            self._typed_embedding(type_registry, "channel_types", d_model)
+        )
+        self.unit_types, self.unit_index, self.unit_embedding = self._typed_embedding(
+            type_registry, "unit_types", d_model
+        )
+        self.observation_uses, self.use_index, self.use_embedding = (
+            self._typed_embedding(type_registry, "observation_uses", d_model)
+        )
+        self.scopes, self.scope_index, self.scope_embedding = self._typed_embedding(
+            type_registry, "scopes", d_model
+        )
         self.channel_encoder = RelationalMessageLayer(d_model)
         self.sensor_encoder = RelationalMessageLayer(d_model)
         self.layers = nn.ModuleList(
@@ -155,18 +182,47 @@ class TypedSnapshotEncoder(nn.Module):
             dtype=torch.float32,
             device=device,
         )
-        semantic_indices = torch.tensor(
-            [self.semantic_index.get(part.semantic_type, 0) for part in all_parts],
-            dtype=torch.long,
-            device=device,
+        semantic_indices = self._indices(
+            all_parts,
+            self.semantic_index,
+            lambda part: part.semantic_type,
+            "semantic type",
+            device,
         )
-        encoded_batch = self.observation_encoder(feature_batch) + self.semantic_embedding(
-            semantic_indices
+        unit_indices = self._indices(
+            all_parts,
+            self.unit_index,
+            lambda part: part.unit,
+            "unit",
+            device,
+        )
+        use_indices = self._indices(
+            all_parts,
+            self.use_index,
+            lambda part: part.use,
+            "observation use",
+            device,
+        )
+        scope_indices = self._indices(
+            all_parts,
+            self.scope_index,
+            lambda part: part.scope,
+            "scope",
+            device,
+        )
+        encoded_batch = (
+            self.observation_encoder(feature_batch)
+            + self.semantic_embedding(semantic_indices)
+            + self.unit_embedding(unit_indices)
+            + self.use_embedding(use_indices)
+            + self.scope_embedding(scope_indices)
         )
 
         channel_lookup: Dict[tuple[int, str, str], int] = {}
         channel_request_indices: list[int] = []
         channel_sensor_ids: list[str] = []
+        channel_sensor_types: list[str] = []
+        channel_types: list[str] = []
         observation_channel_indices: list[int] = []
         for request_index, parts in enumerate(parts_by_request):
             for part in parts:
@@ -177,6 +233,15 @@ class TypedSnapshotEncoder(nn.Module):
                     channel_lookup[key] = channel_index
                     channel_request_indices.append(request_index)
                     channel_sensor_ids.append(part.sensor_id)
+                    channel_sensor_types.append(part.sensor_type)
+                    channel_types.append(part.channel_id)
+                elif (
+                    channel_sensor_types[channel_index] != part.sensor_type
+                    or channel_types[channel_index] != part.channel_id
+                ):
+                    raise ValueError(
+                        "TI-MARL channel contains inconsistent sensor/channel types"
+                    )
                 observation_channel_indices.append(channel_index)
         observation_channels = torch.tensor(
             observation_channel_indices, dtype=torch.long, device=device
@@ -191,12 +256,22 @@ class TypedSnapshotEncoder(nn.Module):
             observation_channels,
             len(channel_lookup),
         )
+        channel_type_indices = self._indices_from_values(
+            channel_types,
+            self.channel_index,
+            "channel type",
+            device,
+        )
+        channel_latents = channel_latents + self.channel_type_embedding(
+            channel_type_indices
+        )
 
         sensor_lookup: Dict[tuple[int, str], int] = {}
         sensor_request_indices: list[int] = []
+        sensor_types: list[str] = []
         channel_sensor_indices: list[int] = []
-        for request_index, sensor_id in zip(
-            channel_request_indices, channel_sensor_ids
+        for request_index, sensor_id, sensor_type in zip(
+            channel_request_indices, channel_sensor_ids, channel_sensor_types
         ):
             key = (request_index, sensor_id)
             sensor_index = sensor_lookup.get(key)
@@ -204,6 +279,9 @@ class TypedSnapshotEncoder(nn.Module):
                 sensor_index = len(sensor_lookup)
                 sensor_lookup[key] = sensor_index
                 sensor_request_indices.append(request_index)
+                sensor_types.append(sensor_type)
+            elif sensor_types[sensor_index] != sensor_type:
+                raise ValueError("TI-MARL sensor contains inconsistent sensor types")
             channel_sensor_indices.append(sensor_index)
         channel_sensors = torch.tensor(
             channel_sensor_indices, dtype=torch.long, device=device
@@ -217,6 +295,15 @@ class TypedSnapshotEncoder(nn.Module):
             encoded_channels,
             channel_sensors,
             len(sensor_lookup),
+        )
+        sensor_type_indices = self._indices_from_values(
+            sensor_types,
+            self.sensor_index,
+            "sensor type",
+            device,
+        )
+        sensor_latents = sensor_latents + self.sensor_type_embedding(
+            sensor_type_indices
         )
         sensor_requests = torch.tensor(
             sensor_request_indices, dtype=torch.long, device=device
@@ -287,9 +374,60 @@ class TypedSnapshotEncoder(nn.Module):
         return torch.where(active.unsqueeze(-1), encoded, torch.zeros_like(encoded))
 
     @staticmethod
+    def _typed_embedding(
+        type_registry: Mapping[str, object],
+        key: str,
+        d_model: int,
+    ) -> tuple[list[str], Dict[str, int], nn.Embedding]:
+        values = sorted(str(item) for item in type_registry.get(key, []))
+        if not values:
+            raise ValueError(f"TI-MARL type registry must define {key}")
+        return values, {name: index for index, name in enumerate(values)}, nn.Embedding(
+            len(values), d_model
+        )
+
+    @staticmethod
+    def _indices(
+        parts: Sequence[ObservationPart],
+        lookup: Mapping[str, int],
+        value_getter,
+        label: str,
+        device: torch.device,
+    ) -> Tensor:
+        return TypedSnapshotEncoder._indices_from_values(
+            [str(value_getter(part)) for part in parts],
+            lookup,
+            label,
+            device,
+        )
+
+    @staticmethod
+    def _indices_from_values(
+        values: Sequence[str],
+        lookup: Mapping[str, int],
+        label: str,
+        device: torch.device,
+    ) -> Tensor:
+        unknown = sorted({str(value) for value in values if str(value) not in lookup})
+        if unknown:
+            raise ValueError(f"Unknown TI-MARL {label}(s): {unknown}")
+        return torch.tensor(
+            [lookup[str(value)] for value in values],
+            dtype=torch.long,
+            device=device,
+        )
+
+    @staticmethod
     def _feature_array(part: ObservationPart) -> np.ndarray:
         raw = np.asarray(part.values or (0.0,), dtype=np.float32)
-        transformed = np.sign(raw) * np.log1p(np.abs(raw))
+        if part.normalisation == "signed_log1p":
+            transformed = np.sign(raw) * np.log1p(np.abs(raw))
+        elif part.normalisation in {"identity", "none"}:
+            transformed = raw
+        else:
+            raise ValueError(
+                f"Unknown TI-MARL normalisation: {part.normalisation!r}"
+            )
         values = np.asarray(
             (
                 transformed[0],
@@ -307,13 +445,70 @@ class TypedSnapshotEncoder(nn.Module):
         age = np.asarray(
             (np.log1p(max(part.age_seconds, 0.0)),), dtype=np.float32
         )
-        unit_hash = int(hashlib.sha256(part.unit.encode("utf-8")).hexdigest()[:8], 16)
-        unit = np.asarray(
-            ((unit_hash % 1000) / 999.0,), dtype=np.float32
-        )
         criticality = np.zeros(3, dtype=np.float32)
         criticality[{"advisory": 0, "operational": 1, "safety": 2}.get(part.criticality, 1)] = 1.0
-        return np.concatenate((values, health, flags, age, unit, criticality))
+        identity = TypedSnapshotEncoder._identity_features(part)
+        temporal = TypedSnapshotEncoder._temporal_features(part.observation_id)
+        return np.concatenate(
+            (values, health, flags, age, criticality, identity, temporal)
+        )
+
+    @staticmethod
+    def _identity_features(part: ObservationPart) -> np.ndarray:
+        # Instance IDs are intentionally absent: a second charger shares the
+        # same model parameters.  The exact typed observation still receives a
+        # stable fingerprint, preventing equal-valued load/PV/price signals
+        # from becoming indistinguishable inside a semantic family.
+        return np.asarray(
+            TypedSnapshotEncoder._identity_feature_tuple(
+                part.semantic_type,
+                part.channel_id,
+                part.observation_id,
+            ),
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    @lru_cache(maxsize=4096)
+    def _identity_feature_tuple(
+        semantic_type: str,
+        channel_id: str,
+        observation_id: str,
+    ) -> tuple[float, ...]:
+        identity = "\x1f".join((semantic_type, channel_id, observation_id))
+        digest = hashlib.sha256(identity.encode("utf-8")).digest()
+        values = (
+            np.frombuffer(digest[:8], dtype=np.uint8).astype(np.float32) / 127.5
+            - 1.0
+        )
+        return tuple(float(value) for value in values)
+
+    @staticmethod
+    def _temporal_features(observation_id: str) -> np.ndarray:
+        return np.asarray(
+            TypedSnapshotEncoder._temporal_feature_tuple(observation_id),
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    @lru_cache(maxsize=4096)
+    def _temporal_feature_tuple(observation_id: str) -> tuple[float, float, float]:
+        key = str(observation_id).lower()
+        future = re.search(r"(?:next|predicted)_(\d+)(m|h)?", key)
+        past = re.search(r"prev_(\d+)", key)
+        amount_minutes = 0.0
+        if future is not None:
+            amount_minutes = float(future.group(1))
+            if future.group(2) == "h":
+                amount_minutes *= 60.0
+        elif past is not None:
+            amount_minutes = float(past.group(1))
+        scaled_amount = np.log1p(amount_minutes) / np.log1p(1440.0)
+        return (
+            float(future is not None),
+            float(past is not None),
+            float(scaled_amount),
+        )
 
 
 class TypedActor(nn.Module):
@@ -365,8 +560,12 @@ class TypedActor(nn.Module):
         log_probs: Dict[str, Tensor] = {}
         entropies: Dict[str, Tensor] = {}
         latents: Dict[str, Tensor] = {}
-        for agent_id in snapshot.agent_ids:
-            local_latent = self.encoder(snapshot, agent_id, device)
+        agent_ids = tuple(snapshot.agent_ids)
+        local_latents = self.encoder.forward_many(
+            tuple((snapshot, agent_id) for agent_id in agent_ids),
+            device,
+        )
+        for agent_id, local_latent in zip(agent_ids, local_latents):
             latents[agent_id] = local_latent
             groups = snapshot.groups_for(agent_id)
             if groups:

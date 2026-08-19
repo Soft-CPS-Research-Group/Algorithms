@@ -341,6 +341,13 @@ class TypedAgentInterface:
                         unit=observation.get("unit"),
                     )
                     merged = {**defaults, **observation}
+                    semantic_type = str(merged.get("semantic_type", "local_energy"))
+                    if semantic_type not in profiles.supported_semantic_types:
+                        raise ValueError(
+                            f"TI-MARL observation {sensor_id}.{channel_id}."
+                            f"{observation_id} uses unknown semantic type "
+                            f"{semantic_type!r}"
+                        )
                     use = str(merged.get("use", ""))
                     if use not in OBSERVATION_USES:
                         raise ValueError(
@@ -380,7 +387,7 @@ class TypedAgentInterface:
                             source_feature=observation_id,
                             unit=unit,
                             dimensions=dimensions,
-                            semantic_type=str(merged.get("semantic_type", "local_energy")),
+                            semantic_type=semantic_type,
                             use=use,
                             policy_input=policy_input,
                             criticality=str(merged.get("criticality", "operational")),

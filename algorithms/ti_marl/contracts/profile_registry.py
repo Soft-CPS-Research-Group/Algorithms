@@ -32,6 +32,82 @@ SUPPORTED_UNITS = {
     "timestamp",
 }
 
+# Public channel names are semantic types, not deployment bindings. New
+# instances may use these channels without changing the policy shape; adding a
+# genuinely new channel kind is an explicit contract/model migration.
+SUPPORTED_CHANNEL_TYPES = (
+    "capability",
+    "connection",
+    "energy",
+    "ev_session",
+    "ev_state",
+    "execution_feedback",
+    "forecast",
+    "generation",
+    "grid",
+    "market",
+    "schedule",
+    "service",
+    "state",
+    "storage_state",
+    "time",
+)
+
+# These are deliberately instance-free. ``charger_1`` and ``charger_2`` use
+# the same vocabulary and parameters, while load, PV and price remain
+# distinguishable to the learned encoder.
+OBSERVATION_SEMANTIC_TYPES = (
+    "carbon_intensity",
+    "community_energy",
+    "community_ev_energy",
+    "community_export",
+    "community_flexibility",
+    "community_grid_constraint",
+    "community_import",
+    "community_load_forecast",
+    "community_net_exchange",
+    "community_net_forecast",
+    "community_pv_forecast",
+    "community_pv_generation",
+    "community_signal",
+    "community_storage_energy",
+    "community_topology",
+    "deferrable_capability",
+    "deferrable_schedule",
+    "deferrable_state",
+    "ev_capability",
+    "ev_connection",
+    "ev_execution",
+    "ev_schedule",
+    "ev_service",
+    "ev_soc",
+    "execution_feedback",
+    "grid_headroom",
+    "local_energy",
+    "local_ev_energy",
+    "local_export",
+    "local_flexibility",
+    "local_grid_constraint",
+    "local_import",
+    "local_load",
+    "local_load_forecast",
+    "local_net_exchange",
+    "local_net_forecast",
+    "local_pv_forecast",
+    "local_pv_generation",
+    "local_storage_energy",
+    "market_price",
+    "market_price_forecast",
+    "phase_connection",
+    "storage_capability",
+    "storage_execution",
+    "storage_soc",
+    "storage_state",
+    "time_context",
+    "weather",
+    "weather_forecast",
+)
+
 SENSOR_ENTITY_TYPES: Mapping[str, str] = {
     "building_meter": "building",
     "community_aggregate_service": "district",
@@ -146,19 +222,135 @@ def channel_for(entity_type: str, feature: str) -> str:
     return "state"
 
 
-def semantic_type_for(entity_type: str, channel: str, scope: str) -> str:
-    if scope == "community" or entity_type == "district":
-        return "community_signal"
-    if channel == "grid":
-        return "local_constraint"
-    return {
-        "storage": "storage_state",
-        "charger": "ev_service",
-        "ev": "ev_service",
-        "deferrable_appliance": "deferrable_state",
-        "pv": "local_energy",
-        "building": "local_energy",
-    }.get(entity_type, "local_energy")
+def semantic_type_for(
+    entity_type: str,
+    channel: str,
+    scope: str,
+    observation: str,
+) -> str:
+    """Classify an observation into an explicit, instance-free meaning."""
+
+    key = str(observation).lower()
+    is_forecast = channel == "forecast" or any(
+        token in key for token in ("forecast", "predicted", "next_")
+    )
+
+    if channel == "time":
+        return "time_context"
+    if "carbon_intensity" in key:
+        return "carbon_intensity"
+    if any(
+        token in key
+        for token in ("temperature", "humidity", "irradiance", "weather")
+    ):
+        return "weather_forecast" if is_forecast else "weather"
+    if channel == "market" or "price" in key or "pricing" in key:
+        return "market_price_forecast" if is_forecast else "market_price"
+
+    if entity_type == "district" or scope == "community":
+        if channel == "grid" or "headroom" in key or "phase" in key:
+            return "community_grid_constraint"
+        if is_forecast:
+            if "pv" in key or "solar" in key:
+                return "community_pv_forecast"
+            if "load" in key or "demand" in key:
+                return "community_load_forecast"
+            return "community_net_forecast"
+        if "active_" in key or key == "topology_version":
+            return "community_topology"
+        if "import" in key:
+            return "community_import"
+        if "export" in key:
+            return "community_export"
+        if "pv" in key or "solar" in key:
+            return "community_pv_generation"
+        if "bess" in key or "storage" in key:
+            return "community_storage_energy"
+        if "ev_" in key:
+            return "community_ev_energy"
+        if "flexible" in key or "flexibility" in key:
+            return "community_flexibility"
+        if "net" in key:
+            return "community_net_exchange"
+        return "community_energy"
+
+    if entity_type == "building":
+        if channel == "grid" or "headroom" in key or "violation" in key:
+            return "local_grid_constraint"
+        if is_forecast:
+            if "pv" in key or "solar" in key:
+                return "local_pv_forecast"
+            if "load" in key or "demand" in key:
+                return "local_load_forecast"
+            return "local_net_forecast"
+        if "import" in key:
+            return "local_import"
+        if "export" in key:
+            return "local_export"
+        if "pv" in key or "solar" in key:
+            return "local_pv_generation"
+        if "non_shiftable" in key or "load_" in key or key == "load":
+            return "local_load"
+        if "net" in key:
+            return "local_net_exchange"
+        if "bess" in key or "storage" in key:
+            return "local_storage_energy"
+        if "ev_" in key or "charging_total" in key:
+            return "local_ev_energy"
+        if "flexible" in key:
+            return "local_flexibility"
+        return "local_energy"
+
+    if entity_type == "storage":
+        if channel == "execution_feedback":
+            return "storage_execution"
+        if "soc" in key and not any(
+            token in key for token in ("limit", "min_", "max_", "available")
+        ):
+            return "storage_soc"
+        if any(
+            token in key
+            for token in (
+                "available",
+                "can_",
+                "capacity",
+                "efficiency",
+                "headroom",
+                "max_",
+                "min_",
+                "phase_connection",
+            )
+        ):
+            return "storage_capability"
+        return "storage_state"
+
+    if entity_type in {"charger", "ev"}:
+        if channel == "connection":
+            return "ev_connection"
+        if channel == "execution_feedback":
+            return "ev_execution"
+        if channel in {"schedule", "service"}:
+            return "ev_schedule"
+        if channel in {"ev_state", "ev_session"} and (
+            "soc" in key or "energy_" in key or "battery_capacity" in key
+        ):
+            return "ev_soc"
+        if channel == "capability":
+            return "ev_capability"
+        return "ev_service"
+
+    if entity_type == "deferrable_appliance":
+        if channel == "schedule":
+            if any(
+                token in key
+                for token in ("deadline", "slack", "start", "urgent", "must_run")
+            ):
+                return "deferrable_schedule"
+            return "deferrable_state"
+        return "deferrable_capability"
+    if entity_type == "pv":
+        return "local_pv_generation"
+    return "local_energy"
 
 
 def default_use(entity_type: str, feature: str) -> tuple[str, bool, str | None]:
@@ -207,6 +399,14 @@ class CapabilityProfileRegistry:
     def supported_action_types(self) -> tuple[str, ...]:
         return tuple(sorted(ACTION_PROFILES))
 
+    @property
+    def supported_channel_types(self) -> tuple[str, ...]:
+        return tuple(sorted(SUPPORTED_CHANNEL_TYPES))
+
+    @property
+    def supported_semantic_types(self) -> tuple[str, ...]:
+        return tuple(sorted(OBSERVATION_SEMANTIC_TYPES))
+
     def entity_type(self, sensor_type: str) -> str:
         try:
             return SENSOR_ENTITY_TYPES[str(sensor_type)]
@@ -229,10 +429,17 @@ class CapabilityProfileRegistry:
         unit: str | None = None,
     ) -> Dict[str, Any]:
         entity_type = self.entity_type(sensor_type)
+        if channel not in SUPPORTED_CHANNEL_TYPES:
+            raise ValueError(f"Unknown TI-MARL channel type: {channel!r}")
         use, policy_input, reason = default_use(entity_type, observation)
         result: Dict[str, Any] = {
             "unit": canonical_unit(unit, observation),
-            "semantic_type": semantic_type_for(entity_type, channel, scope),
+            "semantic_type": semantic_type_for(
+                entity_type,
+                channel,
+                scope,
+                observation,
+            ),
             "use": use,
             "policy_input": policy_input,
             "criticality": criticality_for(entity_type, observation, use),
@@ -284,6 +491,8 @@ class CapabilityProfileRegistry:
             "roles": list(SUPPORTED_ROLES),
             "agent_types": list(SUPPORTED_AGENT_TYPES),
             "sensor_types": dict(SENSOR_ENTITY_TYPES),
+            "channel_types": list(self.supported_channel_types),
+            "semantic_types": list(self.supported_semantic_types),
             "action_profiles": deepcopy(dict(ACTION_PROFILES)),
             "health": deepcopy(dict(self.health_rules())),
         }

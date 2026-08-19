@@ -55,6 +55,16 @@ critic or a centralised variable-set critic. It is a separate neural component
 used only during training; neither it nor privileged training context belongs
 to the deployment bundle.
 
+The learned encoder does not infer signal identity from numeric values alone.
+Each observation carries an explicit instance-free semantic family (for
+example local load, local PV, price, EV SoC or grid constraint), sensor type,
+channel type, unit, scope, use, health and an exact deterministic observation
+fingerprint.  Sensor and asset instance IDs are deliberately absent. Thus an
+equal-valued load and PV sample remain distinguishable, while adding
+`charger_2` reuses the parameters of the known charger type instead of growing
+the model. Unknown semantic families fail before action selection and require
+an explicit contract/model migration.
+
 `fault_mode` is retained as evidence. It is never treated as a Simulator
 health label and there is deliberately no universal `fault_mode → HealthState`
 mapping.
@@ -163,6 +173,8 @@ During PPO updates, observation, channel, sensor, agent and action-group sets
 from the rollout are packed by stable indices and evaluated in batches. This
 preserves the same typed set reductions and hybrid-action densities while
 avoiding per-observation device transfers and discarded runtime bundles.
+Runtime actor inference also encodes every active agent in one packed call;
+static typed identity features are cached without caching values or health.
 Update duration and evaluated samples per second are exported with the training
 diagnostics.
 
