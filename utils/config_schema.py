@@ -1186,6 +1186,7 @@ class TIMARLActorConfig(BaseModel):
     attention_heads: int = Field(default=4, ge=1)
     relation_layers: int = Field(default=2, ge=1)
     group_context_kind: Literal["local", "action_conditioned"] = "local"
+    deterministic_mode_strategy: Literal["argmax", "expected_signed"] = "argmax"
 
     @model_validator(mode="after")
     def validate_attention_width(self) -> "TIMARLActorConfig":

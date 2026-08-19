@@ -110,6 +110,9 @@ class TIMARL(BaseAgent):
             attention_heads=int(actor_cfg.get("attention_heads", 4)),
             relation_layers=relation_layers,
             group_context_kind=self.actor_group_context_kind,
+            deterministic_mode_strategy=str(
+                actor_cfg.get("deterministic_mode_strategy", "argmax")
+            ),
         ).to(self.device)
         critic_class = (
             CentralSetCritic if self.critic_kind == "set" else LocalTypedCritic

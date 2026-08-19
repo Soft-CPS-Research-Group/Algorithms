@@ -560,6 +560,7 @@ class TypedActor(nn.Module):
         attention_heads: int = 4,
         relation_layers: int = 2,
         group_context_kind: str = "local",
+        deterministic_mode_strategy: str = "argmax",
     ) -> None:
         super().__init__()
         self.d_model = int(d_model)
@@ -568,6 +569,15 @@ class TypedActor(nn.Module):
             raise ValueError(
                 "TI-MARL actor group_context_kind must be 'local' or "
                 "'action_conditioned'"
+            )
+        self.deterministic_mode_strategy = str(deterministic_mode_strategy)
+        if self.deterministic_mode_strategy not in {
+            "argmax",
+            "expected_signed",
+        }:
+            raise ValueError(
+                "TI-MARL actor deterministic_mode_strategy must be 'argmax' "
+                "or 'expected_signed'"
             )
         self.encoder = TypedSnapshotEncoder(type_registry, d_model, relation_layers)
         action_types = dict(type_registry.get("action_group_types", {}))
@@ -1072,8 +1082,14 @@ class TypedActor(nn.Module):
                 device=context.device,
             )
         elif deterministic:
-            mode_index = int(torch.argmax(masked_logits).item())
             fraction = beta_params[0] / beta_params.sum()
+            mode_index, fraction = self._deterministic_mode_and_fraction(
+                modes,
+                categorical.probs,
+                fraction,
+                mask_values,
+                masked_logits,
+            )
         else:
             mode_index = int(categorical.sample().item())
             fraction = beta_distribution.rsample()
@@ -1108,6 +1124,46 @@ class TypedActor(nn.Module):
                 raw_log_prob=float(log_prob.detach().cpu()),
             )
         return decision, log_prob, entropy
+
+    def _deterministic_mode_and_fraction(
+        self,
+        modes: Sequence[str],
+        probabilities: Tensor,
+        beta_mean: Tensor,
+        mask_values: Sequence[bool],
+        masked_logits: Tensor,
+    ) -> tuple[int, Tensor]:
+        if self.deterministic_mode_strategy == "argmax":
+            return int(torch.argmax(masked_logits).item()), beta_mean
+
+        charge_indices = [
+            index for index, mode in enumerate(modes) if mode.startswith("CHARGE_")
+        ]
+        discharge_indices = [
+            index
+            for index, mode in enumerate(modes)
+            if mode.startswith("DISCHARGE_")
+        ]
+        if not charge_indices and not discharge_indices:
+            return int(torch.argmax(masked_logits).item()), beta_mean
+
+        signed_probability = probabilities.new_zeros(())
+        for index in charge_indices:
+            signed_probability = signed_probability + probabilities[index]
+        for index in discharge_indices:
+            signed_probability = signed_probability - probabilities[index]
+        signed_fraction = signed_probability * beta_mean
+        if abs(float(signed_fraction.detach().cpu())) <= 1.0e-8:
+            return modes.index("IDLE"), beta_mean.new_zeros(())
+        candidates = charge_indices if signed_fraction > 0.0 else discharge_indices
+        valid_candidates = [index for index in candidates if mask_values[index]]
+        if not valid_candidates:
+            return modes.index("IDLE"), beta_mean.new_zeros(())
+        mode_index = max(
+            valid_candidates,
+            key=lambda index: float(probabilities[index].detach().cpu()),
+        )
+        return mode_index, torch.clamp(torch.abs(signed_fraction), 0.0, 1.0)
 
 
 class CentralSetCritic(nn.Module):

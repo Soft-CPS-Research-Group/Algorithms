@@ -112,6 +112,49 @@ def test_actor_and_critic_are_permutation_equivariant_and_cardinality_independen
     assert parameter_count(actor) + parameter_count(critic) == initial_parameters
 
 
+def test_expected_signed_deterministic_decoder_uses_hybrid_policy_mean(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+        deterministic_mode_strategy="expected_signed",
+    )
+    group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "stationary_storage"
+    )
+    modes = actor.group_modes[group.group_type]
+    logits = {"IDLE": 0.0, "CHARGE_STATIONARY": 1.0, "DISCHARGE_STATIONARY": -1.0}
+    with torch.no_grad():
+        actor.mode_heads[group.group_type].weight.zero_()
+        actor.mode_heads[group.group_type].bias.copy_(
+            torch.tensor([logits[mode] for mode in modes])
+        )
+        actor.beta_heads[group.group_type].weight.zero_()
+        actor.beta_heads[group.group_type].bias.zero_()
+        decision, _log_prob, _entropy = actor._group_decision(
+            group,
+            torch.zeros(actor.d_model),
+            deterministic=True,
+            expected=None,
+            materialize_decision=True,
+        )
+
+    assert decision is not None
+    assert decision.mode == "CHARGE_STATIONARY"
+    probabilities = torch.softmax(
+        torch.tensor([logits[mode] for mode in modes]), dim=0
+    )
+    expected_fraction = 0.5 * (
+        probabilities[modes.index("CHARGE_STATIONARY")]
+        - probabilities[modes.index("DISCHARGE_STATIONARY")]
+    )
+    assert decision.fraction == pytest.approx(float(expected_fraction), abs=1.0e-6)
+
+
 def test_typed_group_critic_is_equivariant_and_cardinality_independent(tmp_path):
     compiler, snapshot = compile_snapshot(tmp_path)
     torch.manual_seed(31)
