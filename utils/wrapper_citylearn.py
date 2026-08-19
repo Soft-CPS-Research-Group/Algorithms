@@ -1696,6 +1696,33 @@ class Wrapper_CityLearn(RLC):
                             self._restore_entity_layout_state(entity_layout_snapshot)
                         raise
 
+                # Deterministic policies do not learn, but agents with an
+                # explicit observation hook may still persist execution
+                # evidence and advance their typed transition state.
+                if (
+                    episode_deterministic
+                    and bool(
+                        getattr(
+                            self.model,
+                            "requires_deterministic_transition_observation",
+                            False,
+                        )
+                    )
+                    and callable(getattr(self.model, "observe_transition", None))
+                ):
+                    phase_start_time = time.perf_counter()
+                    self.update(
+                        observations,
+                        actions,
+                        rewards,
+                        next_observations,
+                        terminated=terminated,
+                        truncated=truncated,
+                        learn=False,
+                    )
+                    model_update_duration = time.perf_counter() - phase_start_time
+                    self._last_model_update_seconds = model_update_duration
+
                 # Update model if not in deterministic mode
                 if not episode_deterministic:
                     if self._topology_changed_during_step and not self._pending_model_environment_attach:
@@ -2797,16 +2824,18 @@ class Wrapper_CityLearn(RLC):
         return shaped_rewards
 
     def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float],
-               next_observations: List[List[float]], terminated: bool, truncated: bool):
+               next_observations: List[List[float]], terminated: bool, truncated: bool,
+               *, learn: bool = True):
         """
-        Delegates the update logic to the Algorithm, encoding observations before passing them.
+        Prepare transition context, then learn or invoke a read-only observer.
         """
 
         if self.model is None:
             logger.error("Model is not set. Use `set_model` to provide a model.")
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        self._refresh_update_schedule()
+        if learn:
+            self._refresh_update_schedule()
 
         phase_start_time = time.perf_counter()
         direct_entity_model_observations = bool(
@@ -2881,6 +2910,22 @@ class Wrapper_CityLearn(RLC):
                     else {}
                 ),
             )
+
+        if not learn:
+            observer = getattr(self.model, "observe_transition", None)
+            if not callable(observer):
+                return None
+            phase_start_time = time.perf_counter()
+            observation_result = observer(
+                observations=encoded_observations,
+                actions=actions,
+                rewards=reward,
+                next_observations=encoded_next_observations,
+                terminated=terminated,
+                truncated=truncated,
+            )
+            self._last_model_update_seconds = time.perf_counter() - phase_start_time
+            return observation_result
 
         # Pass updated parameters to model.update()
         phase_start_time = time.perf_counter()

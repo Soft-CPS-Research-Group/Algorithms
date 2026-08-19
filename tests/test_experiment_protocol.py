@@ -60,6 +60,10 @@ def _write_kpis(path: Path, **overrides: float) -> None:
         "district_electrical_service_phase_violations_energy_total_kwh": 0.0,
         "district_ev_performance_departure_min_acceptable_feasible_ratio": 1.0,
         "district_ev_performance_departure_within_tolerance_feasible_ratio": 0.99,
+        "district_deferrable_appliance_service_service_level_ratio": 0.8,
+        "district_deferrable_appliance_service_completed_cycles_count": 8.0,
+        "district_deferrable_appliance_service_missed_cycles_count": 2.0,
+        "district_deferrable_appliance_service_unserved_energy_total_kwh": 4.0,
         "district_battery_total_throughput_kwh": 12.0,
         "district_ev_total_v2g_export_kwh": 3.0,
         "district_energy_grid_total_import_control_kwh": 50.0,
@@ -86,6 +90,7 @@ def _record(
     solar: float = 0.7,
     violations: float = 0.0,
     ev_min: float = 1.0,
+    deferrable_service: float = 0.8,
 ):
     payload = {
         "format": "ti_marl_evaluation_record_v1",
@@ -107,6 +112,7 @@ def _record(
             "solar_self_consumption_rate": solar,
             "electrical_violation_kwh": violations,
             "ev_min_acceptable_feasible_rate": ev_min,
+            "deferrable_service_level_rate": deferrable_service,
         },
     }
     payload["record_sha256"] = canonical_sha256(payload)
@@ -129,6 +135,7 @@ def _rules():
             "peak_daily_ratio_to_bau": {"max_relative_increase": 0.05},
             "ramping_ratio_to_bau": {"max_relative_increase": 0.05},
             "solar_self_consumption_rate": {"max_absolute_decrease": 0.02},
+            "deferrable_service_level_rate": {"max_absolute_decrease": 0.0},
         },
         "promotion": {
             "metric": "cost_eur",
@@ -170,6 +177,10 @@ def test_scorecard_and_evaluation_record_are_content_addressed(tmp_path):
 
     assert scorecard["cost_eur"] == pytest.approx(100.0)
     assert scorecard["ev_min_acceptable_feasible_rate"] == pytest.approx(1.0)
+    assert scorecard["deferrable_service_level_rate"] == pytest.approx(0.8)
+    assert scorecard["deferrable_completed_cycles_count"] == pytest.approx(8.0)
+    assert scorecard["deferrable_missed_cycles_count"] == pytest.approx(2.0)
+    assert scorecard["deferrable_unserved_energy_kwh"] == pytest.approx(4.0)
     assert record["checkpoint"]["sha256"] == file_sha256(checkpoint)
     assert len(record["record_sha256"]) == 64
 
@@ -186,6 +197,22 @@ def test_selection_requires_every_paired_surface_and_rejects_bad_scorecard():
         _record("unsafe", "summer", "b" * 64, role="candidate", cost=80.0, violations=0.4),
         _record("bad-peak", "winter", "c" * 64, role="candidate", cost=70.0, peak=1.2),
         _record("bad-peak", "summer", "c" * 64, role="candidate", cost=70.0, peak=1.2),
+        _record(
+            "bad-deferrable",
+            "winter",
+            "d" * 64,
+            role="candidate",
+            cost=60.0,
+            deferrable_service=0.7,
+        ),
+        _record(
+            "bad-deferrable",
+            "summer",
+            "d" * 64,
+            role="candidate",
+            cost=60.0,
+            deferrable_service=0.7,
+        ),
     ]
 
     selection = select_checkpoint(
@@ -202,6 +229,10 @@ def test_selection_requires_every_paired_surface_and_rejects_bad_scorecard():
     }
     assert any("electrical_violation_kwh" in reason for reason in rejected["unsafe"])
     assert any("peak_daily_ratio_to_bau" in reason for reason in rejected["bad-peak"])
+    assert any(
+        "deferrable_service_level_rate" in reason
+        for reason in rejected["bad-deferrable"]
+    )
 
 
 def test_selection_refuses_confirmation_records():

@@ -57,7 +57,10 @@ def _ti_marl_stage():
                 "relation_layers": 2,
             },
             "critic": {"kind": "set"},
-            "feasibility": {"kind": "analytic_projection"},
+            "feasibility": {
+                "kind": "analytic_projection",
+                "deferrable_service_margin_seconds": 3600.0,
+            },
         },
     }
 
@@ -70,6 +73,10 @@ def test_validate_config_accepts_ti_marl_entity_dynamic(base_config):
     config["pipeline"] = [_ti_marl_stage()]
     parsed = validate_config(config)
     assert parsed.pipeline[0].algorithm == "TIMARL"
+    assert (
+        parsed.pipeline[0].hyperparameters.feasibility.deferrable_service_margin_seconds
+        == 3600.0
+    )
 
 
 def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
@@ -94,6 +101,7 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         "balance_action_modes": True,
         "mode_balance_exponent": 0.5,
         "max_mode_weight": 3.0,
+        "balanced_loss_kind": "hierarchical_mode_mean",
         "calibration_epochs": 2,
         "calibration_learning_rate": 5.0e-5,
         "teacher": {
@@ -112,6 +120,7 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     assert behavior_cloning.balance_action_modes
     assert behavior_cloning.mode_balance_exponent == 0.5
     assert behavior_cloning.max_mode_weight == 3.0
+    assert behavior_cloning.balanced_loss_kind == "hierarchical_mode_mean"
     assert behavior_cloning.calibration_epochs == 2
     assert behavior_cloning.calibration_learning_rate == 5.0e-5
     assert parsed.pipeline[0].hyperparameters.advantage_normalization == "per_agent"

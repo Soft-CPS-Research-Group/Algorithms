@@ -54,6 +54,18 @@ KPI_ROWS: Mapping[str, tuple[str, ...]] = {
     "ev_within_tolerance_feasible_rate": (
         "district_ev_performance_departure_within_tolerance_feasible_ratio",
     ),
+    "deferrable_service_level_rate": (
+        "district_deferrable_appliance_service_service_level_ratio",
+    ),
+    "deferrable_completed_cycles_count": (
+        "district_deferrable_appliance_service_completed_cycles_count",
+    ),
+    "deferrable_missed_cycles_count": (
+        "district_deferrable_appliance_service_missed_cycles_count",
+    ),
+    "deferrable_unserved_energy_kwh": (
+        "district_deferrable_appliance_service_unserved_energy_total_kwh",
+    ),
     "battery_throughput_kwh": (
         "district_battery_total_throughput_kwh",
     ),
@@ -81,6 +93,10 @@ DEFAULT_AGGREGATION: Mapping[str, str] = {
     "community_export_kwh": "sum",
     "ev_min_acceptable_feasible_rate": "min",
     "ev_within_tolerance_feasible_rate": "min",
+    "deferrable_service_level_rate": "min",
+    "deferrable_completed_cycles_count": "sum",
+    "deferrable_missed_cycles_count": "sum",
+    "deferrable_unserved_energy_kwh": "sum",
 }
 
 

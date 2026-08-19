@@ -1209,6 +1209,7 @@ class TIMARLFeasibilityConfig(BaseModel):
     ] = "average"
     ev_service_tolerance_ratio: float = Field(default=0.05, ge=0.0, le=0.2)
     headroom_reserve_kw: float = Field(default=0.0, ge=0.0)
+    deferrable_service_margin_seconds: float = Field(default=0.0, ge=0.0)
 
 
 class TIMARLTraceConfig(BaseModel):
@@ -1232,6 +1233,10 @@ class TIMARLBehaviorCloningConfig(BaseModel):
     balance_action_modes: bool = True
     mode_balance_exponent: float = Field(default=0.5, ge=0.0, le=1.0)
     max_mode_weight: float = Field(default=4.0, ge=1.0)
+    balanced_loss_kind: Literal[
+        "weighted",
+        "hierarchical_mode_mean",
+    ] = "weighted"
     calibration_epochs: int = Field(default=0, ge=0)
     calibration_learning_rate: Optional[float] = Field(default=None, gt=0)
     teacher: TIMARLBehaviorCloningTeacherConfig = Field(

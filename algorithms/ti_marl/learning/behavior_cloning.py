@@ -40,6 +40,7 @@ class TypedBehaviorCloningWarmStart:
         mode_balance_exponent: float,
         max_mode_weight: float,
         seed: int,
+        balanced_loss_kind: str = "weighted",
         calibration_epochs: int = 0,
         calibration_learning_rate: float | None = None,
     ) -> None:
@@ -51,6 +52,12 @@ class TypedBehaviorCloningWarmStart:
         self.balance_action_modes = bool(balance_action_modes)
         self.mode_balance_exponent = float(mode_balance_exponent)
         self.max_mode_weight = float(max_mode_weight)
+        if balanced_loss_kind not in {"weighted", "hierarchical_mode_mean"}:
+            raise ValueError(
+                "balanced_loss_kind must be 'weighted' or "
+                "'hierarchical_mode_mean'"
+            )
+        self.balanced_loss_kind = str(balanced_loss_kind)
         self.calibration_epochs = int(calibration_epochs)
         self.calibration_learning_rate = (
             self.learning_rate
@@ -135,6 +142,7 @@ class TypedBehaviorCloningWarmStart:
             optimizer,
             epochs=self.pretraining_epochs,
             mode_weights=self.mode_weights,
+            loss_kind=self.balanced_loss_kind,
             max_grad_norm=max_grad_norm,
         )
         calibration_losses: list[float] = []
@@ -147,6 +155,7 @@ class TypedBehaviorCloningWarmStart:
                 optimizer,
                 epochs=self.calibration_epochs,
                 mode_weights={key: 1.0 for key in self.mode_counts},
+                loss_kind="weighted",
                 max_grad_norm=max_grad_norm,
             )
         losses = balanced_losses + calibration_losses
@@ -181,6 +190,7 @@ class TypedBehaviorCloningWarmStart:
         *,
         epochs: int,
         mode_weights: Mapping[tuple[str, str], float],
+        loss_kind: str,
         max_grad_norm: float,
     ) -> tuple[list[float], int]:
         losses: list[float] = []
@@ -210,7 +220,7 @@ class TypedBehaviorCloningWarmStart:
                         for demo, action_map in zip(demos, decisions)
                     )
                 )
-                sample_losses = []
+                sample_losses: list[tuple[str, str, torch.Tensor]] = []
                 for demo, group_log_probs in zip(
                     demos, evaluation.log_prob_by_group_step
                 ):
@@ -227,10 +237,16 @@ class TypedBehaviorCloningWarmStart:
                             weight = mode_weights.get(
                                 (group.group_type, decision.mode), 1.0
                             )
-                            sample_losses.append(-log_prob * float(weight))
+                            sample_losses.append(
+                                (
+                                    group.group_type,
+                                    decision.mode,
+                                    -log_prob * float(weight),
+                                )
+                            )
                 if not sample_losses:
                     continue
-                loss = torch.stack(sample_losses).mean()
+                loss = self._reduce_losses(sample_losses, loss_kind=loss_kind)
                 if not bool(torch.isfinite(loss).all()):
                     raise FloatingPointError("Non-finite TI-MARL behavior-cloning loss")
                 optimizer.zero_grad(set_to_none=True)
@@ -245,6 +261,33 @@ class TypedBehaviorCloningWarmStart:
                 losses.append(float(loss.detach().cpu()))
                 batches += 1
         return losses, batches
+
+    @staticmethod
+    def _reduce_losses(
+        losses: Sequence[tuple[str, str, torch.Tensor]],
+        *,
+        loss_kind: str,
+    ) -> torch.Tensor:
+        """Reduce typed BC losses without letting IDLE frequency dominate.
+
+        ``hierarchical_mode_mean`` first averages examples of each action mode,
+        then modes within one group type, and finally group types. A rare
+        deferrable START therefore receives a useful gradient without making a
+        group type with more modes dominate the entire actor update.
+        """
+
+        if loss_kind == "weighted":
+            return torch.stack([loss for _group, _mode, loss in losses]).mean()
+        if loss_kind != "hierarchical_mode_mean":
+            raise ValueError(f"Unsupported BC loss kind: {loss_kind!r}")
+        by_group: dict[str, dict[str, list[torch.Tensor]]] = {}
+        for group_type, mode, loss in losses:
+            by_group.setdefault(group_type, {}).setdefault(mode, []).append(loss)
+        group_losses = []
+        for modes in by_group.values():
+            mode_losses = [torch.stack(items).mean() for items in modes.values()]
+            group_losses.append(torch.stack(mode_losses).mean())
+        return torch.stack(group_losses).mean()
 
     def in_demonstration_phase(self, *, episode: int, training: bool) -> bool:
         return bool(
@@ -268,6 +311,10 @@ class TypedBehaviorCloningWarmStart:
             "bc_balanced_batches": float(self.latest_balanced_batches),
             "bc_calibration_loss": float(self.latest_calibration_loss),
             "bc_calibration_batches": float(self.latest_calibration_batches),
+            (
+                "bc_balanced_loss_kind_"
+                f"{self.balanced_loss_kind}"
+            ): 1.0,
         }
         for (group_type, mode), count in sorted(self.mode_counts.items()):
             key = f"bc_mode_count_{group_type.lower()}_{mode.lower()}"
@@ -342,6 +389,8 @@ class TypedBehaviorCloningWarmStart:
         return metrics
 
     def _build_mode_weights(self) -> dict[tuple[str, str], float]:
+        if self.balanced_loss_kind == "hierarchical_mode_mean":
+            return {key: 1.0 for key in self.mode_counts}
         if not self.balance_action_modes:
             return {key: 1.0 for key in self.mode_counts}
         result: dict[tuple[str, str], float] = {}
@@ -386,12 +435,20 @@ class TypedBehaviorCloningWarmStart:
             "latest_balanced_batches": self.latest_balanced_batches,
             "latest_calibration_loss": self.latest_calibration_loss,
             "latest_calibration_batches": self.latest_calibration_batches,
+            "balanced_loss_kind": self.balanced_loss_kind,
             "mode_diagnostic_metrics": dict(self.mode_diagnostic_metrics),
         }
 
     def load_state_dict(self, payload: Mapping[str, Any]) -> None:
         if payload.get("format") != "ti_marl_behavior_cloning_v1":
             raise ValueError("Unsupported TI-MARL behavior-cloning checkpoint format")
+        checkpoint_loss_kind = str(
+            payload.get("balanced_loss_kind", "weighted")
+        )
+        if checkpoint_loss_kind != self.balanced_loss_kind:
+            raise ValueError(
+                "TI-MARL BC balanced_loss_kind differs from the checkpoint"
+            )
         demonstrations = list(payload.get("demonstrations", ()))
         if len(demonstrations) > self.max_samples:
             raise ValueError("TI-MARL BC checkpoint exceeds configured sample capacity")

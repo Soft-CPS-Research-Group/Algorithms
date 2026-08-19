@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 import gzip
 import json
@@ -461,6 +462,65 @@ def test_behavior_cloning_balances_rare_action_modes_per_group_type(tmp_path):
     assert weights[(target_group.group_type, target_mode)] <= 3.0
 
 
+def test_behavior_cloning_hierarchical_loss_balances_modes_and_group_types():
+    losses = [
+        ("stationary_storage", "IDLE", torch.tensor(1.0)),
+        ("stationary_storage", "IDLE", torch.tensor(3.0)),
+        ("stationary_storage", "CHARGE_STATIONARY", torch.tensor(10.0)),
+        ("deferrable", "IDLE", torch.tensor(2.0)),
+        ("deferrable", "START", torch.tensor(6.0)),
+    ]
+
+    reduced = TypedBehaviorCloningWarmStart._reduce_losses(
+        losses,
+        loss_kind="hierarchical_mode_mean",
+    )
+
+    # storage: mean(mean(1, 3), 10) = 6; deferrable: mean(2, 6) = 4.
+    assert reduced.item() == pytest.approx(5.0)
+
+
+def test_action_mode_diagnostics_separate_actor_from_feasibility(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    raw_bundles = []
+    final_bundles = []
+    changed_group = next(
+        group
+        for group in snapshot.action_groups
+        if any(port.valid and port.mode != "IDLE" for port in group.ports)
+    )
+    changed_mode = next(
+        port.mode
+        for port in changed_group.ports
+        if port.valid and port.mode != "IDLE"
+    )
+    for agent_id in snapshot.agent_ids:
+        raw = []
+        final = []
+        for group in snapshot.groups_for(agent_id):
+            raw.append(ActionDecision(group.group_id, "IDLE", 0.0, 0))
+            final.append(
+                ActionDecision(
+                    group.group_id,
+                    changed_mode if group.group_id == changed_group.group_id else "IDLE",
+                    1.0 if group.group_id == changed_group.group_id else 0.0,
+                    1 if group.group_id == changed_group.group_id else 0,
+                )
+            )
+        raw_bundles.append(LocalActionBundle(agent_id, tuple(raw)))
+        final_bundles.append(LocalActionBundle(agent_id, tuple(final)))
+
+    agent = TIMARL.__new__(TIMARL)
+    agent._current_snapshot = snapshot
+    agent._episode_raw_modes = Counter()
+    agent._episode_final_modes = Counter()
+    metrics = agent._action_mode_diagnostics(raw_bundles, final_bundles)
+    group_type = changed_group.group_type.lower()
+
+    assert metrics[f"TI_MARL/raw_non_idle_rate_{group_type}"] == 0.0
+    assert metrics[f"TI_MARL/final_non_idle_rate_{group_type}"] > 0.0
+
+
 def test_behavior_cloning_mode_counts_follow_the_retained_reservoir(tmp_path):
     compiler, snapshot = compile_snapshot(tmp_path)
     actor = TypedActor(
@@ -672,6 +732,48 @@ def test_local_projection_jointly_enforces_headroom_and_deferrable_deadline(tmp_
     assert charge_power == pytest.approx(4.0)
     assert decisions[groups["deferrable"].group_id].mode == "START"
     assert any(item["reason"] == "deferrable_must_start" for item in final.interventions)
+
+
+def test_deferrable_service_margin_uses_physical_time(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    group = next(
+        item
+        for item in snapshot.groups_for("Building_1")
+        if item.group_type == "deferrable"
+    )
+    snapshot = replace(
+        snapshot,
+        observation_parts=tuple(
+            replace(part, values=(3.0,))
+            if part.sensor_id == group.module_id
+            and part.observation_id == "slack_steps"
+            else part
+            for part in snapshot.observation_parts
+        ),
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(ActionDecision(group.group_id, "IDLE", 0.0, 0),),
+    )
+
+    default = AnalyticLocalProjector()
+    default.set_seconds_per_time_step(900.0)
+    assert default.project(snapshot, (raw,))[0].decisions[0].mode == "IDLE"
+
+    guarded = AnalyticLocalProjector(
+        deferrable_service_margin_seconds=3600.0,
+    )
+    guarded.set_seconds_per_time_step(900.0)
+    final = guarded.project(snapshot, (raw,))[0]
+
+    assert final.decisions[0].mode == "START"
+    assert any(
+        item["reason"] == "deferrable_service_margin_start"
+        for item in final.interventions
+    )
+    assert guarded.configuration()[
+        "deferrable_service_margin_seconds"
+    ] == pytest.approx(3600.0)
 
 
 def test_compiler_keeps_total_and_phase_headroom_separate(tmp_path):
@@ -1756,6 +1858,44 @@ def test_buffered_trace_contains_every_referenced_snapshot_once(tmp_path):
     hashes = {row["hash"] for row in records if row["kind"] == "snapshot"}
     assert hashes == {first.snapshot_hash, second.snapshot_hash}
     assert sum(row["kind"] == "transition" for row in records) == 1
+
+
+def test_buffered_trace_keeps_intermediate_transitions_but_not_full_snapshots(
+    tmp_path,
+):
+    _compiler, first = compile_snapshot(tmp_path / "first", time_step=0)
+    _compiler, second = compile_snapshot(tmp_path / "second", time_step=1)
+    _compiler, third = compile_snapshot(tmp_path / "third", time_step=2)
+
+    def transition(current, following):
+        return TypedTransition(
+            snapshot_hash=current.snapshot_hash,
+            next_snapshot_hash=following.snapshot_hash,
+            agent_ids=current.agent_ids,
+            next_agent_ids=following.agent_ids,
+            raw_bundles=(),
+            final_bundles=(),
+            commands=(),
+            execution={"version": "entity_action_execution_v1"},
+            rewards=(),
+            reward_components={},
+            terminated_agent_ids=(),
+            bootstrap_agent_ids=current.agent_ids,
+        )
+
+    writer = BufferedTraceWriter(tmp_path, chunk_size=8, snapshot_interval=99)
+    writer.record(first, second, transition(first, second))
+    writer.record(second, third, transition(second, third))
+    writer.close()
+
+    with gzip.open(next(tmp_path.glob("*.jsonl.gz")), "rt", encoding="utf-8") as handle:
+        records = [json.loads(line) for line in handle]
+    hashes = {row["hash"] for row in records if row["kind"] == "snapshot"}
+    transitions = [row for row in records if row["kind"] == "transition"]
+
+    assert hashes == {first.snapshot_hash, second.snapshot_hash}
+    assert len(transitions) == 2
+    assert transitions[-1]["payload"]["next_snapshot_hash"] == third.snapshot_hash
 
 
 def agent_config(tmp_path):

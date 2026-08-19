@@ -65,16 +65,20 @@ the ignored local `runs/` tree.
 
 ## Frozen selection rule
 
-The canonical rule is
-`algorithms/ti_marl/experiments/selection_rules_v1.yaml`.
+The current canonical rule is
+`algorithms/ti_marl/experiments/selection_rules_v2.yaml`. The original
+`selection_rules_v1.yaml` remains immutable so its content hash continues to
+verify the development evidence already collected with it.
 
 It is deliberately cost-first, but a checkpoint is promotable only when:
 
 - total electrical violation energy across development is at most 0.5 kWh;
 - minimum EV service feasibility is at least 99%;
+- EV departures within the requested tolerance are at least 99%;
 - it improves paired-reference cost by at least 0.1%;
 - daily peak and ramping do not degrade by more than 5%;
 - solar self-consumption does not fall by more than two percentage points.
+- deferrable service level does not fall below the paired reference.
 
 All four development windows must be present for both checkpoint and paired
 reference. Additive quantities are summed; shape ratios are averaged; EV hard

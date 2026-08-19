@@ -48,8 +48,7 @@ class BufferedTraceWriter:
             return
         force_snapshot = (
             current.topology_version != following.topology_version
-            or bool(current.fault_evidence)
-            or bool(following.fault_evidence)
+            or self._event_signature(current) != self._event_signature(following)
             or self.transition_count % self.snapshot_interval == 0
         )
         self._stage_snapshot(current, force=force_snapshot)
@@ -59,14 +58,39 @@ class BufferedTraceWriter:
         if len(self._transitions) >= self.chunk_size:
             self.flush()
 
+    @staticmethod
+    def _event_signature(snapshot: InterfaceSnapshot) -> tuple:
+        """Return event state without per-step ages or active durations."""
+
+        return tuple(
+            sorted(
+                (
+                    item.event_domain.value,
+                    item.fault_mode,
+                    item.target_type,
+                    item.target_id,
+                    item.target_feature,
+                    item.availability.value,
+                    item.connection.value,
+                    item.quality.value,
+                    item.event_ids,
+                )
+                for item in snapshot.fault_evidence
+            )
+        )
+
     def _stage_snapshot(self, snapshot: InterfaceSnapshot, *, force: bool) -> None:
+        # Transitions are always persisted, but complete snapshots are sparse:
+        # first/periodic intervals and health/topology events only. Persisting
+        # every value-bearing snapshot defeats buffering because its hash
+        # changes on practically every simulator step.
+        if not force:
+            return
         digest = snapshot.snapshot_hash
         if digest in self._known_snapshot_hashes or digest in self._snapshots:
             return
         payload = canonical_value(snapshot)
-        payload["capture_reason"] = (
-            "event_or_interval" if force else "transition_completeness"
-        )
+        payload["capture_reason"] = "event_or_interval"
         self._snapshots[digest] = payload
 
     def flush(self) -> None:

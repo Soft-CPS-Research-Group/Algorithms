@@ -257,6 +257,25 @@ class _EncodedDummyModel(_DummyModel):
         self.last_encoded_observations = encoded_observations
 
 
+class _DeterministicObserverModel(_DummyModel):
+    requires_deterministic_transition_observation = True
+
+    def __init__(self):
+        super().__init__()
+        self.observed_transitions = 0
+        self.entity_transition_contexts = 0
+        self.update_calls = 0
+
+    def set_entity_transition_context(self, **_kwargs):
+        self.entity_transition_contexts += 1
+
+    def observe_transition(self, **_kwargs):
+        self.observed_transitions += 1
+
+    def update(self, **_kwargs):
+        self.update_calls += 1
+
+
 class _PipelineProbe:
     def __init__(self, *, use_raw_observations: bool, output):
         self.use_raw_observations = use_raw_observations
@@ -379,6 +398,45 @@ def test_wrapper_training_refreshes_schedule_before_deferred_topology_reattach()
     assert model.update_phases == [1]
     assert model.attach_update_steps == [False, False, True]
     assert checkpoint_schedules == [False, True]
+
+
+def test_wrapper_deterministic_run_observes_without_learning():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["tracking"]["progress_updates_enabled"] = False
+    wrapper = Wrapper_CityLearn(
+        env=env,
+        config=config,
+        job_id="entity-deterministic-observer",
+    )
+    model = _DeterministicObserverModel()
+    wrapper.set_model(model)
+
+    wrapper.learn(episodes=1, deterministic=True)
+
+    assert model.observed_transitions == 2
+    assert model.entity_transition_contexts == 2
+    assert model.update_calls == 0
+
+
+def test_wrapper_skips_disabled_deterministic_observer():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["tracking"]["progress_updates_enabled"] = False
+    wrapper = Wrapper_CityLearn(
+        env=env,
+        config=config,
+        job_id="entity-disabled-deterministic-observer",
+    )
+    model = _DeterministicObserverModel()
+    model.requires_deterministic_transition_observation = False
+    wrapper.set_model(model)
+
+    wrapper.learn(episodes=1, deterministic=True)
+
+    assert model.observed_transitions == 0
+    assert model.entity_transition_contexts == 0
+    assert model.update_calls == 0
 
 
 def test_wrapper_restores_metadata_when_model_reattachment_fails():

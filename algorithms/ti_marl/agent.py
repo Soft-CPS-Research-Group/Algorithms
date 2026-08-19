@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 from dataclasses import asdict
 import os
@@ -173,6 +174,9 @@ class TIMARL(BaseAgent):
                 ),
                 max_mode_weight=float(bc_cfg.get("max_mode_weight", 4.0)),
                 seed=self.seed,
+                balanced_loss_kind=str(
+                    bc_cfg.get("balanced_loss_kind", "weighted")
+                ),
                 calibration_epochs=int(bc_cfg.get("calibration_epochs", 0)),
                 calibration_learning_rate=(
                     None
@@ -197,6 +201,9 @@ class TIMARL(BaseAgent):
             headroom_reserve_kw=float(
                 feasibility_cfg.get("headroom_reserve_kw", 0.0)
             ),
+            deferrable_service_margin_seconds=float(
+                feasibility_cfg.get("deferrable_service_margin_seconds", 0.0)
+            ),
         )
         self.codec = CityLearnTypedActionCodec()
         self.command_builder = TypedCommandBuilder()
@@ -210,6 +217,9 @@ class TIMARL(BaseAgent):
             snapshot_interval=int(trace_cfg.get("snapshot_interval", 256)),
             enabled=bool(trace_cfg.get("enabled", True)),
         )
+        self.requires_deterministic_transition_observation = bool(
+            self.trace_writer.enabled
+        )
 
         self._current_snapshot = None
         self._next_snapshot = None
@@ -219,6 +229,8 @@ class TIMARL(BaseAgent):
         self._latest_training_metrics: Dict[str, float] = {}
         self._latest_diagnostics: Dict[str, float] = {}
         self._latest_raw_observations: Optional[List[np.ndarray]] = None
+        self._episode_raw_modes: Counter[tuple[str, str]] = Counter()
+        self._episode_final_modes: Counter[tuple[str, str]] = Counter()
         self._current_episode = 0
         self._current_episode_is_training = False
 
@@ -419,6 +431,7 @@ class TIMARL(BaseAgent):
         ]
         self._latest_diagnostics = {
             **self._latest_diagnostics,
+            **self._action_mode_diagnostics(raw_bundles, final_bundles),
             "TI_MARL/agents": float(len(self._current_snapshot.agent_ids)),
             "TI_MARL/registered_agents": float(
                 len(self._current_snapshot.registered_agent_ids)
@@ -470,6 +483,72 @@ class TIMARL(BaseAgent):
             },
         }
         return commands
+
+    def _action_mode_diagnostics(
+        self,
+        raw_bundles,
+        final_bundles,
+    ) -> Mapping[str, float]:
+        """Report cumulative learned versus post-feasibility action rates."""
+
+        assert self._current_snapshot is not None
+        group_types = {
+            (group.owner_agent_id, group.group_id): group.group_type
+            for group in self._current_snapshot.action_groups
+        }
+        for bundles, counter in (
+            (raw_bundles, self._episode_raw_modes),
+            (final_bundles, self._episode_final_modes),
+        ):
+            for bundle in bundles:
+                for decision in bundle.decisions:
+                    group_type = group_types.get(
+                        (bundle.agent_id, decision.group_id),
+                        "unknown",
+                    )
+                    counter[(group_type, decision.mode)] += 1
+
+        metrics: dict[str, float] = {}
+        group_types_seen = sorted(
+            {
+                group_type
+                for group_type, _mode in (
+                    set(self._episode_raw_modes) | set(self._episode_final_modes)
+                )
+            }
+        )
+        for label, counter in (
+            ("raw", self._episode_raw_modes),
+            ("final", self._episode_final_modes),
+        ):
+            for group_type in group_types_seen:
+                total = sum(
+                    count
+                    for (candidate_type, _mode), count in counter.items()
+                    if candidate_type == group_type
+                )
+                if total <= 0:
+                    continue
+                modes = sorted(
+                    mode
+                    for candidate_type, mode in counter
+                    if candidate_type == group_type
+                )
+                for mode in modes:
+                    metrics[
+                        f"TI_MARL/{label}_mode_{group_type.lower()}_"
+                        f"{mode.lower()}_rate"
+                    ] = float(counter[(group_type, mode)]) / float(total)
+                metrics[
+                    f"TI_MARL/{label}_non_idle_rate_{group_type.lower()}"
+                ] = float(
+                    sum(
+                        count
+                        for (candidate_type, mode), count in counter.items()
+                        if candidate_type == group_type and mode != "IDLE"
+                    )
+                ) / float(total)
+        return metrics
 
     def _reward_components_by_agent(
         self,
@@ -557,7 +636,6 @@ class TIMARL(BaseAgent):
         removed = set(current.agent_ids) - set(following.agent_ids)
         if terminated:
             removed.update(current.agent_ids)
-        bootstrap = set(current.agent_ids) & set(following.agent_ids) - removed
         step = RolloutStep(
             snapshot=current,
             next_snapshot=following,
@@ -583,6 +661,56 @@ class TIMARL(BaseAgent):
                 f"TI_MARL/train_{key}": float(value) for key, value in metrics.items()
             }
 
+        self._record_typed_transition(
+            current=current,
+            following=following,
+            reward_by_agent=reward_by_agent,
+            removed=removed,
+        )
+
+    def observe_transition(
+        self,
+        observations: List[np.ndarray],
+        actions: List[np.ndarray],
+        rewards: List[float],
+        next_observations: List[np.ndarray],
+        terminated: bool,
+        truncated: bool,
+    ) -> None:
+        """Persist one deterministic transition without updating either critic."""
+
+        del observations, actions, next_observations, truncated
+        if self._next_snapshot is None:
+            raise RuntimeError(
+                "TIMARL observation requires a complete typed transition context"
+            )
+        if self._pending is None:
+            raise RuntimeError("TIMARL observation requires a pending actor decision")
+        current = self._pending["snapshot"]
+        following = self._next_snapshot
+        reward_by_agent = {
+            agent_id: float(rewards[index]) if index < len(rewards) else 0.0
+            for index, agent_id in enumerate(current.agent_ids)
+        }
+        removed = set(current.agent_ids) - set(following.agent_ids)
+        if terminated:
+            removed.update(current.agent_ids)
+        self._record_typed_transition(
+            current=current,
+            following=following,
+            reward_by_agent=reward_by_agent,
+            removed=removed,
+        )
+
+    def _record_typed_transition(
+        self,
+        *,
+        current,
+        following,
+        reward_by_agent: Mapping[str, float],
+        removed: set[str],
+    ) -> None:
+        bootstrap = set(current.agent_ids) & set(following.agent_ids) - removed
         typed_transition = TypedTransition(
             snapshot_hash=current.snapshot_hash,
             next_snapshot_hash=following.snapshot_hash,
@@ -656,6 +784,8 @@ class TIMARL(BaseAgent):
         self._current_snapshot = None
         self._next_snapshot = None
         self._pending = None
+        self._episode_raw_modes.clear()
+        self._episode_final_modes.clear()
 
     def consume_latest_training_metrics(self) -> Mapping[str, float]:
         metrics = dict(self._latest_training_metrics)

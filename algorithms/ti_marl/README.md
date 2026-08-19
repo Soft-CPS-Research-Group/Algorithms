@@ -163,8 +163,18 @@ headroom.  Total and per-phase constraints are kept separate and projected
 using each action group's declared phase incidence.  A deferrable `START` is
 treated as a binary first-step demand rather than a fractionally scalable
 action.  Optional headroom reserve absorbs explicitly configured uncertainty;
-it is zero by default.  The projector performs no community optimisation. Raw
-and final bundles plus interventions remain in the typed trace.
+it is zero by default. A deployment-neutral
+`deferrable_service_margin_seconds` can force a mandatory cycle to start before
+its last admissible instant, leaving time to survive a later headroom conflict;
+it is also zero by default and every early start is recorded as a safety
+intervention. The projector performs no community optimisation. Raw and final
+bundles plus interventions remain in the typed trace.
+
+Deterministic evaluation also forwards read-only transitions to TI-MARL, so
+tracing never requires a policy or critic update. Every transition is buffered;
+complete value-bearing snapshots are stored only at the configured interval or
+on health/topology events. This keeps deterministic auditability available
+without turning `snapshot_interval` into an accidental per-step export.
 
 Both PPO variants support normalized value targets and a Huber critic loss so large
 service penalties remain visible without numerically dominating every critic
@@ -191,6 +201,12 @@ populations and asset counts. Typed routing changes the actor estimator and is
 reported as a separate experimental ablation.
 `joint_agent` remains the backward-compatible default.
 
+Runtime diagnostics report cumulative per-episode `raw_mode_*_rate` and
+`final_mode_*_rate` values for every typed action family. These distinguish
+decisions made by the actor from charge/start actions introduced by safety and
+feasibility, preventing a shield-only controller from being misreported as a
+learned policy improvement.
+
 An optional typed behavior-cloning warm start can execute deterministic
 `RBCSmartPolicy` actions for complete demonstration episodes and decode those
 actions back into the same valid typed action groups used by the actor.  It
@@ -216,6 +232,11 @@ far more common than charge, discharge or start.  The warm start may therefore
 apply bounded inverse-frequency weights independently within each action-group
 type using `balance_action_modes`, `mode_balance_exponent` and
 `max_mode_weight`.  Counts and effective weights are exported as diagnostics.
+`balanced_loss_kind: hierarchical_mode_mean` is the stronger alternative: it
+averages examples within each mode, modes within each typed action family, and
+then the families. This prevents frequent `IDLE` labels from erasing rare but
+important charge, discharge and start decisions while keeping each typed
+family equally represented.
 An optional final `calibration_epochs` phase then optimises the original,
 unweighted demonstration likelihood (at `calibration_learning_rate`) to restore
 the observed action prior after rare-mode representation learning. Balanced and

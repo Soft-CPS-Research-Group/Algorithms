@@ -26,6 +26,7 @@ class AnalyticLocalProjector:
         ev_service_strategy: str = "average",
         ev_service_tolerance_ratio: float = 0.05,
         headroom_reserve_kw: float = 0.0,
+        deferrable_service_margin_seconds: float = 0.0,
     ) -> None:
         self.enforce_ev_service = bool(enforce_ev_service)
         self.ev_service_margin_ratio = max(float(ev_service_margin_ratio), 0.0)
@@ -43,6 +44,9 @@ class AnalyticLocalProjector:
             float(ev_service_tolerance_ratio), 0.0
         )
         self.headroom_reserve_kw = max(float(headroom_reserve_kw), 0.0)
+        self.deferrable_service_margin_seconds = max(
+            float(deferrable_service_margin_seconds), 0.0
+        )
         self.seconds_per_time_step = 3600.0
 
     def set_seconds_per_time_step(self, seconds: float) -> None:
@@ -59,6 +63,9 @@ class AnalyticLocalProjector:
             "ev_service_strategy": self.ev_service_strategy,
             "ev_service_tolerance_ratio": self.ev_service_tolerance_ratio,
             "headroom_reserve_kw": self.headroom_reserve_kw,
+            "deferrable_service_margin_seconds": (
+                self.deferrable_service_margin_seconds
+            ),
             "seconds_per_time_step": self.seconds_per_time_step,
         }
 
@@ -390,16 +397,32 @@ class AnalyticLocalProjector:
                 if part.valid
                 for feature, value in zip(part.feature_names, part.values)
             }
+            slack_steps = values.get("slack_steps", 1.0)
+            service_margin_steps = (
+                self.deferrable_service_margin_seconds
+                / max(self.seconds_per_time_step, 1.0e-9)
+            )
             must_start = (
                 values.get("pending", 0.0) > 0.5
                 and values.get("can_start", 0.0) > 0.5
-                and values.get("slack_steps", 1.0) <= 0.0
+                and slack_steps <= service_margin_steps
             )
             start_port = next((port for port in group.ports if port.mode == "START" and port.valid), None)
             if must_start and start_port is not None and decision.mode != "START":
                 decisions[group_id] = replace(decision, mode="START", fraction=1.0, mode_index=1)
                 interventions.append(
-                    self._intervention(group_id, "deferrable_must_start", decision.mode, "START", decision.fraction, 1.0)
+                    self._intervention(
+                        group_id,
+                        (
+                            "deferrable_service_margin_start"
+                            if slack_steps > 0.0
+                            else "deferrable_must_start"
+                        ),
+                        decision.mode,
+                        "START",
+                        decision.fraction,
+                        1.0,
+                    )
                 )
                 continue
             schedule_parts = [
