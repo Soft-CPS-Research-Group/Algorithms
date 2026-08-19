@@ -169,6 +169,92 @@ def test_stall_watchdog_cancels_only_after_completion_progress_write(tmp_path, m
     assert events[-2:] == ["progress", "cancel"]
 
 
+def test_lightweight_step_progress_updates_without_phase_heartbeats(tmp_path):
+    wrapper = Wrapper_CityLearn(
+        env=_DummyEnv(),
+        config={
+            "runtime": {"log_dir": str(tmp_path / "logs")},
+            "training": {},
+            "checkpointing": {},
+            "tracking": {
+                "progress_updates_enabled": True,
+                "progress_phase_updates_enabled": False,
+                "progress_update_interval": 4,
+            },
+        },
+        job_id="lightweight-progress-test",
+    )
+    updates = []
+    wrapper.progress_tracker.update = lambda **payload: updates.append(payload)
+
+    wrapper.global_step = 3
+    wrapper._write_step_progress(
+        episode=0,
+        step=2,
+        episode_total=2,
+        step_total=8,
+        global_step_total=16,
+        rewards=[-1.0],
+        step_duration=0.5,
+        normal_step_duration=0.4,
+        update_duration=0.1,
+    )
+    assert updates == []
+
+    wrapper.global_step = 4
+    wrapper._write_step_progress(
+        episode=0,
+        step=3,
+        episode_total=2,
+        step_total=8,
+        global_step_total=16,
+        rewards=[-0.5],
+        step_duration=0.6,
+        normal_step_duration=0.45,
+        update_duration=0.15,
+    )
+
+    assert len(updates) == 1
+    assert updates[0]["global_step"] == 4
+    assert updates[0]["status"] == "running"
+    assert updates[0]["extra"]["phase"] == "step_end"
+    assert updates[0]["extra"]["update_duration_seconds"] == 0.15
+
+
+def test_lightweight_step_progress_avoids_duplicate_phase_write(tmp_path):
+    wrapper = Wrapper_CityLearn(
+        env=_DummyEnv(),
+        config={
+            "runtime": {"log_dir": str(tmp_path / "logs")},
+            "training": {},
+            "checkpointing": {},
+            "tracking": {
+                "progress_updates_enabled": True,
+                "progress_phase_updates_enabled": True,
+                "progress_update_interval": 1,
+            },
+        },
+        job_id="phase-progress-dedup-test",
+    )
+    updates = []
+    wrapper.progress_tracker.update = lambda **payload: updates.append(payload)
+    wrapper.global_step = 1
+
+    wrapper._write_step_progress(
+        episode=0,
+        step=0,
+        episode_total=1,
+        step_total=1,
+        global_step_total=1,
+        rewards=[0.0],
+        step_duration=0.1,
+        normal_step_duration=0.1,
+        update_duration=0.0,
+    )
+
+    assert updates == []
+
+
 def test_step_end_keeps_watchdog_armed_across_loop_boundary(tmp_path, monkeypatch):
     events = []
     monkeypatch.setattr(

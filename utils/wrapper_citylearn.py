@@ -890,6 +890,54 @@ class Wrapper_CityLearn(RLC):
             if completes_watchdog_scope and self.stall_watchdog_enabled:
                 self._cancel_stall_watchdog()
 
+    def _write_step_progress(
+        self,
+        *,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+        rewards: Any,
+        step_duration: float,
+        normal_step_duration: float,
+        update_duration: float,
+    ) -> None:
+        """Write one lightweight progress heartbeat at the configured interval.
+
+        Phase progress is optional and deliberately more detailed. Ordinary
+        progress must remain observable when phase heartbeats are disabled,
+        without restoring the former per-phase write amplification.
+        """
+        if not self.progress_updates_enabled:
+            return
+        if self.global_step % self.progress_update_interval != 0:
+            return
+        if self.progress_phase_updates_enabled:
+            # ``step_end`` already emitted the same heartbeat through the
+            # phase-progress path at this interval.
+            return
+
+        self.progress_tracker.update(
+            episode=episode,
+            step=step,
+            global_step=self.global_step,
+            rewards=rewards,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            status="running",
+            extra={
+                "phase": "step_end",
+                "step_duration_seconds": round(float(step_duration), 6),
+                "normal_step_duration_seconds": round(
+                    float(normal_step_duration), 6
+                ),
+                "update_duration_seconds": round(float(update_duration), 6),
+                **self._runtime_resource_snapshot(),
+            },
+        )
+
     def _update_stall_watchdog_for_phase(
         self,
         *,
@@ -1908,6 +1956,17 @@ class Wrapper_CityLearn(RLC):
                         "normal_step_duration_seconds": round(float(normal_step_duration), 6),
                         "update_duration_seconds": round(float(model_update_duration), 6),
                     },
+                )
+                self._write_step_progress(
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                    step_duration=step_duration,
+                    normal_step_duration=normal_step_duration,
+                    update_duration=model_update_duration,
                 )
 
                 time_step += 1
