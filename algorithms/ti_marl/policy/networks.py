@@ -165,9 +165,22 @@ class TypedSnapshotEncoder(nn.Module):
         device: torch.device,
     ) -> Tensor:
         """Encode packed snapshot-agent pairs without changing set semantics."""
+        latents, _parts, _tokens = self.forward_many_with_parts(requests, device)
+        return latents
+
+    def forward_many_with_parts(
+        self,
+        requests: Sequence[tuple[InterfaceSnapshot, str]],
+        device: torch.device,
+    ) -> tuple[Tensor, tuple[tuple[ObservationPart, ...], ...], Tensor]:
+        """Encode agents and retain their already encoded observation tokens."""
         request_count = len(requests)
         if request_count == 0:
-            return torch.empty((0, self.d_model), device=device)
+            return (
+                torch.empty((0, self.d_model), device=device),
+                (),
+                torch.empty((0, self.d_model), device=device),
+            )
 
         # Missing/invalid samples remain explicit tokens: health and validity
         # are policy inputs, while the value itself is zero-filled by the TIC.
@@ -177,8 +190,14 @@ class TypedSnapshotEncoder(nn.Module):
         ]
         all_parts = [part for parts in parts_by_request for part in parts]
         if not all_parts:
-            return torch.zeros(
-                (request_count, self.d_model), dtype=torch.float32, device=device
+            return (
+                torch.zeros(
+                    (request_count, self.d_model),
+                    dtype=torch.float32,
+                    device=device,
+                ),
+                tuple(parts_by_request),
+                torch.empty((0, self.d_model), dtype=torch.float32, device=device),
             )
 
         encoded_batch = self.encode_observation_parts(all_parts, device)
@@ -336,7 +355,11 @@ class TypedSnapshotEncoder(nn.Module):
             request_count, dtype=torch.bool, device=device
         )
         active[sensor_requests] = True
-        return torch.where(active.unsqueeze(-1), encoded, torch.zeros_like(encoded))
+        return (
+            torch.where(active.unsqueeze(-1), encoded, torch.zeros_like(encoded)),
+            tuple(parts_by_request),
+            encoded_batch,
+        )
 
     def encode_observation_parts(
         self,
@@ -596,13 +619,16 @@ class TypedActor(nn.Module):
         latents: Dict[str, Tensor] = {}
         agent_ids = tuple(snapshot.agent_ids)
         requests = tuple((snapshot, agent_id) for agent_id in agent_ids)
-        local_latents = self.encoder.forward_many(requests, device)
+        local_latents, preencoded_parts = self._encode_actor_requests(
+            requests, device
+        )
         groups_by_request = tuple(snapshot.groups_for(agent_id) for agent_id in agent_ids)
         flat_contexts = self._group_contexts_many(
             requests,
             groups_by_request,
             local_latents,
             device,
+            preencoded_parts=preencoded_parts,
         )
         context_offset = 0
         for request_index, (agent_id, local_latent) in enumerate(
@@ -665,7 +691,7 @@ class TypedActor(nn.Module):
             empty = tuple({} for _item in items)
             return ActorReplayEvaluation(empty, empty, empty, empty, empty, empty)
 
-        latents = self.encoder.forward_many(requests, device)
+        latents, preencoded_parts = self._encode_actor_requests(requests, device)
         group_entries: list[
             tuple[int, ActionGroupInstance, ActionDecision]
         ] = []
@@ -711,6 +737,7 @@ class TypedActor(nn.Module):
                 groups_by_request,
                 latents,
                 device,
+                preencoded_parts=preencoded_parts,
             )
             request_indices = torch.tensor(
                 [entry[0] for entry in group_entries],
@@ -837,6 +864,10 @@ class TypedActor(nn.Module):
         groups_by_request: Sequence[Sequence[ActionGroupInstance]],
         local_latents: Tensor,
         device: torch.device,
+        *,
+        preencoded_parts: tuple[
+            tuple[tuple[ObservationPart, ...], ...], Tensor
+        ] | None = None,
     ) -> Tensor:
         """Build action-conditioned contexts without using concrete asset IDs."""
 
@@ -861,14 +892,25 @@ class TypedActor(nn.Module):
         base_contexts = local_latents[request_indices] + self.group_embedding(type_indices)
 
         if self.group_context_kind == "action_conditioned":
-            parts_by_request: list[tuple[ObservationPart, ...]] = []
+            if preencoded_parts is None:
+                parts_by_request = [
+                    tuple(
+                        part
+                        for part in snapshot.parts_for(agent_id)
+                        if part.policy_input
+                    )
+                    for snapshot, agent_id in requests
+                ]
+                encoded_parts = self.encoder.encode_observation_parts(
+                    [part for parts in parts_by_request for part in parts],
+                    device,
+                )
+            else:
+                parts_by_request = list(preencoded_parts[0])
+                encoded_parts = preencoded_parts[1]
             relation_by_group: list[tuple[int, ...]] = []
             for request_index, groups in enumerate(groups_by_request):
-                snapshot, agent_id = requests[request_index]
-                parts = tuple(
-                    part for part in snapshot.parts_for(agent_id) if part.policy_input
-                )
-                parts_by_request.append(parts)
+                parts = parts_by_request[request_index]
                 for group in groups:
                     relation_by_group.append(
                         tuple(self._group_part_relation(group, part) for part in parts)
@@ -882,12 +924,6 @@ class TypedActor(nn.Module):
             assert self.group_observation_relation_embedding is not None
             assert self.group_observation_attention is not None
             assert self.group_observation_norm is not None
-            unique_request_parts = [
-                part for parts in parts_by_request for part in parts
-            ]
-            encoded_parts = self.encoder.encode_observation_parts(
-                unique_request_parts, device
-            )
             request_offsets = []
             offset = 0
             for parts in parts_by_request:
@@ -960,6 +996,21 @@ class TypedActor(nn.Module):
             padded_groups[active_requests] + self_attended
         )
         return output[request_indices, position_indices]
+
+    def _encode_actor_requests(
+        self,
+        requests: Sequence[tuple[InterfaceSnapshot, str]],
+        device: torch.device,
+    ) -> tuple[
+        Tensor,
+        tuple[tuple[tuple[ObservationPart, ...], ...], Tensor] | None,
+    ]:
+        if self.group_context_kind == "action_conditioned":
+            latents, parts, encoded_parts = self.encoder.forward_many_with_parts(
+                requests, device
+            )
+            return latents, (parts, encoded_parts)
+        return self.encoder.forward_many(requests, device), None
 
     @staticmethod
     def _group_part_relation(
