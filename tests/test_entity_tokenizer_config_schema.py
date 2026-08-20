@@ -286,7 +286,7 @@ def test_excluded_pattern_matches_topology_version():
 
 def test_excluded_feature_pattern_removes_topology_version():
     """The exclusion regex removes the ``topology_version`` feature."""
-    from algorithms.transformer_ppo.entity_token_layout import EntityTokenLayoutBuilder
+    from algorithms.transformer_shared.entity_token_layout import EntityTokenLayoutBuilder
     from tests._entity_sample_obs_names import (
         load_sample_observation_names_for_first_building,
     )

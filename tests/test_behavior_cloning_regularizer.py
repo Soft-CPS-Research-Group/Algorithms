@@ -6,11 +6,11 @@ import pytest
 import torch
 from loguru import logger
 
-from algorithms.transformer_ppo.behavior_cloning import (
+from algorithms.transformer_shared.behavior_cloning import (
     BehaviorCloningRegularizer,
     Demonstration,
 )
-from algorithms.transformer_ppo.entity_token_layout import (
+from algorithms.transformer_shared.entity_token_layout import (
     BuildingTokenLayout,
     NfcExpression,
     TokenSegment,
