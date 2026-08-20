@@ -12,7 +12,7 @@ D_MODEL = 16
 
 @pytest.fixture
 def backbone():
-    from algorithms.transformer_ppo.transformer_backbone import TransformerBackbone
+    from algorithms.transformer_shared.transformer_backbone import TransformerBackbone
 
     return TransformerBackbone(
         d_model=D_MODEL,

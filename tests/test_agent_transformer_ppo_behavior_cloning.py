@@ -12,7 +12,7 @@ import torch
 from loguru import logger
 
 from algorithms.transformer_ppo.agent import AgentTransformerPPO
-from algorithms.transformer_ppo.behavior_cloning import (
+from algorithms.transformer_shared.behavior_cloning import (
     BehaviorCloningRegularizer,
     Demonstration,
 )

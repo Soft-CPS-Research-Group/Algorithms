@@ -10,9 +10,9 @@ from algorithms.transformer_ppo.ppo_components import (
     ActorHead,
     CriticHead,
     RolloutBuffer,
-    RunningValueNormalizer,
     compute_ppo_loss,
 )
+from algorithms.transformer_shared.value_normalizer import RunningValueNormalizer
 
 
 class TestActorHead:

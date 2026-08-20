@@ -14,9 +14,6 @@ import torch.nn as nn
 from loguru import logger
 from torch.distributions import Normal
 
-from algorithms.transformer_shared.value_normalizer import RunningValueNormalizer
-
-
 class ActorHead(nn.Module):
     """Actor head that produces actions from CA embeddings.
 
