@@ -96,7 +96,10 @@ def test_ti_marl_15s_handles_all_shifted_asset_events_with_bounded_overhead(tmp_
                 break
         assert versions == set(range(7))
         assert event_ids == {event["id"] for event in schema["topology_events"]}
-        assert compiler.structure_recompilations >= 7
+        # One initial compilation plus one for each of the six structural
+        # topology mutations. Runtime value/session churn must not rebuild the
+        # structural plans.
+        assert compiler.structure_recompilations == 7
         assert ("Building_2", "charger_1") in seen_groups
         assert ("Building_3", "battery_1") in seen_groups
         assert np.percentile(latencies, 95) < 500.0

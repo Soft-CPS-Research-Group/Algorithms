@@ -102,6 +102,10 @@ class TypedInterfaceCompiler:
             Tuple[str, str, str, ObservationDefinition], ...
         ] = ()
         self._action_plan: Tuple[Tuple[str, ActuatorDefinition, str], ...] = ()
+        self._controlled_entity_types = frozenset(
+            str(profile["entity_type"])
+            for profile in ACTION_PROFILES.values()
+        )
         self.structure_recompilations = 0
         self.compatibility_signature = CompatibilitySignature.build(
             contract_version=self.contract_version,
@@ -181,10 +185,12 @@ class TypedInterfaceCompiler:
             return
         self.entity_specs = next_specs
         self.seconds_per_time_step = next_seconds
-        # A topology change can keep the same public version while changing
-        # the technological entity catalog.  Never retain bindings compiled
-        # against the previous catalog.
-        self._structure_key = None
+        # Runtime catalogs also change when an EV session connects or leaves.
+        # Those changes must refresh the adapter, but they do not change the
+        # stable charger action group and therefore must not invalidate the
+        # compiler's structural plans.  ``_ensure_structure`` keys the actual
+        # controlled entity catalog below, so a same-version actuator change
+        # still triggers a safe recompile.
         self.adapter.attach_entity_specs(
             self.entity_specs,
             seconds_per_time_step=self.seconds_per_time_step,
@@ -526,6 +532,7 @@ class TypedInterfaceCompiler:
             tuple(
                 (item.owner_agent_id, item.entity_type, item.entity_id, item.active)
                 for item in frame.entities
+                if item.entity_type in self._controlled_entity_types
             ),
         )
         if key == self._structure_key:

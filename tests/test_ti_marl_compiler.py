@@ -240,6 +240,40 @@ def test_session_replacement_rebinds_stable_charger_without_stale_ev_identity(tm
     )
 
 
+def test_session_replacement_does_not_recompile_stable_action_structure(tmp_path):
+    tic = compiler(tmp_path)
+    tic.compile(entity_payload())
+
+    next_specs = entity_specs()
+    next_specs["tables"]["ev"]["ids"] = ["EV_2"]
+    next_payload = entity_payload(time_step=1)
+    next_payload["tables"]["ev"] = next_payload["tables"]["ev"].copy()
+    next_payload["meta"]["runtime_status"]["asset_connections"][0][
+        "target_id"
+    ] = "EV_2"
+    tic.attach_entity_specs(next_specs, seconds_per_time_step=900)
+
+    following = tic.compile(next_payload)
+
+    assert tic.structure_recompilations == 1
+    assert {entity.entity_id for entity in following.entities if entity.entity_type == "ev"} == {
+        "EV_2"
+    }
+
+
+def test_same_version_controlled_asset_change_recompiles_structure(tmp_path):
+    tic = compiler(tmp_path)
+    tic.compile(entity_payload())
+
+    next_specs = entity_specs()
+    next_specs["tables"]["storage"]["ids"] = ["Building_1/storage_2"]
+    next_payload = entity_payload(time_step=1)
+    tic.attach_entity_specs(next_specs, seconds_per_time_step=900)
+    tic.compile(next_payload)
+
+    assert tic.structure_recompilations == 2
+
+
 def test_dependency_cycles_and_conflicts_are_rejected():
     with pytest.raises(ValueError, match="cycle"):
         validate_dependency_graph(
