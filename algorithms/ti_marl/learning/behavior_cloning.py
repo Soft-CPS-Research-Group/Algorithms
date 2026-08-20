@@ -331,6 +331,9 @@ class TypedBehaviorCloningWarmStart:
         correct: Counter[tuple[str, str]] = Counter()
         predicted: Counter[tuple[str, str]] = Counter()
         target_probability: Counter[tuple[str, str]] = Counter()
+        fraction_absolute_error: Counter[tuple[str, str]] = Counter()
+        fraction_signed_error: Counter[tuple[str, str]] = Counter()
+        fraction_count: Counter[tuple[str, str]] = Counter()
         actor.eval()
         with torch.no_grad():
             for start in range(0, len(self._demonstrations), self.batch_size):
@@ -376,16 +379,39 @@ class TypedBehaviorCloningWarmStart:
                                     bundle.agent_id
                                 ][decision.group_id].exp().cpu()
                             )
+                            if decision.mode.startswith(
+                                ("CHARGE_", "DISCHARGE_")
+                            ):
+                                predicted_fraction = float(
+                                    evaluation.predicted_fraction_by_group_step[
+                                        step_index
+                                    ][bundle.agent_id][decision.group_id].cpu()
+                                )
+                                error = predicted_fraction - float(
+                                    decision.fraction
+                                )
+                                fraction_absolute_error[key] += abs(error)
+                                fraction_signed_error[key] += error
+                                fraction_count[key] += 1
         actor.train()
         metrics: dict[str, float] = {}
-        for key, count in sorted(totals.items()):
+        for key in sorted(set(totals) | set(predicted)):
+            count = totals[key]
             group_type, mode = key
             prefix = f"bc_mode_{group_type.lower()}_{mode.lower()}"
-            metrics[f"{prefix}_recall"] = float(correct[key] / count)
-            metrics[f"{prefix}_target_probability"] = float(
-                target_probability[key] / count
-            )
             metrics[f"{prefix}_predicted_count"] = float(predicted[key])
+            if count:
+                metrics[f"{prefix}_recall"] = float(correct[key] / count)
+                metrics[f"{prefix}_target_probability"] = float(
+                    target_probability[key] / count
+                )
+            if fraction_count[key]:
+                metrics[f"{prefix}_fraction_mae"] = float(
+                    fraction_absolute_error[key] / fraction_count[key]
+                )
+                metrics[f"{prefix}_fraction_bias"] = float(
+                    fraction_signed_error[key] / fraction_count[key]
+                )
         return metrics
 
     def _build_mode_weights(self) -> dict[tuple[str, str], float]:

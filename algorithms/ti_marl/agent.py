@@ -104,6 +104,9 @@ class TIMARL(BaseAgent):
         self.policy_credit_assignment = str(
             hyper.get("policy_credit_assignment", "joint_agent")
         )
+        self.policy_anchor_reset_on_resume = bool(
+            hyper.get("policy_anchor_reset_on_resume", False)
+        )
         self.actor = TypedActor(
             self.compiler.type_registry,
             d_model=d_model,
@@ -112,6 +115,24 @@ class TIMARL(BaseAgent):
             group_context_kind=self.actor_group_context_kind,
             deterministic_mode_strategy=str(
                 actor_cfg.get("deterministic_mode_strategy", "argmax")
+            ),
+            deterministic_mode_strategy_by_group_type=dict(
+                actor_cfg.get("deterministic_mode_strategy_by_group_type", {})
+            ),
+            deterministic_expected_signed_gain_by_group_type=dict(
+                actor_cfg.get(
+                    "deterministic_expected_signed_gain_by_group_type", {}
+                )
+            ),
+            deterministic_expected_signed_deadband_by_group_type=dict(
+                actor_cfg.get(
+                    "deterministic_expected_signed_deadband_by_group_type", {}
+                )
+            ),
+            deterministic_non_idle_logit_margin_by_group_type=dict(
+                actor_cfg.get(
+                    "deterministic_non_idle_logit_margin_by_group_type", {}
+                )
             ),
         ).to(self.device)
         critic_class = (
@@ -151,6 +172,15 @@ class TIMARL(BaseAgent):
             ),
             policy_credit_assignment=self.policy_credit_assignment,
             policy_anchor_coeff=float(hyper.get("policy_anchor_coeff", 0.0)),
+            exclude_intervened_actions_from_policy_loss=bool(
+                hyper.get(
+                    "exclude_intervened_actions_from_policy_loss",
+                    False,
+                )
+            ),
+            intervention_distillation_coeff=float(
+                hyper.get("intervention_distillation_coeff", 0.0)
+            ),
             value_coeff=float(hyper.get("value_coeff", 0.5)),
             max_grad_norm=float(hyper.get("max_grad_norm", 0.5)),
             target_kl=(None if hyper.get("target_kl", 0.03) is None else float(hyper.get("target_kl", 0.03))),
@@ -660,6 +690,7 @@ class TIMARL(BaseAgent):
             reward_components_by_agent=self._reward_components_by_agent(current),
             group_values=dict(self._pending.get("group_values", {})),
             next_group_values=next_group_values,
+            final_bundles=tuple(self._pending["final_bundles"]),
         )
         self.learner.rollout.add(step)
         if update_step and self.learner.ready():
@@ -903,6 +934,8 @@ class TIMARL(BaseAgent):
             restore_optimizers=self.restore_optimizers,
             restore_rollout=self.restore_rollout,
         )
+        if self.policy_anchor_reset_on_resume:
+            self.learner.reset_policy_anchor()
         self.compiler.load_checkpoint_state(payload.get("compiler_state", {}))
         if self.behavior_cloning is not None and payload.get("behavior_cloning") is not None:
             self.behavior_cloning.load_state_dict(payload["behavior_cloning"])

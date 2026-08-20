@@ -43,6 +43,9 @@ class ActorReplayEvaluation:
     entropy_by_group_step: Tuple[Mapping[str, Mapping[str, Tensor]], ...]
     mode_log_prob_by_group_step: Tuple[Mapping[str, Mapping[str, Tensor]], ...]
     predicted_mode_by_group_step: Tuple[Mapping[str, Mapping[str, Tensor]], ...]
+    predicted_fraction_by_group_step: Tuple[
+        Mapping[str, Mapping[str, Tensor]], ...
+    ]
 
 
 class RelationalMessageLayer(nn.Module):
@@ -561,6 +564,16 @@ class TypedActor(nn.Module):
         relation_layers: int = 2,
         group_context_kind: str = "local",
         deterministic_mode_strategy: str = "argmax",
+        deterministic_mode_strategy_by_group_type: Mapping[str, str] | None = None,
+        deterministic_expected_signed_gain_by_group_type: Mapping[
+            str, float
+        ] | None = None,
+        deterministic_expected_signed_deadband_by_group_type: Mapping[
+            str, float
+        ] | None = None,
+        deterministic_non_idle_logit_margin_by_group_type: Mapping[
+            str, float
+        ] | None = None,
     ) -> None:
         super().__init__()
         self.d_model = int(d_model)
@@ -583,6 +596,99 @@ class TypedActor(nn.Module):
         action_types = dict(type_registry.get("action_group_types", {}))
         if not action_types:
             raise ValueError("TI-MARL type registry must define action_group_types")
+        self.deterministic_mode_strategy_by_group_type = {
+            str(group_type): str(strategy)
+            for group_type, strategy in dict(
+                deterministic_mode_strategy_by_group_type or {}
+            ).items()
+        }
+        unknown_strategy_group_types = sorted(
+            set(self.deterministic_mode_strategy_by_group_type) - set(action_types)
+        )
+        if unknown_strategy_group_types:
+            raise ValueError(
+                "TI-MARL deterministic mode strategy overrides reference unknown "
+                f"action group types: {unknown_strategy_group_types}"
+            )
+        invalid_strategies = sorted(
+            {
+                strategy
+                for strategy in self.deterministic_mode_strategy_by_group_type.values()
+                if strategy not in {"argmax", "expected_signed"}
+            }
+        )
+        if invalid_strategies:
+            raise ValueError(
+                "TI-MARL deterministic mode strategy overrides must be 'argmax' "
+                f"or 'expected_signed': {invalid_strategies}"
+            )
+        self.deterministic_expected_signed_gain_by_group_type = {
+            str(group_type): float(gain)
+            for group_type, gain in dict(
+                deterministic_expected_signed_gain_by_group_type or {}
+            ).items()
+        }
+        unknown_gain_group_types = sorted(
+            set(self.deterministic_expected_signed_gain_by_group_type)
+            - set(action_types)
+        )
+        if unknown_gain_group_types:
+            raise ValueError(
+                "TI-MARL deterministic expected-signed gains reference unknown "
+                f"action group types: {unknown_gain_group_types}"
+            )
+        if any(
+            gain < 0.0
+            for gain in self.deterministic_expected_signed_gain_by_group_type.values()
+        ):
+            raise ValueError(
+                "TI-MARL deterministic expected-signed gains must be non-negative"
+            )
+        self.deterministic_expected_signed_deadband_by_group_type = {
+            str(group_type): float(deadband)
+            for group_type, deadband in dict(
+                deterministic_expected_signed_deadband_by_group_type or {}
+            ).items()
+        }
+        unknown_deadband_group_types = sorted(
+            set(self.deterministic_expected_signed_deadband_by_group_type)
+            - set(action_types)
+        )
+        if unknown_deadband_group_types:
+            raise ValueError(
+                "TI-MARL deterministic expected-signed deadbands reference unknown "
+                f"action group types: {unknown_deadband_group_types}"
+            )
+        if any(
+            deadband < 0.0 or deadband > 1.0
+            for deadband in self.deterministic_expected_signed_deadband_by_group_type.values()
+        ):
+            raise ValueError(
+                "TI-MARL deterministic expected-signed deadbands must be between "
+                "zero and one"
+            )
+        self.deterministic_non_idle_logit_margin_by_group_type = {
+            str(group_type): float(margin)
+            for group_type, margin in dict(
+                deterministic_non_idle_logit_margin_by_group_type or {}
+            ).items()
+        }
+        unknown_margin_group_types = sorted(
+            set(self.deterministic_non_idle_logit_margin_by_group_type)
+            - set(action_types)
+        )
+        if unknown_margin_group_types:
+            raise ValueError(
+                "TI-MARL deterministic non-idle margins reference unknown action "
+                f"group types: {unknown_margin_group_types}"
+            )
+        if any(
+            margin < 0.0
+            for margin in self.deterministic_non_idle_logit_margin_by_group_type.values()
+        ):
+            raise ValueError(
+                "TI-MARL deterministic non-idle logit margins must be non-negative"
+            )
         self.group_modes = {
             name: tuple(str(mode) for mode in config.get("modes", []))
             for name, config in sorted(action_types.items())
@@ -699,7 +805,15 @@ class TypedActor(nn.Module):
         ]
         if not requests:
             empty = tuple({} for _item in items)
-            return ActorReplayEvaluation(empty, empty, empty, empty, empty, empty)
+            return ActorReplayEvaluation(
+                empty,
+                empty,
+                empty,
+                empty,
+                empty,
+                empty,
+                empty,
+            )
 
         latents, preencoded_parts = self._encode_actor_requests(requests, device)
         group_entries: list[
@@ -733,6 +847,9 @@ class TypedActor(nn.Module):
         group_predicted_mode_by_step: list[Dict[str, Dict[str, Tensor]]] = [
             {} for _item in items
         ]
+        group_predicted_fraction_by_step: list[
+            Dict[str, Dict[str, Tensor]]
+        ] = [{} for _item in items]
         if group_entries:
             groups_by_request = tuple(
                 tuple(
@@ -806,6 +923,7 @@ class TypedActor(nn.Module):
                 predicted_modes = torch.argmax(masked_logits, dim=1)
                 beta_params = F.softplus(self.beta_heads[group_type](contexts)) + 1.0
                 beta_distribution = Beta(beta_params[:, 0], beta_params[:, 1])
+                predicted_fractions = beta_params[:, 0] / beta_params.sum(dim=1)
                 fractions = torch.tensor(
                     [
                         float(np.clip(entry[2].fraction, 1.0e-6, 1.0 - 1.0e-6))
@@ -846,6 +964,9 @@ class TypedActor(nn.Module):
                     group_predicted_mode_by_step[step_index].setdefault(
                         agent_id, {}
                     )[group.group_id] = predicted_modes[row]
+                    group_predicted_fraction_by_step[step_index].setdefault(
+                        agent_id, {}
+                    )[group.group_id] = predicted_fractions[row]
                 target_requests = request_indices[selected_tensor]
                 request_log_probs = request_log_probs.index_add(
                     0, target_requests, log_prob
@@ -866,6 +987,7 @@ class TypedActor(nn.Module):
             tuple(group_entropy_by_step),
             tuple(group_mode_log_prob_by_step),
             tuple(group_predicted_mode_by_step),
+            tuple(group_predicted_fraction_by_step),
         )
 
     def _group_contexts_many(
@@ -1084,6 +1206,7 @@ class TypedActor(nn.Module):
         elif deterministic:
             fraction = beta_params[0] / beta_params.sum()
             mode_index, fraction = self._deterministic_mode_and_fraction(
+                group.group_type,
                 modes,
                 categorical.probs,
                 fraction,
@@ -1127,14 +1250,27 @@ class TypedActor(nn.Module):
 
     def _deterministic_mode_and_fraction(
         self,
+        group_type: str,
         modes: Sequence[str],
         probabilities: Tensor,
         beta_mean: Tensor,
         mask_values: Sequence[bool],
         masked_logits: Tensor,
     ) -> tuple[int, Tensor]:
-        if self.deterministic_mode_strategy == "argmax":
-            return int(torch.argmax(masked_logits).item()), beta_mean
+        strategy = self.deterministic_mode_strategy_by_group_type.get(
+            group_type, self.deterministic_mode_strategy
+        )
+        if strategy == "argmax":
+            mode_index = int(torch.argmax(masked_logits).item())
+            margin = self.deterministic_non_idle_logit_margin_by_group_type.get(
+                group_type, 0.0
+            )
+            if margin > 0.0 and modes[mode_index] != "IDLE":
+                idle_index = modes.index("IDLE")
+                non_idle_advantage = masked_logits[mode_index] - masked_logits[idle_index]
+                if float(non_idle_advantage.detach().cpu()) < margin:
+                    return idle_index, beta_mean.new_zeros(())
+            return mode_index, beta_mean
 
         charge_indices = [
             index for index, mode in enumerate(modes) if mode.startswith("CHARGE_")
@@ -1152,8 +1288,14 @@ class TypedActor(nn.Module):
             signed_probability = signed_probability + probabilities[index]
         for index in discharge_indices:
             signed_probability = signed_probability - probabilities[index]
-        signed_fraction = signed_probability * beta_mean
-        if abs(float(signed_fraction.detach().cpu())) <= 1.0e-8:
+        gain = self.deterministic_expected_signed_gain_by_group_type.get(
+            group_type, 1.0
+        )
+        signed_fraction = signed_probability * beta_mean * gain
+        deadband = self.deterministic_expected_signed_deadband_by_group_type.get(
+            group_type, 0.0
+        )
+        if abs(float(signed_fraction.detach().cpu())) <= max(deadband, 1.0e-8):
             return modes.index("IDLE"), beta_mean.new_zeros(())
         candidates = charge_indices if signed_fraction > 0.0 else discharge_indices
         valid_candidates = [index for index in candidates if mask_values[index]]

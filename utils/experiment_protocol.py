@@ -20,6 +20,7 @@ from typing import Any, Iterable, Mapping, Sequence
 PROTOCOL_VERSION = "ti_marl_experiment_protocol_v1"
 EVALUATION_RECORD_VERSION = "ti_marl_evaluation_record_v1"
 SELECTION_RECORD_VERSION = "ti_marl_checkpoint_selection_v1"
+CONFIRMATION_REPORT_VERSION = "ti_marl_confirmation_report_v1"
 
 
 KPI_ROWS: Mapping[str, tuple[str, ...]] = {
@@ -263,7 +264,10 @@ def build_evaluation_record(
         "data_split": protocol.get("data_split"),
         "window_id": protocol.get("window_id"),
         "selection_rules_sha256": protocol.get("selection_rules_sha256"),
+        "selection_record_sha256": protocol.get("selection_record_sha256"),
+        "selected_checkpoint_sha256": protocol.get("selected_checkpoint_sha256"),
         "candidate_id": str(candidate_id),
+        "paired_reference_id": protocol.get("paired_reference_id"),
         "role": role,
         "neural_seed": (config.get("training") or {}).get("seed"),
         "pairing": pairing,
@@ -490,6 +494,198 @@ def select_checkpoint(
         "selected_checkpoint": None if selected is None else selected["checkpoint"],
     }
     payload["selection_sha256"] = canonical_sha256(payload)
+    return payload
+
+
+def build_confirmation_report(
+    *,
+    references: Sequence[Mapping[str, Any]],
+    candidates: Sequence[Mapping[str, Any]],
+    rules: Mapping[str, Any],
+    selection: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Aggregate one frozen candidate over exact paired confirmation surfaces.
+
+    This deliberately does not select a checkpoint. It verifies that every
+    record points back to the same pre-existing selection and selected
+    checkpoint, then reports whether the frozen development gates replicate on
+    the reserved confirmation windows.
+    """
+
+    records = [*references, *candidates]
+    if rules.get("version") != "ti_marl_selection_rules_v1":
+        raise ValueError("Unsupported checkpoint-selection rules version")
+    if not references or not candidates:
+        raise ValueError("Confirmation requires reference and candidate records")
+    if any(record.get("phase") != "confirmation" for record in records):
+        raise ValueError("Confirmation reports may consume confirmation records only")
+    for record in records:
+        if record.get("format") != EVALUATION_RECORD_VERSION:
+            raise ValueError("Unsupported evaluation record format")
+        recorded_hash = record.get("record_sha256")
+        unhashed = dict(record)
+        unhashed.pop("record_sha256", None)
+        if not recorded_hash or canonical_sha256(unhashed) != recorded_hash:
+            raise ValueError("Evaluation record payload/hash mismatch")
+    if any(record.get("role") != "reference" for record in references):
+        raise ValueError("Reference inputs must have role='reference'")
+    if any(record.get("role") != "candidate" for record in candidates):
+        raise ValueError("Candidate inputs must have role='candidate'")
+
+    rules_hash = canonical_sha256(rules)
+    if {record.get("selection_rules_sha256") for record in records} != {rules_hash}:
+        raise ValueError("Confirmation records do not match the frozen rules")
+    protocol_ids = {record.get("protocol_id") for record in records}
+    if len(protocol_ids) != 1:
+        raise ValueError("All records must use the same protocol_id")
+    selection_hashes = {
+        str(record.get("selection_record_sha256") or "") for record in records
+    }
+    if len(selection_hashes) != 1 or "" in selection_hashes:
+        raise ValueError("Confirmation records must share one selection record hash")
+
+    if selection.get("format") != SELECTION_RECORD_VERSION:
+        raise ValueError("Unsupported checkpoint-selection record format")
+    selection_hash = str(selection.get("selection_sha256") or "")
+    unhashed_selection = dict(selection)
+    unhashed_selection.pop("selection_sha256", None)
+    if not selection_hash or canonical_sha256(unhashed_selection) != selection_hash:
+        raise ValueError("Checkpoint-selection record payload/hash mismatch")
+    if selection_hashes != {selection_hash}:
+        raise ValueError("Confirmation does not reference the supplied selection record")
+    if selection.get("status") != "selected":
+        raise ValueError("Confirmation requires a successful checkpoint selection")
+    if selection.get("rules_sha256") != rules_hash:
+        raise ValueError("Checkpoint selection does not match the frozen rules")
+
+    candidate_ids = {str(record.get("candidate_id") or "") for record in candidates}
+    if len(candidate_ids) != 1 or "" in candidate_ids:
+        raise ValueError("Confirmation must report exactly one frozen candidate")
+    if selection.get("selected_candidate_id") != next(iter(candidate_ids)):
+        raise ValueError("Confirmation candidate differs from the selected candidate")
+    configured_checkpoint_hashes = {
+        str(record.get("selected_checkpoint_sha256") or "") for record in candidates
+    }
+    replayed_checkpoint_hashes = {
+        str((record.get("checkpoint") or {}).get("sha256") or "")
+        for record in candidates
+    }
+    if (
+        len(configured_checkpoint_hashes) != 1
+        or "" in configured_checkpoint_hashes
+        or configured_checkpoint_hashes != replayed_checkpoint_hashes
+    ):
+        raise ValueError(
+            "Confirmation candidates must replay the one selected checkpoint"
+        )
+    selected_checkpoint_hash = str(
+        (selection.get("selected_checkpoint") or {}).get("sha256") or ""
+    )
+    if configured_checkpoint_hashes != {selected_checkpoint_hash}:
+        raise ValueError("Confirmation checkpoint differs from the selected checkpoint")
+
+    reference_by_pairing: dict[str, Mapping[str, Any]] = {}
+    for record in references:
+        pairing_hash = str((record.get("pairing") or {}).get("sha256") or "")
+        if not pairing_hash or pairing_hash in reference_by_pairing:
+            raise ValueError("References must contain one unique record per paired surface")
+        reference_by_pairing[pairing_hash] = record
+    candidate_by_pairing: dict[str, Mapping[str, Any]] = {}
+    for record in candidates:
+        pairing_hash = str((record.get("pairing") or {}).get("sha256") or "")
+        if not pairing_hash or pairing_hash in candidate_by_pairing:
+            raise ValueError("Candidates must contain one unique record per paired surface")
+        candidate_by_pairing[pairing_hash] = record
+    if set(candidate_by_pairing) != set(reference_by_pairing):
+        raise ValueError("Candidate does not cover the exact paired confirmation surfaces")
+    for pairing_hash, candidate in candidate_by_pairing.items():
+        reference = reference_by_pairing[pairing_hash]
+        if candidate.get("paired_reference_id") != reference.get("candidate_id"):
+            raise ValueError("Candidate paired_reference_id does not match its reference")
+
+    aggregation = dict(rules.get("aggregation") or {})
+    reference_metrics = aggregate_records(references, aggregation=aggregation)
+    candidate_metrics = aggregate_records(candidates, aggregation=aggregation)
+    reasons = _gate_reasons(candidate_metrics, rules, reference_metrics)
+    reasons.extend(_guardrail_reasons(candidate_metrics, reference_metrics, rules))
+
+    promotion = dict(rules.get("promotion") or {})
+    primary = str(promotion.get("metric", "cost_eur"))
+    if primary not in candidate_metrics or primary not in reference_metrics:
+        reasons.append(f"missing_promotion:{primary}")
+    else:
+        improvement = max(
+            float(promotion.get("minimum_improvement", 0.0)),
+            abs(float(reference_metrics[primary]))
+            * float(promotion.get("minimum_relative_improvement", 0.0)),
+        )
+        direction = str(promotion.get("direction", "minimize"))
+        if (
+            direction == "minimize"
+            and candidate_metrics[primary] > reference_metrics[primary] - improvement
+        ):
+            reasons.append(f"no_required_improvement:{primary}")
+        if (
+            direction == "maximize"
+            and candidate_metrics[primary] < reference_metrics[primary] + improvement
+        ):
+            reasons.append(f"no_required_improvement:{primary}")
+
+    common_metrics = sorted(set(reference_metrics) & set(candidate_metrics))
+    deltas = {
+        metric: float(candidate_metrics[metric]) - float(reference_metrics[metric])
+        for metric in common_metrics
+    }
+    relative_deltas = {
+        metric: deltas[metric] / abs(float(reference_metrics[metric]))
+        for metric in common_metrics
+        if float(reference_metrics[metric]) != 0.0
+    }
+    paired_windows = []
+    for pairing_hash in sorted(reference_by_pairing):
+        reference = reference_by_pairing[pairing_hash]
+        candidate = candidate_by_pairing[pairing_hash]
+        shared = sorted(set(reference.get("metrics") or {}) & set(candidate.get("metrics") or {}))
+        paired_windows.append(
+            {
+                "window_id": candidate.get("window_id"),
+                "pairing_sha256": pairing_hash,
+                "reference_record_sha256": reference.get("record_sha256"),
+                "candidate_record_sha256": candidate.get("record_sha256"),
+                "metric_deltas": {
+                    metric: float(candidate["metrics"][metric])
+                    - float(reference["metrics"][metric])
+                    for metric in shared
+                },
+                "metric_relative_deltas": {
+                    metric: (
+                        float(candidate["metrics"][metric])
+                        - float(reference["metrics"][metric])
+                    )
+                    / abs(float(reference["metrics"][metric]))
+                    for metric in shared
+                    if float(reference["metrics"][metric]) != 0.0
+                },
+            }
+        )
+
+    payload: dict[str, Any] = {
+        "format": CONFIRMATION_REPORT_VERSION,
+        "protocol_id": next(iter(protocol_ids)),
+        "status": "confirmed" if not reasons else "not_confirmed",
+        "candidate_id": next(iter(candidate_ids)),
+        "selection_record_sha256": next(iter(selection_hashes)),
+        "selected_checkpoint_sha256": next(iter(configured_checkpoint_hashes)),
+        "rules_sha256": rules_hash,
+        "paired_surface_sha256s": sorted(reference_by_pairing),
+        "reference_metrics": reference_metrics,
+        "candidate_metrics": candidate_metrics,
+        "metric_deltas": deltas,
+        "metric_relative_deltas": relative_deltas,
+        "paired_windows": paired_windows,
+        "rejection_reasons": reasons,
+    }
+    payload["report_sha256"] = canonical_sha256(payload)
     return payload
 
 

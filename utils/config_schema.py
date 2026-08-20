@@ -1187,11 +1187,47 @@ class TIMARLActorConfig(BaseModel):
     relation_layers: int = Field(default=2, ge=1)
     group_context_kind: Literal["local", "action_conditioned"] = "local"
     deterministic_mode_strategy: Literal["argmax", "expected_signed"] = "argmax"
+    deterministic_mode_strategy_by_group_type: Dict[
+        str, Literal["argmax", "expected_signed"]
+    ] = Field(default_factory=dict)
+    deterministic_expected_signed_gain_by_group_type: Dict[str, float] = Field(
+        default_factory=dict
+    )
+    deterministic_expected_signed_deadband_by_group_type: Dict[str, float] = Field(
+        default_factory=dict
+    )
+    deterministic_non_idle_logit_margin_by_group_type: Dict[str, float] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def validate_attention_width(self) -> "TIMARLActorConfig":
         if self.d_model % self.attention_heads != 0:
             raise ValueError("TIMARL actor.d_model must be divisible by attention_heads")
+        if any(
+            gain < 0.0
+            for gain in self.deterministic_expected_signed_gain_by_group_type.values()
+        ):
+            raise ValueError(
+                "TIMARL actor deterministic expected-signed gains must be "
+                "non-negative"
+            )
+        if any(
+            margin < 0.0
+            for margin in self.deterministic_non_idle_logit_margin_by_group_type.values()
+        ):
+            raise ValueError(
+                "TIMARL actor deterministic non-idle logit margins must be "
+                "non-negative"
+            )
+        if any(
+            deadband < 0.0 or deadband > 1.0
+            for deadband in self.deterministic_expected_signed_deadband_by_group_type.values()
+        ):
+            raise ValueError(
+                "TIMARL actor deterministic expected-signed deadbands must be "
+                "between zero and one"
+            )
         return self
 
 
@@ -1270,6 +1306,9 @@ class TIMARLHyperparameters(BaseModel):
         "joint_agent"
     )
     policy_anchor_coeff: float = Field(default=0.0, ge=0)
+    policy_anchor_reset_on_resume: bool = False
+    exclude_intervened_actions_from_policy_loss: bool = False
+    intervention_distillation_coeff: float = Field(default=0.0, ge=0)
     value_coeff: float = Field(default=0.5, ge=0)
     max_grad_norm: float = Field(default=0.5, gt=0)
     target_kl: Optional[float] = Field(default=0.03, gt=0)
@@ -1291,6 +1330,22 @@ class TIMARLHyperparameters(BaseModel):
         if any(value < 0.0 for value in self.entropy_coeff_by_group_type.values()):
             raise ValueError(
                 "TIMARL entropy_coeff_by_group_type values must be non-negative"
+            )
+        if (
+            self.exclude_intervened_actions_from_policy_loss
+            and self.policy_credit_assignment != "typed_group"
+        ):
+            raise ValueError(
+                "TIMARL exclude_intervened_actions_from_policy_loss requires "
+                "policy_credit_assignment='typed_group'"
+            )
+        if (
+            self.intervention_distillation_coeff > 0.0
+            and not self.exclude_intervened_actions_from_policy_loss
+        ):
+            raise ValueError(
+                "TIMARL intervention_distillation_coeff requires "
+                "exclude_intervened_actions_from_policy_loss=true"
             )
         return self
 

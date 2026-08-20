@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
+import yaml
 
 from utils.experiment_protocol import (
+    build_confirmation_report,
     build_evaluation_record,
     build_pairing_fingerprint,
     canonical_sha256,
@@ -148,6 +153,68 @@ def _rules():
     }
 
 
+def _confirmation_record(
+    candidate_id: str,
+    pairing: str,
+    checkpoint_sha: str | None,
+    *,
+    role: str,
+    cost: float,
+    paired_reference_id: str | None = None,
+):
+    payload = _record(
+        candidate_id,
+        pairing,
+        checkpoint_sha,
+        role=role,
+        cost=cost,
+    )
+    payload["phase"] = "confirmation"
+    payload["protocol_id"] = "confirmation-v1"
+    payload["selection_record_sha256"] = "b" * 64
+    payload["selected_checkpoint_sha256"] = (
+        checkpoint_sha if role == "candidate" else None
+    )
+    payload["paired_reference_id"] = paired_reference_id
+    payload.pop("record_sha256")
+    payload["record_sha256"] = canonical_sha256(payload)
+    return payload
+
+
+def _selection_record(
+    *,
+    candidate_id: str = "frozen-candidate",
+    checkpoint_sha: str = "a" * 64,
+):
+    payload = {
+        "format": "ti_marl_checkpoint_selection_v1",
+        "protocol_id": "development-v1",
+        "status": "selected",
+        "rules_sha256": canonical_sha256(_rules()),
+        "selected_candidate_id": candidate_id,
+        "selected_checkpoint": {"sha256": checkpoint_sha},
+    }
+    payload["selection_sha256"] = canonical_sha256(payload)
+    return payload
+
+
+def test_canonical_v3_treats_ev_minimum_as_safety_and_symmetric_target_as_guardrail():
+    rules_path = (
+        Path(__file__).parents[1]
+        / "algorithms"
+        / "ti_marl"
+        / "experiments"
+        / "selection_rules_v3.yaml"
+    )
+    rules = yaml.safe_load(rules_path.read_text(encoding="utf-8"))
+
+    assert rules["hard_gates"]["ev_min_acceptable_feasible_rate"]["min"] == 0.99
+    assert "ev_within_tolerance_feasible_rate" not in rules["hard_gates"]
+    assert rules["reference_guardrails"][
+        "ev_within_tolerance_feasible_rate"
+    ]["max_absolute_decrease"] == 0.0
+
+
 def test_pairing_fingerprint_separates_simulator_and_neural_seeds(tmp_path):
     first = build_pairing_fingerprint(_config(tmp_path, neural_seed=1))
     same_surface = build_pairing_fingerprint(_config(tmp_path, neural_seed=999))
@@ -242,6 +309,134 @@ def test_selection_refuses_confirmation_records():
 
     with pytest.raises(ValueError, match="development records only"):
         select_checkpoint(references=[reference], candidates=[candidate], rules=_rules())
+
+
+def test_confirmation_report_verifies_frozen_provenance_and_paired_scorecard():
+    selection = _selection_record()
+    references = [
+        _confirmation_record("smart-winter", "winter", None, role="reference", cost=100.0),
+        _confirmation_record("smart-summer", "summer", None, role="reference", cost=120.0),
+    ]
+    candidates = [
+        _confirmation_record(
+            "frozen-candidate",
+            "winter",
+            "a" * 64,
+            role="candidate",
+            cost=95.0,
+            paired_reference_id="smart-winter",
+        ),
+        _confirmation_record(
+            "frozen-candidate",
+            "summer",
+            "a" * 64,
+            role="candidate",
+            cost=110.0,
+            paired_reference_id="smart-summer",
+        ),
+    ]
+    for record in [*references, *candidates]:
+        record["selection_record_sha256"] = selection["selection_sha256"]
+        record.pop("record_sha256")
+        record["record_sha256"] = canonical_sha256(record)
+
+    report = build_confirmation_report(
+        references=references,
+        candidates=candidates,
+        rules=_rules(),
+        selection=selection,
+    )
+
+    assert report["status"] == "confirmed"
+    assert report["reference_metrics"]["cost_eur"] == pytest.approx(220.0)
+    assert report["candidate_metrics"]["cost_eur"] == pytest.approx(205.0)
+    assert report["metric_deltas"]["cost_eur"] == pytest.approx(-15.0)
+    assert report["metric_relative_deltas"]["cost_eur"] == pytest.approx(
+        -15.0 / 220.0
+    )
+    assert len(report["paired_windows"]) == 2
+    assert len(report["report_sha256"]) == 64
+
+
+def test_confirmation_report_rejects_checkpoint_other_than_selected():
+    reference = _confirmation_record(
+        "smart", "winter", None, role="reference", cost=100.0
+    )
+    candidate = _confirmation_record(
+        "frozen-candidate",
+        "winter",
+        "a" * 64,
+        role="candidate",
+        cost=90.0,
+        paired_reference_id="smart",
+    )
+    candidate["selected_checkpoint_sha256"] = "c" * 64
+    selection = _selection_record()
+    for record in (reference, candidate):
+        record["selection_record_sha256"] = selection["selection_sha256"]
+        record.pop("record_sha256")
+        record["record_sha256"] = canonical_sha256(record)
+
+    with pytest.raises(ValueError, match="one selected checkpoint"):
+        build_confirmation_report(
+            references=[reference],
+            candidates=[candidate],
+            rules=_rules(),
+            selection=selection,
+        )
+
+
+def test_confirmation_cli_forwards_the_frozen_selection(tmp_path):
+    selection = _selection_record()
+    reference = _confirmation_record(
+        "smart", "winter", None, role="reference", cost=100.0
+    )
+    candidate = _confirmation_record(
+        "frozen-candidate",
+        "winter",
+        "a" * 64,
+        role="candidate",
+        cost=90.0,
+        paired_reference_id="smart",
+    )
+    for record in (reference, candidate):
+        record["selection_record_sha256"] = selection["selection_sha256"]
+        record.pop("record_sha256")
+        record["record_sha256"] = canonical_sha256(record)
+
+    reference_path = tmp_path / "reference.json"
+    candidate_path = tmp_path / "candidate.json"
+    selection_path = tmp_path / "selection.json"
+    rules_path = tmp_path / "rules.yaml"
+    output_path = tmp_path / "confirmation.json"
+    reference_path.write_text(json.dumps(reference), encoding="utf-8")
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+    selection_path.write_text(json.dumps(selection), encoding="utf-8")
+    rules_path.write_text(yaml.safe_dump(_rules()), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).parents[1] / "scripts" / "ti_marl_experiment_protocol.py"),
+            "confirm",
+            "--reference",
+            str(reference_path),
+            "--candidate",
+            str(candidate_path),
+            "--rules",
+            str(rules_path),
+            "--selection",
+            str(selection_path),
+            "--output",
+            str(output_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(output_path.read_text(encoding="utf-8"))["status"] == "confirmed"
 
 
 def test_selection_rejects_a_tampered_evaluation_record():

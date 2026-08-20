@@ -181,6 +181,28 @@ def test_identical_facts_produce_identical_snapshot_hash(tmp_path):
     assert first.snapshot_hash == second.snapshot_hash
 
 
+def test_snapshot_hash_is_cached_after_first_canonicalisation(tmp_path, monkeypatch):
+    tic = compiler(tmp_path)
+    snapshot = tic.compile(entity_payload())
+
+    from algorithms.ti_marl.contracts import models
+
+    original = models.content_hash
+    calls = 0
+
+    def counting_content_hash(value):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(models, "content_hash", counting_content_hash)
+    first = snapshot.snapshot_hash
+    second = snapshot.snapshot_hash
+
+    assert first == second
+    assert calls == 1
+
+
 def test_unknown_active_entity_type_is_not_controlled_automatically(tmp_path):
     specs = entity_specs()
     specs["tables"]["mystery_asset"] = {"ids": ["x"], "features": ["value"]}

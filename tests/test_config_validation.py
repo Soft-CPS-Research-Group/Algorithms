@@ -88,9 +88,26 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     stage["hyperparameters"]["actor"][
         "deterministic_mode_strategy"
     ] = "expected_signed"
+    stage["hyperparameters"]["actor"][
+        "deterministic_mode_strategy_by_group_type"
+    ] = {"ev_session": "argmax"}
+    stage["hyperparameters"]["actor"][
+        "deterministic_expected_signed_gain_by_group_type"
+    ] = {"stationary_storage": 2.0}
+    stage["hyperparameters"]["actor"][
+        "deterministic_expected_signed_deadband_by_group_type"
+    ] = {"stationary_storage": 0.05}
+    stage["hyperparameters"]["actor"][
+        "deterministic_non_idle_logit_margin_by_group_type"
+    ] = {"ev_session": 0.25}
     stage["hyperparameters"]["advantage_normalization"] = "per_agent"
     stage["hyperparameters"]["policy_credit_assignment"] = "typed_group"
     stage["hyperparameters"]["policy_anchor_coeff"] = 0.05
+    stage["hyperparameters"]["policy_anchor_reset_on_resume"] = True
+    stage["hyperparameters"][
+        "exclude_intervened_actions_from_policy_loss"
+    ] = True
+    stage["hyperparameters"]["intervention_distillation_coeff"] = 0.1
     stage["hyperparameters"]["entropy_coeff_by_group_type"] = {
         "stationary_storage": 0.05,
         "ev_session": 0.005,
@@ -119,10 +136,31 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
 
     behavior_cloning = parsed.pipeline[0].hyperparameters.behavior_cloning
     assert parsed.pipeline[0].hyperparameters.policy_anchor_coeff == 0.05
+    assert parsed.pipeline[0].hyperparameters.policy_anchor_reset_on_resume
+    assert (
+        parsed.pipeline[0]
+        .hyperparameters.exclude_intervened_actions_from_policy_loss
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.intervention_distillation_coeff
+        == 0.1
+    )
     assert (
         parsed.pipeline[0].hyperparameters.actor.deterministic_mode_strategy
         == "expected_signed"
     )
+    assert parsed.pipeline[0].hyperparameters.actor.deterministic_mode_strategy_by_group_type == {
+        "ev_session": "argmax"
+    }
+    assert parsed.pipeline[0].hyperparameters.actor.deterministic_expected_signed_gain_by_group_type == {
+        "stationary_storage": 2.0
+    }
+    assert parsed.pipeline[0].hyperparameters.actor.deterministic_expected_signed_deadband_by_group_type == {
+        "stationary_storage": 0.05
+    }
+    assert parsed.pipeline[0].hyperparameters.actor.deterministic_non_idle_logit_margin_by_group_type == {
+        "ev_session": 0.25
+    }
     assert behavior_cloning is not None
     assert behavior_cloning.teacher.policy == "RBCSmartPolicy"
     assert behavior_cloning.max_samples == 672
@@ -180,6 +218,67 @@ def test_validate_config_rejects_mismatched_ti_marl_critic(
     config["pipeline"] = [stage]
 
     with pytest.raises(ValueError, match="requires critic.kind"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_negative_expected_signed_gain(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["actor"][
+        "deterministic_expected_signed_gain_by_group_type"
+    ] = {"stationary_storage": -0.1}
+    config["pipeline"] = [stage]
+
+    with pytest.raises(ValueError, match="expected-signed gains must be non-negative"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_invalid_expected_signed_deadband(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["actor"][
+        "deterministic_expected_signed_deadband_by_group_type"
+    ] = {"stationary_storage": 1.1}
+    config["pipeline"] = [stage]
+
+    with pytest.raises(ValueError, match="deadbands must be between zero and one"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_intervention_mask_with_joint_credit(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"][
+        "exclude_intervened_actions_from_policy_loss"
+    ] = True
+    config["pipeline"] = [stage]
+
+    with pytest.raises(
+        ValueError,
+        match="exclude_intervened_actions_from_policy_loss requires",
+    ):
+        validate_config(config)
+
+
+def test_validate_config_rejects_intervention_distillation_without_mask(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["policy_credit_assignment"] = "typed_group"
+    stage["hyperparameters"]["intervention_distillation_coeff"] = 0.1
+    config["pipeline"] = [stage]
+
+    with pytest.raises(
+        ValueError,
+        match="intervention_distillation_coeff requires",
+    ):
         validate_config(config)
 
 

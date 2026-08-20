@@ -26,6 +26,7 @@ class RolloutStep:
     next_group_values: Mapping[str, Mapping[str, float]] = field(
         default_factory=dict
     )
+    final_bundles: Tuple[LocalActionBundle, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from utils.experiment_protocol import (
+    build_confirmation_report,
     build_evaluation_record,
     load_json_records,
     select_checkpoint,
@@ -56,6 +57,15 @@ def _parser() -> argparse.ArgumentParser:
     select.add_argument("--rules", required=True)
     select.add_argument("--output", required=True)
 
+    confirm = commands.add_parser(
+        "confirm", help="Aggregate a frozen candidate on confirmation records"
+    )
+    confirm.add_argument("--reference", action="append", required=True)
+    confirm.add_argument("--candidate", action="append", required=True)
+    confirm.add_argument("--rules", required=True)
+    confirm.add_argument("--selection", required=True)
+    confirm.add_argument("--output", required=True)
+
     verify = commands.add_parser("verify", help="Verify a promoted checkpoint hash")
     verify.add_argument("--selection", required=True)
     verify.add_argument("--checkpoint", required=True)
@@ -90,6 +100,15 @@ def main() -> int:
         )
         _write_json(args.output, payload)
         return 0 if payload["status"] == "selected" else 2
+    if args.command == "confirm":
+        payload = build_confirmation_report(
+            references=load_json_records(args.reference),
+            candidates=load_json_records(args.candidate),
+            rules=_load_yaml(args.rules),
+            selection=json.loads(Path(args.selection).read_text(encoding="utf-8")),
+        )
+        _write_json(args.output, payload)
+        return 0 if payload["status"] == "confirmed" else 2
 
     selection = json.loads(Path(args.selection).read_text(encoding="utf-8"))
     return 0 if verify_selected_checkpoint(selection, args.checkpoint) else 1

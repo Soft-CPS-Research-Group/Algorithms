@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
+from functools import cached_property
 import hashlib
 import json
 from typing import Any, Mapping, Optional, Sequence, Tuple
@@ -280,8 +281,10 @@ class InterfaceSnapshot:
     execution_feedback: Tuple[Mapping[str, Any], ...] = ()
     topology_events: Tuple[Mapping[str, Any], ...] = ()
 
-    @property
+    @cached_property
     def snapshot_hash(self) -> str:
+        """Return the canonical hash, computed once for this immutable snapshot."""
+
         return content_hash(self)
 
     def groups_for(self, agent_id: str) -> Tuple[ActionGroupInstance, ...]:

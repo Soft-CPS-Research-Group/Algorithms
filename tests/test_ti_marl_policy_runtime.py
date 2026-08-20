@@ -155,6 +155,207 @@ def test_expected_signed_deterministic_decoder_uses_hybrid_policy_mean(tmp_path)
     assert decision.fraction == pytest.approx(float(expected_fraction), abs=1.0e-6)
 
 
+def test_expected_signed_deterministic_decoder_supports_group_gain(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+        deterministic_mode_strategy="expected_signed",
+        deterministic_expected_signed_gain_by_group_type={
+            "stationary_storage": 2.0
+        },
+    )
+    group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "stationary_storage"
+    )
+    modes = actor.group_modes[group.group_type]
+    logits = {"IDLE": 0.0, "CHARGE_STATIONARY": 1.0, "DISCHARGE_STATIONARY": -1.0}
+    with torch.no_grad():
+        actor.mode_heads[group.group_type].weight.zero_()
+        actor.mode_heads[group.group_type].bias.copy_(
+            torch.tensor([logits[mode] for mode in modes])
+        )
+        actor.beta_heads[group.group_type].weight.zero_()
+        actor.beta_heads[group.group_type].bias.zero_()
+        decision, _log_prob, _entropy = actor._group_decision(
+            group,
+            torch.zeros(actor.d_model),
+            deterministic=True,
+            expected=None,
+            materialize_decision=True,
+        )
+
+    assert decision is not None
+    probabilities = torch.softmax(
+        torch.tensor([logits[mode] for mode in modes]), dim=0
+    )
+    expected_fraction = 2.0 * 0.5 * (
+        probabilities[modes.index("CHARGE_STATIONARY")]
+        - probabilities[modes.index("DISCHARGE_STATIONARY")]
+    )
+    assert decision.mode == "CHARGE_STATIONARY"
+    assert decision.fraction == pytest.approx(float(expected_fraction), abs=1.0e-6)
+
+
+def test_expected_signed_deterministic_decoder_rejects_invalid_gain(tmp_path):
+    compiler, _snapshot = compile_snapshot(tmp_path)
+    with pytest.raises(ValueError, match="expected-signed gains must be non-negative"):
+        TypedActor(
+            compiler.type_registry,
+            d_model=32,
+            attention_heads=4,
+            relation_layers=1,
+            deterministic_expected_signed_gain_by_group_type={
+                "stationary_storage": -1.0
+            },
+        )
+
+
+def test_expected_signed_deterministic_decoder_supports_group_deadband(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+        deterministic_mode_strategy="expected_signed",
+        deterministic_expected_signed_deadband_by_group_type={
+            "stationary_storage": 0.3
+        },
+    )
+    group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "stationary_storage"
+    )
+    modes = actor.group_modes[group.group_type]
+    logits = {"IDLE": 0.0, "CHARGE_STATIONARY": 1.0, "DISCHARGE_STATIONARY": -1.0}
+    with torch.no_grad():
+        actor.mode_heads[group.group_type].weight.zero_()
+        actor.mode_heads[group.group_type].bias.copy_(
+            torch.tensor([logits[mode] for mode in modes])
+        )
+        actor.beta_heads[group.group_type].weight.zero_()
+        actor.beta_heads[group.group_type].bias.zero_()
+        decision, _log_prob, _entropy = actor._group_decision(
+            group,
+            torch.zeros(actor.d_model),
+            deterministic=True,
+            expected=None,
+            materialize_decision=True,
+        )
+
+    assert decision is not None
+    assert decision.mode == "IDLE"
+    assert decision.fraction == 0.0
+
+
+def test_expected_signed_deterministic_decoder_rejects_invalid_deadband(tmp_path):
+    compiler, _snapshot = compile_snapshot(tmp_path)
+    with pytest.raises(ValueError, match="deadbands must be between zero and one"):
+        TypedActor(
+            compiler.type_registry,
+            d_model=32,
+            attention_heads=4,
+            relation_layers=1,
+            deterministic_expected_signed_deadband_by_group_type={
+                "stationary_storage": 1.1
+            },
+        )
+
+
+def test_deterministic_decoder_strategy_can_be_overridden_by_group_type(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+        deterministic_mode_strategy="expected_signed",
+        deterministic_mode_strategy_by_group_type={"ev_session": "argmax"},
+    )
+    groups = {
+        group.group_type: group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type in {"stationary_storage", "ev_session"}
+    }
+    logits = {
+        "stationary_storage": {
+            "IDLE": 0.0,
+            "CHARGE_STATIONARY": 1.0,
+            "DISCHARGE_STATIONARY": -1.0,
+        },
+        "ev_session": {
+            "IDLE": 1.1,
+            "CHARGE_EV": 1.0,
+            "DISCHARGE_EV": -1.0,
+        },
+    }
+    decisions = {}
+    with torch.no_grad():
+        for group_type, group in groups.items():
+            modes = actor.group_modes[group_type]
+            actor.mode_heads[group_type].weight.zero_()
+            actor.mode_heads[group_type].bias.copy_(
+                torch.tensor([logits[group_type][mode] for mode in modes])
+            )
+            actor.beta_heads[group_type].weight.zero_()
+            actor.beta_heads[group_type].bias.zero_()
+            decision, _log_prob, _entropy = actor._group_decision(
+                group,
+                torch.zeros(actor.d_model),
+                deterministic=True,
+                expected=None,
+                materialize_decision=True,
+            )
+            decisions[group_type] = decision
+
+    assert decisions["stationary_storage"].mode == "CHARGE_STATIONARY"
+    assert 0.0 < decisions["stationary_storage"].fraction < 0.5
+    assert decisions["ev_session"].mode == "IDLE"
+    assert decisions["ev_session"].fraction == 0.0
+
+
+def test_deterministic_argmax_can_require_non_idle_logit_margin(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+        deterministic_non_idle_logit_margin_by_group_type={"ev_session": 0.25},
+    )
+    group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    modes = actor.group_modes[group.group_type]
+    logits = {"IDLE": 1.0, "CHARGE_EV": 1.1, "DISCHARGE_EV": -1.0}
+    with torch.no_grad():
+        actor.mode_heads[group.group_type].weight.zero_()
+        actor.mode_heads[group.group_type].bias.copy_(
+            torch.tensor([logits[mode] for mode in modes])
+        )
+        actor.beta_heads[group.group_type].weight.zero_()
+        actor.beta_heads[group.group_type].bias.zero_()
+        decision, _log_prob, _entropy = actor._group_decision(
+            group,
+            torch.zeros(actor.d_model),
+            deterministic=True,
+            expected=None,
+            materialize_decision=True,
+        )
+
+    assert decision is not None
+    assert decision.mode == "IDLE"
+    assert decision.fraction == 0.0
+
+
 def test_typed_group_critic_is_equivariant_and_cardinality_independent(tmp_path):
     compiler, snapshot = compile_snapshot(tmp_path)
     torch.manual_seed(31)
@@ -394,6 +595,10 @@ def test_actor_replay_skips_bundle_materialization_without_changing_density(tmp_
             packed.log_prob_by_step[0][agent_id],
             atol=1.0e-6,
         )
+        for fraction in packed.predicted_fraction_by_group_step[0][
+            agent_id
+        ].values():
+            assert 0.0 < float(fraction) < 1.0
         assert torch.allclose(
             sampled.entropy_by_agent[agent_id],
             packed.entropy_by_step[0][agent_id],
@@ -639,6 +844,9 @@ def test_behavior_cloning_mode_counts_follow_the_retained_reservoir(tmp_path):
     )
     assert 0.0 <= metrics[f"{target_prefix}_recall"] <= 1.0
     assert 0.0 < metrics[f"{target_prefix}_target_probability"] <= 1.0
+    if target_mode.startswith(("CHARGE_", "DISCHARGE_")):
+        assert metrics[f"{target_prefix}_fraction_mae"] >= 0.0
+        assert -1.0 <= metrics[f"{target_prefix}_fraction_bias"] <= 1.0
     predicted_count = sum(
         value
         for key, value in metrics.items()
@@ -1129,6 +1337,66 @@ def test_ev_service_floor_records_insufficient_local_headroom(tmp_path):
     )
 
 
+def test_due_deferrable_and_ev_service_share_headroom_by_deadline(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
+    ev_group = groups["ev_session"]
+    deferrable = replace(groups["deferrable"], activation_power_kw=3.0)
+    snapshot = _snapshot_with_ev_service_requirement(
+        snapshot,
+        ev_group,
+        required_average_power_kw=2.0,
+        hours_until_departure=2.0,
+        efficiency=1.0,
+        headroom_kw=4.0,
+    )
+    snapshot = replace(
+        snapshot,
+        action_groups=tuple(
+            deferrable if group.group_id == deferrable.group_id else group
+            for group in snapshot.action_groups
+        ),
+        observation_parts=tuple(
+            replace(part, values=(0.0,))
+            if part.sensor_id == deferrable.module_id
+            and part.observation_id == "slack_steps"
+            else part
+            for part in snapshot.observation_parts
+        ),
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(ev_group.group_id, "IDLE", 0.0, 0),
+            ActionDecision(deferrable.group_id, "IDLE", 0.0, 0),
+        ),
+    )
+
+    projector = AnalyticLocalProjector(
+        ev_service_margin_ratio=0.0,
+        deferrable_service_margin_seconds=3600.0,
+    )
+    final = projector.project(snapshot, (raw,))[0]
+    projector.assert_feasible(snapshot, (final,))
+    decisions = {item.group_id: item for item in final.decisions}
+    ev_decision = decisions[ev_group.group_id]
+    ev_port = next(
+        item for item in ev_group.ports if item.mode == ev_decision.mode
+    )
+    ev_power = (
+        ev_group.max_charge_power_kw
+        * ev_decision.fraction
+        * ev_port.upper_bound
+    )
+
+    assert decisions[deferrable.group_id].mode == "START"
+    assert ev_power == pytest.approx(1.0)
+    assert any(
+        item["reason"] == "ev_service_headroom_limited"
+        for item in final.interventions
+    )
+
+
 def test_projector_can_reserve_headroom_for_next_step_base_load(tmp_path):
     _compiler, snapshot = compile_snapshot(tmp_path)
     groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
@@ -1401,11 +1669,39 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
         entropy_coeff_by_group_type={"stationary_storage": 0.05},
         policy_credit_assignment=policy_credit_assignment,
         policy_anchor_coeff=0.1,
+        exclude_intervened_actions_from_policy_loss=(
+            policy_credit_assignment == "typed_group"
+        ),
+        intervention_distillation_coeff=(
+            0.1 if policy_credit_assignment == "typed_group" else 0.0
+        ),
     )
     with torch.no_grad():
         evaluation = actor(first, deterministic=True)
         values = critic(first)
         next_values = critic(second)
+    final_bundles = evaluation.bundles
+    intervened_group_type = None
+    if policy_credit_assignment == "typed_group":
+        first_bundle = final_bundles[0]
+        first_decision = first_bundle.decisions[0]
+        intervened_group_type = next(
+            group.group_type
+            for group in first.action_groups
+            if group.owner_agent_id == first_bundle.agent_id
+            and group.group_id == first_decision.group_id
+        )
+        changed_fraction = 0.0 if first_decision.fraction > 0.0 else 1.0
+        final_bundles = (
+            replace(
+                first_bundle,
+                decisions=(
+                    replace(first_decision, fraction=changed_fraction),
+                    *first_bundle.decisions[1:],
+                ),
+            ),
+            *final_bundles[1:],
+        )
     learner.rollout.add(
         RolloutStep(
             snapshot=first,
@@ -1449,6 +1745,7 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
                     for agent_id, values_by_group in group_critic(second).items()
                 }
             ),
+            final_bundles=final_bundles,
         )
     )
 
@@ -1478,9 +1775,32 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
     assert np.isfinite(metrics["entropy_bonus"])
     assert np.isfinite(metrics["entropy_stationary_storage"])
     if policy_credit_assignment == "typed_group":
+        assert intervened_group_type is not None
         assert metrics["actor_samples"] >= metrics["samples"]
+        assert metrics["intervened_policy_samples"] == 1.0
+        assert metrics["eligible_actor_samples"] == metrics["actor_samples"] - 1.0
+        assert metrics["intervention_distillation_coeff"] == pytest.approx(0.1)
+        assert metrics["intervention_distillation_samples"] == 1.0
+        assert np.isfinite(metrics["intervention_distillation_loss"])
+        assert metrics[
+            f"intervened_policy_samples_{intervened_group_type}"
+        ] == 1.0
+        assert sum(
+            value
+            for key, value in metrics.items()
+            if key.startswith("intervened_policy_samples_")
+            and key != "intervened_policy_samples"
+        ) == metrics["intervened_policy_samples"]
+        assert sum(
+            value
+            for key, value in metrics.items()
+            if key.startswith("eligible_actor_samples_")
+            and key != "eligible_actor_samples"
+        ) == metrics["eligible_actor_samples"]
     else:
         assert metrics["actor_samples"] == metrics["samples"]
+        assert metrics["intervened_policy_samples"] == 0.0
+        assert metrics["eligible_actor_samples"] == metrics["actor_samples"]
 
 
 def test_ti_mappo_policy_anchor_is_frozen_and_checkpointed(tmp_path):
@@ -2081,6 +2401,34 @@ def test_checkpoint_round_trip_accepts_a_different_compatible_composition(tmp_pa
     )
     actions = restored.predict([], deterministic=True)
     assert len(actions) == 1
+
+
+def test_checkpoint_can_reset_policy_anchor_to_resumed_actor(tmp_path):
+    source_config = agent_config(tmp_path / "source")
+    source_config["algorithm"]["hyperparameters"]["policy_anchor_coeff"] = 0.25
+    source = TIMARL(source_config)
+    attach_agent(source, ("Building_1",))
+    with torch.no_grad():
+        next(source.actor.parameters()).add_(0.5)
+    checkpoint = source.save_checkpoint(str(tmp_path / "checkpoint"), step=1)
+
+    restored_config = agent_config(tmp_path / "restored")
+    restored_config["algorithm"]["hyperparameters"].update(
+        {
+            "policy_anchor_coeff": 0.25,
+            "policy_anchor_reset_on_resume": True,
+        }
+    )
+    restored = TIMARL(restored_config)
+    attach_agent(restored, ("Building_1",))
+    restored.load_checkpoint(checkpoint)
+
+    assert restored.learner.policy_anchor_actor is not None
+    for key, value in restored.actor.state_dict().items():
+        assert torch.equal(
+            value,
+            restored.learner.policy_anchor_actor.state_dict()[key],
+        )
 
 
 def test_checkpoint_rejects_a_different_learning_architecture(tmp_path):

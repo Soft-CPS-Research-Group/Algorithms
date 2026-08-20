@@ -149,7 +149,13 @@ class AnalyticLocalProjector:
                 )
             decisions[group.group_id] = replace(decision, fraction=bounded)
 
-        self._enforce_deferrable_must_start(snapshot, bundle.agent_id, groups, decisions, interventions)
+        deferrable_service_floors = self._enforce_deferrable_must_start(
+            snapshot,
+            bundle.agent_id,
+            groups,
+            decisions,
+            interventions,
+        )
         ev_service_floors = self._enforce_ev_service(
             snapshot,
             bundle.agent_id,
@@ -168,7 +174,10 @@ class AnalyticLocalProjector:
                 "charging_headroom_kw",
                 "charging_phase_headroom_kw",
             ),
-            minimum_power_by_group=ev_service_floors,
+            minimum_power_by_group={
+                **ev_service_floors,
+                **deferrable_service_floors,
+            },
         )
         self._scale_direction(
             snapshot,
@@ -379,7 +388,16 @@ class AnalyticLocalProjector:
         groups: Mapping[str, ActionGroupInstance],
         decisions: Dict[str, ActionDecision],
         interventions: list[Mapping[str, object]],
-    ) -> None:
+    ) -> Mapping[str, tuple[float, float]]:
+        """Force due cycles and expose their indivisible headroom requests.
+
+        The returned deadline is time-to-latest-start, rather than the final
+        cycle deadline.  This lets the joint projector order an imminent
+        binary START alongside EV service floors without silently giving all
+        EV reservations precedence.
+        """
+
+        floors: dict[str, tuple[float, float]] = {}
         for group_id, decision in tuple(decisions.items()):
             group = groups[group_id]
             if group.group_type != "deferrable":
@@ -424,6 +442,16 @@ class AnalyticLocalProjector:
                         1.0,
                     )
                 )
+            if must_start and start_port is not None:
+                time_to_latest_start_hours = (
+                    max(float(slack_steps), 0.0)
+                    * self.seconds_per_time_step
+                    / 3600.0
+                )
+                floors[group_id] = (
+                    max(float(group.activation_power_kw), 0.0),
+                    time_to_latest_start_hours,
+                )
                 continue
             schedule_parts = [
                 part
@@ -462,6 +490,11 @@ class AnalyticLocalProjector:
                         1.0,
                     )
                 )
+                floors[group_id] = (
+                    max(float(group.activation_power_kw), 0.0),
+                    0.0,
+                )
+        return floors
 
     def _scale_direction(
         self,
@@ -599,6 +632,32 @@ class AnalyticLocalProjector:
                 current_power[group_id],
             )
             requested_resource = requested_group_power * coefficient
+            group = groups[group_id]
+            is_binary_start = decisions[group_id].mode == "START"
+            if is_binary_start:
+                if requested_resource > remaining + 1.0e-9:
+                    decision = decisions[group_id]
+                    decisions[group_id] = replace(
+                        decision,
+                        mode="IDLE",
+                        fraction=0.0,
+                        mode_index=0,
+                    )
+                    current_power[group_id] = 0.0
+                    interventions.append(
+                        self._intervention(
+                            group_id,
+                            "deferrable_headroom_limited",
+                            "START",
+                            "IDLE",
+                            decision.fraction,
+                            0.0,
+                        )
+                    )
+                    continue
+                allocated_floors[group_id] = requested_group_power
+                remaining = max(remaining - requested_resource, 0.0)
+                continue
             allocated_resource = min(requested_resource, remaining)
             allocated_group_power = allocated_resource / max(
                 coefficient, 1.0e-9
@@ -607,7 +666,6 @@ class AnalyticLocalProjector:
             remaining = max(remaining - allocated_resource, 0.0)
             if allocated_resource + 1.0e-9 < requested_resource:
                 decision = decisions[group_id]
-                group = groups[group_id]
                 port = next(
                     (item for item in group.ports if item.mode == decision.mode),
                     None,
@@ -639,6 +697,8 @@ class AnalyticLocalProjector:
             is_start,
         ) in sorted(selected, key=lambda item: item[0]):
             if not is_start:
+                continue
+            if group_id in allocated_floors:
                 continue
             requested_resource = current_power[group_id] * coefficient
             if requested_resource <= remaining + 1.0e-9:

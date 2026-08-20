@@ -103,6 +103,9 @@ hyperparameters:
   backbone: {name: mappo}  # or ppo
   actor:
     group_context_kind: action_conditioned  # or local
+    deterministic_mode_strategy: expected_signed
+    deterministic_expected_signed_gain_by_group_type:
+      stationary_storage: 2.0  # optional deterministic calibration; default 1.0
   critic: {kind: set}      # local when backbone.name is ppo
   policy_credit_assignment: typed_group  # or joint_agent
 ```
@@ -167,8 +170,12 @@ it is zero by default. A deployment-neutral
 `deferrable_service_margin_seconds` can force a mandatory cycle to start before
 its last admissible instant, leaving time to survive a later headroom conflict;
 it is also zero by default and every early start is recorded as a safety
-intervention. The projector performs no community optimisation. Raw and final
-bundles plus interventions remain in the typed trace.
+intervention. Mandatory EV charging and indivisible deferrable starts share
+the same headroom reservation queue ordered by their physical time-to-service
+deadline. A binary start is admitted only in full; it cannot consume a partial
+reservation that the actuator cannot execute. The projector performs no
+community optimisation. Raw and final bundles plus interventions remain in
+the typed trace.
 
 Deterministic evaluation also forwards read-only transitions to TI-MARL, so
 tracing never requires a policy or critic update. Every transition is buffered;
@@ -200,6 +207,51 @@ learns the authoritative total member return. Both critics accept variable
 populations and asset counts. Typed routing changes the actor estimator and is
 reported as a separate experimental ablation.
 `joint_agent` remains the backward-compatible default.
+
+With typed-group credit, the optional
+`exclude_intervened_actions_from_policy_loss: true` makes PPO aware of the
+local safety shield. If feasibility changes a sampled mode or fraction, the
+resulting transition still trains both critics, but that action group is
+excluded from the PPO ratio because the sampled action was not the action that
+produced the observed return. Raw and final actions remain available in traces,
+and training reports intervened and eligible policy-sample counts. The option
+is false by default and requires `policy_credit_assignment: typed_group` so an
+intervention in one asset does not unnecessarily mask every action of its
+building.
+
+`intervention_distillation_coeff` optionally adds a typed auxiliary loss only
+for those masked groups. The target is the final locally feasible decision,
+so the shared actor can internalize recurring shield corrections without
+claiming that the raw action earned the transition reward. A zero coefficient
+is the default. A positive value requires intervention-aware masking; the
+projector remains authoritative and the distillation target never performs
+community optimization.
+
+For explicit fine-tuning stages, `policy_anchor_reset_on_resume: true` resets
+the frozen anchor after loading the actor so the regularizer protects the
+resumed checkpoint rather than an older anchor stored inside it. It is false
+by default and does not affect ordinary checkpoint restoration.
+
+Deterministic replay can use `actor.deterministic_mode_strategy: expected_signed`
+to preserve the signed mean of a charge/idle/discharge policy instead of reducing
+it to a hard categorical argmax.  The optional
+`deterministic_mode_strategy_by_group_type` mapping overrides that choice for a
+typed action family.  This permits, for example, smooth stationary-battery
+dispatch while EV sessions retain categorical decisions, without changing the
+learned weights or the stochastic policy used during training.
+`deterministic_expected_signed_gain_by_group_type` can calibrate the magnitude
+of that signed mean for a declared action family; `1.0` preserves the exact
+policy mean and the result is always clipped to the port fraction range before
+the feasibility layer applies physical and safety constraints.
+`deterministic_expected_signed_deadband_by_group_type` can then map a
+small signed fraction back to `IDLE`, suppressing low-confidence chatter and
+avoidable cycling without changing stochastic training. Both mappings are
+typed, deterministic-replay parameters and default to no alteration.
+For an `argmax` family,
+`deterministic_non_idle_logit_margin_by_group_type` can additionally require a
+configured logit advantage over `IDLE` before accepting a learned non-idle
+action.  Safety and service feasibility remain authoritative and can still
+introduce the minimum necessary action afterwards.
 
 Runtime diagnostics report cumulative per-episode `raw_mode_*_rate` and
 `final_mode_*_rate` values for every typed action family. These distinguish

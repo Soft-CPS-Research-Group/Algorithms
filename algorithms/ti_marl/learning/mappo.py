@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from copy import deepcopy
 import time
 from typing import Any, Mapping
@@ -33,6 +33,8 @@ class TIMAPPO:
         advantage_normalization: str = "global",
         policy_credit_assignment: str = "joint_agent",
         policy_anchor_coeff: float = 0.0,
+        exclude_intervened_actions_from_policy_loss: bool = False,
+        intervention_distillation_coeff: float = 0.0,
         value_coeff: float = 0.5,
         max_grad_norm: float = 0.5,
         target_kl: float | None = 0.03,
@@ -87,6 +89,31 @@ class TIMAPPO:
         self.policy_anchor_actor: TypedActor | None = None
         if self.policy_anchor_coeff > 0.0:
             self.reset_policy_anchor()
+        self.exclude_intervened_actions_from_policy_loss = bool(
+            exclude_intervened_actions_from_policy_loss
+        )
+        if (
+            self.exclude_intervened_actions_from_policy_loss
+            and self.policy_credit_assignment != "typed_group"
+        ):
+            raise ValueError(
+                "TI-MAPPO intervention-aware masking requires typed_group credit"
+            )
+        self.intervention_distillation_coeff = float(
+            intervention_distillation_coeff
+        )
+        if self.intervention_distillation_coeff < 0.0:
+            raise ValueError(
+                "TI-MAPPO intervention_distillation_coeff must be non-negative"
+            )
+        if (
+            self.intervention_distillation_coeff > 0.0
+            and not self.exclude_intervened_actions_from_policy_loss
+        ):
+            raise ValueError(
+                "TI-MAPPO intervention distillation requires intervention-aware "
+                "policy masking"
+            )
         self.value_coeff = float(value_coeff)
         self.max_grad_norm = float(max_grad_norm)
         self.target_kl = None if target_kl is None else float(target_kl)
@@ -171,6 +198,45 @@ class TIMAPPO:
             }
             for step in self.rollout.steps
         ]
+        final_decisions_by_step = [
+            self._overlay_final_decisions(step, decisions)
+            for step, decisions in zip(self.rollout.steps, decisions_by_step)
+        ]
+        intervened_groups_by_step = [
+            self._intervened_group_keys(step)
+            for step in self.rollout.steps
+        ]
+        intervened_policy_samples = (
+            sum(len(items) for items in intervened_groups_by_step)
+            if self.exclude_intervened_actions_from_policy_loss
+            else 0
+        )
+        distillable_groups_by_step = [
+            intervened
+            & {
+                (bundle.agent_id, decision.group_id)
+                for bundle in step.final_bundles
+                for decision in bundle.decisions
+            }
+            for step, intervened in zip(
+                self.rollout.steps, intervened_groups_by_step
+            )
+        ]
+        intervention_distillation_samples = (
+            sum(len(items) for items in distillable_groups_by_step)
+            if self.intervention_distillation_coeff > 0.0
+            else 0
+        )
+        actor_samples_by_group_type = Counter(
+            sample.group_type for sample in group_samples
+        )
+        intervened_policy_samples_by_group_type: Counter[str] = Counter()
+        if self.exclude_intervened_actions_from_policy_loss:
+            for sample in group_samples:
+                if (sample.agent_id, sample.group_id) in (
+                    intervened_groups_by_step[sample.step_index]
+                ):
+                    intervened_policy_samples_by_group_type[sample.group_type] += 1
         anchor_evaluation = None
         if self.policy_anchor_coeff > 0.0:
             if self.policy_anchor_actor is None:
@@ -187,6 +253,7 @@ class TIMAPPO:
         for _epoch in range(self.ppo_epochs):
             actor_losses: list[Tensor] = []
             policy_anchor_losses: list[Tensor] = []
+            intervention_distillation_losses: list[Tensor] = []
             critic_predictions: list[Tensor] = []
             critic_targets: list[Tensor] = []
             group_critic_predictions: list[Tensor] = []
@@ -204,6 +271,19 @@ class TIMAPPO:
                     )
                 )
             )
+            intervention_evaluation = None
+            if (
+                self.intervention_distillation_coeff > 0.0
+                and intervention_distillation_samples > 0
+            ):
+                intervention_evaluation = self.actor.evaluate_actions_many(
+                    tuple(
+                        (step.snapshot, decisions)
+                        for step, decisions in zip(
+                            self.rollout.steps, final_decisions_by_step
+                        )
+                    )
+                )
             values_by_step = self.critic.forward_many(
                 tuple(step.snapshot for step in self.rollout.steps)
             )
@@ -286,6 +366,34 @@ class TIMAPPO:
                             group_key = (step_index, agent_id, group_id)
                             if group_key not in normalized_groups:
                                 continue
+                            assert group_values_by_step is not None
+                            group_critic_predictions.append(
+                                group_values_by_step[step_index][agent_id][
+                                    group_id
+                                ]
+                            )
+                            group_critic_targets.append(
+                                torch.tensor(
+                                    group_returns[group_key],
+                                    device=values[agent_id].device,
+                                )
+                            )
+                            if (
+                                self.exclude_intervened_actions_from_policy_loss
+                                and (agent_id, group_id)
+                                in intervened_groups_by_step[step_index]
+                            ):
+                                if (
+                                    intervention_evaluation is not None
+                                    and (agent_id, group_id)
+                                    in distillable_groups_by_step[step_index]
+                                ):
+                                    intervention_distillation_losses.append(
+                                        -intervention_evaluation.log_prob_by_group_step[
+                                            step_index
+                                        ][agent_id][group_id]
+                                    )
+                                continue
                             new_log_prob = current_log_probs[group_id]
                             old_log_prob = torch.tensor(
                                 float(stored_decisions[group_id].raw_log_prob),
@@ -328,32 +436,35 @@ class TIMAPPO:
                             )
                             log_ratios.append(log_ratio)
                             ratios.append(ratio)
-                            assert group_values_by_step is not None
-                            group_critic_predictions.append(
-                                group_values_by_step[step_index][agent_id][
-                                    group_id
-                                ]
-                            )
-                            group_critic_targets.append(
-                                torch.tensor(
-                                    group_returns[group_key],
-                                    device=ratio.device,
-                                )
-                            )
                     target = torch.tensor(returns[key], device=values[agent_id].device)
                     critic_predictions.append(values[agent_id])
                     critic_targets.append(target)
 
-            if not actor_losses:
-                break
-            actor_loss = torch.stack(actor_losses).mean()
+            actor_loss = (
+                torch.stack(actor_losses).mean()
+                if actor_losses
+                else next(self.actor.parameters()).sum() * 0.0
+            )
             policy_anchor_loss = (
                 torch.stack(policy_anchor_losses).mean()
                 if policy_anchor_losses
                 else actor_loss.new_zeros(())
             )
-            entropy = torch.stack(entropies).mean()
-            entropy_bonus = torch.stack(entropy_bonuses).mean()
+            intervention_distillation_loss = (
+                torch.stack(intervention_distillation_losses).mean()
+                if intervention_distillation_losses
+                else actor_loss.new_zeros(())
+            )
+            entropy = (
+                torch.stack(entropies).mean()
+                if entropies
+                else actor_loss.new_zeros(())
+            )
+            entropy_bonus = (
+                torch.stack(entropy_bonuses).mean()
+                if entropy_bonuses
+                else actor_loss.new_zeros(())
+            )
             critic_loss, target_mean, target_scale, raw_mse = self._value_loss(
                 torch.stack(critic_predictions),
                 torch.stack(critic_targets),
@@ -372,8 +483,16 @@ class TIMAPPO:
                     torch.stack(group_critic_predictions),
                     torch.stack(group_critic_targets),
                 )
-            ratio_tensor = torch.stack(ratios)
-            log_ratio_tensor = torch.stack(log_ratios)
+            ratio_tensor = (
+                torch.stack(ratios)
+                if ratios
+                else actor_loss.new_ones((1,))
+            )
+            log_ratio_tensor = (
+                torch.stack(log_ratios)
+                if log_ratios
+                else actor_loss.new_zeros((1,))
+            )
             # Schulman's non-negative sample estimator: (r - 1) - log(r).
             approximate_kl = ((ratio_tensor - 1.0) - log_ratio_tensor).mean()
             clip_fraction = (
@@ -397,6 +516,8 @@ class TIMAPPO:
                 actor_loss
                 - entropy_bonus
                 + self.policy_anchor_coeff * policy_anchor_loss
+                + self.intervention_distillation_coeff
+                * intervention_distillation_loss
             )
             critic_objective = self.value_coeff * critic_loss
             group_critic_objective = (
@@ -461,6 +582,9 @@ class TIMAPPO:
             metrics["policy_anchor_loss"] += float(
                 policy_anchor_loss.detach().cpu()
             )
+            metrics["intervention_distillation_loss"] += float(
+                intervention_distillation_loss.detach().cpu()
+            )
             metrics["critic_loss"] += float(critic_loss.detach().cpu())
             metrics["entropy"] += float(entropy.detach().cpu())
             metrics["entropy_bonus"] += float(entropy_bonus.detach().cpu())
@@ -519,14 +643,85 @@ class TIMAPPO:
                     len(group_samples) if group_samples else len(samples)
                 ),
                 "policy_anchor_coeff": float(self.policy_anchor_coeff),
+                "intervention_distillation_coeff": float(
+                    self.intervention_distillation_coeff
+                ),
+                "intervention_distillation_samples": float(
+                    intervention_distillation_samples
+                ),
+                "intervened_policy_samples": float(intervened_policy_samples),
+                "eligible_actor_samples": float(
+                    max(
+                        (len(group_samples) if group_samples else len(samples))
+                        - intervened_policy_samples,
+                        0,
+                    )
+                ),
                 "update_seconds": float(time.perf_counter() - update_started),
             }
         )
+        for group_type, sample_count in sorted(
+            actor_samples_by_group_type.items()
+        ):
+            intervened_count = intervened_policy_samples_by_group_type.get(
+                group_type, 0
+            )
+            result[
+                f"intervened_policy_samples_{group_type}"
+            ] = float(intervened_count)
+            result[
+                f"eligible_actor_samples_{group_type}"
+            ] = float(max(sample_count - intervened_count, 0))
         result["evaluated_samples_per_second"] = (
             float(len(samples) * epochs_completed)
             / max(result["update_seconds"], 1.0e-9)
         )
         return result
+
+    @staticmethod
+    def _overlay_final_decisions(step, raw_decisions):
+        """Build a complete action map while preserving absent-group masking."""
+
+        overlaid = {
+            agent_id: dict(decisions)
+            for agent_id, decisions in raw_decisions.items()
+        }
+        for bundle in tuple(getattr(step, "final_bundles", ()) or ()):
+            agent = overlaid.setdefault(bundle.agent_id, {})
+            for decision in bundle.decisions:
+                agent[decision.group_id] = decision
+        return overlaid
+
+    @staticmethod
+    def _intervened_group_keys(step) -> set[tuple[str, str]]:
+        """Return groups whose executed local decision differs from the sample.
+
+        PPO ratios are valid for sampled actions.  A safety-projected decision
+        is still useful to the critics, but attributing its return to the raw
+        categorical/continuous sample creates a false policy-gradient signal.
+        """
+
+        final_bundles = tuple(getattr(step, "final_bundles", ()) or ())
+        if not final_bundles:
+            return set()
+        raw = {
+            (bundle.agent_id, decision.group_id): decision
+            for bundle in step.bundles
+            for decision in bundle.decisions
+        }
+        final = {
+            (bundle.agent_id, decision.group_id): decision
+            for bundle in final_bundles
+            for decision in bundle.decisions
+        }
+        return {
+            key
+            for key, raw_decision in raw.items()
+            if key not in final
+            or raw_decision.mode != final[key].mode
+            or abs(float(raw_decision.fraction) - float(final[key].fraction))
+            > 1.0e-9
+        }
 
     def _normalize_advantages(self, samples) -> np.ndarray:
         advantages = np.asarray(

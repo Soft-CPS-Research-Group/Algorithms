@@ -42,6 +42,11 @@ The remaining 24,288 steps are the tuning/training surface. Development uses
 neural seeds `123`, `456`, `789`. Confirmatory training uses the previously
 unseen seeds `1009`, `2027`, `3037`, `4051`, `5059`.
 
+The four reserved temporal-confirmation windows use paired Simulator seeds
+`2601`, `2602`, `2603`, and `2604`, respectively. These seeds are frozen before
+opening the confirmation data, are shared by the candidate and reference in
+each window, and are distinct from neural-training seeds.
+
 The eventual deterministic full-year replay is a separate **annual benchmark**.
 If its policy has trained on that same yearly trace, it is reported as a
 transductive control benchmark, not as temporal generalization. Held-out
@@ -58,26 +63,56 @@ confirmation candidate:
 - exports final-episode Simulator KPIs;
 - records its paired reference ID and frozen rule/selection hash.
 
+Safety-projected PPO is treated as a declared training ablation. When
+`exclude_intervened_actions_from_policy_loss` is enabled, the run must report
+the number of raw action groups masked from the actor objective and the number
+that remained eligible. The transition is never discarded: critics, traces,
+requested/applied diagnostics and the scorecard still use the real executed
+outcome. This prevents reward produced by a substituted safety action from
+being attributed to an unexecuted raw policy sample.
+
+If `intervention_distillation_coeff` is positive, the run must additionally
+report the auxiliary loss and its sample count. Distillation applies only to
+masked typed groups and targets their final locally feasible decisions. It is
+a safety-competence ablation, not an economic teacher and not a replacement
+for the paired scorecard.
+
 `scripts/ti_marl_experiment_protocol.py record` converts each deterministic KPI
 export into `ti_marl_evaluation_record_v1`. The record hashes the checkpoint,
 KPI file and simulator surface. Paths, records, configs and outputs remain in
 the ignored local `runs/` tree.
 
+After all reserved pairs finish, the `confirm` command in
+`scripts/ti_marl_experiment_protocol.py` produces
+`ti_marl_confirmation_report_v1`. It verifies the frozen selection-record and
+checkpoint hashes, requires the exact same paired surfaces, and reports
+aggregate and per-window deltas against the reference. It never selects or
+replaces a checkpoint.
+
 ## Frozen selection rule
 
 The current canonical rule is
-`algorithms/ti_marl/experiments/selection_rules_v2.yaml`. The original
-`selection_rules_v1.yaml` remains immutable so its content hash continues to
-verify the development evidence already collected with it.
+`algorithms/ti_marl/experiments/selection_rules_v3.yaml`. The original v1 and
+v2 files remain immutable so their content hashes continue to verify the
+development evidence already collected with them.
+
+Version 3 corrects the semantics of EV safety before its canonical development
+campaign. Required departure SoC is a lower service bound. The symmetric
+target-tolerance KPI also penalizes an EV that arrives above its requested
+departure target, even when service is fully satisfied and discharging is not
+authorized. Consequently, minimum acceptable feasible SoC remains the hard
+safety gate, while the symmetric KPI becomes a no-regression guardrail against
+the paired reference. This does not authorize V2G and does not permit a
+candidate to reduce minimum service.
 
 It is deliberately cost-first, but a checkpoint is promotable only when:
 
 - total electrical violation energy across development is at most 0.5 kWh;
-- minimum EV service feasibility is at least 99%;
-- EV departures within the requested tolerance are at least 99%;
+- EV minimum acceptable departure service is at least 99%;
+- the symmetric EV target-tolerance rate does not fall below the reference;
 - it improves paired-reference cost by at least 0.1%;
 - daily peak and ramping do not degrade by more than 5%;
-- solar self-consumption does not fall by more than two percentage points.
+- solar self-consumption does not fall by more than two percentage points;
 - deferrable service level does not fall below the paired reference.
 
 All four development windows must be present for both checkpoint and paired
