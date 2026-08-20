@@ -379,10 +379,10 @@ def test_layout_is_cached(builder_and_obs):
 
 
 def test_no_external_imports():
-    """``algorithms/transformer_ppo/entity_token_layout.py`` must be portable: only
+    """``algorithms/transformer_shared/entity_token_layout.py`` must be portable: only
     stdlib + typing + re. No torch / numpy / pydantic / algorithms.* /
     utils.* imports at any depth."""
-    src = Path("algorithms/transformer_ppo/entity_token_layout.py").read_text()
+    src = Path("algorithms/transformer_shared/entity_token_layout.py").read_text()
     tree = ast.parse(src)
     forbidden = ("torch", "numpy", "pydantic", "algorithms.", "utils.")
     bad: list[str] = []
