@@ -51,11 +51,11 @@ def _attach_expanded(agent) -> tuple[list[str], list[str]]:
     return names, actions
 
 
-def test_pr6_enables_agent_hooks_without_registry_integration() -> None:
+def test_registry_exposes_dynamic_topology_hooks() -> None:
     from algorithms.transformer_matd3.agent import AgentTransformerMATD3
 
     assert AgentTransformerMATD3.supports_dynamic_topology is True
-    assert "AgentTransformerMATD3" not in ALGORITHM_REGISTRY
+    assert ALGORITHM_REGISTRY["AgentTransformerMATD3"] is AgentTransformerMATD3
 
 
 def test_compatible_topology_commit_preserves_neural_optimizer_and_history() -> None:

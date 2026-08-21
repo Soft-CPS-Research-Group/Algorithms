@@ -1155,6 +1155,197 @@ class TransformerPPOStageConfig(BaseModel):
         return value
 
 
+class TransformerMATD3TransformerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    d_model: int = Field(gt=0)
+    nhead: int = Field(gt=0)
+    num_layers: int = Field(gt=0)
+    dim_feedforward: int = Field(gt=0)
+    dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
+
+    @model_validator(mode="after")
+    def require_compatible_attention_width(
+        self,
+    ) -> "TransformerMATD3TransformerConfig":
+        if self.d_model % self.nhead != 0:
+            raise ValueError("transformer.d_model must be divisible by nhead")
+        return self
+
+
+class TransformerMATD3Hyperparameters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    require_cuda: bool = False
+    learning_rate: float = Field(gt=0.0)
+    gamma: float = Field(gt=0.0, le=1.0)
+    tau: float = Field(gt=0.0, le=1.0)
+    batch_size: int = Field(gt=0)
+    buffer_capacity: int = Field(gt=0)
+    max_grad_norm: float = Field(gt=0.0)
+    n_step_returns: int = Field(default=1, gt=0)
+    n_step_gamma: Optional[float] = Field(default=None, gt=0.0, le=1.0)
+    critic_team_reward_mix: float = Field(default=0.0, ge=0.0, le=1.0)
+    critic_target_clip_abs: float = Field(default=0.0, ge=0.0)
+    reward_normalization_enabled: bool = False
+    reward_normalization_clip: float = Field(default=10.0, gt=0.0)
+    target_policy_smoothing: bool = True
+    target_policy_noise: float = Field(ge=0.0)
+    target_policy_noise_clip: float = Field(ge=0.0)
+    actor_update_interval: int = Field(default=2, gt=0)
+    sigma: float = Field(ge=0.0)
+    sigma_decay: float = Field(gt=0.0, le=1.0)
+    min_sigma: float = Field(ge=0.0)
+    bias: float
+    noise_clip: Optional[float] = Field(default=None, ge=0.0)
+    random_exploration_steps: int = Field(default=0, ge=0)
+    end_initial_exploration_time_step: int = Field(default=0, ge=0)
+    storage_exploration_noise_multiplier: float = Field(default=1.0, ge=0.0)
+    ev_negative_exploration_noise_multiplier: float = Field(default=1.0, ge=0.0)
+    deferrable_trigger_threshold: float = 0.0
+    deferrable_on_probability: float = Field(default=0.0, ge=0.0, le=1.0)
+    residual_policy_enabled: bool = False
+    warm_start_policy_name: Optional[str] = None
+    warm_start_policy_hyperparameters: Dict[str, Any] = Field(default_factory=dict)
+    residual_action_scale: float = Field(default=1.0, ge=0.0, le=1.0)
+    residual_action_final_scale: float = Field(default=1.0, ge=0.0, le=1.0)
+    residual_action_scale_start_step: int = Field(default=0, ge=0)
+    residual_action_scale_growth_steps: int = Field(default=0, ge=0)
+    residual_storage_action_scale_multiplier: float = Field(default=1.0, ge=0.0)
+    residual_ev_action_scale_multiplier: float = Field(default=1.0, ge=0.0)
+    residual_deferrable_action_scale_multiplier: float = Field(default=1.0, ge=0.0)
+    critic_action_input_mode: Literal["final"] = "final"
+    residual_policy_runtime_only_export: bool = False
+    local_action_safety_enabled: bool = False
+    local_action_safety_fail_on_infeasible: bool = False
+    local_action_safety_protect_ev_minimum: bool = True
+    local_action_safety_ev_minimum_mode: Literal[
+        "average", "deadline_feasible"
+    ] = "average"
+    local_action_safety_protect_ev_service_target: bool = False
+    local_action_safety_protect_deferrable_must_start: bool = True
+    local_action_safety_allow_discretionary_deferrable_start: bool = False
+    local_action_safety_headroom_reserve_kw: float = Field(default=0.0, ge=0.0)
+    local_action_safety_runtime_only_export: bool = False
+    local_price_conditioning_enabled: bool = False
+    local_price_forecast_mode: Literal[
+        "real_unmodified", "aligned_vector", "persist_current"
+    ] = "real_unmodified"
+    local_price_conditioning_runtime_only_export: bool = False
+
+    @model_validator(mode="after")
+    def validate_matd3_relationships(self) -> "TransformerMATD3Hyperparameters":
+        if self.buffer_capacity < self.batch_size:
+            raise ValueError(
+                "buffer_capacity must be greater than or equal to batch_size"
+            )
+        if self.min_sigma > self.sigma:
+            raise ValueError("min_sigma must be less than or equal to sigma")
+        if self.residual_policy_enabled and not str(
+            self.warm_start_policy_name or ""
+        ).strip():
+            raise ValueError(
+                "residual_policy_enabled=true requires warm_start_policy_name"
+            )
+        if self.n_step_gamma is None:
+            self.n_step_gamma = self.gamma
+        return self
+
+
+class TransformerMATD3ReplayBehaviorCloningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    teacher: Literal["warm_start", "replay_action", "external"] = "warm_start"
+    weight: float = Field(default=0.0, ge=0.0)
+    min_weight: float = Field(default=0.0, ge=0.0)
+    decay_start_step: int = Field(default=0, ge=0)
+    decay_steps: int = Field(default=0, ge=0)
+    ev_multiplier: float = Field(default=1.0, ge=0.0)
+    storage_multiplier: float = Field(default=1.0, ge=0.0)
+    deferrable_multiplier: float = Field(default=1.0, ge=0.0)
+    extra_updates: Optional[int] = Field(default=None, ge=0)
+    extra_update_start_step: int = Field(default=0, ge=0)
+    extra_update_end_step: int = Field(default=0, ge=0)
+    clip_target_to_residual_authority: bool = False
+    offline_pretrain_steps: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_weight_floor(
+        self,
+    ) -> "TransformerMATD3ReplayBehaviorCloningConfig":
+        if self.min_weight > self.weight:
+            raise ValueError("replay_based.min_weight must not exceed weight")
+        if self.extra_updates is None:
+            self.extra_updates = int(
+                bool(self.extra_update_start_step or self.extra_update_end_step)
+            )
+        return self
+
+
+class TransformerMATD3BehaviorCloningTeacherConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy: Literal["RBCSmartPolicy"] = "RBCSmartPolicy"
+    hyperparameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TransformerMATD3DemonstrationBehaviorCloningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    demonstration_episodes: int = Field(default=1, ge=0)
+    max_samples_per_building: int = Field(default=4096, gt=0)
+    pretraining_epochs: int = Field(default=4, gt=0)
+    batch_size: int = Field(default=64, gt=0)
+    weight: float = Field(default=0.0, ge=0.0)
+    min_weight: float = Field(default=0.0, ge=0.0)
+    decay_start_step: int = Field(default=0, ge=0)
+    decay_steps: int = Field(default=0, ge=0)
+    ev_multiplier: float = Field(default=1.0, ge=0.0)
+    storage_multiplier: float = Field(default=1.0, ge=0.0)
+    teacher: TransformerMATD3BehaviorCloningTeacherConfig = Field(
+        default_factory=TransformerMATD3BehaviorCloningTeacherConfig
+    )
+
+    @model_validator(mode="after")
+    def validate_demonstration_settings(
+        self,
+    ) -> "TransformerMATD3DemonstrationBehaviorCloningConfig":
+        if self.enabled and self.demonstration_episodes < 1:
+            raise ValueError(
+                "demonstration_based.demonstration_episodes must be at least 1 when enabled"
+            )
+        if self.min_weight > self.weight:
+            raise ValueError("demonstration_based.min_weight must not exceed weight")
+        return self
+
+
+class TransformerMATD3BehaviorCloningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    replay_based: TransformerMATD3ReplayBehaviorCloningConfig = Field(
+        default_factory=TransformerMATD3ReplayBehaviorCloningConfig
+    )
+    demonstration_based: TransformerMATD3DemonstrationBehaviorCloningConfig = Field(
+        default_factory=TransformerMATD3DemonstrationBehaviorCloningConfig
+    )
+
+
+class TransformerMATD3StageConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    algorithm: Literal["AgentTransformerMATD3"]
+    count: Literal[1] = 1
+    frozen: bool = False
+    tokenizer_config_path: str = Field(min_length=1)
+    transformer: TransformerMATD3TransformerConfig
+    hyperparameters: TransformerMATD3Hyperparameters
+    behavior_cloning: TransformerMATD3BehaviorCloningConfig = Field(
+        default_factory=TransformerMATD3BehaviorCloningConfig
+    )
+
+
 PipelineStageConfig = Union[
     BuildingAgentStageConfig,
     CCLevel1AlgorithmConfig,
@@ -1166,6 +1357,7 @@ PipelineStageConfig = Union[
     RuleBasedAlgorithmConfig,
     SingleAgentRLStageConfig,
     TransformerPPOStageConfig,
+    TransformerMATD3StageConfig,
 ]
 
 
@@ -1275,10 +1467,27 @@ class ProjectConfig(BaseModel):
     @model_validator(mode="after")
     def validate_cross_constraints(self) -> "ProjectConfig":
         for index, stage in enumerate(self.pipeline):
-            if isinstance(stage, TransformerPPOStageConfig) and index != len(self.pipeline) - 1:
+            if isinstance(
+                stage, (TransformerPPOStageConfig, TransformerMATD3StageConfig)
+            ) and index != len(self.pipeline) - 1:
                 raise ValueError(
-                    "AgentTransformerPPO must be the final pipeline stage because it learns from its own executed actions."
+                    f"{stage.algorithm} must be the final pipeline stage because "
+                    "it learns from its own executed actions."
                 )
+
+            if isinstance(stage, TransformerMATD3StageConfig):
+                if self.simulator.interface != "entity":
+                    raise ValueError(
+                        "AgentTransformerMATD3 requires simulator.interface='entity'."
+                    )
+                if (
+                    stage.hyperparameters.local_price_conditioning_enabled
+                    and self.simulator.entity_encoding.profile != "minmax_space"
+                ):
+                    raise ValueError(
+                        "AgentTransformerMATD3 local price conditioning requires "
+                        "simulator.entity_encoding.profile='minmax_space'."
+                    )
 
         stage_checkpoint_paths = self.checkpointing.stage_checkpoint_local_paths
         if stage_checkpoint_paths:
@@ -1349,7 +1558,9 @@ def validate_config(raw_config: Dict[str, Any]) -> ProjectConfig:
     project = ProjectConfig.model_validate(raw_config)
 
     for stage in project.pipeline:
-        if isinstance(stage, TransformerPPOStageConfig):
+        if isinstance(
+            stage, (TransformerPPOStageConfig, TransformerMATD3StageConfig)
+        ):
             from utils.entity_tokenizer_schema import (
                 _load_default_sample,
                 load_entity_tokenizer_config,
