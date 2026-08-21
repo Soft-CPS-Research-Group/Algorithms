@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
+import random
 import time
 from typing import Any, ClassVar, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -68,21 +70,36 @@ class _PerBuildingState:
     action_names: Tuple[str, ...]
     action_low: torch.Tensor
     action_high: torch.Tensor
+    topology_version: int = 0
+
+
+@dataclass
+class _TopologyStateSnapshot:
+    agent_state: Dict[str, Any]
+    python_rng_state: object
+    numpy_rng_state: tuple[Any, ...]
+    torch_rng_state: torch.Tensor
+    cuda_rng_state: Optional[List[torch.Tensor]]
 
 
 class AgentTransformerMATD3(BaseAgent):
-    """Static-layout Transformer MATD3 learner.
+    """Transformer MATD3 learner with transactional topology adaptation."""
 
-    Dynamic topology, persistence, price conditioning, and export belong to
-    later implementation stages.
-    """
-
-    supports_dynamic_topology: ClassVar[bool] = False
+    supports_dynamic_topology: ClassVar[bool] = True
     requires_final_pipeline_stage: ClassVar[bool] = True
+    checkpoint_version: ClassVar[int] = 5
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
         self.config = config
+        self.checkpoint_mode = str(
+            (config.get("checkpointing") or {}).get("checkpoint_mode", "full")
+            or "full"
+        ).strip().lower()
+        if self.checkpoint_mode not in {"full", "inference"}:
+            raise ValueError(
+                "Transformer MATD3 checkpoint_mode must be 'full' or 'inference'"
+            )
         algorithm = config["algorithm"]
         self._tokenizer_config_path = str(algorithm["tokenizer_config_path"])
         self._tokenizer_config: EntityTokenizerConfig = load_entity_tokenizer_config(
@@ -337,76 +354,208 @@ class AgentTransformerMATD3(BaseAgent):
         if len(action_names) != count:
             raise ValueError("observation_names and action_names counts must match")
         spaces = self._normalize_spaces(action_space, count)
-        self._normalize_spaces(observation_space, count, name="observation_space")
+        observation_spaces = self._normalize_spaces(
+            observation_space, count, name="observation_space"
+        )
         names_key = tuple(
             (tuple(observation), tuple(actions))
             for observation, actions in zip(observation_names, action_names)
         )
-        if self._attached_names is not None:
-            if names_key != self._attached_names:
-                raise RuntimeError(
-                    "Transformer MATD3 PR 3 supports a static entity layout only"
+        snapshot = self.snapshot_topology_state()
+        try:
+            building_names = (metadata or {}).get("building_names") or ()
+            layouts = [
+                self._layout_builder.build(
+                    str(building_names[index])
+                    if index < len(building_names) and building_names[index]
+                    else (
+                        self._per_building[index].building_id
+                        if index < len(self._per_building)
+                        else f"building_{index}"
+                    ),
+                    observation_names[index],
+                    action_names[index],
                 )
-            return
-
-        building_names = (metadata or {}).get("building_names") or ()
-        layouts = [
-            self._layout_builder.build(
-                str(building_names[index])
-                if index < len(building_names) and building_names[index]
-                else f"building_{index}",
-                observation_names[index],
-                action_names[index],
-            )
-            for index in range(count)
-        ]
-        for index, (layout, names) in enumerate(zip(layouts, action_names)):
-            self._validate_ca_order(index, layout, names)
-
-        type_input_dims = self._community_type_input_dims(layouts)
-        states = []
-        for index, (layout, names, space) in enumerate(
-            zip(layouts, action_names, spaces)
-        ):
-            low, high = self._action_bounds(index, names, space)
-            states.append(
-                self._build_state(
-                    layout=layout,
-                    action_names=tuple(names),
-                    action_low=low,
-                    action_high=high,
+                for index in range(count)
+            ]
+            for index, (layout, names) in enumerate(zip(layouts, action_names)):
+                self._validate_ca_order(index, layout, names)
+            type_input_dims = self._community_type_input_dims(layouts)
+            bounds = [
+                self._action_bounds(index, names, space)
+                for index, (names, space) in enumerate(zip(action_names, spaces))
+            ]
+            candidate_signature = self._build_layout_signature(layouts)
+            was_attached = self._attached_names is not None
+            if (
+                was_attached
+                and count == len(self._per_building)
+                and candidate_signature == self._layout_signature
+                and all(
+                    torch.equal(state.action_low, low)
+                    and torch.equal(state.action_high, high)
+                    for state, (low, high) in zip(self._per_building, bounds)
+                )
+            ):
+                return
+            if self._attached_names is None:
+                self._install_fresh_environment(
+                    layouts=layouts,
+                    action_names=action_names,
+                    bounds=bounds,
                     type_input_dims=type_input_dims,
                 )
+            elif count != len(self._per_building):
+                self._reset_full_for_building_count_change(
+                    layouts=layouts,
+                    action_names=action_names,
+                    bounds=bounds,
+                    type_input_dims=type_input_dims,
+                )
+            else:
+                self._adapt_compatible_topology(
+                    layouts=layouts,
+                    action_names=action_names,
+                    bounds=bounds,
+                    type_input_dims=type_input_dims,
+                    candidate_signature=candidate_signature,
+                )
+            self._attached_names = names_key
+            self._layout_signature = candidate_signature
+            self._attach_warm_start_policy(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=spaces,
+                observation_space=observation_spaces,
+                metadata=metadata,
             )
-        self._per_building = states
-        self._layout_signature = self._build_layout_signature(layouts)
+            self._attach_local_action_safety(
+                observation_names=observation_names,
+                action_names=action_names,
+                metadata=metadata,
+            )
+            self._attach_bc_b_environment(
+                observation_names=observation_names,
+                action_names=action_names,
+                action_space=spaces,
+                observation_space=observation_spaces,
+                metadata=metadata,
+                topology_change=was_attached,
+            )
+        except Exception:
+            self.restore_topology_state(snapshot)
+            raise
+
+    def _install_fresh_environment(
+        self,
+        *,
+        layouts: Sequence[BuildingTokenLayout],
+        action_names: Sequence[Sequence[str]],
+        bounds: Sequence[Tuple[torch.Tensor, torch.Tensor]],
+        type_input_dims: Mapping[str, int],
+    ) -> None:
+        self._per_building = [
+            self._build_state(
+                layout=layout,
+                action_names=tuple(names),
+                action_low=low,
+                action_high=high,
+                type_input_dims=type_input_dims,
+            )
+            for layout, names, (low, high) in zip(layouts, action_names, bounds)
+        ]
         self.replay_buffer = SignatureBucketedReplayBuffer(
             capacity=self.buffer_capacity,
-            num_agents=count,
+            num_agents=len(layouts),
             batch_size=self.batch_size,
         )
-        self._attached_names = names_key
-        self._attach_warm_start_policy(
-            observation_names=observation_names,
-            action_names=action_names,
-            action_space=spaces,
-            observation_space=self._normalize_spaces(observation_space, count),
-            metadata=metadata,
+
+    def _adapt_compatible_topology(
+        self,
+        *,
+        layouts: Sequence[BuildingTokenLayout],
+        action_names: Sequence[Sequence[str]],
+        bounds: Sequence[Tuple[torch.Tensor, torch.Tensor]],
+        type_input_dims: Mapping[str, int],
+        candidate_signature: LayoutSignature,
+    ) -> None:
+        for index, (state, layout) in enumerate(zip(self._per_building, layouts)):
+            if layout.building_id != state.building_id:
+                raise ValueError(
+                    f"topology change building {index} changed identity from "
+                    f"{state.building_id!r} to {layout.building_id!r}"
+                )
+            for type_name, width in type_input_dims.items():
+                if type_name not in state.tokenizer.projections:
+                    raise ValueError(
+                        f"topology change introduced unsupported type {type_name!r}"
+                    )
+                projection = state.tokenizer.projections[type_name]
+                if int(projection.in_features) != int(width):
+                    raise ValueError(
+                        f"topology change feature width for type {type_name!r} "
+                        f"changed {projection.in_features} -> {width}"
+                    )
+        self._flush_n_step_topology_boundary()
+        for index, (state, layout, names, (low, high)) in enumerate(
+            zip(self._per_building, layouts, action_names, bounds)
+        ):
+            changed = (
+                candidate_signature[index] != self._layout_signature[index]
+                or not torch.equal(state.action_low, low)
+                or not torch.equal(state.action_high, high)
+            )
+            state.layout = layout
+            state.action_names = tuple(names)
+            state.action_low = low
+            state.action_high = high
+            if changed:
+                state.topology_version += 1
+
+    def _reset_full_for_building_count_change(
+        self,
+        *,
+        layouts: Sequence[BuildingTokenLayout],
+        action_names: Sequence[Sequence[str]],
+        bounds: Sequence[Tuple[torch.Tensor, torch.Tensor]],
+        type_input_dims: Mapping[str, int],
+    ) -> None:
+        self._flush_n_step_topology_boundary()
+        demonstration = dict(
+            (self.config["algorithm"].get("behavior_cloning") or {}).get(
+                "demonstration_based"
+            )
+            or {}
         )
-        self._attach_local_action_safety(
-            observation_names=observation_names,
-            action_names=action_names,
-            metadata=metadata,
+        self._bc_b = (
+            BehaviorCloningRegularizer.from_config(
+                {"behavior_cloning": demonstration}, self.config
+            )
+            if bool(demonstration.get("enabled", False))
+            else None
         )
-        self._attach_bc_b_environment(
-            observation_names=observation_names,
+        self._install_fresh_environment(
+            layouts=layouts,
             action_names=action_names,
-            action_space=spaces,
-            observation_space=self._normalize_spaces(
-                observation_space, count, name="observation_space"
-            ),
-            metadata=metadata,
+            bounds=bounds,
+            type_input_dims=type_input_dims,
         )
+        self._n_step_queue.clear()
+        self.exploration_sigma = self.sigma
+        self.exploration_step = 0
+        self.reward_norm_count = 0
+        self.reward_norm_mean = 0.0
+        self.reward_norm_m2 = 0.0
+        self.bc_a_offline_pretrain_completed_steps = 0
+        self._bc_b_pretraining_complete = False
+        self._bc_b_actor_training_step = 0
+        self._latest_training_metrics = {}
+        self._last_train_rewards = None
+        self._latest_raw_observations = None
+        self._latest_raw_next_observations = None
+        self._last_warm_start_policy_actions = None
+        self._last_warm_start_next_policy_actions = None
+        self._latest_external_cloning_actions = None
 
     def set_observation_context(
         self,
@@ -581,6 +730,7 @@ class AgentTransformerMATD3(BaseAgent):
                 cloning_actions,
                 behavior_actions,
             ),
+            "layout_signature": self._layout_signature,
         }
         self._validate_transition_vectors(transition)
         self._store_transition(transition)
@@ -631,6 +781,77 @@ class AgentTransformerMATD3(BaseAgent):
             self._bc_b_pretraining_complete = True
             self._bc_b_actor_training_step = 0
 
+    def record_topology_transition(
+        self,
+        *,
+        observations: List[npt.NDArray[np.float64]],
+        actions: List[npt.NDArray[np.float64]],
+        rewards: List[float],
+        terminated: bool,
+        truncated: bool,
+        global_learning_step: int,
+    ) -> None:
+        del truncated, global_learning_step
+        self._require_attached()
+        for name, values in (
+            ("observations", observations),
+            ("actions", actions),
+            ("rewards", rewards),
+        ):
+            self._validate_vector_count(name, values)
+        if self._in_bc_b_demonstration_phase():
+            self._record_bc_b_demonstrations(observations, actions)
+            return
+        if self._bc_b is not None and not self._bc_b_pretraining_complete:
+            self._run_bc_b_pretraining()
+            self._bc_b_pretraining_complete = True
+            self._bc_b_actor_training_step = 0
+        self._update_reward_normalizer(rewards)
+        behavior_actions = self._transition_behavior_actions(actions)
+        cloning_actions = self._transition_cloning_actions(
+            actions, base_actions=behavior_actions
+        )
+        transition = {
+            "observations": self._copied_vectors(observations),
+            "actions": self._copied_vectors(actions),
+            "rewards": np.asarray(rewards, dtype=np.float32).reshape(-1).copy(),
+            # A topology boundary has no shape-compatible successor. The old
+            # observation is a storage placeholder and cannot bootstrap.
+            "next_observations": self._copied_vectors(observations),
+            "terminated": self._done_vector(terminated),
+            "truncated": np.ones(len(self._per_building), dtype=np.bool_),
+            "behavior_actions": self._optional_replay_actions(behavior_actions),
+            "next_behavior_actions": self._optional_replay_actions(
+                behavior_actions
+            ),
+            "cloning_actions": self._distinct_cloning_actions(
+                cloning_actions, behavior_actions
+            ),
+            "layout_signature": self._layout_signature,
+        }
+        self._validate_transition_vectors(transition)
+        self._store_transition(transition)
+
+    def snapshot_topology_state(self) -> _TopologyStateSnapshot:
+        return _TopologyStateSnapshot(
+            agent_state=deepcopy(self.__dict__),
+            python_rng_state=random.getstate(),
+            numpy_rng_state=np.random.get_state(),
+            torch_rng_state=torch.get_rng_state(),
+            cuda_rng_state=self._capture_cuda_rng_state(),
+        )
+
+    def restore_topology_state(self, snapshot: _TopologyStateSnapshot) -> None:
+        if not isinstance(snapshot, _TopologyStateSnapshot):
+            raise TypeError("invalid Transformer MATD3 topology snapshot")
+        restored = deepcopy(snapshot.agent_state)
+        self.__dict__.clear()
+        self.__dict__.update(restored)
+        random.setstate(snapshot.python_rng_state)
+        np.random.set_state(snapshot.numpy_rng_state)
+        torch.set_rng_state(snapshot.torch_rng_state)
+        self._restore_cuda_rng_state(snapshot.cuda_rng_state)
+
     def export_artifacts(
         self,
         output_dir: str,
@@ -638,6 +859,220 @@ class AgentTransformerMATD3(BaseAgent):
     ) -> Dict[str, Any]:
         del output_dir, context
         raise NotImplementedError("Transformer MATD3 export is outside PR 3 scope")
+
+    def save_checkpoint(self, output_dir: str, step: int) -> str:
+        self._require_attached()
+        mode = self.checkpoint_mode
+        payload: Dict[str, Any] = {
+            "checkpoint_version": self.checkpoint_version,
+            "algorithm": "AgentTransformerMATD3",
+            "checkpoint_mode": mode,
+            "step": int(step),
+            "num_agents": len(self._per_building),
+            "building_names": [state.building_id for state in self._per_building],
+        }
+        for index, state in enumerate(self._per_building):
+            payload[f"tokenizer_state_dict_{index}"] = state.tokenizer.state_dict()
+            payload[f"backbone_state_dict_{index}"] = state.backbone.state_dict()
+            payload[f"actor_state_dict_{index}"] = state.actor.state_dict()
+            payload[f"layout_signature_{index}"] = self._layout_signature[index]
+            payload[f"action_names_{index}"] = state.action_names
+            payload[f"action_bounds_{index}"] = (
+                state.action_low.detach().cpu().numpy().copy(),
+                state.action_high.detach().cpu().numpy().copy(),
+            )
+            payload[f"topology_version_{index}"] = state.topology_version
+            if mode == "inference":
+                continue
+            payload[f"tokenizer_target_state_dict_{index}"] = (
+                state.tokenizer_target.state_dict()
+            )
+            payload[f"backbone_target_state_dict_{index}"] = (
+                state.backbone_target.state_dict()
+            )
+            payload[f"actor_target_state_dict_{index}"] = (
+                state.actor_target.state_dict()
+            )
+            for critic_index in (1, 2):
+                critic = getattr(state, f"critic_{critic_index}")
+                critic_target = getattr(state, f"critic_{critic_index}_target")
+                optimizer = getattr(state, f"critic_{critic_index}_optimizer")
+                payload[f"critic_{critic_index}_state_dict_{index}"] = (
+                    critic.state_dict()
+                )
+                payload[f"critic_{critic_index}_target_state_dict_{index}"] = (
+                    critic_target.state_dict()
+                )
+                payload[
+                    f"critic_{critic_index}_optimizer_state_dict_{index}"
+                ] = optimizer.state_dict()
+            payload[f"actor_optimizer_state_dict_{index}"] = (
+                state.actor_optimizer.state_dict()
+            )
+            if state.bc_a_optimizer is not None:
+                payload[f"bc_a_optimizer_state_dict_{index}"] = (
+                    state.bc_a_optimizer.state_dict()
+                )
+            if state.bc_b_optimizer is not None:
+                payload[f"bc_b_optimizer_state_dict_{index}"] = (
+                    state.bc_b_optimizer.state_dict()
+                )
+        if mode == "inference":
+            payload["inference_policy_state"] = {
+                "exploration_step": int(self.exploration_step)
+            }
+        else:
+            assert self.replay_buffer is not None
+            payload.update(
+                {
+                    "replay_buffer": self.replay_buffer.get_state(),
+                    "n_step_queue": deepcopy(list(self._n_step_queue)),
+                    "current_layout_signature": self._layout_signature,
+                    "exploration_state": {
+                        "sigma": float(self.exploration_sigma),
+                        "exploration_step": int(self.exploration_step),
+                    },
+                    "reward_normalization_state": {
+                        "enabled": self.reward_normalization_enabled,
+                        "count": int(self.reward_norm_count),
+                        "mean": float(self.reward_norm_mean),
+                        "m2": float(self.reward_norm_m2),
+                    },
+                    "rng_state": {
+                        "python": random.getstate(),
+                        "numpy": np.random.get_state(),
+                        "torch": torch.get_rng_state(),
+                        "torch_cuda": self._capture_cuda_rng_state(),
+                    },
+                    "bc_state": {
+                        "bc_a_state": (
+                            {
+                                "offline_pretrain_completed_steps": int(
+                                    self.bc_a_offline_pretrain_completed_steps
+                                )
+                            }
+                            if self.bc_a_enabled
+                            else None
+                        ),
+                        "bc_b_state": (
+                            {
+                                "regularizer": self._bc_b.state_dict(),
+                                "pretraining_complete": self._bc_b_pretraining_complete,
+                                "actor_training_step": self._bc_b_actor_training_step,
+                            }
+                            if self._bc_b is not None
+                            else None
+                        ),
+                    },
+                }
+            )
+        checkpoint_dir = Path(output_dir) / "checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        path = checkpoint_dir / f"transformer_matd3_step{int(step)}.pt"
+        torch.save(payload, path)
+        return str(path)
+
+    def load_checkpoint(self, checkpoint_path: str) -> None:
+        self._require_attached()
+        path = Path(checkpoint_path)
+        if not path.exists():
+            raise FileNotFoundError(f"checkpoint file not found: {path}")
+        payload = torch.load(path, map_location=self.device, weights_only=False)
+        prepared_replay = self._validate_checkpoint_payload(payload)
+        snapshot = self.snapshot_topology_state()
+        try:
+            mode = payload["checkpoint_mode"]
+            for index, state in enumerate(self._per_building):
+                state.tokenizer.load_state_dict(
+                    payload[f"tokenizer_state_dict_{index}"]
+                )
+                state.backbone.load_state_dict(
+                    payload[f"backbone_state_dict_{index}"]
+                )
+                state.actor.load_state_dict(payload[f"actor_state_dict_{index}"])
+                low, high = payload[f"action_bounds_{index}"]
+                state.action_low = self._tensor(low)
+                state.action_high = self._tensor(high)
+                state.topology_version = int(payload[f"topology_version_{index}"])
+                if mode == "inference":
+                    continue
+                state.tokenizer_target.load_state_dict(
+                    payload[f"tokenizer_target_state_dict_{index}"]
+                )
+                state.backbone_target.load_state_dict(
+                    payload[f"backbone_target_state_dict_{index}"]
+                )
+                state.actor_target.load_state_dict(
+                    payload[f"actor_target_state_dict_{index}"]
+                )
+                for critic_index in (1, 2):
+                    getattr(state, f"critic_{critic_index}").load_state_dict(
+                        payload[f"critic_{critic_index}_state_dict_{index}"]
+                    )
+                    getattr(
+                        state, f"critic_{critic_index}_target"
+                    ).load_state_dict(
+                        payload[
+                            f"critic_{critic_index}_target_state_dict_{index}"
+                        ]
+                    )
+                    optimizer = getattr(
+                        state, f"critic_{critic_index}_optimizer"
+                    )
+                    optimizer.load_state_dict(
+                        payload[
+                            f"critic_{critic_index}_optimizer_state_dict_{index}"
+                        ]
+                    )
+                    self._move_optimizer_state_to_device(optimizer)
+                state.actor_optimizer.load_state_dict(
+                    payload[f"actor_optimizer_state_dict_{index}"]
+                )
+                self._move_optimizer_state_to_device(state.actor_optimizer)
+                for bc_name in ("bc_a", "bc_b"):
+                    optimizer = getattr(state, f"{bc_name}_optimizer")
+                    if optimizer is not None:
+                        optimizer.load_state_dict(
+                            payload[f"{bc_name}_optimizer_state_dict_{index}"]
+                        )
+                        self._move_optimizer_state_to_device(optimizer)
+            if mode == "inference":
+                self.exploration_step = int(
+                    payload["inference_policy_state"]["exploration_step"]
+                )
+                return
+            assert prepared_replay is not None
+            self.replay_buffer = prepared_replay
+            self._n_step_queue = deque(deepcopy(payload["n_step_queue"]))
+            exploration = payload["exploration_state"]
+            self.exploration_sigma = float(exploration["sigma"])
+            self.exploration_step = int(exploration["exploration_step"])
+            reward = payload["reward_normalization_state"]
+            self.reward_norm_count = int(reward["count"])
+            self.reward_norm_mean = float(reward["mean"])
+            self.reward_norm_m2 = float(reward["m2"])
+            bc_state = payload["bc_state"]
+            if self.bc_a_enabled:
+                self.bc_a_offline_pretrain_completed_steps = int(
+                    bc_state["bc_a_state"]["offline_pretrain_completed_steps"]
+                )
+            if self._bc_b is not None:
+                saved_bc_b = bc_state["bc_b_state"]
+                self._bc_b.load_state_dict(saved_bc_b["regularizer"])
+                self._bc_b_pretraining_complete = bool(
+                    saved_bc_b["pretraining_complete"]
+                )
+                self._bc_b_actor_training_step = int(
+                    saved_bc_b["actor_training_step"]
+                )
+            rng = payload["rng_state"]
+            random.setstate(rng["python"])
+            np.random.set_state(rng["numpy"])
+            torch.set_rng_state(rng["torch"].cpu())
+            self._restore_cuda_rng_state(rng["torch_cuda"])
+        except Exception:
+            self.restore_topology_state(snapshot)
+            raise
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return global_learning_step >= self.random_exploration_steps
@@ -1791,7 +2226,9 @@ class AgentTransformerMATD3(BaseAgent):
             while self._n_step_queue:
                 self._push_oldest_n_step(force=True)
 
-    def _push_oldest_n_step(self, *, force: bool) -> None:
+    def _push_oldest_n_step(
+        self, *, force: bool, topology_boundary: bool = False
+    ) -> None:
         if not self._n_step_queue:
             return
         if not force and len(self._n_step_queue) < self.n_step_returns:
@@ -1806,24 +2243,30 @@ class AgentTransformerMATD3(BaseAgent):
             if np.logical_or(item["terminated"], item["truncated"]).any():
                 break
             discount *= self.n_step_gamma
+        last_terminated = np.asarray(last["terminated"], dtype=np.bool_).copy()
+        last_truncated = np.asarray(last["truncated"], dtype=np.bool_).copy()
+        if topology_boundary:
+            last_truncated[:] = True
         self._push_transition(
             {
                 "observations": first["observations"],
                 "actions": first["actions"],
                 "rewards": rewards,
                 "next_observations": last["next_observations"],
-                "terminated": last["terminated"],
-                "truncated": last["truncated"],
+                "terminated": last_terminated,
+                "truncated": last_truncated,
                 "behavior_actions": first.get("behavior_actions"),
                 "next_behavior_actions": last.get("next_behavior_actions"),
                 "cloning_actions": first.get("cloning_actions"),
+                "layout_signature": first["layout_signature"],
             }
         )
         self._n_step_queue.popleft()
 
     def _push_transition(self, transition: Dict[str, Any]) -> None:
         assert self.replay_buffer is not None
-        assert self._layout_signature is not None
+        signature = transition.get("layout_signature", self._layout_signature)
+        assert signature is not None
         self.replay_buffer.push(
             encoded_obs=transition["observations"],
             next_encoded_obs=transition["next_observations"],
@@ -1831,11 +2274,15 @@ class AgentTransformerMATD3(BaseAgent):
             reward=transition["rewards"],
             terminated=transition["terminated"],
             truncated=transition["truncated"],
-            layout_signature=self._layout_signature,
+            layout_signature=signature,
             behavior_actions=transition.get("behavior_actions"),
             next_behavior_actions=transition.get("next_behavior_actions"),
             cloning_actions=transition.get("cloning_actions"),
         )
+
+    def _flush_n_step_topology_boundary(self) -> None:
+        while self._n_step_queue:
+            self._push_oldest_n_step(force=True, topology_boundary=True)
 
     def _attach_warm_start_policy(
         self,
@@ -2259,6 +2706,397 @@ class AgentTransformerMATD3(BaseAgent):
             ),
             f"{_METRIC_PREFIX}replay_bucket_size_current": float(bucket_size),
         }
+
+    def _validate_checkpoint_payload(
+        self, payload: Any
+    ) -> Optional[SignatureBucketedReplayBuffer]:
+        if not isinstance(payload, Mapping):
+            raise ValueError("Transformer MATD3 checkpoint must be a mapping")
+        checkpoint_version = payload.get("checkpoint_version")
+        if (
+            isinstance(checkpoint_version, bool)
+            or not isinstance(checkpoint_version, int)
+            or checkpoint_version != self.checkpoint_version
+        ):
+            raise ValueError("Transformer MATD3 checkpoint_version must be exactly 5")
+        if payload.get("algorithm") != "AgentTransformerMATD3":
+            raise ValueError("checkpoint algorithm must be AgentTransformerMATD3")
+        mode = payload.get("checkpoint_mode")
+        if mode not in {"full", "inference"}:
+            raise ValueError("checkpoint_mode must be 'full' or 'inference'")
+        if mode == "inference" and not bool(getattr(self, "frozen", False)):
+            raise RuntimeError(
+                "Transformer MATD3 inference checkpoints may be loaded only "
+                "into a frozen pipeline stage"
+            )
+        num_agents = payload.get("num_agents")
+        if (
+            isinstance(num_agents, bool)
+            or not isinstance(num_agents, int)
+            or num_agents != len(self._per_building)
+        ):
+            raise ValueError(
+                "checkpoint num_agents does not match the live building count"
+            )
+        if payload.get("building_names") != [
+            state.building_id for state in self._per_building
+        ]:
+            raise ValueError("checkpoint building_names do not match the live layout")
+        for index, state in enumerate(self._per_building):
+            if (
+                payload.get(f"layout_signature_{index}")
+                != self._layout_signature[index]
+            ):
+                raise ValueError(
+                    f"checkpoint layout signature mismatch for building {index}"
+                )
+            if payload.get(f"action_names_{index}") != state.action_names:
+                raise ValueError(
+                    f"checkpoint action names mismatch for building {index}"
+                )
+            bounds = payload.get(f"action_bounds_{index}")
+            if not isinstance(bounds, tuple) or len(bounds) != 2:
+                raise ValueError(
+                    f"checkpoint action bounds are invalid for building {index}"
+                )
+            saved_low = np.asarray(bounds[0], dtype=np.float32).reshape(-1)
+            saved_high = np.asarray(bounds[1], dtype=np.float32).reshape(-1)
+            live_low = state.action_low.detach().cpu().numpy()
+            live_high = state.action_high.detach().cpu().numpy()
+            if (
+                saved_low.shape != live_low.shape
+                or saved_high.shape != live_high.shape
+                or not np.isfinite(saved_low).all()
+                or not np.isfinite(saved_high).all()
+                or not np.allclose(saved_low, live_low, rtol=0.0, atol=1.0e-6)
+                or not np.allclose(saved_high, live_high, rtol=0.0, atol=1.0e-6)
+            ):
+                raise ValueError(
+                    f"checkpoint action bounds mismatch for building {index}"
+                )
+            topology_version = payload.get(f"topology_version_{index}")
+            if (
+                isinstance(topology_version, bool)
+                or not isinstance(topology_version, int)
+                or topology_version < 0
+            ):
+                raise ValueError("checkpoint topology_version must be non-negative")
+            for module_name in ("tokenizer", "backbone", "actor"):
+                self._validate_module_state_dict(
+                    getattr(state, module_name),
+                    payload.get(f"{module_name}_state_dict_{index}"),
+                    f"{module_name} building {index}",
+                )
+            if mode == "inference":
+                continue
+            for module_name in (
+                "tokenizer_target", "backbone_target", "actor_target",
+                "critic_1", "critic_1_target", "critic_2", "critic_2_target",
+            ):
+                self._validate_module_state_dict(
+                    getattr(state, module_name),
+                    payload.get(f"{module_name}_state_dict_{index}"),
+                    f"{module_name} building {index}",
+                )
+            for optimizer_name in (
+                "actor_optimizer", "critic_1_optimizer", "critic_2_optimizer",
+            ):
+                self._validate_optimizer_state_dict(
+                    getattr(state, optimizer_name),
+                    payload.get(f"{optimizer_name}_state_dict_{index}"),
+                    f"{optimizer_name} building {index}",
+                )
+            for bc_name in ("bc_a", "bc_b"):
+                optimizer = getattr(state, f"{bc_name}_optimizer")
+                saved_optimizer = payload.get(f"{bc_name}_optimizer_state_dict_{index}")
+                if optimizer is None and saved_optimizer is not None:
+                    raise ValueError(
+                        f"checkpoint contains disabled {bc_name} optimizer state"
+                    )
+                if optimizer is not None:
+                    self._validate_optimizer_state_dict(
+                        optimizer,
+                        saved_optimizer,
+                        f"{bc_name} optimizer building {index}",
+                    )
+        if mode == "inference":
+            inference = payload.get("inference_policy_state")
+            if not isinstance(inference, Mapping):
+                raise ValueError("checkpoint inference_policy_state is invalid")
+            step = inference.get("exploration_step")
+            if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+                raise ValueError("checkpoint inference exploration_step is invalid")
+            return None
+
+        required_global = (
+            "replay_buffer", "n_step_queue", "current_layout_signature",
+            "exploration_state", "reward_normalization_state", "rng_state", "bc_state",
+        )
+        for key in required_global:
+            if key not in payload:
+                raise ValueError(f"checkpoint is missing required field {key!r}")
+        if payload["current_layout_signature"] != self._layout_signature:
+            raise ValueError("checkpoint current layout signature mismatch")
+        replay = SignatureBucketedReplayBuffer(
+            capacity=self.buffer_capacity,
+            num_agents=len(self._per_building),
+            batch_size=self.batch_size,
+        )
+        replay.set_state(payload["replay_buffer"])
+        self._validate_checkpoint_n_step_queue(payload["n_step_queue"], replay)
+        exploration = payload["exploration_state"]
+        if not isinstance(exploration, Mapping):
+            raise ValueError("checkpoint exploration_state is invalid")
+        sigma = exploration.get("sigma")
+        exploration_step = exploration.get("exploration_step")
+        if (
+            isinstance(exploration_step, bool)
+            or not isinstance(exploration_step, int)
+            or exploration_step < 0
+            or isinstance(sigma, bool)
+            or not isinstance(sigma, (int, float))
+            or not np.isfinite(float(sigma))
+        ):
+            raise ValueError("checkpoint exploration_state is invalid")
+        reward = payload["reward_normalization_state"]
+        if not isinstance(reward, Mapping):
+            raise ValueError("checkpoint reward_normalization_state is invalid")
+        if reward.get("enabled") is not self.reward_normalization_enabled:
+            raise ValueError("checkpoint reward normalization mode mismatch")
+        count, mean, m2 = reward.get("count"), reward.get("mean"), reward.get("m2")
+        if (
+            isinstance(count, bool) or not isinstance(count, int) or count < 0
+            or not isinstance(mean, (int, float))
+            or not isinstance(m2, (int, float))
+            or not np.isfinite(float(mean))
+            or not np.isfinite(float(m2))
+            or float(m2) < 0.0
+        ):
+            raise ValueError("checkpoint reward normalization state is invalid")
+        self._validate_checkpoint_bc_state(payload["bc_state"])
+        self._validate_rng_state(payload["rng_state"])
+        return replay
+
+    @staticmethod
+    def _validate_module_state_dict(
+        module: nn.Module, saved: Any, label: str
+    ) -> None:
+        if not isinstance(saved, Mapping):
+            raise ValueError(f"checkpoint {label} state is invalid")
+        live = module.state_dict()
+        if tuple(saved.keys()) != tuple(live.keys()):
+            raise ValueError(f"checkpoint {label} parameter keys mismatch")
+        for key, live_value in live.items():
+            saved_value = saved[key]
+            if (
+                not isinstance(saved_value, torch.Tensor)
+                or saved_value.shape != live_value.shape
+                or saved_value.dtype != live_value.dtype
+            ):
+                raise ValueError(
+                    f"checkpoint {label} parameter {key!r} is incompatible"
+                )
+
+    @staticmethod
+    def _validate_optimizer_state_dict(
+        optimizer: torch.optim.Optimizer, saved: Any, label: str
+    ) -> None:
+        if not isinstance(saved, Mapping):
+            raise ValueError(f"checkpoint {label} state is invalid")
+        candidate = deepcopy(optimizer)
+        try:
+            candidate.load_state_dict(saved)
+            for group in candidate.param_groups:
+                for parameter in group["params"]:
+                    for key, value in candidate.state.get(parameter, {}).items():
+                        if (
+                            isinstance(value, torch.Tensor)
+                            and value.ndim > 0
+                            and value.shape != parameter.shape
+                        ):
+                            raise ValueError(
+                                f"optimizer tensor {key!r} has incompatible shape"
+                            )
+        except Exception as exc:
+            raise ValueError(f"checkpoint {label} state is incompatible") from exc
+
+    def _validate_checkpoint_n_step_queue(
+        self,
+        queue: Any,
+        replay: SignatureBucketedReplayBuffer,
+    ) -> None:
+        if not isinstance(queue, list) or len(queue) >= self.n_step_returns:
+            raise ValueError("checkpoint n_step_queue length is invalid")
+        expected_optional_presence: Optional[Tuple[bool, bool, bool]] = None
+        current_bucket = replay.get_state()["buckets"].get(self._layout_signature)
+        if current_bucket:
+            first = current_bucket[0]
+            expected_optional_presence = (
+                first.behavior_actions is not None,
+                first.next_behavior_actions is not None,
+                first.cloning_actions is not None,
+            )
+        for transition in deepcopy(queue):
+            if not isinstance(transition, dict):
+                raise ValueError("checkpoint n_step_queue entry is invalid")
+            if transition.get("layout_signature") != self._layout_signature:
+                raise ValueError("checkpoint n_step_queue signature mismatch")
+            required = (
+                "observations", "actions", "rewards", "next_observations",
+                "terminated", "truncated",
+            )
+            if any(key not in transition for key in required):
+                raise ValueError("checkpoint n_step_queue entry is incomplete")
+            for field in ("observations", "next_observations", "actions"):
+                vectors = transition[field]
+                if not isinstance(vectors, (list, tuple)) or len(vectors) != len(
+                    self._per_building
+                ):
+                    raise ValueError(
+                        f"checkpoint n_step_queue {field} group is invalid"
+                    )
+                for index, vector in enumerate(vectors):
+                    expected_width = (
+                        len(self._attached_names[index][0])
+                        if field != "actions"
+                        else self._per_building[index].layout.n_ca
+                    )
+                    if (
+                        not isinstance(vector, np.ndarray)
+                        or vector.dtype != np.dtype(np.float32)
+                        or vector.shape != (expected_width,)
+                        or not np.isfinite(vector).all()
+                    ):
+                        raise ValueError(
+                            f"checkpoint n_step_queue {field}[{index}] is invalid"
+                        )
+            for field in (
+                "behavior_actions", "next_behavior_actions", "cloning_actions"
+            ):
+                vectors = transition.get(field)
+                if vectors is None:
+                    continue
+                if not isinstance(vectors, (list, tuple)) or len(vectors) != len(
+                    self._per_building
+                ):
+                    raise ValueError(
+                        f"checkpoint n_step_queue {field} group is invalid"
+                    )
+                for index, vector in enumerate(vectors):
+                    if (
+                        not isinstance(vector, np.ndarray)
+                        or vector.dtype != np.dtype(np.float32)
+                        or vector.shape != (self._per_building[index].layout.n_ca,)
+                        or not np.isfinite(vector).all()
+                    ):
+                        raise ValueError(
+                            f"checkpoint n_step_queue {field}[{index}] is invalid"
+                        )
+            optional_presence = tuple(
+                transition.get(field) is not None
+                for field in (
+                    "behavior_actions",
+                    "next_behavior_actions",
+                    "cloning_actions",
+                )
+            )
+            if expected_optional_presence is None:
+                expected_optional_presence = optional_presence
+            elif optional_presence != expected_optional_presence:
+                raise ValueError(
+                    "checkpoint n_step_queue optional action presence is unstable"
+                )
+            rewards = transition["rewards"]
+            if (
+                not isinstance(rewards, np.ndarray)
+                or rewards.dtype != np.dtype(np.float32)
+                or rewards.shape != (len(self._per_building),)
+                or not np.isfinite(rewards).all()
+            ):
+                raise ValueError("checkpoint n_step_queue rewards are invalid")
+            for field in ("terminated", "truncated"):
+                values = transition[field]
+                if (
+                    not isinstance(values, np.ndarray)
+                    or values.dtype != np.dtype(np.bool_)
+                    or values.shape != (len(self._per_building),)
+                ):
+                    raise ValueError(
+                        f"checkpoint n_step_queue {field} values are invalid"
+                    )
+
+    def _validate_checkpoint_bc_state(self, state: Any) -> None:
+        if not isinstance(state, Mapping):
+            raise ValueError("checkpoint bc_state is invalid")
+        bc_a_state = state.get("bc_a_state")
+        if self.bc_a_enabled:
+            if not isinstance(bc_a_state, Mapping):
+                raise ValueError("checkpoint BC-A state is missing")
+            completed = bc_a_state.get("offline_pretrain_completed_steps")
+            if (
+                isinstance(completed, bool)
+                or not isinstance(completed, int)
+                or completed < 0
+            ):
+                raise ValueError("checkpoint BC-A state is invalid")
+        elif bc_a_state is not None:
+            raise ValueError("checkpoint contains BC-A state but BC-A is disabled")
+        bc_b_state = state.get("bc_b_state")
+        if self._bc_b is None:
+            if bc_b_state is not None:
+                raise ValueError("checkpoint contains BC-B state but BC-B is disabled")
+            return
+        if not isinstance(bc_b_state, Mapping):
+            raise ValueError("checkpoint BC-B state is missing")
+        BehaviorCloningRegularizer.validate_state_dict(
+            bc_b_state.get("regularizer"),
+            max_samples_per_building=self._bc_b.max_samples_per_building,
+        )
+        if not isinstance(bc_b_state.get("pretraining_complete"), bool):
+            raise ValueError("checkpoint BC-B pretraining state is invalid")
+        actor_step = bc_b_state.get("actor_training_step")
+        if (
+            isinstance(actor_step, bool)
+            or not isinstance(actor_step, int)
+            or actor_step < 0
+        ):
+            raise ValueError("checkpoint BC-B actor training step is invalid")
+
+    @staticmethod
+    def _validate_rng_state(state: Any) -> None:
+        if not isinstance(state, Mapping):
+            raise ValueError("checkpoint rng_state is invalid")
+        try:
+            python_rng = random.Random()
+            python_rng.setstate(state["python"])
+            numpy_rng = np.random.RandomState()
+            numpy_rng.set_state(state["numpy"])
+            torch_rng = torch.Generator(device="cpu")
+            torch_rng.set_state(state["torch"].cpu())
+            cuda_state = state["torch_cuda"]
+            if cuda_state is not None and not isinstance(cuda_state, list):
+                raise TypeError("CUDA RNG state must be a list or None")
+        except Exception as exc:
+            raise ValueError("checkpoint rng_state is invalid") from exc
+
+    @staticmethod
+    def _capture_cuda_rng_state() -> Optional[List[torch.Tensor]]:
+        if not torch.cuda.is_available():
+            return None
+        return [state.clone() for state in torch.cuda.get_rng_state_all()]
+
+    @staticmethod
+    def _restore_cuda_rng_state(state: Optional[List[torch.Tensor]]) -> None:
+        if state is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all([value.cpu() for value in state])
+
+    def _move_optimizer_state_to_device(
+        self, optimizer: torch.optim.Optimizer
+    ) -> None:
+        for values in optimizer.state.values():
+            for key, value in values.items():
+                if isinstance(value, torch.Tensor):
+                    values[key] = value.to(self.device)
 
     def _validate_hyperparameters(self) -> None:
         if self.learning_rate <= 0.0:
