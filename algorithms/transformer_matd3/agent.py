@@ -14,6 +14,10 @@ from torch.nn.utils import clip_grad_norm_
 
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.maddpg_agent import _log_torch_runtime, _select_torch_device
+from algorithms.utils.citylearn_local_action_safety import (
+    CityLearnLocalSafetyAdapter,
+    CityLearnSafetyConfig,
+)
 from algorithms.transformer_matd3.components import (
     CentralizedCritic,
     DeterministicActorHead,
@@ -53,6 +57,7 @@ class _PerBuildingState:
     actor_optimizer: torch.optim.Optimizer
     critic_1_optimizer: torch.optim.Optimizer
     critic_2_optimizer: torch.optim.Optimizer
+    bc_a_optimizer: Optional[torch.optim.Optimizer]
     layout: BuildingTokenLayout
     action_names: Tuple[str, ...]
     action_low: torch.Tensor
@@ -62,8 +67,8 @@ class _PerBuildingState:
 class AgentTransformerMATD3(BaseAgent):
     """Static-layout Transformer MATD3 learner.
 
-    Dynamic topology, persistence, residual control, safety, behavior cloning,
-    price conditioning, and export belong to later implementation stages.
+    Dynamic topology, persistence, demonstration cloning, price conditioning,
+    and export belong to later implementation stages.
     """
 
     supports_dynamic_topology: ClassVar[bool] = False
@@ -142,6 +147,121 @@ class AgentTransformerMATD3(BaseAgent):
         self.random_exploration_steps = int(
             hyperparameters.get("random_exploration_steps", 0)
         )
+        self.storage_exploration_noise_multiplier = float(
+            hyperparameters.get("storage_exploration_noise_multiplier", 1.0)
+        )
+        self.ev_negative_exploration_noise_multiplier = float(
+            hyperparameters.get("ev_negative_exploration_noise_multiplier", 1.0)
+        )
+        self.deferrable_trigger_threshold = float(
+            hyperparameters.get("deferrable_trigger_threshold", 0.0)
+        )
+        self.deferrable_on_probability = float(
+            hyperparameters.get("deferrable_on_probability", 0.0)
+        )
+        self.residual_policy_enabled = bool(
+            hyperparameters.get("residual_policy_enabled", False)
+        )
+        self.warm_start_policy_name = self._optional_string(
+            hyperparameters.get("warm_start_policy_name")
+        )
+        self.warm_start_policy_hyperparameters = dict(
+            hyperparameters.get("warm_start_policy_hyperparameters") or {}
+        )
+        self.residual_action_scale = float(
+            hyperparameters.get("residual_action_scale", 1.0)
+        )
+        self.residual_action_final_scale = float(
+            hyperparameters.get(
+                "residual_action_final_scale", self.residual_action_scale
+            )
+        )
+        self.residual_action_scale_start_step = int(
+            hyperparameters.get("residual_action_scale_start_step", 0)
+        )
+        self.residual_action_scale_growth_steps = int(
+            hyperparameters.get("residual_action_scale_growth_steps", 0)
+        )
+        self.residual_storage_action_scale_multiplier = float(
+            hyperparameters.get("residual_storage_action_scale_multiplier", 1.0)
+        )
+        self.residual_ev_action_scale_multiplier = float(
+            hyperparameters.get("residual_ev_action_scale_multiplier", 1.0)
+        )
+        self.residual_deferrable_action_scale_multiplier = float(
+            hyperparameters.get("residual_deferrable_action_scale_multiplier", 1.0)
+        )
+        self.critic_action_input_mode = str(
+            hyperparameters.get("critic_action_input_mode", "final")
+        )
+        self._local_action_safety_enabled = bool(
+            hyperparameters.get("local_action_safety_enabled", False)
+        )
+        self._local_action_safety_config = CityLearnSafetyConfig(
+            fail_on_infeasible=bool(
+                hyperparameters.get("local_action_safety_fail_on_infeasible", False)
+            ),
+            protect_ev_minimum=bool(
+                hyperparameters.get("local_action_safety_protect_ev_minimum", True)
+            ),
+            ev_minimum_mode=str(
+                hyperparameters.get("local_action_safety_ev_minimum_mode", "average")
+            ),
+            protect_ev_service_target=bool(
+                hyperparameters.get(
+                    "local_action_safety_protect_ev_service_target", False
+                )
+            ),
+            protect_deferrable_must_start=bool(
+                hyperparameters.get(
+                    "local_action_safety_protect_deferrable_must_start", True
+                )
+            ),
+            allow_discretionary_deferrable_start=bool(
+                hyperparameters.get(
+                    "local_action_safety_allow_discretionary_deferrable_start", False
+                )
+            ),
+            headroom_reserve_kw=float(
+                hyperparameters.get("local_action_safety_headroom_reserve_kw", 0.0)
+            ),
+        )
+        replay_bc = dict(
+            (algorithm.get("behavior_cloning") or {}).get("replay_based") or {}
+        )
+        self.bc_a_enabled = bool(replay_bc.get("enabled", False))
+        self.bc_a_teacher = str(replay_bc.get("teacher", "warm_start"))
+        self.bc_a_weight = float(replay_bc.get("weight", 0.0))
+        self.bc_a_min_weight = float(replay_bc.get("min_weight", 0.0))
+        self.bc_a_decay_start_step = int(replay_bc.get("decay_start_step", 0))
+        self.bc_a_decay_steps = int(replay_bc.get("decay_steps", 0))
+        self.bc_a_ev_multiplier = float(replay_bc.get("ev_multiplier", 1.0))
+        self.bc_a_storage_multiplier = float(
+            replay_bc.get("storage_multiplier", 1.0)
+        )
+        self.bc_a_deferrable_multiplier = float(
+            replay_bc.get("deferrable_multiplier", 1.0)
+        )
+        has_extra_window = bool(
+            int(replay_bc.get("extra_update_start_step", 0))
+            or int(replay_bc.get("extra_update_end_step", 0))
+        )
+        self.bc_a_extra_updates = int(
+            replay_bc.get("extra_updates", 1 if has_extra_window else 0)
+        )
+        self.bc_a_extra_update_start_step = int(
+            replay_bc.get("extra_update_start_step", 0)
+        )
+        self.bc_a_extra_update_end_step = int(
+            replay_bc.get("extra_update_end_step", 0)
+        )
+        self.bc_a_clip_target_to_residual_authority = bool(
+            replay_bc.get("clip_target_to_residual_authority", False)
+        )
+        self.bc_a_offline_pretrain_steps = int(
+            replay_bc.get("offline_pretrain_steps", 0)
+        )
+        self.bc_a_offline_pretrain_completed_steps = 0
         self._validate_hyperparameters()
 
         self._layout_builder = EntityTokenLayoutBuilder(self._tokenizer_config)
@@ -159,6 +279,25 @@ class AgentTransformerMATD3(BaseAgent):
         self.reward_norm_m2 = 0.0
         self._latest_training_metrics: Dict[str, float] = {}
         self._last_train_rewards: Optional[torch.Tensor] = None
+        self._warm_start_policy: Optional[BaseAgent] = None
+        self._latest_raw_observations: Optional[List[np.ndarray]] = None
+        self._latest_raw_next_observations: Optional[List[np.ndarray]] = None
+        self._last_warm_start_policy_actions: Optional[List[List[float]]] = None
+        self._last_warm_start_next_policy_actions: Optional[List[List[float]]] = None
+        self._latest_external_cloning_actions: Optional[List[np.ndarray]] = None
+        self._local_action_safety_adapters: List[
+            CityLearnLocalSafetyAdapter
+        ] = []
+        self._local_action_safety_projection_count = 0
+        self._local_action_safety_intervention_count = 0
+        self._local_action_safety_infeasible_count = 0
+        self._local_action_safety_reason_counts: Dict[str, int] = {}
+        self._last_residual_action_scale = 0.0
+        self.requires_raw_observation_context = bool(
+            self.residual_policy_enabled
+            or self._local_action_safety_enabled
+            or (self.bc_a_enabled and self.bc_a_teacher == "warm_start")
+        )
 
     def attach_environment(  # type: ignore[override]
         self,
@@ -224,6 +363,65 @@ class AgentTransformerMATD3(BaseAgent):
             batch_size=self.batch_size,
         )
         self._attached_names = names_key
+        self._attach_warm_start_policy(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=spaces,
+            observation_space=self._normalize_spaces(observation_space, count),
+            metadata=metadata,
+        )
+        self._attach_local_action_safety(
+            observation_names=observation_names,
+            action_names=action_names,
+            metadata=metadata,
+        )
+
+    def set_observation_context(
+        self,
+        *,
+        raw_observations: Optional[List[npt.NDArray[np.float64]]] = None,
+        encoded_observations: Optional[List[npt.NDArray[np.float64]]] = None,
+    ) -> None:
+        del encoded_observations
+        if raw_observations is not None:
+            self._validate_vector_count("raw_observations", raw_observations)
+        self._latest_raw_observations = self._copied_optional_vectors(
+            raw_observations
+        )
+        self._last_warm_start_policy_actions = None
+
+    def set_transition_context(
+        self,
+        *,
+        raw_observations: Optional[List[npt.NDArray[np.float64]]] = None,
+        raw_next_observations: Optional[List[npt.NDArray[np.float64]]] = None,
+        encoded_observations: Optional[List[npt.NDArray[np.float64]]] = None,
+        encoded_next_observations: Optional[
+            List[npt.NDArray[np.float64]]
+        ] = None,
+        cloning_actions: Optional[List[npt.NDArray[np.float64]]] = None,
+    ) -> None:
+        del encoded_observations, encoded_next_observations
+        if raw_observations is not None:
+            self._validate_vector_count("raw_observations", raw_observations)
+            self._latest_raw_observations = self._copied_optional_vectors(
+                raw_observations
+            )
+        if raw_next_observations is not None:
+            self._validate_vector_count(
+                "raw_next_observations", raw_next_observations
+            )
+        self._latest_raw_next_observations = self._copied_optional_vectors(
+            raw_next_observations
+        )
+        self._last_warm_start_next_policy_actions = (
+            self._predict_warm_start_policy_for_observations(
+                self._latest_raw_next_observations
+            )
+        )
+        self._latest_external_cloning_actions = self._copied_optional_vectors(
+            cloning_actions
+        )
 
     def predict(
         self,
@@ -236,23 +434,47 @@ class AgentTransformerMATD3(BaseAgent):
         self._require_attached()
         self._validate_vector_count("predict observations", observations)
         use_deterministic = bool(deterministic)
+        base_actions = self._predict_warm_start_policy_for_observations(
+            self._latest_raw_observations
+        )
+        if self.residual_policy_enabled and base_actions is None:
+            raise RuntimeError(
+                "Transformer MATD3 residual policy requires raw observation "
+                "context before predict"
+            )
+        self._last_warm_start_policy_actions = deepcopy(base_actions)
         result: List[List[float]] = []
-        for state, observation in zip(self._per_building, observations):
+        for index, (state, observation) in enumerate(
+            zip(self._per_building, observations)
+        ):
             observation_tensor = self._tensor(observation).unsqueeze(0)
             actor_modules = self._actor_modules(state)
             prior_modes = [module.training for module in actor_modules]
             actor_modules.eval()
             try:
                 with torch.no_grad():
-                    action = self._actor_action(
+                    unit_action = self._actor_unit_action(
                         state, observation_tensor, target=False
                     )
                     if not use_deterministic:
-                        action = self._explore(action, state)
+                        unit_action = self._explore_unit_action(
+                            unit_action, state, index
+                        )
+                    action = self._compose_policy_action(
+                        index,
+                        unit_action,
+                        base_action=(
+                            None
+                            if base_actions is None
+                            else self._tensor(base_actions[index]).unsqueeze(0)
+                        ),
+                    )
             finally:
                 for module, training in zip(actor_modules, prior_modes):
                     module.train(training)
-            result.append(action.squeeze(0).cpu().tolist())
+            executed = action.squeeze(0).cpu().tolist()
+            executed = self._apply_local_action_safety(index, executed)
+            result.append(executed)
         if not use_deterministic:
             self.exploration_step += 1
             self.exploration_sigma = max(
@@ -284,6 +506,14 @@ class AgentTransformerMATD3(BaseAgent):
         ):
             self._validate_vector_count(name, values)
         self._update_reward_normalizer(rewards)
+        behavior_actions = self._transition_behavior_actions(actions)
+        next_behavior_actions = self._transition_next_behavior_actions(
+            behavior_actions
+        )
+        cloning_actions = self._transition_cloning_actions(
+            actions,
+            base_actions=behavior_actions,
+        )
         transition = {
             "observations": self._copied_vectors(observations),
             "actions": self._copied_vectors(actions),
@@ -291,6 +521,14 @@ class AgentTransformerMATD3(BaseAgent):
             "next_observations": self._copied_vectors(next_observations),
             "terminated": self._done_vector(terminated),
             "truncated": self._done_vector(truncated),
+            "behavior_actions": self._optional_replay_actions(behavior_actions),
+            "next_behavior_actions": self._optional_replay_actions(
+                next_behavior_actions
+            ),
+            "cloning_actions": self._distinct_cloning_actions(
+                cloning_actions,
+                behavior_actions,
+            ),
         }
         self._validate_transition_vectors(transition)
         self._store_transition(transition)
@@ -337,7 +575,7 @@ class AgentTransformerMATD3(BaseAgent):
         if self.replay_buffer is not None and self._layout_signature is not None:
             bucket_size = self.replay_buffer.bucket_size(self._layout_signature)
             bucket_count = len(tuple(self.replay_buffer.signatures()))
-        return {
+        metrics = {
             f"{_METRIC_PREFIX}enabled": 1.0,
             f"{_METRIC_PREFIX}exploration_sigma": float(self.exploration_sigma),
             f"{_METRIC_PREFIX}exploration_step": float(self.exploration_step),
@@ -351,7 +589,39 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}actor_update_interval": float(
                 self.actor_update_interval
             ),
+            f"{_METRIC_PREFIX}residual_policy_enabled": float(
+                self.residual_policy_enabled
+            ),
+            f"{_METRIC_PREFIX}residual_action_scale_effective": float(
+                self._residual_action_effective_scale()
+            ),
+            f"{_METRIC_PREFIX}local_action_safety_enabled": float(
+                self._local_action_safety_enabled
+            ),
         }
+        if self._local_action_safety_enabled:
+            metrics.update(
+                {
+                    f"{_METRIC_PREFIX}local_action_safety_projections": float(
+                        self._local_action_safety_projection_count
+                    ),
+                    f"{_METRIC_PREFIX}local_action_safety_interventions": float(
+                        self._local_action_safety_intervention_count
+                    ),
+                    f"{_METRIC_PREFIX}local_action_safety_infeasible": float(
+                        self._local_action_safety_infeasible_count
+                    ),
+                }
+            )
+            metrics.update(
+                {
+                    f"{_METRIC_PREFIX}local_action_safety_reason_{reason}": float(
+                        count
+                    )
+                    for reason, count in self._local_action_safety_reason_counts.items()
+                }
+            )
+        return metrics
 
     def _learn(
         self,
@@ -366,6 +636,34 @@ class AgentTransformerMATD3(BaseAgent):
             self._tensor(value) for value in batch.next_observations
         ]
         actions = [self._tensor(value) for value in batch.actions]
+        behavior_actions = (
+            None
+            if batch.behavior_actions is None
+            else [self._tensor(value) for value in batch.behavior_actions]
+        )
+        next_behavior_actions = (
+            None
+            if batch.next_behavior_actions is None
+            else [self._tensor(value) for value in batch.next_behavior_actions]
+        )
+        if batch.cloning_actions is not None:
+            cloning_actions = [
+                self._tensor(value) for value in batch.cloning_actions
+            ]
+        elif self.bc_a_teacher == "warm_start":
+            cloning_actions = behavior_actions
+        else:
+            cloning_actions = actions
+        if self.residual_policy_enabled and (
+            behavior_actions is None or next_behavior_actions is None
+        ):
+            raise RuntimeError("residual replay batch is missing base actions")
+        offline_losses, offline_grad_norms = self._run_bc_a_offline_pretraining(
+            observations=observations,
+            behavior_actions=behavior_actions,
+            cloning_actions=cloning_actions,
+            global_learning_step=global_learning_step,
+        )
         raw_rewards = self._tensor(batch.rewards)
         individual_rewards = self._normalize_reward_tensor(raw_rewards)
         train_rewards = self._team_rewards(individual_rewards)
@@ -373,10 +671,22 @@ class AgentTransformerMATD3(BaseAgent):
         done = self._tensor(batch.done.astype(np.float32))
 
         with torch.no_grad():
-            next_actions = [
-                self._target_action(state, observation)
-                for state, observation in zip(self._per_building, next_observations)
-            ]
+            next_actions = []
+            for index, (state, observation) in enumerate(
+                zip(self._per_building, next_observations)
+            ):
+                next_actions.append(
+                    self._target_action(
+                        state,
+                        observation,
+                        index=index,
+                        base_action=(
+                            None
+                            if next_behavior_actions is None
+                            else next_behavior_actions[index]
+                        ),
+                    )
+                )
             targets = []
             for index, state in enumerate(self._per_building):
                 q1_next = state.critic_1_target(
@@ -421,30 +731,85 @@ class AgentTransformerMATD3(BaseAgent):
             expected_1_values.append(expected_1.detach())
             expected_2_values.append(expected_2.detach())
             td_values.append(float((expected_1.detach() - target).abs().mean()))
-            gap_values.append(float((expected_1.detach() - expected_2.detach()).abs().mean()))
+            gap_values.append(
+                float((expected_1.detach() - expected_2.detach()).abs().mean())
+            )
             critic_grad_norms.extend((float(grad_1), float(grad_2)))
 
         actor_update_due = global_learning_step % self.actor_update_interval == 0
         actor_losses: List[float] = []
+        actor_policy_losses: List[float] = []
+        actor_bc_losses: List[float] = []
+        actor_bc_type_losses: Dict[str, List[float]] = {
+            "ev": [],
+            "storage": [],
+            "deferrable": [],
+            "other": [],
+        }
         actor_q_abs: List[float] = []
         actor_grad_norms: List[float] = []
+        bc_weight = self._bc_a_effective_weight(global_learning_step)
         if actor_update_due:
             with torch.no_grad():
-                detached_actions = [
-                    self._actor_action(state, observation, target=False).detach()
-                    for state, observation in zip(self._per_building, observations)
-                ]
+                detached_actions = []
+                for index, (state, observation) in enumerate(
+                    zip(self._per_building, observations)
+                ):
+                    detached_actions.append(
+                        self._policy_action(
+                            index,
+                            state,
+                            observation,
+                            target=False,
+                            base_action=(
+                                None
+                                if behavior_actions is None
+                                else behavior_actions[index]
+                            ),
+                        ).detach()
+                    )
             for index, state in enumerate(self._per_building):
                 joint_actions = list(detached_actions)
-                joint_actions[index] = self._actor_action(
-                    state, observations[index], target=False
+                joint_actions[index] = self._policy_action(
+                    index,
+                    state,
+                    observations[index],
+                    target=False,
+                    base_action=(
+                        None
+                        if behavior_actions is None
+                        else behavior_actions[index]
+                    ),
                 )
                 self._set_requires_grad(state.critic_1, False)
                 try:
                     q_policy = state.critic_1(
                         observations, self._layouts, joint_actions
                     )
-                    actor_loss = -q_policy.mean()
+                    policy_loss = -q_policy.mean()
+                    bc_loss = policy_loss.new_tensor(0.0)
+                    if (
+                        bc_weight > 0.0
+                        and cloning_actions is not None
+                    ):
+                        bc_loss = self._actor_behavior_cloning_loss(
+                            index,
+                            joint_actions[index],
+                            cloning_actions[index],
+                            base_action=(
+                                None
+                                if behavior_actions is None
+                                else behavior_actions[index]
+                            ),
+                        )
+                        type_losses = self._actor_behavior_cloning_type_losses(
+                            index,
+                            joint_actions[index],
+                            cloning_actions[index],
+                        )
+                        for label, value in type_losses.items():
+                            actor_bc_type_losses[label].append(float(value.detach()))
+                    actor_loss = policy_loss + bc_weight * bc_loss
                     state.actor_optimizer.zero_grad(set_to_none=True)
                     actor_loss.backward()
                     actor_grad = clip_grad_norm_(
@@ -455,15 +820,24 @@ class AgentTransformerMATD3(BaseAgent):
                 finally:
                     self._set_requires_grad(state.critic_1, True)
                 actor_losses.append(float(actor_loss.detach()))
+                actor_policy_losses.append(float(policy_loss.detach()))
+                actor_bc_losses.append(float(bc_loss.detach()))
                 actor_q_abs.append(float(q_policy.detach().abs().mean()))
                 actor_grad_norms.append(float(actor_grad))
-            if update_target_step:
-                for state in self._per_building:
-                    self._soft_update(state.tokenizer, state.tokenizer_target)
-                    self._soft_update(state.backbone, state.backbone_target)
-                    self._soft_update(state.actor, state.actor_target)
-                    self._soft_update(state.critic_1, state.critic_1_target)
-                    self._soft_update(state.critic_2, state.critic_2_target)
+        extra_losses, extra_grad_norms = self._run_bc_a_extra_updates(
+            observations=observations,
+            behavior_actions=behavior_actions,
+            cloning_actions=cloning_actions,
+            effective_weight=bc_weight,
+            global_learning_step=global_learning_step,
+        )
+        if actor_update_due and update_target_step:
+            for state in self._per_building:
+                self._soft_update(state.tokenizer, state.tokenizer_target)
+                self._soft_update(state.backbone, state.backbone_target)
+                self._soft_update(state.actor, state.actor_target)
+                self._soft_update(state.critic_1, state.critic_1_target)
+                self._soft_update(state.critic_2, state.critic_2_target)
 
         expected_1_flat = torch.cat(
             [value.reshape(-1) for value in expected_1_values]
@@ -492,7 +866,7 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}actor_update_performed": float(actor_update_due),
             f"{_METRIC_PREFIX}actor_loss_mean": self._mean_or_zero(actor_losses),
             f"{_METRIC_PREFIX}actor_policy_loss_mean": self._mean_or_zero(
-                actor_losses
+                actor_policy_losses
             ),
             f"{_METRIC_PREFIX}actor_policy_q_abs_mean": self._mean_or_zero(
                 actor_q_abs
@@ -534,12 +908,45 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}exploration_step": float(self.exploration_step),
             f"{_METRIC_PREFIX}training_step_time": time.perf_counter() - started,
         }
+        if self.bc_a_enabled:
+            self._latest_training_metrics.update(
+                {
+                    f"{_METRIC_PREFIX}actor_behavior_cloning_loss_mean": (
+                        self._mean_or_zero(actor_bc_losses)
+                    ),
+                    f"{_METRIC_PREFIX}actor_behavior_cloning_effective_weight": (
+                        bc_weight
+                    ),
+                    f"{_METRIC_PREFIX}actor_behavior_cloning_extra_updates": float(
+                        len(extra_losses)
+                    ),
+                    f"{_METRIC_PREFIX}actor_behavior_cloning_extra_loss_mean": (
+                        self._mean_or_zero(extra_losses)
+                    ),
+                    f"{_METRIC_PREFIX}actor_behavior_cloning_extra_grad_norm_mean": (
+                        self._mean_or_zero(extra_grad_norms)
+                    ),
+                    f"{_METRIC_PREFIX}actor_behavior_cloning_offline_updates": float(
+                        len(offline_losses)
+                    ),
+                    f"{_METRIC_PREFIX}actor_behavior_cloning_offline_loss_mean": (
+                        self._mean_or_zero(offline_losses)
+                    ),
+                    f"{_METRIC_PREFIX}actor_behavior_cloning_offline_grad_norm_mean": (
+                        self._mean_or_zero(offline_grad_norms)
+                    ),
+                }
+            )
+            for label, values in actor_bc_type_losses.items():
+                self._latest_training_metrics[
+                    f"{_METRIC_PREFIX}actor_behavior_cloning_{label}_loss_mean"
+                ] = self._mean_or_zero(values)
 
     @property
     def _layouts(self) -> List[BuildingTokenLayout]:
         return [state.layout for state in self._per_building]
 
-    def _actor_action(
+    def _actor_unit_action(
         self,
         state: _PerBuildingState,
         observations: torch.Tensor,
@@ -555,46 +962,516 @@ class AgentTransformerMATD3(BaseAgent):
             tokens.nfc_token,
             tokens.ca_tokens,
         )
-        unit_action = torch.tanh(actor(ca_embeddings)).squeeze(-1)
+        return torch.tanh(actor(ca_embeddings)).squeeze(-1)
+
+    def _actor_action(
+        self,
+        state: _PerBuildingState,
+        observations: torch.Tensor,
+        *,
+        target: bool,
+    ) -> torch.Tensor:
+        unit_action = self._actor_unit_action(state, observations, target=target)
+        return self._affine_action(unit_action, state)
+
+    @staticmethod
+    def _affine_action(
+        unit_action: torch.Tensor,
+        state: _PerBuildingState,
+    ) -> torch.Tensor:
         return state.action_low + (unit_action + 1.0) * (
             state.action_high - state.action_low
         ) / 2.0
+
+    def _policy_action(
+        self,
+        index: int,
+        state: _PerBuildingState,
+        observations: torch.Tensor,
+        *,
+        target: bool,
+        base_action: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        unit_action = self._actor_unit_action(state, observations, target=target)
+        return self._compose_policy_action(index, unit_action, base_action)
+
+    def _compose_policy_action(
+        self,
+        index: int,
+        unit_action: torch.Tensor,
+        base_action: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        state = self._per_building[index]
+        if not self.residual_policy_enabled:
+            return self._affine_action(unit_action, state)
+        if base_action is None:
+            raise RuntimeError("residual policy action requires a base action")
+        if base_action.shape[-1] != state.layout.n_ca:
+            raise ValueError(
+                f"warm-start action width for building {index} is "
+                f"{base_action.shape[-1]}; expected {state.layout.n_ca}"
+            )
+        base = base_action.to(dtype=unit_action.dtype, device=unit_action.device)
+        if base.ndim == 1 and unit_action.ndim == 2:
+            base = base.unsqueeze(0).expand(unit_action.shape[0], -1)
+        span = state.action_high - state.action_low
+        authority = self._residual_action_effective_scale()
+        mask = self._residual_action_scale_mask(index, unit_action)
+        action = base + 0.5 * span * authority * mask * unit_action
+        return torch.maximum(
+            torch.minimum(action, state.action_high), state.action_low
+        )
 
     def _target_action(
         self,
         state: _PerBuildingState,
         observations: torch.Tensor,
+        *,
+        index: Optional[int] = None,
+        base_action: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        action = self._actor_action(state, observations, target=True)
+        building_index = (
+            self._per_building.index(state) if index is None else index
+        )
+        action = self._policy_action(
+            building_index,
+            state,
+            observations,
+            target=True,
+            base_action=base_action,
+        )
         if not self.target_policy_smoothing or self.target_policy_noise <= 0.0:
             return action
         span = state.action_high - state.action_low
-        noise = torch.randn_like(action) * (self.target_policy_noise * span)
-        limit = self.target_policy_noise_clip * span
+        authority = torch.ones_like(span)
+        if self.residual_policy_enabled:
+            authority = self._residual_action_effective_scale() * (
+                self._residual_action_scale_mask(building_index, action)
+            )
+        noise = torch.randn_like(action) * (
+            self.target_policy_noise * span * authority
+        )
+        limit = self.target_policy_noise_clip * span * authority
         noise = torch.maximum(torch.minimum(noise, limit), -limit)
         return torch.maximum(
             torch.minimum(action + noise, state.action_high), state.action_low
         )
 
-    def _explore(
+    def _explore_unit_action(
         self,
-        action: torch.Tensor,
+        unit_action: torch.Tensor,
         state: _PerBuildingState,
+        index: int,
     ) -> torch.Tensor:
         if self.exploration_step < self.random_exploration_steps:
-            return state.action_low + torch.rand_like(action) * (
-                state.action_high - state.action_low
-            )
-        span = state.action_high - state.action_low
-        noise = torch.randn_like(action) * (self.exploration_sigma * span) + (
-            self.bias * span
+            return torch.rand_like(unit_action) * 2.0 - 1.0
+        noise = 2.0 * (
+            torch.randn_like(unit_action) * self.exploration_sigma + self.bias
         )
+        multipliers = torch.ones_like(noise)
+        for action_index, action_name in enumerate(state.action_names):
+            if self._is_storage_action_name(action_name):
+                multipliers[..., action_index] *= (
+                    self.storage_exploration_noise_multiplier
+                )
+            if (
+                self._is_ev_action_name(action_name)
+                and state.action_low[action_index] < 0.0
+            ):
+                negative = noise[..., action_index] < 0.0
+                multipliers[..., action_index] = torch.where(
+                    negative,
+                    multipliers[..., action_index]
+                    * self.ev_negative_exploration_noise_multiplier,
+                    multipliers[..., action_index],
+                )
+        noise = noise * multipliers
         if self.noise_clip is not None:
-            limit = self.noise_clip * span
-            noise = torch.maximum(torch.minimum(noise, limit), -limit)
-        return torch.maximum(
-            torch.minimum(action + noise, state.action_high), state.action_low
+            noise = noise.clamp(-2.0 * self.noise_clip, 2.0 * self.noise_clip)
+        explored = (unit_action + noise).clamp(-1.0, 1.0)
+        self._apply_deferrable_exploration(explored, state, index)
+        return explored
+
+    def _apply_deferrable_exploration(
+        self,
+        unit_action: torch.Tensor,
+        state: _PerBuildingState,
+        index: int,
+    ) -> None:
+        del index
+        if self.deferrable_on_probability <= 0.0:
+            return
+        threshold = 2.0 * self.deferrable_trigger_threshold - 1.0
+        for action_index, action_name in enumerate(state.action_names):
+            if not self._is_deferrable_action_name(action_name):
+                continue
+            if float(torch.rand((), device=unit_action.device)) < (
+                self.deferrable_on_probability
+            ):
+                unit_action[..., action_index] = torch.empty(
+                    (), device=unit_action.device
+                ).uniform_(threshold, 1.0)
+
+    def _residual_action_effective_scale(
+        self,
+        global_learning_step: Optional[int] = None,
+    ) -> float:
+        if not self.residual_policy_enabled:
+            self._last_residual_action_scale = 0.0
+            return 0.0
+        step = self.exploration_step if global_learning_step is None else int(
+            global_learning_step
         )
+        if step < self.residual_action_scale_start_step:
+            self._last_residual_action_scale = 0.0
+            return 0.0
+        if self.residual_action_scale_growth_steps <= 0:
+            scale = self.residual_action_final_scale
+        else:
+            progress = min(
+                max(
+                    (step - self.residual_action_scale_start_step)
+                    / self.residual_action_scale_growth_steps,
+                    0.0,
+                ),
+                1.0,
+            )
+            scale = self.residual_action_scale + (
+                self.residual_action_final_scale - self.residual_action_scale
+            ) * progress
+        self._last_residual_action_scale = float(np.clip(scale, 0.0, 1.0))
+        return self._last_residual_action_scale
+
+    def _residual_action_scale_mask(
+        self,
+        index: int,
+        like: torch.Tensor,
+    ) -> torch.Tensor:
+        values = torch.ones(
+            self._per_building[index].layout.n_ca,
+            dtype=like.dtype,
+            device=like.device,
+        )
+        for action_index, action_name in enumerate(
+            self._per_building[index].action_names
+        ):
+            if self._is_storage_action_name(action_name):
+                values[action_index] *= (
+                    self.residual_storage_action_scale_multiplier
+                )
+            if self._is_ev_action_name(action_name):
+                values[action_index] *= self.residual_ev_action_scale_multiplier
+            if self._is_deferrable_action_name(action_name):
+                values[action_index] *= (
+                    self.residual_deferrable_action_scale_multiplier
+                )
+        return values
+
+    def _transition_behavior_actions(
+        self,
+        actions: Sequence[Any],
+    ) -> List[Any]:
+        needs_warm_start = self.residual_policy_enabled or (
+            self.bc_a_enabled and self.bc_a_teacher == "warm_start"
+        )
+        if not needs_warm_start:
+            return list(actions)
+        if self._last_warm_start_policy_actions is None:
+            predicted = self._predict_warm_start_policy_for_observations(
+                self._latest_raw_observations
+            )
+            if predicted is None:
+                if not self.residual_policy_enabled:
+                    return list(actions)
+                raise RuntimeError("residual replay requires warm-start base actions")
+            return predicted
+        return deepcopy(self._last_warm_start_policy_actions)
+
+    def _transition_next_behavior_actions(
+        self,
+        fallback_actions: Sequence[Any],
+    ) -> List[Any]:
+        needs_warm_start = self.residual_policy_enabled or (
+            self.bc_a_enabled and self.bc_a_teacher == "warm_start"
+        )
+        if not needs_warm_start:
+            return list(fallback_actions)
+        if self._last_warm_start_next_policy_actions is not None:
+            return deepcopy(self._last_warm_start_next_policy_actions)
+        predicted = self._predict_warm_start_policy_for_observations(
+            self._latest_raw_next_observations
+        )
+        if predicted is None:
+            if not self.residual_policy_enabled:
+                return list(fallback_actions)
+            raise RuntimeError(
+                "residual replay requires next warm-start base actions"
+            )
+        return predicted
+
+    def _transition_cloning_actions(
+        self,
+        fallback_actions: Sequence[Any],
+        *,
+        base_actions: Sequence[Any],
+    ) -> List[Any]:
+        if not self.bc_a_enabled or self.bc_a_teacher == "replay_action":
+            return list(fallback_actions)
+        if self.bc_a_teacher == "warm_start":
+            return list(base_actions)
+        if self.bc_a_teacher == "external":
+            if self._latest_external_cloning_actions is None:
+                return list(fallback_actions)
+            self._validate_action_vector_group(
+                "external BC-A cloning actions",
+                self._latest_external_cloning_actions,
+            )
+            return deepcopy(self._latest_external_cloning_actions)
+        raise ValueError(f"unsupported BC-A teacher {self.bc_a_teacher!r}")
+
+    def _optional_replay_actions(
+        self,
+        values: Sequence[Any],
+    ) -> Optional[List[Any]]:
+        if self.residual_policy_enabled or (
+            self.bc_a_enabled and self.bc_a_teacher == "warm_start"
+        ):
+            return list(values)
+        return None
+
+    def _distinct_cloning_actions(
+        self,
+        cloning_actions: Sequence[Any],
+        behavior_actions: Sequence[Any],
+    ) -> Optional[List[Any]]:
+        if not self.bc_a_enabled:
+            return None
+        if all(
+            np.array_equal(
+                np.asarray(cloning), np.asarray(behavior)
+            )
+            for cloning, behavior in zip(cloning_actions, behavior_actions)
+        ):
+            return None
+        return list(cloning_actions)
+
+    def _bc_a_effective_weight(self, global_learning_step: int) -> float:
+        if not self.bc_a_enabled or self.bc_a_weight <= 0.0:
+            return 0.0
+        if self.bc_a_decay_steps <= 0:
+            return self.bc_a_weight
+        if global_learning_step <= self.bc_a_decay_start_step:
+            return self.bc_a_weight
+        progress = min(
+            max(
+                (global_learning_step - self.bc_a_decay_start_step)
+                / self.bc_a_decay_steps,
+                0.0,
+            ),
+            1.0,
+        )
+        return self.bc_a_weight + (
+            self.bc_a_min_weight - self.bc_a_weight
+        ) * progress
+
+    def _actor_behavior_cloning_loss(
+        self,
+        index: int,
+        predicted_action: torch.Tensor,
+        cloning_action: torch.Tensor,
+        *,
+        base_action: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        target = self._reachable_behavior_cloning_target(
+            index,
+            cloning_action.detach(),
+            base_action=base_action,
+        )
+        predicted = self._normalize_action(index, predicted_action)
+        normalized_target = self._normalize_action(index, target)
+        weights = self._bc_a_action_weights(index, predicted)
+        return (
+            (predicted - normalized_target).square() * weights
+        ).sum() / weights.expand_as(predicted).sum().clamp_min(1.0)
+
+    def _actor_behavior_cloning_type_losses(
+        self,
+        index: int,
+        predicted_action: torch.Tensor,
+        cloning_action: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        error = (
+            self._normalize_action(index, predicted_action)
+            - self._normalize_action(index, cloning_action.detach())
+        ).square()
+        result: Dict[str, torch.Tensor] = {}
+        predicates = {
+            "ev": self._is_ev_action_name,
+            "storage": self._is_storage_action_name,
+            "deferrable": self._is_deferrable_action_name,
+        }
+        known = torch.zeros(error.shape[-1], dtype=torch.bool, device=error.device)
+        for label, predicate in predicates.items():
+            mask = torch.as_tensor(
+                [
+                    predicate(name)
+                    for name in self._per_building[index].action_names
+                ],
+                dtype=torch.bool,
+                device=error.device,
+            )
+            known |= mask
+            result[label] = (
+                error[..., mask].mean() if mask.any() else error.new_tensor(0.0)
+            )
+        result["other"] = (
+            error[..., ~known].mean() if (~known).any() else error.new_tensor(0.0)
+        )
+        return result
+
+    def _reachable_behavior_cloning_target(
+        self,
+        index: int,
+        cloning_action: torch.Tensor,
+        *,
+        base_action: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if (
+            not self.bc_a_clip_target_to_residual_authority
+            or not self.residual_policy_enabled
+            or base_action is None
+        ):
+            return cloning_action
+        base = base_action.detach().to(cloning_action)
+        if base.shape != cloning_action.shape:
+            raise ValueError("BC-A base and cloning action shapes must match")
+        state = self._per_building[index]
+        authority = self._residual_action_effective_scale() * (
+            self._residual_action_scale_mask(index, cloning_action)
+        )
+        maximum_delta = 0.5 * (state.action_high - state.action_low) * authority
+        return torch.maximum(
+            torch.minimum(cloning_action, base + maximum_delta),
+            base - maximum_delta,
+        )
+
+    def _normalize_action(
+        self,
+        index: int,
+        action: torch.Tensor,
+    ) -> torch.Tensor:
+        state = self._per_building[index]
+        span = (state.action_high - state.action_low).clamp_min(1.0e-6)
+        return (2.0 * (action - state.action_low) / span - 1.0).clamp(-1.0, 1.0)
+
+    def _bc_a_action_weights(
+        self,
+        index: int,
+        like: torch.Tensor,
+    ) -> torch.Tensor:
+        values = []
+        for action_name in self._per_building[index].action_names:
+            multiplier = 1.0
+            if self._is_ev_action_name(action_name):
+                multiplier *= self.bc_a_ev_multiplier
+            if self._is_storage_action_name(action_name):
+                multiplier *= self.bc_a_storage_multiplier
+            if self._is_deferrable_action_name(action_name):
+                multiplier *= self.bc_a_deferrable_multiplier
+            values.append(multiplier)
+        return torch.as_tensor(values, dtype=like.dtype, device=like.device).view(1, -1)
+
+    def _run_bc_a_extra_updates(
+        self,
+        *,
+        observations: Sequence[torch.Tensor],
+        behavior_actions: Optional[Sequence[torch.Tensor]],
+        cloning_actions: Optional[Sequence[torch.Tensor]],
+        effective_weight: float,
+        global_learning_step: int,
+        update_count: Optional[int] = None,
+    ) -> Tuple[List[float], List[float]]:
+        count = self.bc_a_extra_updates if update_count is None else update_count
+        if (
+            effective_weight <= 0.0
+            or cloning_actions is None
+            or count <= 0
+            or (
+                update_count is None
+                and global_learning_step < self.bc_a_extra_update_start_step
+            )
+            or (
+                update_count is None
+                and self.bc_a_extra_update_end_step > 0
+                and global_learning_step > self.bc_a_extra_update_end_step
+            )
+        ):
+            return [], []
+        losses: List[float] = []
+        gradients: List[float] = []
+        for index, state in enumerate(self._per_building):
+            if state.bc_a_optimizer is None:
+                raise RuntimeError("BC-A optimizer is not initialized")
+            for _ in range(count):
+                predicted = self._policy_action(
+                    index,
+                    state,
+                    observations[index],
+                    target=False,
+                    base_action=(
+                        None
+                        if behavior_actions is None
+                        else behavior_actions[index]
+                    ),
+                )
+                loss = effective_weight * self._actor_behavior_cloning_loss(
+                    index,
+                    predicted,
+                    cloning_actions[index],
+                    base_action=(
+                        None
+                        if behavior_actions is None
+                        else behavior_actions[index]
+                    ),
+                )
+                state.bc_a_optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                gradient = clip_grad_norm_(
+                    self._actor_modules(state).parameters(),
+                    self.max_grad_norm,
+                )
+                state.bc_a_optimizer.step()
+                losses.append(float(loss.detach()))
+                gradients.append(float(gradient))
+        return losses, gradients
+
+    def _run_bc_a_offline_pretraining(
+        self,
+        *,
+        observations: Sequence[torch.Tensor],
+        behavior_actions: Optional[Sequence[torch.Tensor]],
+        cloning_actions: Optional[Sequence[torch.Tensor]],
+        global_learning_step: int,
+    ) -> Tuple[List[float], List[float]]:
+        remaining = max(
+            self.bc_a_offline_pretrain_steps
+            - self.bc_a_offline_pretrain_completed_steps,
+            0,
+        )
+        effective_weight = self._bc_a_effective_weight(global_learning_step)
+        if remaining <= 0 or effective_weight <= 0.0:
+            return [], []
+        losses, gradients = self._run_bc_a_extra_updates(
+            observations=observations,
+            behavior_actions=behavior_actions,
+            cloning_actions=cloning_actions,
+            effective_weight=effective_weight,
+            global_learning_step=global_learning_step,
+            update_count=remaining,
+        )
+        if losses:
+            self.bc_a_offline_pretrain_completed_steps += remaining
+        return losses, gradients
 
     def _store_transition(self, transition: Dict[str, Any]) -> None:
         if self.n_step_returns == 1:
@@ -630,6 +1507,9 @@ class AgentTransformerMATD3(BaseAgent):
                 "next_observations": last["next_observations"],
                 "terminated": last["terminated"],
                 "truncated": last["truncated"],
+                "behavior_actions": first.get("behavior_actions"),
+                "next_behavior_actions": last.get("next_behavior_actions"),
+                "cloning_actions": first.get("cloning_actions"),
             }
         )
         self._n_step_queue.popleft()
@@ -645,7 +1525,173 @@ class AgentTransformerMATD3(BaseAgent):
             terminated=transition["terminated"],
             truncated=transition["truncated"],
             layout_signature=self._layout_signature,
+            behavior_actions=transition.get("behavior_actions"),
+            next_behavior_actions=transition.get("next_behavior_actions"),
+            cloning_actions=transition.get("cloning_actions"),
         )
+
+    def _attach_warm_start_policy(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        if self.warm_start_policy_name is None:
+            return
+        from algorithms.agents.baseline_policies import (
+            NormalNoBatteryPolicy,
+            NormalPolicy,
+            RBCBasicPolicy,
+            RBCCommunityPolicy,
+            RBCSmartLocalPolicy,
+            RBCSmartPolicy,
+            RandomPolicy,
+        )
+        from algorithms.agents.oracle_replay_policy import (
+            FixedServiceOracleReplayPolicy,
+        )
+        from algorithms.agents.rbc_agent import RuleBasedPolicy
+        from algorithms.agents.total_home_oracle_replay_policy import (
+            TotalHomeOracleReplayPolicy,
+        )
+        from algorithms.agents.total_oracle_replay_policy import (
+            TotalOracleReplayPolicy,
+        )
+
+        policy_classes = {
+            "RuleBasedPolicy": RuleBasedPolicy,
+            "RandomPolicy": RandomPolicy,
+            "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
+            "NormalPolicy": NormalPolicy,
+            "RBCBasicPolicy": RBCBasicPolicy,
+            "RBCCommunityPolicy": RBCCommunityPolicy,
+            "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
+            "RBCSmartPolicy": RBCSmartPolicy,
+            "FixedServiceOracleReplayPolicy": FixedServiceOracleReplayPolicy,
+            "TotalHomeOracleReplayPolicy": TotalHomeOracleReplayPolicy,
+            "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
+        }
+        policy_class = policy_classes.get(self.warm_start_policy_name)
+        if policy_class is None:
+            supported = ", ".join(sorted(policy_classes))
+            raise ValueError(
+                f"unsupported warm_start_policy_name "
+                f"{self.warm_start_policy_name!r}; supported: {supported}"
+            )
+        policy_config = deepcopy(self.config)
+        policy_config["algorithm"] = {
+            "name": self.warm_start_policy_name,
+            "hyperparameters": deepcopy(self.warm_start_policy_hyperparameters),
+        }
+        self._warm_start_policy = policy_class(policy_config)
+        self._warm_start_policy.attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+
+    def _predict_warm_start_policy_for_observations(
+        self,
+        observations: Optional[List[np.ndarray]],
+    ) -> Optional[List[List[float]]]:
+        if self._warm_start_policy is None or observations is None:
+            return None
+        predict_at_step = getattr(self._warm_start_policy, "predict_at_step", None)
+        if callable(predict_at_step):
+            actions = predict_at_step(
+                observations,
+                schedule_step=self.exploration_step,
+                deterministic=True,
+            )
+        else:
+            actions = self._warm_start_policy.predict(
+                observations,
+                deterministic=True,
+            )
+        if len(actions) != len(self._per_building):
+            raise ValueError(
+                "warm-start policy returned an action group count that does not "
+                "match the building count"
+            )
+        result: List[List[float]] = []
+        for index, (action, state) in enumerate(zip(actions, self._per_building)):
+            values = np.asarray(action, dtype=np.float32).reshape(-1)
+            if values.shape != (state.layout.n_ca,):
+                raise ValueError(
+                    f"warm-start action width for building {index} is "
+                    f"{values.size}; expected {state.layout.n_ca}"
+                )
+            if not np.isfinite(values).all():
+                raise ValueError("warm-start actions must be finite")
+            low = state.action_low.detach().cpu().numpy()
+            high = state.action_high.detach().cpu().numpy()
+            result.append(np.clip(values, low, high).tolist())
+        return result
+
+    def _attach_local_action_safety(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        self._local_action_safety_adapters = []
+        if not self._local_action_safety_enabled:
+            return
+        for state, names, actions in zip(
+            self._per_building, observation_names, action_names
+        ):
+            self._local_action_safety_adapters.append(
+                CityLearnLocalSafetyAdapter(
+                    observation_names=names,
+                    action_names=actions,
+                    action_low=state.action_low.detach().cpu().numpy(),
+                    action_high=state.action_high.detach().cpu().numpy(),
+                    metadata=metadata,
+                    config=self._local_action_safety_config,
+                )
+            )
+
+    def _apply_local_action_safety(
+        self,
+        index: int,
+        proposed_action: Sequence[float],
+    ) -> List[float]:
+        if not self._local_action_safety_enabled:
+            return [float(value) for value in proposed_action]
+        if self._latest_raw_observations is None:
+            raise RuntimeError(
+                "Transformer MATD3 local action safety requires raw observation "
+                "context before predict"
+            )
+        projection = self._local_action_safety_adapters[index].project(
+            self._latest_raw_observations[index],
+            proposed_action,
+        )
+        self._local_action_safety_projection_count += 1
+        self._local_action_safety_intervention_count += len(
+            projection.interventions
+        )
+        self._local_action_safety_infeasible_count += len(
+            projection.infeasible_reasons
+        )
+        for intervention in projection.interventions:
+            for reason in intervention.reason_codes:
+                label = str(reason.value)
+                self._local_action_safety_reason_counts[label] = (
+                    self._local_action_safety_reason_counts.get(label, 0) + 1
+                )
+        for reason in projection.infeasible_reasons:
+            label = str(reason.code.value)
+            self._local_action_safety_reason_counts[label] = (
+                self._local_action_safety_reason_counts.get(label, 0) + 1
+            )
+        return [float(value) for value in projection.executed_actions]
 
     def _build_state(
         self,
@@ -686,6 +1732,7 @@ class AgentTransformerMATD3(BaseAgent):
         critic_1_target.eval()
         critic_2_target.eval()
         actor_modules = nn.ModuleList((tokenizer, backbone, actor))
+        actor_parameters = list(actor_modules.parameters())
         return _PerBuildingState(
             building_id=layout.building_id,
             tokenizer=tokenizer,
@@ -698,14 +1745,17 @@ class AgentTransformerMATD3(BaseAgent):
             critic_2=critic_2,
             critic_1_target=critic_1_target,
             critic_2_target=critic_2_target,
-            actor_optimizer=torch.optim.Adam(
-                actor_modules.parameters(), lr=self.learning_rate
-            ),
+            actor_optimizer=torch.optim.Adam(actor_parameters, lr=self.learning_rate),
             critic_1_optimizer=torch.optim.Adam(
                 critic_1.parameters(), lr=self.learning_rate
             ),
             critic_2_optimizer=torch.optim.Adam(
                 critic_2.parameters(), lr=self.learning_rate
+            ),
+            bc_a_optimizer=(
+                torch.optim.Adam(actor_parameters, lr=self.learning_rate)
+                if self.bc_a_enabled
+                else None
             ),
             layout=layout,
             action_names=action_names,
@@ -903,6 +1953,60 @@ class AgentTransformerMATD3(BaseAgent):
             raise ValueError("noise_clip must be non-negative")
         if self.random_exploration_steps < 0:
             raise ValueError("random_exploration_steps must be non-negative")
+        if self.storage_exploration_noise_multiplier < 0.0:
+            raise ValueError("storage exploration multiplier must be non-negative")
+        if self.ev_negative_exploration_noise_multiplier < 0.0:
+            raise ValueError("EV exploration multiplier must be non-negative")
+        if not 0.0 <= self.deferrable_trigger_threshold <= 1.0:
+            raise ValueError("deferrable_trigger_threshold must be in [0, 1]")
+        if not 0.0 <= self.deferrable_on_probability <= 1.0:
+            raise ValueError("deferrable_on_probability must be in [0, 1]")
+        if self.residual_policy_enabled and self.warm_start_policy_name is None:
+            raise ValueError(
+                "residual_policy_enabled requires warm_start_policy_name"
+            )
+        if self.critic_action_input_mode != "final":
+            raise ValueError("critic_action_input_mode must be 'final'")
+        for label, value in (
+            ("residual_action_scale", self.residual_action_scale),
+            ("residual_action_final_scale", self.residual_action_final_scale),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{label} must be in [0, 1]")
+        if (
+            self.residual_action_scale_start_step < 0
+            or self.residual_action_scale_growth_steps < 0
+        ):
+            raise ValueError("residual schedule steps must be non-negative")
+        for value in (
+            self.residual_storage_action_scale_multiplier,
+            self.residual_ev_action_scale_multiplier,
+            self.residual_deferrable_action_scale_multiplier,
+            self.bc_a_ev_multiplier,
+            self.bc_a_storage_multiplier,
+            self.bc_a_deferrable_multiplier,
+        ):
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError("action type multipliers must be non-negative")
+        if self.bc_a_teacher not in {"warm_start", "replay_action", "external"}:
+            raise ValueError("BC-A teacher is invalid")
+        if (
+            self.bc_a_enabled
+            and self.bc_a_teacher == "warm_start"
+            and self.warm_start_policy_name is None
+        ):
+            raise ValueError("BC-A warm_start teacher requires warm_start_policy_name")
+        if not 0.0 <= self.bc_a_min_weight <= self.bc_a_weight:
+            raise ValueError("BC-A min_weight must be between zero and weight")
+        if min(
+            self.bc_a_decay_start_step,
+            self.bc_a_decay_steps,
+            self.bc_a_extra_updates,
+            self.bc_a_extra_update_start_step,
+            self.bc_a_extra_update_end_step,
+            self.bc_a_offline_pretrain_steps,
+        ) < 0:
+            raise ValueError("BC-A schedule values must be non-negative")
 
     def _validate_transition_vectors(self, transition: Dict[str, Any]) -> None:
         for index, state in enumerate(self._per_building):
@@ -922,6 +2026,22 @@ class AgentTransformerMATD3(BaseAgent):
                 raise ValueError(f"actions[{index}] must contain finite values")
         if not np.isfinite(transition["rewards"]).all():
             raise ValueError("rewards must contain finite values")
+
+    def _validate_action_vector_group(
+        self,
+        label: str,
+        values: Sequence[Any],
+    ) -> None:
+        self._validate_vector_count(label, values)
+        for index, (value, state) in enumerate(zip(values, self._per_building)):
+            vector = np.asarray(value, dtype=np.float32).reshape(-1)
+            if vector.shape != (state.layout.n_ca,):
+                raise ValueError(
+                    f"{label}[{index}] width is {vector.size}; "
+                    f"expected {state.layout.n_ca}"
+                )
+            if not np.isfinite(vector).all():
+                raise ValueError(f"{label}[{index}] must contain finite values")
 
     def _require_attached(self) -> None:
         if not self._per_building or self.replay_buffer is None:
@@ -946,6 +2066,51 @@ class AgentTransformerMATD3(BaseAgent):
         return tuple(
             np.asarray(value, dtype=np.float32).reshape(-1).copy()
             for value in values
+        )
+
+    @staticmethod
+    def _copied_optional_vectors(
+        values: Optional[Sequence[Any]],
+    ) -> Optional[List[np.ndarray]]:
+        if values is None:
+            return None
+        return [
+            np.asarray(value, dtype=np.float64).reshape(-1).copy()
+            for value in values
+        ]
+
+    @staticmethod
+    def _optional_string(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        parsed = str(value).strip()
+        return parsed or None
+
+    @staticmethod
+    def _is_storage_action_name(action_name: str) -> bool:
+        normalized = str(action_name or "").lower()
+        return "electrical_storage" in normalized or normalized in {
+            "battery",
+            "storage",
+        }
+
+    @staticmethod
+    def _is_ev_action_name(action_name: str) -> bool:
+        normalized = str(action_name or "").lower()
+        return (
+            "electric_vehicle" in normalized
+            or "charger" in normalized
+            or normalized.startswith("ev_")
+            or normalized in {"ev", "v2g"}
+        )
+
+    @staticmethod
+    def _is_deferrable_action_name(action_name: str) -> bool:
+        normalized = str(action_name or "")
+        return (
+            normalized.startswith("deferrable_appliance")
+            or normalized.endswith("::start")
+            or normalized == "start"
         )
 
     def _tensor(self, value: Any) -> torch.Tensor:
