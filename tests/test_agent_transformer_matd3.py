@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -263,3 +264,27 @@ def test_static_fixture_completes_multiple_finite_learning_steps() -> None:
     }
     assert required <= metrics.keys()
     assert all(np.isfinite(metrics[name]) for name in required)
+
+
+def test_learning_skips_actor_update_for_building_without_actions() -> None:
+    agent, obs_dim = _make_agent(buildings=2, batch_size=2)
+    state = agent._per_building[1]
+    state.layout = replace(
+        state.layout,
+        segments=tuple(
+            segment for segment in state.layout.segments if segment.family != "ca"
+        ),
+        n_ca=0,
+        ca_action_names=(),
+    )
+    state.action_names = ()
+    state.action_low = state.action_low[:0]
+    state.action_high = state.action_high[:0]
+    agent._layout_signature = agent._build_layout_signature(agent._layouts)
+
+    _transition(agent, obs_dim, 0)
+    _transition(agent, obs_dim, 2)
+
+    metrics = agent.consume_latest_training_metrics()
+    assert metrics["TransformerMATD3/actor_update_performed"] == 1.0
+    assert np.isfinite(metrics["TransformerMATD3/actor_loss_mean"])
