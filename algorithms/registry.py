@@ -81,6 +81,9 @@ _registry_trace("before AgentTransformerPPO agents import")
 from algorithms.transformer_ppo.agent import AgentTransformerPPO
 _registry_trace("after AgentTransformerPPO agents import")
 from algorithms.ti_marl.agent import TIMARL
+_registry_trace("before AgentTransformerMATD3 agents import")
+from algorithms.transformer_matd3.agent import AgentTransformerMATD3
+_registry_trace("after AgentTransformerMATD3 agents import")
 _registry_trace("before RuleBasedPolicy import")
 from algorithms.agents.rbc_agent import RuleBasedPolicy
 _registry_trace("after RuleBasedPolicy import")
@@ -121,6 +124,7 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
     "AgentTransformerPPO": AgentTransformerPPO,
     "TIMARL": TIMARL,
+    "AgentTransformerMATD3": AgentTransformerMATD3,
 }
 
 PLACEHOLDER_ALGORITHMS = {
@@ -281,8 +285,11 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
             raise ValueError(
                 f"Stage '{algorithm_name}' has count={count}; must be >= 1."
             )
-        if algorithm_name == "AgentTransformerPPO" and count != 1:
-            raise ValueError("AgentTransformerPPO pipeline stages require count=1")
+        if (
+            algorithm_name in {"AgentTransformerPPO", "AgentTransformerMATD3"}
+            and count != 1
+        ):
+            raise ValueError(f"{algorithm_name} pipeline stages require count=1")
 
         frozen = bool(stage_cfg.get("frozen", False))
 

@@ -26,3 +26,9 @@ def test_agent_transformer_ppo_supports_dynamic_topology() -> None:
     from algorithms.transformer_ppo.agent import AgentTransformerPPO
 
     assert AgentTransformerPPO.supports_dynamic_topology is True
+
+
+def test_agent_transformer_matd3_supports_dynamic_topology() -> None:
+    from algorithms.transformer_matd3.agent import AgentTransformerMATD3
+
+    assert AgentTransformerMATD3.supports_dynamic_topology is True
