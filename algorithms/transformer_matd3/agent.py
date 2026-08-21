@@ -1435,6 +1435,8 @@ class AgentTransformerMATD3(BaseAgent):
                         ).detach()
                     )
             for index, state in enumerate(self._per_building):
+                if state.layout.n_ca == 0:
+                    continue
                 joint_actions = list(detached_actions)
                 joint_actions[index] = self._policy_action(
                     index,
@@ -1532,7 +1534,7 @@ class AgentTransformerMATD3(BaseAgent):
                 torch.minimum(expected_1_flat, expected_2_flat).mean()
             ),
             f"{_METRIC_PREFIX}q_target_mean": float(target_flat.mean()),
-            f"{_METRIC_PREFIX}actor_update_performed": float(actor_update_due),
+            f"{_METRIC_PREFIX}actor_update_performed": float(bool(actor_losses)),
             f"{_METRIC_PREFIX}actor_loss_mean": self._mean_or_zero(actor_losses),
             f"{_METRIC_PREFIX}actor_policy_loss_mean": self._mean_or_zero(
                 actor_policy_losses

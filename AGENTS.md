@@ -83,12 +83,15 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
 | `MADDPG` | Multi-Agent DDPG with replay buffer, actor-critic networks |
 | `RuleBasedPolicy` | Heuristic controller for EV charging (uses raw observations) |
 | `AgentTransformerPPO` | Entity-interface Transformer PPO with dynamic-topology support and optional auxiliary behavior-cloning loss from separate deterministic `RBCSmartPolicy` demonstrations |
+| `AgentTransformerMATD3` | Entity-interface MATD3 with per-building Transformer actors, centralized twin critics, dynamic topology, residual control, and optional behavior cloning |
 | `SingleAgentRL` | Schema placeholder only |
 
-The Transformer PPO implementation lives in `algorithms/transformer_ppo/`.
+The Transformer implementations live in `algorithms/transformer_ppo/` and
+`algorithms/transformer_matd3/`.
 Use the [shared Transformer/entity contract](docs/transformer_entity_controller.md)
-for reusable invariants and the [TPPO specification](docs/transformer_ppo_spec.md)
-for PPO-specific lifecycle and deployment details.
+for reusable invariants. Use the [TPPO specification](docs/transformer_ppo_spec.md)
+and [Transformer MATD3 guide](docs/transformer_matd3.md) for algorithm-specific
+lifecycle and deployment details.
 
 ## Runtime Flow
 
