@@ -762,11 +762,19 @@ def test_action_mode_diagnostics_separate_actor_from_feasibility(tmp_path):
     agent._current_snapshot = snapshot
     agent._episode_raw_modes = Counter()
     agent._episode_final_modes = Counter()
+    agent._episode_raw_fraction_sums = Counter()
+    agent._episode_final_fraction_sums = Counter()
     metrics = agent._action_mode_diagnostics(raw_bundles, final_bundles)
     group_type = changed_group.group_type.lower()
 
     assert metrics[f"TI_MARL/raw_non_idle_rate_{group_type}"] == 0.0
     assert metrics[f"TI_MARL/final_non_idle_rate_{group_type}"] > 0.0
+    assert metrics[f"TI_MARL/raw_mean_abs_fraction_{group_type}"] == 0.0
+    assert metrics[f"TI_MARL/final_mean_abs_fraction_{group_type}"] > 0.0
+    assert (
+        metrics[f"TI_MARL/final_non_idle_mean_abs_fraction_{group_type}"]
+        == 1.0
+    )
 
 
 def test_behavior_cloning_mode_counts_follow_the_retained_reservoir(tmp_path):
@@ -835,7 +843,12 @@ def test_behavior_cloning_mode_counts_follow_the_retained_reservoir(tmp_path):
     assert warm_start.mode_counts[(target_group.group_type, "IDLE")] == (
         retained_group_type_count - 1
     )
-    metrics = warm_start.pretrain(actor, max_grad_norm=0.5)
+    progress = []
+    metrics = warm_start.pretrain(
+        actor,
+        max_grad_norm=0.5,
+        progress_callback=progress.append,
+    )
     assert metrics["bc_balanced_batches"] == 1.0
     assert metrics["bc_calibration_batches"] == 1.0
     assert metrics["bc_calibration_loss"] > 0.0
@@ -854,6 +867,115 @@ def test_behavior_cloning_mode_counts_follow_the_retained_reservoir(tmp_path):
         and key.endswith("_predicted_count")
     )
     assert predicted_count == float(retained_group_type_count)
+    assert [item["phase"] for item in progress] == [
+        "behavior_cloning_prepare",
+        "behavior_cloning_balanced",
+        "behavior_cloning_calibration",
+        "behavior_cloning_complete",
+    ]
+    assert progress[-1]["epoch_current"] == 2
+
+
+def test_behavior_cloning_reuses_prepared_typed_replay_inputs(tmp_path):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    requests = tuple((snapshot, agent_id) for agent_id in snapshot.agent_ids)
+
+    uncached_latents = actor.encoder.forward_many(requests, torch.device("cpu"))
+    actor.encoder.begin_replay_preparation_cache()
+    try:
+        first = actor.encoder._prepared_requests(requests)
+        second = actor.encoder._prepared_requests(requests)
+        first_tensor = first.tensor(
+            "feature_batch",
+            first.feature_batch,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
+        second_tensor = second.tensor(
+            "feature_batch",
+            second.feature_batch,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
+        assert first is second
+        assert first_tensor is second_tensor
+        cached_latents = actor.encoder.forward_many(requests, torch.device("cpu"))
+        assert torch.allclose(uncached_latents, cached_latents, atol=1.0e-7)
+    finally:
+        actor.encoder.end_replay_preparation_cache()
+
+    assert actor.encoder._replay_preparation_cache == {}
+
+
+def test_behavior_cloning_checkpoint_compresses_and_restores_demonstrations(
+    tmp_path,
+):
+    compiler, snapshot = compile_snapshot(tmp_path)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+
+    def warm_start():
+        return TypedBehaviorCloningWarmStart(
+            demonstration_episodes=2,
+            max_samples=4,
+            pretraining_epochs=1,
+            batch_size=1,
+            learning_rate=1.0e-4,
+            balance_action_modes=True,
+            mode_balance_exponent=0.5,
+            max_mode_weight=3.0,
+            seed=7,
+        )
+
+    source = warm_start()
+    source.record(snapshot, actor(snapshot, deterministic=True).bundles)
+
+    state = source.state_dict()
+
+    assert state["format"] == "ti_marl_behavior_cloning_v2"
+    assert state["demonstrations_codec"] == "pickle_zlib_v1"
+    assert isinstance(state["demonstrations_zlib"], bytes)
+    assert "demonstrations" not in state
+
+    restored = warm_start()
+    restored.load_state_dict(state)
+    assert len(restored._demonstrations) == 1
+    assert (
+        restored._demonstrations[0].snapshot.snapshot_hash
+        == snapshot.snapshot_hash
+    )
+    assert restored.mode_counts == source.mode_counts
+
+    legacy = {
+        key: value
+        for key, value in state.items()
+        if key
+        not in {
+            "demonstrations_codec",
+            "demonstrations_zlib",
+            "demonstrations_sha256",
+        }
+    }
+    legacy["format"] = "ti_marl_behavior_cloning_v1"
+    legacy["demonstrations"] = tuple(source._demonstrations)
+    restored_legacy = warm_start()
+    restored_legacy.load_state_dict(legacy)
+    assert len(restored_legacy._demonstrations) == 1
+
+    corrupt = dict(state)
+    corrupt["demonstrations_zlib"] = state["demonstrations_zlib"] + b"x"
+    with pytest.raises(ValueError, match="Corrupt compressed"):
+        warm_start().load_state_dict(corrupt)
 
 
 @pytest.mark.parametrize("critic_class", [LocalTypedCritic, CentralSetCritic])
@@ -1749,8 +1871,16 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
         )
     )
 
-    metrics = learner.update()
+    progress = []
+    metrics = learner.update(progress_callback=progress.append)
 
+    assert actor.encoder._replay_preparation_cache == {}
+    assert critic.encoder._replay_preparation_cache == {}
+    if group_critic is not None:
+        assert group_critic.encoder._replay_preparation_cache == {}
+    assert len(progress) == int(metrics["epochs"])
+    assert all(item["phase"] == "ti_mappo_epoch" for item in progress)
+    assert progress[-1]["update_current"] == 1
     for name in (
         "actor_loss",
         "critic_loss",
@@ -2166,7 +2296,20 @@ def test_ti_marl_typed_teacher_episode_never_enters_ppo_rollout(tmp_path):
     assert agent.behavior_cloning.pretraining_complete
     assert agent.behavior_cloning.training_samples == 1
     cloning_state = agent.behavior_cloning.state_dict()
-    assert cloning_state["demonstrations"] == ()
+    assert cloning_state["format"] == "ti_marl_behavior_cloning_v2"
+    restored_behavior_cloning = TypedBehaviorCloningWarmStart(
+        demonstration_episodes=1,
+        max_samples=8,
+        pretraining_epochs=1,
+        batch_size=2,
+        learning_rate=1.0e-4,
+        balance_action_modes=True,
+        mode_balance_exponent=0.5,
+        max_mode_weight=3.0,
+        seed=7,
+    )
+    restored_behavior_cloning.load_state_dict(cloning_state)
+    assert restored_behavior_cloning._demonstrations == []
     assert all(
         torch.equal(value, critic_before[key])
         for key, value in agent.critic.state_dict().items()
@@ -2351,6 +2494,36 @@ def agent_config(tmp_path):
     }
 
 
+def test_agent_can_require_declared_electrical_service(tmp_path):
+    config = agent_config(tmp_path / "valid")
+    config["algorithm"]["hyperparameters"][
+        "require_declared_electrical_service"
+    ] = True
+    TIMARL(config)
+
+    missing_dir = write_typed_interfaces(
+        tmp_path / "missing" / "interfaces",
+        ("Building_1",),
+    )
+    interface_path = missing_dir / "Building_1.yaml"
+    payload = yaml.safe_load(interface_path.read_text(encoding="utf-8"))
+    payload["constraints"] = {}
+    interface_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+    missing = agent_config(tmp_path / "missing-config")
+    missing["algorithm"]["hyperparameters"]["typed_interfaces_dir"] = str(
+        missing_dir
+    )
+    missing["algorithm"]["hyperparameters"][
+        "require_declared_electrical_service"
+    ] = True
+
+    with pytest.raises(ValueError, match="Building_1.*grid_import"):
+        TIMARL(missing)
+
+
 def ti_ppo_agent_config(tmp_path):
     config = agent_config(tmp_path)
     config["algorithm"]["hyperparameters"]["backbone"] = {"name": "ppo"}
@@ -2401,6 +2574,26 @@ def test_checkpoint_round_trip_accepts_a_different_compatible_composition(tmp_pa
     )
     actions = restored.predict([], deterministic=True)
     assert len(actions) == 1
+
+
+def test_checkpoint_rejects_silent_behavior_cloning_restart(tmp_path):
+    source = TIMARL(agent_config(tmp_path / "source"))
+    checkpoint = source.save_checkpoint(str(tmp_path / "checkpoint"), step=7)
+
+    restored_config = agent_config(tmp_path / "restored")
+    restored_config["algorithm"]["hyperparameters"]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+        "max_samples": 8,
+        "pretraining_epochs": 1,
+        "batch_size": 2,
+        "learning_rate": 1.0e-4,
+        "teacher": {"policy": "RBCSmartPolicy", "hyperparameters": {}},
+    }
+    restored = TIMARL(restored_config)
+
+    with pytest.raises(ValueError, match="no behavior-cloning state"):
+        restored.load_checkpoint(checkpoint)
 
 
 def test_checkpoint_can_reset_policy_anchor_to_resumed_actor(tmp_path):

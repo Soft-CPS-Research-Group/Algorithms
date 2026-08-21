@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -90,7 +91,16 @@ class CheckpointManager:
         preserved_path = checkpoint_path.with_name(
             f"episode_{int(episode) + 1:03d}_step_{int(step)}_{checkpoint_path.name}"
         )
-        shutil.copy2(checkpoint_path, preserved_path)
+        preserved_path.unlink(missing_ok=True)
+        try:
+            # Agent checkpoints that atomically replace their ``latest`` file
+            # can share the just-written inode with the preserved boundary.
+            # This avoids storing two copies of multi-GB rollout/BC states.
+            os.link(checkpoint_path, preserved_path)
+        except OSError:
+            # Cross-device filesystems and agents that return unusual paths
+            # still retain the portable copy behaviour.
+            shutil.copy2(checkpoint_path, preserved_path)
         logger.info("Preserved episode checkpoint: {}", preserved_path)
         return preserved_path
 

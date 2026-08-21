@@ -4,16 +4,49 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from copy import deepcopy
+from functools import wraps
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 import torch
+from loguru import logger
 from torch import Tensor, nn
 from torch.nn import functional as F
 
 from algorithms.ti_marl.learning.rollout import TypedRolloutBuffer
 from algorithms.ti_marl.policy.networks import TypedActor
+
+
+def _with_replay_preparation_cache(
+    method: Callable[..., Mapping[str, float]],
+) -> Callable[..., Mapping[str, float]]:
+    """Reuse typed structural inputs throughout one PPO optimization.
+
+    The same rollout snapshots are evaluated by the actor and critics for
+    every PPO epoch.  Their values stay immutable during an update, while the
+    neural parameters do not, so only the NumPy/index/device preparation is
+    cached.  Cleanup is unconditional, including failed updates.
+    """
+
+    @wraps(method)
+    def wrapped(self: "TIMAPPO", *args: Any, **kwargs: Any) -> Mapping[str, float]:
+        encoders = []
+        seen: set[int] = set()
+        for model in (self.actor, self.critic, self.group_critic):
+            encoder = getattr(model, "encoder", None)
+            if encoder is None or id(encoder) in seen:
+                continue
+            seen.add(id(encoder))
+            encoder.begin_replay_preparation_cache()
+            encoders.append(encoder)
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            for encoder in reversed(encoders):
+                encoder.end_replay_preparation_cache()
+
+    return wrapped
 
 
 class TIMAPPO:
@@ -149,7 +182,12 @@ class TIMAPPO:
             parameter.requires_grad_(False)
         self.policy_anchor_actor = anchor
 
-    def update(self) -> Mapping[str, float]:
+    @_with_replay_preparation_cache
+    def update(
+        self,
+        *,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> Mapping[str, float]:
         update_started = time.perf_counter()
         samples = self.rollout.advantages(gamma=self.gamma, gae_lambda=self.gae_lambda)
         if not samples:
@@ -250,7 +288,8 @@ class TIMAPPO:
                         )
                     )
                 )
-        for _epoch in range(self.ppo_epochs):
+        for epoch in range(self.ppo_epochs):
+            epoch_started = time.perf_counter()
             actor_losses: list[Tensor] = []
             policy_anchor_losses: list[Tensor] = []
             intervention_distillation_losses: list[Tensor] = []
@@ -627,6 +666,33 @@ class TIMAPPO:
                 target_tensor.detach().std(unbiased=False).cpu()
             )
             epochs_completed += 1
+            epoch_duration = time.perf_counter() - epoch_started
+            epoch_payload = {
+                "phase": "ti_mappo_epoch",
+                "update_current": self.update_count + 1,
+                "epoch_current": epoch + 1,
+                "epoch_total": self.ppo_epochs,
+                "actor_loss": float(actor_loss.detach().cpu()),
+                "critic_loss": float(critic_loss.detach().cpu()),
+                "approx_kl": float(approximate_kl.detach().cpu()),
+                "epoch_duration_seconds": epoch_duration,
+            }
+            logger.info(
+                "event=ti_mappo_epoch update={} epoch={}/{} actor_loss={:.8f} "
+                "critic_loss={:.8f} approx_kl={:.8f} duration_seconds={:.3f}",
+                self.update_count + 1,
+                epoch + 1,
+                self.ppo_epochs,
+                epoch_payload["actor_loss"],
+                epoch_payload["critic_loss"],
+                epoch_payload["approx_kl"],
+                epoch_duration,
+            )
+            if progress_callback is not None:
+                try:
+                    progress_callback(epoch_payload)
+                except Exception as exc:  # progress is best-effort telemetry
+                    logger.warning("Unable to report TI-MAPPO progress: {}", exc)
             if self.target_kl is not None and float(approximate_kl.detach().cpu()) > self.target_kl:
                 break
 

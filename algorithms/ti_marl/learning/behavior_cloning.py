@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections import Counter
+import hashlib
 import math
+import pickle
 from random import Random
-from typing import Any, Mapping, Sequence, Tuple
+import time
+from typing import Any, Callable, Mapping, Sequence, Tuple
+import zlib
 
 import torch
+from loguru import logger
 from torch import nn
 
 from algorithms.ti_marl.contracts.models import InterfaceSnapshot, LocalActionBundle
@@ -19,6 +24,12 @@ from algorithms.ti_marl.policy.networks import TypedActor
 class TypedDemonstration:
     snapshot: InterfaceSnapshot
     bundles: Tuple[LocalActionBundle, ...]
+
+
+@dataclass(frozen=True)
+class _PreparedDemonstration:
+    demonstration: TypedDemonstration
+    actions: Mapping[str, Mapping[str, Any]]
 
 
 class TypedBehaviorCloningWarmStart:
@@ -129,95 +140,157 @@ class TypedBehaviorCloningWarmStart:
                 counts[(group_type, decision.mode)] += 1
         return counts
 
-    def pretrain(self, actor: TypedActor, *, max_grad_norm: float) -> Mapping[str, float]:
+    def pretrain(
+        self,
+        actor: TypedActor,
+        *,
+        max_grad_norm: float,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> Mapping[str, float]:
         if self.pretraining_complete:
             return self.metrics()
         if not self._demonstrations:
             raise RuntimeError("TI-MARL behavior cloning has zero typed demonstrations")
         optimizer = torch.optim.Adam(actor.parameters(), lr=self.learning_rate)
         self.mode_weights = self._build_mode_weights()
+        training_batches = self._prepare_training_batches()
+        total_epochs = self.pretraining_epochs + self.calibration_epochs
         actor.train()
-        balanced_losses, balanced_batches = self._train_epochs(
-            actor,
-            optimizer,
-            epochs=self.pretraining_epochs,
-            mode_weights=self.mode_weights,
-            loss_kind=self.balanced_loss_kind,
-            max_grad_norm=max_grad_norm,
+        actor.encoder.begin_replay_preparation_cache()
+        self._report_progress(
+            progress_callback,
+            phase="behavior_cloning_prepare",
+            epoch_current=0,
+            epoch_total=total_epochs,
+            batches_complete=0,
+            batches_total=len(training_batches) * total_epochs,
+            loss=None,
         )
-        calibration_losses: list[float] = []
-        calibration_batches = 0
-        if self.calibration_epochs > 0:
-            for group in optimizer.param_groups:
-                group["lr"] = self.calibration_learning_rate
-            calibration_losses, calibration_batches = self._train_epochs(
+        try:
+            balanced_losses, balanced_batches = self._train_epochs(
                 actor,
                 optimizer,
-                epochs=self.calibration_epochs,
-                mode_weights={key: 1.0 for key in self.mode_counts},
-                loss_kind="weighted",
+                training_batches=training_batches,
+                epochs=self.pretraining_epochs,
+                epoch_offset=0,
+                total_epochs=total_epochs,
+                phase="behavior_cloning_balanced",
+                mode_weights=self.mode_weights,
+                loss_kind=self.balanced_loss_kind,
                 max_grad_norm=max_grad_norm,
+                progress_callback=progress_callback,
             )
-        losses = balanced_losses + calibration_losses
-        batches = balanced_batches + calibration_batches
-        if batches == 0:
-            raise RuntimeError("TI-MARL behavior cloning produced zero trainable batches")
-        self.latest_loss = float(sum(losses) / len(losses))
-        self.latest_batches = int(batches)
-        self.latest_balanced_loss = float(
-            sum(balanced_losses) / len(balanced_losses)
-        )
-        self.latest_balanced_batches = int(balanced_batches)
-        self.latest_calibration_loss = (
-            0.0
-            if not calibration_losses
-            else float(sum(calibration_losses) / len(calibration_losses))
-        )
-        self.latest_calibration_batches = int(calibration_batches)
-        self.training_samples = len(self._demonstrations)
-        self.mode_diagnostic_metrics = self._evaluate_mode_diagnostics(actor)
-        self.pretraining_complete = True
-        # The demonstrations have already been distilled into the actor.  PPO
-        # never revisits them, so retaining full typed snapshots would inflate
-        # every subsequent checkpoint without changing resume semantics.
+            calibration_losses: list[float] = []
+            calibration_batches = 0
+            if self.calibration_epochs > 0:
+                for group in optimizer.param_groups:
+                    group["lr"] = self.calibration_learning_rate
+                calibration_losses, calibration_batches = self._train_epochs(
+                    actor,
+                    optimizer,
+                    training_batches=training_batches,
+                    epochs=self.calibration_epochs,
+                    epoch_offset=self.pretraining_epochs,
+                    total_epochs=total_epochs,
+                    phase="behavior_cloning_calibration",
+                    mode_weights={key: 1.0 for key in self.mode_counts},
+                    loss_kind="weighted",
+                    max_grad_norm=max_grad_norm,
+                    progress_callback=progress_callback,
+                )
+            losses = balanced_losses + calibration_losses
+            batches = balanced_batches + calibration_batches
+            if batches == 0:
+                raise RuntimeError(
+                    "TI-MARL behavior cloning produced zero trainable batches"
+                )
+            self.latest_loss = float(sum(losses) / len(losses))
+            self.latest_batches = int(batches)
+            self.latest_balanced_loss = float(
+                sum(balanced_losses) / len(balanced_losses)
+            )
+            self.latest_balanced_batches = int(balanced_batches)
+            self.latest_calibration_loss = (
+                0.0
+                if not calibration_losses
+                else float(sum(calibration_losses) / len(calibration_losses))
+            )
+            self.latest_calibration_batches = int(calibration_batches)
+            self.training_samples = len(self._demonstrations)
+            self.mode_diagnostic_metrics = self._evaluate_mode_diagnostics(
+                actor,
+                training_batches=training_batches,
+            )
+            self.pretraining_complete = True
+            self._report_progress(
+                progress_callback,
+                phase="behavior_cloning_complete",
+                epoch_current=total_epochs,
+                epoch_total=total_epochs,
+                batches_complete=batches,
+                batches_total=len(training_batches) * total_epochs,
+                loss=self.latest_loss,
+            )
+        finally:
+            actor.encoder.end_replay_preparation_cache()
+
+        # The demonstrations have already been distilled into the actor. PPO
+        # never revisits them, so retaining typed snapshots would inflate every
+        # subsequent checkpoint without changing resume semantics.
         self._demonstrations.clear()
         return self.metrics()
+
+    def _prepare_training_batches(
+        self,
+    ) -> tuple[tuple[_PreparedDemonstration, ...], ...]:
+        indices = list(range(len(self._demonstrations)))
+        self._rng.shuffle(indices)
+        prepared: list[_PreparedDemonstration] = []
+        for index in indices:
+            demonstration = self._demonstrations[index]
+            actions = {
+                bundle.agent_id: {
+                    decision.group_id: decision
+                    for decision in bundle.decisions
+                }
+                for bundle in demonstration.bundles
+            }
+            prepared.append(_PreparedDemonstration(demonstration, actions))
+        return tuple(
+            tuple(prepared[start : start + self.batch_size])
+            for start in range(0, len(prepared), self.batch_size)
+        )
 
     def _train_epochs(
         self,
         actor: TypedActor,
         optimizer: torch.optim.Optimizer,
         *,
+        training_batches: Sequence[Sequence[_PreparedDemonstration]],
         epochs: int,
+        epoch_offset: int,
+        total_epochs: int,
+        phase: str,
         mode_weights: Mapping[tuple[str, str], float],
         loss_kind: str,
         max_grad_norm: float,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None,
     ) -> tuple[list[float], int]:
         losses: list[float] = []
         batches = 0
-        for _epoch in range(int(epochs)):
-            indices = list(range(len(self._demonstrations)))
-            self._rng.shuffle(indices)
-            for start in range(0, len(indices), self.batch_size):
-                demos = [
-                    self._demonstrations[index]
-                    for index in indices[start : start + self.batch_size]
-                ]
-                decisions = []
-                for demo in demos:
-                    decisions.append(
-                        {
-                            bundle.agent_id: {
-                                decision.group_id: decision
-                                for decision in bundle.decisions
-                            }
-                            for bundle in demo.bundles
-                        }
-                    )
+        total_batch_count = len(training_batches) * int(total_epochs)
+        for epoch in range(int(epochs)):
+            epoch_started = time.monotonic()
+            batch_indices = list(range(len(training_batches)))
+            self._rng.shuffle(batch_indices)
+            epoch_losses: list[float] = []
+            for batch_index in batch_indices:
+                prepared_batch = training_batches[batch_index]
+                demos = [item.demonstration for item in prepared_batch]
                 evaluation = actor.evaluate_actions_many(
                     tuple(
-                        (demo.snapshot, action_map)
-                        for demo, action_map in zip(demos, decisions)
+                        (item.demonstration.snapshot, item.actions)
+                        for item in prepared_batch
                     )
                 )
                 sample_losses: list[tuple[str, str, torch.Tensor]] = []
@@ -258,9 +331,52 @@ class TypedBehaviorCloningWarmStart:
                         "Non-finite TI-MARL behavior-cloning gradient"
                     )
                 optimizer.step()
-                losses.append(float(loss.detach().cpu()))
+                loss_value = float(loss.detach().cpu())
+                losses.append(loss_value)
+                epoch_losses.append(loss_value)
                 batches += 1
+            if not epoch_losses:
+                raise RuntimeError(
+                    "TI-MARL behavior cloning produced no trainable batch in "
+                    f"epoch {int(epoch_offset) + epoch + 1}"
+                )
+            absolute_epoch = int(epoch_offset) + epoch + 1
+            epoch_loss = float(sum(epoch_losses) / len(epoch_losses))
+            epoch_duration = time.monotonic() - epoch_started
+            logger.info(
+                "event=ti_marl_bc_epoch phase={} epoch={}/{} batches={} "
+                "loss={:.8f} duration_seconds={:.3f}",
+                phase,
+                absolute_epoch,
+                total_epochs,
+                len(epoch_losses),
+                epoch_loss,
+                epoch_duration,
+            )
+            self._report_progress(
+                progress_callback,
+                phase=phase,
+                epoch_current=absolute_epoch,
+                epoch_total=total_epochs,
+                batches_complete=(int(epoch_offset) + epoch + 1)
+                * len(training_batches),
+                batches_total=total_batch_count,
+                loss=epoch_loss,
+                epoch_duration_seconds=epoch_duration,
+            )
         return losses, batches
+
+    @staticmethod
+    def _report_progress(
+        callback: Callable[[Mapping[str, Any]], None] | None,
+        **payload: Any,
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            callback(payload)
+        except Exception as exc:  # progress is best-effort telemetry
+            logger.warning("Unable to report TI-MARL BC progress: {}", exc)
 
     @staticmethod
     def _reduce_losses(
@@ -326,7 +442,12 @@ class TypedBehaviorCloningWarmStart:
         metrics.update(self.mode_diagnostic_metrics)
         return metrics
 
-    def _evaluate_mode_diagnostics(self, actor: TypedActor) -> dict[str, float]:
+    def _evaluate_mode_diagnostics(
+        self,
+        actor: TypedActor,
+        *,
+        training_batches: Sequence[Sequence[_PreparedDemonstration]],
+    ) -> dict[str, float]:
         totals: Counter[tuple[str, str]] = Counter()
         correct: Counter[tuple[str, str]] = Counter()
         predicted: Counter[tuple[str, str]] = Counter()
@@ -336,22 +457,12 @@ class TypedBehaviorCloningWarmStart:
         fraction_count: Counter[tuple[str, str]] = Counter()
         actor.eval()
         with torch.no_grad():
-            for start in range(0, len(self._demonstrations), self.batch_size):
-                demos = self._demonstrations[start : start + self.batch_size]
-                decisions = [
-                    {
-                        bundle.agent_id: {
-                            decision.group_id: decision
-                            for decision in bundle.decisions
-                        }
-                        for bundle in demo.bundles
-                    }
-                    for demo in demos
-                ]
+            for prepared_batch in training_batches:
+                demos = [item.demonstration for item in prepared_batch]
                 evaluation = actor.evaluate_actions_many(
                     tuple(
-                        (demo.snapshot, action_map)
-                        for demo, action_map in zip(demos, decisions)
+                        (item.demonstration.snapshot, item.actions)
+                        for item in prepared_batch
                     )
                 )
                 for step_index, demo in enumerate(demos):
@@ -446,9 +557,21 @@ class TypedBehaviorCloningWarmStart:
         return result
 
     def state_dict(self) -> Mapping[str, Any]:
+        serialized_demonstrations = pickle.dumps(
+            tuple(self._demonstrations),
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+        compressed_demonstrations = zlib.compress(
+            serialized_demonstrations,
+            level=1,
+        )
         return {
-            "format": "ti_marl_behavior_cloning_v1",
-            "demonstrations": tuple(self._demonstrations),
+            "format": "ti_marl_behavior_cloning_v2",
+            "demonstrations_codec": "pickle_zlib_v1",
+            "demonstrations_zlib": compressed_demonstrations,
+            "demonstrations_sha256": hashlib.sha256(
+                compressed_demonstrations
+            ).hexdigest(),
             "seen_samples": self.seen_samples,
             "training_samples": self.training_samples,
             "mode_counts": dict(self.mode_counts),
@@ -466,7 +589,11 @@ class TypedBehaviorCloningWarmStart:
         }
 
     def load_state_dict(self, payload: Mapping[str, Any]) -> None:
-        if payload.get("format") != "ti_marl_behavior_cloning_v1":
+        checkpoint_format = payload.get("format")
+        if checkpoint_format not in {
+            "ti_marl_behavior_cloning_v1",
+            "ti_marl_behavior_cloning_v2",
+        }:
             raise ValueError("Unsupported TI-MARL behavior-cloning checkpoint format")
         checkpoint_loss_kind = str(
             payload.get("balanced_loss_kind", "weighted")
@@ -475,7 +602,33 @@ class TypedBehaviorCloningWarmStart:
             raise ValueError(
                 "TI-MARL BC balanced_loss_kind differs from the checkpoint"
             )
-        demonstrations = list(payload.get("demonstrations", ()))
+        if checkpoint_format == "ti_marl_behavior_cloning_v2":
+            if payload.get("demonstrations_codec") != "pickle_zlib_v1":
+                raise ValueError(
+                    "Unsupported TI-MARL behavior-cloning demonstration codec"
+                )
+            compressed = payload.get("demonstrations_zlib", b"")
+            if not isinstance(compressed, bytes):
+                raise ValueError("Invalid compressed TI-MARL demonstrations")
+            expected_hash = str(payload.get("demonstrations_sha256", ""))
+            if hashlib.sha256(compressed).hexdigest() != expected_hash:
+                raise ValueError("Corrupt compressed TI-MARL demonstrations")
+            try:
+                demonstrations = list(
+                    pickle.loads(zlib.decompress(compressed))
+                )
+            except (
+                EOFError,
+                pickle.UnpicklingError,
+                TypeError,
+                ValueError,
+                zlib.error,
+            ) as exc:
+                raise ValueError(
+                    "Unable to decode compressed TI-MARL demonstrations"
+                ) from exc
+        else:
+            demonstrations = list(payload.get("demonstrations", ()))
         if len(demonstrations) > self.max_samples:
             raise ValueError("TI-MARL BC checkpoint exceeds configured sample capacity")
         self._demonstrations = demonstrations

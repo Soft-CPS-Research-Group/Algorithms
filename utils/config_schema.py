@@ -1290,6 +1290,7 @@ class TIMARLHyperparameters(BaseModel):
     simulator_bindings_path: Optional[str] = Field(default=None, min_length=1)
     require_cuda: bool = False
     allow_checkpoint_compiler_migration: bool = False
+    require_declared_electrical_service: bool = False
     backbone: TIMARLBackboneConfig = TIMARLBackboneConfig()
     actor: TIMARLActorConfig = TIMARLActorConfig()
     critic: TIMARLCriticConfig = TIMARLCriticConfig()
@@ -1631,6 +1632,21 @@ class ProjectConfig(BaseModel):
                         raise ValueError(
                             "TIMARL protocol training must preserve every episode-end checkpoint"
                         )
+                    for stage in self.pipeline:
+                        if not isinstance(stage, TIMARLStageConfig):
+                            continue
+                        behavior_cloning = stage.hyperparameters.behavior_cloning
+                        if (
+                            behavior_cloning is not None
+                            and behavior_cloning.enabled
+                            and self.simulator.episodes
+                            <= behavior_cloning.demonstration_episodes
+                        ):
+                            raise ValueError(
+                                "TIMARL protocol training requires at least one "
+                                "post-BC learning episode; simulator.episodes must "
+                                "exceed behavior_cloning.demonstration_episodes"
+                            )
 
         return self
 

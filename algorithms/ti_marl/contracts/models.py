@@ -288,10 +288,44 @@ class InterfaceSnapshot:
         return content_hash(self)
 
     def groups_for(self, agent_id: str) -> Tuple[ActionGroupInstance, ...]:
-        return tuple(group for group in self.action_groups if group.owner_agent_id == agent_id)
+        return self._groups_by_agent.get(agent_id, ())
 
     def parts_for(self, agent_id: str) -> Tuple[ObservationPart, ...]:
-        return tuple(part for part in self.observation_parts if part.owner_agent_id == agent_id)
+        return self._parts_by_agent.get(agent_id, ())
+
+    @cached_property
+    def _groups_by_agent(self) -> Mapping[str, Tuple[ActionGroupInstance, ...]]:
+        grouped: dict[str, list[ActionGroupInstance]] = {
+            agent_id: [] for agent_id in self.agent_ids
+        }
+        for group in self.action_groups:
+            grouped.setdefault(group.owner_agent_id, []).append(group)
+        return {
+            agent_id: tuple(groups)
+            for agent_id, groups in grouped.items()
+        }
+
+    @cached_property
+    def _parts_by_agent(self) -> Mapping[str, Tuple[ObservationPart, ...]]:
+        grouped: dict[str, list[ObservationPart]] = {
+            agent_id: [] for agent_id in self.agent_ids
+        }
+        for part in self.observation_parts:
+            grouped.setdefault(part.owner_agent_id, []).append(part)
+        return {
+            agent_id: tuple(parts)
+            for agent_id, parts in grouped.items()
+        }
+
+    @cached_property
+    def _metadata_by_agent(self) -> Mapping[str, Tuple[str, str]]:
+        return {
+            agent_id: (role, agent_type)
+            for agent_id, role, agent_type in self.agent_metadata
+        }
+
+    def metadata_for(self, agent_id: str) -> Tuple[str, str]:
+        return self._metadata_by_agent.get(agent_id, ("consumer", "other"))
 
 
 @dataclass(frozen=True)

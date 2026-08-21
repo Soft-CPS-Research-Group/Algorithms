@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 import hashlib
 import re
@@ -46,6 +46,49 @@ class ActorReplayEvaluation:
     predicted_fraction_by_group_step: Tuple[
         Mapping[str, Mapping[str, Tensor]], ...
     ]
+
+
+@dataclass
+class _PreparedSnapshotRequests:
+    """Immutable tensor inputs shared by repeated actor replay evaluations.
+
+    TI-MARL BC revisits the same typed snapshots for many epochs.  Preparing
+    their NumPy features and structural indices on every visit used to make
+    warm-start training CPU-bound even when the actor lived on a GPU.
+    """
+
+    parts_by_request: tuple[tuple[ObservationPart, ...], ...]
+    feature_batch: np.ndarray
+    semantic_indices: np.ndarray
+    unit_indices: np.ndarray
+    use_indices: np.ndarray
+    scope_indices: np.ndarray
+    observation_channels: np.ndarray
+    channel_types: np.ndarray
+    channel_sensors: np.ndarray
+    sensor_types: np.ndarray
+    sensor_requests: np.ndarray
+    roles: np.ndarray
+    agent_types: np.ndarray
+    channel_count: int
+    sensor_count: int
+    request_count: int
+    tensors: dict[tuple[str, str], Tensor] = field(default_factory=dict)
+
+    def tensor(
+        self,
+        name: str,
+        values: np.ndarray,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        key = (name, str(device))
+        cached = self.tensors.get(key)
+        if cached is None:
+            cached = torch.as_tensor(values, dtype=dtype, device=device)
+            self.tensors[key] = cached
+        return cached
 
 
 class RelationalMessageLayer(nn.Module):
@@ -158,6 +201,22 @@ class TypedSnapshotEncoder(nn.Module):
         self.pool_query = nn.Parameter(torch.zeros(d_model))
         nn.init.normal_(self.pool_query, std=0.02)
         self.pool_projection = nn.Sequential(nn.Linear(d_model, d_model), nn.Tanh())
+        self._replay_preparation_cache_enabled = False
+        self._replay_preparation_cache: dict[
+            tuple[tuple[int, str], ...], _PreparedSnapshotRequests
+        ] = {}
+
+    def begin_replay_preparation_cache(self) -> None:
+        """Cache constant typed inputs while a fixed replay dataset is reused."""
+
+        self._replay_preparation_cache.clear()
+        self._replay_preparation_cache_enabled = True
+
+    def end_replay_preparation_cache(self) -> None:
+        """Release cached CPU/GPU inputs after replay/BC training."""
+
+        self._replay_preparation_cache_enabled = False
+        self._replay_preparation_cache.clear()
 
     def forward(self, snapshot: InterfaceSnapshot, agent_id: str, device: torch.device) -> Tensor:
         return self.forward_many(((snapshot, agent_id),), device)[0]
@@ -185,115 +244,75 @@ class TypedSnapshotEncoder(nn.Module):
                 torch.empty((0, self.d_model), device=device),
             )
 
-        # Missing/invalid samples remain explicit tokens: health and validity
-        # are policy inputs, while the value itself is zero-filled by the TIC.
-        parts_by_request = [
-            tuple(part for part in snapshot.parts_for(agent_id) if part.policy_input)
-            for snapshot, agent_id in requests
-        ]
-        all_parts = [part for parts in parts_by_request for part in parts]
-        if not all_parts:
+        prepared = self._prepared_requests(requests)
+        if prepared.feature_batch.shape[0] == 0:
             return (
                 torch.zeros(
                     (request_count, self.d_model),
                     dtype=torch.float32,
                     device=device,
                 ),
-                tuple(parts_by_request),
+                prepared.parts_by_request,
                 torch.empty((0, self.d_model), dtype=torch.float32, device=device),
             )
 
-        encoded_batch = self.encode_observation_parts(all_parts, device)
-
-        channel_lookup: Dict[tuple[int, str, str], int] = {}
-        channel_request_indices: list[int] = []
-        channel_sensor_ids: list[str] = []
-        channel_sensor_types: list[str] = []
-        channel_types: list[str] = []
-        observation_channel_indices: list[int] = []
-        for request_index, parts in enumerate(parts_by_request):
-            for part in parts:
-                key = (request_index, part.sensor_id, part.channel_id)
-                channel_index = channel_lookup.get(key)
-                if channel_index is None:
-                    channel_index = len(channel_lookup)
-                    channel_lookup[key] = channel_index
-                    channel_request_indices.append(request_index)
-                    channel_sensor_ids.append(part.sensor_id)
-                    channel_sensor_types.append(part.sensor_type)
-                    channel_types.append(part.channel_id)
-                elif (
-                    channel_sensor_types[channel_index] != part.sensor_type
-                    or channel_types[channel_index] != part.channel_id
-                ):
-                    raise ValueError(
-                        "TI-MARL channel contains inconsistent sensor/channel types"
-                    )
-                observation_channel_indices.append(channel_index)
-        observation_channels = torch.tensor(
-            observation_channel_indices, dtype=torch.long, device=device
+        encoded_batch = self._encode_prepared_observations(prepared, device)
+        observation_channels = prepared.tensor(
+            "observation_channels",
+            prepared.observation_channels,
+            dtype=torch.long,
+            device=device,
         )
         encoded_observations = self.channel_encoder.forward_grouped(
             encoded_batch,
             observation_channels,
-            len(channel_lookup),
+            prepared.channel_count,
         )
         channel_latents = _group_mean(
             encoded_observations,
             observation_channels,
-            len(channel_lookup),
+            prepared.channel_count,
         )
-        channel_type_indices = self._indices_from_values(
-            channel_types,
-            self.channel_index,
-            "channel type",
-            device,
+        channel_type_indices = prepared.tensor(
+            "channel_types",
+            prepared.channel_types,
+            dtype=torch.long,
+            device=device,
         )
         channel_latents = channel_latents + self.channel_type_embedding(
             channel_type_indices
         )
 
-        sensor_lookup: Dict[tuple[int, str], int] = {}
-        sensor_request_indices: list[int] = []
-        sensor_types: list[str] = []
-        channel_sensor_indices: list[int] = []
-        for request_index, sensor_id, sensor_type in zip(
-            channel_request_indices, channel_sensor_ids, channel_sensor_types
-        ):
-            key = (request_index, sensor_id)
-            sensor_index = sensor_lookup.get(key)
-            if sensor_index is None:
-                sensor_index = len(sensor_lookup)
-                sensor_lookup[key] = sensor_index
-                sensor_request_indices.append(request_index)
-                sensor_types.append(sensor_type)
-            elif sensor_types[sensor_index] != sensor_type:
-                raise ValueError("TI-MARL sensor contains inconsistent sensor types")
-            channel_sensor_indices.append(sensor_index)
-        channel_sensors = torch.tensor(
-            channel_sensor_indices, dtype=torch.long, device=device
+        channel_sensors = prepared.tensor(
+            "channel_sensors",
+            prepared.channel_sensors,
+            dtype=torch.long,
+            device=device,
         )
         encoded_channels = self.sensor_encoder.forward_grouped(
             channel_latents,
             channel_sensors,
-            len(sensor_lookup),
+            prepared.sensor_count,
         )
         sensor_latents = _group_mean(
             encoded_channels,
             channel_sensors,
-            len(sensor_lookup),
+            prepared.sensor_count,
         )
-        sensor_type_indices = self._indices_from_values(
-            sensor_types,
-            self.sensor_index,
-            "sensor type",
-            device,
+        sensor_type_indices = prepared.tensor(
+            "sensor_types",
+            prepared.sensor_types,
+            dtype=torch.long,
+            device=device,
         )
         sensor_latents = sensor_latents + self.sensor_type_embedding(
             sensor_type_indices
         )
-        sensor_requests = torch.tensor(
-            sensor_request_indices, dtype=torch.long, device=device
+        sensor_requests = prepared.tensor(
+            "sensor_requests",
+            prepared.sensor_requests,
+            dtype=torch.long,
+            device=device,
         )
         for layer in self.layers:
             sensor_latents = layer.forward_grouped(
@@ -328,29 +347,20 @@ class TypedSnapshotEncoder(nn.Module):
             device=device,
         ).index_add(0, sensor_requests, weights.unsqueeze(-1) * sensor_latents)
 
-        roles: list[int] = []
-        agent_types: list[int] = []
-        for snapshot, agent_id in requests:
-            metadata = {
-                row[0]: (row[1], row[2]) for row in snapshot.agent_metadata
-            }.get(agent_id, ("consumer", "other"))
-            roles.append(
-                {"consumer": 0, "producer": 1, "prosumer": 2}.get(metadata[0], 0)
-            )
-            agent_types.append(
-                {
-                    "residential": 0,
-                    "office": 1,
-                    "commercial": 2,
-                    "industrial": 3,
-                    "other": 4,
-                }.get(metadata[1], 4)
-            )
         pooled = (
             pooled
-            + self.role_embedding(torch.tensor(roles, dtype=torch.long, device=device))
+            + self.role_embedding(
+                prepared.tensor(
+                    "roles", prepared.roles, dtype=torch.long, device=device
+                )
+            )
             + self.agent_type_embedding(
-                torch.tensor(agent_types, dtype=torch.long, device=device)
+                prepared.tensor(
+                    "agent_types",
+                    prepared.agent_types,
+                    dtype=torch.long,
+                    device=device,
+                )
             )
         )
         encoded = self.pool_projection(pooled)
@@ -360,9 +370,195 @@ class TypedSnapshotEncoder(nn.Module):
         active[sensor_requests] = True
         return (
             torch.where(active.unsqueeze(-1), encoded, torch.zeros_like(encoded)),
-            tuple(parts_by_request),
+            prepared.parts_by_request,
             encoded_batch,
         )
+
+    def _prepared_requests(
+        self,
+        requests: Sequence[tuple[InterfaceSnapshot, str]],
+    ) -> _PreparedSnapshotRequests:
+        cache_key = tuple((id(snapshot), agent_id) for snapshot, agent_id in requests)
+        if self._replay_preparation_cache_enabled:
+            cached = self._replay_preparation_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        parts_by_request = tuple(
+            tuple(part for part in snapshot.parts_for(agent_id) if part.policy_input)
+            for snapshot, agent_id in requests
+        )
+        all_parts = tuple(part for parts in parts_by_request for part in parts)
+        if all_parts:
+            feature_batch = np.stack(
+                [self._feature_array(part) for part in all_parts]
+            ).astype(np.float32, copy=False)
+        else:
+            feature_batch = np.empty(
+                (0, self.observation_encoder[0].in_features), dtype=np.float32
+            )
+
+        semantic_indices = self._index_array(
+            [part.semantic_type for part in all_parts],
+            self.semantic_index,
+            "semantic type",
+        )
+        unit_indices = self._index_array(
+            [part.unit for part in all_parts], self.unit_index, "unit"
+        )
+        use_indices = self._index_array(
+            [part.use for part in all_parts], self.use_index, "observation use"
+        )
+        scope_indices = self._index_array(
+            [part.scope for part in all_parts], self.scope_index, "scope"
+        )
+
+        channel_lookup: Dict[tuple[int, str, str], int] = {}
+        channel_request_indices: list[int] = []
+        channel_sensor_ids: list[str] = []
+        channel_sensor_types: list[str] = []
+        channel_types: list[str] = []
+        observation_channel_indices: list[int] = []
+        for request_index, parts in enumerate(parts_by_request):
+            for part in parts:
+                key = (request_index, part.sensor_id, part.channel_id)
+                channel_index = channel_lookup.get(key)
+                if channel_index is None:
+                    channel_index = len(channel_lookup)
+                    channel_lookup[key] = channel_index
+                    channel_request_indices.append(request_index)
+                    channel_sensor_ids.append(part.sensor_id)
+                    channel_sensor_types.append(part.sensor_type)
+                    channel_types.append(part.channel_id)
+                elif (
+                    channel_sensor_types[channel_index] != part.sensor_type
+                    or channel_types[channel_index] != part.channel_id
+                ):
+                    raise ValueError(
+                        "TI-MARL channel contains inconsistent sensor/channel types"
+                    )
+                observation_channel_indices.append(channel_index)
+
+        sensor_lookup: Dict[tuple[int, str], int] = {}
+        sensor_request_indices: list[int] = []
+        sensor_types: list[str] = []
+        channel_sensor_indices: list[int] = []
+        for request_index, sensor_id, sensor_type in zip(
+            channel_request_indices, channel_sensor_ids, channel_sensor_types
+        ):
+            key = (request_index, sensor_id)
+            sensor_index = sensor_lookup.get(key)
+            if sensor_index is None:
+                sensor_index = len(sensor_lookup)
+                sensor_lookup[key] = sensor_index
+                sensor_request_indices.append(request_index)
+                sensor_types.append(sensor_type)
+            elif sensor_types[sensor_index] != sensor_type:
+                raise ValueError("TI-MARL sensor contains inconsistent sensor types")
+            channel_sensor_indices.append(sensor_index)
+
+        roles: list[int] = []
+        agent_types: list[int] = []
+        for snapshot, agent_id in requests:
+            role, agent_type = snapshot.metadata_for(agent_id)
+            roles.append(
+                {"consumer": 0, "producer": 1, "prosumer": 2}.get(role, 0)
+            )
+            agent_types.append(
+                {
+                    "residential": 0,
+                    "office": 1,
+                    "commercial": 2,
+                    "industrial": 3,
+                    "other": 4,
+                }.get(agent_type, 4)
+            )
+
+        prepared = _PreparedSnapshotRequests(
+            parts_by_request=parts_by_request,
+            feature_batch=feature_batch,
+            semantic_indices=semantic_indices,
+            unit_indices=unit_indices,
+            use_indices=use_indices,
+            scope_indices=scope_indices,
+            observation_channels=np.asarray(
+                observation_channel_indices, dtype=np.int64
+            ),
+            channel_types=self._index_array(
+                channel_types, self.channel_index, "channel type"
+            ),
+            channel_sensors=np.asarray(channel_sensor_indices, dtype=np.int64),
+            sensor_types=self._index_array(
+                sensor_types, self.sensor_index, "sensor type"
+            ),
+            sensor_requests=np.asarray(sensor_request_indices, dtype=np.int64),
+            roles=np.asarray(roles, dtype=np.int64),
+            agent_types=np.asarray(agent_types, dtype=np.int64),
+            channel_count=len(channel_lookup),
+            sensor_count=len(sensor_lookup),
+            request_count=len(requests),
+        )
+        if self._replay_preparation_cache_enabled:
+            self._replay_preparation_cache[cache_key] = prepared
+        return prepared
+
+    def _encode_prepared_observations(
+        self,
+        prepared: _PreparedSnapshotRequests,
+        device: torch.device,
+    ) -> Tensor:
+        feature_batch = prepared.tensor(
+            "feature_batch",
+            prepared.feature_batch,
+            dtype=torch.float32,
+            device=device,
+        )
+        return (
+            self.observation_encoder(feature_batch)
+            + self.semantic_embedding(
+                prepared.tensor(
+                    "semantic_indices",
+                    prepared.semantic_indices,
+                    dtype=torch.long,
+                    device=device,
+                )
+            )
+            + self.unit_embedding(
+                prepared.tensor(
+                    "unit_indices",
+                    prepared.unit_indices,
+                    dtype=torch.long,
+                    device=device,
+                )
+            )
+            + self.use_embedding(
+                prepared.tensor(
+                    "use_indices",
+                    prepared.use_indices,
+                    dtype=torch.long,
+                    device=device,
+                )
+            )
+            + self.scope_embedding(
+                prepared.tensor(
+                    "scope_indices",
+                    prepared.scope_indices,
+                    dtype=torch.long,
+                    device=device,
+                )
+            )
+        )
+
+    @staticmethod
+    def _index_array(
+        values: Sequence[str],
+        lookup: Mapping[str, int],
+        label: str,
+    ) -> np.ndarray:
+        unknown = sorted({str(value) for value in values if str(value) not in lookup})
+        if unknown:
+            raise ValueError(f"Unknown TI-MARL {label}(s): {unknown}")
+        return np.asarray([lookup[str(value)] for value in values], dtype=np.int64)
 
     def encode_observation_parts(
         self,
@@ -851,14 +1047,12 @@ class TypedActor(nn.Module):
             Dict[str, Dict[str, Tensor]]
         ] = [{} for _item in items]
         if group_entries:
-            groups_by_request = tuple(
-                tuple(
-                    entry[1]
-                    for entry in group_entries
-                    if entry[0] == request_index
-                )
-                for request_index in range(len(requests))
-            )
+            grouped_entries: list[list[ActionGroupInstance]] = [
+                [] for _request in requests
+            ]
+            for request_index, group, _expected in group_entries:
+                grouped_entries[request_index].append(group)
+            groups_by_request = tuple(tuple(groups) for groups in grouped_entries)
             flat_contexts = self._group_contexts_many(
                 requests,
                 groups_by_request,

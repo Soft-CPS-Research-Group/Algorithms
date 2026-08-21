@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import random
 import time
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import numpy as np
 import torch
@@ -92,6 +92,8 @@ class TIMARL(BaseAgent):
             interface_polling=bool(hyper.get("interface_polling", False)),
             simulator_bindings_path=hyper.get("simulator_bindings_path"),
         )
+        if bool(hyper.get("require_declared_electrical_service", False)):
+            self._require_declared_electrical_service()
         self.allow_checkpoint_compiler_migration = bool(
             hyper.get("allow_checkpoint_compiler_migration", False)
         )
@@ -195,6 +197,9 @@ class TIMARL(BaseAgent):
         self.behavior_cloning = None
         self._bc_teacher = None
         self._bc_teacher_spec: Mapping[str, Any] = {}
+        self._training_progress_callback: Optional[
+            Callable[[Mapping[str, Any]], None]
+        ] = None
         if isinstance(bc_cfg, Mapping) and bool(bc_cfg.get("enabled", True)):
             teacher = dict(bc_cfg.get("teacher") or {})
             if str(teacher.get("policy", "RBCSmartPolicy")) != "RBCSmartPolicy":
@@ -272,8 +277,65 @@ class TIMARL(BaseAgent):
         self._latest_raw_observations: Optional[List[np.ndarray]] = None
         self._episode_raw_modes: Counter[tuple[str, str]] = Counter()
         self._episode_final_modes: Counter[tuple[str, str]] = Counter()
+        self._episode_raw_fraction_sums: Counter[tuple[str, str]] = Counter()
+        self._episode_final_fraction_sums: Counter[tuple[str, str]] = Counter()
         self._current_episode = 0
         self._current_episode_is_training = False
+
+    def _require_declared_electrical_service(self) -> None:
+        """Fail before training when controllable members lack grid contracts.
+
+        The deployment-safe default for unknown headroom is zero.  That is the
+        correct runtime fallback, but it can make a long training campaign look
+        healthy while silently suppressing every flexible action.  Campaigns
+        that expect active control can opt into this structural preflight.
+        """
+
+        missing: dict[str, tuple[str, ...]] = {}
+        for agent_id in self.compiler.interface_registry.agent_ids:
+            interface = self.compiler.interface_registry.for_agent(agent_id)
+            modes = {
+                action.mode
+                for actuator in interface.actuators
+                for action in actuator.actions
+            }
+            required = set()
+            if any(
+                mode.startswith("CHARGE_") or mode == "START"
+                for mode in modes
+            ):
+                required.add("grid_import")
+            absent = tuple(
+                sorted(
+                    key
+                    for key in required
+                    if not self._has_positive_constraint_limit(
+                        interface.constraints.get(key)
+                    )
+                )
+            )
+            if absent:
+                missing[agent_id] = absent
+        if missing:
+            rendered = ", ".join(
+                f"{agent_id} ({'/'.join(keys)})"
+                for agent_id, keys in sorted(missing.items())
+            )
+            raise ValueError(
+                "TI-MARL requires explicit electrical-service constraints for "
+                f"this campaign; missing: {rendered}"
+            )
+
+    @staticmethod
+    def _has_positive_constraint_limit(raw: Any) -> bool:
+        if not isinstance(raw, Mapping):
+            return False
+        value = raw.get("max")
+        return (
+            isinstance(value, (int, float, np.integer, np.floating))
+            and np.isfinite(float(value))
+            and float(value) > 0.0
+        )
 
     def _current_parameter_count(self) -> int:
         return (
@@ -537,9 +599,17 @@ class TIMARL(BaseAgent):
             (group.owner_agent_id, group.group_id): group.group_type
             for group in self._current_snapshot.action_groups
         }
-        for bundles, counter in (
-            (raw_bundles, self._episode_raw_modes),
-            (final_bundles, self._episode_final_modes),
+        for bundles, counter, fraction_sums in (
+            (
+                raw_bundles,
+                self._episode_raw_modes,
+                self._episode_raw_fraction_sums,
+            ),
+            (
+                final_bundles,
+                self._episode_final_modes,
+                self._episode_final_fraction_sums,
+            ),
         ):
             for bundle in bundles:
                 for decision in bundle.decisions:
@@ -548,6 +618,9 @@ class TIMARL(BaseAgent):
                         "unknown",
                     )
                     counter[(group_type, decision.mode)] += 1
+                    fraction_sums[(group_type, decision.mode)] += abs(
+                        float(decision.fraction)
+                    )
 
         metrics: dict[str, float] = {}
         group_types_seen = sorted(
@@ -558,9 +631,17 @@ class TIMARL(BaseAgent):
                 )
             }
         )
-        for label, counter in (
-            ("raw", self._episode_raw_modes),
-            ("final", self._episode_final_modes),
+        for label, counter, fraction_sums in (
+            (
+                "raw",
+                self._episode_raw_modes,
+                self._episode_raw_fraction_sums,
+            ),
+            (
+                "final",
+                self._episode_final_modes,
+                self._episode_final_fraction_sums,
+            ),
         ):
             for group_type in group_types_seen:
                 total = sum(
@@ -589,6 +670,35 @@ class TIMARL(BaseAgent):
                         if candidate_type == group_type and mode != "IDLE"
                     )
                 ) / float(total)
+                non_idle_total = sum(
+                    count
+                    for (candidate_type, mode), count in counter.items()
+                    if candidate_type == group_type and mode != "IDLE"
+                )
+                metrics[
+                    f"TI_MARL/{label}_mean_abs_fraction_{group_type.lower()}"
+                ] = float(
+                    sum(
+                        value
+                        for (candidate_type, _mode), value in fraction_sums.items()
+                        if candidate_type == group_type
+                    )
+                ) / float(total)
+                metrics[
+                    f"TI_MARL/{label}_non_idle_mean_abs_fraction_"
+                    f"{group_type.lower()}"
+                ] = (
+                    float(
+                        sum(
+                            value
+                            for (candidate_type, mode), value in fraction_sums.items()
+                            if candidate_type == group_type and mode != "IDLE"
+                        )
+                    )
+                    / float(non_idle_total)
+                    if non_idle_total > 0
+                    else 0.0
+                )
         return metrics
 
     def _reward_components_by_agent(
@@ -698,7 +808,9 @@ class TIMARL(BaseAgent):
             self.critic.train()
             if self.group_critic is not None:
                 self.group_critic.train()
-            metrics = self.learner.update()
+            metrics = self.learner.update(
+                progress_callback=self._training_progress_callback,
+            )
             self._latest_training_metrics = {
                 f"TI_MARL/train_{key}": float(value) for key, value in metrics.items()
             }
@@ -804,6 +916,7 @@ class TIMARL(BaseAgent):
             metrics = self.behavior_cloning.pretrain(
                 self.actor,
                 max_grad_norm=self.learner.max_grad_norm,
+                progress_callback=self._training_progress_callback,
             )
             self.learner.reset_policy_anchor()
             self._latest_training_metrics.update(
@@ -820,6 +933,19 @@ class TIMARL(BaseAgent):
             }
         self.trace_writer.flush()
 
+    def set_training_progress_callback(
+        self,
+        callback: Optional[Callable[[Mapping[str, Any]], None]],
+    ) -> None:
+        """Install best-effort progress telemetry for long boundary training.
+
+        The callback is deliberately supplied by the runner rather than kept
+        in checkpoints.  It lets behavior cloning expose epoch-level liveness
+        without coupling the TI-MARL learner to the job orchestrator.
+        """
+
+        self._training_progress_callback = callback
+
     def on_episode_start(self, *, episode: int, training: bool) -> None:
         self._current_episode = int(episode)
         self._current_episode_is_training = bool(training)
@@ -829,6 +955,8 @@ class TIMARL(BaseAgent):
         self._pending = None
         self._episode_raw_modes.clear()
         self._episode_final_modes.clear()
+        self._episode_raw_fraction_sums.clear()
+        self._episode_final_fraction_sums.clear()
 
     def consume_latest_training_metrics(self) -> Mapping[str, float]:
         metrics = dict(self._latest_training_metrics)
@@ -842,6 +970,7 @@ class TIMARL(BaseAgent):
         root = Path(output_dir)
         root.mkdir(parents=True, exist_ok=True)
         path = root / "latest_checkpoint.pth"
+        temporary_path = root / f".{path.name}.tmp"
         payload = {
             "format": "ti_marl_checkpoint_v1",
             "step": int(step),
@@ -876,7 +1005,16 @@ class TIMARL(BaseAgent):
                 else self.behavior_cloning.state_dict()
             ),
         }
-        torch.save(payload, path)
+        # Replace the latest checkpoint atomically.  Apart from protecting a
+        # previously valid checkpoint from interrupted writes, this lets the
+        # checkpoint manager preserve episode boundaries with hard links:
+        # replacing ``latest`` then creates a new inode and cannot mutate an
+        # older episode checkpoint.
+        try:
+            torch.save(payload, temporary_path)
+            os.replace(temporary_path, path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
         return str(path)
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
@@ -886,6 +1024,16 @@ class TIMARL(BaseAgent):
         payload = torch.load(path, map_location=self.device, weights_only=False)
         if payload.get("format") != "ti_marl_checkpoint_v1":
             raise ValueError("Unsupported TIMARL checkpoint format")
+        if (
+            self.behavior_cloning is not None
+            and payload.get("behavior_cloning") is None
+        ):
+            raise ValueError(
+                "TI-MARL checkpoint has no behavior-cloning state while the "
+                "current configuration enables behavior cloning. Disable "
+                "behavior_cloning for continuation/inference, or resume from "
+                "a checkpoint that preserves the teacher phase state."
+            )
         architecture = dict(
             payload.get(
                 "learning_architecture",
@@ -937,7 +1085,7 @@ class TIMARL(BaseAgent):
         if self.policy_anchor_reset_on_resume:
             self.learner.reset_policy_anchor()
         self.compiler.load_checkpoint_state(payload.get("compiler_state", {}))
-        if self.behavior_cloning is not None and payload.get("behavior_cloning") is not None:
+        if self.behavior_cloning is not None:
             self.behavior_cloning.load_state_dict(payload["behavior_cloning"])
         rng = payload.get("rng", {})
         if rng:

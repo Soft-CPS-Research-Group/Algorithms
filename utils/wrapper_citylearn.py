@@ -1744,8 +1744,35 @@ class Wrapper_CityLearn(RLC):
                         )
                         self._synchronize_model_cuda_for_timing()
                         phase_start_time = time.perf_counter()
-                        if self._pending_model_environment_attach:
-                            try:
+                        set_training_progress = getattr(
+                            self.model,
+                            "set_training_progress_callback",
+                            None,
+                        )
+
+                        def report_model_update_progress(
+                            payload: Mapping[str, Any],
+                        ) -> None:
+                            details = dict(payload)
+                            training_phase = str(
+                                details.pop("phase", "model_update_training")
+                            )
+                            self._write_phase_progress(
+                                phase=training_phase,
+                                episode=episode,
+                                step=time_step,
+                                episode_total=episodes,
+                                step_total=episode_step_total,
+                                global_step_total=global_step_total,
+                                rewards=rewards,
+                                force=True,
+                                extra=details,
+                            )
+
+                        if callable(set_training_progress):
+                            set_training_progress(report_model_update_progress)
+                        try:
+                            if self._pending_model_environment_attach:
                                 self._pending_model_environment_attach = False
                                 self._refresh_update_schedule()
                                 self._attach_model_environment_metadata()
@@ -1764,21 +1791,24 @@ class Wrapper_CityLearn(RLC):
                                         terminated=terminated,
                                         truncated=truncated,
                                     )
-                            except Exception:
-                                if model_topology_snapshot is not None and callable(restore_model_topology):
-                                    restore_model_topology(model_topology_snapshot)
-                                if entity_layout_snapshot is not None:
-                                    self._restore_entity_layout_state(entity_layout_snapshot)
-                                raise
-                        else:
-                            self.update(
-                                observations,
-                                actions,
-                                rewards,
-                                next_observations,
-                                terminated=terminated,
-                                truncated=truncated,
-                            )
+                            else:
+                                self.update(
+                                    observations,
+                                    actions,
+                                    rewards,
+                                    next_observations,
+                                    terminated=terminated,
+                                    truncated=truncated,
+                                )
+                        except Exception:
+                            if model_topology_snapshot is not None and callable(restore_model_topology):
+                                restore_model_topology(model_topology_snapshot)
+                            if entity_layout_snapshot is not None:
+                                self._restore_entity_layout_state(entity_layout_snapshot)
+                            raise
+                        finally:
+                            if callable(set_training_progress):
+                                set_training_progress(None)
                         self._synchronize_model_cuda_for_timing()
                         model_update_duration = time.perf_counter() - phase_start_time
                         self._last_model_update_seconds = model_update_duration
@@ -2000,7 +2030,60 @@ class Wrapper_CityLearn(RLC):
 
             on_episode_end = getattr(self.model, "on_episode_end", None)
             if callable(on_episode_end):
-                on_episode_end(episode=episode, training=not deterministic)
+                episode_boundary_step = max(time_step - 1, 0)
+                last_rewards = rewards_list[-1] if rewards_list else None
+                self._write_phase_progress(
+                    phase="model_episode_end_start",
+                    episode=episode,
+                    step=episode_boundary_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=last_rewards,
+                    force=True,
+                )
+                set_training_progress = getattr(
+                    self.model,
+                    "set_training_progress_callback",
+                    None,
+                )
+
+                def report_boundary_training_progress(
+                    payload: Mapping[str, Any],
+                ) -> None:
+                    details = dict(payload)
+                    training_phase = str(
+                        details.pop("phase", "model_episode_end_training")
+                    )
+                    self._write_phase_progress(
+                        phase=training_phase,
+                        episode=episode,
+                        step=episode_boundary_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=last_rewards,
+                        force=True,
+                        extra=details,
+                    )
+
+                if callable(set_training_progress):
+                    set_training_progress(report_boundary_training_progress)
+                try:
+                    on_episode_end(episode=episode, training=not deterministic)
+                finally:
+                    if callable(set_training_progress):
+                        set_training_progress(None)
+                self._write_phase_progress(
+                    phase="model_episode_end_complete",
+                    episode=episode,
+                    step=episode_boundary_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=last_rewards,
+                    force=True,
+                )
             boundary_training_metrics = self._consume_model_training_metrics()
             if boundary_training_metrics:
                 if mlflow.active_run():

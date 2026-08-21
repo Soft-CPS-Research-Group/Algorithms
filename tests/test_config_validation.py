@@ -79,6 +79,19 @@ def test_validate_config_accepts_ti_marl_entity_dynamic(base_config):
     )
 
 
+def test_validate_config_accepts_ti_marl_electrical_service_preflight(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["require_declared_electrical_service"] = True
+    config["pipeline"] = [stage]
+
+    parsed = validate_config(config)
+
+    assert parsed.pipeline[0].hyperparameters.require_declared_electrical_service
+
+
 def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     config = copy.deepcopy(base_config)
     config["simulator"]["interface"] = "entity"
@@ -330,6 +343,22 @@ def _ti_marl_protocol_config(base_config, *, phase: str):
 @pytest.mark.parametrize("phase", ["train", "development", "confirmation"])
 def test_validate_config_accepts_explicit_ti_marl_protocol_phases(base_config, phase):
     validate_config(_ti_marl_protocol_config(base_config, phase=phase))
+
+
+def test_validate_config_requires_post_bc_ti_marl_learning_episode(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="train")
+    config["pipeline"][0]["hyperparameters"]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 2,
+        "pretraining_epochs": 1,
+    }
+    config["simulator"]["episodes"] = 2
+
+    with pytest.raises(ValueError, match="at least one post-BC learning episode"):
+        validate_config(config)
+
+    config["simulator"]["episodes"] = 3
+    validate_config(config)
 
 
 def test_validate_config_requires_explicit_simulator_seed_for_evaluation(base_config):
