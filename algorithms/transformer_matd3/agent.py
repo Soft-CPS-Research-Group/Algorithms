@@ -21,6 +21,12 @@ from algorithms.utils.citylearn_local_action_safety import (
     CityLearnLocalSafetyAdapter,
     CityLearnSafetyConfig,
 )
+from algorithms.utils.price_multiplier_adapter import (
+    PriceMultiplierObservationAdapter,
+    normalize_price_multiplier_contexts,
+    price_feature_bounds_from_metadata,
+    price_observation_names_from_metadata,
+)
 from algorithms.transformer_matd3.components import (
     CentralizedCritic,
     DeterministicActorHead,
@@ -249,6 +255,12 @@ class AgentTransformerMATD3(BaseAgent):
                 hyperparameters.get("local_action_safety_headroom_reserve_kw", 0.0)
             ),
         )
+        self._local_price_conditioning_enabled = bool(
+            hyperparameters.get("local_price_conditioning_enabled", False)
+        )
+        self._local_price_forecast_mode = str(
+            hyperparameters.get("local_price_forecast_mode", "real_unmodified")
+        )
         replay_bc = dict(
             (algorithm.get("behavior_cloning") or {}).get("replay_based") or {}
         )
@@ -327,6 +339,9 @@ class AgentTransformerMATD3(BaseAgent):
         self._local_action_safety_intervention_count = 0
         self._local_action_safety_infeasible_count = 0
         self._local_action_safety_reason_counts: Dict[str, int] = {}
+        self._local_price_adapters: List[PriceMultiplierObservationAdapter] = []
+        self._local_price_context_non_neutral = False
+        self._local_price_clipping_count = 0
         self._last_residual_action_scale = 0.0
         self._current_episode = 0
         self._current_episode_is_training = False
@@ -432,6 +447,10 @@ class AgentTransformerMATD3(BaseAgent):
             self._attach_local_action_safety(
                 observation_names=observation_names,
                 action_names=action_names,
+                metadata=metadata,
+            )
+            self._attach_local_price_conditioning(
+                observation_names=observation_names,
                 metadata=metadata,
             )
             self._attach_bc_b_environment(
@@ -611,7 +630,6 @@ class AgentTransformerMATD3(BaseAgent):
         *,
         context: Any = None,
     ) -> List[List[float]]:
-        del context
         self._require_attached()
         self._validate_vector_count("predict observations", observations)
         if self._in_bc_b_demonstration_phase():
@@ -622,6 +640,7 @@ class AgentTransformerMATD3(BaseAgent):
                 else observations
             )
             return self._bc_b.compute_teacher_actions(teacher_observations)
+        observations = self._apply_local_price_context(observations, context)
         use_deterministic = bool(deterministic)
         base_actions = self._predict_warm_start_policy_for_observations(
             self._latest_raw_observations
@@ -1112,6 +1131,9 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}local_action_safety_enabled": float(
                 self._local_action_safety_enabled
             ),
+            f"{_METRIC_PREFIX}local_price_conditioning_enabled": float(
+                self._local_price_conditioning_enabled
+            ),
         }
         if self._local_action_safety_enabled:
             metrics.update(
@@ -1133,6 +1155,17 @@ class AgentTransformerMATD3(BaseAgent):
                         count
                     )
                     for reason, count in self._local_action_safety_reason_counts.items()
+                }
+            )
+        if self._local_price_conditioning_enabled:
+            metrics.update(
+                {
+                    f"{_METRIC_PREFIX}local_price_context_non_neutral": float(
+                        self._local_price_context_non_neutral
+                    ),
+                    f"{_METRIC_PREFIX}local_price_clipping_count": float(
+                        self._local_price_clipping_count
+                    ),
                 }
             )
         metrics.update(self._bc_b_metrics())
@@ -2472,6 +2505,68 @@ class AgentTransformerMATD3(BaseAgent):
                 self._local_action_safety_reason_counts.get(label, 0) + 1
             )
         return [float(value) for value in projection.executed_actions]
+
+    def _attach_local_price_conditioning(
+        self,
+        *,
+        observation_names: List[List[str]],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        self._local_price_adapters = []
+        if not self._local_price_conditioning_enabled:
+            return
+        for index, fallback_names in enumerate(observation_names):
+            feature_low, feature_high = price_feature_bounds_from_metadata(
+                metadata=metadata,
+                agent_index=index,
+            )
+            encoded_names = price_observation_names_from_metadata(
+                metadata=metadata,
+                agent_index=index,
+                fallback_observation_names=fallback_names,
+            )
+            self._local_price_adapters.append(
+                PriceMultiplierObservationAdapter(
+                    observation_names=encoded_names,
+                    feature_low=feature_low,
+                    feature_high=feature_high,
+                    forecast_mode=self._local_price_forecast_mode,
+                    require_strict_local=False,
+                )
+            )
+
+    def _apply_local_price_context(
+        self,
+        observations: List[npt.NDArray[np.float64]],
+        context: Any,
+    ) -> List[npt.NDArray[np.float64]]:
+        self._local_price_context_non_neutral = False
+        self._local_price_clipping_count = 0
+        if not self._local_price_conditioning_enabled:
+            return observations
+        if len(self._local_price_adapters) != len(self._per_building):
+            raise RuntimeError(
+                "Transformer MATD3 local price conditioning requires an attached environment"
+            )
+        contexts = normalize_price_multiplier_contexts(
+            context,
+            num_agents=len(self._per_building),
+        )
+        transformed: List[npt.NDArray[np.float64]] = []
+        for adapter, observation, price_context in zip(
+            self._local_price_adapters, observations, contexts
+        ):
+            if price_context is None:
+                transformed.append(np.asarray(observation).copy())
+                continue
+            conditioned, diagnostics = adapter.transform(
+                observation,
+                price_context,
+            )
+            transformed.append(conditioned)
+            self._local_price_context_non_neutral |= not diagnostics.neutral_noop
+            self._local_price_clipping_count += diagnostics.clipping_count
+        return transformed
 
     def _build_state(
         self,
