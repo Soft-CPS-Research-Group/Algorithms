@@ -151,6 +151,89 @@ def test_should_restore_complete_buffer_state_and_rng() -> None:
     assert np.array_equal(actual.observations[0], expected.observations[0])
 
 
+def test_should_round_trip_ordered_buckets_fifo_and_optional_fields() -> None:
+    from algorithms.transformer_matd3.replay import SignatureBucketedReplayBuffer
+
+    first_signature = _signature(1)
+    second_signature = _signature(2)
+    source = SignatureBucketedReplayBuffer(capacity=4, num_agents=1, batch_size=1)
+    source.push(
+        encoded_obs=[np.full(6, 1, dtype=np.float32)],
+        next_encoded_obs=[np.full(6, 2, dtype=np.float32)],
+        actions=[np.ones(1, dtype=np.float32)],
+        behavior_actions=[np.full(1, 3, dtype=np.float32)],
+        next_behavior_actions=[np.full(1, 4, dtype=np.float32)],
+        cloning_actions=[np.full(1, 5, dtype=np.float32)],
+        reward=np.array([1], dtype=np.float32),
+        terminated=False,
+        truncated=False,
+        layout_signature=first_signature,
+    )
+    _push(source, second_signature, 2)
+    source.push(
+        encoded_obs=[np.full(6, 3, dtype=np.float32)],
+        next_encoded_obs=[np.full(6, 4, dtype=np.float32)],
+        actions=[np.ones(1, dtype=np.float32)],
+        behavior_actions=[np.full(1, 6, dtype=np.float32)],
+        next_behavior_actions=[np.full(1, 7, dtype=np.float32)],
+        cloning_actions=[np.full(1, 8, dtype=np.float32)],
+        reward=np.array([3], dtype=np.float32),
+        terminated=False,
+        truncated=False,
+        layout_signature=first_signature,
+    )
+
+    state = source.get_state()
+    restored = SignatureBucketedReplayBuffer(capacity=4, num_agents=1, batch_size=1)
+    restored.set_state(state)
+    restored_state = restored.get_state()
+
+    assert restored_state["format"] == "signature_bucketed_v1"
+    assert tuple(restored_state["buckets"]) == (first_signature, second_signature)
+    assert restored_state["global_fifo"] == (
+        (0, first_signature),
+        (1, second_signature),
+        (2, first_signature),
+    )
+    assert restored_state["next_sequence_id"] == 3
+    assert restored_state["total_size"] == 3
+    restored_transition = restored_state["buckets"][first_signature][0]
+    assert np.array_equal(
+        restored_transition.behavior_actions[0],
+        np.full(1, 3, dtype=np.float32),
+    )
+    assert np.array_equal(
+        restored_transition.next_behavior_actions[0],
+        np.full(1, 4, dtype=np.float32),
+    )
+    assert np.array_equal(
+        restored_transition.cloning_actions[0],
+        np.full(1, 5, dtype=np.float32),
+    )
+
+
+def test_should_validate_bucket_and_fifo_state_atomically() -> None:
+    from algorithms.transformer_matd3.replay import SignatureBucketedReplayBuffer
+
+    signature = _signature()
+    buffer = SignatureBucketedReplayBuffer(capacity=3, num_agents=1, batch_size=1)
+    _push(buffer, signature, 1)
+    original = buffer.get_state()
+    invalid = dict(original, global_fifo=((99, signature),))
+
+    with pytest.raises(ValueError, match="global_fifo does not match"):
+        buffer.set_state(invalid)
+
+    current = buffer.get_state()
+    assert current["global_fifo"] == original["global_fifo"]
+    assert current["next_sequence_id"] == original["next_sequence_id"]
+    assert current["rng_state"] == original["rng_state"]
+    assert np.array_equal(
+        current["transitions"][0].observations[0],
+        original["transitions"][0].observations[0],
+    )
+
+
 def test_should_reject_underfilled_sample_request() -> None:
     from algorithms.transformer_matd3.replay import SignatureBucketedReplayBuffer
 

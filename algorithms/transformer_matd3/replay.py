@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 from collections import deque
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -15,6 +15,8 @@ from algorithms.transformer_matd3.types import (
 
 
 class SignatureBucketedReplayBuffer:
+    STATE_FORMAT = "signature_bucketed_v1"
+
     def __init__(self, capacity: int, num_agents: int, batch_size: int) -> None:
         if capacity <= 0:
             raise ValueError("replay capacity must be positive")
@@ -129,26 +131,50 @@ class SignatureBucketedReplayBuffer:
             self._copy_transition(transitions_by_id[sequence_id])
             for sequence_id, _ in self._global_fifo
         ]
+        buckets = {
+            signature: tuple(
+                self._copy_transition(transition) for transition in bucket
+            )
+            for signature, bucket in self._buckets.items()
+        }
         return {
+            "format": self.STATE_FORMAT,
             "capacity": self.capacity,
             "num_agents": self.num_agents,
             "batch_size": self.batch_size,
             "next_sequence_id": self._next_sequence_id,
+            "total_size": self._total_size,
             "transitions": transitions,
+            "buckets": buckets,
+            "global_fifo": tuple(self._global_fifo),
             "rng_state": self._rng.getstate(),
         }
 
     def set_state(self, state: dict[str, Any]) -> None:
+        if not isinstance(state, Mapping):
+            raise ValueError("replay state must be a mapping")
+        state_format = state.get("format", self.STATE_FORMAT)
+        if state_format != self.STATE_FORMAT:
+            raise ValueError(f"unsupported replay state format: {state_format!r}")
         for field in ("capacity", "num_agents", "batch_size"):
-            if state.get(field) != getattr(self, field):
+            value = state.get(field)
+            expected = getattr(self, field)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value != expected
+            ):
                 raise ValueError(
-                    f"replay state {field}={state.get(field)!r} does not match "
-                    f"buffer value {getattr(self, field)!r}"
+                    f"replay state {field}={value!r} does not match "
+                    f"buffer value {expected!r}"
                 )
         transitions = state.get("transitions")
         if not isinstance(transitions, list) or len(transitions) > self.capacity:
             raise ValueError("replay state transitions are invalid")
-        restored = [self._copy_transition(item) for item in transitions]
+        try:
+            restored = [self._copy_transition(item) for item in transitions]
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("replay state contains an invalid transition") from exc
         for transition in restored:
             self._validate_sequence_id(transition.sequence_id)
         sequence_ids = [item.sequence_id for item in restored]
@@ -166,7 +192,10 @@ class SignatureBucketedReplayBuffer:
         if sequence_ids and next_sequence_id <= sequence_ids[-1]:
             raise ValueError("replay next_sequence_id must exceed stored sequence IDs")
         restored_rng = random.Random()
-        restored_rng.setstate(state["rng_state"])
+        try:
+            restored_rng.setstate(state["rng_state"])
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            raise ValueError("replay rng_state is invalid") from exc
         candidate = SignatureBucketedReplayBuffer(
             capacity=self.capacity,
             num_agents=self.num_agents,
@@ -175,6 +204,16 @@ class SignatureBucketedReplayBuffer:
         for transition in restored:
             candidate._validate_restored_transition(transition)
             candidate._append_transition(transition)
+        if "total_size" in state:
+            total_size = state["total_size"]
+            if (
+                isinstance(total_size, bool)
+                or not isinstance(total_size, int)
+                or total_size != candidate._total_size
+            ):
+                raise ValueError("replay state total_size does not match transitions")
+        candidate._validate_bucket_snapshot(state.get("buckets"), restored)
+        candidate._validate_fifo_snapshot(state.get("global_fifo"), restored)
         candidate._next_sequence_id = next_sequence_id
         candidate._rng.setstate(restored_rng.getstate())
         self._buckets = candidate._buckets
@@ -182,6 +221,96 @@ class SignatureBucketedReplayBuffer:
         self._total_size = candidate._total_size
         self._next_sequence_id = candidate._next_sequence_id
         self._rng = candidate._rng
+
+    def _validate_bucket_snapshot(
+        self,
+        buckets: Any,
+        transitions: Sequence[ReplayTransition],
+    ) -> None:
+        if buckets is None:
+            return
+        if not isinstance(buckets, Mapping):
+            raise ValueError("replay state buckets are invalid")
+        expected = self._buckets
+        if tuple(buckets) != tuple(expected):
+            raise ValueError("replay state buckets do not match transitions")
+        transitions_by_id = {
+            transition.sequence_id: transition for transition in transitions
+        }
+        for signature, bucket in buckets.items():
+            if not isinstance(bucket, (list, tuple)):
+                raise ValueError("replay state bucket entries are invalid")
+            expected_bucket = expected[signature]
+            if len(bucket) != len(expected_bucket):
+                raise ValueError("replay state bucket size does not match transitions")
+            for restored, expected_transition in zip(bucket, expected_bucket):
+                if not isinstance(restored, ReplayTransition):
+                    raise ValueError(
+                        "replay state bucket contains an invalid transition"
+                    )
+                canonical = transitions_by_id.get(restored.sequence_id)
+                if canonical is None or not self._transitions_equal(
+                    restored, canonical
+                ) or not self._transitions_equal(restored, expected_transition):
+                    raise ValueError(
+                        "replay state bucket order does not match transitions"
+                    )
+
+    def _validate_fifo_snapshot(
+        self,
+        global_fifo: Any,
+        transitions: Sequence[ReplayTransition],
+    ) -> None:
+        if global_fifo is None:
+            return
+        if not isinstance(global_fifo, (list, tuple)):
+            raise ValueError("replay state global_fifo is invalid")
+        expected = tuple(
+            (transition.sequence_id, transition.signature) for transition in transitions
+        )
+        try:
+            restored = tuple(global_fifo)
+        except TypeError as exc:
+            raise ValueError("replay state global_fifo is invalid") from exc
+        for item in restored:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ValueError("replay state global_fifo entries are invalid")
+            self._validate_sequence_id(item[0])
+            self._validate_signature(item[1])
+        if restored != expected:
+            raise ValueError("replay state global_fifo does not match transitions")
+
+    @staticmethod
+    def _transitions_equal(left: ReplayTransition, right: ReplayTransition) -> bool:
+        if (
+            left.sequence_id != right.sequence_id
+            or left.signature != right.signature
+            or not np.array_equal(left.rewards, right.rewards)
+            or not np.array_equal(left.terminated, right.terminated)
+            or not np.array_equal(left.truncated, right.truncated)
+        ):
+            return False
+        for field in (
+            "observations",
+            "next_observations",
+            "actions",
+            "behavior_actions",
+            "next_behavior_actions",
+            "cloning_actions",
+        ):
+            left_values = getattr(left, field)
+            right_values = getattr(right, field)
+            if (left_values is None) != (right_values is None):
+                return False
+            if left_values is not None and (
+                len(left_values) != len(right_values)
+                or any(
+                    not np.array_equal(a, b)
+                    for a, b in zip(left_values, right_values)
+                )
+            ):
+                return False
+        return True
 
     def _validate_signature(self, signature: LayoutSignature) -> None:
         if not isinstance(signature, tuple) or len(signature) != self.num_agents:
