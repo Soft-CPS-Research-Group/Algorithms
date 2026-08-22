@@ -12,10 +12,16 @@ Start with one template under `configs/templates/dynamic/`:
 - `transformer_matd3_entity_dynamic_residual.yaml` adds an RBC residual base.
 - `transformer_matd3_entity_dynamic_bc.yaml` enables replay and demonstration
   behavior cloning plus the runtime local-action safety guard.
+- `transformer_matd3_entity_dynamic_cost4_faithful.yaml` translates the
+  15-minute cost4 residual recipe over `RBCCommunityPolicy`.
 
 The default template disables residual control, local action safety, local
 price conditioning, and both behavior-cloning paths. Enable each path only when
 its runtime inputs are available.
+
+The actor objective exposes `actor_policy_loss_weight`. Set it to `0.085` for
+the cost4 translation. The value scales the MATD3 policy term before BC terms;
+it does not change the executed action or the critic target.
 
 The BC template applies EV deadline-feasibility and local electrical-headroom
 constraints to executed actions. It is experiment-only: the exported ONNX actor
