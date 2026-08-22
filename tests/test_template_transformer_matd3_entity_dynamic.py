@@ -98,6 +98,28 @@ def test_cost4_template_matches_named_recipe_translation() -> None:
     assert replay["ev_multiplier"] == pytest.approx(18.0)
 
 
+@pytest.mark.parametrize(
+    "path, algorithm",
+    [
+        (
+            TEMPLATE_DIR / "rbc_community_entity_dynamic_15min_cost4.yaml",
+            "RBCCommunityPolicy",
+        ),
+        (
+            TEMPLATE_DIR / "rbc_smart_entity_dynamic_15min_cost4.yaml",
+            "RBCSmartPolicy",
+        ),
+    ],
+)
+def test_matching_dynamic_cost4_baselines_validate(path: Path, algorithm: str) -> None:
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    validated = validate_config(config)
+
+    assert validated.pipeline[0].algorithm == algorithm
+    assert config["simulator"]["dataset_name"].endswith("15min_parquet")
+    assert config["simulator"]["topology_mode"] == "dynamic"
+
+
 def test_templates_reference_the_validated_tokenizer() -> None:
     from utils.entity_tokenizer_schema import (
         _load_default_sample,
