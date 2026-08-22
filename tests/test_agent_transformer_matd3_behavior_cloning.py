@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -148,6 +149,54 @@ def test_bc_b_collects_immutable_normalized_demonstration_without_rl_state() -> 
     assert replay_before["transitions"] == agent.replay_buffer.get_state()[
         "transitions"
     ]
+
+
+def test_bc_b_projects_teacher_actions_before_execution_and_storage() -> None:
+    agent, obs_dim = _bc_b_agent()
+    assert agent._bc_b is not None
+
+    class _UnsafeTeacher:
+        def predict(self, observations, deterministic):
+            del observations, deterministic
+            return [[-0.5, 0.75]]
+
+    projected = [0.25, -0.1]
+    agent._bc_b.teacher_policy = _UnsafeTeacher()
+    agent._local_action_safety_enabled = True
+    agent._local_action_safety_adapters = [
+        SimpleNamespace(
+            project=lambda raw, proposed: SimpleNamespace(
+                executed_actions=projected,
+                interventions=(),
+                infeasible_reasons=(),
+            )
+        )
+    ]
+    observation = np.zeros(obs_dim, dtype=np.float32)
+    agent.set_observation_context(raw_observations=[observation])
+    agent.on_episode_start(episode=0, training=True)
+
+    actions = agent.predict([observation], deterministic=False)
+    agent.update(
+        [observation],
+        actions,
+        [0.0],
+        [observation],
+        False,
+        False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=False,
+    )
+
+    groups = agent._bc_b.demonstrations_for_building_by_signature(0)
+    stored = next(iter(groups.values()))[0]
+    assert actions == [projected]
+    assert stored.target.tolist() == pytest.approx([0.5, -0.36])
+    assert agent.get_diagnostic_metrics()[
+        "TransformerMATD3/local_action_safety_projections"
+    ] == 1.0
 
 
 def test_bc_b_reservoir_capacity_applies_per_building() -> None:

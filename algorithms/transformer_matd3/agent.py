@@ -651,7 +651,13 @@ class AgentTransformerMATD3(BaseAgent):
                 if self._latest_raw_observations is not None
                 else observations
             )
-            return self._bc_b.compute_teacher_actions(teacher_observations)
+            teacher_actions = self._bc_b.compute_teacher_actions(
+                teacher_observations
+            )
+            return [
+                self._apply_local_action_safety(index, action)
+                for index, action in enumerate(teacher_actions)
+            ]
         observations = self._apply_local_price_context(observations, context)
         use_deterministic = bool(deterministic)
         base_actions = self._predict_warm_start_policy_for_observations(
