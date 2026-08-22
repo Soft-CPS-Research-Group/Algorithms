@@ -1281,6 +1281,21 @@ class TIMARLBehaviorCloningConfig(BaseModel):
     )
 
 
+class TIMARLEVPlanningConfig(BaseModel):
+    """Causal auxiliary target for proactive low-level EV scheduling."""
+
+    auxiliary_coeff: float = Field(default=0.0, ge=0.0)
+    balance_targets: bool = True
+    fraction_coeff: float = Field(default=0.25, ge=0.0)
+    replay_capacity_per_reason: int = Field(default=16, ge=0)
+    replay_samples_per_reason: int = Field(default=8, ge=0)
+    charge_fraction: float = Field(default=0.95, gt=0.0, lt=1.0)
+    service_tolerance_ratio: float = Field(default=0.05, ge=0.0, le=0.5)
+    price_tie_tolerance: float = Field(default=1.0e-6, ge=0.0)
+    urgency_duty_ratio: float = Field(default=0.85, gt=0.0, le=1.0)
+    minimum_price_spread: float = Field(default=0.0, ge=0.0)
+
+
 class TIMARLHyperparameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1298,6 +1313,7 @@ class TIMARLHyperparameters(BaseModel):
     learning_rate: float = Field(default=3.0e-4, gt=0)
     gamma: float = Field(default=0.99, gt=0, le=1)
     gae_lambda: float = Field(default=0.95, gt=0, le=1)
+    discount_timebase_seconds: Optional[float] = Field(default=None, gt=0)
     clip_eps: float = Field(default=0.2, gt=0)
     ppo_epochs: int = Field(default=4, ge=1)
     entropy_coeff: float = Field(default=0.01, ge=0)
@@ -1319,6 +1335,7 @@ class TIMARLHyperparameters(BaseModel):
     critic_loss: Literal["mse", "huber"] = "huber"
     trace: TIMARLTraceConfig = TIMARLTraceConfig()
     behavior_cloning: Optional[TIMARLBehaviorCloningConfig] = None
+    ev_planning: TIMARLEVPlanningConfig = TIMARLEVPlanningConfig()
 
     @model_validator(mode="after")
     def validate_learning_architecture(self) -> "TIMARLHyperparameters":

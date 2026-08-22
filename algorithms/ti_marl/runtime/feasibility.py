@@ -143,9 +143,28 @@ class AnalyticLocalProjector:
             bounded = float(np.clip(decision.fraction, 0.0, 1.0))
             if decision.mode == "IDLE":
                 bounded = 0.0
+            elif float(port.lower_bound) > 0.0:
+                # Port bounds are normalized physical magnitudes. Since the
+                # learned fraction is relative to the currently available
+                # upper bound, convert the typed minimum into that domain.
+                bounded = max(
+                    bounded,
+                    float(port.lower_bound) / max(float(port.upper_bound), 1.0e-9),
+                )
             if abs(bounded - decision.fraction) > 1.0e-9:
                 interventions.append(
-                    self._intervention(group.group_id, "fraction_domain", decision.mode, decision.mode, decision.fraction, bounded)
+                    self._intervention(
+                        group.group_id,
+                        (
+                            "typed_minimum_power"
+                            if bounded > float(np.clip(decision.fraction, 0.0, 1.0))
+                            else "fraction_domain"
+                        ),
+                        decision.mode,
+                        decision.mode,
+                        decision.fraction,
+                        bounded,
+                    )
                 )
             decisions[group.group_id] = replace(decision, fraction=bounded)
 

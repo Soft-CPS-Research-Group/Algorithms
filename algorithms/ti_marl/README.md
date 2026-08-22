@@ -259,6 +259,38 @@ decisions made by the actor from charge/start actions introduced by safety and
 feasibility, preventing a shield-only controller from being misreported as a
 learned policy improvement.
 
+For sub-hourly datasets, `discount_timebase_seconds` interprets `gamma` and
+`gae_lambda` against a physical reference period instead of silently applying
+hourly-looking values at every 15-minute transition.  The resolved effective
+discounts and runtime step duration are exported in checkpoints and training
+diagnostics.  Omitting the option preserves the historical step-based
+semantics exactly.
+
+`ev_planning` is an optional deployment-causal auxiliary objective for the EV
+actor.  It derives auditable targets only from typed observations available to
+the deployed policy: confirmed connection, service deficit, time to departure,
+charger capability, the current tariff and explicitly declared price
+forecasts before departure.  It never consumes future Simulator state and
+never emits a runtime action.  The categorical loss teaches when to choose
+`CHARGE_EV` or `IDLE`; a separate continuous loss teaches the requested charge
+fraction.  Targets are balanced first by action mode and then by causal reason
+so abundant idle instants cannot erase cheap or urgent charging examples.
+
+A small bounded reservoir, configured with
+`replay_capacity_per_reason` and `replay_samples_per_reason`, retains auxiliary
+examples independently for cheap charging, urgent charging and deliberate
+waiting.  This prevents rare EV decisions from being forgotten after an early
+charge changes the subsequent on-policy state distribution.  Only the causal
+auxiliary loss uses this reservoir: PPO ratios, advantages, critics and rewards
+remain strictly on-policy.  Reservoir snapshots retain only policy-visible
+typed observations, action groups and agent metadata; compiler evidence and
+constraints that the actor never reads are not duplicated. Reservoir contents
+and seen counts round-trip in a training checkpoint and are omitted when replay
+restoration is disabled.
+`ev_actor_charge_ownership_rate`, `ev_projector_charge_takeover_rate`, target
+coverage and per-mode recall make the division between learned control and the
+safety shield measurable.
+
 An optional typed behavior-cloning warm start can execute deterministic
 `RBCSmartPolicy` actions for complete demonstration episodes and decode those
 actions back into the same valid typed action groups used by the actor.  It

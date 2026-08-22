@@ -24,6 +24,7 @@ from algorithms.ti_marl.contracts.models import (
 )
 from algorithms.ti_marl.contracts.enums import HealthState
 from algorithms.ti_marl.learning.mappo import TIMAPPO
+from algorithms.ti_marl.learning.ev_planning import CausalEVPlanner
 from algorithms.ti_marl.learning.behavior_cloning import (
     TypedBehaviorCloningWarmStart,
 )
@@ -1707,6 +1708,325 @@ def test_just_in_time_ev_service_uses_laxity_before_forcing_charge(tmp_path):
     )
 
 
+def _snapshot_with_ev_planning_signals(
+    snapshot,
+    *,
+    current_price: float,
+    future_price: float | None,
+    hours_until_departure: float = 4.0,
+    energy_needed_kwh: float = 7.0,
+):
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    parts = [
+        replace(part, values=(current_price,))
+        if part.owner_agent_id == "Building_1"
+        and part.semantic_type == "market_price"
+        else part
+        for part in snapshot.observation_parts
+    ]
+    for observation_id, value, unit, semantic_type in (
+        ("energy_to_required_soc_kwh", energy_needed_kwh, "kWh", "ev_service"),
+        ("hours_until_departure", hours_until_departure, "h", "ev_schedule"),
+        ("available_charge_power_kw", 7.0, "kW", "ev_capability"),
+        ("charger_efficiency_ratio", 1.0, "fraction", "ev_capability"),
+    ):
+        parts.append(
+            ObservationPart(
+                part_id=f"Building_1:{ev_group.module_id}.planning.{observation_id}",
+                owner_agent_id="Building_1",
+                source_entity_id=ev_group.adapter_target_entity_id
+                or ev_group.module_id,
+                semantic_type=semantic_type,
+                feature_names=(observation_id,),
+                values=(value,),
+                health=HealthState.HEALTHY,
+                sensor_id=ev_group.module_id,
+                sensor_type="bidirectional_ev_charger",
+                channel_id="schedule",
+                observation_id=observation_id,
+                unit=unit,
+                scope="local",
+                use="policy_input",
+                policy_input=True,
+            )
+        )
+    if future_price is not None:
+        for observation_id, horizon_price in (
+            ("forecast_price_next_15m", future_price),
+            ("forecast_price_next_1h", future_price),
+            ("forecast_price_next_3h", future_price),
+        ):
+            parts.append(
+                ObservationPart(
+                    part_id=f"Building_1:community.market.{observation_id}",
+                    owner_agent_id="Building_1",
+                    source_entity_id="district_0",
+                    semantic_type="market_price_forecast",
+                    feature_names=(observation_id,),
+                    values=(horizon_price,),
+                    health=HealthState.HEALTHY,
+                    sensor_id="community",
+                    sensor_type="community_aggregate_service",
+                    channel_id="market",
+                    observation_id=observation_id,
+                    unit="EUR/kWh",
+                    scope="community",
+                    use="policy_input",
+                    policy_input=True,
+                )
+            )
+    return replace(snapshot, observation_parts=tuple(parts))
+
+
+def test_causal_ev_planner_uses_price_opportunity_and_service_urgency(tmp_path):
+    _compiler, base = compile_snapshot(
+        tmp_path,
+        buildings=("Building_1",),
+    )
+    planner = CausalEVPlanner()
+
+    cheap = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.10,
+        future_price=0.30,
+    )
+    expensive = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+    )
+    urgent = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        hours_until_departure=0.25,
+        energy_needed_kwh=2.0,
+    )
+    no_forecast = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.10,
+        future_price=None,
+    )
+
+    cheap_target = planner.targets(cheap, seconds_per_time_step=900.0)[0]
+    expensive_target = planner.targets(expensive, seconds_per_time_step=900.0)[0]
+    urgent_target = planner.targets(urgent, seconds_per_time_step=900.0)[0]
+
+    assert cheap_target.decision.mode == "CHARGE_EV"
+    assert cheap_target.reason == "cheapest_forecast_opportunity"
+    assert expensive_target.decision.mode == "IDLE"
+    assert expensive_target.reason == "cheaper_forecast_with_service_slack"
+    assert urgent_target.decision.mode == "CHARGE_EV"
+    assert urgent_target.reason == "service_urgent"
+    assert planner.targets(no_forecast, seconds_per_time_step=900.0) == ()
+
+
+def test_mappo_scales_discount_factors_to_physical_step_duration():
+    learner = TIMAPPO(
+        torch.nn.Linear(1, 1),
+        torch.nn.Linear(1, 1),
+        gamma=0.99,
+        gae_lambda=0.95,
+        discount_timebase_seconds=3600.0,
+    )
+
+    learner.set_seconds_per_time_step(900.0)
+
+    assert learner.gamma == pytest.approx(0.99**0.25)
+    assert learner.gae_lambda == pytest.approx(0.95**0.25)
+    learner.set_seconds_per_time_step(3600.0)
+    assert learner.gamma == pytest.approx(0.99)
+    assert learner.gae_lambda == pytest.approx(0.95)
+
+
+def test_ev_planning_loss_balances_sparse_modes_and_causal_reasons():
+    learner = TIMAPPO(
+        torch.nn.Linear(1, 1),
+        torch.nn.Linear(1, 1),
+        ev_planning_balance_targets=True,
+    )
+    losses = {
+        "IDLE": {"cheaper_forecast_with_service_slack": [torch.tensor(1.0)] * 4},
+        "CHARGE_EV": {
+            "service_urgent": [torch.tensor(9.0)] * 3,
+            "cheapest_forecast_opportunity": [torch.tensor(5.0)],
+        },
+    }
+
+    balanced = learner._ev_planning_loss(losses, fallback=torch.tensor(4.5))
+
+    # IDLE contributes 1.0.  Within CHARGE_EV, urgent and cheap reasons have
+    # equal mass: (9.0 + 5.0) / 2 = 7.0.  Modes then have equal mass.
+    assert float(balanced) == pytest.approx(4.0)
+
+    learner.ev_planning_balance_targets = False
+    unbalanced = learner._ev_planning_loss(
+        losses,
+        fallback=torch.tensor(4.5),
+    )
+    assert float(unbalanced) == pytest.approx(4.5)
+
+
+def test_ev_planning_auxiliary_trains_raw_actor_without_projector(tmp_path):
+    compiler, base = compile_snapshot(
+        tmp_path,
+        buildings=("Building_1",),
+    )
+    snapshots = (
+        _snapshot_with_ev_planning_signals(
+            base,
+            current_price=0.10,
+            future_price=0.30,
+        ),
+        _snapshot_with_ev_planning_signals(
+            base,
+            current_price=0.30,
+            future_price=0.10,
+        ),
+        _snapshot_with_ev_planning_signals(
+            base,
+            current_price=0.10,
+            future_price=None,
+        ),
+    )
+    torch.manual_seed(73)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+        group_context_kind="action_conditioned",
+    )
+    critic = LocalTypedCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+    )
+    planner = CausalEVPlanner()
+    learner = TIMAPPO(
+        actor,
+        critic,
+        learning_rate=2.0e-3,
+        rollout_steps=2,
+        ppo_epochs=8,
+        entropy_coeff=0.0,
+        target_kl=None,
+        ev_planner=planner,
+        ev_planning_auxiliary_coeff=1.0,
+    )
+    learner.set_seconds_per_time_step(900.0)
+
+    target_maps = []
+    for snapshot in snapshots:
+        with torch.no_grad():
+            evaluation = actor(snapshot, deterministic=False)
+            values = critic(snapshot)
+        raw_map = {
+            bundle.agent_id: {
+                decision.group_id: decision for decision in bundle.decisions
+            }
+            for bundle in evaluation.bundles
+        }
+        for target in planner.targets(snapshot, seconds_per_time_step=900.0):
+            raw_map[target.agent_id][target.group_id] = target.decision
+        target_maps.append(raw_map)
+        learner.rollout.add(
+            RolloutStep(
+                snapshot=snapshot,
+                next_snapshot=snapshot,
+                bundles=evaluation.bundles,
+                old_log_probs={
+                    key: float(value)
+                    for key, value in evaluation.log_prob_by_agent.items()
+                },
+                values={key: float(value) for key, value in values.items()},
+                next_values={key: 0.0 for key in snapshot.agent_ids},
+                rewards={key: 0.0 for key in snapshot.agent_ids},
+                terminated_agent_ids=snapshot.agent_ids,
+                truncated=False,
+                final_bundles=evaluation.bundles,
+            )
+        )
+
+    with torch.no_grad():
+        before = actor.evaluate_actions_many(
+            tuple(zip(snapshots, target_maps))
+        )
+        before_mode_nll = -torch.stack(
+            [
+                before.mode_log_prob_by_group_step[index]["Building_1"][
+                    next(
+                        group.group_id
+                        for group in snapshot.groups_for("Building_1")
+                        if group.group_type == "ev_session"
+                    )
+                ]
+                for index, snapshot in enumerate(snapshots[:2])
+            ]
+        ).mean()
+
+    metrics = learner.update()
+
+    with torch.no_grad():
+        after = actor.evaluate_actions_many(tuple(zip(snapshots, target_maps)))
+        after_mode_nll = -torch.stack(
+            [
+                after.mode_log_prob_by_group_step[index]["Building_1"][
+                    next(
+                        group.group_id
+                        for group in snapshot.groups_for("Building_1")
+                        if group.group_type == "ev_session"
+                    )
+                ]
+                for index, snapshot in enumerate(snapshots[:2])
+            ]
+        ).mean()
+
+    assert after_mode_nll < before_mode_nll
+    assert metrics["ev_planning_samples"] == 2.0
+    assert metrics["ev_planning_charge_samples"] == 1.0
+    assert metrics["ev_planning_idle_samples"] == 1.0
+    assert metrics["intervened_policy_samples"] == 0.0
+    assert np.isfinite(metrics["ev_planning_loss"])
+    assert np.isfinite(metrics["ev_planning_mode_loss"])
+    assert np.isfinite(metrics["ev_planning_fraction_loss"])
+
+    # A following rollout with no fresh causal label still rehearses the rare
+    # charge/wait examples from the bounded auxiliary replay.  PPO itself
+    # remains on-policy because only the EV planning loss sees these items.
+    snapshot = snapshots[2]
+    with torch.no_grad():
+        evaluation = actor(snapshot, deterministic=False)
+        values = critic(snapshot)
+    learner.rollout.add(
+        RolloutStep(
+            snapshot=snapshot,
+            next_snapshot=snapshot,
+            bundles=evaluation.bundles,
+            old_log_probs={
+                key: float(value)
+                for key, value in evaluation.log_prob_by_agent.items()
+            },
+            values={key: float(value) for key, value in values.items()},
+            next_values={key: 0.0 for key in snapshot.agent_ids},
+            rewards={key: 0.0 for key in snapshot.agent_ids},
+            terminated_agent_ids=snapshot.agent_ids,
+            truncated=False,
+            final_bundles=evaluation.bundles,
+        )
+    )
+    replay_metrics = learner.update()
+    assert replay_metrics["ev_planning_current_samples"] == 0.0
+    assert replay_metrics["ev_planning_replay_samples"] == 2.0
+    assert replay_metrics["ev_planning_charge_samples"] == 1.0
+    assert replay_metrics["ev_planning_replay_size"] == 2.0
+    assert learner.state_dict()["ev_planning"]["replay"]
+
+
 def test_mappo_value_loss_normalizes_large_targets_and_keeps_raw_diagnostic():
     learner = TIMAPPO(
         torch.nn.Linear(1, 1),
@@ -2138,6 +2458,72 @@ def test_codec_applies_a_dynamic_port_bound_exactly_once(tmp_path):
     # The fixture exposes 0.5 available EV charge action.  Full policy intent
     # therefore becomes 0.5, not 0.25 (double contraction) or 1.0 (unbounded).
     assert commands[0][1] == pytest.approx(0.5)
+
+
+def test_ev_charge_respects_nonzero_typed_minimum_power(tmp_path):
+    interfaces = write_typed_interfaces(
+        tmp_path / "interfaces_with_minimum",
+        ("Building_1",),
+    )
+    interface_path = interfaces / "Building_1.yaml"
+    payload = yaml.safe_load(interface_path.read_text(encoding="utf-8"))
+    payload["actuators"]["charger_1"]["actions"]["charge"]["parameter"][
+        "bounds"
+    ] = [1.4, 7.0]
+    interface_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    compiler = TypedInterfaceCompiler(
+        contract_version="ti_marl_v1",
+        typed_interfaces_dir=interfaces,
+    )
+    compiler.attach_entity_specs(
+        entity_specs(("Building_1",)),
+        seconds_per_time_step=900,
+    )
+    snapshot = compiler.compile(entity_payload(("Building_1",)))
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    charge_port = next(port for port in ev_group.ports if port.mode == "CHARGE_EV")
+    assert charge_port.lower_bound == pytest.approx(0.2)
+    assert charge_port.upper_bound == pytest.approx(1.0)
+
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(ActionDecision(ev_group.group_id, "CHARGE_EV", 0.05, 1),),
+    )
+    projected = AnalyticLocalProjector(enforce_ev_service=False).project(
+        snapshot,
+        (raw,),
+    )[0]
+    assert projected.decisions[0].fraction == pytest.approx(0.2)
+    assert any(
+        item["reason"] == "typed_minimum_power"
+        for item in projected.interventions
+    )
+    command = TypedCommandBuilder().build(snapshot, (projected,))[0]
+    assert command.value == pytest.approx(1.4)
+
+    unavailable_minimum = entity_payload(("Building_1",), time_step=1)
+    unavailable_minimum["tables"]["charger"][0, 4] = 0.1
+    constrained = compiler.compile(unavailable_minimum)
+    constrained_group = next(
+        group
+        for group in constrained.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    constrained_port = next(
+        port for port in constrained_group.ports if port.mode == "CHARGE_EV"
+    )
+    assert not constrained_port.valid
+    assert constrained_port.invalid_reasons == (
+        "runtime_bound_below_typed_minimum",
+    )
 
 
 def test_discharge_uses_its_own_bound_and_keeps_a_negative_simulator_sign(tmp_path):

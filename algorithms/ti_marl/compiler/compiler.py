@@ -648,17 +648,34 @@ class TypedInterfaceCompiler:
                 if action is None:
                     continue
                 runtime_bound = self._runtime_bound(values, mode)
-                valid = runtime_bound > 0.0
+                rated_power = max(float(action.upper_bound), 0.0)
+                minimum_bound = (
+                    float(np.clip(action.lower_bound / rated_power, 0.0, 1.0))
+                    if rated_power > 1.0e-9
+                    else 0.0
+                )
+                valid = (
+                    runtime_bound > 0.0
+                    and runtime_bound + 1.0e-9 >= minimum_bound
+                )
                 ports.append(
                     ActionPortInstance(
                         port_id=f"{agent_id}:{actuator.actuator_id}:{mode}",
                         mode=mode,
                         target_entity_id=entity.entity_id,
                         action_name=action.action_id,
-                        lower_bound=0.0,
+                        lower_bound=minimum_bound,
                         upper_bound=runtime_bound,
                         valid=valid,
-                        invalid_reasons=() if valid else ("unknown_or_zero_runtime_bound",),
+                        invalid_reasons=(
+                            ()
+                            if valid
+                            else (
+                                "runtime_bound_below_typed_minimum"
+                                if runtime_bound > 0.0
+                                else "unknown_or_zero_runtime_bound",
+                            )
+                        ),
                         contracted_by=("runtime_capability",) if runtime_bound < 1.0 else (),
                     )
                 )

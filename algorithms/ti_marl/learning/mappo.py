@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from copy import deepcopy
+from dataclasses import dataclass, replace
 from functools import wraps
+import random
 import time
 from typing import Any, Callable, Mapping
 
@@ -14,8 +16,23 @@ from loguru import logger
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from algorithms.ti_marl.contracts.models import ActionDecision, InterfaceSnapshot
+from algorithms.ti_marl.learning.ev_planning import (
+    CausalEVPlanner,
+    EVPlanningTarget,
+)
 from algorithms.ti_marl.learning.rollout import TypedRolloutBuffer
 from algorithms.ti_marl.policy.networks import TypedActor
+
+
+@dataclass(frozen=True)
+class _EVPlanningReplayItem:
+    """One immutable, deployment-causal auxiliary replay item."""
+
+    snapshot: InterfaceSnapshot
+    decisions: Mapping[str, Mapping[str, ActionDecision]]
+    targets: tuple[EVPlanningTarget, ...]
+    reason: str
 
 
 def _with_replay_preparation_cache(
@@ -59,6 +76,7 @@ class TIMAPPO:
         learning_rate: float = 3.0e-4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
+        discount_timebase_seconds: float | None = None,
         clip_eps: float = 0.2,
         ppo_epochs: int = 4,
         entropy_coeff: float = 0.01,
@@ -68,6 +86,12 @@ class TIMAPPO:
         policy_anchor_coeff: float = 0.0,
         exclude_intervened_actions_from_policy_loss: bool = False,
         intervention_distillation_coeff: float = 0.0,
+        ev_planner: CausalEVPlanner | None = None,
+        ev_planning_auxiliary_coeff: float = 0.0,
+        ev_planning_balance_targets: bool = True,
+        ev_planning_fraction_coeff: float = 0.25,
+        ev_planning_replay_capacity_per_reason: int = 16,
+        ev_planning_replay_samples_per_reason: int = 8,
         value_coeff: float = 0.5,
         max_grad_norm: float = 0.5,
         target_kl: float | None = 0.03,
@@ -79,8 +103,21 @@ class TIMAPPO:
         self.actor = actor
         self.critic = critic
         self.group_critic = group_critic
-        self.gamma = float(gamma)
-        self.gae_lambda = float(gae_lambda)
+        self.gamma_reference = float(gamma)
+        self.gae_lambda_reference = float(gae_lambda)
+        self.discount_timebase_seconds = (
+            None
+            if discount_timebase_seconds is None
+            else float(discount_timebase_seconds)
+        )
+        if (
+            self.discount_timebase_seconds is not None
+            and self.discount_timebase_seconds <= 0.0
+        ):
+            raise ValueError("TI-MAPPO discount_timebase_seconds must be positive")
+        self.seconds_per_time_step = 1.0
+        self.gamma = self.gamma_reference
+        self.gae_lambda = self.gae_lambda_reference
         self.clip_eps = float(clip_eps)
         self.ppo_epochs = int(ppo_epochs)
         self.entropy_coeff = float(entropy_coeff)
@@ -147,6 +184,40 @@ class TIMAPPO:
                 "TI-MAPPO intervention distillation requires intervention-aware "
                 "policy masking"
             )
+        self.ev_planner = ev_planner
+        self.ev_planning_auxiliary_coeff = float(ev_planning_auxiliary_coeff)
+        if self.ev_planning_auxiliary_coeff < 0.0:
+            raise ValueError(
+                "TI-MAPPO ev_planning_auxiliary_coeff must be non-negative"
+            )
+        if self.ev_planning_auxiliary_coeff > 0.0 and self.ev_planner is None:
+            raise ValueError(
+                "TI-MAPPO EV planning auxiliary loss requires a causal EV planner"
+            )
+        self.ev_planning_balance_targets = bool(ev_planning_balance_targets)
+        self.ev_planning_fraction_coeff = float(ev_planning_fraction_coeff)
+        if self.ev_planning_fraction_coeff < 0.0:
+            raise ValueError(
+                "TI-MAPPO EV planning fraction coefficient must be non-negative"
+            )
+        self.ev_planning_replay_capacity_per_reason = int(
+            ev_planning_replay_capacity_per_reason
+        )
+        self.ev_planning_replay_samples_per_reason = int(
+            ev_planning_replay_samples_per_reason
+        )
+        if self.ev_planning_replay_capacity_per_reason < 0:
+            raise ValueError(
+                "TI-MAPPO EV planning replay capacity must be non-negative"
+            )
+        if self.ev_planning_replay_samples_per_reason < 0:
+            raise ValueError(
+                "TI-MAPPO EV planning replay sample count must be non-negative"
+            )
+        self._ev_planning_replay: dict[str, list[_EVPlanningReplayItem]] = (
+            defaultdict(list)
+        )
+        self._ev_planning_replay_seen: Counter[str] = Counter()
         self.value_coeff = float(value_coeff)
         self.max_grad_norm = float(max_grad_norm)
         self.target_kl = None if target_kl is None else float(target_kl)
@@ -167,6 +238,28 @@ class TIMAPPO:
         )
         self.rollout = TypedRolloutBuffer()
         self.update_count = 0
+
+    def set_seconds_per_time_step(self, seconds: float) -> None:
+        """Resolve PPO discount factors against physical rather than step time.
+
+        When ``discount_timebase_seconds`` is configured, ``gamma`` and
+        ``gae_lambda`` describe that reference period (normally one hour).  The
+        effective per-transition values are exponentiated by the actual runtime
+        step duration.  With no timebase configured, historical step-based
+        behaviour is preserved exactly.
+        """
+
+        seconds = float(seconds)
+        if not np.isfinite(seconds) or seconds <= 0.0:
+            raise ValueError("TI-MAPPO seconds_per_time_step must be positive")
+        self.seconds_per_time_step = seconds
+        if self.discount_timebase_seconds is None:
+            self.gamma = self.gamma_reference
+            self.gae_lambda = self.gae_lambda_reference
+            return
+        exponent = seconds / self.discount_timebase_seconds
+        self.gamma = self.gamma_reference**exponent
+        self.gae_lambda = self.gae_lambda_reference**exponent
 
     def ready(self) -> bool:
         return len(self.rollout) >= self.rollout_steps
@@ -265,6 +358,44 @@ class TIMAPPO:
             if self.intervention_distillation_coeff > 0.0
             else 0
         )
+        ev_targets_by_step = [
+            (
+                self.ev_planner.targets(
+                    step.snapshot,
+                    seconds_per_time_step=self.seconds_per_time_step,
+                )
+                if self.ev_planner is not None
+                and self.ev_planning_auxiliary_coeff > 0.0
+                else ()
+            )
+            for step in self.rollout.steps
+        ]
+        current_ev_planning_items = self._ev_planning_items(
+            snapshots=tuple(step.snapshot for step in self.rollout.steps),
+            decisions_by_step=decisions_by_step,
+            targets_by_step=ev_targets_by_step,
+        )
+        replay_ev_planning_items = self._sample_ev_planning_replay()
+        ev_planning_items = current_ev_planning_items + replay_ev_planning_items
+        ev_planning_current_samples = sum(
+            len(item.targets) for item in current_ev_planning_items
+        )
+        ev_planning_replay_samples = sum(
+            len(item.targets) for item in replay_ev_planning_items
+        )
+        ev_planning_samples = sum(
+            len(item.targets) for item in ev_planning_items
+        )
+        ev_planning_charge_samples = sum(
+            target.decision.mode == "CHARGE_EV"
+            for item in ev_planning_items
+            for target in item.targets
+        )
+        ev_planning_reason_counts = Counter(
+            target.reason
+            for item in ev_planning_items
+            for target in item.targets
+        )
         actor_samples_by_group_type = Counter(
             sample.group_type for sample in group_samples
         )
@@ -293,6 +424,15 @@ class TIMAPPO:
             actor_losses: list[Tensor] = []
             policy_anchor_losses: list[Tensor] = []
             intervention_distillation_losses: list[Tensor] = []
+            ev_planning_losses: list[Tensor] = []
+            ev_planning_losses_by_mode_and_reason: dict[
+                str, dict[str, list[Tensor]]
+            ] = defaultdict(lambda: defaultdict(list))
+            ev_planning_mode_correct: list[Tensor] = []
+            ev_planning_mode_correct_by_mode: dict[str, list[Tensor]] = defaultdict(
+                list
+            )
+            ev_planning_fraction_losses: list[Tensor] = []
             critic_predictions: list[Tensor] = []
             critic_targets: list[Tensor] = []
             group_critic_predictions: list[Tensor] = []
@@ -321,6 +461,14 @@ class TIMAPPO:
                         for step, decisions in zip(
                             self.rollout.steps, final_decisions_by_step
                         )
+                    )
+                )
+            ev_planning_evaluation = None
+            if ev_planning_samples > 0:
+                ev_planning_evaluation = self.actor.evaluate_actions_many(
+                    tuple(
+                        (item.snapshot, item.decisions)
+                        for item in ev_planning_items
                     )
                 )
             values_by_step = self.critic.forward_many(
@@ -479,6 +627,47 @@ class TIMAPPO:
                     critic_predictions.append(values[agent_id])
                     critic_targets.append(target)
 
+            if ev_planning_evaluation is not None:
+                for replay_index, item in enumerate(ev_planning_items):
+                    for target in item.targets:
+                        target_mode_log_prob = (
+                            ev_planning_evaluation.mode_log_prob_by_group_step[
+                                replay_index
+                            ][target.agent_id][target.group_id]
+                        )
+                        target_loss = -target_mode_log_prob
+                        ev_planning_losses.append(target_loss)
+                        ev_planning_losses_by_mode_and_reason[
+                            target.decision.mode
+                        ][target.reason].append(target_loss)
+                        predicted_mode = (
+                            ev_planning_evaluation.predicted_mode_by_group_step[
+                                replay_index
+                            ][target.agent_id][target.group_id]
+                        )
+                        mode_correct = (
+                            predicted_mode == int(target.decision.mode_index)
+                        ).float()
+                        ev_planning_mode_correct.append(mode_correct)
+                        ev_planning_mode_correct_by_mode[
+                            target.decision.mode
+                        ].append(mode_correct)
+                        if target.decision.mode == "CHARGE_EV":
+                            predicted_fraction = (
+                                ev_planning_evaluation
+                                .predicted_fraction_by_group_step[replay_index][
+                                    target.agent_id
+                                ][target.group_id]
+                            )
+                            ev_planning_fraction_losses.append(
+                                F.smooth_l1_loss(
+                                    predicted_fraction,
+                                    predicted_fraction.new_tensor(
+                                        float(target.decision.fraction)
+                                    ),
+                                )
+                            )
+
             actor_loss = (
                 torch.stack(actor_losses).mean()
                 if actor_losses
@@ -493,6 +682,36 @@ class TIMAPPO:
                 torch.stack(intervention_distillation_losses).mean()
                 if intervention_distillation_losses
                 else actor_loss.new_zeros(())
+            )
+            ev_planning_unbalanced_mode_loss = (
+                torch.stack(ev_planning_losses).mean()
+                if ev_planning_losses
+                else actor_loss.new_zeros(())
+            )
+            ev_planning_mode_loss = self._ev_planning_loss(
+                ev_planning_losses_by_mode_and_reason,
+                fallback=ev_planning_unbalanced_mode_loss,
+            )
+            ev_planning_fraction_loss = self._mean_or_zero(
+                ev_planning_fraction_losses,
+                reference=actor_loss,
+            )
+            ev_planning_loss = (
+                ev_planning_mode_loss
+                + self.ev_planning_fraction_coeff * ev_planning_fraction_loss
+            )
+            ev_planning_mode_accuracy = (
+                torch.stack(ev_planning_mode_correct).mean()
+                if ev_planning_mode_correct
+                else actor_loss.new_zeros(())
+            )
+            ev_planning_charge_recall = self._mean_or_zero(
+                ev_planning_mode_correct_by_mode.get("CHARGE_EV", ()),
+                reference=actor_loss,
+            )
+            ev_planning_idle_recall = self._mean_or_zero(
+                ev_planning_mode_correct_by_mode.get("IDLE", ()),
+                reference=actor_loss,
             )
             entropy = (
                 torch.stack(entropies).mean()
@@ -557,6 +776,7 @@ class TIMAPPO:
                 + self.policy_anchor_coeff * policy_anchor_loss
                 + self.intervention_distillation_coeff
                 * intervention_distillation_loss
+                + self.ev_planning_auxiliary_coeff * ev_planning_loss
             )
             critic_objective = self.value_coeff * critic_loss
             group_critic_objective = (
@@ -623,6 +843,27 @@ class TIMAPPO:
             )
             metrics["intervention_distillation_loss"] += float(
                 intervention_distillation_loss.detach().cpu()
+            )
+            metrics["ev_planning_loss"] += float(
+                ev_planning_loss.detach().cpu()
+            )
+            metrics["ev_planning_mode_loss"] += float(
+                ev_planning_mode_loss.detach().cpu()
+            )
+            metrics["ev_planning_unbalanced_mode_loss"] += float(
+                ev_planning_unbalanced_mode_loss.detach().cpu()
+            )
+            metrics["ev_planning_fraction_loss"] += float(
+                ev_planning_fraction_loss.detach().cpu()
+            )
+            metrics["ev_planning_mode_accuracy"] += float(
+                ev_planning_mode_accuracy.detach().cpu()
+            )
+            metrics["ev_planning_charge_recall"] += float(
+                ev_planning_charge_recall.detach().cpu()
+            )
+            metrics["ev_planning_idle_recall"] += float(
+                ev_planning_idle_recall.detach().cpu()
             )
             metrics["critic_loss"] += float(critic_loss.detach().cpu())
             metrics["entropy"] += float(entropy.detach().cpu())
@@ -696,6 +937,7 @@ class TIMAPPO:
             if self.target_kl is not None and float(approximate_kl.detach().cpu()) > self.target_kl:
                 break
 
+        self._remember_ev_planning_items(current_ev_planning_items)
         self.update_count += 1
         self.rollout.clear()
         divisor = max(epochs_completed, 1)
@@ -715,6 +957,31 @@ class TIMAPPO:
                 "intervention_distillation_samples": float(
                     intervention_distillation_samples
                 ),
+                "ev_planning_auxiliary_coeff": float(
+                    self.ev_planning_auxiliary_coeff
+                ),
+                "ev_planning_balance_targets": float(
+                    self.ev_planning_balance_targets
+                ),
+                "ev_planning_fraction_coeff": float(
+                    self.ev_planning_fraction_coeff
+                ),
+                "ev_planning_samples": float(ev_planning_samples),
+                "ev_planning_current_samples": float(
+                    ev_planning_current_samples
+                ),
+                "ev_planning_replay_samples": float(
+                    ev_planning_replay_samples
+                ),
+                "ev_planning_charge_samples": float(
+                    ev_planning_charge_samples
+                ),
+                "ev_planning_idle_samples": float(
+                    ev_planning_samples - ev_planning_charge_samples
+                ),
+                "effective_gamma": float(self.gamma),
+                "effective_gae_lambda": float(self.gae_lambda),
+                "seconds_per_time_step": float(self.seconds_per_time_step),
                 "intervened_policy_samples": float(intervened_policy_samples),
                 "eligible_actor_samples": float(
                     max(
@@ -738,11 +1005,156 @@ class TIMAPPO:
             result[
                 f"eligible_actor_samples_{group_type}"
             ] = float(max(sample_count - intervened_count, 0))
+        for reason, count in sorted(ev_planning_reason_counts.items()):
+            result[f"ev_planning_samples_{reason}"] = float(count)
+        result["ev_planning_replay_size"] = float(
+            sum(len(items) for items in self._ev_planning_replay.values())
+        )
+        for reason, items in sorted(self._ev_planning_replay.items()):
+            result[f"ev_planning_replay_size_{reason}"] = float(len(items))
+            result[f"ev_planning_replay_seen_{reason}"] = float(
+                self._ev_planning_replay_seen[reason]
+            )
         result["evaluated_samples_per_second"] = (
             float(len(samples) * epochs_completed)
             / max(result["update_seconds"], 1.0e-9)
         )
         return result
+
+    @staticmethod
+    def _ev_planning_items(
+        *,
+        snapshots,
+        decisions_by_step,
+        targets_by_step,
+    ) -> tuple[_EVPlanningReplayItem, ...]:
+        """Group current targets by causal reason for stratified replay."""
+
+        items: list[_EVPlanningReplayItem] = []
+        for snapshot, raw_decisions, targets in zip(
+            snapshots,
+            decisions_by_step,
+            targets_by_step,
+        ):
+            replay_snapshot = TIMAPPO._compact_ev_planning_snapshot(snapshot)
+            targets_by_reason: dict[str, list[EVPlanningTarget]] = defaultdict(
+                list
+            )
+            for target in targets:
+                targets_by_reason[target.reason].append(target)
+            for reason, reason_targets in sorted(targets_by_reason.items()):
+                overlaid = {
+                    agent_id: dict(group_decisions)
+                    for agent_id, group_decisions in raw_decisions.items()
+                }
+                for target in reason_targets:
+                    overlaid.setdefault(target.agent_id, {})[
+                        target.group_id
+                    ] = target.decision
+                items.append(
+                    _EVPlanningReplayItem(
+                        snapshot=replay_snapshot,
+                        decisions=overlaid,
+                        targets=tuple(reason_targets),
+                        reason=reason,
+                    )
+                )
+        return tuple(items)
+
+    @staticmethod
+    def _compact_ev_planning_snapshot(
+        snapshot: InterfaceSnapshot,
+    ) -> InterfaceSnapshot:
+        """Keep exactly the immutable fields consumed by actor replay."""
+
+        return replace(
+            snapshot,
+            modules=(),
+            entities=(),
+            fault_evidence=(),
+            health=(),
+            observation_parts=tuple(
+                part for part in snapshot.observation_parts if part.policy_input
+            ),
+            dependencies=(),
+            constraints=(),
+            shared_resources=(),
+            closure_log=(),
+            execution_feedback=(),
+            topology_events=(),
+        )
+
+    def _sample_ev_planning_replay(self) -> tuple[_EVPlanningReplayItem, ...]:
+        count = self.ev_planning_replay_samples_per_reason
+        if count <= 0:
+            return ()
+        samples: list[_EVPlanningReplayItem] = []
+        for reason, reservoir in sorted(self._ev_planning_replay.items()):
+            if not reservoir:
+                continue
+            samples.extend(
+                random.sample(reservoir, min(count, len(reservoir)))
+            )
+        return tuple(samples)
+
+    def _remember_ev_planning_items(
+        self,
+        items: tuple[_EVPlanningReplayItem, ...],
+    ) -> None:
+        """Maintain a bounded reservoir independently for each target reason."""
+
+        capacity = self.ev_planning_replay_capacity_per_reason
+        if capacity <= 0:
+            return
+        for item in items:
+            reason = item.reason
+            self._ev_planning_replay_seen[reason] += 1
+            seen = self._ev_planning_replay_seen[reason]
+            reservoir = self._ev_planning_replay[reason]
+            if len(reservoir) < capacity:
+                reservoir.append(item)
+                continue
+            replacement_index = random.randrange(seen)
+            if replacement_index < capacity:
+                reservoir[replacement_index] = item
+
+    def _ev_planning_loss(
+        self,
+        losses_by_mode_and_reason: Mapping[str, Mapping[str, list[Tensor]]],
+        *,
+        fallback: Tensor,
+    ) -> Tensor:
+        """Return a target-balanced EV loss without duplicating samples.
+
+        Connected EV data naturally contains many more safe ``IDLE`` instants
+        than useful charging opportunities.  An ordinary sample mean therefore
+        rewards an actor that predicts IDLE almost everywhere.  The balanced
+        objective gives equal mass to the available action modes and, within a
+        mode, equal mass to the available causal reasons (for example urgent
+        service versus a cheap tariff opportunity).  This affects training
+        only; the planner never replaces the actor at inference time.
+        """
+
+        if not self.ev_planning_balance_targets:
+            return fallback
+        mode_losses: list[Tensor] = []
+        for reason_groups in losses_by_mode_and_reason.values():
+            reason_losses = [
+                torch.stack(losses).mean()
+                for losses in reason_groups.values()
+                if losses
+            ]
+            if reason_losses:
+                mode_losses.append(torch.stack(reason_losses).mean())
+        return torch.stack(mode_losses).mean() if mode_losses else fallback
+
+    @staticmethod
+    def _mean_or_zero(values, *, reference: Tensor) -> Tensor:
+        return (
+            torch.stack(tuple(values)).mean()
+            if values
+            else reference.new_zeros(())
+        )
 
     @staticmethod
     def _overlay_final_decisions(step, raw_decisions):
@@ -869,6 +1281,35 @@ class TIMAPPO:
             ),
             "rollout": self.rollout.state_dict(),
             "update_count": self.update_count,
+            "discount": {
+                "gamma_reference": self.gamma_reference,
+                "gae_lambda_reference": self.gae_lambda_reference,
+                "discount_timebase_seconds": self.discount_timebase_seconds,
+                "seconds_per_time_step": self.seconds_per_time_step,
+                "effective_gamma": self.gamma,
+                "effective_gae_lambda": self.gae_lambda,
+            },
+            "ev_planning": {
+                "auxiliary_coeff": self.ev_planning_auxiliary_coeff,
+                "balance_targets": self.ev_planning_balance_targets,
+                "fraction_coeff": self.ev_planning_fraction_coeff,
+                "replay_capacity_per_reason": (
+                    self.ev_planning_replay_capacity_per_reason
+                ),
+                "replay_samples_per_reason": (
+                    self.ev_planning_replay_samples_per_reason
+                ),
+                "replay": {
+                    reason: tuple(items)
+                    for reason, items in self._ev_planning_replay.items()
+                },
+                "replay_seen": dict(self._ev_planning_replay_seen),
+                "planner": (
+                    None
+                    if self.ev_planner is None
+                    else dict(self.ev_planner.configuration())
+                ),
+            },
             "policy_anchor_actor": (
                 None
                 if self.policy_anchor_actor is None
@@ -883,6 +1324,32 @@ class TIMAPPO:
         restore_optimizers: bool = True,
         restore_rollout: bool = True,
     ) -> None:
+        ev_planning_state = dict(payload.get("ev_planning", {}))
+        restored_replay = (
+            dict(ev_planning_state.get("replay", {}))
+            if restore_rollout
+            else {}
+        )
+        capacity = self.ev_planning_replay_capacity_per_reason
+        self._ev_planning_replay = defaultdict(
+            list,
+            {
+                str(reason): list(items)[-capacity:]
+                if capacity > 0
+                else []
+                for reason, items in restored_replay.items()
+            },
+        )
+        self._ev_planning_replay_seen = Counter(
+            {
+                str(reason): int(count)
+                for reason, count in (
+                    dict(ev_planning_state.get("replay_seen", {})).items()
+                    if restore_rollout
+                    else ()
+                )
+            }
+        )
         if restore_optimizers:
             self.actor_optimizer.load_state_dict(payload["actor_optimizer"])
             self.critic_optimizer.load_state_dict(payload["critic_optimizer"])

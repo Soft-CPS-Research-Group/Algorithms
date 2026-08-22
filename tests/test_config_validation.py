@@ -121,6 +121,18 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         "exclude_intervened_actions_from_policy_loss"
     ] = True
     stage["hyperparameters"]["intervention_distillation_coeff"] = 0.1
+    stage["hyperparameters"]["discount_timebase_seconds"] = 3600.0
+    stage["hyperparameters"]["ev_planning"] = {
+        "auxiliary_coeff": 0.25,
+        "balance_targets": True,
+        "fraction_coeff": 0.2,
+        "replay_capacity_per_reason": 64,
+        "replay_samples_per_reason": 8,
+        "charge_fraction": 0.95,
+        "service_tolerance_ratio": 0.05,
+        "urgency_duty_ratio": 0.85,
+        "minimum_price_spread": 0.001,
+    }
     stage["hyperparameters"]["entropy_coeff_by_group_type"] = {
         "stationary_storage": 0.05,
         "ev_session": 0.005,
@@ -157,6 +169,22 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     assert (
         parsed.pipeline[0].hyperparameters.intervention_distillation_coeff
         == 0.1
+    )
+    assert parsed.pipeline[0].hyperparameters.discount_timebase_seconds == 3600.0
+    assert parsed.pipeline[0].hyperparameters.ev_planning.auxiliary_coeff == 0.25
+    assert parsed.pipeline[0].hyperparameters.ev_planning.balance_targets
+    assert parsed.pipeline[0].hyperparameters.ev_planning.fraction_coeff == 0.2
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.replay_capacity_per_reason
+        == 64
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.replay_samples_per_reason
+        == 8
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.minimum_price_spread
+        == 0.001
     )
     assert (
         parsed.pipeline[0].hyperparameters.actor.deterministic_mode_strategy

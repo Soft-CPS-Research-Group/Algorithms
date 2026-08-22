@@ -24,6 +24,7 @@ from algorithms.ti_marl.learning.mappo import TIMAPPO
 from algorithms.ti_marl.learning.behavior_cloning import (
     TypedBehaviorCloningWarmStart,
 )
+from algorithms.ti_marl.learning.ev_planning import CausalEVPlanner
 from algorithms.ti_marl.learning.rollout import RolloutStep
 from algorithms.ti_marl.policy.networks import (
     CentralSetCritic,
@@ -156,6 +157,31 @@ class TIMARL(BaseAgent):
             else None
         )
         self._parameter_count = self._current_parameter_count()
+        ev_planning_cfg = dict(hyper.get("ev_planning", {}))
+        ev_planning_auxiliary_coeff = float(
+            ev_planning_cfg.get("auxiliary_coeff", 0.0)
+        )
+        ev_planner = (
+            CausalEVPlanner(
+                charge_fraction=float(
+                    ev_planning_cfg.get("charge_fraction", 0.95)
+                ),
+                service_tolerance_ratio=float(
+                    ev_planning_cfg.get("service_tolerance_ratio", 0.05)
+                ),
+                price_tie_tolerance=float(
+                    ev_planning_cfg.get("price_tie_tolerance", 1.0e-6)
+                ),
+                urgency_duty_ratio=float(
+                    ev_planning_cfg.get("urgency_duty_ratio", 0.85)
+                ),
+                minimum_price_spread=float(
+                    ev_planning_cfg.get("minimum_price_spread", 0.0)
+                ),
+            )
+            if ev_planning_auxiliary_coeff > 0.0
+            else None
+        )
         self.learner = TIMAPPO(
             self.actor,
             self.critic,
@@ -163,6 +189,11 @@ class TIMARL(BaseAgent):
             learning_rate=float(hyper.get("learning_rate", 3.0e-4)),
             gamma=float(hyper.get("gamma", 0.99)),
             gae_lambda=float(hyper.get("gae_lambda", 0.95)),
+            discount_timebase_seconds=(
+                None
+                if hyper.get("discount_timebase_seconds") is None
+                else float(hyper["discount_timebase_seconds"])
+            ),
             clip_eps=float(hyper.get("clip_eps", 0.2)),
             ppo_epochs=int(hyper.get("ppo_epochs", 4)),
             entropy_coeff=float(hyper.get("entropy_coeff", 0.01)),
@@ -182,6 +213,20 @@ class TIMARL(BaseAgent):
             ),
             intervention_distillation_coeff=float(
                 hyper.get("intervention_distillation_coeff", 0.0)
+            ),
+            ev_planner=ev_planner,
+            ev_planning_auxiliary_coeff=ev_planning_auxiliary_coeff,
+            ev_planning_balance_targets=bool(
+                ev_planning_cfg.get("balance_targets", True)
+            ),
+            ev_planning_fraction_coeff=float(
+                ev_planning_cfg.get("fraction_coeff", 0.25)
+            ),
+            ev_planning_replay_capacity_per_reason=int(
+                ev_planning_cfg.get("replay_capacity_per_reason", 16)
+            ),
+            ev_planning_replay_samples_per_reason=int(
+                ev_planning_cfg.get("replay_samples_per_reason", 8)
             ),
             value_coeff=float(hyper.get("value_coeff", 0.5)),
             max_grad_norm=float(hyper.get("max_grad_norm", 0.5)),
@@ -279,6 +324,7 @@ class TIMARL(BaseAgent):
         self._episode_final_modes: Counter[tuple[str, str]] = Counter()
         self._episode_raw_fraction_sums: Counter[tuple[str, str]] = Counter()
         self._episode_final_fraction_sums: Counter[tuple[str, str]] = Counter()
+        self._episode_ev_control: Counter[str] = Counter()
         self._current_episode = 0
         self._current_episode_is_training = False
 
@@ -371,6 +417,9 @@ class TIMARL(BaseAgent):
             seconds_per_time_step=float(metadata.get("seconds_per_time_step", 1.0)),
         )
         self.projector.set_seconds_per_time_step(
+            float(metadata.get("seconds_per_time_step", 1.0))
+        )
+        self.learner.set_seconds_per_time_step(
             float(metadata.get("seconds_per_time_step", 1.0))
         )
         building_names = metadata.get("building_names") or entity_specs.get("tables", {}).get("building", {}).get("ids", [])
@@ -535,6 +584,11 @@ class TIMARL(BaseAgent):
         self._latest_diagnostics = {
             **self._latest_diagnostics,
             **self._action_mode_diagnostics(raw_bundles, final_bundles),
+            **self._ev_actor_control_diagnostics(
+                self._current_snapshot,
+                raw_bundles,
+                final_bundles,
+            ),
             "TI_MARL/agents": float(len(self._current_snapshot.agent_ids)),
             "TI_MARL/registered_agents": float(
                 len(self._current_snapshot.registered_agent_ids)
@@ -551,6 +605,8 @@ class TIMARL(BaseAgent):
                 sum(item.get("reason") == "invalid_port_fallback" for bundle in final_bundles for item in bundle.interventions)
             ) / float(total_groups),
             "TI_MARL/parameter_count": float(self._parameter_count),
+            "TI_MARL/effective_gamma": float(self.learner.gamma),
+            "TI_MARL/effective_gae_lambda": float(self.learner.gae_lambda),
             "TI_MARL/structure_recompilations": float(
                 self.compiler.structure_recompilations
             ),
@@ -700,6 +756,88 @@ class TIMARL(BaseAgent):
                     else 0.0
                 )
         return metrics
+
+    def _ev_actor_control_diagnostics(
+        self,
+        snapshot,
+        raw_bundles,
+        final_bundles,
+    ) -> Mapping[str, float]:
+        """Distinguish learned EV control from safety-projector takeovers."""
+
+        ev_groups = {
+            (group.owner_agent_id, group.group_id): group
+            for group in snapshot.action_groups
+            if group.group_type == "ev_session"
+        }
+        raw = {
+            (bundle.agent_id, decision.group_id): decision
+            for bundle in raw_bundles
+            for decision in bundle.decisions
+            if (bundle.agent_id, decision.group_id) in ev_groups
+        }
+        final = {
+            (bundle.agent_id, decision.group_id): decision
+            for bundle in final_bundles
+            for decision in bundle.decisions
+            if (bundle.agent_id, decision.group_id) in ev_groups
+        }
+        self._episode_ev_control["groups"] += len(ev_groups)
+        for key, final_decision in final.items():
+            if final_decision.mode != "CHARGE_EV":
+                continue
+            self._episode_ev_control["final_charge"] += 1
+            raw_decision = raw.get(key)
+            if raw_decision is not None and raw_decision.mode == "CHARGE_EV":
+                self._episode_ev_control["actor_charge"] += 1
+            else:
+                self._episode_ev_control["projector_charge_takeover"] += 1
+
+        planner = self.learner.ev_planner
+        if planner is not None:
+            for target in planner.targets(
+                snapshot,
+                seconds_per_time_step=self.learner.seconds_per_time_step,
+            ):
+                self._episode_ev_control["targets"] += 1
+                label = "charge" if target.decision.mode == "CHARGE_EV" else "idle"
+                self._episode_ev_control[f"targets_{label}"] += 1
+                raw_decision = raw.get((target.agent_id, target.group_id))
+                if (
+                    raw_decision is not None
+                    and raw_decision.mode == target.decision.mode
+                ):
+                    self._episode_ev_control["agreements"] += 1
+                    self._episode_ev_control[f"agreements_{label}"] += 1
+
+        def ratio(numerator: str, denominator: str) -> float:
+            total = self._episode_ev_control[denominator]
+            return (
+                float(self._episode_ev_control[numerator]) / float(total)
+                if total > 0
+                else 0.0
+            )
+
+        return {
+            "TI_MARL/ev_planning_target_coverage_rate": ratio(
+                "targets", "groups"
+            ),
+            "TI_MARL/ev_planning_mode_agreement_rate": ratio(
+                "agreements", "targets"
+            ),
+            "TI_MARL/ev_planning_charge_recall": ratio(
+                "agreements_charge", "targets_charge"
+            ),
+            "TI_MARL/ev_planning_idle_recall": ratio(
+                "agreements_idle", "targets_idle"
+            ),
+            "TI_MARL/ev_actor_charge_ownership_rate": ratio(
+                "actor_charge", "final_charge"
+            ),
+            "TI_MARL/ev_projector_charge_takeover_rate": ratio(
+                "projector_charge_takeover", "final_charge"
+            ),
+        }
 
     def _reward_components_by_agent(
         self,
@@ -957,6 +1095,7 @@ class TIMARL(BaseAgent):
         self._episode_final_modes.clear()
         self._episode_raw_fraction_sums.clear()
         self._episode_final_fraction_sums.clear()
+        self._episode_ev_control.clear()
 
     def consume_latest_training_metrics(self) -> Mapping[str, float]:
         metrics = dict(self._latest_training_metrics)

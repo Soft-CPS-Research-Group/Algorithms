@@ -4,11 +4,17 @@ from algorithms.ti_marl.learning.behavior_cloning import (
     TypedBehaviorCloningWarmStart,
     TypedDemonstration,
 )
+from algorithms.ti_marl.learning.ev_planning import (
+    CausalEVPlanner,
+    EVPlanningTarget,
+)
 from algorithms.ti_marl.learning.mappo import TIMAPPO
 from algorithms.ti_marl.learning.rollout import TypedRolloutBuffer
 
 __all__ = [
     "TIMAPPO",
+    "CausalEVPlanner",
+    "EVPlanningTarget",
     "TypedBehaviorCloningWarmStart",
     "TypedDemonstration",
     "TypedRolloutBuffer",
