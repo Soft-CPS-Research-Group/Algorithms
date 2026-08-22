@@ -55,9 +55,10 @@ def test_default_payload_sample_loads_from_repo():
     from utils.entity_tokenizer_schema import _load_default_sample
 
     sample = _load_default_sample()
-    # Expected coverage: district has 46 features, building has 38.
-    assert len(sample.feature_names_per_table["district"]) == 46
-    assert len(sample.feature_names_per_table["building"]) == 38
+    # Simulator 1.7.0 entity_v1 catalog (regenerate with
+    # scripts/dump_entity_obs_sample.py when the public schema changes).
+    assert len(sample.feature_names_per_table["district"]) == 83
+    assert len(sample.feature_names_per_table["building"]) == 72
     assert "district__hour" in sample.feature_names_per_table["district"]
     assert (
         "non_shiftable_load" in sample.feature_names_per_table["building"]

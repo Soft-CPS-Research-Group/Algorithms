@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -147,6 +148,18 @@ def test_checkpoint_manager_preserves_trainable_episode_boundaries(tmp_path):
     assert path.name == "episode_001_step_35039_dummy_35039.pth"
     assert path.read_text() == "checkpoint"
     assert agent.saved_steps == [35039]
+    latest = tmp_path / "checkpoints" / "dummy_35039.pth"
+    assert os.path.samefile(path, latest)
+
+    repeated = manager.save_episode_end(
+        agent,
+        step=35039,
+        episode=0,
+        deterministic=False,
+    )
+    assert repeated == path
+    assert os.path.samefile(repeated, latest)
+    assert agent.saved_steps == [35039, 35039]
 
 
 def test_checkpoint_manager_does_not_save_deterministic_episode_boundary(tmp_path):

@@ -41,12 +41,12 @@
     "storage": {
       "entity_table": "storage",
       "action_field": "electrical_storage",
-      "input_dim_fallback": 9
+      "input_dim_fallback": 49
     },
     "charger": {
       "entity_table": "charger",
       "action_field": "electric_vehicle_storage",
-      "input_dim_fallback": 16
+      "input_dim_fallback": 63
     }
   },
 
@@ -235,7 +235,7 @@
       "entity_table": "deferrable_appliance",
       "cardinality": "per_asset",
       "adapter_prefix": "deferrable_appliance::",
-      "input_dim_fallback": 5
+      "input_dim_fallback": 43
     }
   },
 

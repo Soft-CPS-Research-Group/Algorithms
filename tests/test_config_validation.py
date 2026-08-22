@@ -43,6 +43,427 @@ def test_validate_config_accepts_strict_local_rbc_policy(base_config):
     validate_config(config)
 
 
+def _ti_marl_stage():
+    return {
+        "algorithm": "TIMARL",
+        "count": 1,
+        "hyperparameters": {
+            "contract_version": "ti_marl_v1",
+            "typed_interfaces_dir": "local/generated_interfaces",
+            "backbone": {"name": "mappo"},
+            "actor": {
+                "d_model": 128,
+                "attention_heads": 4,
+                "relation_layers": 2,
+            },
+            "critic": {"kind": "set"},
+            "feasibility": {
+                "kind": "analytic_projection",
+                "deferrable_service_margin_seconds": 3600.0,
+            },
+        },
+    }
+
+
+def test_validate_config_accepts_ti_marl_entity_dynamic(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["topology_mode"] = "dynamic"
+    config["simulator"]["central_agent"] = False
+    config["pipeline"] = [_ti_marl_stage()]
+    parsed = validate_config(config)
+    assert parsed.pipeline[0].algorithm == "TIMARL"
+    assert (
+        parsed.pipeline[0].hyperparameters.feasibility.deferrable_service_margin_seconds
+        == 3600.0
+    )
+
+
+def test_validate_config_accepts_ti_marl_electrical_service_preflight(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["require_declared_electrical_service"] = True
+    config["pipeline"] = [stage]
+
+    parsed = validate_config(config)
+
+    assert parsed.pipeline[0].hyperparameters.require_declared_electrical_service
+
+
+def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["actor"]["group_context_kind"] = "action_conditioned"
+    stage["hyperparameters"]["actor"][
+        "deterministic_mode_strategy"
+    ] = "expected_signed"
+    stage["hyperparameters"]["actor"][
+        "deterministic_mode_strategy_by_group_type"
+    ] = {"ev_session": "argmax"}
+    stage["hyperparameters"]["actor"][
+        "deterministic_expected_signed_gain_by_group_type"
+    ] = {"stationary_storage": 2.0}
+    stage["hyperparameters"]["actor"][
+        "deterministic_expected_signed_deadband_by_group_type"
+    ] = {"stationary_storage": 0.05}
+    stage["hyperparameters"]["actor"][
+        "deterministic_non_idle_logit_margin_by_group_type"
+    ] = {"ev_session": 0.25}
+    stage["hyperparameters"]["advantage_normalization"] = "per_agent"
+    stage["hyperparameters"]["policy_credit_assignment"] = "typed_group"
+    stage["hyperparameters"]["policy_anchor_coeff"] = 0.05
+    stage["hyperparameters"]["policy_anchor_reset_on_resume"] = True
+    stage["hyperparameters"][
+        "exclude_intervened_actions_from_policy_loss"
+    ] = True
+    stage["hyperparameters"]["intervention_distillation_coeff"] = 0.1
+    stage["hyperparameters"]["discount_timebase_seconds"] = 3600.0
+    stage["hyperparameters"]["ev_planning"] = {
+        "auxiliary_coeff": 0.25,
+        "balance_targets": True,
+        "fraction_coeff": 0.2,
+        "replay_capacity_per_reason": 64,
+        "replay_samples_per_reason": 8,
+        "charge_fraction": 0.95,
+        "discharge_fraction": 0.40,
+        "service_tolerance_ratio": 0.05,
+        "v2g_service_margin_ratio": 0.06,
+        "urgency_duty_ratio": 0.85,
+        "minimum_price_spread": 0.001,
+        "minimum_v2g_price_spread": 0.02,
+        "minimum_v2g_departure_hours": 1.5,
+    }
+    stage["hyperparameters"]["entropy_coeff_by_group_type"] = {
+        "stationary_storage": 0.05,
+        "ev_session": 0.005,
+    }
+    stage["hyperparameters"]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 1,
+        "max_samples": 672,
+        "pretraining_epochs": 2,
+        "batch_size": 32,
+        "learning_rate": 1.0e-4,
+        "balance_action_modes": True,
+        "mode_balance_exponent": 0.5,
+        "max_mode_weight": 3.0,
+        "balanced_loss_kind": "hierarchical_mode_mean",
+        "calibration_epochs": 2,
+        "calibration_learning_rate": 5.0e-5,
+        "teacher": {
+            "policy": "RBCSmartPolicy",
+            "hyperparameters": {"allow_v2g": True},
+        },
+    }
+    config["pipeline"] = [stage]
+
+    parsed = validate_config(config)
+
+    behavior_cloning = parsed.pipeline[0].hyperparameters.behavior_cloning
+    assert parsed.pipeline[0].hyperparameters.policy_anchor_coeff == 0.05
+    assert parsed.pipeline[0].hyperparameters.policy_anchor_reset_on_resume
+    assert (
+        parsed.pipeline[0]
+        .hyperparameters.exclude_intervened_actions_from_policy_loss
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.intervention_distillation_coeff
+        == 0.1
+    )
+    assert parsed.pipeline[0].hyperparameters.discount_timebase_seconds == 3600.0
+    assert parsed.pipeline[0].hyperparameters.ev_planning.auxiliary_coeff == 0.25
+    assert parsed.pipeline[0].hyperparameters.ev_planning.balance_targets
+    assert parsed.pipeline[0].hyperparameters.ev_planning.fraction_coeff == 0.2
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.replay_capacity_per_reason
+        == 64
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.replay_samples_per_reason
+        == 8
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.minimum_price_spread
+        == 0.001
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.discharge_fraction
+        == 0.40
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.v2g_service_margin_ratio
+        == 0.06
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.minimum_v2g_price_spread
+        == 0.02
+    )
+    assert (
+        parsed.pipeline[0]
+        .hyperparameters.ev_planning.minimum_v2g_departure_hours
+        == 1.5
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.actor.deterministic_mode_strategy
+        == "expected_signed"
+    )
+    assert parsed.pipeline[0].hyperparameters.actor.deterministic_mode_strategy_by_group_type == {
+        "ev_session": "argmax"
+    }
+    assert parsed.pipeline[0].hyperparameters.actor.deterministic_expected_signed_gain_by_group_type == {
+        "stationary_storage": 2.0
+    }
+    assert parsed.pipeline[0].hyperparameters.actor.deterministic_expected_signed_deadband_by_group_type == {
+        "stationary_storage": 0.05
+    }
+    assert parsed.pipeline[0].hyperparameters.actor.deterministic_non_idle_logit_margin_by_group_type == {
+        "ev_session": 0.25
+    }
+    assert behavior_cloning is not None
+    assert behavior_cloning.teacher.policy == "RBCSmartPolicy"
+    assert behavior_cloning.max_samples == 672
+    assert behavior_cloning.balance_action_modes
+    assert behavior_cloning.mode_balance_exponent == 0.5
+    assert behavior_cloning.max_mode_weight == 3.0
+    assert behavior_cloning.balanced_loss_kind == "hierarchical_mode_mean"
+    assert behavior_cloning.calibration_epochs == 2
+    assert behavior_cloning.calibration_learning_rate == 5.0e-5
+    assert parsed.pipeline[0].hyperparameters.advantage_normalization == "per_agent"
+    assert (
+        parsed.pipeline[0].hyperparameters.policy_credit_assignment
+        == "typed_group"
+    )
+    assert parsed.pipeline[0].hyperparameters.entropy_coeff_by_group_type == {
+        "stationary_storage": 0.05,
+        "ev_session": 0.005,
+    }
+    assert (
+        parsed.pipeline[0].hyperparameters.actor.group_context_kind
+        == "action_conditioned"
+    )
+
+
+def test_validate_config_accepts_ti_ppo_with_local_critic(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["backbone"] = {"name": "ppo"}
+    stage["hyperparameters"]["critic"] = {"kind": "local"}
+    config["pipeline"] = [stage]
+
+    parsed = validate_config(config)
+
+    assert parsed.pipeline[0].hyperparameters.backbone.name == "ppo"
+    assert parsed.pipeline[0].hyperparameters.critic.kind == "local"
+
+
+@pytest.mark.parametrize(
+    ("backbone", "critic"),
+    [("ppo", "set"), ("mappo", "local")],
+)
+def test_validate_config_rejects_mismatched_ti_marl_critic(
+    base_config,
+    backbone,
+    critic,
+):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["backbone"] = {"name": backbone}
+    stage["hyperparameters"]["critic"] = {"kind": critic}
+    config["pipeline"] = [stage]
+
+    with pytest.raises(ValueError, match="requires critic.kind"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_negative_expected_signed_gain(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["actor"][
+        "deterministic_expected_signed_gain_by_group_type"
+    ] = {"stationary_storage": -0.1}
+    config["pipeline"] = [stage]
+
+    with pytest.raises(ValueError, match="expected-signed gains must be non-negative"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_invalid_expected_signed_deadband(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["actor"][
+        "deterministic_expected_signed_deadband_by_group_type"
+    ] = {"stationary_storage": 1.1}
+    config["pipeline"] = [stage]
+
+    with pytest.raises(ValueError, match="deadbands must be between zero and one"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_intervention_mask_with_joint_credit(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"][
+        "exclude_intervened_actions_from_policy_loss"
+    ] = True
+    config["pipeline"] = [stage]
+
+    with pytest.raises(
+        ValueError,
+        match="exclude_intervened_actions_from_policy_loss requires",
+    ):
+        validate_config(config)
+
+
+def test_validate_config_rejects_intervention_distillation_without_mask(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["policy_credit_assignment"] = "typed_group"
+    stage["hyperparameters"]["intervention_distillation_coeff"] = 0.1
+    config["pipeline"] = [stage]
+
+    with pytest.raises(
+        ValueError,
+        match="intervention_distillation_coeff requires",
+    ):
+        validate_config(config)
+
+
+def _ti_marl_protocol_config(base_config, *, phase: str):
+    config = copy.deepcopy(base_config)
+    config["simulator"].update(
+        {
+            "interface": "entity",
+            "topology_mode": "static",
+            "central_agent": False,
+            "random_seed": 101,
+            "episodes": 1,
+            "deterministic_finish": phase != "train",
+        }
+    )
+    config["simulator"]["export"].update(
+        {"export_kpis_on_episode_end": True, "final_episode_only": True}
+    )
+    stage = _ti_marl_stage()
+    stage["frozen"] = phase != "train"
+    config["pipeline"] = [stage]
+    config["checkpointing"].update(
+        {
+            "checkpoint_interval": None,
+            "checkpoint_on_episode_end": phase == "train",
+            "keep_episode_checkpoints": phase == "train",
+            "resume_training": phase != "train",
+            "checkpoint_local_path": (
+                "runs/local/checkpoint.pth" if phase != "train" else None
+            ),
+        }
+    )
+    config["experiment_protocol"] = {
+        "version": "ti_marl_experiment_protocol_v1",
+        "protocol_id": "ti-marl-v1",
+        "phase": phase,
+        "role": "candidate",
+        "data_split": phase,
+        "window_id": "winter",
+        "candidate_id": "candidate-1",
+        "paired_reference_id": "smart-winter" if phase != "train" else None,
+        "selection_rules_sha256": "a" * 64 if phase == "development" else None,
+        "selection_record_sha256": "b" * 64 if phase == "confirmation" else None,
+        "selected_checkpoint_sha256": "c" * 64 if phase == "confirmation" else None,
+    }
+    return config
+
+
+@pytest.mark.parametrize("phase", ["train", "development", "confirmation"])
+def test_validate_config_accepts_explicit_ti_marl_protocol_phases(base_config, phase):
+    validate_config(_ti_marl_protocol_config(base_config, phase=phase))
+
+
+def test_validate_config_requires_post_bc_ti_marl_learning_episode(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="train")
+    config["pipeline"][0]["hyperparameters"]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 2,
+        "pretraining_epochs": 1,
+    }
+    config["simulator"]["episodes"] = 2
+
+    with pytest.raises(ValueError, match="at least one post-BC learning episode"):
+        validate_config(config)
+
+    config["simulator"]["episodes"] = 3
+    validate_config(config)
+
+
+def test_validate_config_requires_explicit_simulator_seed_for_evaluation(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="development")
+    config["simulator"]["random_seed"] = None
+    with pytest.raises(ValueError, match="simulator.random_seed"):
+        validate_config(config)
+
+
+def test_validate_config_prevents_confirmation_without_selection_record(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="confirmation")
+    config["experiment_protocol"]["selection_record_sha256"] = None
+    with pytest.raises(ValueError, match="selection_record_sha256"):
+        validate_config(config)
+
+
+def test_validate_config_requires_selected_checkpoint_hash_for_confirmation(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="confirmation")
+    config["experiment_protocol"]["selected_checkpoint_sha256"] = None
+    with pytest.raises(ValueError, match="selected_checkpoint_sha256"):
+        validate_config(config)
+
+
+def test_validate_config_rejects_retired_ti_marl_interface_sources(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["typed_interface_path"] = "retired-global.yaml"
+    config["pipeline"] = [stage]
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    ("interface", "central_agent", "message"),
+    [
+        ("flat", False, "interface='entity'"),
+        ("entity", True, "central_agent=false"),
+    ],
+)
+def test_validate_config_rejects_invalid_ti_marl_environment(
+    base_config,
+    interface,
+    central_agent,
+    message,
+):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = interface
+    config["simulator"]["topology_mode"] = "static"
+    config["simulator"]["central_agent"] = central_agent
+    config["pipeline"] = [_ti_marl_stage()]
+    with pytest.raises(ValueError, match=message):
+        validate_config(config)
+
+
 def test_validate_config_rejects_non_leaf_transformer_ppo() -> None:
     config_path = Path("configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml")
     with config_path.open("r", encoding="utf-8") as handle:

@@ -37,26 +37,28 @@ def _select_torch_device(
     *, require_cuda: bool = False, algorithm_name: str = "MADDPG"
 ) -> torch.device:
     """Select the torch device and fail early when CUDA was explicitly required."""
-    if torch.cuda.is_available():
+    cuda_usable = bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
+    if cuda_usable:
         return torch.device("cuda")
     if require_cuda:
         raise RuntimeError(
-            f"{algorithm_name} requires CUDA, but torch.cuda.is_available() is false."
+            f"{algorithm_name} requires CUDA, but no CUDA device is usable."
         )
     return torch.device("cpu")
 
 
 def _log_torch_runtime(device: torch.device) -> None:
-    cuda_available = torch.cuda.is_available()
-    cuda_device_count = torch.cuda.device_count() if cuda_available else 0
+    cuda_reported_available = bool(torch.cuda.is_available())
+    cuda_device_count = torch.cuda.device_count() if cuda_reported_available else 0
+    cuda_usable = bool(cuda_reported_available and cuda_device_count > 0)
     logger.info(
         "Torch runtime: torch_version={}, torch_cuda_version={}, cuda_available={}, cuda_device_count={}",
         torch.__version__,
         torch.version.cuda,
-        cuda_available,
+        cuda_usable,
         cuda_device_count,
     )
-    if cuda_available:
+    if device.type == "cuda" and cuda_usable:
         logger.info("CUDA device selected: {}", torch.cuda.get_device_name(device))
 
 

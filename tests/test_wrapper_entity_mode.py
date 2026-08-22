@@ -257,6 +257,67 @@ class _EncodedDummyModel(_DummyModel):
         self.last_encoded_observations = encoded_observations
 
 
+class _DeterministicObserverModel(_DummyModel):
+    requires_deterministic_transition_observation = True
+
+    def __init__(self):
+        super().__init__()
+        self.observed_transitions = 0
+        self.entity_transition_contexts = 0
+        self.update_calls = 0
+
+    def set_entity_transition_context(self, **_kwargs):
+        self.entity_transition_contexts += 1
+
+    def observe_transition(self, **_kwargs):
+        self.observed_transitions += 1
+
+    def update(self, **_kwargs):
+        self.update_calls += 1
+
+
+class _BoundaryTrainingProgressModel(_DummyModel):
+    def __init__(self):
+        super().__init__()
+        self.progress_callback = None
+
+    def set_training_progress_callback(self, callback):
+        self.progress_callback = callback
+
+    def on_episode_end(self, *, episode, training):
+        assert episode == 0
+        assert training is True
+        assert callable(self.progress_callback)
+        self.progress_callback(
+            {
+                "phase": "behavior_cloning_balanced",
+                "epoch_current": 1,
+                "epoch_total": 2,
+                "loss": 0.25,
+            }
+        )
+
+
+class _UpdateTrainingProgressModel(_DummyModel):
+    def __init__(self):
+        super().__init__()
+        self.progress_callback = None
+
+    def set_training_progress_callback(self, callback):
+        self.progress_callback = callback
+
+    def update(self, **_kwargs):
+        assert callable(self.progress_callback)
+        self.progress_callback(
+            {
+                "phase": "ti_mappo_epoch",
+                "epoch_current": 1,
+                "epoch_total": 4,
+                "approx_kl": 0.01,
+            }
+        )
+
+
 class _PipelineProbe:
     def __init__(self, *, use_raw_observations: bool, output):
         self.use_raw_observations = use_raw_observations
@@ -379,6 +440,97 @@ def test_wrapper_training_refreshes_schedule_before_deferred_topology_reattach()
     assert model.update_phases == [1]
     assert model.attach_update_steps == [False, False, True]
     assert checkpoint_schedules == [False, True]
+
+
+def test_wrapper_deterministic_run_observes_without_learning():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["tracking"]["progress_updates_enabled"] = False
+    wrapper = Wrapper_CityLearn(
+        env=env,
+        config=config,
+        job_id="entity-deterministic-observer",
+    )
+    model = _DeterministicObserverModel()
+    wrapper.set_model(model)
+
+    wrapper.learn(episodes=1, deterministic=True)
+
+    assert model.observed_transitions == 2
+    assert model.entity_transition_contexts == 2
+    assert model.update_calls == 0
+
+
+def test_wrapper_reports_and_clears_boundary_training_progress_callback():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["tracking"]["progress_updates_enabled"] = False
+    wrapper = Wrapper_CityLearn(
+        env=env,
+        config=config,
+        job_id="entity-boundary-progress",
+    )
+    model = _BoundaryTrainingProgressModel()
+    wrapper.set_model(model)
+    phases = []
+    wrapper._write_phase_progress = lambda **kwargs: phases.append(kwargs)
+
+    wrapper.learn(episodes=1, deterministic=False)
+
+    phase_names = [item["phase"] for item in phases]
+    assert "model_episode_end_start" in phase_names
+    assert "behavior_cloning_balanced" in phase_names
+    assert "model_episode_end_complete" in phase_names
+    bc_progress = next(
+        item for item in phases if item["phase"] == "behavior_cloning_balanced"
+    )
+    assert bc_progress["extra"]["epoch_current"] == 1
+    assert model.progress_callback is None
+
+
+def test_wrapper_reports_and_clears_model_update_progress_callback():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["tracking"]["progress_updates_enabled"] = False
+    wrapper = Wrapper_CityLearn(
+        env=env,
+        config=config,
+        job_id="entity-model-update-progress",
+    )
+    model = _UpdateTrainingProgressModel()
+    wrapper.set_model(model)
+    phases = []
+    wrapper._write_phase_progress = lambda **kwargs: phases.append(kwargs)
+
+    wrapper.learn(episodes=1, deterministic=False)
+
+    update_progress = [
+        item for item in phases if item["phase"] == "ti_mappo_epoch"
+    ]
+    assert update_progress
+    assert update_progress[0]["extra"]["epoch_current"] == 1
+    assert update_progress[0]["extra"]["approx_kl"] == pytest.approx(0.01)
+    assert model.progress_callback is None
+
+
+def test_wrapper_skips_disabled_deterministic_observer():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["tracking"]["progress_updates_enabled"] = False
+    wrapper = Wrapper_CityLearn(
+        env=env,
+        config=config,
+        job_id="entity-disabled-deterministic-observer",
+    )
+    model = _DeterministicObserverModel()
+    model.requires_deterministic_transition_observation = False
+    wrapper.set_model(model)
+
+    wrapper.learn(episodes=1, deterministic=True)
+
+    assert model.observed_transitions == 0
+    assert model.entity_transition_contexts == 0
+    assert model.update_calls == 0
 
 
 def test_wrapper_restores_metadata_when_model_reattachment_fails():

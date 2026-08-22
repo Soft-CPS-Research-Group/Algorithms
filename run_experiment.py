@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ _startup_trace("module import started")
 import mlflow
 import numpy as np
 import yaml
+import citylearn
 from loguru import logger
 from pydantic import ValidationError
 
@@ -74,6 +76,7 @@ _startup_trace("before artifact imports")
 from utils.artifact_manifest import build_manifest, write_manifest
 from utils.bundle_validator import validate_bundle_contract
 from utils.config_schema import validate_config
+from utils.experiment_protocol import build_pairing_fingerprint, file_sha256
 _startup_trace("after artifact imports")
 
 _startup_trace("project imports loaded")
@@ -196,6 +199,103 @@ def _community_market_overlay(simulator_cfg: Mapping[str, Any] | None) -> dict[s
     return overlay
 
 
+def _load_electrical_service_overrides(
+    simulator_cfg: Mapping[str, Any] | None,
+) -> dict[str, Mapping[str, Any]]:
+    """Load an explicit simulation-only electrical-service scenario overlay.
+
+    The source dataset remains immutable.  These values describe an experimental
+    or deployment contract and are deliberately kept outside the public dataset
+    schema so provenance cannot be confused with measured dataset metadata.
+    """
+
+    if not isinstance(simulator_cfg, Mapping):
+        return {}
+    raw_path = simulator_cfg.get("electrical_service_overrides_path")
+    if raw_path in (None, ""):
+        return {}
+
+    path = Path(str(raw_path)).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Electrical-service overrides not found: {path}")
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"Unable to load electrical-service overrides: {path}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("Electrical-service overrides must be a mapping")
+    if str(payload.get("version", "")) != "electrical_service_overrides_v1":
+        raise ValueError(
+            "Electrical-service overrides require "
+            "version='electrical_service_overrides_v1'"
+        )
+    buildings = payload.get("buildings")
+    if not isinstance(buildings, Mapping) or not buildings:
+        raise ValueError("Electrical-service overrides require a non-empty buildings mapping")
+
+    result: dict[str, Mapping[str, Any]] = {}
+    for raw_agent_id, raw_service in buildings.items():
+        agent_id = str(raw_agent_id)
+        if not isinstance(raw_service, Mapping) or not raw_service:
+            raise ValueError(
+                f"Electrical-service override for {agent_id!r} must be a non-empty mapping"
+            )
+        result[agent_id] = deepcopy(dict(raw_service))
+    return result
+
+
+def _apply_simulation_schema_overlays(
+    payload: dict[str, Any],
+    simulator_cfg: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Apply declared scenario overlays to an in-memory schema copy only."""
+
+    if not isinstance(simulator_cfg, Mapping):
+        return payload
+    buildings = payload.get("buildings")
+    if not isinstance(buildings, Mapping):
+        if simulator_cfg.get("building_ids") or simulator_cfg.get(
+            "electrical_service_overrides_path"
+        ):
+            raise ValueError("Schema overlays require a buildings mapping")
+        return payload
+
+    mutable_buildings = dict(buildings)
+    for agent_id, service in _load_electrical_service_overrides(simulator_cfg).items():
+        if agent_id not in mutable_buildings:
+            raise ValueError(
+                f"Electrical-service override references unknown building {agent_id!r}"
+            )
+        building = deepcopy(dict(mutable_buildings[agent_id] or {}))
+        existing = building.get("electrical_service")
+        if existing not in (None, {}) and existing != service:
+            raise ValueError(
+                f"Electrical-service override refuses to replace dataset limits for {agent_id!r}"
+            )
+        building["electrical_service"] = deepcopy(dict(service))
+        mutable_buildings[agent_id] = building
+
+    raw_ids = simulator_cfg.get("building_ids")
+    if raw_ids is not None:
+        selected = [str(item) for item in raw_ids]
+        if not selected:
+            raise ValueError("simulator.building_ids must not be empty")
+        if len(selected) != len(set(selected)):
+            raise ValueError("simulator.building_ids must contain unique IDs")
+        unknown = [agent_id for agent_id in selected if agent_id not in mutable_buildings]
+        if unknown:
+            raise ValueError(
+                "simulator.building_ids contains unknown buildings: " + ", ".join(unknown)
+            )
+        mutable_buildings = {
+            agent_id: mutable_buildings[agent_id] for agent_id in selected
+        }
+
+    payload["buildings"] = mutable_buildings
+    return payload
+
+
 def _resolve_citylearn_schema_input(
     dataset_path_value: Any,
     simulator_cfg: Mapping[str, Any] | None = None,
@@ -227,7 +327,7 @@ def _resolve_citylearn_schema_input(
         community_market = _community_market_overlay(simulator_cfg)
         if community_market is not None:
             payload["community_market"] = community_market
-        return payload
+        return _apply_simulation_schema_overlays(payload, simulator_cfg)
 
     return dataset_path_value
 
@@ -560,6 +660,24 @@ def _resume_agent_from_checkpoint(
             checkpoints_dir=checkpoints_dir,
         )
 
+    protocol = config.get("experiment_protocol") or {}
+    expected_checkpoint_sha256 = protocol.get("selected_checkpoint_sha256")
+    if expected_checkpoint_sha256:
+        checkpoint_file = checkpoint_path
+        if checkpoint_file.is_dir():
+            checkpoint_file = checkpoint_file / checkpoint_artifact
+        if not checkpoint_file.is_file():
+            raise RuntimeError(
+                "Cannot verify selected checkpoint hash because the resolved "
+                f"checkpoint is not a file: {checkpoint_file}"
+            )
+        actual_checkpoint_sha256 = file_sha256(checkpoint_file)
+        if actual_checkpoint_sha256 != str(expected_checkpoint_sha256):
+            raise RuntimeError(
+                "Selected checkpoint SHA-256 mismatch: "
+                f"expected {expected_checkpoint_sha256}, got {actual_checkpoint_sha256}"
+            )
+
     agent.load_checkpoint(str(checkpoint_path))
     logger.info("Agent '{}' resumed from checkpoint {}", agent.__class__.__name__, checkpoint_path)
     return checkpoint_path
@@ -764,6 +882,8 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "export_only_final_episode": export_cfg.get("final_episode_only", True),
             "render_directory": str(path_info["simulation_data_dir"]),
         }
+        if simulator_cfg.get("random_seed") is not None:
+            env_kwargs["random_seed"] = int(simulator_cfg["random_seed"])
         reward_function_kwargs = simulator_cfg.get("reward_function_kwargs")
         if isinstance(reward_function_kwargs, dict) and reward_function_kwargs:
             env_kwargs["reward_function_kwargs"] = reward_function_kwargs
@@ -904,6 +1024,15 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             else {}
         )
 
+        experiment_protocol = config.get("experiment_protocol")
+        pairing_fingerprint = (
+            build_pairing_fingerprint(
+                config,
+                simulator_version=str(getattr(citylearn, "__version__", "unknown")),
+            )
+            if experiment_protocol
+            else None
+        )
         result_payload = {
             "status": "completed",
             "kpi_source": kpi_source,
@@ -924,6 +1053,8 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "wrapper_reward_enabled": bool(wrapper_reward_metadata.get("enabled", False)),
             "wrapper_reward_profile": wrapper_reward_metadata.get("profile"),
             "wrapper_reward_version": wrapper_reward_metadata.get("version"),
+            "experiment_protocol": experiment_protocol,
+            "pairing_fingerprint": pairing_fingerprint,
         }
 
         result_path = path_info["result_path"]
@@ -964,6 +1095,12 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "kpi_metric_count": 0,
             "bundle_dir": str(path_info["bundle_dir"]),
             "timestamp": datetime.utcnow().isoformat() + "Z",
+            "experiment_protocol": experiment_protocol,
+            "pairing_fingerprint_sha256": (
+                pairing_fingerprint.get("sha256")
+                if isinstance(pairing_fingerprint, Mapping)
+                else None
+            ),
         }
         summary_path = path_info["summary_path"]
         with open(summary_path, "w", encoding="utf-8") as summary_file:

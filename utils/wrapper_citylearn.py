@@ -172,6 +172,10 @@ class Wrapper_CityLearn(RLC):
         self._topology_changed_during_step: bool = False
         self._pending_model_environment_attach: bool = False
         self._defer_model_environment_attach: bool = False
+        self._entity_current_payload: Optional[Mapping[str, Any]] = None
+        self._entity_current_info: Mapping[str, Any] = {}
+        self._entity_next_payload: Optional[Mapping[str, Any]] = None
+        self._entity_step_info: Mapping[str, Any] = {}
         self._entity_adapter: Optional[EntityContractAdapter] = None
         self._entity_profile_adapters: Dict[str, EntityContractAdapter] = {}
         self._profiled_observation_cache_key: Optional[tuple[int, ...]] = None
@@ -605,6 +609,8 @@ class Wrapper_CityLearn(RLC):
             return True
         if bool(getattr(self.model, "requires_raw_observation_context", False)):
             return True
+        if bool(getattr(self.model, "requires_entity_observation_context", False)):
+            return True
         if getattr(self.model, "_warm_start_policy", None) is not None:
             return True
         if getattr(self.model, "warm_start_policy_name", None):
@@ -883,6 +889,54 @@ class Wrapper_CityLearn(RLC):
             # leaving a blocked progress write invisible to the watchdog.
             if completes_watchdog_scope and self.stall_watchdog_enabled:
                 self._cancel_stall_watchdog()
+
+    def _write_step_progress(
+        self,
+        *,
+        episode: int,
+        step: int,
+        episode_total: Optional[int],
+        step_total: Optional[int],
+        global_step_total: Optional[int],
+        rewards: Any,
+        step_duration: float,
+        normal_step_duration: float,
+        update_duration: float,
+    ) -> None:
+        """Write one lightweight progress heartbeat at the configured interval.
+
+        Phase progress is optional and deliberately more detailed. Ordinary
+        progress must remain observable when phase heartbeats are disabled,
+        without restoring the former per-phase write amplification.
+        """
+        if not self.progress_updates_enabled:
+            return
+        if self.global_step % self.progress_update_interval != 0:
+            return
+        if self.progress_phase_updates_enabled:
+            # ``step_end`` already emitted the same heartbeat through the
+            # phase-progress path at this interval.
+            return
+
+        self.progress_tracker.update(
+            episode=episode,
+            step=step,
+            global_step=self.global_step,
+            rewards=rewards,
+            episode_total=episode_total,
+            step_total=step_total,
+            global_step_total=global_step_total,
+            status="running",
+            extra={
+                "phase": "step_end",
+                "step_duration_seconds": round(float(step_duration), 6),
+                "normal_step_duration_seconds": round(
+                    float(normal_step_duration), 6
+                ),
+                "update_duration_seconds": round(float(update_duration), 6),
+                **self._runtime_resource_snapshot(),
+            },
+        )
 
     def _update_stall_watchdog_for_phase(
         self,
@@ -1383,8 +1437,12 @@ class Wrapper_CityLearn(RLC):
                 global_step_total=None,
             )
             self._prepare_episode_reset()
-            raw_observations, _ = self.env.reset()
+            raw_observations, reset_info = self.env.reset()
             if self._entity_interface_mode:
+                self._entity_current_payload = raw_observations
+                self._entity_current_info = dict(reset_info or {})
+                self._entity_next_payload = None
+                self._entity_step_info = {}
                 observations = self._apply_entity_layout(
                     raw_observations,
                     force_attach=True,
@@ -1507,7 +1565,10 @@ class Wrapper_CityLearn(RLC):
                     global_step_total=global_step_total,
                 )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
-                next_observations_raw, rewards, terminated, truncated, _ = self.env.step(env_actions)
+                next_observations_raw, rewards, terminated, truncated, step_info = self.env.step(env_actions)
+                if self._entity_interface_mode:
+                    self._entity_next_payload = next_observations_raw
+                    self._entity_step_info = dict(step_info or {})
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/env_step_seconds"] = (
                         time.perf_counter() - phase_start_time
@@ -1571,6 +1632,12 @@ class Wrapper_CityLearn(RLC):
                 )
                 phase_start_time = time.perf_counter() if should_profile_step else 0.0
                 rewards = self._shape_rewards(rewards, next_observations)
+                if self._entity_interface_mode:
+                    self._entity_step_info = dict(self._entity_step_info)
+                    self._entity_step_info.setdefault(
+                        "reward_components",
+                        self._get_reward_components_payload(),
+                    )
                 if should_profile_step:
                     runtime_profile_metrics["Runtime/reward_shaping_seconds"] = (
                         time.perf_counter() - phase_start_time
@@ -1588,6 +1655,9 @@ class Wrapper_CityLearn(RLC):
 
                 topology_transition_recorded = False
                 if self._topology_changed_during_step:
+                    handles_cross_topology = bool(
+                        getattr(self.model, "handles_cross_topology_transitions", False)
+                    )
                     snapshot_model_topology = getattr(self.model, "snapshot_topology_state", None)
                     restore_model_topology = getattr(self.model, "restore_topology_state", None)
                     try:
@@ -1598,7 +1668,7 @@ class Wrapper_CityLearn(RLC):
                             )
                         if callable(snapshot_model_topology):
                             model_topology_snapshot = snapshot_model_topology()
-                        if not deterministic:
+                        if not episode_deterministic and not handles_cross_topology:
                             transition_hook = getattr(self.model, "record_topology_transition", None)
                             if callable(transition_hook):
                                 transition_observations = (
@@ -1626,6 +1696,33 @@ class Wrapper_CityLearn(RLC):
                             self._restore_entity_layout_state(entity_layout_snapshot)
                         raise
 
+                # Deterministic policies do not learn, but agents with an
+                # explicit observation hook may still persist execution
+                # evidence and advance their typed transition state.
+                if (
+                    episode_deterministic
+                    and bool(
+                        getattr(
+                            self.model,
+                            "requires_deterministic_transition_observation",
+                            False,
+                        )
+                    )
+                    and callable(getattr(self.model, "observe_transition", None))
+                ):
+                    phase_start_time = time.perf_counter()
+                    self.update(
+                        observations,
+                        actions,
+                        rewards,
+                        next_observations,
+                        terminated=terminated,
+                        truncated=truncated,
+                        learn=False,
+                    )
+                    model_update_duration = time.perf_counter() - phase_start_time
+                    self._last_model_update_seconds = model_update_duration
+
                 # Update model if not in deterministic mode
                 if not episode_deterministic:
                     if self._topology_changed_during_step and not self._pending_model_environment_attach:
@@ -1647,26 +1744,71 @@ class Wrapper_CityLearn(RLC):
                         )
                         self._synchronize_model_cuda_for_timing()
                         phase_start_time = time.perf_counter()
-                        if self._pending_model_environment_attach:
-                            try:
+                        set_training_progress = getattr(
+                            self.model,
+                            "set_training_progress_callback",
+                            None,
+                        )
+
+                        def report_model_update_progress(
+                            payload: Mapping[str, Any],
+                        ) -> None:
+                            details = dict(payload)
+                            training_phase = str(
+                                details.pop("phase", "model_update_training")
+                            )
+                            self._write_phase_progress(
+                                phase=training_phase,
+                                episode=episode,
+                                step=time_step,
+                                episode_total=episodes,
+                                step_total=episode_step_total,
+                                global_step_total=global_step_total,
+                                rewards=rewards,
+                                force=True,
+                                extra=details,
+                            )
+
+                        if callable(set_training_progress):
+                            set_training_progress(report_model_update_progress)
+                        try:
+                            if self._pending_model_environment_attach:
                                 self._pending_model_environment_attach = False
                                 self._refresh_update_schedule()
                                 self._attach_model_environment_metadata()
-                            except Exception:
-                                if model_topology_snapshot is not None and callable(restore_model_topology):
-                                    restore_model_topology(model_topology_snapshot)
-                                if entity_layout_snapshot is not None:
-                                    self._restore_entity_layout_state(entity_layout_snapshot)
-                                raise
-                        else:
-                            self.update(
-                                observations,
-                                actions,
-                                rewards,
-                                next_observations,
-                                terminated=terminated,
-                                truncated=truncated,
-                            )
+                                if bool(
+                                    getattr(
+                                        self.model,
+                                        "handles_cross_topology_transitions",
+                                        False,
+                                    )
+                                ):
+                                    self.update(
+                                        observations,
+                                        actions,
+                                        rewards,
+                                        next_observations,
+                                        terminated=terminated,
+                                        truncated=truncated,
+                                    )
+                            else:
+                                self.update(
+                                    observations,
+                                    actions,
+                                    rewards,
+                                    next_observations,
+                                    terminated=terminated,
+                                    truncated=truncated,
+                                )
+                        except Exception:
+                            if model_topology_snapshot is not None and callable(restore_model_topology):
+                                restore_model_topology(model_topology_snapshot)
+                            if entity_layout_snapshot is not None:
+                                self._restore_entity_layout_state(entity_layout_snapshot)
+                            raise
+                        finally:
+                            if callable(set_training_progress):
+                                set_training_progress(None)
                         self._synchronize_model_cuda_for_timing()
                         model_update_duration = time.perf_counter() - phase_start_time
                         self._last_model_update_seconds = model_update_duration
@@ -1747,6 +1889,11 @@ class Wrapper_CityLearn(RLC):
                     )
 
                 observations = [o for o in next_observations]
+                if self._entity_interface_mode:
+                    self._entity_current_payload = self._entity_next_payload
+                    self._entity_current_info = self._entity_step_info
+                    self._entity_next_payload = None
+                    self._entity_step_info = {}
 
                 # Reduce system monitoring frequency
                 cpu_usage = None
@@ -1867,12 +2014,76 @@ class Wrapper_CityLearn(RLC):
                         "update_duration_seconds": round(float(model_update_duration), 6),
                     },
                 )
+                self._write_step_progress(
+                    episode=episode,
+                    step=time_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=rewards,
+                    step_duration=step_duration,
+                    normal_step_duration=normal_step_duration,
+                    update_duration=model_update_duration,
+                )
 
                 time_step += 1
 
             on_episode_end = getattr(self.model, "on_episode_end", None)
             if callable(on_episode_end):
-                on_episode_end(episode=episode, training=not deterministic)
+                episode_boundary_step = max(time_step - 1, 0)
+                last_rewards = rewards_list[-1] if rewards_list else None
+                self._write_phase_progress(
+                    phase="model_episode_end_start",
+                    episode=episode,
+                    step=episode_boundary_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=last_rewards,
+                    force=True,
+                )
+                set_training_progress = getattr(
+                    self.model,
+                    "set_training_progress_callback",
+                    None,
+                )
+
+                def report_boundary_training_progress(
+                    payload: Mapping[str, Any],
+                ) -> None:
+                    details = dict(payload)
+                    training_phase = str(
+                        details.pop("phase", "model_episode_end_training")
+                    )
+                    self._write_phase_progress(
+                        phase=training_phase,
+                        episode=episode,
+                        step=episode_boundary_step,
+                        episode_total=episodes,
+                        step_total=episode_step_total,
+                        global_step_total=global_step_total,
+                        rewards=last_rewards,
+                        force=True,
+                        extra=details,
+                    )
+
+                if callable(set_training_progress):
+                    set_training_progress(report_boundary_training_progress)
+                try:
+                    on_episode_end(episode=episode, training=not deterministic)
+                finally:
+                    if callable(set_training_progress):
+                        set_training_progress(None)
+                self._write_phase_progress(
+                    phase="model_episode_end_complete",
+                    episode=episode,
+                    step=episode_boundary_step,
+                    episode_total=episodes,
+                    step_total=episode_step_total,
+                    global_step_total=global_step_total,
+                    rewards=last_rewards,
+                    force=True,
+                )
             boundary_training_metrics = self._consume_model_training_metrics()
             if boundary_training_metrics:
                 if mlflow.active_run():
@@ -2089,6 +2300,11 @@ class Wrapper_CityLearn(RLC):
             )
 
         observation_context_hook = getattr(self.model, "set_observation_context", None)
+        entity_observation_context_hook = getattr(
+            self.model,
+            "set_entity_observation_context",
+            None,
+        )
         profiled_observation_context_hook = getattr(
             self.model,
             "set_profiled_observation_context",
@@ -2106,6 +2322,15 @@ class Wrapper_CityLearn(RLC):
                 if direct_entity_model_observations
                 else observations,
                 encoded_observations=encoded_observations,
+            )
+        if callable(entity_observation_context_hook):
+            if self._entity_current_payload is None:
+                raise RuntimeError(
+                    "Model requested entity observation context but no entity payload is active."
+                )
+            entity_observation_context_hook(
+                observation_payload=self._entity_current_payload,
+                info=self._entity_current_info,
             )
 
         actions = self.model.predict(encoded_observations, deterministic)
@@ -2537,6 +2762,24 @@ class Wrapper_CityLearn(RLC):
 
         return metrics
 
+    def _get_reward_components_payload(self) -> Mapping[str, Any]:
+        """Return the unflattened reward evidence for typed transition traces."""
+
+        reward_fn = getattr(self.env, "reward_function", None)
+        if reward_fn is None and hasattr(self.env, "unwrapped"):
+            reward_fn = getattr(self.env.unwrapped, "reward_function", None)
+        if reward_fn is None:
+            return {}
+        components_hook = getattr(reward_fn, "get_last_components", None)
+        if callable(components_hook):
+            components = components_hook()
+        else:
+            components = {
+                "per_agent": getattr(reward_fn, "last_components_by_agent", []),
+                "community": getattr(reward_fn, "last_community_components", {}),
+            }
+        return deepcopy(components) if isinstance(components, Mapping) else {}
+
     def _build_observation_lookup(self, agent_index: int, observation: List[float]) -> Dict[str, float]:
         names: List[str] = []
         if agent_index < len(self.observation_names):
@@ -2664,16 +2907,18 @@ class Wrapper_CityLearn(RLC):
         return shaped_rewards
 
     def update(self, observations: List[List[float]], actions: List[List[float]], reward: List[float],
-               next_observations: List[List[float]], terminated: bool, truncated: bool):
+               next_observations: List[List[float]], terminated: bool, truncated: bool,
+               *, learn: bool = True):
         """
-        Delegates the update logic to the Algorithm, encoding observations before passing them.
+        Prepare transition context, then learn or invoke a read-only observer.
         """
 
         if self.model is None:
             logger.error("Model is not set. Use `set_model` to provide a model.")
             raise ValueError("Model is not set. Use `set_model` to provide a model.")
 
-        self._refresh_update_schedule()
+        if learn:
+            self._refresh_update_schedule()
 
         phase_start_time = time.perf_counter()
         direct_entity_model_observations = bool(
@@ -2693,6 +2938,11 @@ class Wrapper_CityLearn(RLC):
             self._last_model_observation_encoding_seconds = time.perf_counter() - phase_start_time
 
         transition_context_hook = getattr(self.model, "set_transition_context", None)
+        entity_transition_context_hook = getattr(
+            self.model,
+            "set_entity_transition_context",
+            None,
+        )
         profiled_transition_context_hook = getattr(
             self.model,
             "set_profiled_transition_context",
@@ -2720,6 +2970,16 @@ class Wrapper_CityLearn(RLC):
                 encoded_observations=encoded_observations,
                 encoded_next_observations=encoded_next_observations,
             )
+        if callable(entity_transition_context_hook):
+            if self._entity_current_payload is None or self._entity_next_payload is None:
+                raise RuntimeError(
+                    "Model requested entity transition context but current/next payloads are incomplete."
+                )
+            entity_transition_context_hook(
+                observation_payload=self._entity_current_payload,
+                next_observation_payload=self._entity_next_payload,
+                info=self._entity_step_info,
+            )
         if callable(profiled_transition_context_hook):
             profiled_transition_context_hook(
                 profiled_encoded_observations=(
@@ -2733,6 +2993,22 @@ class Wrapper_CityLearn(RLC):
                     else {}
                 ),
             )
+
+        if not learn:
+            observer = getattr(self.model, "observe_transition", None)
+            if not callable(observer):
+                return None
+            phase_start_time = time.perf_counter()
+            observation_result = observer(
+                observations=encoded_observations,
+                actions=actions,
+                rewards=reward,
+                next_observations=encoded_next_observations,
+                terminated=terminated,
+                truncated=truncated,
+            )
+            self._last_model_update_seconds = time.perf_counter() - phase_start_time
+            return observation_result
 
         # Pass updated parameters to model.update()
         phase_start_time = time.perf_counter()

@@ -1,0 +1,457 @@
+from __future__ import annotations
+
+import csv
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+import pytest
+import yaml
+
+from utils.experiment_protocol import (
+    build_confirmation_report,
+    build_evaluation_record,
+    build_pairing_fingerprint,
+    canonical_sha256,
+    extract_scorecard,
+    file_sha256,
+    select_checkpoint,
+    verify_selected_checkpoint,
+)
+
+
+def _config(tmp_path: Path, *, simulator_seed: int = 17, neural_seed: int = 23):
+    schema = tmp_path / "schema.json"
+    schema.write_text("{}", encoding="utf-8")
+    return {
+        "simulator": {
+            "dataset_name": "annual",
+            "dataset_path": str(schema),
+            "central_agent": False,
+            "interface": "entity",
+            "topology_mode": "static",
+            "simulation_start_time_step": 100,
+            "simulation_end_time_step": 195,
+            "episode_time_steps": 96,
+            "random_seed": simulator_seed,
+            "reward_function": "CostHardConstraintReward",
+            "reward_function_kwargs": {"community_settlement_cost_weight": 1.0},
+            "export": {"include_business_as_usual": True},
+        },
+        "training": {"seed": neural_seed},
+        "experiment_protocol": {
+            "version": "ti_marl_experiment_protocol_v1",
+            "protocol_id": "ti-marl-dev-v1",
+            "phase": "development",
+            "role": "candidate",
+            "data_split": "development",
+            "window_id": "winter",
+            "candidate_id": "checkpoint-1",
+            "selection_rules_sha256": "a" * 64,
+        },
+    }
+
+
+def _write_kpis(path: Path, **overrides: float) -> None:
+    values = {
+        "district_cost_community_market_settled_total_eur": 100.0,
+        "district_energy_grid_shape_quality_peak_daily_average_to_business_as_usual_ratio": 1.0,
+        "district_energy_grid_shape_quality_peak_all_time_average_to_business_as_usual_ratio": 1.0,
+        "district_energy_grid_shape_quality_ramping_average_to_business_as_usual_ratio": 1.0,
+        "district_energy_grid_shape_quality_load_factor_penalty_daily_average_to_business_as_usual_ratio": 1.0,
+        "district_solar_self_consumption_ratio_self_consumption_ratio": 0.7,
+        "district_emissions_ratio_to_business_as_usual_total_ratio": 0.9,
+        "district_electrical_service_phase_violations_energy_total_kwh": 0.0,
+        "district_ev_performance_departure_min_acceptable_feasible_ratio": 1.0,
+        "district_ev_performance_departure_within_tolerance_feasible_ratio": 0.99,
+        "district_deferrable_appliance_service_service_level_ratio": 0.8,
+        "district_deferrable_appliance_service_completed_cycles_count": 8.0,
+        "district_deferrable_appliance_service_missed_cycles_count": 2.0,
+        "district_deferrable_appliance_service_unserved_energy_total_kwh": 4.0,
+        "district_battery_total_throughput_kwh": 12.0,
+        "district_ev_total_v2g_export_kwh": 3.0,
+        "district_energy_grid_total_import_control_kwh": 50.0,
+        "district_energy_grid_total_export_control_kwh": 8.0,
+        "district_equity_distribution_gini_benefit_ratio": 0.2,
+    }
+    values.update(overrides)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["KPI", "District"])
+        writer.writeheader()
+        for name, value in values.items():
+            writer.writerow({"KPI": name, "District": value})
+
+
+def _record(
+    candidate_id: str,
+    pairing: str,
+    checkpoint_sha: str | None,
+    *,
+    role: str,
+    cost: float,
+    peak: float = 1.0,
+    ramp: float = 1.0,
+    solar: float = 0.7,
+    violations: float = 0.0,
+    ev_min: float = 1.0,
+    deferrable_service: float = 0.8,
+):
+    payload = {
+        "format": "ti_marl_evaluation_record_v1",
+        "protocol_id": "dev-v1",
+        "phase": "development",
+        "selection_rules_sha256": canonical_sha256(_rules()),
+        "candidate_id": candidate_id,
+        "role": role,
+        "pairing": {"sha256": pairing},
+        "checkpoint": (
+            None
+            if checkpoint_sha is None
+            else {"path": f"/{candidate_id}.pth", "sha256": checkpoint_sha}
+        ),
+        "metrics": {
+            "cost_eur": cost,
+            "peak_daily_ratio_to_bau": peak,
+            "ramping_ratio_to_bau": ramp,
+            "solar_self_consumption_rate": solar,
+            "electrical_violation_kwh": violations,
+            "ev_min_acceptable_feasible_rate": ev_min,
+            "deferrable_service_level_rate": deferrable_service,
+        },
+    }
+    payload["record_sha256"] = canonical_sha256(payload)
+    return payload
+
+
+def _rules():
+    return {
+        "version": "ti_marl_selection_rules_v1",
+        "aggregation": {
+            "cost_eur": "sum",
+            "electrical_violation_kwh": "sum",
+            "ev_min_acceptable_feasible_rate": "min",
+        },
+        "hard_gates": {
+            "electrical_violation_kwh": {"max": 0.5},
+            "ev_min_acceptable_feasible_rate": {"min": 0.99},
+        },
+        "reference_guardrails": {
+            "peak_daily_ratio_to_bau": {"max_relative_increase": 0.05},
+            "ramping_ratio_to_bau": {"max_relative_increase": 0.05},
+            "solar_self_consumption_rate": {"max_absolute_decrease": 0.02},
+            "deferrable_service_level_rate": {"max_absolute_decrease": 0.0},
+        },
+        "promotion": {
+            "metric": "cost_eur",
+            "direction": "minimize",
+            "minimum_improvement": 0.0,
+        },
+        "tie_breakers": [
+            {"metric": "peak_daily_ratio_to_bau", "direction": "minimize"},
+        ],
+    }
+
+
+def _confirmation_record(
+    candidate_id: str,
+    pairing: str,
+    checkpoint_sha: str | None,
+    *,
+    role: str,
+    cost: float,
+    paired_reference_id: str | None = None,
+):
+    payload = _record(
+        candidate_id,
+        pairing,
+        checkpoint_sha,
+        role=role,
+        cost=cost,
+    )
+    payload["phase"] = "confirmation"
+    payload["protocol_id"] = "confirmation-v1"
+    payload["selection_record_sha256"] = "b" * 64
+    payload["selected_checkpoint_sha256"] = (
+        checkpoint_sha if role == "candidate" else None
+    )
+    payload["paired_reference_id"] = paired_reference_id
+    payload.pop("record_sha256")
+    payload["record_sha256"] = canonical_sha256(payload)
+    return payload
+
+
+def _selection_record(
+    *,
+    candidate_id: str = "frozen-candidate",
+    checkpoint_sha: str = "a" * 64,
+):
+    payload = {
+        "format": "ti_marl_checkpoint_selection_v1",
+        "protocol_id": "development-v1",
+        "status": "selected",
+        "rules_sha256": canonical_sha256(_rules()),
+        "selected_candidate_id": candidate_id,
+        "selected_checkpoint": {"sha256": checkpoint_sha},
+    }
+    payload["selection_sha256"] = canonical_sha256(payload)
+    return payload
+
+
+def test_canonical_v3_treats_ev_minimum_as_safety_and_symmetric_target_as_guardrail():
+    rules_path = (
+        Path(__file__).parents[1]
+        / "algorithms"
+        / "ti_marl"
+        / "experiments"
+        / "selection_rules_v3.yaml"
+    )
+    rules = yaml.safe_load(rules_path.read_text(encoding="utf-8"))
+
+    assert rules["hard_gates"]["ev_min_acceptable_feasible_rate"]["min"] == 0.99
+    assert "ev_within_tolerance_feasible_rate" not in rules["hard_gates"]
+    assert rules["reference_guardrails"][
+        "ev_within_tolerance_feasible_rate"
+    ]["max_absolute_decrease"] == 0.0
+
+
+def test_pairing_fingerprint_separates_simulator_and_neural_seeds(tmp_path):
+    first = build_pairing_fingerprint(_config(tmp_path, neural_seed=1))
+    same_surface = build_pairing_fingerprint(_config(tmp_path, neural_seed=999))
+    changed_surface = build_pairing_fingerprint(
+        _config(tmp_path, simulator_seed=18, neural_seed=1)
+    )
+
+    assert first["sha256"] == same_surface["sha256"]
+    assert first["sha256"] != changed_surface["sha256"]
+
+
+def test_scorecard_and_evaluation_record_are_content_addressed(tmp_path):
+    kpis = tmp_path / "exported_kpis.csv"
+    checkpoint = tmp_path / "checkpoint.pth"
+    _write_kpis(kpis)
+    checkpoint.write_bytes(b"weights")
+
+    scorecard = extract_scorecard(kpis)
+    record = build_evaluation_record(
+        candidate_id="checkpoint-1",
+        role="candidate",
+        config=_config(tmp_path),
+        exported_kpis_path=kpis,
+        checkpoint_path=checkpoint,
+        simulator_version="1.7.0",
+    )
+
+    assert scorecard["cost_eur"] == pytest.approx(100.0)
+    assert scorecard["ev_min_acceptable_feasible_rate"] == pytest.approx(1.0)
+    assert scorecard["deferrable_service_level_rate"] == pytest.approx(0.8)
+    assert scorecard["deferrable_completed_cycles_count"] == pytest.approx(8.0)
+    assert scorecard["deferrable_missed_cycles_count"] == pytest.approx(2.0)
+    assert scorecard["deferrable_unserved_energy_kwh"] == pytest.approx(4.0)
+    assert record["checkpoint"]["sha256"] == file_sha256(checkpoint)
+    assert len(record["record_sha256"]) == 64
+
+
+def test_selection_requires_every_paired_surface_and_rejects_bad_scorecard():
+    references = [
+        _record("smart", "winter", None, role="reference", cost=100.0),
+        _record("smart", "summer", None, role="reference", cost=120.0),
+    ]
+    candidates = [
+        _record("good", "winter", "a" * 64, role="candidate", cost=95.0),
+        _record("good", "summer", "a" * 64, role="candidate", cost=110.0),
+        _record("unsafe", "winter", "b" * 64, role="candidate", cost=80.0, violations=0.4),
+        _record("unsafe", "summer", "b" * 64, role="candidate", cost=80.0, violations=0.4),
+        _record("bad-peak", "winter", "c" * 64, role="candidate", cost=70.0, peak=1.2),
+        _record("bad-peak", "summer", "c" * 64, role="candidate", cost=70.0, peak=1.2),
+        _record(
+            "bad-deferrable",
+            "winter",
+            "d" * 64,
+            role="candidate",
+            cost=60.0,
+            deferrable_service=0.7,
+        ),
+        _record(
+            "bad-deferrable",
+            "summer",
+            "d" * 64,
+            role="candidate",
+            cost=60.0,
+            deferrable_service=0.7,
+        ),
+    ]
+
+    selection = select_checkpoint(
+        references=references,
+        candidates=candidates,
+        rules=_rules(),
+    )
+
+    assert selection["status"] == "selected"
+    assert selection["selected_candidate_id"] == "good"
+    rejected = {
+        row["candidate_id"]: row["rejection_reasons"]
+        for row in selection["evaluated_candidates"]
+    }
+    assert any("electrical_violation_kwh" in reason for reason in rejected["unsafe"])
+    assert any("peak_daily_ratio_to_bau" in reason for reason in rejected["bad-peak"])
+    assert any(
+        "deferrable_service_level_rate" in reason
+        for reason in rejected["bad-deferrable"]
+    )
+
+
+def test_selection_refuses_confirmation_records():
+    reference = _record("smart", "winter", None, role="reference", cost=100.0)
+    candidate = _record("candidate", "winter", "a" * 64, role="candidate", cost=90.0)
+    candidate["phase"] = "confirmation"
+
+    with pytest.raises(ValueError, match="development records only"):
+        select_checkpoint(references=[reference], candidates=[candidate], rules=_rules())
+
+
+def test_confirmation_report_verifies_frozen_provenance_and_paired_scorecard():
+    selection = _selection_record()
+    references = [
+        _confirmation_record("smart-winter", "winter", None, role="reference", cost=100.0),
+        _confirmation_record("smart-summer", "summer", None, role="reference", cost=120.0),
+    ]
+    candidates = [
+        _confirmation_record(
+            "frozen-candidate",
+            "winter",
+            "a" * 64,
+            role="candidate",
+            cost=95.0,
+            paired_reference_id="smart-winter",
+        ),
+        _confirmation_record(
+            "frozen-candidate",
+            "summer",
+            "a" * 64,
+            role="candidate",
+            cost=110.0,
+            paired_reference_id="smart-summer",
+        ),
+    ]
+    for record in [*references, *candidates]:
+        record["selection_record_sha256"] = selection["selection_sha256"]
+        record.pop("record_sha256")
+        record["record_sha256"] = canonical_sha256(record)
+
+    report = build_confirmation_report(
+        references=references,
+        candidates=candidates,
+        rules=_rules(),
+        selection=selection,
+    )
+
+    assert report["status"] == "confirmed"
+    assert report["reference_metrics"]["cost_eur"] == pytest.approx(220.0)
+    assert report["candidate_metrics"]["cost_eur"] == pytest.approx(205.0)
+    assert report["metric_deltas"]["cost_eur"] == pytest.approx(-15.0)
+    assert report["metric_relative_deltas"]["cost_eur"] == pytest.approx(
+        -15.0 / 220.0
+    )
+    assert len(report["paired_windows"]) == 2
+    assert len(report["report_sha256"]) == 64
+
+
+def test_confirmation_report_rejects_checkpoint_other_than_selected():
+    reference = _confirmation_record(
+        "smart", "winter", None, role="reference", cost=100.0
+    )
+    candidate = _confirmation_record(
+        "frozen-candidate",
+        "winter",
+        "a" * 64,
+        role="candidate",
+        cost=90.0,
+        paired_reference_id="smart",
+    )
+    candidate["selected_checkpoint_sha256"] = "c" * 64
+    selection = _selection_record()
+    for record in (reference, candidate):
+        record["selection_record_sha256"] = selection["selection_sha256"]
+        record.pop("record_sha256")
+        record["record_sha256"] = canonical_sha256(record)
+
+    with pytest.raises(ValueError, match="one selected checkpoint"):
+        build_confirmation_report(
+            references=[reference],
+            candidates=[candidate],
+            rules=_rules(),
+            selection=selection,
+        )
+
+
+def test_confirmation_cli_forwards_the_frozen_selection(tmp_path):
+    selection = _selection_record()
+    reference = _confirmation_record(
+        "smart", "winter", None, role="reference", cost=100.0
+    )
+    candidate = _confirmation_record(
+        "frozen-candidate",
+        "winter",
+        "a" * 64,
+        role="candidate",
+        cost=90.0,
+        paired_reference_id="smart",
+    )
+    for record in (reference, candidate):
+        record["selection_record_sha256"] = selection["selection_sha256"]
+        record.pop("record_sha256")
+        record["record_sha256"] = canonical_sha256(record)
+
+    reference_path = tmp_path / "reference.json"
+    candidate_path = tmp_path / "candidate.json"
+    selection_path = tmp_path / "selection.json"
+    rules_path = tmp_path / "rules.yaml"
+    output_path = tmp_path / "confirmation.json"
+    reference_path.write_text(json.dumps(reference), encoding="utf-8")
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+    selection_path.write_text(json.dumps(selection), encoding="utf-8")
+    rules_path.write_text(yaml.safe_dump(_rules()), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).parents[1] / "scripts" / "ti_marl_experiment_protocol.py"),
+            "confirm",
+            "--reference",
+            str(reference_path),
+            "--candidate",
+            str(candidate_path),
+            "--rules",
+            str(rules_path),
+            "--selection",
+            str(selection_path),
+            "--output",
+            str(output_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(output_path.read_text(encoding="utf-8"))["status"] == "confirmed"
+
+
+def test_selection_rejects_a_tampered_evaluation_record():
+    reference = _record("smart", "winter", None, role="reference", cost=100.0)
+    candidate = _record("candidate", "winter", "a" * 64, role="candidate", cost=90.0)
+    candidate["metrics"]["cost_eur"] = 1.0
+
+    with pytest.raises(ValueError, match="payload/hash mismatch"):
+        select_checkpoint(references=[reference], candidates=[candidate], rules=_rules())
+
+
+def test_selected_checkpoint_verification(tmp_path):
+    checkpoint = tmp_path / "selected.pth"
+    checkpoint.write_bytes(b"selected")
+    selection = {"selected_checkpoint": {"sha256": file_sha256(checkpoint)}}
+    assert verify_selected_checkpoint(selection, checkpoint)
+    checkpoint.write_bytes(b"changed")
+    assert not verify_selected_checkpoint(selection, checkpoint)

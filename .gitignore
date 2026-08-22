@@ -5,6 +5,9 @@
 /runs/
 /tese/
 /configs/generated/
+/generated_interfaces/
+/typed_interfaces.local/
+/configs/ti_marl/local/
 /datasets/*_15s/
 /datasets/citylearn_three_phase_electrical_service_demo_15s.zip
 *.log

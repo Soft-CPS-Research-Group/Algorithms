@@ -349,6 +349,8 @@ class CommunityMarketConfig(BaseModel):
 class SimulatorConfig(BaseModel):
     dataset_name: str
     dataset_path: str
+    building_ids: Optional[List[str]] = None
+    electrical_service_overrides_path: Optional[str] = None
     central_agent: bool = False
     interface: Literal["flat", "entity"] = "flat"
     topology_mode: Literal["static", "dynamic"] = "static"
@@ -357,6 +359,14 @@ class SimulatorConfig(BaseModel):
     episodes: int = Field(default=1, ge=1)
     deterministic_finish: bool = False
     repeat_episode_scenario: bool = False
+    random_seed: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Simulator/exogenous-process seed. This is deliberately separate "
+            "from training.seed, which initializes the learning algorithm."
+        ),
+    )
     simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
     simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
@@ -383,6 +393,18 @@ class SimulatorConfig(BaseModel):
             if end < start:
                 raise ValueError("simulator.episode_time_steps range end must be >= start")
         return value
+
+    @field_validator("building_ids")
+    @classmethod
+    def validate_building_ids(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return value
+        cleaned = [str(item).strip() for item in value]
+        if not cleaned or any(not item for item in cleaned):
+            raise ValueError("simulator.building_ids must contain non-empty IDs")
+        if len(cleaned) != len(set(cleaned)):
+            raise ValueError("simulator.building_ids must contain unique IDs")
+        return cleaned
 
     @model_validator(mode="after")
     def validate_time_window(self) -> "SimulatorConfig":
@@ -1292,6 +1314,89 @@ class TransformerMATD3BehaviorCloningTeacherConfig(BaseModel):
     hyperparameters: Dict[str, Any] = Field(default_factory=dict)
 
 
+class TIMARLBackboneConfig(BaseModel):
+    name: Literal["ppo", "mappo"] = "mappo"
+
+
+class TIMARLActorConfig(BaseModel):
+    d_model: int = Field(default=128, ge=16)
+    attention_heads: int = Field(default=4, ge=1)
+    relation_layers: int = Field(default=2, ge=1)
+    group_context_kind: Literal["local", "action_conditioned"] = "local"
+    deterministic_mode_strategy: Literal["argmax", "expected_signed"] = "argmax"
+    deterministic_mode_strategy_by_group_type: Dict[
+        str, Literal["argmax", "expected_signed"]
+    ] = Field(default_factory=dict)
+    deterministic_expected_signed_gain_by_group_type: Dict[str, float] = Field(
+        default_factory=dict
+    )
+    deterministic_expected_signed_deadband_by_group_type: Dict[str, float] = Field(
+        default_factory=dict
+    )
+    deterministic_non_idle_logit_margin_by_group_type: Dict[str, float] = Field(
+        default_factory=dict
+    )
+
+    @model_validator(mode="after")
+    def validate_attention_width(self) -> "TIMARLActorConfig":
+        if self.d_model % self.attention_heads != 0:
+            raise ValueError("TIMARL actor.d_model must be divisible by attention_heads")
+        if any(
+            gain < 0.0
+            for gain in self.deterministic_expected_signed_gain_by_group_type.values()
+        ):
+            raise ValueError(
+                "TIMARL actor deterministic expected-signed gains must be "
+                "non-negative"
+            )
+        if any(
+            margin < 0.0
+            for margin in self.deterministic_non_idle_logit_margin_by_group_type.values()
+        ):
+            raise ValueError(
+                "TIMARL actor deterministic non-idle logit margins must be "
+                "non-negative"
+            )
+        if any(
+            deadband < 0.0 or deadband > 1.0
+            for deadband in self.deterministic_expected_signed_deadband_by_group_type.values()
+        ):
+            raise ValueError(
+                "TIMARL actor deterministic expected-signed deadbands must be "
+                "between zero and one"
+            )
+        return self
+
+
+class TIMARLCriticConfig(BaseModel):
+    kind: Literal["local", "set"] = "set"
+
+
+class TIMARLFeasibilityConfig(BaseModel):
+    kind: Literal["analytic_projection"] = "analytic_projection"
+    enforce_ev_service: bool = True
+    ev_service_margin_ratio: float = Field(default=0.05, ge=0.0, le=0.5)
+    ev_service_strategy: Literal[
+        "average",
+        "minimum_average",
+        "just_in_time",
+    ] = "average"
+    ev_service_tolerance_ratio: float = Field(default=0.05, ge=0.0, le=0.2)
+    headroom_reserve_kw: float = Field(default=0.0, ge=0.0)
+    deferrable_service_margin_seconds: float = Field(default=0.0, ge=0.0)
+
+
+class TIMARLTraceConfig(BaseModel):
+    enabled: bool = True
+    chunk_size: int = Field(default=256, ge=1)
+    snapshot_interval: int = Field(default=256, ge=1)
+
+
+class TIMARLBehaviorCloningTeacherConfig(BaseModel):
+    policy: Literal["RBCSmartPolicy"] = "RBCSmartPolicy"
+    hyperparameters: Dict[str, Any] = Field(default_factory=dict)
+
+
 class TransformerMATD3DemonstrationBehaviorCloningConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1348,7 +1453,127 @@ class TransformerMATD3StageConfig(BaseModel):
     )
 
 
+class TIMARLBehaviorCloningConfig(BaseModel):
+    enabled: bool = True
+    demonstration_episodes: int = Field(default=1, ge=1)
+    max_samples: int = Field(default=4096, ge=1)
+    pretraining_epochs: int = Field(default=4, ge=1)
+    batch_size: int = Field(default=64, ge=1)
+    learning_rate: float = Field(default=3.0e-4, gt=0)
+    balance_action_modes: bool = True
+    mode_balance_exponent: float = Field(default=0.5, ge=0.0, le=1.0)
+    max_mode_weight: float = Field(default=4.0, ge=1.0)
+    balanced_loss_kind: Literal[
+        "weighted",
+        "hierarchical_mode_mean",
+    ] = "weighted"
+    calibration_epochs: int = Field(default=0, ge=0)
+    calibration_learning_rate: Optional[float] = Field(default=None, gt=0)
+    teacher: TIMARLBehaviorCloningTeacherConfig = Field(
+        default_factory=TIMARLBehaviorCloningTeacherConfig
+    )
+
+
+class TIMARLEVPlanningConfig(BaseModel):
+    """Causal auxiliary target for proactive low-level EV scheduling."""
+
+    auxiliary_coeff: float = Field(default=0.0, ge=0.0)
+    balance_targets: bool = True
+    fraction_coeff: float = Field(default=0.25, ge=0.0)
+    replay_capacity_per_reason: int = Field(default=16, ge=0)
+    replay_samples_per_reason: int = Field(default=8, ge=0)
+    charge_fraction: float = Field(default=0.95, gt=0.0, lt=1.0)
+    discharge_fraction: float = Field(default=0.50, gt=0.0, lt=1.0)
+    service_tolerance_ratio: float = Field(default=0.05, ge=0.0, le=0.5)
+    v2g_service_margin_ratio: float = Field(default=0.05, ge=0.0, le=0.5)
+    price_tie_tolerance: float = Field(default=1.0e-6, ge=0.0)
+    urgency_duty_ratio: float = Field(default=0.85, gt=0.0, le=1.0)
+    minimum_price_spread: float = Field(default=0.0, ge=0.0)
+    minimum_v2g_price_spread: float = Field(default=0.01, ge=0.0)
+    minimum_v2g_departure_hours: float = Field(default=1.0, ge=0.0)
+
+
+class TIMARLHyperparameters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: Literal["ti_marl_v1"] = "ti_marl_v1"
+    typed_interfaces_dir: str = Field(min_length=1)
+    interface_polling: bool = False
+    simulator_bindings_path: Optional[str] = Field(default=None, min_length=1)
+    require_cuda: bool = False
+    allow_checkpoint_compiler_migration: bool = False
+    require_declared_electrical_service: bool = False
+    backbone: TIMARLBackboneConfig = TIMARLBackboneConfig()
+    actor: TIMARLActorConfig = TIMARLActorConfig()
+    critic: TIMARLCriticConfig = TIMARLCriticConfig()
+    feasibility: TIMARLFeasibilityConfig = TIMARLFeasibilityConfig()
+    learning_rate: float = Field(default=3.0e-4, gt=0)
+    gamma: float = Field(default=0.99, gt=0, le=1)
+    gae_lambda: float = Field(default=0.95, gt=0, le=1)
+    discount_timebase_seconds: Optional[float] = Field(default=None, gt=0)
+    clip_eps: float = Field(default=0.2, gt=0)
+    ppo_epochs: int = Field(default=4, ge=1)
+    entropy_coeff: float = Field(default=0.01, ge=0)
+    entropy_coeff_by_group_type: Dict[str, float] = Field(default_factory=dict)
+    advantage_normalization: Literal["global", "per_agent"] = "global"
+    policy_credit_assignment: Literal["joint_agent", "typed_group"] = (
+        "joint_agent"
+    )
+    policy_anchor_coeff: float = Field(default=0.0, ge=0)
+    policy_anchor_reset_on_resume: bool = False
+    exclude_intervened_actions_from_policy_loss: bool = False
+    intervention_distillation_coeff: float = Field(default=0.0, ge=0)
+    value_coeff: float = Field(default=0.5, ge=0)
+    max_grad_norm: float = Field(default=0.5, gt=0)
+    target_kl: Optional[float] = Field(default=0.03, gt=0)
+    rollout_steps: int = Field(default=256, ge=1)
+    normalize_value_targets: bool = True
+    value_target_scale_floor: float = Field(default=1.0, gt=0)
+    critic_loss: Literal["mse", "huber"] = "huber"
+    trace: TIMARLTraceConfig = TIMARLTraceConfig()
+    behavior_cloning: Optional[TIMARLBehaviorCloningConfig] = None
+    ev_planning: TIMARLEVPlanningConfig = TIMARLEVPlanningConfig()
+
+    @model_validator(mode="after")
+    def validate_learning_architecture(self) -> "TIMARLHyperparameters":
+        expected = {"ppo": "local", "mappo": "set"}[self.backbone.name]
+        if self.critic.kind != expected:
+            raise ValueError(
+                f"TIMARL backbone.name={self.backbone.name!r} requires "
+                f"critic.kind={expected!r}"
+            )
+        if any(value < 0.0 for value in self.entropy_coeff_by_group_type.values()):
+            raise ValueError(
+                "TIMARL entropy_coeff_by_group_type values must be non-negative"
+            )
+        if (
+            self.exclude_intervened_actions_from_policy_loss
+            and self.policy_credit_assignment != "typed_group"
+        ):
+            raise ValueError(
+                "TIMARL exclude_intervened_actions_from_policy_loss requires "
+                "policy_credit_assignment='typed_group'"
+            )
+        if (
+            self.intervention_distillation_coeff > 0.0
+            and not self.exclude_intervened_actions_from_policy_loss
+        ):
+            raise ValueError(
+                "TIMARL intervention_distillation_coeff requires "
+                "exclude_intervened_actions_from_policy_loss=true"
+            )
+        return self
+
+
+class TIMARLStageConfig(BaseModel):
+    algorithm: Literal["TIMARL"]
+    count: Literal[1] = 1
+    frozen: bool = False
+    hyperparameters: TIMARLHyperparameters
+
+
 PipelineStageConfig = Union[
+    TIMARLStageConfig,
     BuildingAgentStageConfig,
     CCLevel1AlgorithmConfig,
     CausalPriceSignalAlgorithmConfig,
@@ -1444,6 +1669,59 @@ class BundleConfig(BaseModel):
         return normalized
 
 
+class ExperimentProtocolConfig(BaseModel):
+    """Immutable provenance for train/development/confirmation separation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["ti_marl_experiment_protocol_v1"] = (
+        "ti_marl_experiment_protocol_v1"
+    )
+    protocol_id: str = Field(min_length=1)
+    phase: Literal["train", "development", "confirmation"]
+    role: Literal["candidate", "reference"] = "candidate"
+    data_split: str = Field(min_length=1)
+    window_id: str = Field(min_length=1)
+    candidate_id: str = Field(min_length=1)
+    paired_reference_id: Optional[str] = Field(default=None, min_length=1)
+    selection_rules_sha256: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    selection_record_sha256: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    selected_checkpoint_sha256: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @model_validator(mode="after")
+    def validate_phase_evidence(self) -> "ExperimentProtocolConfig":
+        if self.phase == "development" and self.selection_rules_sha256 is None:
+            raise ValueError(
+                "development phase requires the pre-frozen selection_rules_sha256"
+            )
+        if self.phase == "confirmation" and self.selection_record_sha256 is None:
+            raise ValueError(
+                "confirmation phase requires selection_record_sha256"
+            )
+        if (
+            self.phase == "confirmation"
+            and self.role == "candidate"
+            and self.selected_checkpoint_sha256 is None
+        ):
+            raise ValueError(
+                "confirmation candidates require selected_checkpoint_sha256"
+            )
+        if self.role == "candidate" and self.phase != "train" and not self.paired_reference_id:
+            raise ValueError(
+                "evaluated candidates require paired_reference_id"
+            )
+        return self
+
+
 class ProjectConfig(BaseModel):
     metadata: MetadataConfig
     runtime: RuntimeConfig = RuntimeConfig()
@@ -1463,6 +1741,7 @@ class ProjectConfig(BaseModel):
     )
     execution: Optional[ExecutionConfig] = None
     bundle: BundleConfig = BundleConfig()
+    experiment_protocol: Optional[ExperimentProtocolConfig] = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1476,6 +1755,15 @@ class ProjectConfig(BaseModel):
                     f"{stage.algorithm} must be the final pipeline stage because "
                     "it learns from its own executed actions."
                 )
+            if isinstance(stage, TIMARLStageConfig):
+                if len(self.pipeline) != 1:
+                    raise ValueError("TIMARL v1 must run as a standalone single-stage pipeline")
+                if index != len(self.pipeline) - 1:
+                    raise ValueError("TIMARL must be the final pipeline stage")
+                if self.simulator.interface != "entity":
+                    raise ValueError("TIMARL requires simulator.interface='entity'")
+                if self.simulator.central_agent:
+                    raise ValueError("TIMARL requires simulator.central_agent=false")
 
             if isinstance(stage, TransformerMATD3StageConfig):
                 if self.simulator.interface != "entity":
@@ -1522,6 +1810,75 @@ class ProjectConfig(BaseModel):
                         f"algorithm={stage.algorithm!r} does not support "
                         "simulator.topology_mode='dynamic' (supports_dynamic_topology=False)."
                     )
+
+        protocol = self.experiment_protocol
+        if protocol is not None:
+            is_evaluation = protocol.phase in {"development", "confirmation"}
+            if is_evaluation:
+                if self.simulator.random_seed is None:
+                    raise ValueError(
+                        "development/confirmation requires explicit simulator.random_seed"
+                    )
+                if self.simulator.episodes != 1 or not self.simulator.deterministic_finish:
+                    raise ValueError(
+                        "development/confirmation must be one deterministic episode"
+                    )
+                export = self.simulator.export
+                if not export.export_kpis_on_episode_end or not export.final_episode_only:
+                    raise ValueError(
+                        "development/confirmation must export final-episode KPIs"
+                    )
+                if (
+                    self.checkpointing.checkpoint_interval is not None
+                    or self.checkpointing.checkpoint_on_episode_end
+                ):
+                    raise ValueError(
+                        "evaluation runs must not write training checkpoints"
+                    )
+                if protocol.role == "candidate":
+                    has_source = bool(
+                        self.checkpointing.checkpoint_local_path
+                        or self.checkpointing.checkpoint_run_id
+                    )
+                    if not self.checkpointing.resume_training or not has_source:
+                        raise ValueError(
+                            "evaluated candidates require one explicit checkpoint source"
+                        )
+                    for stage in self.pipeline:
+                        if isinstance(stage, TIMARLStageConfig) and not stage.frozen:
+                            raise ValueError(
+                                "TIMARL evaluation requires pipeline stage frozen=true"
+                            )
+            else:
+                if protocol.role != "candidate":
+                    raise ValueError("train phase only supports role='candidate'")
+                if self.simulator.deterministic_finish:
+                    raise ValueError(
+                        "protocol train phase must not mix a deterministic evaluation episode"
+                    )
+                if any(isinstance(stage, TIMARLStageConfig) for stage in self.pipeline):
+                    if not (
+                        self.checkpointing.checkpoint_on_episode_end
+                        and self.checkpointing.keep_episode_checkpoints
+                    ):
+                        raise ValueError(
+                            "TIMARL protocol training must preserve every episode-end checkpoint"
+                        )
+                    for stage in self.pipeline:
+                        if not isinstance(stage, TIMARLStageConfig):
+                            continue
+                        behavior_cloning = stage.hyperparameters.behavior_cloning
+                        if (
+                            behavior_cloning is not None
+                            and behavior_cloning.enabled
+                            and self.simulator.episodes
+                            <= behavior_cloning.demonstration_episodes
+                        ):
+                            raise ValueError(
+                                "TIMARL protocol training requires at least one "
+                                "post-BC learning episode; simulator.episodes must "
+                                "exceed behavior_cloning.demonstration_episodes"
+                            )
 
         return self
 

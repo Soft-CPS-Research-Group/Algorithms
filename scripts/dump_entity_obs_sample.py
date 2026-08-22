@@ -49,14 +49,14 @@ def _build_env(config: Mapping[str, Any]) -> CityLearnEnv:
         raise ValueError(
             f"Fixture dump requires simulator.interface='entity'; got {interface!r}"
         )
-    schema_input = _resolve_citylearn_schema_input(sim["dataset_path"])
+    schema_input = _resolve_citylearn_schema_input(sim["dataset_path"], sim)
     _validate_dynamic_entity_schema_input(
         schema_input, interface=interface, topology_mode=topology
     )
     reward_cls = REWARD_FUNCTION_MAP.get(sim["reward_function"])
     if reward_cls is None:
         raise ValueError(f"Unknown reward function {sim['reward_function']!r}")
-    return CityLearnEnv(
+    env_kwargs = dict(
         schema=schema_input,
         central_agent=sim["central_agent"],
         interface=interface,
@@ -66,6 +66,17 @@ def _build_env(config: Mapping[str, Any]) -> CityLearnEnv:
         render_mode="none",
         export_kpis_on_episode_end=False,
     )
+    reward_function_kwargs = sim.get("reward_function_kwargs")
+    if isinstance(reward_function_kwargs, Mapping) and reward_function_kwargs:
+        env_kwargs["reward_function_kwargs"] = dict(reward_function_kwargs)
+    for key in (
+        "simulation_start_time_step",
+        "simulation_end_time_step",
+        "episode_time_steps",
+    ):
+        if sim.get(key) is not None:
+            env_kwargs[key] = sim[key]
+    return CityLearnEnv(**env_kwargs)
 
 
 def _edge_pairs(raw_edges: Any) -> list[dict[str, Any]]:
