@@ -126,6 +126,7 @@ class CityLearnSafetyConfig:
     protect_ev_minimum: bool = True
     ev_minimum_mode: str = "average"
     protect_ev_service_target: bool = False
+    allow_ev_service_target_to_use_reserved_headroom: bool = False
     protect_deferrable_must_start: bool = True
     allow_discretionary_deferrable_start: bool = False
     headroom_reserve_kw: float = 0.0
@@ -232,7 +233,31 @@ class CityLearnLocalSafetyAdapter:
             name: _finite(value)
             for name, value in zip(self.observation_names, values_array)
         }
-        headroom = self._headroom(values)
+        # A configured reserve is a robustness margin for discretionary
+        # controls.  It must not make an otherwise physically feasible hard
+        # EV departure target infeasible.  In target-protection mode, build
+        # the envelope from the physical limits; target-limited EV actions
+        # still cannot consume more energy than required for departure.
+        service_target_active = False
+        if (
+            self.config.protect_ev_service_target
+            and self.config.allow_ev_service_target_to_use_reserved_headroom
+        ):
+            for name, value in zip(self.observation_names, values_array):
+                if not (
+                    name.startswith("charger::")
+                    and name.endswith("energy_to_required_soc_kwh")
+                    and _finite(value, 0.0) > 0.0
+                ):
+                    continue
+                prefix = name.removesuffix("energy_to_required_soc_kwh")
+                if _finite(values.get(f"{prefix}connected_state"), 0.0) > 0.5:
+                    service_target_active = True
+                    break
+        headroom = self._headroom(
+            values,
+            reserve_override=0.0 if service_target_active else None,
+        )
         specs: list[ActionSpec] = []
         constraints: list[ActionConstraint] = []
         for index, action_name in enumerate(self.action_names):
@@ -516,7 +541,12 @@ class CityLearnLocalSafetyAdapter:
         target_limited = max(target_limited, minimum_action)
         return target_limited if physical is None else min(physical, target_limited)
 
-    def _headroom(self, values: Mapping[str, float]) -> ElectricalHeadroom:
+    def _headroom(
+        self,
+        values: Mapping[str, float],
+        *,
+        reserve_override: float | None = None,
+    ) -> ElectricalHeadroom:
         import_total = self._first_optional(
             values,
             "charging_building_headroom_kw",
@@ -586,7 +616,11 @@ class CityLearnLocalSafetyAdapter:
             phase: max(0.0, value - applied_phase_kw.get(phase, 0.0))
             for phase, value in phase_export.items()
         }
-        reserve = float(self.config.headroom_reserve_kw)
+        reserve = (
+            float(self.config.headroom_reserve_kw)
+            if reserve_override is None
+            else float(reserve_override)
+        )
 
         def reserved(value: float | None) -> float | None:
             return None if value is None else max(0.0, value - reserve)

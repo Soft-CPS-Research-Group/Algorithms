@@ -248,6 +248,12 @@ class AgentTransformerMATD3(BaseAgent):
                     "local_action_safety_protect_ev_service_target", False
                 )
             ),
+            allow_ev_service_target_to_use_reserved_headroom=bool(
+                hyperparameters.get(
+                    "local_action_safety_allow_ev_service_target_to_use_reserved_headroom",
+                    False,
+                )
+            ),
             protect_deferrable_must_start=bool(
                 hyperparameters.get(
                     "local_action_safety_protect_deferrable_must_start", True
