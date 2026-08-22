@@ -807,6 +807,7 @@ def test_validate_config_accepts_simulator_export_and_time_controls(base_config)
     config["simulator"]["simulation_end_time_step"] = 95
     config["simulator"]["episodes"] = 2
     config["simulator"]["episode_time_steps"] = 24
+    config["simulator"]["terminal_observation_padding"] = True
     config["simulator"]["export"] = {
         "mode": "end",
         "export_kpis_on_episode_end": True,
@@ -816,7 +817,8 @@ def test_validate_config_accepts_simulator_export_and_time_controls(base_config)
         "kpi_round_decimals": 4,
         "session_name": "session-a",
     }
-    validate_config(config)
+    validated = validate_config(config)
+    assert validated.simulator.terminal_observation_padding is True
 
 
 def test_validate_config_accepts_runtime_safety_guards(base_config):

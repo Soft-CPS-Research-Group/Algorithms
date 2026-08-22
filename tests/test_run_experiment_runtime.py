@@ -659,6 +659,33 @@ def test_resolve_citylearn_schema_input_prefers_local_schema_directory(tmp_path)
     assert schema_input["root_directory"] == str(dataset_dir.resolve())
 
 
+def test_resolve_citylearn_schema_input_preserves_valid_relative_parent_root(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    schema_dir = dataset_dir / "schemas"
+    timeseries_dir = dataset_dir / "timeseries"
+    schema_dir.mkdir(parents=True)
+    timeseries_dir.mkdir()
+    (timeseries_dir / "Member_001.parquet").write_bytes(b"fixture")
+    schema_path = schema_dir / "variant.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "root_directory": "..",
+                "buildings": {
+                    "Member_001": {
+                        "energy_simulation": "timeseries/Member_001.parquet"
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    schema_input = runner._resolve_citylearn_schema_input(str(schema_path))
+
+    assert schema_input["root_directory"] == str(dataset_dir.resolve())
+
+
 def test_resolve_citylearn_schema_input_applies_community_market_overlay(tmp_path):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()

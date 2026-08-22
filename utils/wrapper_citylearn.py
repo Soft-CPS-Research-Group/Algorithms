@@ -767,7 +767,8 @@ class Wrapper_CityLearn(RLC):
         return parsed or None
 
     def _resolve_progress_totals(self, episodes: int) -> tuple[Optional[int], Optional[int]]:
-        step_total = self._coerce_positive_int(self.episode_time_steps)
+        state_points = self._coerce_positive_int(self.episode_time_steps)
+        step_total = None if state_points is None else state_points - 1
         if step_total is None:
             return None, None
         return step_total, episodes * step_total

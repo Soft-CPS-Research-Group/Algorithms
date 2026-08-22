@@ -370,6 +370,7 @@ class SimulatorConfig(BaseModel):
     simulation_start_time_step: Optional[int] = Field(default=None, ge=0)
     simulation_end_time_step: Optional[int] = Field(default=None, ge=0)
     episode_time_steps: Optional[Union[int, List[Tuple[int, int]]]] = None
+    terminal_observation_padding: bool = False
     export: SimulatorExportConfig = SimulatorExportConfig()
     wrapper_reward: WrapperRewardConfig = WrapperRewardConfig()
     entity_encoding: EntityEncodingConfig = EntityEncodingConfig()

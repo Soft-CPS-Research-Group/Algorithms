@@ -293,6 +293,10 @@ def _apply_simulation_schema_overlays(
         }
 
     payload["buildings"] = mutable_buildings
+    if simulator_cfg.get("terminal_observation_padding") is not None:
+        payload["terminal_observation_padding"] = bool(
+            simulator_cfg["terminal_observation_padding"]
+        )
     return payload
 
 
@@ -320,10 +324,31 @@ def _resolve_citylearn_schema_input(
         return dataset_path_value
 
     if isinstance(payload, dict):
-        # A local schema must resolve sibling CSV/Parquet files from its own
-        # directory. Copied datasets can carry a root_directory from another
-        # repository, so local paths intentionally take precedence here.
-        payload["root_directory"] = str(candidate.resolve().parent)
+        # Prefer the schema directory for portability, but preserve an explicit
+        # relative root when it demonstrably resolves local dataset assets. This
+        # is required for canonical variant schemas stored under ``schemas/``
+        # with ``root_directory: ..``. Absolute or stale copied paths still
+        # fall back to the directory containing the local schema.
+        local_root = candidate.resolve().parent
+        declared_root = payload.get("root_directory")
+        if isinstance(declared_root, str) and declared_root.strip():
+            declared_path = Path(declared_root).expanduser()
+            if not declared_path.is_absolute():
+                resolved_declared_root = (local_root / declared_path).resolve()
+                referenced_files = []
+                for building in (payload.get("buildings") or {}).values():
+                    if not isinstance(building, Mapping):
+                        continue
+                    for key in ("energy_simulation", "weather", "pricing", "carbon_intensity"):
+                        value = building.get(key)
+                        if isinstance(value, str) and value.strip():
+                            referenced_files.append(value)
+                if any(
+                    (resolved_declared_root / relative).is_file()
+                    for relative in referenced_files
+                ):
+                    local_root = resolved_declared_root
+        payload["root_directory"] = str(local_root)
         community_market = _community_market_overlay(simulator_cfg)
         if community_market is not None:
             payload["community_market"] = community_market
@@ -825,7 +850,12 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         # Materialise expected per-job output files early for orchestration parity.
         simulator_cfg = config.get("simulator", {})
         configured_episode_total = int(simulator_cfg.get("episodes", 1) or 1)
-        configured_step_total = simulator_cfg.get("episode_time_steps")
+        configured_state_points = simulator_cfg.get("episode_time_steps")
+        configured_step_total = (
+            configured_state_points - 1
+            if isinstance(configured_state_points, int)
+            else None
+        )
         if not isinstance(configured_step_total, int) or configured_step_total <= 0:
             configured_step_total = None
         configured_global_step_total = (
@@ -976,7 +1006,10 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
 
         # Ensure progress file reaches terminal state with 100% completion.
         completed_episodes = int(simulator_cfg.get("episodes", 1) or 1)
-        final_step_total = int(getattr(wrapper, "episode_time_steps", 0) or 0)
+        final_step_total = max(
+            int(getattr(wrapper, "episode_time_steps", 0) or 0) - 1,
+            0,
+        )
         final_step = max(0, final_step_total - 1)
         final_global_step = max(0, int(getattr(wrapper, "global_step", 0) or 0))
         final_global_step_total = (

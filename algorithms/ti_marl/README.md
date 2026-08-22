@@ -399,7 +399,7 @@ python scripts/validate_ti_marl_interfaces.py \
   --simulator-bindings /local/path/generated_interfaces/technology_bindings/simulator.yaml
 ```
 
-`softcpsrecsimulator==1.7.0` is the pinned minimum runtime for TI-MARL. The
+`softcpsrecsimulator==1.8.0` is the pinned runtime for TI-MARL. The
 end-to-end vertical slice runs against the installed package; using an adjacent
 Simulator checkout is only a deliberate development override.
 

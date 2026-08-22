@@ -29,7 +29,7 @@ orchestration, logging, and packaging.
 
 - Python 3.10
 - `pip install -r requirements.txt`
-- Simulator dependency is installed via `softcpsrecsimulator` (imports remain `citylearn.*`)
+- Simulator dependency is pinned to `softcpsrecsimulator==1.8.0` (imports remain `citylearn.*`)
 - If your environment already had `CityLearn`, run `pip uninstall -y CityLearn` first (or recreate the venv)
 - (Optional) `mlflow` if you want the UI locally
 - Docker (optional, for containerised runs)

@@ -49,6 +49,9 @@ KPI_ROWS: Mapping[str, tuple[str, ...]] = {
     "electrical_violation_kwh": (
         "district_electrical_service_phase_violations_energy_total_kwh",
     ),
+    "electrical_requested_pressure_kwh": (
+        "district_electrical_service_phase_requested_pressure_energy_total_kwh",
+    ),
     "ev_min_acceptable_feasible_rate": (
         "district_ev_performance_departure_min_acceptable_feasible_ratio",
     ),
@@ -88,6 +91,7 @@ KPI_ROWS: Mapping[str, tuple[str, ...]] = {
 DEFAULT_AGGREGATION: Mapping[str, str] = {
     "cost_eur": "sum",
     "electrical_violation_kwh": "sum",
+    "electrical_requested_pressure_kwh": "sum",
     "battery_throughput_kwh": "sum",
     "v2g_export_kwh": "sum",
     "community_import_kwh": "sum",
@@ -158,6 +162,9 @@ def build_pairing_fingerprint(
         "simulation_start_time_step": simulator.get("simulation_start_time_step"),
         "simulation_end_time_step": simulator.get("simulation_end_time_step"),
         "episode_time_steps": simulator.get("episode_time_steps"),
+        "terminal_observation_padding": simulator.get(
+            "terminal_observation_padding", False
+        ),
         "repeat_episode_scenario": simulator.get("repeat_episode_scenario", False),
         "simulator_random_seed": simulator.get("random_seed"),
         "reward_function": simulator.get("reward_function"),

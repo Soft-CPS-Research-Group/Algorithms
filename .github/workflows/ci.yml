@@ -12,9 +12,19 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      SIMULATOR_REPO: ${{ github.workspace }}/.ci/Simulator
 
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout Simulator 1.8.0 benchmark data
+        uses: actions/checkout@v4
+        with:
+          repository: Soft-CPS-Research-Group/Simulator
+          # Exact source commit used to publish softcpsrecsimulator 1.8.0.
+          # The inherited upstream repository already owns an unrelated v1.8.0 tag.
+          ref: 978be68b0e0740deab15ecf536805f323b86fa57
+          path: .ci/Simulator
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
