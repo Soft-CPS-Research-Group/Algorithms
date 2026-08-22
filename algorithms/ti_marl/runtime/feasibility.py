@@ -211,12 +211,58 @@ class AnalyticLocalProjector:
             ),
             minimum_power_by_group={},
         )
+        self._drop_actions_below_typed_minimum(
+            groups,
+            decisions,
+            interventions,
+        )
         ordered = tuple(decisions[key] for key in sorted(decisions))
         return LocalActionBundle(
             agent_id=bundle.agent_id,
             decisions=ordered,
             interventions=tuple(interventions),
         )
+
+    def _drop_actions_below_typed_minimum(
+        self,
+        groups: Mapping[str, ActionGroupInstance],
+        decisions: Dict[str, ActionDecision],
+        interventions: list[Mapping[str, object]],
+    ) -> None:
+        """Never emit a continuous command below its typed operating floor."""
+
+        for group_id, decision in tuple(decisions.items()):
+            if decision.mode in {"IDLE", "START"}:
+                continue
+            group = groups[group_id]
+            port = next(
+                (item for item in group.ports if item.mode == decision.mode),
+                None,
+            )
+            if port is None or float(port.lower_bound) <= 0.0:
+                continue
+            applied_magnitude = max(float(decision.fraction), 0.0) * max(
+                float(port.upper_bound),
+                0.0,
+            )
+            if applied_magnitude + 1.0e-9 >= float(port.lower_bound):
+                continue
+            decisions[group_id] = replace(
+                decision,
+                mode="IDLE",
+                fraction=0.0,
+                mode_index=0,
+            )
+            interventions.append(
+                self._intervention(
+                    group_id,
+                    "typed_minimum_power_unavailable",
+                    decision.mode,
+                    "IDLE",
+                    decision.fraction,
+                    0.0,
+                )
+            )
 
     def _enforce_ev_service(
         self,
@@ -841,6 +887,17 @@ class AnalyticLocalProjector:
                         (item for item in group.ports if item.mode == decision.mode),
                         None,
                     )
+                    if (
+                        not is_start
+                        and port is not None
+                        and decision.fraction * float(port.upper_bound)
+                        + 1.0e-9
+                        < float(port.lower_bound)
+                    ):
+                        raise AssertionError(
+                            f"Projected {decision.mode} magnitude is below the "
+                            f"typed minimum for {decision.group_id}"
+                        )
                     available_fraction = (
                         1.0
                         if is_start and port is not None and port.valid

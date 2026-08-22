@@ -2509,6 +2509,26 @@ def test_ev_charge_respects_nonzero_typed_minimum_power(tmp_path):
     command = TypedCommandBuilder().build(snapshot, (projected,))[0]
     assert command.value == pytest.approx(1.4)
 
+    constrained_headroom = replace(
+        snapshot,
+        constraints=tuple(
+            replace(constraint, upper_bound=0.7)
+            if constraint.owner_agent_id == "Building_1"
+            and constraint.constraint_type == "charging_headroom_kw"
+            else constraint
+            for constraint in snapshot.constraints
+        ),
+    )
+    below_minimum = AnalyticLocalProjector(enforce_ev_service=False).project(
+        constrained_headroom,
+        (raw,),
+    )[0]
+    assert below_minimum.decisions[0].mode == "IDLE"
+    assert any(
+        item["reason"] == "typed_minimum_power_unavailable"
+        for item in below_minimum.interventions
+    )
+
     unavailable_minimum = entity_payload(("Building_1",), time_step=1)
     unavailable_minimum["tables"]["charger"][0, 4] = 0.1
     constrained = compiler.compile(unavailable_minimum)
