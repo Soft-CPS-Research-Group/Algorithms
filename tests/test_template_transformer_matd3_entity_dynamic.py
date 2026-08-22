@@ -16,6 +16,7 @@ TEMPLATES = {
     "default": TEMPLATE_DIR / "transformer_matd3_entity_dynamic.yaml",
     "residual": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_residual.yaml",
     "bc": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_bc.yaml",
+    "cost4": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_faithful.yaml",
 }
 
 
@@ -74,6 +75,27 @@ def test_bc_template_enables_independent_bc_paths() -> None:
     assert hyperparameters["local_action_safety_ev_minimum_mode"] == "deadline_feasible"
     assert hyperparameters["local_action_safety_protect_ev_service_target"] is True
     assert hyperparameters["local_action_safety_runtime_only_export"] is True
+
+
+def test_templates_declare_actor_policy_loss_weight() -> None:
+    for name in sorted(TEMPLATES):
+        hyperparameters = _load(name)["pipeline"][0]["hyperparameters"]
+        assert hyperparameters["actor_policy_loss_weight"] >= 0.0
+
+
+def test_cost4_template_matches_named_recipe_translation() -> None:
+    stage = _load("cost4")["pipeline"][0]
+    hyperparameters = stage["hyperparameters"]
+    replay = stage["behavior_cloning"]["replay_based"]
+
+    assert _load("cost4")["simulator"]["dataset_name"].endswith("15min_parquet")
+    assert hyperparameters["actor_policy_loss_weight"] == pytest.approx(0.085)
+    assert hyperparameters["warm_start_policy_name"] == "RBCCommunityPolicy"
+    assert hyperparameters["residual_action_final_scale"] == pytest.approx(0.30)
+    assert hyperparameters["residual_storage_action_scale_multiplier"] == pytest.approx(0.75)
+    assert hyperparameters["residual_ev_action_scale_multiplier"] == pytest.approx(0.25)
+    assert replay["weight"] == pytest.approx(0.24)
+    assert replay["ev_multiplier"] == pytest.approx(18.0)
 
 
 def test_templates_reference_the_validated_tokenizer() -> None:

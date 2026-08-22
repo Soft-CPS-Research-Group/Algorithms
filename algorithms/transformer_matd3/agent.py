@@ -166,6 +166,9 @@ class AgentTransformerMATD3(BaseAgent):
         self.actor_update_interval = int(
             hyperparameters.get("actor_update_interval", 2)
         )
+        self.actor_policy_loss_weight = float(
+            hyperparameters.get("actor_policy_loss_weight", 1.0)
+        )
         self.sigma = float(hyperparameters.get("sigma", 0.0))
         self.sigma_decay = float(hyperparameters.get("sigma_decay", 1.0))
         self.min_sigma = float(hyperparameters.get("min_sigma", 0.0))
@@ -1558,7 +1561,10 @@ class AgentTransformerMATD3(BaseAgent):
                         )
                         for label, value in type_losses.items():
                             actor_bc_type_losses[label].append(float(value.detach()))
-                    actor_loss = policy_loss + bc_weight * bc_loss
+                    actor_loss = (
+                        self.actor_policy_loss_weight * policy_loss
+                        + bc_weight * bc_loss
+                    )
                     state.actor_optimizer.zero_grad(set_to_none=True)
                     actor_loss.backward()
                     actor_grad = clip_grad_norm_(
@@ -1638,6 +1644,9 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}actor_loss_mean": self._mean_or_zero(actor_losses),
             f"{_METRIC_PREFIX}actor_policy_loss_mean": self._mean_or_zero(
                 actor_policy_losses
+            ),
+            f"{_METRIC_PREFIX}actor_policy_loss_weight": float(
+                self.actor_policy_loss_weight
             ),
             f"{_METRIC_PREFIX}actor_policy_q_abs_mean": self._mean_or_zero(
                 actor_q_abs
@@ -3591,6 +3600,11 @@ class AgentTransformerMATD3(BaseAgent):
             raise ValueError("critic_team_reward_mix must be in [0, 1]")
         if self.actor_update_interval <= 0:
             raise ValueError("actor_update_interval must be positive")
+        if (
+            not np.isfinite(self.actor_policy_loss_weight)
+            or self.actor_policy_loss_weight < 0.0
+        ):
+            raise ValueError("actor_policy_loss_weight must be non-negative")
         if self.sigma < 0.0 or not 0.0 <= self.min_sigma <= self.sigma:
             raise ValueError("exploration sigma values are invalid")
         if not 0.0 < self.sigma_decay <= 1.0:

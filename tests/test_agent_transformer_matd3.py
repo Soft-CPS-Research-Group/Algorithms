@@ -119,6 +119,12 @@ def test_agent_is_registered_for_runtime_construction() -> None:
     assert ALGORITHM_REGISTRY["AgentTransformerMATD3"] is AgentTransformerMATD3
 
 
+def test_actor_policy_loss_weight_is_configurable() -> None:
+    agent, _ = _make_agent(actor_policy_loss_weight=0.085)
+
+    assert agent.actor_policy_loss_weight == pytest.approx(0.085)
+
+
 def test_predict_is_repeatable_and_respects_per_ca_bounds() -> None:
     agent, obs_dim = _make_agent(buildings=1)
     observations = [np.linspace(-1.0, 1.0, obs_dim, dtype=np.float32)]
