@@ -59,7 +59,9 @@ def test_residual_template_declares_runtime_export_dependency() -> None:
 
 
 def test_bc_template_enables_independent_bc_paths() -> None:
-    behavior_cloning = _load("bc")["pipeline"][0]["behavior_cloning"]
+    stage = _load("bc")["pipeline"][0]
+    behavior_cloning = stage["behavior_cloning"]
+    hyperparameters = stage["hyperparameters"]
 
     replay = behavior_cloning["replay_based"]
     demonstration = behavior_cloning["demonstration_based"]
@@ -68,6 +70,10 @@ def test_bc_template_enables_independent_bc_paths() -> None:
     assert demonstration["enabled"] is True
     assert demonstration["demonstration_episodes"] >= 1
     assert demonstration["teacher"]["policy"] == "RBCSmartPolicy"
+    assert hyperparameters["local_action_safety_enabled"] is True
+    assert hyperparameters["local_action_safety_ev_minimum_mode"] == "deadline_feasible"
+    assert hyperparameters["local_action_safety_protect_ev_service_target"] is True
+    assert hyperparameters["local_action_safety_runtime_only_export"] is True
 
 
 def test_templates_reference_the_validated_tokenizer() -> None:
