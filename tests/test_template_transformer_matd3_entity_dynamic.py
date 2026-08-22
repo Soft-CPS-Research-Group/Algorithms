@@ -17,6 +17,7 @@ TEMPLATES = {
     "residual": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_residual.yaml",
     "bc": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_bc.yaml",
     "cost4": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_faithful.yaml",
+    "cost4_realistic_pilot": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_realistic_pilot.yaml",
 }
 
 
@@ -95,6 +96,30 @@ def test_cost4_template_matches_named_recipe_translation() -> None:
     assert hyperparameters["residual_storage_action_scale_multiplier"] == pytest.approx(0.75)
     assert hyperparameters["residual_ev_action_scale_multiplier"] == pytest.approx(0.25)
     assert replay["weight"] == pytest.approx(0.24)
+    assert replay["ev_multiplier"] == pytest.approx(18.0)
+
+
+def test_cost4_realistic_pilot_keeps_recipe_and_limits_episode_budget() -> None:
+    config = _load("cost4_realistic_pilot")
+    stage = config["pipeline"][0]
+    hyperparameters = stage["hyperparameters"]
+    replay = stage["behavior_cloning"]["replay_based"]
+
+    assert config["simulator"]["episodes"] == 2
+    assert config["simulator"]["episode_time_steps"] == 3401
+    assert config["simulator"]["dataset_name"].endswith("15min_parquet")
+    assert config["simulator"]["reward_function"] == (
+        "CostServiceCommunityDenseEVResidualRewardV54"
+    )
+    assert config["simulator"]["reward_function_kwargs"] == {
+        "community_settlement_cost_weight": pytest.approx(1.55),
+        "battery_throughput_penalty": pytest.approx(0.0015),
+    }
+    assert hyperparameters["actor_policy_loss_weight"] == pytest.approx(0.085)
+    assert hyperparameters["warm_start_policy_name"] == "RBCCommunityPolicy"
+    assert hyperparameters["residual_action_final_scale"] == pytest.approx(0.30)
+    assert hyperparameters["residual_storage_action_scale_multiplier"] == pytest.approx(0.75)
+    assert hyperparameters["residual_ev_action_scale_multiplier"] == pytest.approx(0.25)
     assert replay["ev_multiplier"] == pytest.approx(18.0)
 
 
