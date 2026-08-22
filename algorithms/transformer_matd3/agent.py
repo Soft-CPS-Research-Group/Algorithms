@@ -343,6 +343,18 @@ class AgentTransformerMATD3(BaseAgent):
         self.reward_norm_mean = 0.0
         self.reward_norm_m2 = 0.0
         self._latest_training_metrics: Dict[str, float] = {}
+        tracking_cfg = config.get("tracking", {}) if isinstance(config, dict) else {}
+        self.runtime_profiling_enabled = bool(
+            tracking_cfg.get("runtime_profiling_enabled", False)
+        )
+        try:
+            self.runtime_profiling_interval = int(
+                tracking_cfg.get("runtime_profiling_interval", 512) or 512
+            )
+        except (TypeError, ValueError):
+            self.runtime_profiling_interval = 512
+        if self.runtime_profiling_interval < 1:
+            self.runtime_profiling_interval = 512
         self._last_train_rewards: Optional[torch.Tensor] = None
         self._warm_start_policy: Optional[BaseAgent] = None
         self._latest_raw_observations: Optional[List[np.ndarray]] = None
@@ -730,6 +742,9 @@ class AgentTransformerMATD3(BaseAgent):
         initial_exploration_done: bool,
     ) -> None:
         self._require_attached()
+        should_profile = self._should_runtime_profile_step(global_learning_step)
+        profile_metrics: Dict[str, float] = {}
+        profile_start = time.perf_counter() if should_profile else 0.0
         for name, values in (
             ("observations", observations),
             ("actions", actions),
@@ -745,6 +760,11 @@ class AgentTransformerMATD3(BaseAgent):
                 **self._bc_b_metrics(),
             }
             return
+        if should_profile:
+            profile_metrics[f"{_METRIC_PREFIX}runtime_update_prepare_seconds"] = (
+                time.perf_counter() - profile_start
+            )
+            profile_start = time.perf_counter()
         if self._bc_b is not None and not self._bc_b_pretraining_complete:
             self._run_bc_b_pretraining()
             self._bc_b_pretraining_complete = True
@@ -777,6 +797,11 @@ class AgentTransformerMATD3(BaseAgent):
         }
         self._validate_transition_vectors(transition)
         self._store_transition(transition)
+        if should_profile:
+            profile_metrics[f"{_METRIC_PREFIX}runtime_replay_push_seconds"] = (
+                time.perf_counter() - profile_start
+            )
+            profile_start = time.perf_counter()
         if self._bc_b is not None and self._bc_b_pretraining_complete:
             self._bc_b_actor_training_step += 1
 
@@ -785,18 +810,34 @@ class AgentTransformerMATD3(BaseAgent):
         bucket_size = self.replay_buffer.bucket_size(self._layout_signature)
         if bucket_size < self.batch_size:
             self._record_skip("replay_underfull", bucket_size)
+            if should_profile:
+                profile_metrics[f"{_METRIC_PREFIX}runtime_update_skip_replay_warmup"] = 1.0
+                self._latest_training_metrics.update(profile_metrics)
             return
         if not initial_exploration_done:
             self._record_skip("initial_exploration", bucket_size)
+            if should_profile:
+                profile_metrics[f"{_METRIC_PREFIX}runtime_update_skip_initial_exploration"] = 1.0
+                self._latest_training_metrics.update(profile_metrics)
             return
         if not update_step:
             self._record_skip("schedule", bucket_size)
+            if should_profile:
+                profile_metrics[f"{_METRIC_PREFIX}runtime_update_skip_schedule"] = 1.0
+                self._latest_training_metrics.update(profile_metrics)
             return
+        if should_profile:
+            profile_start = time.perf_counter()
         batch = self.replay_buffer.sample(self._layout_signature, self.batch_size)
+        if should_profile:
+            profile_metrics[f"{_METRIC_PREFIX}runtime_replay_sample_seconds"] = (
+                time.perf_counter() - profile_start
+            )
         self._learn(
             batch,
             update_target_step=update_target_step,
             global_learning_step=global_learning_step,
+            runtime_profile_metrics=profile_metrics if should_profile else None,
         )
 
     def on_episode_start(self, *, episode: int, training: bool) -> None:
@@ -1230,6 +1271,11 @@ class AgentTransformerMATD3(BaseAgent):
         self._latest_training_metrics = {}
         return metrics
 
+    def _should_runtime_profile_step(self, global_learning_step: int) -> bool:
+        return bool(self.runtime_profiling_enabled) and (
+            global_learning_step % self.runtime_profiling_interval == 0
+        )
+
     def get_diagnostic_metrics(self) -> Dict[str, float]:
         buffer_size = self.replay_buffer.total_size() if self.replay_buffer else 0
         bucket_size = 0
@@ -1307,8 +1353,11 @@ class AgentTransformerMATD3(BaseAgent):
         *,
         update_target_step: bool,
         global_learning_step: int,
+        runtime_profile_metrics: Optional[Dict[str, float]] = None,
     ) -> None:
         started = time.perf_counter()
+        should_profile = runtime_profile_metrics is not None
+        phase_start = time.perf_counter() if should_profile else 0.0
         observations = [self._tensor(value) for value in batch.observations]
         next_observations = [
             self._tensor(value) for value in batch.next_observations
@@ -1332,6 +1381,11 @@ class AgentTransformerMATD3(BaseAgent):
             cloning_actions = behavior_actions
         else:
             cloning_actions = actions
+        if should_profile:
+            runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_tensor_prepare_seconds"] = (
+                time.perf_counter() - phase_start
+            )
+            phase_start = time.perf_counter()
         if self.residual_policy_enabled and (
             behavior_actions is None or next_behavior_actions is None
         ):
@@ -1342,6 +1396,11 @@ class AgentTransformerMATD3(BaseAgent):
             cloning_actions=cloning_actions,
             global_learning_step=global_learning_step,
         )
+        if should_profile:
+            runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_bc_a_offline_seconds"] = (
+                time.perf_counter() - phase_start
+            )
+            phase_start = time.perf_counter()
         raw_rewards = self._tensor(batch.rewards)
         individual_rewards = self._normalize_reward_tensor(raw_rewards)
         train_rewards = self._team_rewards(individual_rewards)
@@ -1383,6 +1442,11 @@ class AgentTransformerMATD3(BaseAgent):
                         self.critic_target_clip_abs,
                     )
                 targets.append(target)
+        if should_profile:
+            runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_target_compute_seconds"] = (
+                time.perf_counter() - phase_start
+            )
+            phase_start = time.perf_counter()
 
         critic_1_losses = []
         critic_2_losses = []
@@ -1413,6 +1477,11 @@ class AgentTransformerMATD3(BaseAgent):
                 float((expected_1.detach() - expected_2.detach()).abs().mean())
             )
             critic_grad_norms.extend((float(grad_1), float(grad_2)))
+        if should_profile:
+            runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_critic_update_seconds"] = (
+                time.perf_counter() - phase_start
+            )
+            phase_start = time.perf_counter()
 
         actor_update_due = global_learning_step % self.actor_update_interval == 0
         actor_losses: List[float] = []
@@ -1504,6 +1573,11 @@ class AgentTransformerMATD3(BaseAgent):
                 actor_bc_losses.append(float(bc_loss.detach()))
                 actor_q_abs.append(float(q_policy.detach().abs().mean()))
                 actor_grad_norms.append(float(actor_grad))
+        if should_profile:
+            runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_actor_update_seconds"] = (
+                time.perf_counter() - phase_start
+            )
+            phase_start = time.perf_counter()
         extra_losses, extra_grad_norms = self._run_bc_a_extra_updates(
             observations=observations,
             behavior_actions=behavior_actions,
@@ -1511,9 +1585,19 @@ class AgentTransformerMATD3(BaseAgent):
             effective_weight=bc_weight,
             global_learning_step=global_learning_step,
         )
+        if should_profile:
+            runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_bc_a_extra_seconds"] = (
+                time.perf_counter() - phase_start
+            )
+            phase_start = time.perf_counter()
         bc_b_losses, bc_b_grad_norms = self._run_bc_b_auxiliary_updates(
             global_learning_step=self._bc_b_actor_training_step
         )
+        if should_profile:
+            runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_bc_b_auxiliary_seconds"] = (
+                time.perf_counter() - phase_start
+            )
+            phase_start = time.perf_counter()
         if actor_update_due and update_target_step:
             for state in self._per_building:
                 self._soft_update(state.tokenizer, state.tokenizer_target)
@@ -1521,6 +1605,10 @@ class AgentTransformerMATD3(BaseAgent):
                 self._soft_update(state.actor, state.actor_target)
                 self._soft_update(state.critic_1, state.critic_1_target)
                 self._soft_update(state.critic_2, state.critic_2_target)
+        if should_profile:
+            runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_target_update_seconds"] = (
+                time.perf_counter() - phase_start
+            )
 
         expected_1_flat = torch.cat(
             [value.reshape(-1) for value in expected_1_values]
@@ -1639,6 +1727,11 @@ class AgentTransformerMATD3(BaseAgent):
                     ),
                 }
             )
+        if runtime_profile_metrics is not None:
+            runtime_profile_metrics[
+                f"{_METRIC_PREFIX}runtime_training_step_seconds"
+            ] = time.perf_counter() - started
+            self._latest_training_metrics.update(runtime_profile_metrics)
 
     @property
     def _layouts(self) -> List[BuildingTokenLayout]:
