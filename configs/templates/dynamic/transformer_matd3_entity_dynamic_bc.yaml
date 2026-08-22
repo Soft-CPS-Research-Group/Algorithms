@@ -136,6 +136,7 @@ pipeline:
       local_action_safety_protect_ev_minimum: true
       local_action_safety_ev_minimum_mode: deadline_feasible
       local_action_safety_protect_ev_service_target: true
+      local_action_safety_allow_ev_service_target_to_use_reserved_headroom: true
       local_action_safety_protect_deferrable_must_start: true
       local_action_safety_allow_discretionary_deferrable_start: false
       local_action_safety_headroom_reserve_kw: 0.25

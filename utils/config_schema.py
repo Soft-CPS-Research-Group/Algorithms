@@ -1223,6 +1223,7 @@ class TransformerMATD3Hyperparameters(BaseModel):
         "average", "deadline_feasible"
     ] = "average"
     local_action_safety_protect_ev_service_target: bool = False
+    local_action_safety_allow_ev_service_target_to_use_reserved_headroom: bool = False
     local_action_safety_protect_deferrable_must_start: bool = True
     local_action_safety_allow_discretionary_deferrable_start: bool = False
     local_action_safety_headroom_reserve_kw: float = Field(default=0.0, ge=0.0)
