@@ -391,6 +391,11 @@ class TIMAPPO:
             for item in ev_planning_items
             for target in item.targets
         )
+        ev_planning_discharge_samples = sum(
+            target.decision.mode == "DISCHARGE_EV"
+            for item in ev_planning_items
+            for target in item.targets
+        )
         ev_planning_reason_counts = Counter(
             target.reason
             for item in ev_planning_items
@@ -652,7 +657,10 @@ class TIMAPPO:
                         ev_planning_mode_correct_by_mode[
                             target.decision.mode
                         ].append(mode_correct)
-                        if target.decision.mode == "CHARGE_EV":
+                        if target.decision.mode in {
+                            "CHARGE_EV",
+                            "DISCHARGE_EV",
+                        }:
                             predicted_fraction = (
                                 ev_planning_evaluation
                                 .predicted_fraction_by_group_step[replay_index][
@@ -707,6 +715,10 @@ class TIMAPPO:
             )
             ev_planning_charge_recall = self._mean_or_zero(
                 ev_planning_mode_correct_by_mode.get("CHARGE_EV", ()),
+                reference=actor_loss,
+            )
+            ev_planning_discharge_recall = self._mean_or_zero(
+                ev_planning_mode_correct_by_mode.get("DISCHARGE_EV", ()),
                 reference=actor_loss,
             )
             ev_planning_idle_recall = self._mean_or_zero(
@@ -862,6 +874,9 @@ class TIMAPPO:
             metrics["ev_planning_charge_recall"] += float(
                 ev_planning_charge_recall.detach().cpu()
             )
+            metrics["ev_planning_discharge_recall"] += float(
+                ev_planning_discharge_recall.detach().cpu()
+            )
             metrics["ev_planning_idle_recall"] += float(
                 ev_planning_idle_recall.detach().cpu()
             )
@@ -976,8 +991,13 @@ class TIMAPPO:
                 "ev_planning_charge_samples": float(
                     ev_planning_charge_samples
                 ),
+                "ev_planning_discharge_samples": float(
+                    ev_planning_discharge_samples
+                ),
                 "ev_planning_idle_samples": float(
-                    ev_planning_samples - ev_planning_charge_samples
+                    ev_planning_samples
+                    - ev_planning_charge_samples
+                    - ev_planning_discharge_samples
                 ),
                 "effective_gamma": float(self.gamma),
                 "effective_gae_lambda": float(self.gae_lambda),
@@ -1036,16 +1056,27 @@ class TIMAPPO:
             decisions_by_step,
             targets_by_step,
         ):
-            replay_snapshot = TIMAPPO._compact_ev_planning_snapshot(snapshot)
             targets_by_reason: dict[str, list[EVPlanningTarget]] = defaultdict(
                 list
             )
             for target in targets:
                 targets_by_reason[target.reason].append(target)
             for reason, reason_targets in sorted(targets_by_reason.items()):
+                target_agent_ids = tuple(
+                    agent_id
+                    for agent_id in snapshot.agent_ids
+                    if any(
+                        target.agent_id == agent_id
+                        for target in reason_targets
+                    )
+                )
+                replay_snapshot = TIMAPPO._compact_ev_planning_snapshot(
+                    snapshot,
+                    agent_ids=target_agent_ids,
+                )
                 overlaid = {
-                    agent_id: dict(group_decisions)
-                    for agent_id, group_decisions in raw_decisions.items()
+                    agent_id: dict(raw_decisions.get(agent_id, {}))
+                    for agent_id in target_agent_ids
                 }
                 for target in reason_targets:
                     overlaid.setdefault(target.agent_id, {})[
@@ -1064,17 +1095,29 @@ class TIMAPPO:
     @staticmethod
     def _compact_ev_planning_snapshot(
         snapshot: InterfaceSnapshot,
+        *,
+        agent_ids: tuple[str, ...],
     ) -> InterfaceSnapshot:
-        """Keep exactly the immutable fields consumed by actor replay."""
+        """Keep only local actor inputs for agents carrying causal targets."""
+
+        selected = frozenset(agent_ids)
 
         return replace(
             snapshot,
+            agent_ids=agent_ids,
             modules=(),
             entities=(),
             fault_evidence=(),
             health=(),
             observation_parts=tuple(
-                part for part in snapshot.observation_parts if part.policy_input
+                part
+                for part in snapshot.observation_parts
+                if part.policy_input and part.owner_agent_id in selected
+            ),
+            action_groups=tuple(
+                group
+                for group in snapshot.action_groups
+                if group.owner_agent_id in selected
             ),
             dependencies=(),
             constraints=(),

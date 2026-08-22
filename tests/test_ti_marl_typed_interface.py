@@ -174,6 +174,32 @@ def test_generator_classifies_every_supported_simulator_field(tmp_path):
     assert (output / "interface_manifest.json").is_file()
 
 
+def test_generator_preserves_charger_minimum_and_maximum_power_bounds():
+    schema = {
+        "buildings": {
+            "Building_1": {
+                "chargers": {
+                    "charger_1": {
+                        "attributes": {
+                            "nominal_power": 11.0,
+                            "min_charging_power": 1.4,
+                            "max_charging_power": 11.0,
+                            "min_discharging_power": 0.8,
+                            "max_discharging_power": 7.2,
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    interfaces, _coverage = generate(entity_specs(), entity_payload(), schema)
+    actions = interfaces["Building_1"]["actuators"]["charger_1"]["actions"]
+
+    assert actions["charge"]["parameter"]["bounds"] == [1.4, 11.0]
+    assert actions["discharge"]["parameter"]["bounds"] == [0.8, 7.2]
+
+
 def test_public_yaml_contains_no_simulator_contract_section(tmp_path):
     path = _write(tmp_path / "Building_1.yaml", typed_interface_payload("Building_1"))
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))

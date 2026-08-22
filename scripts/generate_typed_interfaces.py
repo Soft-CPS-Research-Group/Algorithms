@@ -166,13 +166,17 @@ def _actuator(
     actuator_type: str,
     specs: Mapping[str, Any],
     *,
+    charge_min_kw: float = 0.0,
     charge_max_kw: float = 0.0,
+    discharge_min_kw: float = 0.0,
     discharge_max_kw: float = 0.0,
 ) -> Mapping[str, Any]:
     if actuator_type in {"bidirectional_ev_charger", "ev_charger"}:
         entity_type = "charger"
         bound_features = specs["tables"][entity_type].get("features", [])
+        charge_min = max(float(charge_min_kw), 0.0)
         charge_max = max(float(charge_max_kw), 0.0)
+        discharge_min = max(float(discharge_min_kw), 0.0)
         discharge_max = max(float(discharge_max_kw), 0.0)
         actions = ("charge", "discharge") if actuator_type == "bidirectional_ev_charger" else ("charge",)
         connected = _dependency(actuator_id, specs, entity_type, ("connected", "state"))
@@ -204,7 +208,10 @@ def _actuator(
             result["actions"][action] = {
                 "parameter": {
                     "unit": "kW",
-                    "bounds": [0.0, charge_max if action == "charge" else discharge_max],
+                    "bounds": [
+                        charge_min if action == "charge" else discharge_min,
+                        charge_max if action == "charge" else discharge_max,
+                    ],
                 },
                 "dependencies": dependencies,
             }
@@ -298,24 +305,26 @@ def _schema_asset_limits(
     agent_id: str,
     entity_type: str,
     entity_id: str,
-) -> tuple[float, float]:
+) -> tuple[float, float, float, float]:
     if not schema:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
     building = dict(dict(schema.get("buildings", {}) or {}).get(agent_id, {}) or {})
     if entity_type == "storage":
         attributes = dict(dict(building.get("electrical_storage", {}) or {}).get("attributes", {}) or {})
         rated = float(attributes.get("nominal_power", 0.0) or 0.0)
-        return rated, rated
+        return 0.0, rated, 0.0, rated
     if entity_type == "charger":
         asset_id = str(entity_id).split("/", 1)[-1]
         charger = dict(dict(building.get("chargers", {}) or {}).get(asset_id, {}) or {})
         attributes = dict(charger.get("attributes", {}) or {})
         nominal = float(attributes.get("nominal_power", 0.0) or 0.0)
         return (
+            float(attributes.get("min_charging_power", 0.0) or 0.0),
             float(attributes.get("max_charging_power", nominal) or 0.0),
+            float(attributes.get("min_discharging_power", 0.0) or 0.0),
             float(attributes.get("max_discharging_power", nominal) or 0.0),
         )
-    return 0.0, 0.0
+    return 0.0, 0.0, 0.0, 0.0
 
 
 def _building_constraints(
@@ -406,7 +415,12 @@ def generate(
                 if entity_type in {"storage", "charger", "deferrable_appliance"}:
                     entity_ids = specs["tables"][entity_type].get("ids", [])
                     entity_id = str(entity_ids[row]) if row < len(entity_ids) else sensor_id
-                    schema_charge, schema_discharge = _schema_asset_limits(
+                    (
+                        schema_charge_min,
+                        schema_charge_max,
+                        schema_discharge_min,
+                        schema_discharge_max,
+                    ) = _schema_asset_limits(
                         schema,
                         agent_id,
                         entity_type,
@@ -430,8 +444,10 @@ def generate(
                         sensor_id,
                         sensor_type,
                         specs,
-                        charge_max_kw=schema_charge or runtime_charge,
-                        discharge_max_kw=schema_discharge or runtime_discharge,
+                        charge_min_kw=schema_charge_min,
+                        charge_max_kw=schema_charge_max or runtime_charge,
+                        discharge_min_kw=schema_discharge_min,
+                        discharge_max_kw=schema_discharge_max or runtime_discharge,
                     )
         interface = {
             "version": "typed_agent_interface_v1",
@@ -589,7 +605,12 @@ def augment_dynamic_assets(
             if entity_type in {"storage", "charger", "deferrable_appliance"}:
                 source_agent = str(event.get("source_member_id") or agent_id)
                 source_asset = str(event.get("source_asset_id") or event.get("target_asset_id") or sensor_id)
-                charge_max, discharge_max = _schema_asset_limits(
+                (
+                    charge_min,
+                    charge_max,
+                    discharge_min,
+                    discharge_max,
+                ) = _schema_asset_limits(
                     schema,
                     source_agent,
                     entity_type,
@@ -599,7 +620,9 @@ def augment_dynamic_assets(
                     sensor_id,
                     sensor_type,
                     specs,
+                    charge_min_kw=charge_min,
                     charge_max_kw=charge_max,
+                    discharge_min_kw=discharge_min,
                     discharge_max_kw=discharge_max,
                 )
         if entity_type == "pv":

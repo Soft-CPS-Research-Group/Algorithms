@@ -1290,10 +1290,14 @@ class TIMARLEVPlanningConfig(BaseModel):
     replay_capacity_per_reason: int = Field(default=16, ge=0)
     replay_samples_per_reason: int = Field(default=8, ge=0)
     charge_fraction: float = Field(default=0.95, gt=0.0, lt=1.0)
+    discharge_fraction: float = Field(default=0.50, gt=0.0, lt=1.0)
     service_tolerance_ratio: float = Field(default=0.05, ge=0.0, le=0.5)
+    v2g_service_margin_ratio: float = Field(default=0.05, ge=0.0, le=0.5)
     price_tie_tolerance: float = Field(default=1.0e-6, ge=0.0)
     urgency_duty_ratio: float = Field(default=0.85, gt=0.0, le=1.0)
     minimum_price_spread: float = Field(default=0.0, ge=0.0)
+    minimum_v2g_price_spread: float = Field(default=0.01, ge=0.0)
+    minimum_v2g_departure_hours: float = Field(default=1.0, ge=0.0)
 
 
 class TIMARLHyperparameters(BaseModel):

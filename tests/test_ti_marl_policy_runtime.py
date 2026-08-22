@@ -1715,6 +1715,10 @@ def _snapshot_with_ev_planning_signals(
     future_price: float | None,
     hours_until_departure: float = 4.0,
     energy_needed_kwh: float = 7.0,
+    connected_ev_soc: float = 0.70,
+    required_soc: float = 0.80,
+    battery_capacity_kwh: float = 50.0,
+    local_net_power_kw: float = 4.0,
 ):
     ev_group = next(
         group
@@ -1732,7 +1736,22 @@ def _snapshot_with_ev_planning_signals(
         ("energy_to_required_soc_kwh", energy_needed_kwh, "kWh", "ev_service"),
         ("hours_until_departure", hours_until_departure, "h", "ev_schedule"),
         ("available_charge_power_kw", 7.0, "kW", "ev_capability"),
+        ("available_discharge_power_kw", 7.0, "kW", "ev_capability"),
         ("charger_efficiency_ratio", 1.0, "fraction", "ev_capability"),
+        ("connected_ev_soc", connected_ev_soc, "fraction", "ev_service"),
+        (
+            "connected_ev_required_soc_departure",
+            required_soc,
+            "fraction",
+            "ev_service",
+        ),
+        (
+            "connected_ev_battery_capacity_kwh",
+            battery_capacity_kwh,
+            "kWh",
+            "ev_service",
+        ),
+        ("connected_ev_soc_min_ratio", 0.20, "fraction", "ev_service"),
     ):
         parts.append(
             ObservationPart(
@@ -1754,6 +1773,25 @@ def _snapshot_with_ev_planning_signals(
                 policy_input=True,
             )
         )
+    parts.append(
+        ObservationPart(
+            part_id="Building_1:self.energy.net_power_kw",
+            owner_agent_id="Building_1",
+            source_entity_id="Building_1",
+            semantic_type="local_energy",
+            feature_names=("net_power_kw",),
+            values=(local_net_power_kw,),
+            health=HealthState.HEALTHY,
+            sensor_id="self",
+            sensor_type="building_meter",
+            channel_id="energy",
+            observation_id="net_power_kw",
+            unit="kW",
+            scope="local",
+            use="policy_input",
+            policy_input=True,
+        )
+    )
     if future_price is not None:
         for observation_id, horizon_price in (
             ("forecast_price_next_15m", future_price),
@@ -1823,6 +1861,189 @@ def test_causal_ev_planner_uses_price_opportunity_and_service_urgency(tmp_path):
     assert urgent_target.decision.mode == "CHARGE_EV"
     assert urgent_target.reason == "service_urgent"
     assert planner.targets(no_forecast, seconds_per_time_step=900.0) == ()
+
+
+def test_causal_ev_planner_stops_at_service_target_and_teaches_safe_v2g(tmp_path):
+    _compiler, base = compile_snapshot(
+        tmp_path,
+        buildings=("Building_1",),
+    )
+    planner = CausalEVPlanner(
+        discharge_fraction=0.50,
+        minimum_v2g_price_spread=0.01,
+    )
+
+    satisfied = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        energy_needed_kwh=0.0,
+        connected_ev_soc=0.84,
+        required_soc=0.80,
+    )
+    surplus = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        energy_needed_kwh=0.0,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        local_net_power_kw=0.7,
+    )
+    exporting = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        energy_needed_kwh=0.0,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        local_net_power_kw=-2.0,
+    )
+    final_top_up = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        hours_until_departure=0.25,
+        energy_needed_kwh=0.35,
+    )
+
+    satisfied_target = planner.targets(
+        satisfied, seconds_per_time_step=900.0
+    )[0]
+    surplus_target = planner.targets(surplus, seconds_per_time_step=900.0)[0]
+    exporting_target = planner.targets(
+        exporting, seconds_per_time_step=900.0
+    )[0]
+    top_up_target = planner.targets(
+        final_top_up, seconds_per_time_step=900.0
+    )[0]
+
+    assert satisfied_target.decision.mode == "IDLE"
+    assert satisfied_target.reason == "service_target_satisfied"
+    assert surplus_target.decision.mode == "DISCHARGE_EV"
+    assert surplus_target.reason == "expensive_import_with_service_surplus"
+    surplus_group = next(
+        group
+        for group in surplus.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    surplus_port = next(
+        port for port in surplus_group.ports if port.mode == "DISCHARGE_EV"
+    )
+    assert surplus_target.decision.fraction == pytest.approx(
+        min(
+            0.50,
+            0.7
+            / (
+                surplus_group.max_discharge_power_kw
+                * surplus_port.upper_bound
+            ),
+        )
+    )
+    assert exporting_target.decision.mode == "IDLE"
+    assert top_up_target.decision.mode == "CHARGE_EV"
+    top_up_group = next(
+        group
+        for group in final_top_up.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    top_up_port = next(
+        port for port in top_up_group.ports if port.mode == "CHARGE_EV"
+    )
+    assert top_up_target.decision.fraction == pytest.approx(
+        0.35
+        / (
+            top_up_group.max_charge_power_kw
+            * top_up_port.upper_bound
+            * 0.25
+        )
+    )
+
+    bounded_group = replace(
+        next(
+            group
+            for group in base.groups_for("Building_1")
+            if group.group_type == "ev_session"
+        ),
+        ports=tuple(
+            replace(port, lower_bound=0.50)
+            if port.mode == "CHARGE_EV"
+            else replace(port, lower_bound=0.20)
+            if port.mode == "DISCHARGE_EV"
+            else port
+            for port in next(
+                group
+                for group in base.groups_for("Building_1")
+                if group.group_type == "ev_session"
+            ).ports
+        ),
+    )
+    bounded_base = replace(
+        base,
+        action_groups=tuple(
+            bounded_group if group.group_id == bounded_group.group_id else group
+            for group in base.action_groups
+        ),
+    )
+    minimum_charge = _snapshot_with_ev_planning_signals(
+        bounded_base,
+        current_price=0.10,
+        future_price=0.30,
+        energy_needed_kwh=0.10,
+    )
+    below_minimum_v2g = _snapshot_with_ev_planning_signals(
+        bounded_base,
+        current_price=0.30,
+        future_price=0.10,
+        energy_needed_kwh=0.0,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        local_net_power_kw=0.20,
+    )
+
+    assert planner.targets(
+        minimum_charge, seconds_per_time_step=900.0
+    )[0].decision.fraction == pytest.approx(0.50)
+    assert planner.targets(
+        below_minimum_v2g, seconds_per_time_step=900.0
+    )[0].decision.mode == "IDLE"
+
+
+def test_ev_control_diagnostics_report_actor_owned_v2g_separately(tmp_path):
+    _compiler, base = compile_snapshot(
+        tmp_path,
+        buildings=("Building_1",),
+    )
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        energy_needed_kwh=0.0,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        local_net_power_kw=0.70,
+    )
+    planner = CausalEVPlanner(minimum_v2g_price_spread=0.01)
+    target = planner.targets(snapshot, seconds_per_time_step=900.0)[0]
+    assert target.decision.mode == "DISCHARGE_EV"
+
+    bundle = LocalActionBundle("Building_1", (target.decision,))
+    agent = TIMARL.__new__(TIMARL)
+    agent.learner = SimpleNamespace(
+        ev_planner=planner,
+        seconds_per_time_step=900.0,
+    )
+    agent._episode_ev_control = Counter()
+
+    metrics = agent._ev_actor_control_diagnostics(
+        snapshot,
+        (bundle,),
+        (bundle,),
+    )
+
+    assert metrics["TI_MARL/ev_planning_discharge_recall"] == 1.0
+    assert metrics["TI_MARL/ev_actor_discharge_ownership_rate"] == 1.0
+    assert metrics["TI_MARL/ev_projector_discharge_takeover_rate"] == 0.0
 
 
 def test_mappo_scales_discount_factors_to_physical_step_duration():
@@ -2025,6 +2246,49 @@ def test_ev_planning_auxiliary_trains_raw_actor_without_projector(tmp_path):
     assert replay_metrics["ev_planning_charge_samples"] == 1.0
     assert replay_metrics["ev_planning_replay_size"] == 2.0
     assert learner.state_dict()["ev_planning"]["replay"]
+
+
+def test_ev_planning_replay_keeps_only_agents_with_causal_targets(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path)
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.10,
+        future_price=0.30,
+    )
+    planner = CausalEVPlanner()
+    targets = planner.targets(snapshot, seconds_per_time_step=900.0)
+    decisions = {
+        agent_id: {
+            group.group_id: ActionDecision(
+                group_id=group.group_id,
+                mode="IDLE",
+                fraction=0.0,
+                mode_index=0,
+            )
+            for group in snapshot.groups_for(agent_id)
+        }
+        for agent_id in snapshot.agent_ids
+    }
+
+    items = TIMAPPO._ev_planning_items(
+        snapshots=(snapshot,),
+        decisions_by_step=(decisions,),
+        targets_by_step=(targets,),
+    )
+
+    assert items
+    assert all(item.snapshot.agent_ids == ("Building_1",) for item in items)
+    assert all(set(item.decisions) == {"Building_1"} for item in items)
+    assert all(
+        part.owner_agent_id == "Building_1"
+        for item in items
+        for part in item.snapshot.observation_parts
+    )
+    assert all(
+        group.owner_agent_id == "Building_1"
+        for item in items
+        for group in item.snapshot.action_groups
+    )
 
 
 def test_mappo_value_loss_normalizes_large_targets_and_keeps_raw_diagnostic():

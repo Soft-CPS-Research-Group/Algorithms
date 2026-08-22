@@ -22,6 +22,7 @@ import numpy as np
 from algorithms.ti_marl.contracts.models import (
     ActionDecision,
     ActionGroupInstance,
+    ActionPortInstance,
     InterfaceSnapshot,
     ObservationPart,
 )
@@ -51,34 +52,54 @@ class CausalEVPlanner:
     This is deliberately a small receding-horizon rule rather than a perfect
     foresight oracle.  It charges at high power when the current tariff is one
     of the cheapest known opportunities before departure, waits when a cheaper
-    deployable forecast is available and there is slack, and charges whenever
-    waiting would make the service target unsafe.
+    deployable forecast is available and there is slack, charges whenever
+    waiting would make the service target unsafe, and uses service-safe V2G
+    only to offset local demand during an expensive tariff opportunity.
     """
 
     def __init__(
         self,
         *,
         charge_fraction: float = 0.95,
+        discharge_fraction: float = 0.50,
         service_tolerance_ratio: float = 0.05,
+        v2g_service_margin_ratio: float = 0.05,
         price_tie_tolerance: float = 1.0e-6,
         urgency_duty_ratio: float = 0.85,
         minimum_price_spread: float = 0.0,
+        minimum_v2g_price_spread: float = 0.01,
+        minimum_v2g_departure_hours: float = 1.0,
     ) -> None:
         if not 0.0 < float(charge_fraction) < 1.0:
             raise ValueError("EV planning charge_fraction must lie in (0, 1)")
+        if not 0.0 < float(discharge_fraction) < 1.0:
+            raise ValueError("EV planning discharge_fraction must lie in (0, 1)")
         if not 0.0 <= float(service_tolerance_ratio) <= 0.5:
             raise ValueError(
                 "EV planning service_tolerance_ratio must lie in [0, 0.5]"
             )
+        if not 0.0 <= float(v2g_service_margin_ratio) <= 0.5:
+            raise ValueError(
+                "EV planning v2g_service_margin_ratio must lie in [0, 0.5]"
+            )
         if not 0.0 < float(urgency_duty_ratio) <= 1.0:
             raise ValueError("EV planning urgency_duty_ratio must lie in (0, 1]")
-        if float(price_tie_tolerance) < 0.0 or float(minimum_price_spread) < 0.0:
+        if (
+            float(price_tie_tolerance) < 0.0
+            or float(minimum_price_spread) < 0.0
+            or float(minimum_v2g_price_spread) < 0.0
+            or float(minimum_v2g_departure_hours) < 0.0
+        ):
             raise ValueError("EV planning price tolerances must be non-negative")
         self.charge_fraction = float(charge_fraction)
+        self.discharge_fraction = float(discharge_fraction)
         self.service_tolerance_ratio = float(service_tolerance_ratio)
+        self.v2g_service_margin_ratio = float(v2g_service_margin_ratio)
         self.price_tie_tolerance = float(price_tie_tolerance)
         self.urgency_duty_ratio = float(urgency_duty_ratio)
         self.minimum_price_spread = float(minimum_price_spread)
+        self.minimum_v2g_price_spread = float(minimum_v2g_price_spread)
+        self.minimum_v2g_departure_hours = float(minimum_v2g_departure_hours)
 
     def targets(
         self,
@@ -104,12 +125,16 @@ class CausalEVPlanner:
 
     def configuration(self) -> Mapping[str, float | str]:
         return {
-            "kind": "causal_cheapest_feasible_slot_v1",
+            "kind": "causal_bidirectional_service_capped_v2",
             "charge_fraction": self.charge_fraction,
+            "discharge_fraction": self.discharge_fraction,
             "service_tolerance_ratio": self.service_tolerance_ratio,
+            "v2g_service_margin_ratio": self.v2g_service_margin_ratio,
             "price_tie_tolerance": self.price_tie_tolerance,
             "urgency_duty_ratio": self.urgency_duty_ratio,
             "minimum_price_spread": self.minimum_price_spread,
+            "minimum_v2g_price_spread": self.minimum_v2g_price_spread,
+            "minimum_v2g_departure_hours": self.minimum_v2g_departure_hours,
         }
 
     def _target_for_group(
@@ -129,7 +154,15 @@ class CausalEVPlanner:
             ),
             None,
         )
-        if charge_port is None or "IDLE" not in modes:
+        discharge_port = next(
+            (
+                port
+                for port in group.ports
+                if port.mode == "DISCHARGE_EV" and port.valid and group.enabled
+            ),
+            None,
+        )
+        if "IDLE" not in modes:
             return None
 
         values = self._group_values(group, parts)
@@ -137,6 +170,38 @@ class CausalEVPlanner:
             return None
         hours_until_departure = values.get("hours_until_departure")
         if hours_until_departure is None or hours_until_departure < 0.0:
+            return None
+
+        energy_needed = self._energy_needed(values)
+        if energy_needed is None:
+            return None
+        current_price = self._current_price(parts)
+        future_prices = self._future_prices(parts, float(hours_until_departure))
+        if energy_needed <= 1.0e-9:
+            v2g_target = self._v2g_target(
+                agent_id=agent_id,
+                group=group,
+                discharge_port=discharge_port,
+                modes=modes,
+                parts=parts,
+                values=values,
+                hours_until_departure=float(hours_until_departure),
+                current_price=current_price,
+                future_prices=future_prices,
+                seconds_per_time_step=seconds_per_time_step,
+            )
+            if v2g_target is not None:
+                return v2g_target
+            return self._idle_target(
+                agent_id=agent_id,
+                group=group,
+                modes=modes,
+                reason="service_target_satisfied",
+                current_price=current_price,
+                future_prices=future_prices,
+                required_duty_ratio=0.0,
+            )
+        if charge_port is None:
             return None
 
         available_power = max(float(group.max_charge_power_kw), 0.0) * max(
@@ -147,10 +212,6 @@ class CausalEVPlanner:
             max(values.get("available_charge_power_kw", available_power), 0.0),
         )
         if available_power <= 1.0e-9:
-            return None
-
-        energy_needed = self._energy_needed(values)
-        if energy_needed is None or energy_needed <= 1.0e-9:
             return None
         efficiency = float(
             np.clip(
@@ -171,8 +232,6 @@ class CausalEVPlanner:
             np.clip(required_average_power / available_power, 0.0, 1.0)
         )
 
-        current_price = self._current_price(parts)
-        future_prices = self._future_prices(parts, remaining_hours)
         if current_price is None or not future_prices:
             # Price-free targets would merely reproduce the service shield.
             # Leave those samples to PPO and the explicit safety projection.
@@ -198,7 +257,21 @@ class CausalEVPlanner:
         )
         if urgent or cheap_now:
             mode = "CHARGE_EV"
-            fraction = self.charge_fraction
+            energy_limited_fraction = energy_needed / max(
+                available_power * efficiency * step_hours,
+                1.0e-9,
+            )
+            fraction = float(
+                np.clip(
+                    max(
+                        min(self.charge_fraction, energy_limited_fraction),
+                        float(charge_port.lower_bound)
+                        / max(float(charge_port.upper_bound), 1.0e-9),
+                    ),
+                    0.0,
+                    1.0,
+                )
+            )
             reason = "service_urgent" if urgent else "cheapest_forecast_opportunity"
         else:
             mode = "IDLE"
@@ -217,6 +290,147 @@ class CausalEVPlanner:
             current_price=float(current_price),
             future_price_min=float(future_min),
             required_duty_ratio=required_duty_ratio,
+        )
+
+    def _v2g_target(
+        self,
+        *,
+        agent_id: str,
+        group: ActionGroupInstance,
+        discharge_port: ActionPortInstance | None,
+        modes: Sequence[str],
+        parts: Sequence[ObservationPart],
+        values: Mapping[str, float],
+        hours_until_departure: float,
+        current_price: Optional[float],
+        future_prices: Sequence[float],
+        seconds_per_time_step: float,
+    ) -> Optional[EVPlanningTarget]:
+        """Return a demand-capped V2G target without spending service energy."""
+
+        if (
+            discharge_port is None
+            or current_price is None
+            or not future_prices
+            or hours_until_departure + 1.0e-9
+            < self.minimum_v2g_departure_hours
+        ):
+            return None
+        future_min = min(future_prices)
+        if (
+            current_price - future_min + self.price_tie_tolerance
+            < self.minimum_v2g_price_spread
+        ):
+            return None
+
+        soc = values.get("connected_ev_soc")
+        required_soc = values.get("connected_ev_required_soc_departure")
+        capacity = values.get("connected_ev_battery_capacity_kwh")
+        if any(
+            value is None or not np.isfinite(value)
+            for value in (soc, required_soc, capacity)
+        ):
+            return None
+        service_floor = max(
+            float(required_soc) + self.v2g_service_margin_ratio,
+            float(values.get("connected_ev_soc_min_ratio", 0.0)),
+        )
+        surplus_energy = (
+            max(float(soc) - min(service_floor, 1.0), 0.0)
+            * max(float(capacity), 0.0)
+        )
+        if surplus_energy <= 1.0e-9:
+            return None
+
+        available_power = max(float(group.max_discharge_power_kw), 0.0) * max(
+            float(discharge_port.upper_bound), 0.0
+        )
+        available_power = min(
+            available_power,
+            max(
+                values.get("available_discharge_power_kw", available_power),
+                0.0,
+            ),
+        )
+        local_net_demand = self._local_net_demand(parts)
+        if available_power <= 1.0e-9 or local_net_demand <= 1.0e-9:
+            return None
+        efficiency = float(
+            np.clip(
+                values.get(
+                    "discharge_efficiency_at_max_ratio",
+                    values.get("charger_efficiency_ratio", 1.0),
+                ),
+                1.0e-3,
+                1.0,
+            )
+        )
+        step_hours = seconds_per_time_step / 3600.0
+        surplus_fraction = surplus_energy * efficiency / max(
+            available_power * step_hours,
+            1.0e-9,
+        )
+        demand_fraction = local_net_demand / available_power
+        fraction = float(
+            np.clip(
+                min(
+                    self.discharge_fraction,
+                    surplus_fraction,
+                    demand_fraction,
+                ),
+                0.0,
+                1.0,
+            )
+        )
+        minimum_fraction = float(discharge_port.lower_bound) / max(
+            float(discharge_port.upper_bound),
+            1.0e-9,
+        )
+        if fraction <= 1.0e-9 or fraction + 1.0e-9 < minimum_fraction:
+            return None
+        return EVPlanningTarget(
+            agent_id=agent_id,
+            group_id=group.group_id,
+            decision=ActionDecision(
+                group_id=group.group_id,
+                mode="DISCHARGE_EV",
+                fraction=fraction,
+                mode_index=modes.index("DISCHARGE_EV"),
+            ),
+            reason="expensive_import_with_service_surplus",
+            current_price=float(current_price),
+            future_price_min=float(future_min),
+            required_duty_ratio=0.0,
+        )
+
+    @staticmethod
+    def _idle_target(
+        *,
+        agent_id: str,
+        group: ActionGroupInstance,
+        modes: Sequence[str],
+        reason: str,
+        current_price: Optional[float],
+        future_prices: Sequence[float],
+        required_duty_ratio: float,
+    ) -> EVPlanningTarget:
+        return EVPlanningTarget(
+            agent_id=agent_id,
+            group_id=group.group_id,
+            decision=ActionDecision(
+                group_id=group.group_id,
+                mode="IDLE",
+                fraction=0.0,
+                mode_index=modes.index("IDLE"),
+            ),
+            reason=reason,
+            current_price=(
+                float(current_price) if current_price is not None else float("nan")
+            ),
+            future_price_min=(
+                float(min(future_prices)) if future_prices else float("nan")
+            ),
+            required_duty_ratio=float(required_duty_ratio),
         )
 
     def _energy_needed(self, values: Mapping[str, float]) -> Optional[float]:
@@ -261,6 +475,19 @@ class CausalEVPlanner:
             and np.isfinite(float(part.values[0]))
         ]
         return candidates[0] if candidates else None
+
+    @staticmethod
+    def _local_net_demand(parts: Sequence[ObservationPart]) -> float:
+        candidates = [
+            float(part.values[0])
+            for part in parts
+            if part.observation_id == "net_power_kw"
+            and part.scope == "local"
+            and part.valid
+            and len(part.values) == 1
+            and np.isfinite(float(part.values[0]))
+        ]
+        return candidates[-1] if candidates else 0.0
 
     @staticmethod
     def _future_prices(

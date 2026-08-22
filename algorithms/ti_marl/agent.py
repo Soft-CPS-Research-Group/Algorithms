@@ -166,8 +166,14 @@ class TIMARL(BaseAgent):
                 charge_fraction=float(
                     ev_planning_cfg.get("charge_fraction", 0.95)
                 ),
+                discharge_fraction=float(
+                    ev_planning_cfg.get("discharge_fraction", 0.50)
+                ),
                 service_tolerance_ratio=float(
                     ev_planning_cfg.get("service_tolerance_ratio", 0.05)
+                ),
+                v2g_service_margin_ratio=float(
+                    ev_planning_cfg.get("v2g_service_margin_ratio", 0.05)
                 ),
                 price_tie_tolerance=float(
                     ev_planning_cfg.get("price_tie_tolerance", 1.0e-6)
@@ -177,6 +183,12 @@ class TIMARL(BaseAgent):
                 ),
                 minimum_price_spread=float(
                     ev_planning_cfg.get("minimum_price_spread", 0.0)
+                ),
+                minimum_v2g_price_spread=float(
+                    ev_planning_cfg.get("minimum_v2g_price_spread", 0.01)
+                ),
+                minimum_v2g_departure_hours=float(
+                    ev_planning_cfg.get("minimum_v2g_departure_hours", 1.0)
                 ),
             )
             if ev_planning_auxiliary_coeff > 0.0
@@ -784,14 +796,23 @@ class TIMARL(BaseAgent):
         }
         self._episode_ev_control["groups"] += len(ev_groups)
         for key, final_decision in final.items():
-            if final_decision.mode != "CHARGE_EV":
+            label = {
+                "CHARGE_EV": "charge",
+                "DISCHARGE_EV": "discharge",
+            }.get(final_decision.mode)
+            if label is None:
                 continue
-            self._episode_ev_control["final_charge"] += 1
+            self._episode_ev_control[f"final_{label}"] += 1
             raw_decision = raw.get(key)
-            if raw_decision is not None and raw_decision.mode == "CHARGE_EV":
-                self._episode_ev_control["actor_charge"] += 1
+            if (
+                raw_decision is not None
+                and raw_decision.mode == final_decision.mode
+            ):
+                self._episode_ev_control[f"actor_{label}"] += 1
             else:
-                self._episode_ev_control["projector_charge_takeover"] += 1
+                self._episode_ev_control[
+                    f"projector_{label}_takeover"
+                ] += 1
 
         planner = self.learner.ev_planner
         if planner is not None:
@@ -800,7 +821,11 @@ class TIMARL(BaseAgent):
                 seconds_per_time_step=self.learner.seconds_per_time_step,
             ):
                 self._episode_ev_control["targets"] += 1
-                label = "charge" if target.decision.mode == "CHARGE_EV" else "idle"
+                label = {
+                    "CHARGE_EV": "charge",
+                    "DISCHARGE_EV": "discharge",
+                    "IDLE": "idle",
+                }[target.decision.mode]
                 self._episode_ev_control[f"targets_{label}"] += 1
                 raw_decision = raw.get((target.agent_id, target.group_id))
                 if (
@@ -828,6 +853,9 @@ class TIMARL(BaseAgent):
             "TI_MARL/ev_planning_charge_recall": ratio(
                 "agreements_charge", "targets_charge"
             ),
+            "TI_MARL/ev_planning_discharge_recall": ratio(
+                "agreements_discharge", "targets_discharge"
+            ),
             "TI_MARL/ev_planning_idle_recall": ratio(
                 "agreements_idle", "targets_idle"
             ),
@@ -836,6 +864,12 @@ class TIMARL(BaseAgent):
             ),
             "TI_MARL/ev_projector_charge_takeover_rate": ratio(
                 "projector_charge_takeover", "final_charge"
+            ),
+            "TI_MARL/ev_actor_discharge_ownership_rate": ratio(
+                "actor_discharge", "final_discharge"
+            ),
+            "TI_MARL/ev_projector_discharge_takeover_rate": ratio(
+                "projector_discharge_takeover", "final_discharge"
             ),
         }
 

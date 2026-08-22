@@ -129,9 +129,13 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         "replay_capacity_per_reason": 64,
         "replay_samples_per_reason": 8,
         "charge_fraction": 0.95,
+        "discharge_fraction": 0.40,
         "service_tolerance_ratio": 0.05,
+        "v2g_service_margin_ratio": 0.06,
         "urgency_duty_ratio": 0.85,
         "minimum_price_spread": 0.001,
+        "minimum_v2g_price_spread": 0.02,
+        "minimum_v2g_departure_hours": 1.5,
     }
     stage["hyperparameters"]["entropy_coeff_by_group_type"] = {
         "stationary_storage": 0.05,
@@ -185,6 +189,23 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     assert (
         parsed.pipeline[0].hyperparameters.ev_planning.minimum_price_spread
         == 0.001
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.discharge_fraction
+        == 0.40
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.v2g_service_margin_ratio
+        == 0.06
+    )
+    assert (
+        parsed.pipeline[0].hyperparameters.ev_planning.minimum_v2g_price_spread
+        == 0.02
+    )
+    assert (
+        parsed.pipeline[0]
+        .hyperparameters.ev_planning.minimum_v2g_departure_hours
+        == 1.5
     )
     assert (
         parsed.pipeline[0].hyperparameters.actor.deterministic_mode_strategy
