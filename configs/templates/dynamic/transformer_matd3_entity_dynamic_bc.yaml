@@ -128,7 +128,18 @@ pipeline:
       random_exploration_steps: 256
       end_initial_exploration_time_step: 256
       residual_policy_enabled: false
-      local_action_safety_enabled: false
+      # Keep executed actions within the raw CityLearn EV and electrical-service
+      # envelope. This template is experiment-only because this guard runs
+      # outside the exported ONNX actor.
+      local_action_safety_enabled: true
+      local_action_safety_fail_on_infeasible: false
+      local_action_safety_protect_ev_minimum: true
+      local_action_safety_ev_minimum_mode: deadline_feasible
+      local_action_safety_protect_ev_service_target: true
+      local_action_safety_protect_deferrable_must_start: true
+      local_action_safety_allow_discretionary_deferrable_start: false
+      local_action_safety_headroom_reserve_kw: 0.25
+      local_action_safety_runtime_only_export: true
       local_price_conditioning_enabled: false
     behavior_cloning:
       replay_based:
