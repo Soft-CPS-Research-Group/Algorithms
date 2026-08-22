@@ -1193,6 +1193,7 @@ class TransformerMATD3Hyperparameters(BaseModel):
     target_policy_noise: float = Field(ge=0.0)
     target_policy_noise_clip: float = Field(ge=0.0)
     actor_update_interval: int = Field(default=2, gt=0)
+    actor_policy_loss_weight: float = Field(default=1.0, ge=0.0)
     sigma: float = Field(ge=0.0)
     sigma_decay: float = Field(gt=0.0, le=1.0)
     min_sigma: float = Field(ge=0.0)
