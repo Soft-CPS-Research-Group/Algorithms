@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 import torch
 from torch import nn
@@ -129,7 +129,8 @@ class CentralizedCritic(nn.Module):
             raise ValueError("action count must match observation count")
 
         batch_size = per_building_obs[0].shape[0]
-        building_embeddings = []
+        tokenized = []
+        grouped_indices: Dict[tuple[int, int], list[int]] = {}
         for index, (observation, layout, actions) in enumerate(
             zip(per_building_obs, per_building_layouts, per_building_actions)
         ):
@@ -150,21 +151,45 @@ class CentralizedCritic(nn.Module):
                 )
 
             tokens = self.tokenizer(observation, layout)
-            ca_embeddings, pooled = self.backbone(
-                tokens.sro_tokens,
-                tokens.nfc_token,
-                tokens.ca_tokens,
+            tokenized.append(tokens)
+            grouped_indices.setdefault((tokens.n_sro, tokens.n_ca), []).append(index)
+
+        # The backbone is shared by every building inside this critic. Group
+        # compatible token shapes so attention runs once over a larger batch
+        # instead of once per building. Each batch item remains independent.
+        building_embeddings: list[torch.Tensor | None] = [None] * community_size
+        for indices in grouped_indices.values():
+            sros = torch.cat(
+                [tokenized[index].sro_tokens for index in indices], dim=0
             )
-            action_conditioned = self.action_injection(ca_embeddings, actions)
-            if layout.n_ca == 0:
-                action_summary = torch.zeros_like(pooled)
-            else:
-                action_summary = action_conditioned.mean(dim=1)
-            building_embeddings.append(
-                self.building_embedding(
-                    torch.cat((pooled, action_summary), dim=-1)
+            nfcs = torch.cat(
+                [tokenized[index].nfc_token for index in indices], dim=0
+            )
+            cas = torch.cat(
+                [tokenized[index].ca_tokens for index in indices], dim=0
+            )
+            actions = torch.cat(
+                [per_building_actions[index] for index in indices], dim=0
+            )
+            ca_embeddings, pooled = self.backbone(sros, nfcs, cas)
+            offset = 0
+            for index in indices:
+                building_batch = per_building_obs[index].shape[0]
+                current = slice(offset, offset + building_batch)
+                action_conditioned = self.action_injection(
+                    ca_embeddings[current], actions[current]
                 )
-            )
+                if per_building_layouts[index].n_ca == 0:
+                    action_summary = torch.zeros_like(pooled[current])
+                else:
+                    action_summary = action_conditioned.mean(dim=1)
+                building_embeddings[index] = self.building_embedding(
+                    torch.cat((pooled[current], action_summary), dim=-1)
+                )
+                offset += building_batch
+
+        if any(embedding is None for embedding in building_embeddings):
+            raise RuntimeError("centralized critic failed to encode a building")
 
         projected = [
             self.deep_set_projection(embedding)
