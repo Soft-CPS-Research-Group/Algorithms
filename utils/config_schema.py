@@ -1643,9 +1643,31 @@ class ProjectConfig(BaseModel):
                 if protocol.role != "candidate":
                     raise ValueError("train phase only supports role='candidate'")
                 if self.simulator.deterministic_finish:
-                    raise ValueError(
-                        "protocol train phase must not mix a deterministic evaluation episode"
-                    )
+                    if self.simulator.episodes < 2:
+                        raise ValueError(
+                            "protocol train phase deterministic_finish requires at "
+                            "least one trainable episode before the diagnostic evaluation"
+                        )
+                    episode_windows = self.simulator.episode_time_steps
+                    if (
+                        not isinstance(episode_windows, list)
+                        or len(episode_windows) != self.simulator.episodes
+                    ):
+                        raise ValueError(
+                            "protocol train phase deterministic_finish requires one "
+                            "explicit episode_time_steps window per episode"
+                        )
+                    export = self.simulator.export
+                    if (
+                        not export.export_kpis_on_episode_end
+                        or not export.final_episode_only
+                        or export.kpis_final_episode_only is False
+                        or export.timeseries_final_episode_only is False
+                    ):
+                        raise ValueError(
+                            "protocol train phase deterministic_finish must export "
+                            "KPIs and timeseries only for the final diagnostic episode"
+                        )
                 if any(isinstance(stage, TIMARLStageConfig) for stage in self.pipeline):
                     if not (
                         self.checkpointing.checkpoint_on_episode_end
@@ -1661,7 +1683,10 @@ class ProjectConfig(BaseModel):
                         if (
                             behavior_cloning is not None
                             and behavior_cloning.enabled
-                            and self.simulator.episodes
+                            and (
+                                self.simulator.episodes
+                                - int(self.simulator.deterministic_finish)
+                            )
                             <= behavior_cloning.demonstration_episodes
                         ):
                             raise ValueError(

@@ -410,6 +410,84 @@ def test_validate_config_requires_post_bc_ti_marl_learning_episode(base_config):
     validate_config(config)
 
 
+def test_validate_config_accepts_train_with_final_deterministic_diagnostic(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="train")
+    config["simulator"].update(
+        {
+            "episodes": 3,
+            "deterministic_finish": True,
+            "episode_time_steps": [[0, 23], [24, 47], [72, 95]],
+        }
+    )
+    config["simulator"]["export"].update(
+        {
+            "mode": "end",
+            "export_kpis_on_episode_end": True,
+            "final_episode_only": True,
+            "kpis_final_episode_only": True,
+            "timeseries_final_episode_only": True,
+        }
+    )
+
+    validate_config(config)
+
+
+def test_validate_config_rejects_non_isolated_train_diagnostic_export(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="train")
+    config["simulator"].update(
+        {
+            "episodes": 2,
+            "deterministic_finish": True,
+            "episode_time_steps": [[0, 23], [72, 95]],
+        }
+    )
+    config["simulator"]["export"].update(
+        {
+            "export_kpis_on_episode_end": True,
+            "final_episode_only": False,
+        }
+    )
+
+    with pytest.raises(ValueError, match="only for the final diagnostic episode"):
+        validate_config(config)
+
+
+def test_validate_config_counts_deterministic_finish_outside_bc_learning(base_config):
+    config = _ti_marl_protocol_config(base_config, phase="train")
+    config["pipeline"][0]["hyperparameters"]["behavior_cloning"] = {
+        "enabled": True,
+        "demonstration_episodes": 2,
+        "pretraining_epochs": 1,
+    }
+    config["simulator"].update(
+        {
+            "episodes": 3,
+            "deterministic_finish": True,
+            "episode_time_steps": [[0, 23], [24, 47], [72, 95]],
+        }
+    )
+    config["simulator"]["export"].update(
+        {
+            "mode": "end",
+            "export_kpis_on_episode_end": True,
+            "final_episode_only": True,
+            "kpis_final_episode_only": True,
+            "timeseries_final_episode_only": True,
+        }
+    )
+
+    with pytest.raises(ValueError, match="at least one post-BC learning episode"):
+        validate_config(config)
+
+    config["simulator"].update(
+        {
+            "episodes": 4,
+            "episode_time_steps": [[0, 23], [24, 47], [48, 71], [72, 95]],
+        }
+    )
+    validate_config(config)
+
+
 def test_validate_config_requires_explicit_simulator_seed_for_evaluation(base_config):
     config = _ti_marl_protocol_config(base_config, phase="development")
     config["simulator"]["random_seed"] = None

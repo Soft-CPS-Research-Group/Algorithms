@@ -318,6 +318,28 @@ class _UpdateTrainingProgressModel(_DummyModel):
         )
 
 
+class _EpisodeModeModel(_DummyModel):
+    def __init__(self):
+        super().__init__()
+        self.episode_starts = []
+        self.episode_ends = []
+        self.predict_modes = []
+        self.update_calls = 0
+
+    def on_episode_start(self, *, episode, training):
+        self.episode_starts.append((episode, training))
+
+    def on_episode_end(self, *, episode, training):
+        self.episode_ends.append((episode, training))
+
+    def predict(self, observations, deterministic=None):
+        self.predict_modes.append(bool(deterministic))
+        return super().predict(observations, deterministic=deterministic)
+
+    def update(self, **_kwargs):
+        self.update_calls += 1
+
+
 class _PipelineProbe:
     def __init__(self, *, use_raw_observations: bool, output):
         self.use_raw_observations = use_raw_observations
@@ -511,6 +533,34 @@ def test_wrapper_reports_and_clears_model_update_progress_callback():
     assert update_progress[0]["extra"]["epoch_current"] == 1
     assert update_progress[0]["extra"]["approx_kl"] == pytest.approx(0.01)
     assert model.progress_callback is None
+
+
+def test_wrapper_final_deterministic_episode_is_not_reported_as_training():
+    env = _DummyEntityEnv()
+    config = _entity_config()
+    config["simulator"]["episodes"] = 2
+    config["tracking"]["progress_updates_enabled"] = False
+    wrapper = Wrapper_CityLearn(
+        env=env,
+        config=config,
+        job_id="entity-deterministic-finish",
+    )
+    model = _EpisodeModeModel()
+    wrapper.set_model(model)
+    checkpoint_modes = []
+    wrapper.checkpoint_manager.save_episode_end = lambda *_args, **kwargs: checkpoint_modes.append(
+        kwargs["deterministic"]
+    )
+
+    wrapper.learn(episodes=2, deterministic_finish=True)
+
+    assert model.episode_starts == [(0, True), (1, False)]
+    assert model.episode_ends == [(0, True), (1, False)]
+    assert model.predict_modes == [False, False, True, True]
+    # The dynamic fixture records its topology-changing transition through the
+    # wrapper hook, so only the first trainable step reaches model.update().
+    assert model.update_calls == 1
+    assert checkpoint_modes == [False, True]
 
 
 def test_wrapper_skips_disabled_deterministic_observer():

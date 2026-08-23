@@ -63,6 +63,15 @@ confirmation candidate:
 - exports final-episode Simulator KPIs;
 - records its paired reference ID and frozen rule/selection hash.
 
+A training job may append one explicitly-windowed deterministic final episode
+as an operational diagnostic. In that case the final episode performs no
+learning, is reported to agent lifecycle hooks as `training=false`, writes no
+episode checkpoint, and is the only episode allowed to export KPIs or
+timeseries. This removes a redundant replay when screening the final training
+state, but its KPIs are not a formal development or confirmation record. The
+checkpoint selected for promotion is still replayed frozen under the paired
+development/confirmation protocol above.
+
 Safety-projected PPO is treated as a declared training ablation. When
 `exclude_intervened_actions_from_policy_loss` is enabled, the run must report
 the number of raw action groups masked from the actor objective and the number
