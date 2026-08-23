@@ -36,7 +36,7 @@ def cfg():
 
 @pytest.fixture
 def layout(cfg):
-    from algorithms.transformer_ppo.entity_token_layout import (
+    from algorithms.transformer_shared.entity_token_layout import (
         EntityTokenLayoutBuilder,
     )
 
@@ -76,7 +76,7 @@ def _type_input_dims_for_layout(cfg, layout) -> dict[str, int]:
 
 
 def test_forward_shapes_baseline(cfg, layout, sentinel_obs) -> None:
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
 
@@ -97,7 +97,7 @@ def test_forward_shapes_baseline(cfg, layout, sentinel_obs) -> None:
 
 
 def test_nfc_token_value_equals_subtract_op(cfg, layout) -> None:
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
 
@@ -129,7 +129,7 @@ def test_nfc_token_value_equals_subtract_op(cfg, layout) -> None:
 
 
 def test_nfc_projection_input_dim_is_one(cfg, layout) -> None:
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
 
@@ -147,10 +147,10 @@ def test_projection_is_per_type_no_new_params_on_topology_grow(
 ) -> None:
     """Adding a second charger (or any extra CA of an existing type) must
     NOT add new projection parameters — per-type weight sharing."""
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
-    from algorithms.transformer_ppo.entity_token_layout import (
+    from algorithms.transformer_shared.entity_token_layout import (
         BuildingTokenLayout,
         TokenSegment,
     )
@@ -204,7 +204,7 @@ def test_index_select_handles_non_contiguous_sro_segment(
 ) -> None:
     """Pick any SRO segment with ≥ 2 indices and verify the gathered values
     sum to the sum of those raw indices (sentinel ``obs[i]==i``)."""
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
 
@@ -248,7 +248,7 @@ def test_index_select_handles_non_contiguous_sro_segment(
 
 
 def test_construction_rejects_wrong_nfc_dim(cfg, layout) -> None:
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
 
@@ -260,7 +260,7 @@ def test_construction_rejects_wrong_nfc_dim(cfg, layout) -> None:
 
 
 def test_construction_rejects_missing_type(cfg, layout) -> None:
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
 
@@ -272,7 +272,7 @@ def test_construction_rejects_missing_type(cfg, layout) -> None:
 
 
 def test_dtype_and_device_propagation(cfg, layout, sentinel_obs) -> None:
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
 
@@ -291,7 +291,7 @@ def test_dtype_and_device_propagation(cfg, layout, sentinel_obs) -> None:
 
 
 def test_forward_rejects_non_2d_input(cfg, layout) -> None:
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
 
@@ -307,7 +307,7 @@ def test_forward_rejects_non_2d_input(cfg, layout) -> None:
 def test_gradient_flows_through_projections(
     cfg, layout, sentinel_obs
 ) -> None:
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
 
@@ -340,10 +340,10 @@ def test_gradient_flows_through_projections(
 def test_tokenizer_backbone_ppo_components_integration(
     cfg, layout, sentinel_obs
 ) -> None:
-    from algorithms.transformer_ppo.entity_observation_tokenizer import (
+    from algorithms.transformer_shared.entity_observation_tokenizer import (
         EntityObservationTokenizer,
     )
-    from algorithms.transformer_ppo.transformer_backbone import TransformerBackbone
+    from algorithms.transformer_shared.transformer_backbone import TransformerBackbone
     from algorithms.transformer_ppo.ppo_components import ActorHead, CriticHead
 
     tok = EntityObservationTokenizer(

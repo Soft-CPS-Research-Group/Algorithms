@@ -37,14 +37,14 @@ from torch import nn
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.maddpg_agent import _log_torch_runtime, _select_torch_device
 from algorithms.exceptions import DeferredCheckpointError
-from algorithms.transformer_ppo.behavior_cloning import (
+from algorithms.transformer_shared.behavior_cloning import (
     BehaviorCloningRegularizer,
     Demonstration,
 )
-from algorithms.transformer_ppo.entity_observation_tokenizer import (
+from algorithms.transformer_shared.entity_observation_tokenizer import (
     EntityObservationTokenizer,
 )
-from algorithms.transformer_ppo.entity_token_layout import (
+from algorithms.transformer_shared.entity_token_layout import (
     BuildingTokenLayout,
     EntityTokenLayoutBuilder,
 )
@@ -52,10 +52,10 @@ from algorithms.transformer_ppo.ppo_components import (
     ActorHead,
     CriticHead,
     RolloutBuffer,
-    RunningValueNormalizer,
     compute_ppo_loss,
 )
-from algorithms.transformer_ppo.transformer_backbone import TransformerBackbone
+from algorithms.transformer_shared.transformer_backbone import TransformerBackbone
+from algorithms.transformer_shared.value_normalizer import RunningValueNormalizer
 from algorithms.utils.citylearn_local_action_safety import (
     CityLearnLocalSafetyAdapter,
     CityLearnSafetyConfig,
