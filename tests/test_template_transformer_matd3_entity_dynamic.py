@@ -19,6 +19,7 @@ TEMPLATES = {
     "cost4": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_faithful.yaml",
     "cost4_realistic_pilot": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_realistic_pilot.yaml",
     "cost4_realistic_fast_pilot": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_realistic_fast_pilot.yaml",
+    "cost4_realistic_speed_pilot": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_realistic_speed_pilot.yaml",
 }
 
 
@@ -140,6 +141,23 @@ def test_cost4_realistic_fast_pilot_keeps_bc_without_extra_updates() -> None:
     assert replay["ev_multiplier"] == pytest.approx(18.0)
     assert replay["extra_updates"] == 0
     assert replay["offline_pretrain_steps"] == 128
+
+
+def test_cost4_realistic_speed_pilot_bounds_learner_schedule() -> None:
+    config = _load("cost4_realistic_speed_pilot")
+    stage = config["pipeline"][0]
+    replay = stage["behavior_cloning"]["replay_based"]
+
+    assert config["simulator"]["episodes"] == 1
+    assert config["simulator"]["episode_time_steps"] == 3401
+    assert config["simulator"]["dataset_name"].endswith("15min_parquet")
+    assert config["simulator"]["reward_function"] == (
+        "CostServiceCommunityDenseEVResidualRewardV54"
+    )
+    assert config["training"]["steps_between_training_updates"] == 8
+    assert config["training"]["target_update_interval"] == 8
+    assert replay["enabled"] is True
+    assert replay["extra_updates"] == 0
 
 
 @pytest.mark.parametrize(
