@@ -9,6 +9,7 @@ from typing import Any, ClassVar, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import numpy.typing as npt
 import torch
+from loguru import logger
 from torch import nn
 from torch.nn.utils import clip_grad_norm_
 
@@ -24,6 +25,10 @@ from algorithms.transformer_matd3.components import (
 )
 from algorithms.transformer_matd3.replay import SignatureBucketedReplayBuffer
 from algorithms.transformer_matd3.types import LayoutSignature, ReplayBatch
+from algorithms.transformer_shared.behavior_cloning import (
+    BehaviorCloningRegularizer,
+    Demonstration,
+)
 from algorithms.transformer_shared.entity_observation_tokenizer import (
     EntityObservationTokenizer,
 )
@@ -58,6 +63,7 @@ class _PerBuildingState:
     critic_1_optimizer: torch.optim.Optimizer
     critic_2_optimizer: torch.optim.Optimizer
     bc_a_optimizer: Optional[torch.optim.Optimizer]
+    bc_b_optimizer: Optional[torch.optim.Optimizer]
     layout: BuildingTokenLayout
     action_names: Tuple[str, ...]
     action_low: torch.Tensor
@@ -67,8 +73,8 @@ class _PerBuildingState:
 class AgentTransformerMATD3(BaseAgent):
     """Static-layout Transformer MATD3 learner.
 
-    Dynamic topology, persistence, demonstration cloning, price conditioning,
-    and export belong to later implementation stages.
+    Dynamic topology, persistence, price conditioning, and export belong to
+    later implementation stages.
     """
 
     supports_dynamic_topology: ClassVar[bool] = False
@@ -262,6 +268,18 @@ class AgentTransformerMATD3(BaseAgent):
             replay_bc.get("offline_pretrain_steps", 0)
         )
         self.bc_a_offline_pretrain_completed_steps = 0
+        demonstration_bc = dict(
+            (algorithm.get("behavior_cloning") or {}).get("demonstration_based")
+            or {}
+        )
+        self._bc_b = (
+            BehaviorCloningRegularizer.from_config(
+                {"behavior_cloning": demonstration_bc},
+                self.config,
+            )
+            if bool(demonstration_bc.get("enabled", False))
+            else None
+        )
         self._validate_hyperparameters()
 
         self._layout_builder = EntityTokenLayoutBuilder(self._tokenizer_config)
@@ -293,10 +311,15 @@ class AgentTransformerMATD3(BaseAgent):
         self._local_action_safety_infeasible_count = 0
         self._local_action_safety_reason_counts: Dict[str, int] = {}
         self._last_residual_action_scale = 0.0
+        self._current_episode = 0
+        self._current_episode_is_training = False
+        self._bc_b_pretraining_complete = False
+        self._bc_b_actor_training_step = 0
         self.requires_raw_observation_context = bool(
             self.residual_policy_enabled
             or self._local_action_safety_enabled
             or (self.bc_a_enabled and self.bc_a_teacher == "warm_start")
+            or self._bc_b is not None
         )
 
     def attach_environment(  # type: ignore[override]
@@ -375,6 +398,15 @@ class AgentTransformerMATD3(BaseAgent):
             action_names=action_names,
             metadata=metadata,
         )
+        self._attach_bc_b_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=spaces,
+            observation_space=self._normalize_spaces(
+                observation_space, count, name="observation_space"
+            ),
+            metadata=metadata,
+        )
 
     def set_observation_context(
         self,
@@ -433,6 +465,14 @@ class AgentTransformerMATD3(BaseAgent):
         del context
         self._require_attached()
         self._validate_vector_count("predict observations", observations)
+        if self._in_bc_b_demonstration_phase():
+            assert self._bc_b is not None
+            teacher_observations = (
+                self._latest_raw_observations
+                if self._latest_raw_observations is not None
+                else observations
+            )
+            return self._bc_b.compute_teacher_actions(teacher_observations)
         use_deterministic = bool(deterministic)
         base_actions = self._predict_warm_start_policy_for_observations(
             self._latest_raw_observations
@@ -505,6 +545,18 @@ class AgentTransformerMATD3(BaseAgent):
             ("next_observations", next_observations),
         ):
             self._validate_vector_count(name, values)
+        if self._in_bc_b_demonstration_phase():
+            self._record_bc_b_demonstrations(observations, actions)
+            self._latest_training_metrics = {
+                f"{_METRIC_PREFIX}episode_training": 1.0,
+                f"{_METRIC_PREFIX}teacher_action_execution": 1.0,
+                **self._bc_b_metrics(),
+            }
+            return
+        if self._bc_b is not None and not self._bc_b_pretraining_complete:
+            self._run_bc_b_pretraining()
+            self._bc_b_pretraining_complete = True
+            self._bc_b_actor_training_step = 0
         self._update_reward_normalizer(rewards)
         behavior_actions = self._transition_behavior_actions(actions)
         next_behavior_actions = self._transition_next_behavior_actions(
@@ -532,6 +584,8 @@ class AgentTransformerMATD3(BaseAgent):
         }
         self._validate_transition_vectors(transition)
         self._store_transition(transition)
+        if self._bc_b is not None and self._bc_b_pretraining_complete:
+            self._bc_b_actor_training_step += 1
 
         assert self.replay_buffer is not None
         assert self._layout_signature is not None
@@ -551,6 +605,31 @@ class AgentTransformerMATD3(BaseAgent):
             update_target_step=update_target_step,
             global_learning_step=global_learning_step,
         )
+
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        self._current_episode = int(episode)
+        self._current_episode_is_training = bool(training)
+        if (
+            training
+            and self._bc_b is not None
+            and not self._bc_b_pretraining_complete
+            and episode >= self._bc_b.demonstration_episodes
+        ):
+            self._run_bc_b_pretraining()
+            self._bc_b_pretraining_complete = True
+            self._bc_b_actor_training_step = 0
+
+    def on_episode_end(self, *, episode: int, training: bool) -> None:
+        self._current_episode = int(episode)
+        if not training or self._bc_b is None:
+            return
+        if (
+            self._in_bc_b_demonstration_phase()
+            and episode + 1 == self._bc_b.demonstration_episodes
+        ):
+            self._run_bc_b_pretraining()
+            self._bc_b_pretraining_complete = True
+            self._bc_b_actor_training_step = 0
 
     def export_artifacts(
         self,
@@ -621,6 +700,7 @@ class AgentTransformerMATD3(BaseAgent):
                     for reason, count in self._local_action_safety_reason_counts.items()
                 }
             )
+        metrics.update(self._bc_b_metrics())
         return metrics
 
     def _learn(
@@ -831,6 +911,9 @@ class AgentTransformerMATD3(BaseAgent):
             effective_weight=bc_weight,
             global_learning_step=global_learning_step,
         )
+        bc_b_losses, bc_b_grad_norms = self._run_bc_b_auxiliary_updates(
+            global_learning_step=self._bc_b_actor_training_step
+        )
         if actor_update_due and update_target_step:
             for state in self._per_building:
                 self._soft_update(state.tokenizer, state.tokenizer_target)
@@ -941,6 +1024,21 @@ class AgentTransformerMATD3(BaseAgent):
                 self._latest_training_metrics[
                     f"{_METRIC_PREFIX}actor_behavior_cloning_{label}_loss_mean"
                 ] = self._mean_or_zero(values)
+        if self._bc_b is not None:
+            self._latest_training_metrics.update(self._bc_b_metrics())
+            self._latest_training_metrics.update(
+                {
+                    f"{_METRIC_PREFIX}behavior_cloning_auxiliary_updates": float(
+                        len(bc_b_losses)
+                    ),
+                    f"{_METRIC_PREFIX}behavior_cloning_auxiliary_loss_mean": (
+                        self._mean_or_zero(bc_b_losses)
+                    ),
+                    f"{_METRIC_PREFIX}behavior_cloning_auxiliary_grad_norm_mean": (
+                        self._mean_or_zero(bc_b_grad_norms)
+                    ),
+                }
+            )
 
     @property
     def _layouts(self) -> List[BuildingTokenLayout]:
@@ -1473,6 +1571,215 @@ class AgentTransformerMATD3(BaseAgent):
             self.bc_a_offline_pretrain_completed_steps += remaining
         return losses, gradients
 
+    def _in_bc_b_demonstration_phase(self) -> bool:
+        return (
+            self._bc_b is not None
+            and not self._bc_b_pretraining_complete
+            and self._current_episode_is_training
+            and self._current_episode < self._bc_b.demonstration_episodes
+        )
+
+    def _record_bc_b_demonstrations(
+        self,
+        observations: Sequence[Any],
+        actions: Sequence[Any],
+    ) -> None:
+        assert self._bc_b is not None
+        for building_idx, (state, observation, action) in enumerate(
+            zip(self._per_building, observations, actions)
+        ):
+            teacher_action = np.asarray(action, dtype=np.float32).reshape(-1)
+            if teacher_action.shape != (state.layout.n_ca,):
+                raise ValueError(
+                    f"BC-B teacher action for building {state.building_id!r} "
+                    f"has width {teacher_action.size}; expected {state.layout.n_ca}"
+                )
+            if not np.isfinite(teacher_action).all():
+                raise ValueError("BC-B teacher actions must be finite")
+            low = state.action_low.detach().cpu().numpy()
+            high = state.action_high.detach().cpu().numpy()
+            normalized_target = 2.0 * (teacher_action - low) / (high - low) - 1.0
+            self._bc_b.record_demonstration(
+                building_idx,
+                np.asarray(observation, dtype=np.float32),
+                state.layout,
+                normalized_target.tolist(),
+            )
+
+    def _run_bc_b_pretraining(self) -> None:
+        """Train every compatible stored signature before the first RL update."""
+        assert self._bc_b is not None
+        logger.info(
+            "event=matd3_bc_b_pretraining_start buildings={}",
+            len(self._per_building),
+        )
+        prepared_groups: List[List[Tuple[Demonstration, ...]]] = []
+        incompatible_samples = 0
+        missing_buildings: List[str] = []
+        for building_idx, state in enumerate(self._per_building):
+            grouped = self._bc_b.demonstrations_for_building_by_signature(
+                building_idx
+            )
+            usable_groups: List[Tuple[Demonstration, ...]] = []
+            for demonstrations in grouped.values():
+                layout = demonstrations[0].layout
+                if not self._bc_b_layout_is_compatible(state, layout):
+                    incompatible_samples += len(demonstrations)
+                    continue
+                usable_groups.append(demonstrations)
+            prepared_groups.append(usable_groups)
+            if not usable_groups:
+                missing_buildings.append(state.building_id)
+        self._bc_b.set_incompatible_demonstration_samples(incompatible_samples)
+        if missing_buildings:
+            raise RuntimeError(
+                "Behavior-cloning pretraining has zero usable demonstrations for "
+                f"building(s): {', '.join(missing_buildings)}."
+            )
+
+        total_batches = 0
+        metrics: Dict[str, float] = {}
+        for state, groups in zip(self._per_building, prepared_groups):
+            usable_samples = sum(len(group) for group in groups)
+            trained_batches = 0
+            for demonstrations in groups:
+                layout = demonstrations[0].layout
+                for _ in range(self._bc_b.pretraining_epochs):
+                    for start in range(0, len(demonstrations), self._bc_b.batch_size):
+                        batch = demonstrations[start : start + self._bc_b.batch_size]
+                        self._apply_bc_b_gradient_step(
+                            state=state,
+                            layout=layout,
+                            demonstrations=batch,
+                            global_learning_step=0,
+                            apply_weight=False,
+                        )
+                        trained_batches += 1
+            total_batches += trained_batches
+            metrics[
+                f"{_METRIC_PREFIX}behavior_cloning_building_"
+                f"{state.building_id}_usable_samples"
+            ] = float(usable_samples)
+            metrics[
+                f"{_METRIC_PREFIX}behavior_cloning_building_"
+                f"{state.building_id}_trained_batches"
+            ] = float(trained_batches)
+        self._bc_b.set_pretraining_epochs(self._bc_b.pretraining_epochs)
+        metrics[f"{_METRIC_PREFIX}behavior_cloning_pretraining_batches"] = float(
+            total_batches
+        )
+        self._latest_training_metrics.update(self._bc_b_metrics())
+        self._latest_training_metrics.update(metrics)
+        logger.info(
+            "event=matd3_bc_b_pretraining_complete buildings={} trained_batches={}",
+            len(self._per_building),
+            total_batches,
+        )
+
+    def _bc_b_layout_is_compatible(
+        self,
+        state: _PerBuildingState,
+        layout: BuildingTokenLayout,
+    ) -> bool:
+        assert self._bc_b is not None
+        if layout.n_ca == 0:
+            return False
+        for segment in layout.segments:
+            if segment.type_name not in state.tokenizer.projections:
+                return False
+            projection = state.tokenizer.projections[segment.type_name]
+            expected_width = 1 if segment.family == "nfc" else len(
+                segment.feature_indices
+            )
+            if projection.in_features != expected_width:
+                return False
+        weights = self._bc_b.ca_type_weights(
+            layout, dtype=torch.float32, device=self.device
+        )
+        if weights.numel() != layout.n_ca:
+            raise RuntimeError(
+                "BC-B action-weight count does not match the stored layout for "
+                f"building {state.building_id!r}"
+            )
+        if weights.sum().item() <= 0.0:
+            raise ValueError(
+                "BC-B has no active action weights for building "
+                f"{state.building_id!r}"
+            )
+        return True
+
+    def _apply_bc_b_gradient_step(
+        self,
+        *,
+        state: _PerBuildingState,
+        layout: BuildingTokenLayout,
+        demonstrations: Sequence[Demonstration],
+        global_learning_step: int,
+        apply_weight: bool,
+    ) -> Tuple[float, float]:
+        assert self._bc_b is not None
+        assert state.bc_b_optimizer is not None
+        observations = self._tensor(
+            np.stack([demonstration.observation for demonstration in demonstrations])
+        )
+        state.bc_b_optimizer.zero_grad(set_to_none=True)
+        tokenized = state.tokenizer(observations, layout)
+        ca_embeddings, _ = state.backbone(
+            tokenized.sro_tokens,
+            tokenized.nfc_token,
+            tokenized.ca_tokens,
+        )
+        predicted_means = torch.tanh(state.actor(ca_embeddings))
+        loss = self._bc_b.demonstration_loss(
+            layout=layout,
+            demonstrations=list(demonstrations),
+            predicted_means=predicted_means,
+            global_learning_step=global_learning_step,
+            apply_weight=apply_weight,
+        )
+        if not loss.requires_grad:
+            return 0.0, 0.0
+        loss.backward()
+        gradient = clip_grad_norm_(
+            self._actor_modules(state).parameters(), self.max_grad_norm
+        )
+        state.bc_b_optimizer.step()
+        return float(loss.detach()), float(gradient)
+
+    def _run_bc_b_auxiliary_updates(
+        self, *, global_learning_step: int
+    ) -> Tuple[List[float], List[float]]:
+        if self._bc_b is None or not self._bc_b_pretraining_complete:
+            return [], []
+        if self._bc_b.effective_weight(global_learning_step) <= 0.0:
+            return [], []
+        losses: List[float] = []
+        gradients: List[float] = []
+        for building_idx, state in enumerate(self._per_building):
+            demonstrations = self._bc_b.sample_demonstrations(
+                building_idx, state.layout, self._bc_b.batch_size
+            )
+            if not demonstrations:
+                continue
+            loss, gradient = self._apply_bc_b_gradient_step(
+                state=state,
+                layout=state.layout,
+                demonstrations=demonstrations,
+                global_learning_step=global_learning_step,
+                apply_weight=True,
+            )
+            losses.append(loss)
+            gradients.append(gradient)
+        return losses, gradients
+
+    def _bc_b_metrics(self) -> Dict[str, float]:
+        if self._bc_b is None:
+            return {}
+        return {
+            f"{_METRIC_PREFIX}{name}": value
+            for name, value in self._bc_b.snapshot_metrics().items()
+        }
+
     def _store_transition(self, transition: Dict[str, Any]) -> None:
         if self.n_step_returns == 1:
             self._push_transition(transition)
@@ -1588,6 +1895,32 @@ class AgentTransformerMATD3(BaseAgent):
         }
         self._warm_start_policy = policy_class(policy_config)
         self._warm_start_policy.attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+
+    def _attach_bc_b_environment(
+        self,
+        *,
+        observation_names: List[List[str]],
+        action_names: List[List[str]],
+        action_space: List[Any],
+        observation_space: List[Any],
+        metadata: Optional[Dict[str, Any]],
+        topology_change: bool = False,
+    ) -> None:
+        """Build the live teacher without storing it in MATD3 state."""
+        if self._bc_b is None:
+            return
+        attach = (
+            self._bc_b.on_topology_change
+            if topology_change
+            else self._bc_b.attach_environment
+        )
+        attach(
             observation_names=observation_names,
             action_names=action_names,
             action_space=action_space,
@@ -1755,6 +2088,11 @@ class AgentTransformerMATD3(BaseAgent):
             bc_a_optimizer=(
                 torch.optim.Adam(actor_parameters, lr=self.learning_rate)
                 if self.bc_a_enabled
+                else None
+            ),
+            bc_b_optimizer=(
+                torch.optim.Adam(actor_parameters, lr=self.learning_rate)
+                if self._bc_b is not None
                 else None
             ),
             layout=layout,
@@ -2007,6 +2345,26 @@ class AgentTransformerMATD3(BaseAgent):
             self.bc_a_offline_pretrain_steps,
         ) < 0:
             raise ValueError("BC-A schedule values must be non-negative")
+        if self._bc_b is not None:
+            if (
+                self._bc_b.demonstration_episodes <= 0
+                or self._bc_b.max_samples_per_building <= 0
+                or self._bc_b.pretraining_epochs <= 0
+                or self._bc_b.batch_size <= 0
+            ):
+                raise ValueError("BC-B collection and training sizes must be positive")
+            if not 0.0 <= self._bc_b.min_weight <= self._bc_b.weight:
+                raise ValueError("BC-B min_weight must be between zero and weight")
+            if self._bc_b.decay_start_step < 0 or self._bc_b.decay_steps < 0:
+                raise ValueError("BC-B schedule values must be non-negative")
+            if any(
+                not np.isfinite(value) or value < 0.0
+                for value in (
+                    self._bc_b.ev_multiplier,
+                    self._bc_b.storage_multiplier,
+                )
+            ):
+                raise ValueError("BC-B action type multipliers must be non-negative")
 
     def _validate_transition_vectors(self, transition: Dict[str, Any]) -> None:
         for index, state in enumerate(self._per_building):
