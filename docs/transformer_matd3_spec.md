@@ -172,8 +172,9 @@ runtime behavior. They are not part of the actor ONNX graph.
 
 ## 6. Learning step
 
-For a sampled batch, the controller computes n-step rewards and done masks per
-building. Optional reward normalization applies only to learning targets.
+Before replay insertion, the n-step queue computes discounted rewards and done
+masks per building. A sampled batch already contains these n-step transitions.
+Optional reward normalization applies only to learning targets.
 
 For each actor building `i`:
 

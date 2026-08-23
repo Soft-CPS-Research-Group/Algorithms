@@ -213,9 +213,9 @@ Format 5 supports:
   operational step needed by the residual schedule.
 
 Restore is strict. Building count, building identity, layout signature, action
-names, action bounds, BC configuration, and checkpoint mode must match. All
-validation completes before live state changes. An inference checkpoint can
-only load into a frozen stage.
+names, action bounds, checkpoint mode, enabled BC paths, and compatible BC-B
+reservoir capacity must match. All validation completes before live state
+changes. An inference checkpoint can only load into a frozen stage.
 
 ## Export and deployment
 
