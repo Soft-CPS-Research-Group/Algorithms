@@ -3,6 +3,7 @@ from algorithms.transformer_matd3.components import (
     CentralizedCritic,
     DeterministicActorHead,
 )
+from algorithms.transformer_matd3.agent import AgentTransformerMATD3
 from algorithms.transformer_matd3.replay import SignatureBucketedReplayBuffer
 from algorithms.transformer_matd3.types import (
     BuildingLayoutSignature,
@@ -15,6 +16,7 @@ from algorithms.transformer_matd3.types import (
 
 __all__ = [
     "ActionInjectionMLP",
+    "AgentTransformerMATD3",
     "BuildingLayoutSignature",
     "CentralizedCritic",
     "DeterministicActorHead",
