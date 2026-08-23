@@ -94,6 +94,7 @@ class AgentTransformerMATD3(BaseAgent):
     supports_dynamic_topology: ClassVar[bool] = True
     requires_final_pipeline_stage: ClassVar[bool] = True
     checkpoint_version: ClassVar[int] = 5
+    onnx_opset_version: ClassVar[int] = 17
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
@@ -191,6 +192,9 @@ class AgentTransformerMATD3(BaseAgent):
         self.residual_policy_enabled = bool(
             hyperparameters.get("residual_policy_enabled", False)
         )
+        self.residual_policy_runtime_only_export = bool(
+            hyperparameters.get("residual_policy_runtime_only_export", False)
+        )
         self.warm_start_policy_name = self._optional_string(
             hyperparameters.get("warm_start_policy_name")
         )
@@ -226,6 +230,9 @@ class AgentTransformerMATD3(BaseAgent):
         self._local_action_safety_enabled = bool(
             hyperparameters.get("local_action_safety_enabled", False)
         )
+        self._local_action_safety_runtime_only_export = bool(
+            hyperparameters.get("local_action_safety_runtime_only_export", False)
+        )
         self._local_action_safety_config = CityLearnSafetyConfig(
             fail_on_infeasible=bool(
                 hyperparameters.get("local_action_safety_fail_on_infeasible", False)
@@ -257,6 +264,11 @@ class AgentTransformerMATD3(BaseAgent):
         )
         self._local_price_conditioning_enabled = bool(
             hyperparameters.get("local_price_conditioning_enabled", False)
+        )
+        self._local_price_conditioning_runtime_only_export = bool(
+            hyperparameters.get(
+                "local_price_conditioning_runtime_only_export", False
+            )
         )
         self._local_price_forecast_mode = str(
             hyperparameters.get("local_price_forecast_mode", "real_unmodified")
@@ -876,8 +888,113 @@ class AgentTransformerMATD3(BaseAgent):
         output_dir: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        del output_dir, context
-        raise NotImplementedError("Transformer MATD3 export is outside PR 3 scope")
+        del context
+        guard_requirements = (
+            (
+                self.residual_policy_enabled,
+                self.residual_policy_runtime_only_export,
+                "residual_policy_runtime_only_export",
+            ),
+            (
+                self._local_action_safety_enabled,
+                self._local_action_safety_runtime_only_export,
+                "local_action_safety_runtime_only_export",
+            ),
+            (
+                self._local_price_conditioning_enabled,
+                self._local_price_conditioning_runtime_only_export,
+                "local_price_conditioning_runtime_only_export",
+            ),
+        )
+        missing_opt_ins = [
+            name for enabled, opted_in, name in guard_requirements
+            if enabled and not opted_in
+        ]
+        if missing_opt_ins:
+            raise RuntimeError(
+                "Transformer MATD3 ONNX export excludes enabled runtime "
+                "dependencies. Set these flags only for non-deployable "
+                f"experiment evidence: {', '.join(missing_opt_ins)}."
+            )
+
+        self._require_attached()
+        assert self._attached_names is not None
+        export_root = Path(output_dir)
+        models_dir = export_root / "onnx_models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        requires_runtime_residual = bool(self.residual_policy_enabled)
+        requires_runtime_safety = bool(self._local_action_safety_enabled)
+        requires_runtime_price = bool(self._local_price_conditioning_enabled)
+        deployable = not any(
+            (
+                requires_runtime_residual,
+                requires_runtime_safety,
+                requires_runtime_price,
+            )
+        )
+        artifacts: List[Dict[str, Any]] = []
+        agent_models: List[Dict[str, Any]] = []
+        for index, state in enumerate(self._per_building):
+            topology_version = int(state.topology_version)
+            observation_dimension = len(self._attached_names[index][0])
+            relative_path = (
+                f"onnx_models/agent_{index}__topology_v"
+                f"{topology_version}.onnx"
+            )
+            self._export_onnx(
+                state=state,
+                path=export_root / relative_path,
+                observation_dimension=observation_dimension,
+            )
+            sro_types = [
+                segment.type_name
+                for segment in state.layout.segments
+                if segment.family == "sro"
+            ]
+            ca_types = [
+                segment.type_name
+                for segment in state.layout.segments
+                if segment.family == "ca"
+            ]
+            layout_metadata = {
+                "building_id": state.building_id,
+                "topology_version": topology_version,
+                "obs_dim": observation_dimension,
+                "n_sro": state.layout.n_sro,
+                "n_ca": state.layout.n_ca,
+                "sro_types": sro_types,
+                "ca_types": ca_types,
+                "ca_action_names": list(state.layout.ca_action_names),
+            }
+            artifact_config = {
+                **layout_metadata,
+                "deployable": deployable,
+                "requires_runtime_residual": requires_runtime_residual,
+                "requires_runtime_local_action_safety": requires_runtime_safety,
+                "requires_runtime_local_price_conditioning": requires_runtime_price,
+            }
+            artifacts.append(
+                {
+                    "agent_index": index,
+                    "path": relative_path,
+                    "format": "onnx",
+                    "config": artifact_config,
+                }
+            )
+            agent_models.append(
+                {
+                    "model_path": relative_path,
+                    "building_index": index,
+                    **layout_metadata,
+                }
+            )
+        return {
+            "format": "onnx",
+            "artifacts": artifacts,
+            "tokenizer_config_path": self._tokenizer_config_path,
+            "supports_dynamic_topology": True,
+            "agent_models": agent_models,
+        }
 
     def save_checkpoint(self, output_dir: str, step: int) -> str:
         self._require_attached()
@@ -1169,6 +1286,7 @@ class AgentTransformerMATD3(BaseAgent):
                 }
             )
         metrics.update(self._bc_b_metrics())
+        metrics.update(self._latest_training_metrics)
         return metrics
 
     def _learn(
@@ -1511,6 +1629,144 @@ class AgentTransformerMATD3(BaseAgent):
     @property
     def _layouts(self) -> List[BuildingTokenLayout]:
         return [state.layout for state in self._per_building]
+
+    def _export_onnx(
+        self,
+        *,
+        state: _PerBuildingState,
+        path: Path,
+        observation_dimension: int,
+    ) -> None:
+        layout = state.layout
+        sro_indices = [
+            torch.tensor(segment.feature_indices, dtype=torch.long)
+            for segment in layout.segments
+            if segment.family == "sro"
+        ]
+        ca_indices = [
+            torch.tensor(segment.feature_indices, dtype=torch.long)
+            for segment in layout.segments
+            if segment.family == "ca"
+        ]
+        nfc_segment = next(
+            segment for segment in layout.segments if segment.family == "nfc"
+        )
+        assert nfc_segment.derived is not None
+        nfc_indices = torch.tensor(
+            nfc_segment.feature_indices,
+            dtype=torch.long,
+        )
+        nfc_left = nfc_segment.derived.left_index_in_segment
+        nfc_right = nfc_segment.derived.right_index_in_segment
+        sro_types = [
+            segment.type_name
+            for segment in layout.segments
+            if segment.family == "sro"
+        ]
+        ca_types = [
+            segment.type_name
+            for segment in layout.segments
+            if segment.family == "ca"
+        ]
+        tokenizer = deepcopy(state.tokenizer).to("cpu").eval()
+        backbone = deepcopy(state.backbone).to("cpu").eval()
+        actor = deepcopy(state.actor).to("cpu").eval()
+        action_low = state.action_low.detach().cpu()
+        action_high = state.action_high.detach().cpu()
+
+        class _ExportWrapper(nn.Module):
+            def __init__(self_inner) -> None:
+                super().__init__()
+                self_inner.tokenizer = tokenizer
+                self_inner.backbone = backbone
+                self_inner.actor = actor
+                self_inner.register_buffer("action_low", action_low)
+                self_inner.register_buffer("action_high", action_high)
+
+            def forward(self_inner, encoded_obs: torch.Tensor) -> torch.Tensor:
+                if layout.n_ca == 0:
+                    return encoded_obs[:, :0]
+                sro_tokens = [
+                    self_inner.tokenizer.projections[type_name](
+                        encoded_obs.index_select(1, indices)
+                    ).unsqueeze(1)
+                    for type_name, indices in zip(sro_types, sro_indices)
+                ]
+                ca_tokens = [
+                    self_inner.tokenizer.projections[type_name](
+                        encoded_obs.index_select(1, indices)
+                    ).unsqueeze(1)
+                    for type_name, indices in zip(ca_types, ca_indices)
+                ]
+                nfc_group = encoded_obs.index_select(1, nfc_indices)
+                nfc_value = (
+                    nfc_group[:, nfc_left] - nfc_group[:, nfc_right]
+                ).unsqueeze(1)
+                nfc_token = self_inner.tokenizer.projections[
+                    nfc_segment.type_name
+                ](nfc_value).unsqueeze(1)
+                sro_stack = (
+                    torch.cat(sro_tokens, dim=1)
+                    if sro_tokens
+                    else encoded_obs.new_zeros(
+                        encoded_obs.shape[0],
+                        0,
+                        self_inner.backbone.d_model,
+                    )
+                )
+                ca_stack = (
+                    torch.cat(ca_tokens, dim=1)
+                    if ca_tokens
+                    else encoded_obs.new_zeros(
+                        encoded_obs.shape[0],
+                        0,
+                        self_inner.backbone.d_model,
+                    )
+                )
+                ca_embeddings, _ = self_inner.backbone(
+                    sro_stack,
+                    nfc_token,
+                    ca_stack,
+                )
+                unit_actions = torch.tanh(
+                    self_inner.actor(ca_embeddings)
+                ).squeeze(-1)
+                actions = self_inner.action_low + (unit_actions + 1.0) * (
+                    (self_inner.action_high - self_inner.action_low) / 2.0
+                )
+                return actions.reshape(encoded_obs.shape[0], layout.n_ca)
+
+        wrapper = _ExportWrapper().eval()
+        dummy = torch.zeros(1, observation_dimension)
+        previous_fastpath = torch.backends.mha.get_fastpath_enabled()
+        torch.backends.mha.set_fastpath_enabled(False)
+        try:
+            with torch.no_grad():
+                torch.onnx.export(
+                    wrapper,
+                    (dummy,),
+                    str(path),
+                    export_params=True,
+                    do_constant_folding=True,
+                    input_names=["encoded_obs"],
+                    output_names=["actions"],
+                    dynamic_axes={
+                        "encoded_obs": {0: "batch"},
+                        "actions": {0: "batch"},
+                    },
+                    opset_version=self.onnx_opset_version,
+                )
+                import onnx
+
+                exported_model = onnx.load(path)
+                output_width = (
+                    exported_model.graph.output[0]
+                    .type.tensor_type.shape.dim[1]
+                )
+                output_width.dim_value = layout.n_ca
+                onnx.save(exported_model, path)
+        finally:
+            torch.backends.mha.set_fastpath_enabled(previous_fastpath)
 
     def _actor_unit_action(
         self,
