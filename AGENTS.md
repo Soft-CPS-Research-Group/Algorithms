@@ -4,7 +4,9 @@ Guide for developing, registering, and configuring learning agents.
 
 ## Overview
 
-Agents live in `algorithms/agents/` and extend `BaseAgent`. Infrastructure (runner, wrapper, tracking, checkpoints) is provided—focus on algorithm logic.
+Agents live in `algorithms/agents/`, `algorithms/transformer_ppo/`, and
+`algorithms/transformer_matd3/`. They extend `BaseAgent`. Infrastructure
+(runner, wrapper, tracking, checkpoints) is provided—focus on algorithm logic.
 
 > **Note:** The training loop is handled by the runner. Agents receive already processed observations from the wrapper.
 

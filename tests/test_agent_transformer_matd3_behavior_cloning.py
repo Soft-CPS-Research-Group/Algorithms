@@ -576,37 +576,14 @@ def test_bc_a_weight_decay_reaches_configured_floor() -> None:
 
 
 def test_bc_a_external_targets_use_lazy_cloning_replay_field() -> None:
-    agent, obs_dim = _agent(
-        replay_bc={
-            "enabled": True,
-            "teacher": "external",
-            "weight": 1.0,
-        }
-    )
-    observations = [np.zeros(obs_dim, dtype=np.float32)]
-    actions = agent.predict(observations, deterministic=True)
-    cloning_actions = [np.asarray([0.8, 0.6], dtype=np.float32)]
-    agent.set_transition_context(cloning_actions=cloning_actions)
-
-    agent.update(
-        observations,
-        actions,
-        [0.0],
-        observations,
-        False,
-        False,
-        update_target_step=False,
-        global_learning_step=0,
-        update_step=False,
-        initial_exploration_done=False,
-    )
-
-    transition = agent.replay_buffer.get_state()["transitions"][0]
-    assert transition.behavior_actions is None
-    assert transition.cloning_actions is not None
-    assert transition.cloning_actions[0].tolist() == pytest.approx(
-        cloning_actions[0].tolist()
-    )
+    with pytest.raises(ValueError, match="teacher='external'.*not supported"):
+        _agent(
+            replay_bc={
+                "enabled": True,
+                "teacher": "external",
+                "weight": 1.0,
+            }
+        )
 
 
 def test_missing_warm_start_bc_a_context_does_not_block_replay() -> None:
