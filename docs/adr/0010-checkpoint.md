@@ -121,7 +121,7 @@ Full mode global additions:
 - `reward_normalization_state: {enabled, count, mean, m2}`
 - `rng_state: {python, numpy, torch, torch_cuda}`
 - `bc_state` (optional; per ADR-0007)
-  - `bc_a_state` when BC-A enabled: side loss decay clock
+  - `bc_a_state` when BC-A enabled: offline pretraining progress
   - `bc_b_state` when BC-B enabled:
     `BehaviorCloningRegularizer.state_dict()` reservoir + signatures
 
