@@ -9,7 +9,7 @@ across all tokens (used by the critic).
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Dict, Tuple
 
 import torch
 import torch.nn as nn
@@ -42,6 +42,9 @@ class TransformerBackbone(nn.Module):
 
         # 3-entry table: SRO=0, NFC=1, CA=2.
         self.type_embedding = nn.Embedding(3, d_model)
+        # Token counts are stable for a topology. Reuse the type-id tensor
+        # instead of rebuilding it on every critic/actor forward pass.
+        self._type_id_cache: Dict[Tuple[int, int, str], torch.Tensor] = {}
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -86,21 +89,25 @@ class TransformerBackbone(nn.Module):
         n_ca = cas.shape[1]
         device = sros.device
 
-        # Build the per-position type-id sequence
-        # [SRO]*n_sro + [NFC] + [CA]*n_ca.
-        type_ids = torch.cat(
-            [
-                torch.full(
-                    (n_sro,), _TYPE_SRO, dtype=torch.long, device=device
-                ),
-                torch.full(
-                    (1,), _TYPE_NFC, dtype=torch.long, device=device
-                ),
-                torch.full(
-                    (n_ca,), _TYPE_CA, dtype=torch.long, device=device
-                ),
-            ]
-        )
+        cache_key = (n_sro, n_ca, str(device))
+        type_ids = self._type_id_cache.get(cache_key)
+        if type_ids is None:
+            # Build the per-position type-id sequence
+            # [SRO]*n_sro + [NFC] + [CA]*n_ca.
+            type_ids = torch.cat(
+                [
+                    torch.full(
+                        (n_sro,), _TYPE_SRO, dtype=torch.long, device=device
+                    ),
+                    torch.full(
+                        (1,), _TYPE_NFC, dtype=torch.long, device=device
+                    ),
+                    torch.full(
+                        (n_ca,), _TYPE_CA, dtype=torch.long, device=device
+                    ),
+                ]
+            )
+            self._type_id_cache[cache_key] = type_ids
         # Concat in order [sros, nfc, cas].
         seq = torch.cat([sros, nfc, cas], dim=1)
         # Add type embeddings (broadcast across batch).

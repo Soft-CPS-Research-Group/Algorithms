@@ -108,6 +108,24 @@ def test_should_return_one_q_value_per_batch_item() -> None:
     assert q_values.shape == (4, 1)
 
 
+def test_should_batch_backbone_for_compatible_buildings(monkeypatch) -> None:
+    critic = _critic()
+    observations = [torch.randn(4, 6), torch.randn(4, 6)]
+    layouts = [_layout("building-1"), _layout("building-2")]
+    actions = [torch.randn(4, 1), torch.randn(4, 1)]
+    calls = []
+    original_forward = critic.backbone.forward
+
+    def record_forward(sros, nfc, cas):
+        calls.append(int(sros.shape[0]))
+        return original_forward(sros, nfc, cas)
+
+    monkeypatch.setattr(critic.backbone, "forward", record_forward)
+    critic(observations, layouts, actions)
+
+    assert calls == [8]
+
+
 def test_should_propagate_critic_gradient_to_joint_actions() -> None:
     critic = _critic()
     observations = [torch.randn(2, 6), torch.randn(2, 6)]
