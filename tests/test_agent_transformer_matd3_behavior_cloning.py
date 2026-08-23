@@ -60,10 +60,12 @@ def _same(before: list[torch.Tensor], module: torch.nn.Module) -> bool:
     )
 
 
-def test_bc_b_keeps_agent_unregistered_and_is_disabled_by_default() -> None:
+def test_bc_b_is_registered_and_disabled_by_default() -> None:
+    from algorithms.transformer_matd3.agent import AgentTransformerMATD3
+
     agent, _ = _agent()
 
-    assert "AgentTransformerMATD3" not in ALGORITHM_REGISTRY
+    assert ALGORITHM_REGISTRY["AgentTransformerMATD3"] is AgentTransformerMATD3
     assert agent._bc_b is None
     assert agent._per_building[0].bc_b_optimizer is None
 

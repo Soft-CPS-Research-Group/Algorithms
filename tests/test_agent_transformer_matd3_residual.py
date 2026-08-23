@@ -53,8 +53,8 @@ def _residual_hyperparameters(**overrides) -> dict:
     return values
 
 
-def test_agent_remains_unregistered_in_pr4() -> None:
-    assert "AgentTransformerMATD3" not in ALGORITHM_REGISTRY
+def test_agent_registry_preserves_final_stage_capability() -> None:
+    assert ALGORITHM_REGISTRY["AgentTransformerMATD3"].requires_final_pipeline_stage is True
 
 
 def test_residual_composition_uses_ca_order_span_and_authority() -> None:

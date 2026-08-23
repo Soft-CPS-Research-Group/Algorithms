@@ -112,8 +112,10 @@ def _changed(before: list[torch.Tensor], module: torch.nn.Module) -> bool:
     )
 
 
-def test_agent_remains_unregistered_in_pr3() -> None:
-    assert "AgentTransformerMATD3" not in ALGORITHM_REGISTRY
+def test_agent_is_registered_for_runtime_construction() -> None:
+    from algorithms.transformer_matd3.agent import AgentTransformerMATD3
+
+    assert ALGORITHM_REGISTRY["AgentTransformerMATD3"] is AgentTransformerMATD3
 
 
 def test_predict_is_repeatable_and_respects_per_ca_bounds() -> None:
