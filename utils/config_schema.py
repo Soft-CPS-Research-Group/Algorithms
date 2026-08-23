@@ -1352,6 +1352,11 @@ class TransformerMATD3ReplayBehaviorCloningConfig(BaseModel):
     def validate_weight_floor(
         self,
     ) -> "TransformerMATD3ReplayBehaviorCloningConfig":
+        if self.enabled and self.teacher == "external":
+            raise ValueError(
+                "replay_based.teacher='external' is not supported by "
+                "AgentTransformerMATD3"
+            )
         if self.min_weight > self.weight:
             raise ValueError("replay_based.min_weight must not exceed weight")
         if self.extra_updates is None:

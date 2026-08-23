@@ -148,6 +148,19 @@ def test_exploration_decays_to_sigma_floor_and_stays_bounded() -> None:
     assert agent.exploration_sigma == pytest.approx(0.1)
 
 
+def test_initial_exploration_uses_configured_end_boundary() -> None:
+    agent, _ = _make_agent(
+        random_exploration_steps=2,
+        end_initial_exploration_time_step=7,
+    )
+
+    assert not agent.is_initial_exploration_done(6)
+    assert agent.is_initial_exploration_done(7)
+
+    # The random-action boundary remains independent from the training gate.
+    assert agent.random_exploration_steps == 2
+
+
 def test_learning_uses_twin_target_minimum() -> None:
     agent, obs_dim = _make_agent(buildings=1, target_policy_smoothing=False)
     for critic in agent._per_building[0].critic_1_target.modules():

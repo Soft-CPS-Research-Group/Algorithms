@@ -377,8 +377,8 @@ class SignatureBucketedReplayBuffer:
                 "a tuple of strings"
             )
 
-    @staticmethod
     def _validate_segments(
+        self,
         segments: Any,
         building_index: int,
         n_sro: int,
@@ -390,12 +390,13 @@ class SignatureBucketedReplayBuffer:
             )
         family_counts = {"sro": 0, "nfc": 0, "ca": 0}
         for segment_index, segment in enumerate(segments):
-            if not isinstance(segment, tuple) or len(segment) != 3:
+            if not isinstance(segment, tuple) or len(segment) != 5:
                 raise ValueError(
-                    "layout_signature segment must contain family, type, and "
+                    "layout_signature segment must contain family, type, instance, "
+                    "ordered feature names, and NFC expression; "
                     f"instance ID; building {building_index}, segment {segment_index}"
                 )
-            family, type_name, instance_id = segment
+            family, type_name, instance_id, feature_names, expression = segment
             if not isinstance(family, str):
                 raise ValueError(
                     "layout_signature segment family must be a string"
@@ -411,6 +412,29 @@ class SignatureBucketedReplayBuffer:
             if instance_id is not None and not isinstance(instance_id, str):
                 raise ValueError(
                     "layout_signature segment instance ID must be a string or None"
+                )
+            self._validate_string_tuple(
+                feature_names,
+                building_index,
+                "segment_feature_names",
+            )
+            if not feature_names:
+                raise ValueError(
+                    "layout_signature segment feature names must not be empty"
+                )
+            if family == "nfc":
+                if (
+                    not isinstance(expression, tuple)
+                    or len(expression) != 3
+                    or not all(isinstance(value, str) and value for value in expression)
+                ):
+                    raise ValueError(
+                        "layout_signature NFC segment expression must contain "
+                        "operation, left feature, and right feature"
+                    )
+            elif expression is not None:
+                raise ValueError(
+                    "layout_signature non-NFC segment expression must be None"
                 )
             family_counts[family] += 1
         if family_counts != {"sro": n_sro, "nfc": 1, "ca": n_ca}:

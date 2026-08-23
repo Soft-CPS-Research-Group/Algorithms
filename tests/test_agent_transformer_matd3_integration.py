@@ -242,6 +242,75 @@ def test_neutral_price_context_is_an_exact_copy(monkeypatch) -> None:
     assert np.array_equal(captured[0][0], observation)
 
 
+def test_price_conditioning_stores_conditioned_current_and_successor_replay() -> None:
+    agent, names = _price_agent()
+    observation = np.zeros(len(names), dtype=np.float32)
+    next_observation = np.zeros(len(names), dtype=np.float32)
+    for value in (observation, next_observation):
+        for name in PRICE_NAMES:
+            value[names.index(name)] = 0.5
+
+    actions = agent.predict([observation], deterministic=True, context=1.5)
+    agent.update(
+        [observation],
+        actions,
+        [0.0],
+        [next_observation],
+        False,
+        False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=False,
+    )
+
+    transition = agent.replay_buffer.get_state()["transitions"][0]
+    assert transition.observations[0][names.index(PRICE_NAMES[0])] == pytest.approx(
+        0.875
+    )
+    assert transition.next_observations[0][names.index(PRICE_NAMES[0])] == pytest.approx(
+        0.875
+    )
+    assert np.array_equal(observation, np.zeros(len(names), dtype=np.float32)) is False
+
+
+def test_price_conditioning_accepts_distinct_successor_context() -> None:
+    agent, names = _price_agent()
+    observation = np.zeros(len(names), dtype=np.float32)
+    next_observation = np.zeros(len(names), dtype=np.float32)
+    for value in (observation, next_observation):
+        for name in PRICE_NAMES:
+            value[names.index(name)] = 0.5
+
+    actions = agent.predict([observation], deterministic=True, context=1.5)
+    agent.set_transition_context(
+        encoded_observations=[observation],
+        encoded_next_observations=[next_observation],
+        price_context=1.5,
+        next_price_context=0.5,
+    )
+    agent.update(
+        [observation],
+        actions,
+        [0.0],
+        [next_observation],
+        False,
+        False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=False,
+    )
+
+    transition = agent.replay_buffer.get_state()["transitions"][0]
+    assert transition.observations[0][names.index(PRICE_NAMES[0])] == pytest.approx(
+        0.875
+    )
+    assert transition.next_observations[0][names.index(PRICE_NAMES[0])] == pytest.approx(
+        0.125
+    )
+
+
 def test_price_conditioning_rejects_missing_price_names() -> None:
     from algorithms.transformer_matd3.agent import AgentTransformerMATD3
 

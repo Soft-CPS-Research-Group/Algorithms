@@ -175,6 +175,19 @@ class BehaviorCloningRegularizer:
                     segment.instance_id,
                     segment.feature_indices,
                     segment.feature_names,
+                    (
+                        (
+                            segment.derived.op,
+                            segment.feature_names[
+                                segment.derived.left_index_in_segment
+                            ],
+                            segment.feature_names[
+                                segment.derived.right_index_in_segment
+                            ],
+                        )
+                        if segment.derived is not None
+                        else None
+                    ),
                 )
                 for segment in layout.segments
             ),
