@@ -1,6 +1,6 @@
 # Documentacao Ativa
 
-Snapshot: 2026-08-16
+Snapshot: 2026-08-23
 
 Este diretorio fica reduzido aos documentos que ainda ajudam trabalho futuro.
 Historico de fases antigas, configs remotos ja executados e relatorios
@@ -25,8 +25,12 @@ intermedios foram removidos do repo. Resultados brutos devem ficar em
   layout, tokenizer, topologia e deployment.
 - `transformer_ppo_spec.md` - especificacao atual do AgentTransformerPPO,
   incluindo BC, safety, checkpoints, metricas e export.
-- `transformer_matd3.md` - guia operacional, limites e rastreabilidade de testes
-  do AgentTransformerMATD3.
+- `transformer_matd3.md` - ponto de entrada operacional do
+  AgentTransformerMATD3.
+- `transformer_matd3_spec.md` - invariantes tecnicos e contratos internos do
+  AgentTransformerMATD3.
+- `transformer_matd3_glossary.md` - termos especificos da arquitetura.
+- `adr/README.md` - indice e politica dos ADRs do Transformer MATD3.
 
 ## Algoritmos E Comparadores
 

@@ -12,10 +12,10 @@ patterns exist:
 
 - BC-A (replay-based) — MATD3-native side loss using
   `cloning_actions` stored per replay transition.
-  `algorithms/agents/maddpg_agent.py:3180-3227,4229-4394,4396-4737`.
+  The established implementation is in legacy MADDPG/MATD3 helpers.
 - BC-B (demonstration-based) — TPPO-style dedicated demonstration
   reservoir with actor-only pretraining and optional auxiliary loss.
-  `algorithms/transformer_ppo/behavior_cloning.py:33-666`.
+  The shared implementation is `BehaviorCloningRegularizer`.
 
 ## Plain-language
 
@@ -74,17 +74,16 @@ required per sub-block.
 
 ### 7c — module location: L2
 
-BC-B code moves to `algorithms/transformer_shared/behavior_cloning.py`
-in the extraction PR (ADR-0001 updated). BC-A stays in
-`algorithms/transformer_matd3/behavior_cloning.py` and reuses
-MADDPG-inherited methods.
+BC-B lives in `algorithms/transformer_shared/behavior_cloning.py`.
+BC-A lives in `algorithms/transformer_matd3/behavior_cloning.py`, with
+controller integration in `algorithms/transformer_matd3/agent.py`.
 
 ### 7d — hard boundaries
 
 The following invariants are inviolable and tested:
 
 1. BC never updates critics or their targets.
-2. BC never updates value normalizer statistics.
+2. BC never updates reward-normalizer statistics.
 3. BC never mutates replay buffer state.
 4. BC never runs when effective weight is 0 (short-circuit before
    forward).
@@ -104,8 +103,7 @@ The following invariants are inviolable and tested:
    optimizers, not a shared one.
 
 Enforcement: per-building, per-subsystem BC optimizers cover only
-actor + tokenizer + backbone parameters (mirror
-`algorithms/transformer_ppo/agent.py:1307-1312`). Concretely:
+actor + tokenizer + backbone parameters. Concretely:
 
 - `bc_a_optimizer_b` when BC-A is enabled.
 - `bc_b_optimizer_b` when BC-B is enabled.
@@ -128,21 +126,18 @@ already implements.
 
 ## Consequences
 
-- ADR-0001 extraction PR includes BC-B extraction with a shim.
-- New `TransformerMATD3StageConfig.behavior_cloning` optional block.
-- BC-A reuses `_actor_behavior_cloning_loss`,
-  `_actor_behavior_cloning_type_losses`, `_transition_cloning_actions`
-  from MADDPG.
+- ADR-0001 places BC-B in the shared package. No shim remains.
+- `TransformerMATD3StageConfig.behavior_cloning` provides both optional blocks.
+- Transformer MATD3 owns its BC-A loss, target, and update helpers.
 - BC-B reuses `BehaviorCloningRegularizer` verbatim from the shared
   package.
 - Test suite includes one test per hard-boundary invariant.
 
 ## Evidence
 
-- MATD3 BC methods: `maddpg_agent.py:3180-3227,4229-4394,4396-4737`.
-- TPPO BC regularizer: `behavior_cloning.py:33-666`.
-- Separate BC optimizer pattern:
-  `algorithms/transformer_ppo/agent.py:1307-1312`.
+- Legacy MADDPG/MATD3 provides the replay-BC behavior baseline.
+- `BehaviorCloningRegularizer` provides the shared demonstration reservoir.
+- Both Transformer agents constrain BC optimizers to actor-stack parameters.
 
 ## Future improvements
 
