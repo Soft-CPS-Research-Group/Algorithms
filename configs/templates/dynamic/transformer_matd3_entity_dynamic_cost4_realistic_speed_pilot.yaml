@@ -1,0 +1,190 @@
+# Controlled speed pilot for the 15-minute cost4 Transformer MATD3 recipe.
+# It keeps the model and reward unchanged, but performs one learner update
+# every eight environment steps to bound the remote iteration time.
+
+metadata:
+  experiment_name: "transformer_matd3_entity_dynamic_cost4_realistic_speed_pilot"
+  run_name: "Transformer MATD3 cost4 realistic one-episode speed pilot"
+  community_name: "default_community"
+  description: "15-minute residual Transformer MATD3 over RBCCommunityPolicy; one-episode speed pilot with eight-step learner scheduling"
+
+runtime:
+  log_dir: null
+  job_dir: null
+  mlflow_uri: null
+  job_id: null
+  run_id: null
+  run_name: null
+  tracking_uri: null
+  experiment_id: null
+  mlflow_run_url: null
+
+tracking:
+  mlflow_enabled: false
+  log_level: "INFO"
+  log_frequency: 256
+  mlflow_step_sample_interval: 256
+  mlflow_artifacts_profile: minimal
+  progress_updates_enabled: true
+  progress_update_interval: 128
+  system_metrics_enabled: true
+  system_metrics_interval: 256
+
+checkpointing:
+  resume_training: false
+  checkpoint_run_id: null
+  checkpoint_artifact: "transformer_matd3_checkpoint.pt"
+  use_best_checkpoint_artifact: false
+  reset_replay_buffer: false
+  freeze_pretrained_layers: false
+  fine_tune: false
+  checkpoint_interval: 2048
+  require_update_step: true
+  require_initial_exploration_done: true
+
+bundle:
+  bundle_version: null
+  description: null
+  alias_mapping_path: null
+  require_observations_envelope: false
+  artifact_config: {}
+  per_agent_artifact_config: {}
+
+simulator:
+  dataset_name: citylearn_three_phase_dynamic_assets_only_demo_15min_parquet
+  dataset_path: ./datasets/citylearn_three_phase_dynamic_assets_only_demo_15min_parquet/schema.json
+  central_agent: false
+  interface: entity
+  topology_mode: dynamic
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    profile: minmax_space
+    clip: true
+  reward_function: CostServiceCommunityDenseEVResidualRewardV54
+  reward_function_kwargs:
+    community_settlement_cost_weight: 1.55
+    battery_throughput_penalty: 0.0015
+  episodes: 1
+  simulation_start_time_step: 0
+  simulation_end_time_step: 3400
+  episode_time_steps: 3401
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    final_episode_only: true
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: false
+    session_name: null
+  wrapper_reward:
+    enabled: false
+    profile: cost_limits_v1
+    clip_enabled: true
+    clip_min: -10.0
+    clip_max: 10.0
+    squash: none
+
+training:
+  seed: 7
+  steps_between_training_updates: 8
+  target_update_interval: 8
+
+topology:
+  num_agents: null
+  observation_dimensions: null
+  action_dimensions: null
+  action_space: null
+
+pipeline:
+  - algorithm: "AgentTransformerMATD3"
+    count: 1
+    frozen: false
+    tokenizer_config_path: "configs/tokenizers/entity_default.json"
+    transformer:
+      d_model: 64
+      nhead: 4
+      num_layers: 2
+      dim_feedforward: 128
+      dropout: 0.0
+    hyperparameters:
+      require_cuda: false
+      learning_rate: 3.0e-4
+      gamma: 0.99
+      tau: 0.005
+      batch_size: 128
+      buffer_capacity: 100000
+      max_grad_norm: 1.0
+      n_step_returns: 1
+      critic_team_reward_mix: 0.0
+      critic_target_clip_abs: 0.0
+      reward_normalization_enabled: true
+      reward_normalization_clip: 10.0
+      target_policy_smoothing: true
+      target_policy_noise: 0.2
+      target_policy_noise_clip: 0.5
+      actor_update_interval: 2
+      actor_policy_loss_weight: 0.085
+      sigma: 0.1
+      sigma_decay: 0.9995
+      min_sigma: 0.01
+      bias: 0.0
+      noise_clip: 0.5
+      random_exploration_steps: 256
+      end_initial_exploration_time_step: 256
+      residual_policy_enabled: true
+      warm_start_policy_name: RBCCommunityPolicy
+      warm_start_policy_hyperparameters: {}
+      residual_action_scale: 0.3
+      residual_action_final_scale: 0.3
+      residual_action_scale_start_step: 256
+      residual_action_scale_growth_steps: 4096
+      residual_storage_action_scale_multiplier: 0.75
+      residual_ev_action_scale_multiplier: 0.25
+      residual_deferrable_action_scale_multiplier: 0.25
+      critic_action_input_mode: final
+      residual_policy_runtime_only_export: true
+      local_action_safety_enabled: true
+      local_action_safety_fail_on_infeasible: false
+      local_action_safety_protect_ev_minimum: true
+      local_action_safety_ev_minimum_mode: deadline_feasible
+      local_action_safety_protect_ev_service_target: true
+      local_action_safety_allow_ev_service_target_to_use_reserved_headroom: true
+      local_action_safety_protect_deferrable_must_start: true
+      local_action_safety_allow_discretionary_deferrable_start: false
+      local_action_safety_headroom_reserve_kw: 0.25
+      local_action_safety_runtime_only_export: true
+      local_price_conditioning_enabled: false
+      local_price_forecast_mode: real_unmodified
+      local_price_conditioning_runtime_only_export: false
+    behavior_cloning:
+      replay_based:
+        enabled: true
+        teacher: warm_start
+        weight: 0.24
+        min_weight: 0.08
+        decay_start_step: 512
+        decay_steps: 5120
+        ev_multiplier: 18.0
+        storage_multiplier: 0.08
+        deferrable_multiplier: 1.0
+        extra_updates: 0
+        extra_update_start_step: 0
+        extra_update_end_step: 0
+        offline_pretrain_steps: 128
+      demonstration_based:
+        enabled: false
+        demonstration_episodes: 1
+        max_samples_per_building: 3400
+        pretraining_epochs: 4
+        batch_size: 64
+        weight: 0.0
+        min_weight: 0.0
+        decay_start_step: 0
+        decay_steps: 0
+        ev_multiplier: 1.0
+        storage_multiplier: 1.0
+        teacher:
+          policy: RBCSmartPolicy
+          hyperparameters: {}
+
+execution: null
