@@ -31,6 +31,7 @@ from algorithms.transformer_matd3.components import (
     CentralizedCritic,
     DeterministicActorHead,
 )
+from algorithms.transformer_matd3 import behavior_cloning as matd3_bc
 from algorithms.transformer_matd3.replay import SignatureBucketedReplayBuffer
 from algorithms.transformer_matd3.types import LayoutSignature, ReplayBatch
 from algorithms.transformer_shared.behavior_cloning import (
@@ -176,6 +177,9 @@ class AgentTransformerMATD3(BaseAgent):
         )
         self.random_exploration_steps = int(
             hyperparameters.get("random_exploration_steps", 0)
+        )
+        self.end_initial_exploration_time_step = int(
+            hyperparameters.get("end_initial_exploration_time_step", 0)
         )
         self.storage_exploration_noise_multiplier = float(
             hyperparameters.get("storage_exploration_noise_multiplier", 1.0)
@@ -359,6 +363,11 @@ class AgentTransformerMATD3(BaseAgent):
         self._warm_start_policy: Optional[BaseAgent] = None
         self._latest_raw_observations: Optional[List[np.ndarray]] = None
         self._latest_raw_next_observations: Optional[List[np.ndarray]] = None
+        self._latest_conditioned_observations: Optional[List[np.ndarray]] = None
+        self._latest_conditioned_next_observations: Optional[List[np.ndarray]] = None
+        self._latest_price_contexts: Optional[List[Mapping[str, Any] | None]] = None
+        self._transition_conditioned_observations: Optional[List[np.ndarray]] = None
+        self._transition_conditioned_next_observations: Optional[List[np.ndarray]] = None
         self._last_warm_start_policy_actions: Optional[List[List[float]]] = None
         self._last_warm_start_next_policy_actions: Optional[List[List[float]]] = None
         self._latest_external_cloning_actions: Optional[List[np.ndarray]] = None
@@ -528,6 +537,7 @@ class AgentTransformerMATD3(BaseAgent):
         type_input_dims: Mapping[str, int],
         candidate_signature: LayoutSignature,
     ) -> None:
+        self._validate_compatible_layout_signature(candidate_signature)
         for index, (state, layout) in enumerate(zip(self._per_building, layouts)):
             if layout.building_id != state.building_id:
                 raise ValueError(
@@ -560,6 +570,53 @@ class AgentTransformerMATD3(BaseAgent):
             state.action_high = high
             if changed:
                 state.topology_version += 1
+
+    def _validate_compatible_layout_signature(
+        self,
+        candidate_signature: LayoutSignature,
+    ) -> None:
+        """Reject schema drift while allowing new controllable assets."""
+        assert self._layout_signature is not None
+        for building_index, (previous, candidate) in enumerate(
+            zip(self._layout_signature, candidate_signature)
+        ):
+            previous_segments = previous[3]
+            candidate_segments = candidate[3]
+            previous_keys = [
+                (segment[0], segment[1], segment[2])
+                for segment in previous_segments
+            ]
+            previous_key_set = set(previous_keys)
+            candidate_existing_keys = [
+                (segment[0], segment[1], segment[2])
+                for segment in candidate_segments
+                if (segment[0], segment[1], segment[2]) in previous_key_set
+            ]
+            if candidate_existing_keys != previous_keys:
+                raise ValueError(
+                    "topology schema drift: ordered segments changed for "
+                    f"building {building_index}"
+                )
+            candidate_by_key = {
+                (segment[0], segment[1], segment[2]): segment
+                for segment in candidate_segments
+            }
+            for segment in previous_segments:
+                key = (segment[0], segment[1], segment[2])
+                if candidate_by_key.get(key) != segment:
+                    candidate_segment = candidate_by_key.get(key)
+                    if (
+                        candidate_segment is not None
+                        and len(candidate_segment[3]) != len(segment[3])
+                    ):
+                        raise ValueError(
+                            "topology schema drift: feature width changed for "
+                            f"building {building_index}, segment {key!r}"
+                        )
+                    raise ValueError(
+                        "topology schema drift: segment feature names or NFC "
+                        f"expression changed for building {building_index}, segment {key!r}"
+                    )
 
     def _reset_full_for_building_count_change(
         self,
@@ -630,8 +687,9 @@ class AgentTransformerMATD3(BaseAgent):
             List[npt.NDArray[np.float64]]
         ] = None,
         cloning_actions: Optional[List[npt.NDArray[np.float64]]] = None,
+        price_context: Any = None,
+        next_price_context: Any = None,
     ) -> None:
-        del encoded_observations, encoded_next_observations
         if raw_observations is not None:
             self._validate_vector_count("raw_observations", raw_observations)
             self._latest_raw_observations = self._copied_optional_vectors(
@@ -652,6 +710,35 @@ class AgentTransformerMATD3(BaseAgent):
         self._latest_external_cloning_actions = self._copied_optional_vectors(
             cloning_actions
         )
+        if encoded_observations is not None:
+            if price_context is None and self._latest_conditioned_observations is not None:
+                self._transition_conditioned_observations = self._copied_vectors(
+                    self._latest_conditioned_observations
+                )
+            else:
+                self._transition_conditioned_observations = self._apply_local_price_context(
+                    [np.asarray(value, dtype=np.float64) for value in encoded_observations],
+                    price_context,
+                )
+        else:
+            self._transition_conditioned_observations = None
+        if encoded_next_observations is not None:
+            successor_context = (
+                next_price_context
+                if next_price_context is not None
+                else price_context
+                if price_context is not None
+                else self._latest_price_contexts
+            )
+            self._transition_conditioned_next_observations = self._apply_local_price_context(
+                [
+                    np.asarray(value, dtype=np.float64)
+                    for value in encoded_next_observations
+                ],
+                successor_context,
+            )
+        else:
+            self._transition_conditioned_next_observations = None
 
     def predict(
         self,
@@ -677,6 +764,15 @@ class AgentTransformerMATD3(BaseAgent):
                 for index, action in enumerate(teacher_actions)
             ]
         observations = self._apply_local_price_context(observations, context)
+        self._latest_conditioned_observations = self._copied_vectors(observations)
+        self._latest_price_contexts = (
+            normalize_price_multiplier_contexts(
+                context,
+                num_agents=len(self._per_building),
+            )
+            if self._local_price_conditioning_enabled
+            else [None for _ in self._per_building]
+        )
         use_deterministic = bool(deterministic)
         base_actions = self._predict_warm_start_policy_for_observations(
             self._latest_raw_observations
@@ -778,11 +874,24 @@ class AgentTransformerMATD3(BaseAgent):
             actions,
             base_actions=behavior_actions,
         )
+        conditioned_observations = self._transition_conditioned_observations
+        if conditioned_observations is None and self._latest_conditioned_observations is not None:
+            conditioned_observations = self._latest_conditioned_observations
+        conditioned_next_observations = self._transition_conditioned_next_observations
+        if conditioned_next_observations is None:
+            conditioned_next_observations = self._apply_local_price_context(
+                [np.asarray(value, dtype=np.float64) for value in next_observations],
+                self._latest_price_contexts,
+            )
         transition = {
-            "observations": self._copied_vectors(observations),
+            "observations": self._copied_vectors(
+                conditioned_observations
+                if conditioned_observations is not None
+                else observations
+            ),
             "actions": self._copied_vectors(actions),
             "rewards": np.asarray(rewards, dtype=np.float32).reshape(-1).copy(),
-            "next_observations": self._copied_vectors(next_observations),
+            "next_observations": self._copied_vectors(conditioned_next_observations),
             "terminated": self._done_vector(terminated),
             "truncated": self._done_vector(truncated),
             "behavior_actions": self._optional_replay_actions(behavior_actions),
@@ -1264,7 +1373,7 @@ class AgentTransformerMATD3(BaseAgent):
             raise
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
-        return global_learning_step >= self.random_exploration_steps
+        return global_learning_step >= self.end_initial_exploration_time_step
 
     def consume_latest_training_metrics(self) -> Dict[str, float]:
         metrics = dict(self._latest_training_metrics)
@@ -2185,23 +2294,7 @@ class AgentTransformerMATD3(BaseAgent):
         return list(cloning_actions)
 
     def _bc_a_effective_weight(self, global_learning_step: int) -> float:
-        if not self.bc_a_enabled or self.bc_a_weight <= 0.0:
-            return 0.0
-        if self.bc_a_decay_steps <= 0:
-            return self.bc_a_weight
-        if global_learning_step <= self.bc_a_decay_start_step:
-            return self.bc_a_weight
-        progress = min(
-            max(
-                (global_learning_step - self.bc_a_decay_start_step)
-                / self.bc_a_decay_steps,
-                0.0,
-            ),
-            1.0,
-        )
-        return self.bc_a_weight + (
-            self.bc_a_min_weight - self.bc_a_weight
-        ) * progress
+        return matd3_bc.effective_weight(self, global_learning_step)
 
     def _actor_behavior_cloning_loss(
         self,
@@ -2211,17 +2304,13 @@ class AgentTransformerMATD3(BaseAgent):
         *,
         base_action: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        target = self._reachable_behavior_cloning_target(
+        return matd3_bc.actor_loss(
+            self,
             index,
-            cloning_action.detach(),
+            predicted_action,
+            cloning_action,
             base_action=base_action,
         )
-        predicted = self._normalize_action(index, predicted_action)
-        normalized_target = self._normalize_action(index, target)
-        weights = self._bc_a_action_weights(index, predicted)
-        return (
-            (predicted - normalized_target).square() * weights
-        ).sum() / weights.expand_as(predicted).sum().clamp_min(1.0)
 
     def _actor_behavior_cloning_type_losses(
         self,
@@ -2229,34 +2318,12 @@ class AgentTransformerMATD3(BaseAgent):
         predicted_action: torch.Tensor,
         cloning_action: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        error = (
-            self._normalize_action(index, predicted_action)
-            - self._normalize_action(index, cloning_action.detach())
-        ).square()
-        result: Dict[str, torch.Tensor] = {}
-        predicates = {
-            "ev": self._is_ev_action_name,
-            "storage": self._is_storage_action_name,
-            "deferrable": self._is_deferrable_action_name,
-        }
-        known = torch.zeros(error.shape[-1], dtype=torch.bool, device=error.device)
-        for label, predicate in predicates.items():
-            mask = torch.as_tensor(
-                [
-                    predicate(name)
-                    for name in self._per_building[index].action_names
-                ],
-                dtype=torch.bool,
-                device=error.device,
-            )
-            known |= mask
-            result[label] = (
-                error[..., mask].mean() if mask.any() else error.new_tensor(0.0)
-            )
-        result["other"] = (
-            error[..., ~known].mean() if (~known).any() else error.new_tensor(0.0)
+        return matd3_bc.actor_type_losses(
+            self,
+            index,
+            predicted_action,
+            cloning_action,
         )
-        return result
 
     def _reachable_behavior_cloning_target(
         self,
@@ -2265,23 +2332,11 @@ class AgentTransformerMATD3(BaseAgent):
         *,
         base_action: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        if (
-            not self.bc_a_clip_target_to_residual_authority
-            or not self.residual_policy_enabled
-            or base_action is None
-        ):
-            return cloning_action
-        base = base_action.detach().to(cloning_action)
-        if base.shape != cloning_action.shape:
-            raise ValueError("BC-A base and cloning action shapes must match")
-        state = self._per_building[index]
-        authority = self._residual_action_effective_scale() * (
-            self._residual_action_scale_mask(index, cloning_action)
-        )
-        maximum_delta = 0.5 * (state.action_high - state.action_low) * authority
-        return torch.maximum(
-            torch.minimum(cloning_action, base + maximum_delta),
-            base - maximum_delta,
+        return matd3_bc.reachable_target(
+            self,
+            index,
+            cloning_action,
+            base_action=base_action,
         )
 
     def _normalize_action(
@@ -2298,17 +2353,7 @@ class AgentTransformerMATD3(BaseAgent):
         index: int,
         like: torch.Tensor,
     ) -> torch.Tensor:
-        values = []
-        for action_name in self._per_building[index].action_names:
-            multiplier = 1.0
-            if self._is_ev_action_name(action_name):
-                multiplier *= self.bc_a_ev_multiplier
-            if self._is_storage_action_name(action_name):
-                multiplier *= self.bc_a_storage_multiplier
-            if self._is_deferrable_action_name(action_name):
-                multiplier *= self.bc_a_deferrable_multiplier
-            values.append(multiplier)
-        return torch.as_tensor(values, dtype=like.dtype, device=like.device).view(1, -1)
+        return matd3_bc.action_weights(self, index, like)
 
     def _run_bc_a_extra_updates(
         self,
@@ -2321,19 +2366,12 @@ class AgentTransformerMATD3(BaseAgent):
         update_count: Optional[int] = None,
     ) -> Tuple[List[float], List[float]]:
         count = self.bc_a_extra_updates if update_count is None else update_count
-        if (
-            effective_weight <= 0.0
-            or cloning_actions is None
-            or count <= 0
-            or (
-                update_count is None
-                and global_learning_step < self.bc_a_extra_update_start_step
-            )
-            or (
-                update_count is None
-                and self.bc_a_extra_update_end_step > 0
-                and global_learning_step > self.bc_a_extra_update_end_step
-            )
+        if not matd3_bc.extra_updates_are_due(
+            self,
+            effective_weight_value=effective_weight,
+            cloning_actions=cloning_actions,
+            global_learning_step=global_learning_step,
+            update_count=update_count,
         ):
             return [], []
         losses: List[float] = []
@@ -2441,7 +2479,7 @@ class AgentTransformerMATD3(BaseAgent):
         """Train every compatible stored signature before the first RL update."""
         assert self._bc_b is not None
         logger.info(
-            "event=matd3_bc_b_pretraining_start buildings={}",
+            "operation=matd3_bc_b_pretraining_start, message='pretraining started', buildings={}",
             len(self._per_building),
         )
         prepared_groups: List[List[Tuple[Demonstration, ...]]] = []
@@ -2459,8 +2497,8 @@ class AgentTransformerMATD3(BaseAgent):
                 if layout.n_ca == 0:
                     zero_action_samples += len(demonstrations)
                     logger.info(
-                        "event=matd3_bc_b_pretraining_group_skipped "
-                        "building_id={} group_samples={} reason=no_controllable_actions",
+                        "operation=matd3_bc_b_pretraining_group_skipped, "
+                        "message='no controllable actions', building_id={} group_samples={}",
                         state.building_id,
                         len(demonstrations),
                     )
@@ -2520,7 +2558,8 @@ class AgentTransformerMATD3(BaseAgent):
         self._latest_training_metrics.update(self._bc_b_metrics())
         self._latest_training_metrics.update(metrics)
         logger.info(
-            "event=matd3_bc_b_pretraining_complete buildings={} trained_batches={}",
+            "operation=matd3_bc_b_pretraining_complete, message='pretraining complete', "
+            "buildings={} trained_batches={}",
             len(self._per_building),
             total_batches,
         )
@@ -3066,7 +3105,25 @@ class AgentTransformerMATD3(BaseAgent):
             segments = []
             for segment in layout.segments:
                 segments.append(
-                    (segment.family, segment.type_name, segment.instance_id)
+                    (
+                        segment.family,
+                        segment.type_name,
+                        segment.instance_id,
+                        tuple(segment.feature_names),
+                        (
+                            (
+                                segment.derived.op,
+                                segment.feature_names[
+                                    segment.derived.left_index_in_segment
+                                ],
+                                segment.feature_names[
+                                    segment.derived.right_index_in_segment
+                                ],
+                            )
+                            if segment.derived is not None
+                            else None
+                        ),
+                    )
                 )
                 width = 1 if segment.family == "nfc" else len(
                     segment.feature_indices
@@ -3605,6 +3662,10 @@ class AgentTransformerMATD3(BaseAgent):
             raise ValueError("noise_clip must be non-negative")
         if self.random_exploration_steps < 0:
             raise ValueError("random_exploration_steps must be non-negative")
+        if self.end_initial_exploration_time_step < 0:
+            raise ValueError(
+                "end_initial_exploration_time_step must be non-negative"
+            )
         if self.storage_exploration_noise_multiplier < 0.0:
             raise ValueError("storage exploration multiplier must be non-negative")
         if self.ev_negative_exploration_noise_multiplier < 0.0:
@@ -3642,6 +3703,11 @@ class AgentTransformerMATD3(BaseAgent):
                 raise ValueError("action type multipliers must be non-negative")
         if self.bc_a_teacher not in {"warm_start", "replay_action", "external"}:
             raise ValueError("BC-A teacher is invalid")
+        if self.bc_a_enabled and self.bc_a_teacher == "external":
+            raise ValueError(
+                "BC-A teacher='external' is not supported by "
+                "AgentTransformerMATD3"
+            )
         if (
             self.bc_a_enabled
             and self.bc_a_teacher == "warm_start"

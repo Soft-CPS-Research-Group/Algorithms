@@ -15,9 +15,18 @@ def _signature(n_ca: int = 1) -> LayoutSignature:
             n_ca,
             tuple(f"action-{index}" for index in range(n_ca)),
             (
-                ("sro", "weather", None),
-                ("nfc", "building_nfc", "building-1"),
-                *(("ca", "storage", f"storage-{index}") for index in range(n_ca)),
+                ("sro", "weather", None, ("temperature",), None),
+                (
+                    "nfc",
+                    "building_nfc",
+                    "building-1",
+                    ("net_consumption", "solar_generation"),
+                    ("subtract", "net_consumption", "solar_generation"),
+                ),
+                *(
+                    ("ca", "storage", f"storage-{index}", ("soc", "power"), None)
+                    for index in range(n_ca)
+                ),
             ),
             (),
             (("building_nfc", 1), ("storage", 2), ("weather", 2)),
@@ -310,7 +319,7 @@ def test_should_reject_unhashable_signature_segment_family() -> None:
 
     buffer = SignatureBucketedReplayBuffer(capacity=2, num_agents=1, batch_size=1)
     building = _signature()[0]
-    malformed_segment = ([], "weather", None)
+    malformed_segment = ([], "weather", None, ("temperature",), None)
     malformed_signature = (
         (building[0], building[1], building[2], (malformed_segment,), (), building[5]),
     )

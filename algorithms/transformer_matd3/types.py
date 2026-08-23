@@ -6,7 +6,14 @@ from typing import Optional, Tuple, TypeAlias
 import numpy as np
 
 
-SegmentSignature: TypeAlias = Tuple[str, str, Optional[str]]
+NfcExpressionSignature: TypeAlias = Tuple[str, str, str]
+SegmentSignature: TypeAlias = Tuple[
+    str,
+    str,
+    Optional[str],
+    Tuple[str, ...],
+    Optional[NfcExpressionSignature],
+]
 TypeWidth: TypeAlias = Tuple[str, int]
 BuildingLayoutSignature: TypeAlias = Tuple[
     int,

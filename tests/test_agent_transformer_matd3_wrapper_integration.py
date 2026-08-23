@@ -107,7 +107,7 @@ def test_feature_width_failure_rolls_back_all_live_state_and_rng() -> None:
     )
     drifted = list(names) + [f"storage::{storage_id}::new_width_field"]
 
-    with pytest.raises(ValueError, match="feature width"):
+    with pytest.raises(ValueError, match="topology schema drift"):
         agent.attach_environment(
             observation_names=[drifted],
             action_names=[list(_ACTION_NAMES)],
@@ -132,6 +132,30 @@ def test_feature_width_failure_rolls_back_all_live_state_and_rng() -> None:
     assert random.getstate() == python_before
     assert np.array_equal(np.random.get_state()[1], numpy_before[1])
     assert torch.equal(torch.get_rng_state(), torch_before)
+
+
+def test_topology_feature_order_drift_fails_atomically() -> None:
+    agent, _ = _make_agent(buildings=1)
+    names = load_sample_observation_names_for_first_building()
+    storage_indices = [
+        index for index, name in enumerate(names) if name.startswith("storage::")
+    ]
+    assert len(storage_indices) >= 2
+    reordered = list(names)
+    first, second = storage_indices[:2]
+    reordered[first], reordered[second] = reordered[second], reordered[first]
+    signature_before = agent._layout_signature
+
+    with pytest.raises(ValueError, match="topology schema drift"):
+        agent.attach_environment(
+            observation_names=[reordered],
+            action_names=[list(_ACTION_NAMES)],
+            action_space=[_Box([-2.0, -0.5], [1.0, 0.75])],
+            observation_space=[None],
+            metadata={"building_names": ["Building_1"]},
+        )
+
+    assert agent._layout_signature == signature_before
 
 
 def test_topology_commit_flushes_pending_n_step_entries_as_truncated() -> None:
