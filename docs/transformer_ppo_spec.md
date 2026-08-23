@@ -21,7 +21,7 @@ the entity payload (`tables`, `edges`, `meta`), `meta.topology_version`, and
 active action-table shapes.
 
 The implementation sources are [agent.py](../algorithms/transformer_ppo/agent.py),
-[behavior_cloning.py](../algorithms/transformer_ppo/behavior_cloning.py),
+[behavior_cloning.py](../algorithms/transformer_shared/behavior_cloning.py),
 [PPO components](../algorithms/transformer_ppo/ppo_components.py), the
 [wrapper](../utils/wrapper_citylearn.py), the [schema](../utils/config_schema.py),
 and the [manifest and bundle validators](../utils/artifact_manifest.py).
