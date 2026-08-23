@@ -92,8 +92,10 @@ The Transformer implementations live in `algorithms/transformer_ppo/` and
 `algorithms/transformer_matd3/`.
 Use the [shared Transformer/entity contract](docs/transformer_entity_controller.md)
 for reusable invariants. Use the [TPPO specification](docs/transformer_ppo_spec.md)
-and [Transformer MATD3 guide](docs/transformer_matd3.md) for algorithm-specific
-lifecycle and deployment details.
+for TPPO. For Transformer MATD3, start with the
+[operational guide](docs/transformer_matd3.md), then use the
+[technical specification](docs/transformer_matd3_spec.md) and
+[ADRs](docs/adr/README.md) when changing architecture.
 
 ## Runtime Flow
 

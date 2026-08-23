@@ -12,9 +12,9 @@ adds PPO, behavior-cloning, safety, checkpoint, and export rules. Future
 Transformer algorithms should reuse this document and state their differences.
 
 The authoritative sources are the runtime [entity adapter](../utils/entity_adapter.py),
-[wrapper](../utils/wrapper_citylearn.py), [layout builder](../algorithms/transformer_ppo/entity_token_layout.py),
-[tokenizer](../algorithms/transformer_ppo/entity_observation_tokenizer.py), and
-[backbone](../algorithms/transformer_ppo/transformer_backbone.py), together with
+[wrapper](../utils/wrapper_citylearn.py), [layout builder](../algorithms/transformer_shared/entity_token_layout.py),
+[tokenizer](../algorithms/transformer_shared/entity_observation_tokenizer.py), and
+[backbone](../algorithms/transformer_shared/transformer_backbone.py), together with
 the shipped [tokenizer configuration](../configs/tokenizers/entity_default.json)
 and its [schema fixture](../configs/tokenizers/fixtures/entity_obs_sample.json).
 The tested simulator package is `softcpsrecsimulator==1.5.6` from

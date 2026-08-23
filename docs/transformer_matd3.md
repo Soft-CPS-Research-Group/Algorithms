@@ -1,71 +1,283 @@
 # AgentTransformerMATD3
 
-`AgentTransformerMATD3` is an off-policy controller for the entity interface.
-It uses one Transformer actor per building and centralized twin critics. It
-supports dynamic asset topology. It must be the final pipeline stage.
+`AgentTransformerMATD3` is an off-policy controller for CityLearn's entity
+interface. It uses one Transformer actor stack per building and one independent
+twin-critic pair per controlled building. Each critic observes the joint state
+and actions of all buildings.
 
-## Supported workflow
+Use this guide for configuration and operation. Use the
+[technical specification](transformer_matd3_spec.md) for invariants and data
+flows. Use the [ADRs](adr/README.md) when changing an architectural decision.
+Terms specific to this controller are defined in the
+[glossary](transformer_matd3_glossary.md).
 
-Start with one template under `configs/templates/dynamic/`:
+## Supported contract
 
-- `transformer_matd3_entity_dynamic.yaml` uses the core MATD3 path.
-- `transformer_matd3_entity_dynamic_residual.yaml` adds an RBC residual base.
-- `transformer_matd3_entity_dynamic_bc.yaml` enables replay and demonstration
-  behavior cloning plus the runtime local-action safety guard.
-- `transformer_matd3_entity_dynamic_cost4_faithful.yaml` translates the
-  15-minute cost4 residual recipe over `RBCCommunityPolicy`.
+- The simulator must use `interface: entity`.
+- The controller supports `topology_mode: dynamic`.
+- The pipeline must contain one `AgentTransformerMATD3` stage, in final
+  position, with `count: 1`.
+- The tokenizer must satisfy the shared
+  [Transformer entity contract](transformer_entity_controller.md).
+- Action position always follows the attached `action_names` order.
+- CUDA is optional. Set `require_cuda: true` to reject CPU execution.
 
-The default template disables residual control, local action safety, local
-price conditioning, and both behavior-cloning paths. Enable each path only when
-its runtime inputs are available.
+The registered implementation is
+`algorithms/transformer_matd3/agent.py::AgentTransformerMATD3`. Configuration
+validation is defined by `TransformerMATD3StageConfig` and its nested models in
+`utils/config_schema.py`. These code symbols are authoritative when this guide
+and the code disagree.
 
-The actor objective exposes `actor_policy_loss_weight`. Set it to `0.085` for
-the cost4 translation. The value scales the MATD3 policy term before BC terms;
-it does not change the executed action or the critic target.
+## Start a run
 
-The BC template applies EV deadline-feasibility and local electrical-headroom
-constraints to executed actions. It is experiment-only: the exported ONNX actor
-requires the same safety guard in the serving runtime.
+Choose the smallest template that provides the required behavior:
 
-Dynamic topology changes preserve compatible neural and optimizer state.
-Feature-width drift or a new entity type fails atomically. A building-count
-change rebuilds the agent and clears replay. Replay batches never mix layout
-signatures.
-
-Checkpoint format 5 supports `full` and `inference` modes. Restore validation is
-strict. ONNX export writes one opset-17 actor per building and topology version.
-Residual, safety, and price logic stay outside ONNX. Their runtime-only export
-flags must be explicit.
-
-## Traceability
-
-Each accepted architecture consequence maps to named automated tests.
-
-| ADR | Consequence coverage |
+| Template | Purpose |
 |---|---|
-| 0001 shared package | `test_no_transformer_compatibility_shim_or_cross_algorithm_import_remains`; `test_no_external_imports`; `test_projection_is_per_type_no_new_params_on_topology_grow`; `test_variable_token_count_supported`; `test_normalizer_state_round_trip_is_device_agnostic` |
-| 0002 actor ownership | `test_actor_and_targets_update_only_on_delayed_due_step`; `test_building_count_change_applies_reset_full`; `test_export_writes_one_topology_versioned_opset17_model_per_building` |
-| 0003 centralized twin critics | `test_should_be_permutation_invariant_across_buildings`; `test_should_initialize_twin_critics_independently`; `test_should_isolate_gradients_between_independent_critics`; `test_learning_uses_twin_target_minimum` |
-| 0004 unchanged backbone | `test_variable_token_count_supported`; `test_forward_returns_ca_and_pooled_with_correct_shapes`; `test_should_sample_only_one_layout_signature` |
-| 0005 replay representation | `test_should_sample_only_one_layout_signature`; `test_compatible_topology_commit_preserves_neural_optimizer_and_history`; `test_building_count_change_applies_reset_full` |
-| 0006 batching policy | `test_should_evict_oldest_transition_globally`; `test_should_reject_underfilled_sample_request`; `test_underfull_update_emits_explicit_finite_skip_metrics` |
-| 0007 behavior cloning | `test_bc_b_pretraining_changes_only_actor_stack`; `test_bc_a_extra_update_changes_only_actor_stack`; `test_bc_b_zero_weight_short_circuits_before_actor_forward`; `test_bc_a_external_targets_use_lazy_cloning_replay_field`; `test_bc_b_reservoir_capacity_applies_per_building`; `test_bc_b_teacher_is_rebuilt_for_topology_attachment`; `test_bc_a_disabled_allocates_no_optimizer_or_optional_replay_fields`; `test_bc_b_pretraining_fails_before_rl_when_building_has_no_usable_demo`; `test_missing_warm_start_bc_a_context_does_not_block_replay`; `test_bc_a_and_bc_b_use_separate_optimizers` |
-| 0008 residual policy | `test_residual_composition_uses_ca_order_span_and_authority`; `test_warm_start_teacher_width_is_validated_before_composition`; `test_target_smoothing_uses_residual_authority`; `test_export_guards_fail_before_writing_files` |
-| 0009 local price adapter | `test_price_conditioning_rewrites_a_copy_before_tokenization`; `test_neutral_price_context_is_an_exact_copy`; `test_schema_requires_entity_interface_and_minmax_price_profile`; `test_export_guards_fail_before_writing_files` |
-| 0010 checkpoint | `test_full_format_5_round_trip_restores_training_replay_queue_and_rng`; `test_inference_round_trip_restores_actor_stack_and_operational_step`; all strict rejection and atomic-restore cases in `test_agent_transformer_matd3_checkpoint.py` |
-| 0011 ONNX export | `test_export_writes_one_topology_versioned_opset17_model_per_building`; `test_exported_model_matches_deterministic_actor`; `test_runtime_only_export_marks_manifest_and_bundle_non_deployable` |
-| 0012 schema and wrapper | `test_schema_accepts_matd3_and_defaults_n_step_gamma`; `test_schema_rejects_invalid_matd3_stage`; `test_registry_constructs_transformer_matd3`; `test_registry_exposes_dynamic_topology_hooks` |
+| [`transformer_matd3_entity_dynamic.yaml`](../configs/templates/dynamic/transformer_matd3_entity_dynamic.yaml) | Core Transformer MATD3 |
+| [`transformer_matd3_entity_dynamic_residual.yaml`](../configs/templates/dynamic/transformer_matd3_entity_dynamic_residual.yaml) | Actor corrections around an RBC base policy |
+| [`transformer_matd3_entity_dynamic_bc.yaml`](../configs/templates/dynamic/transformer_matd3_entity_dynamic_bc.yaml) | Replay BC, demonstration BC, and local action safety |
+| [`transformer_matd3_entity_dynamic_cost4_faithful.yaml`](../configs/templates/dynamic/transformer_matd3_entity_dynamic_cost4_faithful.yaml) | Fifteen-minute cost4 translation over `RBCCommunityPolicy` |
 
-The end-to-end test
-`test_e2e_learning_mutation_checkpoint_and_export` runs the normal experiment
-entry point. It proves learning, topology mutation, checkpoint output, ONNX
-export, and bundle validation together.
+The `cost4_realistic_pilot`, `cost4_realistic_fast_pilot`, and
+`cost4_realistic_speed_pilot` templates are bounded diagnostics. They are not
+promotion configurations. Matching `RBCCommunityPolicy` and `RBCSmartPolicy`
+baseline templates use the same dynamic 15-minute dataset and reward.
+
+Copy a template and change the dataset, duration, seed, and hyperparameters.
+Do not enable optional runtime paths without their required inputs.
+
+Run locally:
+
+```bash
+python run_experiment.py \
+  --config configs/templates/dynamic/transformer_matd3_entity_dynamic.yaml \
+  --job_id transformer-matd3-local
+```
+
+For remote execution, use the normal OPEVA preparation and submission flow in
+`scripts/manage_remote_experiment.py`. A merge-validation run should pin the
+exact commit image, dataset, worker, seed, episode count, and time-step window.
+The dataset interval alone does not define the run length:
+
+```text
+total environment steps = episodes * episode_time_steps
+```
+
+For example, two episodes with `episode_time_steps: 3401` execute 6,802 steps.
+Two full 15-minute years with 35,040 steps each execute 70,080 steps.
+
+## Core configuration
+
+The pipeline stage has four sections:
+
+```yaml
+pipeline:
+  - algorithm: AgentTransformerMATD3
+    count: 1
+    frozen: false
+    tokenizer_config_path: configs/tokenizers/entity_default.json
+    transformer:
+      d_model: 64
+      nhead: 4
+      num_layers: 2
+      dim_feedforward: 128
+      dropout: 0.0
+    hyperparameters:
+      require_cuda: false
+      learning_rate: 3.0e-4
+      gamma: 0.99
+      tau: 0.005
+      batch_size: 128
+      buffer_capacity: 100000
+      max_grad_norm: 1.0
+      target_policy_smoothing: true
+      target_policy_noise: 0.2
+      target_policy_noise_clip: 0.5
+      actor_update_interval: 2
+      actor_policy_loss_weight: 1.0
+      sigma: 0.1
+      sigma_decay: 0.9995
+      min_sigma: 0.01
+      bias: 0.0
+      random_exploration_steps: 256
+      end_initial_exploration_time_step: 256
+    behavior_cloning:
+      replay_based:
+        enabled: false
+      demonstration_based:
+        enabled: false
+```
+
+Important rules:
+
+- `d_model` must be divisible by `nhead`.
+- `buffer_capacity` must be at least `batch_size`.
+- `min_sigma` cannot exceed `sigma`.
+- `random_exploration_steps` controls random actions.
+- `end_initial_exploration_time_step` controls when learning may start.
+- `actor_policy_loss_weight` must be non-negative. It scales the MATD3 policy
+  term before optional BC terms. The cost4 translation uses `0.085`.
+- `n_step_gamma` defaults to `gamma`.
+- Unknown fields fail validation.
+
+The templates and Pydantic models contain the complete field set and defaults.
+Do not copy field lists from an ADR into a new config.
+
+## Learning model
+
+Each building owns independent online and target actor stacks:
+
+```text
+encoded observation
+  -> entity tokenizer
+  -> Transformer backbone
+  -> per-CA actor head
+  -> tanh and affine action bounds
+```
+
+Each controlled building also owns two independent centralized critics. A
+critic encodes each building, injects its action after tokenization, aggregates
+building embeddings with a permutation-invariant Deep Sets block, and returns
+one Q value. Learning uses the minimum target Q, delayed actor updates, target
+policy smoothing, and soft target updates.
+
+Replay stores encoded transitions in buckets keyed by the full layout
+signature. A gradient batch contains one signature only. If the current bucket
+has fewer than `batch_size` transitions, the update is skipped and reported in
+metrics.
+
+## Dynamic topology
+
+An asset-count change within existing buildings preserves compatible neural
+weights, optimizer state, replay history, and training clocks. The controller
+increments the topology version for changed buildings. New instances reuse
+their asset-type projections and per-CA head.
+
+The topology transaction rejects these schema changes before committing state:
+
+- an existing segment changes order, family, type, instance identity, feature
+  names, feature width, or NFC expression;
+- a new entity type has no existing tokenizer projection;
+- an existing building changes identity.
+
+On every committed topology boundary, pending n-step transitions are flushed
+as truncated. A building-count change performs a full controller rebuild and
+clears replay, optimizer state, exploration state, normalizer state, and BC
+state. Any failed attachment restores the previous controller and random state.
+
+## Optional behavior
+
+### Residual control
+
+Set `residual_policy_enabled: true` and provide
+`warm_start_policy_name`. The warm-start policy supplies a base action. The
+Transformer actor supplies a bounded correction scaled by the configured
+authority schedule. The critic observes the final composed action.
+
+### Replay behavior cloning (BC-A)
+
+Enable `behavior_cloning.replay_based`. BC-A trains only the actor stack from
+cloning targets stored with replay transitions. Supported teachers are
+`warm_start` and `replay_action`; `external` is rejected during config
+validation. BC-A samples the current layout signature only.
+
+### Demonstration behavior cloning (BC-B)
+
+Enable `behavior_cloning.demonstration_based`. BC-B collects deterministic
+`RBCSmartPolicy` demonstrations into a separate per-signature reservoir, then
+pretrains the actor before RL. It can continue as an auxiliary actor loss.
+Pretraining fails before RL when a building has no compatible demonstrations.
+
+BC-A and BC-B have separate optimizers. Neither path updates critics, targets,
+normalizer statistics, or replay state.
+
+### Local action safety and price conditioning
+
+The local safety adapter projects executed actions using raw CityLearn context.
+The price adapter rewrites a copy of the encoded current or successor
+observation before tokenization. Price conditioning requires the
+`minmax_space` entity-encoding profile.
+
+Both adapters are outside the exported ONNX graph.
+
+## Checkpoints and resume
+
+Checkpoint settings belong in the top-level `checkpointing` block, not inside
+the algorithm stage:
+
+```yaml
+checkpointing:
+  resume_training: false
+  checkpoint_artifact: transformer_matd3_checkpoint.pt
+  checkpoint_mode: full
+  checkpoint_interval: 2048
+```
+
+Format 5 supports:
+
+- `full`: actor and target stacks, critics, optimizers, replay, n-step queue,
+  exploration, reward normalization, random generators, and enabled BC state;
+- `inference`: actor stacks, action bounds, topology metadata, and the
+  operational step needed by the residual schedule.
+
+Restore is strict. Building count, building identity, layout signature, action
+names, action bounds, BC configuration, and checkpoint mode must match. All
+validation completes before live state changes. An inference checkpoint can
+only load into a frozen stage.
+
+## Export and deployment
+
+Export writes one opset-17 ONNX actor per building for the current topology:
+
+```text
+onnx_models/agent_<building-index>__topology_v<version>.onnx
+```
+
+The graph includes tokenization, the Transformer actor, `tanh`, and affine
+action bounds. It excludes exploration, critics, residual composition, local
+safety, and local price conditioning.
+
+If residual, safety, or price behavior is enabled, export fails unless its
+matching `*_runtime_only_export` flag is true. Opting in creates experiment
+evidence marked `deployable: false`; it does not make the graph behaviorally
+complete. Production serving must reproduce every required external adapter.
+
+Run outputs follow the repository contract under `runs/jobs/<job_id>/`,
+including `results/`, `checkpoints/`, `onnx_models/`, the resolved config, and
+`artifact_manifest.json`.
+
+## Verification
+
+Run focused validation after changing this controller or its documentation:
+
+```bash
+pytest -q \
+  tests/test_transformer_matd3_components.py \
+  tests/test_transformer_matd3_replay.py \
+  tests/test_agent_transformer_matd3.py \
+  tests/test_agent_transformer_matd3_behavior_cloning.py \
+  tests/test_agent_transformer_matd3_checkpoint.py \
+  tests/test_agent_transformer_matd3_export.py \
+  tests/test_agent_transformer_matd3_integration.py \
+  tests/test_agent_transformer_matd3_residual.py \
+  tests/test_agent_transformer_matd3_wrapper_integration.py \
+  tests/test_template_transformer_matd3_entity_dynamic.py
+```
+
+Run the slow end-to-end contract explicitly:
+
+```bash
+pytest -q -o addopts='' -m slow \
+  tests/e2e/test_e2e_transformer_matd3_entity_dynamic.py
+```
 
 ## Known limits
 
 - Only the entity interface is supported.
 - Checkpoints cannot restore across layouts or building counts.
 - Export contains only the current topology.
-- Residual, safety, and price processing require an external ONNX runtime path.
-- BC-A samples only the current layout signature.
-- Layout-homogeneous batches are required.
+- Residual, safety, and price behavior require external serving logic.
+- BC-A cannot train across historical signatures.
+- Batches cannot mix layout signatures.
+- Building-count changes reset all learned state.
