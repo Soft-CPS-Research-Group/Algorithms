@@ -20,7 +20,7 @@ Design:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Mapping
+from typing import Dict, List, Mapping, Tuple
 
 import torch
 from torch import nn
@@ -89,6 +89,31 @@ class EntityObservationTokenizer(nn.Module):
                 for type_name, in_dim in type_input_dims.items()
             }
         )
+        # Layouts are reused for every replay batch. Cache the index tensors
+        # instead of allocating them for every tokenizer invocation.
+        self._index_cache: Dict[
+            Tuple[BuildingTokenLayout, str], Tuple[torch.Tensor, ...]
+        ] = {}
+
+    def _cached_indices(
+        self,
+        layout: BuildingTokenLayout,
+        device: torch.device,
+    ) -> Tuple[torch.Tensor, ...]:
+        key = (layout, str(device))
+        cached = self._index_cache.get(key)
+        if cached is not None:
+            return cached
+        cached = tuple(
+            torch.as_tensor(
+                segment.feature_indices,
+                dtype=torch.long,
+                device=device,
+            )
+            for segment in layout.segments
+        )
+        self._index_cache[key] = cached
+        return cached
 
     def forward(
         self,
@@ -109,10 +134,7 @@ class EntityObservationTokenizer(nn.Module):
         ca_types: List[str] = []
         nfc_token: torch.Tensor | None = None
 
-        for seg in layout.segments:
-            idx = torch.tensor(
-                list(seg.feature_indices), dtype=torch.long, device=device
-            )
+        for seg, idx in zip(layout.segments, self._cached_indices(layout, device)):
             group = encoded_obs.index_select(dim=1, index=idx)  # [B, k]
 
             if seg.family == "nfc":
