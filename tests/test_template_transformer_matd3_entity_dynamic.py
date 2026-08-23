@@ -16,6 +16,10 @@ TEMPLATES = {
     "default": TEMPLATE_DIR / "transformer_matd3_entity_dynamic.yaml",
     "residual": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_residual.yaml",
     "bc": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_bc.yaml",
+    "cost4": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_faithful.yaml",
+    "cost4_realistic_pilot": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_realistic_pilot.yaml",
+    "cost4_realistic_fast_pilot": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_realistic_fast_pilot.yaml",
+    "cost4_realistic_speed_pilot": TEMPLATE_DIR / "transformer_matd3_entity_dynamic_cost4_realistic_speed_pilot.yaml",
 }
 
 
@@ -74,6 +78,108 @@ def test_bc_template_enables_independent_bc_paths() -> None:
     assert hyperparameters["local_action_safety_ev_minimum_mode"] == "deadline_feasible"
     assert hyperparameters["local_action_safety_protect_ev_service_target"] is True
     assert hyperparameters["local_action_safety_runtime_only_export"] is True
+
+
+def test_templates_declare_actor_policy_loss_weight() -> None:
+    for name in sorted(TEMPLATES):
+        hyperparameters = _load(name)["pipeline"][0]["hyperparameters"]
+        assert hyperparameters["actor_policy_loss_weight"] >= 0.0
+
+
+def test_cost4_template_matches_named_recipe_translation() -> None:
+    stage = _load("cost4")["pipeline"][0]
+    hyperparameters = stage["hyperparameters"]
+    replay = stage["behavior_cloning"]["replay_based"]
+
+    assert _load("cost4")["simulator"]["dataset_name"].endswith("15min_parquet")
+    assert hyperparameters["actor_policy_loss_weight"] == pytest.approx(0.085)
+    assert hyperparameters["warm_start_policy_name"] == "RBCCommunityPolicy"
+    assert hyperparameters["residual_action_final_scale"] == pytest.approx(0.30)
+    assert hyperparameters["residual_storage_action_scale_multiplier"] == pytest.approx(0.75)
+    assert hyperparameters["residual_ev_action_scale_multiplier"] == pytest.approx(0.25)
+    assert replay["weight"] == pytest.approx(0.24)
+    assert replay["ev_multiplier"] == pytest.approx(18.0)
+
+
+def test_cost4_realistic_pilot_keeps_recipe_and_limits_episode_budget() -> None:
+    config = _load("cost4_realistic_pilot")
+    stage = config["pipeline"][0]
+    hyperparameters = stage["hyperparameters"]
+    replay = stage["behavior_cloning"]["replay_based"]
+
+    assert config["simulator"]["episodes"] == 2
+    assert config["simulator"]["episode_time_steps"] == 3401
+    assert config["simulator"]["dataset_name"].endswith("15min_parquet")
+    assert config["simulator"]["reward_function"] == (
+        "CostServiceCommunityDenseEVResidualRewardV54"
+    )
+    assert config["simulator"]["reward_function_kwargs"] == {
+        "community_settlement_cost_weight": pytest.approx(1.55),
+        "battery_throughput_penalty": pytest.approx(0.0015),
+    }
+    assert hyperparameters["actor_policy_loss_weight"] == pytest.approx(0.085)
+    assert hyperparameters["warm_start_policy_name"] == "RBCCommunityPolicy"
+    assert hyperparameters["residual_action_final_scale"] == pytest.approx(0.30)
+    assert hyperparameters["residual_storage_action_scale_multiplier"] == pytest.approx(0.75)
+    assert hyperparameters["residual_ev_action_scale_multiplier"] == pytest.approx(0.25)
+    assert replay["ev_multiplier"] == pytest.approx(18.0)
+
+
+def test_cost4_realistic_fast_pilot_keeps_bc_without_extra_updates() -> None:
+    config = _load("cost4_realistic_fast_pilot")
+    stage = config["pipeline"][0]
+    replay = stage["behavior_cloning"]["replay_based"]
+
+    assert config["simulator"]["episodes"] == 1
+    assert config["simulator"]["episode_time_steps"] == 3401
+    assert config["simulator"]["dataset_name"].endswith("15min_parquet")
+    assert config["simulator"]["reward_function"] == (
+        "CostServiceCommunityDenseEVResidualRewardV54"
+    )
+    assert replay["enabled"] is True
+    assert replay["weight"] == pytest.approx(0.24)
+    assert replay["ev_multiplier"] == pytest.approx(18.0)
+    assert replay["extra_updates"] == 0
+    assert replay["offline_pretrain_steps"] == 128
+
+
+def test_cost4_realistic_speed_pilot_bounds_learner_schedule() -> None:
+    config = _load("cost4_realistic_speed_pilot")
+    stage = config["pipeline"][0]
+    replay = stage["behavior_cloning"]["replay_based"]
+
+    assert config["simulator"]["episodes"] == 1
+    assert config["simulator"]["episode_time_steps"] == 3401
+    assert config["simulator"]["dataset_name"].endswith("15min_parquet")
+    assert config["simulator"]["reward_function"] == (
+        "CostServiceCommunityDenseEVResidualRewardV54"
+    )
+    assert config["training"]["steps_between_training_updates"] == 8
+    assert config["training"]["target_update_interval"] == 8
+    assert replay["enabled"] is True
+    assert replay["extra_updates"] == 0
+
+
+@pytest.mark.parametrize(
+    "path, algorithm",
+    [
+        (
+            TEMPLATE_DIR / "rbc_community_entity_dynamic_15min_cost4.yaml",
+            "RBCCommunityPolicy",
+        ),
+        (
+            TEMPLATE_DIR / "rbc_smart_entity_dynamic_15min_cost4.yaml",
+            "RBCSmartPolicy",
+        ),
+    ],
+)
+def test_matching_dynamic_cost4_baselines_validate(path: Path, algorithm: str) -> None:
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    validated = validate_config(config)
+
+    assert validated.pipeline[0].algorithm == algorithm
+    assert config["simulator"]["dataset_name"].endswith("15min_parquet")
+    assert config["simulator"]["topology_mode"] == "dynamic"
 
 
 def test_templates_reference_the_validated_tokenizer() -> None:
