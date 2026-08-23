@@ -11,11 +11,15 @@ Start with one template under `configs/templates/dynamic/`:
 - `transformer_matd3_entity_dynamic.yaml` uses the core MATD3 path.
 - `transformer_matd3_entity_dynamic_residual.yaml` adds an RBC residual base.
 - `transformer_matd3_entity_dynamic_bc.yaml` enables replay and demonstration
-  behavior cloning.
+  behavior cloning plus the runtime local-action safety guard.
 
 The default template disables residual control, local action safety, local
 price conditioning, and both behavior-cloning paths. Enable each path only when
 its runtime inputs are available.
+
+The BC template applies EV deadline-feasibility and local electrical-headroom
+constraints to executed actions. It is experiment-only: the exported ONNX actor
+requires the same safety guard in the serving runtime.
 
 Dynamic topology changes preserve compatible neural and optimizer state.
 Feature-width drift or a new entity type fails atomically. A building-count

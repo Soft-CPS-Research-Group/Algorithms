@@ -489,6 +489,29 @@ def test_deadline_feasible_reports_target_outside_reserved_envelope() -> None:
     }
 
 
+def test_service_target_can_use_reserved_physical_headroom() -> None:
+    adapter = _deadline_ev_adapter(reserve_kw=1.0)
+    adapter.config = CityLearnSafetyConfig(
+        ev_minimum_mode="deadline_feasible",
+        protect_ev_service_target=True,
+        allow_ev_service_target_to_use_reserved_headroom=True,
+        headroom_reserve_kw=1.0,
+    )
+
+    result = adapter.project(
+        _deadline_ev_observation(
+            raw_headroom_kw=5.0,
+            last_applied_power_kw=0.0,
+            energy_to_target_kwh=5.0,
+            hours_until_departure=1.0,
+        ),
+        [0.0],
+    )
+
+    assert result.feasible
+    assert result.executed_actions == pytest.approx((1.0,))
+
+
 def test_deadline_feasible_reserve_zero_preserves_raw_margin_behavior() -> None:
     adapter = _deadline_ev_adapter(reserve_kw=0.0)
 

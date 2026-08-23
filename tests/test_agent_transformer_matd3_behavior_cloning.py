@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -51,6 +52,32 @@ def _bc_b_agent(**overrides):
         metadata={"building_names": ["Building_1"]},
     )
     return agent, len(names)
+
+
+def _bc_b_agent_with_zero_action_building():
+    from algorithms.transformer_matd3.agent import AgentTransformerMATD3
+    from tests._entity_sample_obs_names import (
+        load_sample_observation_names_for_first_building,
+    )
+    from tests.test_agent_transformer_matd3 import _ACTION_NAMES, _Box, _config
+
+    names = load_sample_observation_names_for_first_building()
+    zero_action_names = [
+        name for name in names if not name.startswith(("storage::", "charger::"))
+    ]
+    config = _config()
+    config["algorithm"]["behavior_cloning"] = {
+        "demonstration_based": _bc_b_config()
+    }
+    agent = AgentTransformerMATD3(config)
+    agent.attach_environment(
+        observation_names=[list(names), zero_action_names],
+        action_names=[list(_ACTION_NAMES), []],
+        action_space=[_Box([-2.0, -0.5], [1.0, 0.75]), _Box([], [])],
+        observation_space=[None, None],
+        metadata={"building_names": ["Building_1", "Building_3"]},
+    )
+    return agent, [len(names), len(zero_action_names)]
 
 
 def _same(before: list[torch.Tensor], module: torch.nn.Module) -> bool:
@@ -124,6 +151,54 @@ def test_bc_b_collects_immutable_normalized_demonstration_without_rl_state() -> 
     ]
 
 
+def test_bc_b_projects_teacher_actions_before_execution_and_storage() -> None:
+    agent, obs_dim = _bc_b_agent()
+    assert agent._bc_b is not None
+
+    class _UnsafeTeacher:
+        def predict(self, observations, deterministic):
+            del observations, deterministic
+            return [[-0.5, 0.75]]
+
+    projected = [0.25, -0.1]
+    agent._bc_b.teacher_policy = _UnsafeTeacher()
+    agent._local_action_safety_enabled = True
+    agent._local_action_safety_adapters = [
+        SimpleNamespace(
+            project=lambda raw, proposed: SimpleNamespace(
+                executed_actions=projected,
+                interventions=(),
+                infeasible_reasons=(),
+            )
+        )
+    ]
+    observation = np.zeros(obs_dim, dtype=np.float32)
+    agent.set_observation_context(raw_observations=[observation])
+    agent.on_episode_start(episode=0, training=True)
+
+    actions = agent.predict([observation], deterministic=False)
+    agent.update(
+        [observation],
+        actions,
+        [0.0],
+        [observation],
+        False,
+        False,
+        update_target_step=False,
+        global_learning_step=0,
+        update_step=False,
+        initial_exploration_done=False,
+    )
+
+    groups = agent._bc_b.demonstrations_for_building_by_signature(0)
+    stored = next(iter(groups.values()))[0]
+    assert actions == [projected]
+    assert stored.target.tolist() == pytest.approx([0.5, -0.36])
+    assert agent.get_diagnostic_metrics()[
+        "TransformerMATD3/local_action_safety_projections"
+    ] == 1.0
+
+
 def test_bc_b_reservoir_capacity_applies_per_building() -> None:
     agent, obs_dim = _bc_b_agent(max_samples_per_building=2)
     assert agent._bc_b is not None
@@ -150,6 +225,55 @@ def test_bc_b_pretraining_fails_before_rl_when_building_has_no_usable_demo() -> 
 
     assert not agent._bc_b_pretraining_complete
     assert agent.replay_buffer.total_size() == 0
+
+
+def test_bc_b_pretraining_skips_building_without_controllable_actions() -> None:
+    agent, dimensions = _bc_b_agent_with_zero_action_building()
+    assert agent._bc_b is not None
+    agent.on_episode_start(episode=0, training=True)
+    agent._record_bc_b_demonstrations(
+        [np.ones(dimension, dtype=np.float64) for dimension in dimensions],
+        [[0.25, 0.5], []],
+    )
+
+    agent.on_episode_end(episode=0, training=True)
+
+    metrics = agent._latest_training_metrics
+    assert agent._bc_b_pretraining_complete
+    assert metrics["TransformerMATD3/behavior_cloning_building_Building_1_usable_samples"] == 1.0
+    assert metrics["TransformerMATD3/behavior_cloning_building_Building_3_usable_samples"] == 0.0
+    assert metrics["TransformerMATD3/behavior_cloning_building_Building_3_trained_batches"] == 0.0
+    assert metrics["TransformerMATD3/behavior_cloning_building_Building_3_zero_action_samples"] == 1.0
+
+
+def test_bc_b_zero_action_history_does_not_mask_missing_active_demonstrations(
+    monkeypatch,
+) -> None:
+    agent, obs_dim = _bc_b_agent()
+    assert agent._bc_b is not None
+    layout = agent._per_building[0].layout
+    zero_action_layout = replace(
+        layout,
+        n_ca=0,
+        ca_action_names=(),
+        segments=tuple(segment for segment in layout.segments if segment.family != "ca"),
+    )
+    zero_action_obs_dim = sum(
+        len(segment.feature_indices) for segment in zero_action_layout.segments
+    ) + len(zero_action_layout.excluded_feature_names)
+    agent._bc_b.record_demonstration(
+        0,
+        np.zeros(zero_action_obs_dim, dtype=np.float32),
+        zero_action_layout,
+        [],
+    )
+    agent._bc_b.record_demonstration(
+        0, np.zeros(obs_dim, dtype=np.float32), layout, [0.0, 0.0]
+    )
+    monkeypatch.setattr(agent, "_bc_b_layout_is_compatible", lambda *_: False)
+
+    with pytest.raises(RuntimeError, match="zero usable demonstrations"):
+        agent._run_bc_b_pretraining()
 
 
 def test_bc_b_missing_pretraining_fails_before_first_rl_episode() -> None:

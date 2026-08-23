@@ -248,6 +248,12 @@ class AgentTransformerMATD3(BaseAgent):
                     "local_action_safety_protect_ev_service_target", False
                 )
             ),
+            allow_ev_service_target_to_use_reserved_headroom=bool(
+                hyperparameters.get(
+                    "local_action_safety_allow_ev_service_target_to_use_reserved_headroom",
+                    False,
+                )
+            ),
             protect_deferrable_must_start=bool(
                 hyperparameters.get(
                     "local_action_safety_protect_deferrable_must_start", True
@@ -651,7 +657,13 @@ class AgentTransformerMATD3(BaseAgent):
                 if self._latest_raw_observations is not None
                 else observations
             )
-            return self._bc_b.compute_teacher_actions(teacher_observations)
+            teacher_actions = self._bc_b.compute_teacher_actions(
+                teacher_observations
+            )
+            return [
+                self._apply_local_action_safety(index, action)
+                for index, action in enumerate(teacher_actions)
+            ]
         observations = self._apply_local_price_context(observations, context)
         use_deterministic = bool(deterministic)
         base_actions = self._predict_warm_start_policy_for_observations(
@@ -2342,19 +2354,31 @@ class AgentTransformerMATD3(BaseAgent):
         prepared_groups: List[List[Tuple[Demonstration, ...]]] = []
         incompatible_samples = 0
         missing_buildings: List[str] = []
+        zero_action_samples_by_building: List[int] = []
         for building_idx, state in enumerate(self._per_building):
             grouped = self._bc_b.demonstrations_for_building_by_signature(
                 building_idx
             )
             usable_groups: List[Tuple[Demonstration, ...]] = []
+            zero_action_samples = 0
             for demonstrations in grouped.values():
                 layout = demonstrations[0].layout
+                if layout.n_ca == 0:
+                    zero_action_samples += len(demonstrations)
+                    logger.info(
+                        "event=matd3_bc_b_pretraining_group_skipped "
+                        "building_id={} group_samples={} reason=no_controllable_actions",
+                        state.building_id,
+                        len(demonstrations),
+                    )
+                    continue
                 if not self._bc_b_layout_is_compatible(state, layout):
                     incompatible_samples += len(demonstrations)
                     continue
                 usable_groups.append(demonstrations)
             prepared_groups.append(usable_groups)
-            if not usable_groups:
+            zero_action_samples_by_building.append(zero_action_samples)
+            if state.layout.n_ca > 0 and not usable_groups:
                 missing_buildings.append(state.building_id)
         self._bc_b.set_incompatible_demonstration_samples(incompatible_samples)
         if missing_buildings:
@@ -2365,7 +2389,9 @@ class AgentTransformerMATD3(BaseAgent):
 
         total_batches = 0
         metrics: Dict[str, float] = {}
-        for state, groups in zip(self._per_building, prepared_groups):
+        for state, groups, zero_action_samples in zip(
+            self._per_building, prepared_groups, zero_action_samples_by_building
+        ):
             usable_samples = sum(len(group) for group in groups)
             trained_batches = 0
             for demonstrations in groups:
@@ -2390,6 +2416,10 @@ class AgentTransformerMATD3(BaseAgent):
                 f"{_METRIC_PREFIX}behavior_cloning_building_"
                 f"{state.building_id}_trained_batches"
             ] = float(trained_batches)
+            metrics[
+                f"{_METRIC_PREFIX}behavior_cloning_building_"
+                f"{state.building_id}_zero_action_samples"
+            ] = float(zero_action_samples)
         self._bc_b.set_pretraining_epochs(self._bc_b.pretraining_epochs)
         metrics[f"{_METRIC_PREFIX}behavior_cloning_pretraining_batches"] = float(
             total_batches
