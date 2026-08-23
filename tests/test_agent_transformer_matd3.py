@@ -266,6 +266,30 @@ def test_static_fixture_completes_multiple_finite_learning_steps() -> None:
     assert all(np.isfinite(metrics[name]) for name in required)
 
 
+def test_runtime_profiling_reports_transformer_training_phases() -> None:
+    agent, obs_dim = _make_agent(buildings=1)
+    agent.runtime_profiling_enabled = True
+    agent.runtime_profiling_interval = 2
+
+    _transition(agent, obs_dim, 0)
+    _transition(agent, obs_dim, 1)
+    _transition(agent, obs_dim, 2)
+
+    metrics = agent.consume_latest_training_metrics()
+    required = {
+        "TransformerMATD3/runtime_replay_push_seconds",
+        "TransformerMATD3/runtime_replay_sample_seconds",
+        "TransformerMATD3/runtime_target_compute_seconds",
+        "TransformerMATD3/runtime_critic_update_seconds",
+        "TransformerMATD3/runtime_actor_update_seconds",
+        "TransformerMATD3/runtime_bc_a_extra_seconds",
+        "TransformerMATD3/runtime_bc_b_auxiliary_seconds",
+        "TransformerMATD3/runtime_training_step_seconds",
+    }
+    assert required <= metrics.keys()
+    assert all(np.isfinite(metrics[name]) and metrics[name] >= 0.0 for name in required)
+
+
 def test_learning_skips_actor_update_for_building_without_actions() -> None:
     agent, obs_dim = _make_agent(buildings=2, batch_size=2)
     state = agent._per_building[1]
