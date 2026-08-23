@@ -7,7 +7,18 @@ Templates are grouped by purpose:
   use the same wrapper/export contract.
 - `baselines/`: Random, Normal, NormalNoBattery, legacy RuleBased, RBCBasic,
   RBCSmart and RBCCommunity comparison baselines.
-- `dynamic/`: entity dynamic-topology smoke/debug templates.
+- `dynamic/`: entity dynamic-topology smoke/debug templates. This group includes
+  Transformer PPO and Transformer MATD3 default, residual, and behavior-cloning
+  variants.
+
+Transformer MATD3 templates:
+
+- `dynamic/transformer_matd3_entity_dynamic.yaml`: default training. Optional
+  residual, safety, price, and behavior-cloning paths are disabled.
+- `dynamic/transformer_matd3_entity_dynamic_residual.yaml`: residual control with
+  `RBCSmartPolicy`. ONNX metadata declares the required runtime residual path.
+- `dynamic/transformer_matd3_entity_dynamic_bc.yaml`: independent replay-based
+  and demonstration-based behavior cloning.
 
 15-minute static dataset templates are available for the Phase 2 work:
 

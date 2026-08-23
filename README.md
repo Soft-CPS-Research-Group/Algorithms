@@ -24,6 +24,8 @@ orchestration, logging, and packaging.
   shared entity, token, layout, topology, and deployment invariants.
 - 🎯 [AgentTransformerPPO Specification](docs/transformer_ppo_spec.md): current
   TPPO lifecycle, BC, safety, configuration, metrics, checkpoints, and export.
+- 🤖 [AgentTransformerMATD3 Guide](docs/transformer_matd3.md): dynamic MATD3
+  templates, runtime constraints, and ADR-to-test traceability.
 
 ## Prerequisites
 
@@ -157,7 +159,9 @@ Use this diagram as the mental model when wiring CI or new algorithms.
   `rl/td3_distributed_local.yaml`,
   `baselines/rbc_community_local.yaml`,
   `baselines/rbc_smart_local.yaml`,
-  `dynamic/rule_based_entity_dynamic_local.yaml`.
+  `dynamic/rule_based_entity_dynamic_local.yaml`,
+  `dynamic/transformer_ppo_entity_dynamic.yaml`, and
+  `dynamic/transformer_matd3_entity_dynamic.yaml`.
   Executor/runtime specifics are chosen at launch time (UI/payload), not in template YAML.
 - Project-specific experiment recipes, demonstrations and result evidence are
   intentionally kept outside the tracked repository.
