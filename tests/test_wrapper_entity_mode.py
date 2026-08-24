@@ -200,6 +200,49 @@ class _DummyEntityEnv:
         }
 
 
+def test_entity_bootstrap_reset_does_not_consume_first_episode_window():
+    class _SequencedTracker:
+        def __init__(self):
+            self.episode = -1
+            self.windows = [(10, 11), (20, 22), (30, 33)]
+            self.episode_time_steps = 0
+            self.reset_calls = 0
+
+        def next_episode(self) -> None:
+            self.episode += 1
+            start, end = self.windows[self.episode % len(self.windows)]
+            self.episode_time_steps = end - start + 1
+
+        def reset_episode_index(self) -> None:
+            self.episode = -1
+            self.reset_calls += 1
+
+    class _SequencedEntityEnv(_DummyEntityEnv):
+        def __init__(self):
+            super().__init__()
+            self.episode_tracker = _SequencedTracker()
+
+        def reset(self):
+            self.episode_tracker.next_episode()
+            return super().reset()
+
+    env = _SequencedEntityEnv()
+    Wrapper_CityLearn(env=env, config=_entity_config(), job_id="entity-window-order")
+
+    # Wrapper construction used the first window to compile the entity layout,
+    # then restored the tracker so the actual run still starts at window zero.
+    assert env.episode_tracker.reset_calls == 1
+    assert env.episode_tracker.episode == -1
+
+    observed_lengths = []
+    for expected_episode in range(3):
+        env.reset()
+        assert env.episode_tracker.episode == expected_episode
+        observed_lengths.append(env.episode_tracker.episode_time_steps)
+
+    assert observed_lengths == [2, 3, 4]
+
+
 class _DummyModel:
     supports_dynamic_topology = True
 
@@ -561,6 +604,14 @@ def test_wrapper_final_deterministic_episode_is_not_reported_as_training():
     # wrapper hook, so only the first trainable step reaches model.update().
     assert model.update_calls == 1
     assert checkpoint_modes == [False, True]
+    assert [item["deterministic"] for item in wrapper.get_episode_execution_history()] == [
+        False,
+        True,
+    ]
+    assert [item["training"] for item in wrapper.get_episode_execution_history()] == [
+        True,
+        False,
+    ]
 
 
 def test_wrapper_skips_disabled_deterministic_observer():

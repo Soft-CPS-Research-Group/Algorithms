@@ -72,6 +72,11 @@ state, but its KPIs are not a formal development or confirmation record. The
 checkpoint selected for promotion is still replayed frozen under the paired
 development/confirmation protocol above.
 
+Entity-layout bootstrap must not consume a configured episode window. The
+runner records the actual start/end, length, deterministic/training mode and
+export flag of every executed episode in `result.json`; promotion checks use
+this runtime evidence rather than trusting the requested schedule alone.
+
 Safety-projected PPO is treated as a declared training ablation. When
 `exclude_intervened_actions_from_policy_loss` is enabled, the run must report
 the number of raw action groups masked from the actor objective and the number

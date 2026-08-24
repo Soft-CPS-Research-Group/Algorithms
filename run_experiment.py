@@ -1066,6 +1066,11 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             if experiment_protocol
             else None
         )
+        episode_execution = (
+            wrapper.get_episode_execution_history()
+            if hasattr(wrapper, "get_episode_execution_history")
+            else []
+        )
         result_payload = {
             "status": "completed",
             "kpi_source": kpi_source,
@@ -1088,6 +1093,7 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "wrapper_reward_version": wrapper_reward_metadata.get("version"),
             "experiment_protocol": experiment_protocol,
             "pairing_fingerprint": pairing_fingerprint,
+            "episode_execution": episode_execution,
         }
 
         result_path = path_info["result_path"]

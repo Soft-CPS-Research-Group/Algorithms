@@ -180,6 +180,7 @@ class Wrapper_CityLearn(RLC):
         self._entity_profile_adapters: Dict[str, EntityContractAdapter] = {}
         self._profiled_observation_cache_key: Optional[tuple[int, ...]] = None
         self._profiled_observation_cache_value: Dict[str, List[np.ndarray]] = {}
+        self._episode_execution_history: List[Dict[str, Any]] = []
         self.model = model
 
         entity_encoding_cfg = simulator_cfg.get("entity_encoding", {}) or {}
@@ -468,6 +469,21 @@ class Wrapper_CityLearn(RLC):
 
         initial_observations, _ = self.env.reset()
         self._apply_entity_layout(initial_observations, force_attach=False)
+        # Entity mode needs one real reset to discover the initial payload and
+        # compile its layout.  That reset is bootstrap work, not a configured
+        # training/evaluation episode.  CityLearn advances EpisodeTracker on
+        # every reset, so leaving the index untouched silently shifts explicit
+        # episode windows by one (and changes episode-derived EV randomness).
+        # Restore the tracker before the learning loop to give entity mode the
+        # same episode semantics as the flat wrapper, which does not consume a
+        # reset while it is constructed.
+        reset_episode_index = getattr(
+            getattr(self.env.unwrapped, "episode_tracker", None),
+            "reset_episode_index",
+            None,
+        )
+        if callable(reset_episode_index):
+            reset_episode_index()
         self.reset()
 
     def _apply_entity_layout(
@@ -1408,6 +1424,45 @@ class Wrapper_CityLearn(RLC):
         reset_index()
         self._deferrable_wait_steps.clear()
 
+    def _record_episode_execution(
+        self,
+        *,
+        episode: int,
+        deterministic: bool,
+        training: bool,
+        export_enabled: bool,
+    ) -> None:
+        """Record the actual CityLearn window selected for an episode."""
+
+        tracker = getattr(self.env.unwrapped, "episode_tracker", None)
+
+        def _optional_int(name: str) -> Optional[int]:
+            value = getattr(tracker, name, None)
+            return None if value is None else int(value)
+
+        record = {
+            "episode": int(episode),
+            "tracker_episode": _optional_int("episode"),
+            "start_time_step": _optional_int("episode_start_time_step"),
+            "end_time_step": _optional_int("episode_end_time_step"),
+            "time_steps": int(self.episode_time_steps),
+            "deterministic": bool(deterministic),
+            "training": bool(training),
+            "export_enabled": bool(export_enabled),
+        }
+        self._episode_execution_history.append(record)
+        logger.info(
+            "event=episode_window episode={episode} tracker_episode={tracker_episode} "
+            "start={start_time_step} end={end_time_step} time_steps={time_steps} "
+            "deterministic={deterministic} training={training} export_enabled={export_enabled}",
+            **record,
+        )
+
+    def get_episode_execution_history(self) -> List[Dict[str, Any]]:
+        """Return auditable runtime evidence for the last ``learn`` call."""
+
+        return deepcopy(self._episode_execution_history)
+
     def learn(self, episodes=None, deterministic=None, deterministic_finish=None):
         """
         Train agent with MLflow logging for rewards (per step and per agent), PyTorch GPU memory usage, and system usage.
@@ -1419,6 +1474,7 @@ class Wrapper_CityLearn(RLC):
         episodes = episodes or self.default_episodes
         deterministic_finish = deterministic_finish if deterministic_finish is not None else False
         deterministic = deterministic if deterministic is not None else False
+        self._episode_execution_history = []
 
         total_rewards_across_episodes = []  # To track overall reward trends
 
@@ -1458,6 +1514,12 @@ class Wrapper_CityLearn(RLC):
                     training=not episode_deterministic,
                 )
             self.episode_time_steps = self.episode_tracker.episode_time_steps
+            self._record_episode_execution(
+                episode=episode,
+                deterministic=episode_deterministic,
+                training=not episode_deterministic,
+                export_enabled=export_this_episode,
+            )
             episode_step_total, global_step_total = self._resolve_progress_totals(episodes)
             self._write_phase_progress(
                 phase="episode_reset_end",
