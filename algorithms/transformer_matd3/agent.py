@@ -816,7 +816,13 @@ class AgentTransformerMATD3(BaseAgent):
                 for module, training in zip(actor_modules, prior_modes):
                     module.train(training)
             executed = action.squeeze(0).cpu().tolist()
-            executed = self._apply_local_action_safety(index, executed)
+            executed = self._apply_local_action_safety(
+                index,
+                executed,
+                residual_base_action=(
+                    None if base_actions is None else base_actions[index]
+                ),
+            )
             result.append(executed)
         if not use_deterministic:
             self.exploration_step += 1
@@ -2903,6 +2909,8 @@ class AgentTransformerMATD3(BaseAgent):
         self,
         index: int,
         proposed_action: Sequence[float],
+        *,
+        residual_base_action: Optional[Sequence[float]] = None,
     ) -> List[float]:
         if not self._local_action_safety_enabled:
             return [float(value) for value in proposed_action]
@@ -2911,29 +2919,68 @@ class AgentTransformerMATD3(BaseAgent):
                 "Transformer MATD3 local action safety requires raw observation "
                 "context before predict"
             )
+        proposed = np.asarray(proposed_action, dtype=np.float64).reshape(-1)
+        neutral_residual_mask: Optional[npt.NDArray[np.bool_]] = None
+        residual_base: Optional[npt.NDArray[np.float64]] = None
+        if self.residual_policy_enabled and residual_base_action is not None:
+            residual_base = np.asarray(
+                residual_base_action, dtype=np.float64
+            ).reshape(-1)
+            if residual_base.shape != proposed.shape:
+                raise ValueError(
+                    "Transformer MATD3 residual base action width does not match "
+                    "the proposed action width"
+                )
+            neutral_residual_mask = np.isclose(
+                proposed,
+                residual_base,
+                rtol=0.0,
+                atol=1.0e-7,
+            )
+            # The warm-start policy is already an operational controller.
+            # Safety may constrain residual changes, but it must not re-plan
+            # action components where the residual contributed nothing.
+            if bool(np.all(neutral_residual_mask)):
+                return residual_base.astype(float).tolist()
         projection = self._local_action_safety_adapters[index].project(
-            self._latest_raw_observations[index],
-            proposed_action,
+            self._latest_raw_observations[index], proposed
         )
+        effective_interventions = projection.interventions
+        effective_infeasible_reasons = projection.infeasible_reasons
+        executed = np.asarray(
+            projection.executed_actions, dtype=np.float64
+        ).reshape(-1)
+        if neutral_residual_mask is not None and residual_base is not None:
+            executed[neutral_residual_mask] = residual_base[neutral_residual_mask]
+            effective_interventions = tuple(
+                intervention
+                for intervention in projection.interventions
+                if not neutral_residual_mask[intervention.action_index]
+            )
+            effective_infeasible_reasons = tuple(
+                reason
+                for reason in projection.infeasible_reasons
+                if not neutral_residual_mask[reason.action_index]
+            )
         self._local_action_safety_projection_count += 1
         self._local_action_safety_intervention_count += len(
-            projection.interventions
+            effective_interventions
         )
         self._local_action_safety_infeasible_count += len(
-            projection.infeasible_reasons
+            effective_infeasible_reasons
         )
-        for intervention in projection.interventions:
+        for intervention in effective_interventions:
             for reason in intervention.reason_codes:
                 label = str(reason.value)
                 self._local_action_safety_reason_counts[label] = (
                     self._local_action_safety_reason_counts.get(label, 0) + 1
                 )
-        for reason in projection.infeasible_reasons:
+        for reason in effective_infeasible_reasons:
             label = str(reason.code.value)
             self._local_action_safety_reason_counts[label] = (
                 self._local_action_safety_reason_counts.get(label, 0) + 1
             )
-        return [float(value) for value in projection.executed_actions]
+        return executed.astype(float).tolist()
 
     def _attach_local_price_conditioning(
         self,

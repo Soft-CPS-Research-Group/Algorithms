@@ -163,6 +163,75 @@ def test_local_safety_projection_is_returned_and_stored_in_replay() -> None:
     ] == 1.0
 
 
+def test_neutral_residual_returns_warm_start_action_without_projection(
+    monkeypatch,
+) -> None:
+    agent, obs_dim = _agent(
+        hyperparameters=_residual_hyperparameters(
+            residual_storage_action_scale_multiplier=0.0,
+            residual_ev_action_scale_multiplier=0.0,
+            local_action_safety_enabled=True,
+        )
+    )
+
+    class _ConstantPolicy(torch.nn.Module):
+        def predict(self, observations, deterministic):
+            del observations, deterministic
+            return [[0.2, 0.1]]
+
+    agent._warm_start_policy = _ConstantPolicy()
+    monkeypatch.setattr(
+        agent._local_action_safety_adapters[0],
+        "project",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a neutral residual must not re-project its operational base action"
+        ),
+    )
+    observations = [np.zeros(obs_dim, dtype=np.float32)]
+    agent.set_observation_context(raw_observations=observations)
+
+    actions = agent.predict(observations, deterministic=True)
+
+    assert actions[0] == pytest.approx([0.2, 0.1])
+
+
+def test_safety_projection_preserves_action_components_with_neutral_residual(
+    monkeypatch,
+) -> None:
+    agent, obs_dim = _agent(
+        hyperparameters=_residual_hyperparameters(
+            residual_storage_action_scale_multiplier=0.2,
+            residual_ev_action_scale_multiplier=0.0,
+            local_action_safety_enabled=True,
+        )
+    )
+
+    class _ConstantPolicy(torch.nn.Module):
+        def predict(self, observations, deterministic):
+            del observations, deterministic
+            return [[0.2, 0.1]]
+
+    agent._warm_start_policy = _ConstantPolicy()
+    monkeypatch.setattr(
+        agent,
+        "_actor_unit_action",
+        lambda *_args, **_kwargs: torch.ones((1, 2), device=agent.device),
+    )
+    agent._local_action_safety_adapters[0] = SimpleNamespace(
+        project=lambda raw, proposed: SimpleNamespace(
+            executed_actions=[0.4, 0.7],
+            interventions=(),
+            infeasible_reasons=(),
+        )
+    )
+    observations = [np.zeros(obs_dim, dtype=np.float32)]
+    agent.set_observation_context(raw_observations=observations)
+
+    actions = agent.predict(observations, deterministic=True)
+
+    assert actions[0] == pytest.approx([0.4, 0.1])
+
+
 def test_local_safety_requires_raw_observation_context() -> None:
     agent, obs_dim = _agent(
         hyperparameters={"local_action_safety_enabled": True}
