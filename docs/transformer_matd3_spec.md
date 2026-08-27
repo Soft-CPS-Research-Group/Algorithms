@@ -109,10 +109,11 @@ Each segment signature contains family, type name, optional instance ID,
 ordered feature names, and an optional NFC expression. This full signature
 guards both tensor shape and feature meaning.
 
-Replay stores encoded current and successor observations, final actions,
-per-building rewards, termination flags, truncation flags, and the layout
-signature. It allocates optional current and successor base actions only for
-residual behavior. It allocates cloning actions only for BC-A.
+Replay stores encoded current and successor observations, legacy executed
+actions, explicit proposed and executed actions, per-building rewards,
+termination flags, truncation flags, and the layout signature. It allocates
+optional current base actions for residual or service-teacher behavior. It
+allocates cloning actions only for BC-A.
 
 `SignatureBucketedReplayBuffer` has one global capacity and global FIFO
 eviction. It keeps separate buckets per signature. Every learning batch:
@@ -152,9 +153,10 @@ in CA order. The actor supplies a unit correction. The controller scales that
 correction by the action span, the scheduled residual authority, and optional
 asset-type multipliers, then clips the result to action bounds.
 
-The critic and replay consume final composed actions. Replay also stores current
-and successor base actions because target-policy evaluation must reproduce the
-same composition.
+Replay, online critics, target critics, and actor policy-Q consume the same
+proposed actions. Executed actions remain available for safety, service, and
+action-path diagnostics. Replay also stores current and successor base actions
+because target-policy evaluation must reproduce the same composition.
 
 ### 5.4 Runtime adapters
 
@@ -167,8 +169,9 @@ Local action safety consumes raw simulator context and projects the action that
 will be executed. It can protect EV minimum or deadline-feasible service,
 deferrable must-start behavior, and configured electrical headroom.
 
-Residual composition, price conditioning, and local safety are operational
-runtime behavior. They are not part of the actor ONNX graph.
+Residual composition, service-teacher preservation, price conditioning, and
+local safety are operational runtime behavior. They are not part of the actor
+ONNX graph.
 
 ## 6. Learning step
 
@@ -186,14 +189,16 @@ For each actor building `i`:
    action list; all other actor actions stay detached.
 6. Actor `i` maximizes critic 1's Q. `actor_policy_loss_weight` scales this
    policy term before optional actor-only BC losses are added.
-7. Actor and target critic stacks receive soft updates with `tau`.
+7. Actor and target critic stacks receive soft updates with `tau` only after a
+   delayed actor update. The delay is based on successful critic update count.
 
 Critic gradients must not enter actor stacks. One critic's optimizer must not
 change the other critic. BC gradients must not enter critics or target stacks.
 
 ## 7. Behavior cloning
 
-Both paths default to disabled and own separate actor-only optimizers.
+Both paths default to disabled. Enabled actor-only updates use one actor
+optimizer and one coherent optimizer state.
 
 BC-A reads cloning targets from current-signature replay. It supports
 `warm_start` and `replay_action`. Configuration rejects the unimplemented
@@ -216,7 +221,7 @@ Both paths must satisfy these boundaries:
 6. Rebuild teachers from configuration; never checkpoint teacher objects.
 7. Execute no BC code when its path is disabled.
 8. Fail before RL when enabled BC-B lacks usable demonstrations.
-9. Use separate BC-A and BC-B optimizers.
+9. Use one actor optimizer for BC-A, BC-B, and policy updates.
 
 ## 8. Dynamic-topology transaction
 

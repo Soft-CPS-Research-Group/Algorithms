@@ -386,7 +386,7 @@ def test_bc_b_pretraining_changes_only_actor_stack() -> None:
     ]
 
 
-def test_bc_a_and_bc_b_use_separate_optimizers() -> None:
+def test_bc_a_and_bc_b_share_the_actor_optimizer() -> None:
     from algorithms.transformer_matd3.agent import AgentTransformerMATD3
     from tests._entity_sample_obs_names import (
         load_sample_observation_names_for_first_building,
@@ -415,7 +415,8 @@ def test_bc_a_and_bc_b_use_separate_optimizers() -> None:
 
     assert state.bc_a_optimizer is not None
     assert state.bc_b_optimizer is not None
-    assert state.bc_a_optimizer is not state.bc_b_optimizer
+    assert state.bc_a_optimizer is state.actor_optimizer
+    assert state.bc_b_optimizer is state.actor_optimizer
 
 
 def test_bc_b_zero_weight_short_circuits_before_actor_forward(monkeypatch) -> None:

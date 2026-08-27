@@ -206,6 +206,33 @@ def test_actor_and_targets_update_only_on_delayed_due_step() -> None:
     assert _changed(critic_2_target_before, agent._per_building[0].critic_2_target)
 
 
+def test_actor_delay_counts_successful_critic_updates_not_environment_steps() -> None:
+    agent, obs_dim = _make_agent(
+        buildings=1,
+        batch_size=1,
+        actor_update_interval=2,
+        minimum_successful_critic_updates_before_actor=1,
+    )
+
+    _transition(agent, obs_dim, 0)
+    assert agent.critic_update_count == 1
+    assert agent.actor_update_count == 0
+    _transition(agent, obs_dim, 1)
+
+    assert agent.critic_update_count == 2
+    assert agent.actor_update_count == 1
+    assert agent.target_update_count == 1
+
+
+def test_skipped_replay_does_not_advance_critic_update_count() -> None:
+    agent, obs_dim = _make_agent(buildings=1, batch_size=2)
+
+    _transition(agent, obs_dim, 0)
+
+    assert agent.critic_update_count == 0
+    assert agent.actor_update_count == 0
+
+
 def test_target_policy_smoothing_is_clipped_per_ca(monkeypatch) -> None:
     agent, obs_dim = _make_agent(
         buildings=1,
@@ -327,6 +354,7 @@ def test_learning_skips_actor_update_for_building_without_actions() -> None:
 
     _transition(agent, obs_dim, 0)
     _transition(agent, obs_dim, 2)
+    _transition(agent, obs_dim, 3)
 
     metrics = agent.consume_latest_training_metrics()
     assert metrics["TransformerMATD3/actor_update_performed"] == 1.0

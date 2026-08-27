@@ -50,12 +50,14 @@ action is delivered in the same order by the warm-start policy;
 position-`i` alignment holds under the shared contract
 defined in `docs/transformer_entity_controller.md`.
 
-### 8c — critic sees `final` only (F1)
+### 8c — critic sees the explicit proposed action (F1)
 
-The action injection MLP (ADR-0003c) receives the final composed
-action per CA. Legacy MATD3 `critic_action_input_mode` values
-`final_base_delta` and `final_base_delta_normalized` are not
-implemented in v1.
+The action injection MLP (ADR-0003c) receives the proposed action per CA.
+This is the actor output after residual composition and service-teacher
+replacement, before local safety projection. Replay stores both proposed and
+executed actions. The executed action is used for environment outcomes and
+diagnostics. Legacy MATD3 `critic_action_input_mode` values `final_base_delta`
+and `final_base_delta_normalized` are not implemented in v1.
 
 ### 8d — target-policy smoothing per-CA
 
@@ -97,7 +99,7 @@ non-residual, non-BC configs.
 
 ## Future improvements
 
-- 8c support `final_base_delta` and `final_base_delta_normalized` by
+- 8c support alternative action domains by
   expanding the injection MLP input from `(d_model + 1)` to
   `(d_model + 3)`.
 - 8b base-conditioned actor (P2): inject base action as a CA-token

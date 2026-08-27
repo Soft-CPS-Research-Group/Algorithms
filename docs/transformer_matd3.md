@@ -173,7 +173,14 @@ state. Any failed attachment restores the previous controller and random state.
 Set `residual_policy_enabled: true` and provide
 `warm_start_policy_name`. The warm-start policy supplies a base action. The
 Transformer actor supplies a bounded correction scaled by the configured
-authority schedule. The critic observes the final composed action.
+authority schedule. Replay, online critics, target critics, and actor policy-Q
+all use the same proposed action. Runtime safety and service-teacher adapters
+may produce a different executed action.
+
+Set `local_action_safety_service_teacher_enabled: true` to preserve EV and
+deferrable actions from the warm-start teacher. Set
+`local_action_safety_service_teacher_eval_enabled: true` to apply the same
+preservation during deterministic evaluation.
 
 ### Replay behavior cloning (BC-A)
 
@@ -189,8 +196,8 @@ Enable `behavior_cloning.demonstration_based`. BC-B collects deterministic
 pretrains the actor before RL. It can continue as an auxiliary actor loss.
 Pretraining fails before RL when a building has no compatible demonstrations.
 
-BC-A and BC-B have separate optimizers. Neither path updates critics, targets,
-normalizer statistics, or replay state.
+BC-A and BC-B use the actor optimizer for actor-only updates. Neither path
+updates critics, targets, normalizer statistics, or replay state.
 
 ### Local action safety and price conditioning
 

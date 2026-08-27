@@ -20,6 +20,8 @@ from algorithms.agents.maddpg_agent import _log_torch_runtime, _select_torch_dev
 from algorithms.utils.citylearn_local_action_safety import (
     CityLearnLocalSafetyAdapter,
     CityLearnSafetyConfig,
+    preserve_teacher_service_with_storage_fallback,
+    replace_service_actions_with_teacher,
 )
 from algorithms.utils.price_multiplier_adapter import (
     PriceMultiplierObservationAdapter,
@@ -167,6 +169,9 @@ class AgentTransformerMATD3(BaseAgent):
         self.actor_update_interval = int(
             hyperparameters.get("actor_update_interval", 2)
         )
+        self.minimum_successful_critic_updates_before_actor = int(
+            hyperparameters.get("minimum_successful_critic_updates_before_actor", 1)
+        )
         self.actor_policy_loss_weight = float(
             hyperparameters.get("actor_policy_loss_weight", 1.0)
         )
@@ -236,6 +241,15 @@ class AgentTransformerMATD3(BaseAgent):
         )
         self._local_action_safety_enabled = bool(
             hyperparameters.get("local_action_safety_enabled", False)
+        )
+        self._local_action_safety_service_teacher_enabled = bool(
+            hyperparameters.get("local_action_safety_service_teacher_enabled", False)
+        )
+        self._local_action_safety_service_teacher_eval_enabled = bool(
+            hyperparameters.get(
+                "local_action_safety_service_teacher_eval_enabled",
+                self._local_action_safety_service_teacher_enabled,
+            )
         )
         self._local_action_safety_runtime_only_export = bool(
             hyperparameters.get("local_action_safety_runtime_only_export", False)
@@ -378,6 +392,7 @@ class AgentTransformerMATD3(BaseAgent):
             CityLearnLocalSafetyAdapter
         ] = []
         self._local_action_safety_projection_count = 0
+        self._local_action_safety_opportunity_count = 0
         self._local_action_safety_intervention_count = 0
         self._local_action_safety_infeasible_count = 0
         self._local_action_safety_reason_counts: Dict[str, int] = {}
@@ -385,6 +400,19 @@ class AgentTransformerMATD3(BaseAgent):
         self._local_price_context_non_neutral = False
         self._local_price_clipping_count = 0
         self._last_residual_action_scale = 0.0
+        self.critic_update_count = 0
+        self.actor_update_count = 0
+        self.target_update_count = 0
+        self.bc_main_update_count = 0
+        self.bc_extra_update_count = 0
+        self.bc_offline_update_count = 0
+        self._effective_exploration_action_count = 0
+        self._successful_sample_count = 0
+        self._action_diagnostic_totals: Dict[str, float] = {}
+        self._last_base_actions: Optional[List[List[float]]] = None
+        self._last_proposed_actions: Optional[List[List[float]]] = None
+        self._last_executed_actions: Optional[List[List[float]]] = None
+        self._last_service_teacher_applied = False
         self._current_episode = 0
         self._current_episode_is_training = False
         self._bc_b_pretraining_complete = False
@@ -392,6 +420,8 @@ class AgentTransformerMATD3(BaseAgent):
         self.requires_raw_observation_context = bool(
             self.residual_policy_enabled
             or self._local_action_safety_enabled
+            or self._local_action_safety_service_teacher_enabled
+            or self._local_action_safety_service_teacher_eval_enabled
             or (self.bc_a_enabled and self.bc_a_teacher == "warm_start")
             or self._bc_b is not None
         )
@@ -656,6 +686,19 @@ class AgentTransformerMATD3(BaseAgent):
         self.reward_norm_mean = 0.0
         self.reward_norm_m2 = 0.0
         self.bc_a_offline_pretrain_completed_steps = 0
+        self.critic_update_count = 0
+        self.actor_update_count = 0
+        self.target_update_count = 0
+        self.bc_main_update_count = 0
+        self.bc_extra_update_count = 0
+        self.bc_offline_update_count = 0
+        self._effective_exploration_action_count = 0
+        self._successful_sample_count = 0
+        self._action_diagnostic_totals = {}
+        self._last_base_actions = None
+        self._last_proposed_actions = None
+        self._last_executed_actions = None
+        self._last_service_teacher_applied = False
         self._bc_b_pretraining_complete = False
         self._bc_b_actor_training_step = 0
         self._latest_training_metrics = {}
@@ -665,6 +708,11 @@ class AgentTransformerMATD3(BaseAgent):
         self._last_warm_start_policy_actions = None
         self._last_warm_start_next_policy_actions = None
         self._latest_external_cloning_actions = None
+        self._local_action_safety_projection_count = 0
+        self._local_action_safety_opportunity_count = 0
+        self._local_action_safety_intervention_count = 0
+        self._local_action_safety_infeasible_count = 0
+        self._local_action_safety_reason_counts = {}
 
     def set_observation_context(
         self,
@@ -762,10 +810,14 @@ class AgentTransformerMATD3(BaseAgent):
             teacher_actions = self._bc_b.compute_teacher_actions(
                 teacher_observations
             )
-            return [
+            executed_actions = [
                 self._apply_local_action_safety(index, action)
                 for index, action in enumerate(teacher_actions)
             ]
+            self._last_base_actions = deepcopy(teacher_actions)
+            self._last_proposed_actions = deepcopy(teacher_actions)
+            self._last_executed_actions = deepcopy(executed_actions)
+            return executed_actions
         observations = self._apply_local_price_context(observations, context)
         self._latest_conditioned_observations = self._copied_vectors(observations)
         self._latest_price_contexts = (
@@ -786,7 +838,7 @@ class AgentTransformerMATD3(BaseAgent):
                 "context before predict"
             )
         self._last_warm_start_policy_actions = deepcopy(base_actions)
-        result: List[List[float]] = []
+        raw_proposed_actions: List[List[float]] = []
         for index, (state, observation) in enumerate(
             zip(self._per_building, observations)
         ):
@@ -815,22 +867,176 @@ class AgentTransformerMATD3(BaseAgent):
             finally:
                 for module, training in zip(actor_modules, prior_modes):
                     module.train(training)
-            executed = action.squeeze(0).cpu().tolist()
+            raw_proposed_actions.append(action.squeeze(0).cpu().tolist())
+
+        service_teacher_active = bool(
+            self._local_action_safety_service_teacher_enabled
+            and (
+                not use_deterministic
+                or self._local_action_safety_service_teacher_eval_enabled
+            )
+        )
+        self._last_service_teacher_applied = False
+        proposed_actions = raw_proposed_actions
+        if service_teacher_active:
+            if base_actions is None:
+                raise RuntimeError(
+                    "Transformer MATD3 service-teacher safety requires a "
+                    "configured warm_start_policy."
+                )
+            proposed_actions = replace_service_actions_with_teacher(
+                action_names=[state.action_names for state in self._per_building],
+                proposed_actions=raw_proposed_actions,
+                teacher_actions=base_actions,
+            )
+            self._last_service_teacher_applied = True
+
+        result: List[List[float]] = []
+        for index, proposed in enumerate(proposed_actions):
             executed = self._apply_local_action_safety(
                 index,
-                executed,
+                proposed,
                 residual_base_action=(
                     None if base_actions is None else base_actions[index]
                 ),
+                storage_fallback_action=(
+                    None if base_actions is None else base_actions[index]
+                ),
+                service_teacher_active=service_teacher_active,
             )
             result.append(executed)
+        self._last_base_actions = deepcopy(base_actions)
+        self._last_proposed_actions = deepcopy(proposed_actions)
+        self._last_executed_actions = deepcopy(result)
+        self._record_action_diagnostics(
+            base_actions=base_actions,
+            proposed_actions=proposed_actions,
+            executed_actions=result,
+            raw_proposed_actions=raw_proposed_actions,
+            exploration=not use_deterministic,
+        )
+        residual_authority = self._residual_action_effective_scale()
         if not use_deterministic:
             self.exploration_step += 1
-            self.exploration_sigma = max(
-                self.min_sigma,
-                self.exploration_sigma * self.sigma_decay,
-            )
+            if not self.residual_policy_enabled or residual_authority > 0.0:
+                self.exploration_sigma = max(
+                    self.min_sigma,
+                    self.exploration_sigma * self.sigma_decay,
+                )
         return result
+
+    def _record_action_diagnostics(
+        self,
+        *,
+        base_actions: Optional[Sequence[Sequence[float]]],
+        proposed_actions: Sequence[Sequence[float]],
+        executed_actions: Sequence[Sequence[float]],
+        raw_proposed_actions: Sequence[Sequence[float]],
+        exploration: bool,
+    ) -> None:
+        totals = self._action_diagnostic_totals
+
+        def add(name: str, value: float = 1.0) -> None:
+            totals[name] = totals.get(name, 0.0) + float(value)
+
+        action_count = 0
+        for index, (proposed, executed, raw_proposed) in enumerate(
+            zip(proposed_actions, executed_actions, raw_proposed_actions)
+        ):
+            base = None if base_actions is None else base_actions[index]
+            proposed_array = np.asarray(proposed, dtype=np.float64).reshape(-1)
+            executed_array = np.asarray(executed, dtype=np.float64).reshape(-1)
+            raw_array = np.asarray(raw_proposed, dtype=np.float64).reshape(-1)
+            if not (
+                proposed_array.shape == executed_array.shape == raw_array.shape
+            ):
+                raise ValueError("action diagnostics received misaligned vectors")
+            for action_index, action_name in enumerate(
+                self._per_building[index].action_names
+            ):
+                category = "other"
+                if self._is_ev_action_name(action_name):
+                    category = "ev"
+                elif self._is_storage_action_name(action_name):
+                    category = "storage"
+                elif self._is_deferrable_action_name(action_name):
+                    category = "deferrable"
+                action_count += 1
+                add(f"action_opportunities_{category}")
+                proposed_value = proposed_array[action_index]
+                executed_value = executed_array[action_index]
+                raw_value = raw_array[action_index]
+                add(f"proposed_executed_abs_delta_{category}_sum", abs(executed_value - proposed_value))
+                add(
+                    f"proposed_executed_abs_delta_{category}_max",
+                    abs(executed_value - proposed_value),
+                )
+                if base is not None:
+                    base_value = float(np.asarray(base, dtype=np.float64).reshape(-1)[action_index])
+                    add(
+                        f"base_proposed_abs_delta_{category}_sum",
+                        abs(proposed_value - base_value),
+                    )
+                    add(
+                        f"base_proposed_abs_delta_{category}_max",
+                        abs(proposed_value - base_value),
+                    )
+                    if self._is_ev_action_name(action_name) and base_value <= 0.0:
+                        if raw_value > 0.0:
+                            add("ev_positive_proposal_teacher_zero")
+                        if raw_value > 0.0 and proposed_value <= 0.0:
+                            add("ev_service_teacher_suppressed_positive_proposal")
+                        if executed_value > 0.0:
+                            add("ev_activation_count")
+                        if proposed_value > 0.0:
+                            add("ev_activation_deadband_crossing")
+                if self._is_ev_action_name(action_name):
+                    if abs(executed_value - proposed_value) > 1.0e-9:
+                        add("ev_executed_proposal_difference_count")
+                    if executed_value > 0.0:
+                        building_id = self._per_building[index].building_id
+                        add(f"ev_activation_count_{building_id}")
+                        raw_observation = (
+                            None
+                            if self._latest_raw_observations is None
+                            else self._latest_raw_observations[index]
+                        )
+                        if raw_observation is not None:
+                            names = self._attached_names[index][0]
+                            charger_name = str(action_name).removeprefix(
+                                "electric_vehicle_storage_"
+                            )
+                            power = 0.0
+                            for observation_index, observation_name in enumerate(names):
+                                if observation_name.endswith(
+                                    f"{charger_name}::max_charging_power_kw"
+                                ):
+                                    power = max(
+                                        float(raw_observation[observation_index]), 0.0
+                                    )
+                                    break
+                            step_hours = (
+                                getattr(
+                                    self._local_action_safety_adapters[index],
+                                    "step_hours",
+                                    1.0,
+                                )
+                                if index < len(self._local_action_safety_adapters)
+                                else 1.0
+                            )
+                            add(
+                                f"ev_energy_kwh_{building_id}",
+                                max(executed_value, 0.0) * power * step_hours,
+                            )
+        add("action_opportunities", action_count)
+        if exploration and (
+            base_actions is None
+            or any(
+                not np.allclose(raw, base, atol=1.0e-9, rtol=0.0)
+                for raw, base in zip(raw_proposed_actions, base_actions)
+            )
+        ):
+            self._effective_exploration_action_count += 1
 
     def update(
         self,
@@ -883,6 +1089,26 @@ class AgentTransformerMATD3(BaseAgent):
             actions,
             base_actions=behavior_actions,
         )
+        base_actions = (
+            deepcopy(self._last_base_actions)
+            if self._last_base_actions is not None
+            else (
+                deepcopy(behavior_actions)
+                if self.residual_policy_enabled
+                or self._local_action_safety_service_teacher_enabled
+                else None
+            )
+        )
+        proposed_actions = (
+            deepcopy(self._last_proposed_actions)
+            if self._last_proposed_actions is not None
+            else list(actions)
+        )
+        executed_actions = (
+            deepcopy(self._last_executed_actions)
+            if self._last_executed_actions is not None
+            else list(actions)
+        )
         conditioned_observations = self._transition_conditioned_observations
         if conditioned_observations is None and self._latest_conditioned_observations is not None:
             conditioned_observations = self._latest_conditioned_observations
@@ -898,7 +1124,14 @@ class AgentTransformerMATD3(BaseAgent):
                 if conditioned_observations is not None
                 else observations
             ),
-            "actions": self._copied_vectors(actions),
+            "actions": self._copied_vectors(executed_actions),
+            "proposed_actions": self._copied_vectors(proposed_actions),
+            "executed_actions": self._copied_vectors(executed_actions),
+            "base_actions": (
+                None
+                if base_actions is None
+                else self._copied_vectors(base_actions)
+            ),
             "rewards": np.asarray(rewards, dtype=np.float32).reshape(-1).copy(),
             "next_observations": self._copied_vectors(conditioned_next_observations),
             "terminated": self._done_vector(terminated),
@@ -947,6 +1180,7 @@ class AgentTransformerMATD3(BaseAgent):
         if should_profile:
             profile_start = time.perf_counter()
         batch = self.replay_buffer.sample(self._layout_signature, self.batch_size)
+        self._successful_sample_count += 1
         if should_profile:
             profile_metrics[f"{_METRIC_PREFIX}runtime_replay_sample_seconds"] = (
                 time.perf_counter() - profile_start
@@ -1013,9 +1247,34 @@ class AgentTransformerMATD3(BaseAgent):
         cloning_actions = self._transition_cloning_actions(
             actions, base_actions=behavior_actions
         )
+        base_actions = (
+            deepcopy(self._last_base_actions)
+            if self._last_base_actions is not None
+            else deepcopy(behavior_actions)
+            if self.residual_policy_enabled
+            or self._local_action_safety_service_teacher_enabled
+            else None
+        )
+        proposed_actions = (
+            deepcopy(self._last_proposed_actions)
+            if self._last_proposed_actions is not None
+            else list(actions)
+        )
+        executed_actions = (
+            deepcopy(self._last_executed_actions)
+            if self._last_executed_actions is not None
+            else list(actions)
+        )
         transition = {
             "observations": self._copied_vectors(observations),
-            "actions": self._copied_vectors(actions),
+            "actions": self._copied_vectors(executed_actions),
+            "proposed_actions": self._copied_vectors(proposed_actions),
+            "executed_actions": self._copied_vectors(executed_actions),
+            "base_actions": (
+                None
+                if base_actions is None
+                else self._copied_vectors(base_actions)
+            ),
             "rewards": np.asarray(rewards, dtype=np.float32).reshape(-1).copy(),
             # A topology boundary has no shape-compatible successor. The old
             # observation is a storage placeholder and cannot bootstrap.
@@ -1142,6 +1401,10 @@ class AgentTransformerMATD3(BaseAgent):
                 "deployable": deployable,
                 "requires_runtime_residual": requires_runtime_residual,
                 "requires_runtime_local_action_safety": requires_runtime_safety,
+                "requires_runtime_service_teacher": bool(
+                    self._local_action_safety_service_teacher_enabled
+                    and self._local_action_safety_service_teacher_eval_enabled
+                ),
                 "requires_runtime_local_price_conditioning": requires_runtime_price,
             }
             artifacts.append(
@@ -1216,11 +1479,17 @@ class AgentTransformerMATD3(BaseAgent):
             payload[f"actor_optimizer_state_dict_{index}"] = (
                 state.actor_optimizer.state_dict()
             )
-            if state.bc_a_optimizer is not None:
+            if (
+                state.bc_a_optimizer is not None
+                and state.bc_a_optimizer is not state.actor_optimizer
+            ):
                 payload[f"bc_a_optimizer_state_dict_{index}"] = (
                     state.bc_a_optimizer.state_dict()
                 )
-            if state.bc_b_optimizer is not None:
+            if (
+                state.bc_b_optimizer is not None
+                and state.bc_b_optimizer is not state.actor_optimizer
+            ):
                 payload[f"bc_b_optimizer_state_dict_{index}"] = (
                     state.bc_b_optimizer.state_dict()
                 )
@@ -1238,6 +1507,18 @@ class AgentTransformerMATD3(BaseAgent):
                     "exploration_state": {
                         "sigma": float(self.exploration_sigma),
                         "exploration_step": int(self.exploration_step),
+                    },
+                    "training_counters": {
+                        "critic_update_count": int(self.critic_update_count),
+                        "actor_update_count": int(self.actor_update_count),
+                        "target_update_count": int(self.target_update_count),
+                        "bc_main_update_count": int(self.bc_main_update_count),
+                        "bc_extra_update_count": int(self.bc_extra_update_count),
+                        "bc_offline_update_count": int(self.bc_offline_update_count),
+                        "effective_exploration_action_count": int(
+                            self._effective_exploration_action_count
+                        ),
+                        "successful_sample_count": int(self._successful_sample_count),
                     },
                     "reward_normalization_state": {
                         "enabled": self.reward_normalization_enabled,
@@ -1338,7 +1619,7 @@ class AgentTransformerMATD3(BaseAgent):
                 self._move_optimizer_state_to_device(state.actor_optimizer)
                 for bc_name in ("bc_a", "bc_b"):
                     optimizer = getattr(state, f"{bc_name}_optimizer")
-                    if optimizer is not None:
+                    if optimizer is not None and optimizer is not state.actor_optimizer:
                         optimizer.load_state_dict(
                             payload[f"{bc_name}_optimizer_state_dict_{index}"]
                         )
@@ -1354,6 +1635,18 @@ class AgentTransformerMATD3(BaseAgent):
             exploration = payload["exploration_state"]
             self.exploration_sigma = float(exploration["sigma"])
             self.exploration_step = int(exploration["exploration_step"])
+            counters = payload["training_counters"]
+            for name in (
+                "critic_update_count",
+                "actor_update_count",
+                "target_update_count",
+                "bc_main_update_count",
+                "bc_extra_update_count",
+                "bc_offline_update_count",
+                "effective_exploration_action_count",
+                "successful_sample_count",
+            ):
+                setattr(self, name, int(counters[name]))
             reward = payload["reward_normalization_state"]
             self.reward_norm_count = int(reward["count"])
             self.reward_norm_mean = float(reward["mean"])
@@ -1415,6 +1708,21 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}actor_update_interval": float(
                 self.actor_update_interval
             ),
+            f"{_METRIC_PREFIX}minimum_successful_critic_updates_before_actor": float(
+                self.minimum_successful_critic_updates_before_actor
+            ),
+            f"{_METRIC_PREFIX}critic_update_count": float(self.critic_update_count),
+            f"{_METRIC_PREFIX}actor_update_count": float(self.actor_update_count),
+            f"{_METRIC_PREFIX}target_update_count": float(self.target_update_count),
+            f"{_METRIC_PREFIX}bc_main_update_count": float(self.bc_main_update_count),
+            f"{_METRIC_PREFIX}bc_extra_update_count": float(self.bc_extra_update_count),
+            f"{_METRIC_PREFIX}bc_offline_update_count": float(self.bc_offline_update_count),
+            f"{_METRIC_PREFIX}effective_exploration_action_count": float(
+                self._effective_exploration_action_count
+            ),
+            f"{_METRIC_PREFIX}successful_sample_count": float(
+                self._successful_sample_count
+            ),
             f"{_METRIC_PREFIX}residual_policy_enabled": float(
                 self.residual_policy_enabled
             ),
@@ -1423,6 +1731,15 @@ class AgentTransformerMATD3(BaseAgent):
             ),
             f"{_METRIC_PREFIX}local_action_safety_enabled": float(
                 self._local_action_safety_enabled
+            ),
+            f"{_METRIC_PREFIX}local_action_safety_service_teacher_enabled": float(
+                self._local_action_safety_service_teacher_enabled
+            ),
+            f"{_METRIC_PREFIX}local_action_safety_service_teacher_eval_enabled": float(
+                self._local_action_safety_service_teacher_eval_enabled
+            ),
+            f"{_METRIC_PREFIX}local_action_safety_service_teacher_applied": float(
+                self._last_service_teacher_applied
             ),
             f"{_METRIC_PREFIX}local_price_conditioning_enabled": float(
                 self._local_price_conditioning_enabled
@@ -1434,11 +1751,22 @@ class AgentTransformerMATD3(BaseAgent):
                     f"{_METRIC_PREFIX}local_action_safety_projections": float(
                         self._local_action_safety_projection_count
                     ),
+                    f"{_METRIC_PREFIX}local_action_safety_opportunities": float(
+                        self._local_action_safety_opportunity_count
+                    ),
                     f"{_METRIC_PREFIX}local_action_safety_interventions": float(
                         self._local_action_safety_intervention_count
                     ),
                     f"{_METRIC_PREFIX}local_action_safety_infeasible": float(
                         self._local_action_safety_infeasible_count
+                    ),
+                    f"{_METRIC_PREFIX}local_action_safety_projection_rate": float(
+                        self._local_action_safety_projection_count
+                        / max(self._local_action_safety_opportunity_count, 1)
+                    ),
+                    f"{_METRIC_PREFIX}local_action_safety_interventions_per_opportunity": float(
+                        self._local_action_safety_intervention_count
+                        / max(self._local_action_safety_opportunity_count, 1)
                     ),
                 }
             )
@@ -1463,6 +1791,48 @@ class AgentTransformerMATD3(BaseAgent):
             )
         metrics.update(self._bc_b_metrics())
         metrics.update(self._latest_training_metrics)
+        for category in ("ev", "storage", "deferrable", "other"):
+            action_count = self._action_diagnostic_totals.get(
+                f"action_opportunities_{category}", 0.0
+            )
+            for direction in ("base_proposed", "proposed_executed"):
+                total = self._action_diagnostic_totals.get(
+                    f"{direction}_abs_delta_{category}_sum", 0.0
+                )
+                key = f"{_METRIC_PREFIX}{direction}_abs_delta_{category}_mean"
+                metrics[key] = float(total / action_count) if action_count else 0.0
+                metrics[
+                    f"{_METRIC_PREFIX}{direction}_abs_delta_{category}_max"
+                ] = float(
+                    self._action_diagnostic_totals.get(
+                        f"{direction}_abs_delta_{category}_max", 0.0
+                    )
+                )
+            if category != "other":
+                metrics[
+                    f"{_METRIC_PREFIX}proposed_base_abs_delta_{category}_mean"
+                ] = metrics[
+                    f"{_METRIC_PREFIX}base_proposed_abs_delta_{category}_mean"
+                ]
+                metrics[
+                    f"{_METRIC_PREFIX}proposed_base_abs_delta_{category}_max"
+                ] = metrics[
+                    f"{_METRIC_PREFIX}base_proposed_abs_delta_{category}_max"
+                ]
+                metrics[
+                    f"{_METRIC_PREFIX}executed_proposed_abs_delta_{category}_mean"
+                ] = metrics[
+                    f"{_METRIC_PREFIX}proposed_executed_abs_delta_{category}_mean"
+                ]
+                metrics[
+                    f"{_METRIC_PREFIX}executed_proposed_abs_delta_{category}_max"
+                ] = metrics[
+                    f"{_METRIC_PREFIX}proposed_executed_abs_delta_{category}_max"
+                ]
+        for name, value in self._action_diagnostic_totals.items():
+            if name.endswith("_sum") or name.endswith("_max") or name == "action_opportunities":
+                continue
+            metrics[f"{_METRIC_PREFIX}{name}"] = float(value)
         return metrics
 
     def _learn(
@@ -1480,12 +1850,27 @@ class AgentTransformerMATD3(BaseAgent):
         next_observations = [
             self._tensor(value) for value in batch.next_observations
         ]
-        actions = [self._tensor(value) for value in batch.actions]
+        proposed_actions = [
+            self._tensor(value)
+            for value in (batch.proposed_actions or batch.actions)
+        ]
+        executed_actions = [
+            self._tensor(value)
+            for value in (batch.executed_actions or batch.actions)
+        ]
+        actions = proposed_actions
+        base_actions = (
+            None
+            if batch.base_actions is None
+            else [self._tensor(value) for value in batch.base_actions]
+        )
         behavior_actions = (
             None
             if batch.behavior_actions is None
             else [self._tensor(value) for value in batch.behavior_actions]
         )
+        if behavior_actions is None and base_actions is not None:
+            behavior_actions = base_actions
         next_behavior_actions = (
             None
             if batch.next_behavior_actions is None
@@ -1572,10 +1957,16 @@ class AgentTransformerMATD3(BaseAgent):
         expected_2_values = []
         td_values = []
         gap_values = []
+        td_abs_tensors: List[torch.Tensor] = []
+        gap_tensors: List[torch.Tensor] = []
         critic_grad_norms = []
         for state, target in zip(self._per_building, targets):
-            expected_1 = state.critic_1(observations, self._layouts, actions)
-            expected_2 = state.critic_2(observations, self._layouts, actions)
+            expected_1 = state.critic_1(
+                observations, self._layouts, proposed_actions
+            )
+            expected_2 = state.critic_2(
+                observations, self._layouts, proposed_actions
+            )
             loss_1 = nn.functional.mse_loss(expected_1, target)
             loss_2 = nn.functional.mse_loss(expected_2, target)
             state.critic_1_optimizer.zero_grad(set_to_none=True)
@@ -1594,6 +1985,10 @@ class AgentTransformerMATD3(BaseAgent):
             gap_values.append(
                 float((expected_1.detach() - expected_2.detach()).abs().mean())
             )
+            td_abs_tensors.append((expected_1.detach() - target).abs().reshape(-1))
+            gap_tensors.append(
+                (expected_1.detach() - expected_2.detach()).abs().reshape(-1)
+            )
             critic_grad_norms.extend((float(grad_1), float(grad_2)))
         if should_profile:
             runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_critic_update_seconds"] = (
@@ -1601,7 +1996,11 @@ class AgentTransformerMATD3(BaseAgent):
             )
             phase_start = time.perf_counter()
 
-        actor_update_due = global_learning_step % self.actor_update_interval == 0
+        self.critic_update_count += 1
+        actor_update_due = bool(
+            self.critic_update_count >= self.minimum_successful_critic_updates_before_actor
+            and self.critic_update_count % self.actor_update_interval == 0
+        )
         actor_losses: List[float] = []
         actor_policy_losses: List[float] = []
         actor_bc_losses: List[float] = []
@@ -1612,6 +2011,8 @@ class AgentTransformerMATD3(BaseAgent):
             "other": [],
         }
         actor_q_abs: List[float] = []
+        policy_q_values: List[torch.Tensor] = []
+        replay_q_values: List[torch.Tensor] = []
         actor_grad_norms: List[float] = []
         bc_weight = self._bc_a_effective_weight(global_learning_step)
         if actor_update_due:
@@ -1693,7 +2094,12 @@ class AgentTransformerMATD3(BaseAgent):
                 actor_policy_losses.append(float(policy_loss.detach()))
                 actor_bc_losses.append(float(bc_loss.detach()))
                 actor_q_abs.append(float(q_policy.detach().abs().mean()))
+                policy_q_values.append(q_policy.detach().reshape(-1))
+                replay_q_values.append(expected_1_values[index].reshape(-1))
                 actor_grad_norms.append(float(actor_grad))
+            if actor_losses:
+                self.actor_update_count += 1
+                self.bc_main_update_count += 1
         if should_profile:
             runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_actor_update_seconds"] = (
                 time.perf_counter() - phase_start
@@ -1719,13 +2125,14 @@ class AgentTransformerMATD3(BaseAgent):
                 time.perf_counter() - phase_start
             )
             phase_start = time.perf_counter()
-        if actor_update_due and update_target_step:
+        if actor_update_due and actor_losses and update_target_step:
             for state in self._per_building:
                 self._soft_update(state.tokenizer, state.tokenizer_target)
                 self._soft_update(state.backbone, state.backbone_target)
                 self._soft_update(state.actor, state.actor_target)
                 self._soft_update(state.critic_1, state.critic_1_target)
                 self._soft_update(state.critic_2, state.critic_2_target)
+            self.target_update_count += 1
         if should_profile:
             runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_target_update_seconds"] = (
                 time.perf_counter() - phase_start
@@ -1738,6 +2145,27 @@ class AgentTransformerMATD3(BaseAgent):
             [value.reshape(-1) for value in expected_2_values]
         )
         target_flat = torch.cat([value.reshape(-1) for value in targets])
+        td_flat = torch.cat(td_abs_tensors) if td_abs_tensors else target_flat.new_zeros(1)
+        gap_flat = torch.cat(gap_tensors) if gap_tensors else target_flat.new_zeros(1)
+        policy_q_flat = (
+            torch.cat(policy_q_values)
+            if policy_q_values
+            else target_flat.new_zeros(1)
+        )
+        replay_q_flat = (
+            torch.cat(replay_q_values)
+            if replay_q_values
+            else target_flat.new_zeros(1)
+        )
+        critic_grad_array = np.asarray(critic_grad_norms, dtype=np.float64)
+        actor_grad_array = np.asarray(actor_grad_norms, dtype=np.float64)
+
+        def percentile(values: torch.Tensor, quantile: float) -> float:
+            return float(torch.quantile(values.float(), quantile).item())
+
+        def array_percentile(values: np.ndarray, quantile: float) -> float:
+            return float(np.percentile(values, quantile)) if values.size else 0.0
+
         self._latest_training_metrics = {
             f"{_METRIC_PREFIX}critic_1_loss_mean": float(np.mean(critic_1_losses)),
             f"{_METRIC_PREFIX}critic_2_loss_mean": float(np.mean(critic_2_losses)),
@@ -1746,8 +2174,23 @@ class AgentTransformerMATD3(BaseAgent):
             ),
             f"{_METRIC_PREFIX}critic_td_abs_mean": float(np.mean(td_values)),
             f"{_METRIC_PREFIX}critic_gap_abs_mean": float(np.mean(gap_values)),
+            f"{_METRIC_PREFIX}critic_td_abs_p95": percentile(td_flat, 0.95),
+            f"{_METRIC_PREFIX}critic_td_abs_max": float(td_flat.max()),
+            f"{_METRIC_PREFIX}critic_gap_abs_p95": percentile(gap_flat, 0.95),
+            f"{_METRIC_PREFIX}critic_gap_abs_max": float(gap_flat.max()),
             f"{_METRIC_PREFIX}critic_grad_norm_mean": float(
                 np.mean(critic_grad_norms)
+            ),
+            f"{_METRIC_PREFIX}critic_grad_norm_p95": array_percentile(
+                critic_grad_array, 95
+            ),
+            f"{_METRIC_PREFIX}critic_grad_norm_max": float(
+                critic_grad_array.max() if critic_grad_array.size else 0.0
+            ),
+            f"{_METRIC_PREFIX}critic_grad_clip_fraction": float(
+                np.mean(critic_grad_array > self.max_grad_norm)
+                if critic_grad_array.size
+                else 0.0
             ),
             f"{_METRIC_PREFIX}q1_expected_mean": float(expected_1_flat.mean()),
             f"{_METRIC_PREFIX}q2_expected_mean": float(expected_2_flat.mean()),
@@ -1755,7 +2198,24 @@ class AgentTransformerMATD3(BaseAgent):
                 torch.minimum(expected_1_flat, expected_2_flat).mean()
             ),
             f"{_METRIC_PREFIX}q_target_mean": float(target_flat.mean()),
+            f"{_METRIC_PREFIX}q_target_std": float(target_flat.std(unbiased=False)),
+            f"{_METRIC_PREFIX}q_target_p05": percentile(target_flat, 0.05),
+            f"{_METRIC_PREFIX}q_target_p95": percentile(target_flat, 0.95),
+            f"{_METRIC_PREFIX}q_target_min": float(target_flat.min()),
+            f"{_METRIC_PREFIX}q_target_max": float(target_flat.max()),
+            f"{_METRIC_PREFIX}replay_action_q_mean": float(replay_q_flat.mean()),
+            f"{_METRIC_PREFIX}replay_action_q_abs_mean": float(replay_q_flat.abs().mean()),
+            f"{_METRIC_PREFIX}policy_action_q_mean": float(policy_q_flat.mean()),
+            f"{_METRIC_PREFIX}policy_action_q_abs_mean": float(policy_q_flat.abs().mean()),
+            f"{_METRIC_PREFIX}policy_replay_q_abs_gap": float(
+                (policy_q_flat - replay_q_flat).abs().mean()
+            ),
             f"{_METRIC_PREFIX}actor_update_performed": float(bool(actor_losses)),
+            f"{_METRIC_PREFIX}actor_skip_critic_warmup": float(
+                not actor_update_due
+                and self.critic_update_count
+                < self.minimum_successful_critic_updates_before_actor
+            ),
             f"{_METRIC_PREFIX}actor_loss_mean": self._mean_or_zero(actor_losses),
             f"{_METRIC_PREFIX}actor_policy_loss_mean": self._mean_or_zero(
                 actor_policy_losses
@@ -1768,6 +2228,26 @@ class AgentTransformerMATD3(BaseAgent):
             ),
             f"{_METRIC_PREFIX}actor_grad_norm_mean": self._mean_or_zero(
                 actor_grad_norms
+            ),
+            f"{_METRIC_PREFIX}actor_grad_norm_p95": array_percentile(
+                actor_grad_array, 95
+            ),
+            f"{_METRIC_PREFIX}actor_grad_norm_max": float(
+                actor_grad_array.max() if actor_grad_array.size else 0.0
+            ),
+            f"{_METRIC_PREFIX}actor_grad_clip_fraction": float(
+                np.mean(actor_grad_array > self.max_grad_norm)
+                if actor_grad_array.size
+                else 0.0
+            ),
+            f"{_METRIC_PREFIX}actor_unit_output_saturation_fraction": self._actor_saturation_fraction(
+                observations
+            ),
+            f"{_METRIC_PREFIX}actor_unit_output_near_minus_one_fraction": self._actor_unit_output_fraction(
+                observations, upper=False
+            ),
+            f"{_METRIC_PREFIX}actor_unit_output_near_plus_one_fraction": self._actor_unit_output_fraction(
+                observations, upper=True
             ),
             f"{_METRIC_PREFIX}reward_raw_mean": float(raw_rewards.mean()),
             f"{_METRIC_PREFIX}reward_train_mean": float(train_rewards.mean()),
@@ -1802,6 +2282,12 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}exploration_sigma": float(self.exploration_sigma),
             f"{_METRIC_PREFIX}exploration_step": float(self.exploration_step),
             f"{_METRIC_PREFIX}training_step_time": time.perf_counter() - started,
+            f"{_METRIC_PREFIX}critic_update_count": float(self.critic_update_count),
+            f"{_METRIC_PREFIX}actor_update_count": float(self.actor_update_count),
+            f"{_METRIC_PREFIX}target_update_count": float(self.target_update_count),
+            f"{_METRIC_PREFIX}bc_main_update_count": float(self.bc_main_update_count),
+            f"{_METRIC_PREFIX}bc_extra_update_count": float(self.bc_extra_update_count),
+            f"{_METRIC_PREFIX}bc_offline_update_count": float(self.bc_offline_update_count),
         }
         if self.bc_a_enabled:
             self._latest_training_metrics.update(
@@ -2027,6 +2513,39 @@ class AgentTransformerMATD3(BaseAgent):
         unit_action = self._actor_unit_action(state, observations, target=target)
         return self._affine_action(unit_action, state)
 
+    def _actor_saturation_fraction(
+        self, observations: Sequence[torch.Tensor]
+    ) -> float:
+        values: List[torch.Tensor] = []
+        for state, observation in zip(self._per_building, observations):
+            if state.layout.n_ca == 0:
+                continue
+            with torch.no_grad():
+                values.append(
+                    self._actor_unit_action(
+                        state, observation, target=False
+                    ).abs().reshape(-1)
+                )
+        if not values:
+            return 0.0
+        return float(torch.cat(values).ge(0.99).float().mean())
+
+    def _actor_unit_output_fraction(
+        self, observations: Sequence[torch.Tensor], *, upper: bool
+    ) -> float:
+        values: List[torch.Tensor] = []
+        for state, observation in zip(self._per_building, observations):
+            if state.layout.n_ca == 0:
+                continue
+            with torch.no_grad():
+                unit = self._actor_unit_action(state, observation, target=False)
+                values.append(
+                    (unit >= 0.99 if upper else unit <= -0.99).float().reshape(-1)
+                )
+        if not values:
+            return 0.0
+        return float(torch.cat(values).mean())
+
     @staticmethod
     def _affine_action(
         unit_action: torch.Tensor,
@@ -2046,7 +2565,20 @@ class AgentTransformerMATD3(BaseAgent):
         base_action: Optional[torch.Tensor],
     ) -> torch.Tensor:
         unit_action = self._actor_unit_action(state, observations, target=target)
-        return self._compose_policy_action(index, unit_action, base_action)
+        action = self._compose_policy_action(index, unit_action, base_action)
+        if (
+            (
+                self._local_action_safety_service_teacher_enabled
+                or self._local_action_safety_service_teacher_eval_enabled
+            )
+            and base_action is not None
+        ):
+            service_mask = self._service_action_mask(index, action)
+            base = base_action.to(dtype=action.dtype, device=action.device)
+            if base.ndim == 1 and action.ndim == 2:
+                base = base.unsqueeze(0).expand(action.shape[0], -1)
+            action = torch.where(service_mask, base, action)
+        return action
 
     def _compose_policy_action(
         self,
@@ -2093,6 +2625,19 @@ class AgentTransformerMATD3(BaseAgent):
             target=True,
             base_action=base_action,
         )
+        service_mask = torch.zeros_like(action, dtype=torch.bool)
+        if (
+            (
+                self._local_action_safety_service_teacher_enabled
+                or self._local_action_safety_service_teacher_eval_enabled
+            )
+            and base_action is not None
+        ):
+            service_mask = self._service_action_mask(building_index, action)
+            base = base_action.to(dtype=action.dtype, device=action.device)
+            if base.ndim == 1 and action.ndim == 2:
+                base = base.unsqueeze(0).expand(action.shape[0], -1)
+            action = torch.where(service_mask, base, action)
         if not self.target_policy_smoothing or self.target_policy_noise <= 0.0:
             return action
         span = state.action_high - state.action_low
@@ -2104,11 +2649,19 @@ class AgentTransformerMATD3(BaseAgent):
         noise = torch.randn_like(action) * (
             self.target_policy_noise * span * authority
         )
+        noise = torch.where(service_mask, torch.zeros_like(noise), noise)
         limit = self.target_policy_noise_clip * span * authority
         noise = torch.maximum(torch.minimum(noise, limit), -limit)
         return torch.maximum(
             torch.minimum(action + noise, state.action_high), state.action_low
         )
+
+    def _service_action_mask(self, index: int, like: torch.Tensor) -> torch.Tensor:
+        values = [
+            str(name).startswith(("electric_vehicle", "deferrable_appliance"))
+            for name in self._per_building[index].action_names
+        ]
+        return torch.as_tensor(values, dtype=torch.bool, device=like.device).view(1, -1)
 
     def _explore_unit_action(
         self,
@@ -2189,9 +2742,7 @@ class AgentTransformerMATD3(BaseAgent):
                 ),
                 1.0,
             )
-            scale = self.residual_action_scale + (
-                self.residual_action_final_scale - self.residual_action_scale
-            ) * progress
+            scale = self.residual_action_final_scale * progress
         self._last_residual_action_scale = float(np.clip(scale, 0.0, 1.0))
         return self._last_residual_action_scale
 
@@ -2224,8 +2775,11 @@ class AgentTransformerMATD3(BaseAgent):
         self,
         actions: Sequence[Any],
     ) -> List[Any]:
-        needs_warm_start = self.residual_policy_enabled or (
-            self.bc_a_enabled and self.bc_a_teacher == "warm_start"
+        needs_warm_start = (
+            self.residual_policy_enabled
+            or self._local_action_safety_service_teacher_enabled
+            or self._local_action_safety_service_teacher_eval_enabled
+            or (self.bc_a_enabled and self.bc_a_teacher == "warm_start")
         )
         if not needs_warm_start:
             return list(actions)
@@ -2244,8 +2798,11 @@ class AgentTransformerMATD3(BaseAgent):
         self,
         fallback_actions: Sequence[Any],
     ) -> List[Any]:
-        needs_warm_start = self.residual_policy_enabled or (
-            self.bc_a_enabled and self.bc_a_teacher == "warm_start"
+        needs_warm_start = (
+            self.residual_policy_enabled
+            or self._local_action_safety_service_teacher_enabled
+            or self._local_action_safety_service_teacher_eval_enabled
+            or (self.bc_a_enabled and self.bc_a_teacher == "warm_start")
         )
         if not needs_warm_start:
             return list(fallback_actions)
@@ -2286,8 +2843,13 @@ class AgentTransformerMATD3(BaseAgent):
         self,
         values: Sequence[Any],
     ) -> Optional[List[Any]]:
-        if self.residual_policy_enabled or (
+        if (
+            self.residual_policy_enabled
+            or self._local_action_safety_service_teacher_enabled
+            or self._local_action_safety_service_teacher_eval_enabled
+            or (
             self.bc_a_enabled and self.bc_a_teacher == "warm_start"
+            )
         ):
             return list(values)
         return None
@@ -2392,8 +2954,6 @@ class AgentTransformerMATD3(BaseAgent):
         losses: List[float] = []
         gradients: List[float] = []
         for index, state in enumerate(self._per_building):
-            if state.bc_a_optimizer is None:
-                raise RuntimeError("BC-A optimizer is not initialized")
             for _ in range(count):
                 predicted = self._policy_action(
                     index,
@@ -2416,13 +2976,14 @@ class AgentTransformerMATD3(BaseAgent):
                         else behavior_actions[index]
                     ),
                 )
-                state.bc_a_optimizer.zero_grad(set_to_none=True)
+                state.actor_optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 gradient = clip_grad_norm_(
                     self._actor_modules(state).parameters(),
                     self.max_grad_norm,
                 )
-                state.bc_a_optimizer.step()
+                state.actor_optimizer.step()
+                self.bc_extra_update_count += 1
                 losses.append(float(loss.detach()))
                 gradients.append(float(gradient))
         return losses, gradients
@@ -2453,6 +3014,7 @@ class AgentTransformerMATD3(BaseAgent):
         )
         if losses:
             self.bc_a_offline_pretrain_completed_steps += remaining
+            self.bc_offline_update_count += len(losses)
         return losses, gradients
 
     def _in_bc_b_demonstration_phase(self) -> bool:
@@ -2621,11 +3183,10 @@ class AgentTransformerMATD3(BaseAgent):
         apply_weight: bool,
     ) -> Tuple[float, float]:
         assert self._bc_b is not None
-        assert state.bc_b_optimizer is not None
         observations = self._tensor(
             np.stack([demonstration.observation for demonstration in demonstrations])
         )
-        state.bc_b_optimizer.zero_grad(set_to_none=True)
+        state.actor_optimizer.zero_grad(set_to_none=True)
         tokenized = state.tokenizer(observations, layout)
         ca_embeddings, _ = state.backbone(
             tokenized.sro_tokens,
@@ -2646,7 +3207,8 @@ class AgentTransformerMATD3(BaseAgent):
         gradient = clip_grad_norm_(
             self._actor_modules(state).parameters(), self.max_grad_norm
         )
-        state.bc_b_optimizer.step()
+        state.actor_optimizer.step()
+        self.bc_extra_update_count += 1
         return float(loss.detach()), float(gradient)
 
     def _run_bc_b_auxiliary_updates(
@@ -2719,6 +3281,13 @@ class AgentTransformerMATD3(BaseAgent):
             {
                 "observations": first["observations"],
                 "actions": first["actions"],
+                "proposed_actions": first.get(
+                    "proposed_actions", first["actions"]
+                ),
+                "executed_actions": first.get(
+                    "executed_actions", first["actions"]
+                ),
+                "base_actions": first.get("base_actions"),
                 "rewards": rewards,
                 "next_observations": last["next_observations"],
                 "terminated": last_terminated,
@@ -2739,6 +3308,9 @@ class AgentTransformerMATD3(BaseAgent):
             encoded_obs=transition["observations"],
             next_encoded_obs=transition["next_observations"],
             actions=transition["actions"],
+            proposed_actions=transition.get("proposed_actions"),
+            executed_actions=transition.get("executed_actions"),
+            base_actions=transition.get("base_actions"),
             reward=transition["rewards"],
             terminated=transition["terminated"],
             truncated=transition["truncated"],
@@ -2911,6 +3483,8 @@ class AgentTransformerMATD3(BaseAgent):
         proposed_action: Sequence[float],
         *,
         residual_base_action: Optional[Sequence[float]] = None,
+        storage_fallback_action: Optional[Sequence[float]] = None,
+        service_teacher_active: bool = False,
     ) -> List[float]:
         if not self._local_action_safety_enabled:
             return [float(value) for value in proposed_action]
@@ -2919,6 +3493,7 @@ class AgentTransformerMATD3(BaseAgent):
                 "Transformer MATD3 local action safety requires raw observation "
                 "context before predict"
             )
+        self._local_action_safety_opportunity_count += 1
         proposed = np.asarray(proposed_action, dtype=np.float64).reshape(-1)
         neutral_residual_mask: Optional[npt.NDArray[np.bool_]] = None
         residual_base: Optional[npt.NDArray[np.float64]] = None
@@ -2961,6 +3536,16 @@ class AgentTransformerMATD3(BaseAgent):
                 reason
                 for reason in projection.infeasible_reasons
                 if not neutral_residual_mask[reason.action_index]
+            )
+        if service_teacher_active:
+            executed = np.asarray(
+                preserve_teacher_service_with_storage_fallback(
+                    action_names=self._per_building[index].action_names,
+                    teacher_merged_actions=proposed,
+                    projected_actions=executed,
+                    storage_fallback_actions=storage_fallback_action,
+                ),
+                dtype=np.float64,
             )
         self._local_action_safety_projection_count += 1
         self._local_action_safety_intervention_count += len(
@@ -3060,6 +3645,10 @@ class AgentTransformerMATD3(BaseAgent):
         actor = DeterministicActorHead(
             self._d_model, self.actor_hidden_dim
         ).to(self.device)
+        if self.residual_policy_enabled:
+            final_layer = actor.mlp[-1]
+            nn.init.zeros_(final_layer.weight)
+            nn.init.zeros_(final_layer.bias)
         tokenizer_target = deepcopy(tokenizer)
         backbone_target = deepcopy(backbone)
         actor_target = deepcopy(actor)
@@ -3084,6 +3673,7 @@ class AgentTransformerMATD3(BaseAgent):
         critic_2_target.eval()
         actor_modules = nn.ModuleList((tokenizer, backbone, actor))
         actor_parameters = list(actor_modules.parameters())
+        actor_optimizer = torch.optim.Adam(actor_parameters, lr=self.learning_rate)
         return _PerBuildingState(
             building_id=layout.building_id,
             tokenizer=tokenizer,
@@ -3096,23 +3686,17 @@ class AgentTransformerMATD3(BaseAgent):
             critic_2=critic_2,
             critic_1_target=critic_1_target,
             critic_2_target=critic_2_target,
-            actor_optimizer=torch.optim.Adam(actor_parameters, lr=self.learning_rate),
+            actor_optimizer=actor_optimizer,
             critic_1_optimizer=torch.optim.Adam(
                 critic_1.parameters(), lr=self.learning_rate
             ),
             critic_2_optimizer=torch.optim.Adam(
                 critic_2.parameters(), lr=self.learning_rate
             ),
-            bc_a_optimizer=(
-                torch.optim.Adam(actor_parameters, lr=self.learning_rate)
-                if self.bc_a_enabled
-                else None
-            ),
-            bc_b_optimizer=(
-                torch.optim.Adam(actor_parameters, lr=self.learning_rate)
-                if self._bc_b is not None
-                else None
-            ),
+            # All actor-only objectives share one Adam state.  The optional
+            # fields remain as compatibility aliases for checkpoint callers.
+            bc_a_optimizer=actor_optimizer if self.bc_a_enabled else None,
+            bc_b_optimizer=actor_optimizer if self._bc_b is not None else None,
             layout=layout,
             action_names=action_names,
             action_low=action_low,
@@ -3290,6 +3874,12 @@ class AgentTransformerMATD3(BaseAgent):
                 reason == "initial_exploration"
             ),
             f"{_METRIC_PREFIX}update_skip_schedule": float(reason == "schedule"),
+            f"{_METRIC_PREFIX}update_skip_teacher_warmup": float(
+                reason == "initial_exploration" and self.residual_policy_enabled
+            ),
+            f"{_METRIC_PREFIX}actor_skip_critic_warmup": 0.0,
+            f"{_METRIC_PREFIX}critic_update_count": float(self.critic_update_count),
+            f"{_METRIC_PREFIX}actor_update_count": float(self.actor_update_count),
             f"{_METRIC_PREFIX}replay_buffer_size": float(
                 self.replay_buffer.total_size()
             ),
@@ -3402,7 +3992,19 @@ class AgentTransformerMATD3(BaseAgent):
                     raise ValueError(
                         f"checkpoint contains disabled {bc_name} optimizer state"
                     )
-                if optimizer is not None:
+                if optimizer is state.actor_optimizer:
+                    if (
+                        saved_optimizer is not None
+                        and not self._optimizer_states_equal(
+                            saved_optimizer,
+                            payload.get(f"actor_optimizer_state_dict_{index}"),
+                        )
+                    ):
+                        raise RuntimeError(
+                            f"checkpoint contains legacy independent {bc_name} "
+                            "optimizer state that cannot be migrated safely"
+                        )
+                elif optimizer is not None:
                     self._validate_optimizer_state_dict(
                         optimizer,
                         saved_optimizer,
@@ -3419,7 +4021,8 @@ class AgentTransformerMATD3(BaseAgent):
 
         required_global = (
             "replay_buffer", "n_step_queue", "current_layout_signature",
-            "exploration_state", "reward_normalization_state", "rng_state", "bc_state",
+            "exploration_state", "training_counters", "reward_normalization_state",
+            "rng_state", "bc_state",
         )
         for key in required_global:
             if key not in payload:
@@ -3447,6 +4050,22 @@ class AgentTransformerMATD3(BaseAgent):
             or not np.isfinite(float(sigma))
         ):
             raise ValueError("checkpoint exploration_state is invalid")
+        counters = payload["training_counters"]
+        if not isinstance(counters, Mapping):
+            raise ValueError("checkpoint training_counters is invalid")
+        for name in (
+            "critic_update_count",
+            "actor_update_count",
+            "target_update_count",
+            "bc_main_update_count",
+            "bc_extra_update_count",
+            "bc_offline_update_count",
+            "effective_exploration_action_count",
+            "successful_sample_count",
+        ):
+            value = counters.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("checkpoint training_counters is invalid")
         reward = payload["reward_normalization_state"]
         if not isinstance(reward, Mapping):
             raise ValueError("checkpoint reward_normalization_state is invalid")
@@ -3465,6 +4084,33 @@ class AgentTransformerMATD3(BaseAgent):
         self._validate_checkpoint_bc_state(payload["bc_state"])
         self._validate_rng_state(payload["rng_state"])
         return replay
+
+    @staticmethod
+    def _optimizer_states_equal(left: Any, right: Any) -> bool:
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+            return False
+        if left.keys() != right.keys():
+            return False
+        for key in left:
+            left_value = left[key]
+            right_value = right[key]
+            if isinstance(left_value, Mapping) and isinstance(right_value, Mapping):
+                if not AgentTransformerMATD3._optimizer_states_equal(
+                    left_value, right_value
+                ):
+                    return False
+            elif isinstance(left_value, torch.Tensor) or isinstance(
+                right_value, torch.Tensor
+            ):
+                if not (
+                    isinstance(left_value, torch.Tensor)
+                    and isinstance(right_value, torch.Tensor)
+                    and torch.equal(left_value, right_value)
+                ):
+                    return False
+            elif left_value != right_value:
+                return False
+        return True
 
     @staticmethod
     def _validate_module_state_dict(
@@ -3516,7 +4162,7 @@ class AgentTransformerMATD3(BaseAgent):
     ) -> None:
         if not isinstance(queue, list) or len(queue) >= self.n_step_returns:
             raise ValueError("checkpoint n_step_queue length is invalid")
-        expected_optional_presence: Optional[Tuple[bool, bool, bool]] = None
+        expected_optional_presence: Optional[Tuple[bool, ...]] = None
         current_bucket = replay.get_state()["buckets"].get(self._layout_signature)
         if current_bucket:
             first = current_bucket[0]
@@ -3524,6 +4170,9 @@ class AgentTransformerMATD3(BaseAgent):
                 first.behavior_actions is not None,
                 first.next_behavior_actions is not None,
                 first.cloning_actions is not None,
+                getattr(first, "base_actions", None) is not None,
+                getattr(first, "proposed_actions", None) is not None,
+                getattr(first, "executed_actions", None) is not None,
             )
         for transition in deepcopy(queue):
             if not isinstance(transition, dict):
@@ -3536,7 +4185,11 @@ class AgentTransformerMATD3(BaseAgent):
             )
             if any(key not in transition for key in required):
                 raise ValueError("checkpoint n_step_queue entry is incomplete")
-            for field in ("observations", "next_observations", "actions"):
+            for field in (
+                "observations",
+                "next_observations",
+                "actions",
+            ):
                 vectors = transition[field]
                 if not isinstance(vectors, (list, tuple)) or len(vectors) != len(
                     self._per_building
@@ -3547,7 +4200,7 @@ class AgentTransformerMATD3(BaseAgent):
                 for index, vector in enumerate(vectors):
                     expected_width = (
                         len(self._attached_names[index][0])
-                        if field != "actions"
+                        if field in {"observations", "next_observations"}
                         else self._per_building[index].layout.n_ca
                     )
                     if (
@@ -3560,7 +4213,12 @@ class AgentTransformerMATD3(BaseAgent):
                             f"checkpoint n_step_queue {field}[{index}] is invalid"
                         )
             for field in (
-                "behavior_actions", "next_behavior_actions", "cloning_actions"
+                "behavior_actions",
+                "next_behavior_actions",
+                "cloning_actions",
+                "base_actions",
+                "proposed_actions",
+                "executed_actions",
             ):
                 vectors = transition.get(field)
                 if vectors is None:
@@ -3587,6 +4245,9 @@ class AgentTransformerMATD3(BaseAgent):
                     "behavior_actions",
                     "next_behavior_actions",
                     "cloning_actions",
+                    "base_actions",
+                    "proposed_actions",
+                    "executed_actions",
                 )
             )
             if expected_optional_presence is None:
@@ -3704,6 +4365,10 @@ class AgentTransformerMATD3(BaseAgent):
             raise ValueError("critic_team_reward_mix must be in [0, 1]")
         if self.actor_update_interval <= 0:
             raise ValueError("actor_update_interval must be positive")
+        if self.minimum_successful_critic_updates_before_actor < 0:
+            raise ValueError(
+                "minimum_successful_critic_updates_before_actor must be non-negative"
+            )
         if (
             not np.isfinite(self.actor_policy_loss_weight)
             or self.actor_policy_loss_weight < 0.0
@@ -3738,6 +4403,16 @@ class AgentTransformerMATD3(BaseAgent):
         if self.residual_policy_enabled and self.warm_start_policy_name is None:
             raise ValueError(
                 "residual_policy_enabled requires warm_start_policy_name"
+            )
+        if (
+            (
+                self._local_action_safety_service_teacher_enabled
+                or self._local_action_safety_service_teacher_eval_enabled
+            )
+            and self.warm_start_policy_name is None
+        ):
+            raise ValueError(
+                "service-teacher safety requires warm_start_policy_name"
             )
         if self.critic_action_input_mode != "final":
             raise ValueError("critic_action_input_mode must be 'final'")

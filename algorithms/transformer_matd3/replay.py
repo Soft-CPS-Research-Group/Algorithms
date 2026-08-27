@@ -40,11 +40,14 @@ class SignatureBucketedReplayBuffer:
         *,
         encoded_obs: Sequence[Any],
         next_encoded_obs: Sequence[Any],
-        actions: Sequence[Any],
+        actions: Optional[Sequence[Any]] = None,
         reward: Any,
         terminated: Any,
         truncated: Any,
         layout_signature: LayoutSignature,
+        proposed_actions: Optional[Sequence[Any]] = None,
+        executed_actions: Optional[Sequence[Any]] = None,
+        base_actions: Optional[Sequence[Any]] = None,
         behavior_actions: Optional[Sequence[Any]] = None,
         next_behavior_actions: Optional[Sequence[Any]] = None,
         cloning_actions: Optional[Sequence[Any]] = None,
@@ -55,12 +58,32 @@ class SignatureBucketedReplayBuffer:
             next_encoded_obs,
             "next_encoded_obs",
         )
-        action_vectors = self._coerce_agent_vectors(actions, "action")
+        legacy_actions = actions
+        if legacy_actions is None:
+            legacy_actions = executed_actions or proposed_actions
+        if legacy_actions is None:
+            raise ValueError(
+                "replay push requires actions or an explicit proposed/executed action"
+            )
+        action_vectors = self._coerce_agent_vectors(legacy_actions, "action")
+        proposed_vectors = (
+            action_vectors
+            if proposed_actions is None
+            else self._coerce_agent_vectors(proposed_actions, "proposed_actions")
+        )
+        executed_vectors = (
+            action_vectors
+            if executed_actions is None
+            else self._coerce_agent_vectors(executed_actions, "executed_actions")
+        )
+        base_vectors = self._coerce_optional_actions(base_actions, "base_actions")
         self._validate_transition_shapes(
             layout_signature,
             observations,
             next_observations,
             action_vectors,
+            proposed_vectors,
+            executed_vectors,
         )
         optional_vectors = (
             self._coerce_optional_actions(behavior_actions, "behavior_actions"),
@@ -70,7 +93,10 @@ class SignatureBucketedReplayBuffer:
             ),
             self._coerce_optional_actions(cloning_actions, "cloning_actions"),
         )
-        self._validate_optional_presence(layout_signature, optional_vectors)
+        self._validate_optional_presence(
+            layout_signature,
+            (*optional_vectors, base_vectors, proposed_vectors, executed_vectors),
+        )
         transition = ReplayTransition(
             sequence_id=self._next_sequence_id,
             signature=layout_signature,
@@ -90,6 +116,9 @@ class SignatureBucketedReplayBuffer:
                 "truncated",
                 broadcast_scalar=True,
             ),
+            proposed_actions=proposed_vectors,
+            executed_actions=executed_vectors,
+            base_actions=base_vectors,
             behavior_actions=optional_vectors[0],
             next_behavior_actions=optional_vectors[1],
             cloning_actions=optional_vectors[2],
@@ -294,12 +323,15 @@ class SignatureBucketedReplayBuffer:
             "observations",
             "next_observations",
             "actions",
+            "proposed_actions",
+            "executed_actions",
+            "base_actions",
             "behavior_actions",
             "next_behavior_actions",
             "cloning_actions",
         ):
-            left_values = getattr(left, field)
-            right_values = getattr(right, field)
+            left_values = getattr(left, field, None)
+            right_values = getattr(right, field, None)
             if (left_values is None) != (right_values is None):
                 return False
             if left_values is not None and (
@@ -499,16 +531,24 @@ class SignatureBucketedReplayBuffer:
             transition.observations,
             transition.next_observations,
             transition.actions,
+            getattr(transition, "proposed_actions", None) or transition.actions,
+            getattr(transition, "executed_actions", None) or transition.actions,
         )
         optional_values = (
             transition.behavior_actions,
             transition.next_behavior_actions,
             transition.cloning_actions,
+            getattr(transition, "base_actions", None),
+            getattr(transition, "proposed_actions", None),
+            getattr(transition, "executed_actions", None),
         )
         optional_labels = (
             "behavior_actions",
             "next_behavior_actions",
             "cloning_actions",
+            "base_actions",
+            "proposed_actions",
+            "executed_actions",
         )
         for label, vectors in zip(optional_labels, optional_values):
             if vectors is not None:
@@ -600,13 +640,21 @@ class SignatureBucketedReplayBuffer:
         observations: ArrayTuple,
         next_observations: ArrayTuple,
         actions: ArrayTuple,
+        proposed_actions: ArrayTuple,
+        executed_actions: ArrayTuple,
     ) -> None:
         for index in range(self.num_agents):
             if observations[index].shape != next_observations[index].shape:
                 raise ValueError(
                     f"next_encoded_obs[{index}] shape must match encoded_obs[{index}]"
-                )
+            )
             self._validate_action_width(actions[index], index, "action", signature)
+            self._validate_action_width(
+                proposed_actions[index], index, "proposed_actions", signature
+            )
+            self._validate_action_width(
+                executed_actions[index], index, "executed_actions", signature
+            )
         bucket = self._buckets.get(signature)
         if not bucket:
             return
@@ -636,9 +684,16 @@ class SignatureBucketedReplayBuffer:
     def _validate_optional_presence(
         self,
         signature: LayoutSignature,
-        values: tuple[Optional[ArrayTuple], Optional[ArrayTuple], Optional[ArrayTuple]],
+        values: tuple[Optional[ArrayTuple], ...],
     ) -> None:
-        labels = ("behavior_actions", "next_behavior_actions", "cloning_actions")
+        labels = (
+            "behavior_actions",
+            "next_behavior_actions",
+            "cloning_actions",
+            "base_actions",
+            "proposed_actions",
+            "executed_actions",
+        )
         for label, vectors in zip(labels, values):
             if vectors is not None:
                 for index, vector in enumerate(vectors):
@@ -648,7 +703,7 @@ class SignatureBucketedReplayBuffer:
             return
         expected = bucket[0]
         for label, vectors in zip(labels, values):
-            if (getattr(expected, label) is None) != (vectors is None):
+            if (getattr(expected, label, None) is None) != (vectors is None):
                 raise ValueError(f"{label} presence must remain stable within a bucket")
 
     def _coerce_agent_values(
@@ -722,6 +777,9 @@ class SignatureBucketedReplayBuffer:
             rewards=rewards,
             terminated=terminated,
             truncated=truncated,
+            proposed_actions=copied(getattr(transition, "proposed_actions", None)),
+            executed_actions=copied(getattr(transition, "executed_actions", None)),
+            base_actions=copied(getattr(transition, "base_actions", None)),
             behavior_actions=copied(transition.behavior_actions),
             next_behavior_actions=copied(transition.next_behavior_actions),
             cloning_actions=copied(transition.cloning_actions),
@@ -740,8 +798,13 @@ class SignatureBucketedReplayBuffer:
             )
 
         def optional_stacked(field: str) -> Optional[ArrayTuple]:
-            if getattr(transitions[0], field) is None:
+            if getattr(transitions[0], field, None) is None:
                 return None
+            return stacked(field)
+
+        def action_stacked(field: str) -> ArrayTuple:
+            if getattr(transitions[0], field, None) is None:
+                return stacked("actions")
             return stacked(field)
 
         terminated = np.stack([item.terminated for item in transitions])
@@ -755,6 +818,9 @@ class SignatureBucketedReplayBuffer:
             terminated=terminated,
             truncated=truncated,
             done=np.logical_or(terminated, truncated),
+            proposed_actions=action_stacked("proposed_actions"),
+            executed_actions=action_stacked("executed_actions"),
+            base_actions=optional_stacked("base_actions"),
             behavior_actions=optional_stacked("behavior_actions"),
             next_behavior_actions=optional_stacked("next_behavior_actions"),
             cloning_actions=optional_stacked("cloning_actions"),

@@ -99,22 +99,17 @@ The following invariants are inviolable and tested:
    `external` teacher is rejected during configuration validation. A
    supported `warm_start` teacher remains non-blocking when its runtime
    context is unavailable.
-9. When both BC subsystems are enabled, they use **separate**
-   optimizers, not a shared one.
+9. BC-A and BC-B use the same per-building actor optimizer as the policy
+   update. Actor-only boundaries remain enforced.
 
-Enforcement: per-building, per-subsystem BC optimizers cover only
-actor + tokenizer + backbone parameters. Concretely:
+Enforcement: the per-building actor optimizer covers only actor + tokenizer +
+backbone parameters. The compatibility fields `bc_a_optimizer_b` and
+`bc_b_optimizer_b` refer to this optimizer when their subsystem is enabled.
+Critic optimizers remain separate.
 
-- `bc_a_optimizer_b` when BC-A is enabled.
-- `bc_b_optimizer_b` when BC-B is enabled.
-
-Rationale for separation: Adam moment estimates are per-parameter but
-scaled by the gradient signal that feeds them. BC-A and BC-B have
-different loss magnitudes, different schedules, and different sampling
-distributions. Sharing one optimizer instance couples their moment
-estimates and distorts each subsystem's implicit learning-rate
-behavior. The cost of two optimizers (moment tensors sized like the
-actor stack) is negligible against the correctness gain.
+Rationale: policy, BC-A, and BC-B all update the same actor parameters. One
+Adam state prevents independent actor-only moments from competing during the
+same training run. Each objective still has its own schedule and metric.
 
 ### 7e — BC-A sampling scope: current-signature only
 
