@@ -967,9 +967,9 @@ class AgentTransformerMATD3(BaseAgent):
                 executed_value = executed_array[action_index]
                 raw_value = raw_array[action_index]
                 add(f"proposed_executed_abs_delta_{category}_sum", abs(executed_value - proposed_value))
-                add(
-                    f"proposed_executed_abs_delta_{category}_max",
-                    abs(executed_value - proposed_value),
+                max_key = f"proposed_executed_abs_delta_{category}_max"
+                totals[max_key] = max(
+                    totals.get(max_key, 0.0), abs(executed_value - proposed_value)
                 )
                 if base is not None:
                     base_value = float(np.asarray(base, dtype=np.float64).reshape(-1)[action_index])
@@ -977,9 +977,9 @@ class AgentTransformerMATD3(BaseAgent):
                         f"base_proposed_abs_delta_{category}_sum",
                         abs(proposed_value - base_value),
                     )
-                    add(
-                        f"base_proposed_abs_delta_{category}_max",
-                        abs(proposed_value - base_value),
+                    max_key = f"base_proposed_abs_delta_{category}_max"
+                    totals[max_key] = max(
+                        totals.get(max_key, 0.0), abs(proposed_value - base_value)
                     )
                     if self._is_ev_action_name(action_name) and base_value <= 0.0:
                         if raw_value > 0.0:
@@ -1065,11 +1065,11 @@ class AgentTransformerMATD3(BaseAgent):
             self._validate_vector_count(name, values)
         if self._in_bc_b_demonstration_phase():
             self._record_bc_b_demonstrations(observations, actions)
-            self._latest_training_metrics = {
+            self._merge_latest_training_metrics({
                 f"{_METRIC_PREFIX}episode_training": 1.0,
                 f"{_METRIC_PREFIX}teacher_action_execution": 1.0,
                 **self._bc_b_metrics(),
-            }
+            })
             return
         if should_profile:
             profile_metrics[f"{_METRIC_PREFIX}runtime_update_prepare_seconds"] = (
@@ -1682,6 +1682,29 @@ class AgentTransformerMATD3(BaseAgent):
         self._latest_training_metrics = {}
         return metrics
 
+    def _merge_latest_training_metrics(self, metrics: Mapping[str, float]) -> None:
+        """Merge metric events until the wrapper flushes the pending snapshot.
+
+        Critic updates can occur between actor updates. Actor-only values must
+        therefore not be replaced by synthetic zeros from a critic-only event.
+        ``actor_update_performed`` remains true when any actor event is pending.
+        """
+        actor_event = bool(metrics.get(f"{_METRIC_PREFIX}actor_update_performed", 0.0))
+        for key, value in metrics.items():
+            is_actor_value = (
+                key.startswith(f"{_METRIC_PREFIX}actor_")
+                or key.startswith(f"{_METRIC_PREFIX}policy_action_q")
+                or key.startswith(f"{_METRIC_PREFIX}policy_replay_q")
+            )
+            if is_actor_value and not actor_event and key in self._latest_training_metrics:
+                continue
+            if key == f"{_METRIC_PREFIX}actor_update_performed":
+                value = max(
+                    float(value),
+                    float(self._latest_training_metrics.get(key, 0.0)),
+                )
+            self._latest_training_metrics[key] = float(value)
+
     def _should_runtime_profile_step(self, global_learning_step: int) -> bool:
         return bool(self.runtime_profiling_enabled) and (
             global_learning_step % self.runtime_profiling_interval == 0
@@ -2166,7 +2189,7 @@ class AgentTransformerMATD3(BaseAgent):
         def array_percentile(values: np.ndarray, quantile: float) -> float:
             return float(np.percentile(values, quantile)) if values.size else 0.0
 
-        self._latest_training_metrics = {
+        self._merge_latest_training_metrics({
             f"{_METRIC_PREFIX}critic_1_loss_mean": float(np.mean(critic_1_losses)),
             f"{_METRIC_PREFIX}critic_2_loss_mean": float(np.mean(critic_2_losses)),
             f"{_METRIC_PREFIX}critic_loss_mean": float(
@@ -2288,40 +2311,38 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}bc_main_update_count": float(self.bc_main_update_count),
             f"{_METRIC_PREFIX}bc_extra_update_count": float(self.bc_extra_update_count),
             f"{_METRIC_PREFIX}bc_offline_update_count": float(self.bc_offline_update_count),
-        }
+        })
         if self.bc_a_enabled:
-            self._latest_training_metrics.update(
-                {
-                    f"{_METRIC_PREFIX}actor_behavior_cloning_loss_mean": (
-                        self._mean_or_zero(actor_bc_losses)
-                    ),
-                    f"{_METRIC_PREFIX}actor_behavior_cloning_effective_weight": (
-                        bc_weight
-                    ),
-                    f"{_METRIC_PREFIX}actor_behavior_cloning_extra_updates": float(
-                        len(extra_losses)
-                    ),
-                    f"{_METRIC_PREFIX}actor_behavior_cloning_extra_loss_mean": (
-                        self._mean_or_zero(extra_losses)
-                    ),
-                    f"{_METRIC_PREFIX}actor_behavior_cloning_extra_grad_norm_mean": (
-                        self._mean_or_zero(extra_grad_norms)
-                    ),
-                    f"{_METRIC_PREFIX}actor_behavior_cloning_offline_updates": float(
-                        len(offline_losses)
-                    ),
-                    f"{_METRIC_PREFIX}actor_behavior_cloning_offline_loss_mean": (
-                        self._mean_or_zero(offline_losses)
-                    ),
-                    f"{_METRIC_PREFIX}actor_behavior_cloning_offline_grad_norm_mean": (
-                        self._mean_or_zero(offline_grad_norms)
-                    ),
-                }
-            )
-            for label, values in actor_bc_type_losses.items():
-                self._latest_training_metrics[
-                    f"{_METRIC_PREFIX}actor_behavior_cloning_{label}_loss_mean"
-                ] = self._mean_or_zero(values)
+            bc_metrics = {
+                f"{_METRIC_PREFIX}actor_behavior_cloning_effective_weight": bc_weight,
+                f"{_METRIC_PREFIX}actor_behavior_cloning_extra_updates": float(
+                    len(extra_losses)
+                ),
+                f"{_METRIC_PREFIX}actor_behavior_cloning_extra_loss_mean": self._mean_or_zero(
+                    extra_losses
+                ),
+                f"{_METRIC_PREFIX}actor_behavior_cloning_extra_grad_norm_mean": self._mean_or_zero(
+                    extra_grad_norms
+                ),
+                f"{_METRIC_PREFIX}actor_behavior_cloning_offline_updates": float(
+                    len(offline_losses)
+                ),
+                f"{_METRIC_PREFIX}actor_behavior_cloning_offline_loss_mean": self._mean_or_zero(
+                    offline_losses
+                ),
+                f"{_METRIC_PREFIX}actor_behavior_cloning_offline_grad_norm_mean": self._mean_or_zero(
+                    offline_grad_norms
+                ),
+            }
+            if actor_update_due and actor_losses:
+                bc_metrics[
+                    f"{_METRIC_PREFIX}actor_behavior_cloning_loss_mean"
+                ] = self._mean_or_zero(actor_bc_losses)
+                for label, values in actor_bc_type_losses.items():
+                    bc_metrics[
+                        f"{_METRIC_PREFIX}actor_behavior_cloning_{label}_loss_mean"
+                    ] = self._mean_or_zero(values)
+            self._latest_training_metrics.update(bc_metrics)
         if self._bc_b is not None:
             self._latest_training_metrics.update(self._bc_b_metrics())
             self._latest_training_metrics.update(
@@ -3865,7 +3886,7 @@ class AgentTransformerMATD3(BaseAgent):
 
     def _record_skip(self, reason: str, bucket_size: int) -> None:
         assert self.replay_buffer is not None
-        self._latest_training_metrics = {
+        self._merge_latest_training_metrics({
             f"{_METRIC_PREFIX}update_skipped": 1.0,
             f"{_METRIC_PREFIX}update_skip_replay_underfull": float(
                 reason == "replay_underfull"
@@ -3884,7 +3905,7 @@ class AgentTransformerMATD3(BaseAgent):
                 self.replay_buffer.total_size()
             ),
             f"{_METRIC_PREFIX}replay_bucket_size_current": float(bucket_size),
-        }
+        })
 
     def _validate_checkpoint_payload(
         self, payload: Any

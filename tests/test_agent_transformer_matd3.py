@@ -224,6 +224,55 @@ def test_actor_delay_counts_successful_critic_updates_not_environment_steps() ->
     assert agent.target_update_count == 1
 
 
+def test_pending_actor_metrics_survive_intervening_critic_event() -> None:
+    agent, _ = _make_agent(buildings=1)
+    agent._merge_latest_training_metrics(
+        {
+            "TransformerMATD3/actor_update_performed": 1.0,
+            "TransformerMATD3/actor_policy_loss_mean": 2.5,
+            "TransformerMATD3/policy_action_q_mean": -3.0,
+        }
+    )
+    agent._merge_latest_training_metrics(
+        {
+            "TransformerMATD3/actor_update_performed": 0.0,
+            "TransformerMATD3/actor_policy_loss_mean": 0.0,
+            "TransformerMATD3/policy_action_q_mean": 0.0,
+            "TransformerMATD3/critic_loss_mean": 1.25,
+        }
+    )
+
+    metrics = agent.consume_latest_training_metrics()
+
+    assert metrics["TransformerMATD3/actor_update_performed"] == 1.0
+    assert metrics["TransformerMATD3/actor_policy_loss_mean"] == 2.5
+    assert metrics["TransformerMATD3/policy_action_q_mean"] == -3.0
+    assert metrics["TransformerMATD3/critic_loss_mean"] == 1.25
+
+
+def test_action_diagnostic_maxima_are_not_cumulative() -> None:
+    agent, _ = _make_agent(buildings=1)
+    agent._record_action_diagnostics(
+        base_actions=[[0.0, 0.0]],
+        proposed_actions=[[0.2, 0.1]],
+        executed_actions=[[0.0, 0.0]],
+        raw_proposed_actions=[[0.2, 0.1]],
+        exploration=False,
+    )
+    agent._record_action_diagnostics(
+        base_actions=[[0.0, 0.0]],
+        proposed_actions=[[0.5, 0.05]],
+        executed_actions=[[0.0, 0.0]],
+        raw_proposed_actions=[[0.5, 0.05]],
+        exploration=False,
+    )
+
+    metrics = agent.get_diagnostic_metrics()
+
+    assert metrics["TransformerMATD3/base_proposed_abs_delta_storage_max"] == pytest.approx(0.5)
+    assert metrics["TransformerMATD3/proposed_executed_abs_delta_storage_max"] == pytest.approx(0.5)
+
+
 def test_skipped_replay_does_not_advance_critic_update_count() -> None:
     agent, obs_dim = _make_agent(buildings=1, batch_size=2)
 
