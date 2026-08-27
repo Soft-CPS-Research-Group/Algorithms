@@ -314,3 +314,42 @@ def test_diagnostic_metrics_include_latest_training_metrics() -> None:
     assert "TransformerMATD3/critic_loss_mean" in metrics
     assert "TransformerMATD3/training_step_time" in metrics
     assert all(np.isfinite(value) for value in metrics.values())
+
+
+def test_critic_diagnostics_persist_replay_q_and_attribute_buildings() -> None:
+    agent, obs_dim = _make_agent(buildings=2, batch_size=1)
+    agent._merge_latest_training_metrics(
+        {
+            "TransformerMATD3/replay_action_q_mean": 2.5,
+            "TransformerMATD3/replay_action_q_abs_mean": 3.0,
+            "TransformerMATD3/actor_update_performed": 1.0,
+        }
+    )
+    agent._merge_latest_training_metrics(
+        {
+            "TransformerMATD3/critic_loss_mean": 1.0,
+            "TransformerMATD3/actor_update_performed": 0.0,
+        }
+    )
+    metrics = agent.get_diagnostic_metrics()
+    assert metrics["TransformerMATD3/replay_action_q_mean"] == pytest.approx(2.5)
+    assert metrics["TransformerMATD3/replay_action_q_abs_mean"] == pytest.approx(3.0)
+
+    _transition(agent, obs_dim, 0)
+    metrics = agent.get_diagnostic_metrics()
+    for index in range(2):
+        assert f"TransformerMATD3/building_{index}_td_abs_max" in metrics
+        assert f"TransformerMATD3/building_{index}_critic_1_grad_norm" in metrics
+        assert np.isfinite(metrics[f"TransformerMATD3/building_{index}_target_min"])
+
+
+def test_critic_action_sensitivity_is_sampled_on_bounded_cadence() -> None:
+    agent, obs_dim = _make_agent(buildings=1, batch_size=1)
+    agent.critic_update_count = 15
+    _transition(agent, obs_dim, 0)
+    metrics = agent.get_diagnostic_metrics()
+    key = "TransformerMATD3/building_0_storage_critic_dq_da_abs_mean"
+    assert key in metrics
+    assert np.isfinite(metrics[key])
+    assert np.isfinite(metrics["TransformerMATD3/building_0_storage_critic_dq_da_abs_p95"])
+    assert np.isfinite(metrics["TransformerMATD3/building_0_storage_critic_dq_da_abs_max"])

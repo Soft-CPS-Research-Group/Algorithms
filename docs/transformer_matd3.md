@@ -47,6 +47,23 @@ baseline templates use the same dynamic 15-minute dataset and reward.
 Copy a template and change the dataset, duration, seed, and hyperparameters.
 Do not enable optional runtime paths without their required inputs.
 
+### Training diagnostics
+
+With MLflow disabled, training diagnostics are written to `logs/metrics.jsonl`.
+`TransformerMATD3/replay_action_q_mean` and
+`replay_action_q_abs_mean` describe critic values at replay actions and persist
+across critic-only updates. `building_<index>_target_*`, `td_abs_*`,
+`gap_abs_*`, and `critic_*_grad_norm` describe the target, absolute TD error,
+twin-critic gap, and critic gradient norms for that building. The corresponding
+`*_max` values are tail diagnostics, not clipped training values.
+
+Every 16th critic update, the agent records
+`building_<index>_storage_critic_dq_da_abs_{mean,p95,max}`. These are absolute
+partial derivatives of critic 1 with respect to that building's stored
+electrical-storage action components, evaluated at replay actions. They are
+local critic sensitivity diagnostics, not environment perturbation results, and
+are zero when the building has no storage action.
+
 Run locally:
 
 ```bash

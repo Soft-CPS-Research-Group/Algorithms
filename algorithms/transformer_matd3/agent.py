@@ -1694,7 +1694,6 @@ class AgentTransformerMATD3(BaseAgent):
             is_actor_value = (
                 key.startswith(f"{_METRIC_PREFIX}actor_")
                 or key.startswith(f"{_METRIC_PREFIX}policy_action_q")
-                or key.startswith(f"{_METRIC_PREFIX}policy_replay_q")
             )
             if is_actor_value and not actor_event and key in self._latest_training_metrics:
                 continue
@@ -1983,6 +1982,8 @@ class AgentTransformerMATD3(BaseAgent):
         td_abs_tensors: List[torch.Tensor] = []
         gap_tensors: List[torch.Tensor] = []
         critic_grad_norms = []
+        replay_q_values: List[torch.Tensor] = []
+        per_building_diagnostics: Dict[int, Dict[str, float]] = {}
         for state, target in zip(self._per_building, targets):
             expected_1 = state.critic_1(
                 observations, self._layouts, proposed_actions
@@ -2013,6 +2014,22 @@ class AgentTransformerMATD3(BaseAgent):
                 (expected_1.detach() - expected_2.detach()).abs().reshape(-1)
             )
             critic_grad_norms.extend((float(grad_1), float(grad_2)))
+            per_building_diagnostics[len(per_building_diagnostics)] = {
+                "td_abs_mean": float((expected_1.detach() - target).abs().mean()),
+                "td_abs_max": float((expected_1.detach() - target).abs().max()),
+                "gap_abs_mean": float((expected_1.detach() - expected_2.detach()).abs().mean()),
+                "gap_abs_max": float((expected_1.detach() - expected_2.detach()).abs().max()),
+                "target_mean": float(target.detach().mean()),
+                "target_std": float(target.detach().std(unbiased=False)),
+                "target_min": float(target.detach().min()),
+                "target_max": float(target.detach().max()),
+                "critic_1_grad_norm": float(grad_1),
+                "critic_2_grad_norm": float(grad_2),
+                "critic_grad_norm_max": float(max(grad_1, grad_2)),
+            }
+        # Replay-action Q is a critic diagnostic and must be available on every
+        # critic update, including snapshots where no actor update is due.
+        replay_q_values.extend(value.reshape(-1) for value in expected_1_values)
         if should_profile:
             runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_critic_update_seconds"] = (
                 time.perf_counter() - phase_start
@@ -2035,7 +2052,7 @@ class AgentTransformerMATD3(BaseAgent):
         }
         actor_q_abs: List[float] = []
         policy_q_values: List[torch.Tensor] = []
-        replay_q_values: List[torch.Tensor] = []
+        actor_replay_q_values: List[torch.Tensor] = []
         actor_grad_norms: List[float] = []
         bc_weight = self._bc_a_effective_weight(global_learning_step)
         if actor_update_due:
@@ -2118,7 +2135,7 @@ class AgentTransformerMATD3(BaseAgent):
                 actor_bc_losses.append(float(bc_loss.detach()))
                 actor_q_abs.append(float(q_policy.detach().abs().mean()))
                 policy_q_values.append(q_policy.detach().reshape(-1))
-                replay_q_values.append(expected_1_values[index].reshape(-1))
+                actor_replay_q_values.append(expected_1_values[index].reshape(-1))
                 actor_grad_norms.append(float(actor_grad))
             if actor_losses:
                 self.actor_update_count += 1
@@ -2180,6 +2197,11 @@ class AgentTransformerMATD3(BaseAgent):
             if replay_q_values
             else target_flat.new_zeros(1)
         )
+        actor_replay_q_flat = (
+            torch.cat(actor_replay_q_values)
+            if actor_replay_q_values
+            else target_flat.new_zeros(1)
+        )
         critic_grad_array = np.asarray(critic_grad_norms, dtype=np.float64)
         actor_grad_array = np.asarray(actor_grad_norms, dtype=np.float64)
 
@@ -2231,7 +2253,7 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}policy_action_q_mean": float(policy_q_flat.mean()),
             f"{_METRIC_PREFIX}policy_action_q_abs_mean": float(policy_q_flat.abs().mean()),
             f"{_METRIC_PREFIX}policy_replay_q_abs_gap": float(
-                (policy_q_flat - replay_q_flat).abs().mean()
+                (policy_q_flat - actor_replay_q_flat).abs().mean()
             ),
             f"{_METRIC_PREFIX}actor_update_performed": float(bool(actor_losses)),
             f"{_METRIC_PREFIX}actor_skip_critic_warmup": float(
@@ -2312,6 +2334,47 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}bc_extra_update_count": float(self.bc_extra_update_count),
             f"{_METRIC_PREFIX}bc_offline_update_count": float(self.bc_offline_update_count),
         })
+        for index, values in per_building_diagnostics.items():
+            for name, value in values.items():
+                self._latest_training_metrics[
+                    f"{_METRIC_PREFIX}building_{index}_{name}"
+                ] = float(value)
+        # Compute storage-action sensitivity sparsely. This uses the critic's
+        # local gradient at stored actions, not an environment perturbation.
+        # One pass per building every 16 critic updates bounds overhead while
+        # retaining a current value in the latest metric snapshot.
+        if self.critic_update_count % 16 == 0:
+            sensitivity_actions = [
+                value.detach().clone().requires_grad_(True)
+                for value in proposed_actions
+            ]
+            for index, state in enumerate(self._per_building):
+                q_value = state.critic_1(
+                    observations, self._layouts, sensitivity_actions
+                ).sum()
+                gradient = torch.autograd.grad(
+                    q_value, sensitivity_actions[index], retain_graph=False
+                )[0].detach()
+                storage_indices = [
+                    action_index
+                    for action_index, action_name in enumerate(state.action_names)
+                    if self._is_storage_action_name(action_name)
+                ]
+                if storage_indices:
+                    storage_gradient = gradient[..., storage_indices].abs().reshape(-1)
+                    sensitivity_metrics = {
+                        "storage_critic_dq_da_abs_mean": float(storage_gradient.mean()),
+                        "storage_critic_dq_da_abs_p95": percentile(storage_gradient, 0.95),
+                        "storage_critic_dq_da_abs_max": float(storage_gradient.max()),
+                    }
+                else:
+                    sensitivity_metrics = {
+                        "storage_critic_dq_da_abs_mean": 0.0,
+                        "storage_critic_dq_da_abs_p95": 0.0,
+                        "storage_critic_dq_da_abs_max": 0.0,
+                    }
+                for name, value in sensitivity_metrics.items():
+                    self._latest_training_metrics[f"{_METRIC_PREFIX}building_{index}_{name}"] = value
         if self.bc_a_enabled:
             bc_metrics = {
                 f"{_METRIC_PREFIX}actor_behavior_cloning_effective_weight": bc_weight,
