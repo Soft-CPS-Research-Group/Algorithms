@@ -57,6 +57,13 @@ across critic-only updates. `building_<index>_target_*`, `td_abs_*`,
 twin-critic gap, and critic gradient norms for that building. The corresponding
 `*_max` values are tail diagnostics, not clipped training values.
 
+`policy_replay_q_abs_gap` is the mean absolute difference between policy-action
+and replay-action Q tensors from one actor-update event. It is not the
+difference between aggregate means. `actor_update_event_count` identifies the
+actor event that produced the value; critic-only flushes retain that event's
+value instead of replacing it with a synthetic zero. A zero gap is valid only
+when the paired tensors are equal.
+
 Every 16th critic update, the agent records
 `building_<index>_storage_critic_dq_da_abs_{mean,p95,max}`. These are absolute
 partial derivatives of critic 1 with respect to that building's stored

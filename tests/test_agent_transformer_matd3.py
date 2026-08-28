@@ -150,6 +150,36 @@ def test_policy_replay_q_gap_uses_aligned_actor_update_values() -> None:
     assert AgentTransformerMATD3._aligned_q_gap(policy, []) == 0.0
 
 
+def test_policy_replay_q_gap_is_retained_across_critic_only_flush() -> None:
+    agent, _ = _make_agent(buildings=1)
+    prefix = "TransformerMATD3/"
+    agent._merge_latest_training_metrics(
+        {
+            f"{prefix}actor_update_performed": 1.0,
+            f"{prefix}actor_update_event_count": 3.0,
+            f"{prefix}policy_replay_q_abs_gap": 2.5,
+        }
+    )
+    agent._merge_latest_training_metrics(
+        {
+            f"{prefix}actor_update_performed": 0.0,
+            f"{prefix}actor_update_event_count": 3.0,
+            f"{prefix}policy_replay_q_abs_gap": 0.0,
+        }
+    )
+
+    metrics = agent.consume_latest_training_metrics()
+    assert metrics[f"{prefix}policy_replay_q_abs_gap"] == pytest.approx(2.5)
+    assert metrics[f"{prefix}actor_update_event_count"] == pytest.approx(3.0)
+
+
+def test_policy_replay_q_gap_reports_zero_for_identical_paired_tensors() -> None:
+    from algorithms.transformer_matd3.agent import AgentTransformerMATD3
+
+    values = [torch.tensor([[1.0], [-2.0]])]
+    assert AgentTransformerMATD3._aligned_q_gap(values, values) == pytest.approx(0.0)
+
+
 def test_predict_is_repeatable_and_respects_per_ca_bounds() -> None:
     agent, obs_dim = _make_agent(buildings=1)
     observations = [np.linspace(-1.0, 1.0, obs_dim, dtype=np.float32)]

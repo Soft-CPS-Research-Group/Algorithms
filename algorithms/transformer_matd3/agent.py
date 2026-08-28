@@ -1696,10 +1696,20 @@ class AgentTransformerMATD3(BaseAgent):
         ``actor_update_performed`` remains true when any actor event is pending.
         """
         actor_event = bool(metrics.get(f"{_METRIC_PREFIX}actor_update_performed", 0.0))
+        actor_scoped_keys = {
+            f"{_METRIC_PREFIX}actor_update_performed",
+            f"{_METRIC_PREFIX}actor_update_event_count",
+            f"{_METRIC_PREFIX}policy_replay_q_abs_gap",
+            f"{_METRIC_PREFIX}replay_action_q_mean",
+            f"{_METRIC_PREFIX}replay_action_q_abs_mean",
+            f"{_METRIC_PREFIX}policy_action_q_mean",
+            f"{_METRIC_PREFIX}policy_action_q_abs_mean",
+        }
         for key, value in metrics.items():
             is_actor_value = (
                 key.startswith(f"{_METRIC_PREFIX}actor_")
                 or key.startswith(f"{_METRIC_PREFIX}policy_action_q")
+                or key in actor_scoped_keys
             )
             if is_actor_value and not actor_event and key in self._latest_training_metrics:
                 continue
@@ -2255,6 +2265,9 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}policy_action_q_abs_mean": float(policy_q_flat.abs().mean()),
             f"{_METRIC_PREFIX}policy_replay_q_abs_gap": float(
                 self._aligned_q_gap(policy_q_values, actor_replay_q_values)
+            ),
+            f"{_METRIC_PREFIX}actor_update_event_count": float(
+                self.actor_update_count
             ),
             f"{_METRIC_PREFIX}critic_loss_huber": float(self.critic_loss_type == "huber"),
             f"{_METRIC_PREFIX}critic_huber_delta": float(self.critic_huber_delta),
