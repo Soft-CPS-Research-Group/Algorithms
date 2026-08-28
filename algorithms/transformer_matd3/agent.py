@@ -151,6 +151,12 @@ class AgentTransformerMATD3(BaseAgent):
         self.critic_target_clip_abs = float(
             hyperparameters.get("critic_target_clip_abs", 0.0)
         )
+        self.critic_loss_type = str(
+            hyperparameters.get("critic_loss_type", "mse") or "mse"
+        ).strip().lower()
+        self.critic_huber_delta = float(
+            hyperparameters.get("critic_huber_delta", 1.0)
+        )
         self.reward_normalization_enabled = bool(
             hyperparameters.get("reward_normalization_enabled", False)
         )
@@ -1991,8 +1997,8 @@ class AgentTransformerMATD3(BaseAgent):
             expected_2 = state.critic_2(
                 observations, self._layouts, proposed_actions
             )
-            loss_1 = nn.functional.mse_loss(expected_1, target)
-            loss_2 = nn.functional.mse_loss(expected_2, target)
+            loss_1 = self._critic_regression_loss(expected_1, target)
+            loss_2 = self._critic_regression_loss(expected_2, target)
             state.critic_1_optimizer.zero_grad(set_to_none=True)
             loss_1.backward()
             grad_1 = clip_grad_norm_(state.critic_1.parameters(), self.max_grad_norm)
@@ -2197,11 +2203,6 @@ class AgentTransformerMATD3(BaseAgent):
             if replay_q_values
             else target_flat.new_zeros(1)
         )
-        actor_replay_q_flat = (
-            torch.cat(actor_replay_q_values)
-            if actor_replay_q_values
-            else target_flat.new_zeros(1)
-        )
         critic_grad_array = np.asarray(critic_grad_norms, dtype=np.float64)
         actor_grad_array = np.asarray(actor_grad_norms, dtype=np.float64)
 
@@ -2253,8 +2254,10 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}policy_action_q_mean": float(policy_q_flat.mean()),
             f"{_METRIC_PREFIX}policy_action_q_abs_mean": float(policy_q_flat.abs().mean()),
             f"{_METRIC_PREFIX}policy_replay_q_abs_gap": float(
-                (policy_q_flat - actor_replay_q_flat).abs().mean()
+                self._aligned_q_gap(policy_q_values, actor_replay_q_values)
             ),
+            f"{_METRIC_PREFIX}critic_loss_huber": float(self.critic_loss_type == "huber"),
+            f"{_METRIC_PREFIX}critic_huber_delta": float(self.critic_huber_delta),
             f"{_METRIC_PREFIX}actor_update_performed": float(bool(actor_losses)),
             f"{_METRIC_PREFIX}actor_skip_critic_warmup": float(
                 not actor_update_due
@@ -4459,6 +4462,30 @@ class AgentTransformerMATD3(BaseAgent):
                 if isinstance(value, torch.Tensor):
                     values[key] = value.to(self.device)
 
+    def _critic_regression_loss(
+        self, expected: torch.Tensor, target: torch.Tensor
+    ) -> torch.Tensor:
+        if self.critic_loss_type == "huber":
+            return nn.functional.smooth_l1_loss(
+                expected, target, beta=self.critic_huber_delta
+            )
+        return nn.functional.mse_loss(expected, target)
+
+    @staticmethod
+    def _aligned_q_gap(
+        policy_q_values: Sequence[torch.Tensor],
+        replay_q_values: Sequence[torch.Tensor],
+    ) -> float:
+        """Compare policy and replay Q only for the same actor-update events."""
+        if not policy_q_values or len(policy_q_values) != len(replay_q_values):
+            return 0.0
+        gaps = []
+        for policy_q, replay_q in zip(policy_q_values, replay_q_values):
+            if policy_q.shape != replay_q.shape:
+                return 0.0
+            gaps.append((policy_q.detach() - replay_q.detach()).abs().reshape(-1))
+        return float(torch.cat(gaps).mean()) if gaps else 0.0
+
     def _validate_hyperparameters(self) -> None:
         if self.learning_rate <= 0.0:
             raise ValueError("learning_rate must be positive")
@@ -4493,6 +4520,10 @@ class AgentTransformerMATD3(BaseAgent):
             raise ValueError("target policy noise values must be non-negative")
         if self.critic_target_clip_abs < 0.0:
             raise ValueError("critic_target_clip_abs must be non-negative")
+        if self.critic_loss_type not in {"mse", "huber"}:
+            raise ValueError("critic_loss_type must be 'mse' or 'huber'")
+        if not np.isfinite(self.critic_huber_delta) or self.critic_huber_delta <= 0.0:
+            raise ValueError("critic_huber_delta must be positive and finite")
         if self.reward_normalization_clip <= 0.0:
             raise ValueError("reward_normalization_clip must be positive")
         if self.noise_clip is not None and self.noise_clip < 0.0:

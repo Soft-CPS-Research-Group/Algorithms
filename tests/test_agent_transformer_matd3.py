@@ -125,6 +125,31 @@ def test_actor_policy_loss_weight_is_configurable() -> None:
     assert agent.actor_policy_loss_weight == pytest.approx(0.085)
 
 
+def test_critic_loss_defaults_to_mse_and_supports_huber_delta() -> None:
+    mse_agent, _ = _make_agent()
+    expected = torch.tensor([[3.0, 0.0]])
+    target = torch.zeros_like(expected)
+    assert mse_agent.critic_loss_type == "mse"
+    assert mse_agent._critic_regression_loss(expected, target).item() == pytest.approx(4.5)
+
+    huber_agent, _ = _make_agent(critic_loss_type="huber", critic_huber_delta=1.0)
+    assert huber_agent._critic_regression_loss(expected, target).item() == pytest.approx(1.25)
+
+
+def test_critic_huber_delta_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="critic_huber_delta"):
+        _make_agent(critic_loss_type="huber", critic_huber_delta=0.0)
+
+
+def test_policy_replay_q_gap_uses_aligned_actor_update_values() -> None:
+    from algorithms.transformer_matd3.agent import AgentTransformerMATD3
+
+    policy = [torch.tensor([[-2.0], [-1.0]])]
+    replay = [torch.tensor([[1.0], [1.0]])]
+    assert AgentTransformerMATD3._aligned_q_gap(policy, replay) == pytest.approx(2.5)
+    assert AgentTransformerMATD3._aligned_q_gap(policy, []) == 0.0
+
+
 def test_predict_is_repeatable_and_respects_per_ca_bounds() -> None:
     agent, obs_dim = _make_agent(buildings=1)
     observations = [np.linspace(-1.0, 1.0, obs_dim, dtype=np.float32)]

@@ -114,6 +114,8 @@ pipeline:
       n_step_returns: 1
       critic_team_reward_mix: 0.0
       critic_target_clip_abs: 0.0
+      critic_loss_type: mse
+      critic_huber_delta: 1.0
       reward_normalization_enabled: true
       reward_normalization_clip: 10.0
       target_policy_smoothing: true
