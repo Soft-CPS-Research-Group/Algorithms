@@ -62,7 +62,10 @@ Every 16th critic update, the agent records
 partial derivatives of critic 1 with respect to that building's stored
 electrical-storage action components, evaluated at replay actions. They are
 local critic sensitivity diagnostics, not environment perturbation results, and
-are zero when the building has no storage action.
+are emitted only when the derivative is available and finite. The companion
+`storage_action_count` and `storage_critic_dq_da_available` fields distinguish
+no storage action or a structurally disconnected critic input from a measured
+zero sensitivity; disconnected derivatives are not reported as numeric zero.
 
 Run locally:
 

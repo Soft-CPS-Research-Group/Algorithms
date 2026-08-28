@@ -349,7 +349,20 @@ def test_critic_action_sensitivity_is_sampled_on_bounded_cadence() -> None:
     _transition(agent, obs_dim, 0)
     metrics = agent.get_diagnostic_metrics()
     key = "TransformerMATD3/building_0_storage_critic_dq_da_abs_mean"
+    assert metrics["TransformerMATD3/building_0_storage_action_count"] > 0.0
+    assert metrics["TransformerMATD3/building_0_storage_critic_dq_da_available"] == 1.0
     assert key in metrics
     assert np.isfinite(metrics[key])
+    assert metrics[key] > 0.0
     assert np.isfinite(metrics["TransformerMATD3/building_0_storage_critic_dq_da_abs_p95"])
     assert np.isfinite(metrics["TransformerMATD3/building_0_storage_critic_dq_da_abs_max"])
+
+
+def test_critic_action_sensitivity_handles_mixed_topology() -> None:
+    agent, obs_dim = _make_agent(buildings=2, batch_size=1)
+    agent.critic_update_count = 15
+    _transition(agent, obs_dim, 0)
+    metrics = agent.get_diagnostic_metrics()
+    for index in range(2):
+        assert metrics[f"TransformerMATD3/building_{index}_storage_action_count"] >= 0.0
+        assert metrics[f"TransformerMATD3/building_{index}_storage_critic_dq_da_available"] in {0.0, 1.0}

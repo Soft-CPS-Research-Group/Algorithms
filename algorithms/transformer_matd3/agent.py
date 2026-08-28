@@ -2349,30 +2349,57 @@ class AgentTransformerMATD3(BaseAgent):
                 for value in proposed_actions
             ]
             for index, state in enumerate(self._per_building):
-                q_value = state.critic_1(
-                    observations, self._layouts, sensitivity_actions
-                ).sum()
-                gradient = torch.autograd.grad(
-                    q_value, sensitivity_actions[index], retain_graph=False
-                )[0].detach()
                 storage_indices = [
                     action_index
                     for action_index, action_name in enumerate(state.action_names)
                     if self._is_storage_action_name(action_name)
                 ]
-                if storage_indices:
+                self._latest_training_metrics[
+                    f"{_METRIC_PREFIX}building_{index}_storage_action_count"
+                ] = float(len(storage_indices))
+                if not storage_indices:
+                    self._latest_training_metrics[
+                        f"{_METRIC_PREFIX}building_{index}_storage_critic_dq_da_available"
+                    ] = 0.0
+                    continue
+                q_value = state.critic_1(
+                    observations, self._layouts, sensitivity_actions
+                ).sum()
+                gradient = torch.autograd.grad(
+                    q_value,
+                    sensitivity_actions[index],
+                    retain_graph=False,
+                    allow_unused=True,
+                )[0]
+                if gradient is not None:
+                    gradient = gradient.detach()
                     storage_gradient = gradient[..., storage_indices].abs().reshape(-1)
-                    sensitivity_metrics = {
-                        "storage_critic_dq_da_abs_mean": float(storage_gradient.mean()),
-                        "storage_critic_dq_da_abs_p95": percentile(storage_gradient, 0.95),
-                        "storage_critic_dq_da_abs_max": float(storage_gradient.max()),
-                    }
+                    if torch.isfinite(storage_gradient).all():
+                        sensitivity_metrics = {
+                            "storage_critic_dq_da_available": 1.0,
+                            "storage_critic_dq_da_abs_mean": float(storage_gradient.mean()),
+                            "storage_critic_dq_da_abs_p95": percentile(storage_gradient, 0.95),
+                            "storage_critic_dq_da_abs_max": float(storage_gradient.max()),
+                        }
+                    else:
+                        sensitivity_metrics = {
+                            "storage_critic_dq_da_available": 0.0,
+                        }
                 else:
                     sensitivity_metrics = {
-                        "storage_critic_dq_da_abs_mean": 0.0,
-                        "storage_critic_dq_da_abs_p95": 0.0,
-                        "storage_critic_dq_da_abs_max": 0.0,
+                        "storage_critic_dq_da_available": 0.0,
                     }
+                if not sensitivity_metrics["storage_critic_dq_da_available"]:
+                    # Do not publish a numeric zero for a disconnected or
+                    # non-finite derivative. Availability disambiguates it.
+                    for name in (
+                        "storage_critic_dq_da_abs_mean",
+                        "storage_critic_dq_da_abs_p95",
+                        "storage_critic_dq_da_abs_max",
+                    ):
+                        self._latest_training_metrics.pop(
+                            f"{_METRIC_PREFIX}building_{index}_{name}", None
+                        )
                 for name, value in sensitivity_metrics.items():
                     self._latest_training_metrics[f"{_METRIC_PREFIX}building_{index}_{name}"] = value
         if self.bc_a_enabled:
