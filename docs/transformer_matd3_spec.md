@@ -177,7 +177,9 @@ ONNX graph.
 
 Before replay insertion, the n-step queue computes discounted rewards and done
 masks per building. A sampled batch already contains these n-step transitions.
-Optional reward normalization applies only to learning targets.
+Optional reward normalization applies only to learning targets. Its default
+`global` scope uses one shared running state. The `per_building` scope keeps
+independent count, mean, and variance state for each stable building column.
 
 For each actor building `i`:
 
@@ -255,6 +257,9 @@ Full checkpoints contain actor and target stacks, critics and targets, all
 optimizers, replay, n-step queue, current signature, topology versions,
 exploration state, reward-normalization state, enabled BC state, and Python,
 NumPy, PyTorch, and CUDA RNG state.
+
+Reward-normalization scope is strict. A missing scope in an older format-5
+checkpoint means `global`; it is not converted to `per_building` state.
 
 Inference checkpoints contain actor stacks, signatures, names, bounds,
 topology versions, and `exploration_step`. They may load only into a frozen

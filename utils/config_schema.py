@@ -1267,6 +1267,7 @@ class TransformerMATD3Hyperparameters(BaseModel):
     critic_loss_type: Literal["mse", "huber"] = "mse"
     critic_huber_delta: float = Field(default=1.0, gt=0.0)
     reward_normalization_enabled: bool = False
+    reward_normalization_scope: Literal["global", "per_building"] = "global"
     reward_normalization_clip: float = Field(default=10.0, gt=0.0)
     target_policy_smoothing: bool = True
     target_policy_noise: float = Field(ge=0.0)

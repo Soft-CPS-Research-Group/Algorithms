@@ -376,8 +376,73 @@ def test_reward_normalization_uses_global_welford_state() -> None:
 
     assert agent.reward_norm_count == 2
     assert agent.reward_norm_mean == pytest.approx(2.0)
+    assert agent.reward_norm_m2 == pytest.approx(2.0)
+    normalized = agent._normalize_reward_tensor(
+        torch.tensor([[1.0], [3.0]], device=agent.device)
+    )
+    assert normalized.cpu().reshape(-1).tolist() == pytest.approx(
+        [-2.0**-0.5, 2.0**-0.5]
+    )
     assert agent._last_train_rewards is not None
     assert torch.isfinite(agent._last_train_rewards).all()
+
+
+def test_reward_normalization_keeps_per_building_scales_independent() -> None:
+    agent, _ = _make_agent(
+        buildings=2,
+        reward_normalization_enabled=True,
+        reward_normalization_scope="per_building",
+    )
+
+    agent._update_reward_normalizer([1.0, 100.0])
+    agent._update_reward_normalizer([3.0, 300.0])
+    normalized = agent._normalize_reward_tensor(
+        torch.tensor([[3.0, 300.0]], device=agent.device)
+    )
+
+    assert agent.reward_norm_counts.tolist() == [2, 2]
+    assert agent.reward_norm_means.tolist() == pytest.approx([2.0, 200.0])
+    assert agent.reward_norm_m2s.tolist() == pytest.approx([2.0, 20000.0])
+    assert normalized.cpu().tolist()[0] == pytest.approx(
+        [2.0**-0.5, 2.0**-0.5]
+    )
+
+
+def test_extreme_building_does_not_change_other_normalized_reward() -> None:
+    common = {
+        "buildings": 2,
+        "reward_normalization_enabled": True,
+        "reward_normalization_scope": "per_building",
+    }
+    reference, _ = _make_agent(**common)
+    extreme, _ = _make_agent(**common)
+    for left, right in (([1.0, 10.0], [1.0, 10.0]), ([3.0, 30.0], [3.0, 3.0e9])):
+        reference._update_reward_normalizer(left)
+        extreme._update_reward_normalizer(right)
+
+    reward = torch.tensor([[2.5, 20.0]])
+    reference_value = reference._normalize_reward_tensor(reward)[0, 0]
+    extreme_value = extreme._normalize_reward_tensor(reward)[0, 0]
+
+    assert extreme_value.item() == pytest.approx(reference_value.item())
+
+
+def test_per_building_reward_normalization_skips_non_finite_statistics() -> None:
+    agent, _ = _make_agent(
+        buildings=2,
+        reward_normalization_enabled=True,
+        reward_normalization_scope="per_building",
+    )
+
+    agent._update_reward_normalizer([1.0, float("nan")])
+    agent._update_reward_normalizer([3.0, float("inf")])
+    normalized = agent._normalize_reward_tensor(
+        torch.tensor([[3.0, float("nan")]], device=agent.device)
+    )
+
+    assert agent.reward_norm_counts.tolist() == [2, 0]
+    assert torch.isfinite(normalized[0, 0])
+    assert torch.isnan(normalized[0, 1])
 
 
 def test_n_step_returns_flush_terminal_tail() -> None:

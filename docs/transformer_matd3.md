@@ -123,6 +123,9 @@ pipeline:
       target_policy_noise_clip: 0.5
       actor_update_interval: 2
       actor_policy_loss_weight: 1.0
+      reward_normalization_enabled: false
+      reward_normalization_scope: global
+      reward_normalization_clip: 10.0
       sigma: 0.1
       sigma_decay: 0.9995
       min_sigma: 0.01
@@ -145,6 +148,9 @@ Important rules:
 - `end_initial_exploration_time_step` controls when learning may start.
 - `actor_policy_loss_weight` must be non-negative. It scales the MATD3 policy
   term before optional BC terms. The cost4 translation uses `0.085`.
+- `reward_normalization_scope` accepts `global` or `per_building`. The default
+  `global` scope preserves the existing shared running statistics. The
+  `per_building` scope keeps independent statistics in attached building order.
 - `n_step_gamma` defaults to `gamma`.
 - Unknown fields fail validation.
 
@@ -259,6 +265,9 @@ Restore is strict. Building count, building identity, layout signature, action
 names, action bounds, checkpoint mode, enabled BC paths, and compatible BC-B
 reservoir capacity must match. All validation completes before live state
 changes. An inference checkpoint can only load into a frozen stage.
+
+Legacy format-5 checkpoints without a normalization scope are global. Loading
+them into a per-building configuration fails instead of converting statistics.
 
 ## Export and deployment
 

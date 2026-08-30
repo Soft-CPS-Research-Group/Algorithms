@@ -230,6 +230,45 @@ def test_building_count_change_applies_reset_full() -> None:
     )
 
 
+def test_dynamic_topology_preserves_per_building_reward_statistics() -> None:
+    agent, _ = _make_agent(
+        buildings=1,
+        reward_normalization_enabled=True,
+        reward_normalization_scope="per_building",
+    )
+    agent._update_reward_normalizer([1.0])
+    agent._update_reward_normalizer([3.0])
+
+    _attach_expanded(agent)
+
+    assert agent.reward_norm_counts.tolist() == [2]
+    assert agent.reward_norm_means.tolist() == pytest.approx([2.0])
+
+
+def test_building_count_change_resizes_per_building_reward_statistics() -> None:
+    agent, _ = _make_agent(
+        buildings=1,
+        reward_normalization_enabled=True,
+        reward_normalization_scope="per_building",
+    )
+    agent._update_reward_normalizer([2.0])
+    names = load_sample_observation_names_for_first_building()
+
+    agent.attach_environment(
+        observation_names=[list(names), list(names)],
+        action_names=[list(_ACTION_NAMES), list(_ACTION_NAMES)],
+        action_space=[
+            _Box([-2.0, -0.5], [1.0, 0.75]),
+            _Box([-2.0, -0.5], [1.0, 0.75]),
+        ],
+        observation_space=[None, None],
+        metadata={"building_names": ["Building_1", "Building_2"]},
+    )
+
+    assert agent.reward_norm_counts.tolist() == [0, 0]
+    assert agent.reward_norm_means.tolist() == pytest.approx([0.0, 0.0])
+
+
 def test_late_topology_attach_failure_restores_committed_state(monkeypatch) -> None:
     agent, _ = _make_agent(buildings=1)
     snapshot = agent.snapshot_topology_state()

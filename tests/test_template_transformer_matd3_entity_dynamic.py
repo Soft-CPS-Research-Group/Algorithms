@@ -86,6 +86,25 @@ def test_templates_declare_actor_policy_loss_weight() -> None:
         assert hyperparameters["actor_policy_loss_weight"] >= 0.0
 
 
+def test_reward_normalization_scope_schema_is_strict() -> None:
+    config = _load("default")
+    hyperparameters = config["pipeline"][0]["hyperparameters"]
+
+    validated = validate_config(config)
+    assert validated.pipeline[0].hyperparameters.reward_normalization_scope == "global"
+
+    hyperparameters["reward_normalization_scope"] = "per_building"
+    validated = validate_config(config)
+    assert (
+        validated.pipeline[0].hyperparameters.reward_normalization_scope
+        == "per_building"
+    )
+
+    hyperparameters["reward_normalization_scope"] = "per_agent"
+    with pytest.raises(ValueError, match="reward_normalization_scope"):
+        validate_config(config)
+
+
 def test_cost4_template_matches_named_recipe_translation() -> None:
     stage = _load("cost4")["pipeline"][0]
     hyperparameters = stage["hyperparameters"]

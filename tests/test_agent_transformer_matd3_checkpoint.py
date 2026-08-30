@@ -101,6 +101,83 @@ def test_full_format_5_round_trip_restores_training_replay_queue_and_rng(
     assert len(restored_state.critic_1_optimizer.state) > 0
 
 
+def test_legacy_global_checkpoint_without_scope_remains_compatible(
+    tmp_path: Path,
+) -> None:
+    source, obs_dim = _make_agent(
+        buildings=1,
+        reward_normalization_enabled=True,
+    )
+    _transition(source, obs_dim, 0, rewards=[1.0])
+    _transition(source, obs_dim, 1, rewards=[3.0])
+    path = source.save_checkpoint(str(tmp_path), step=4)
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    del payload["reward_normalization_state"]["scope"]
+    legacy = tmp_path / "legacy_global.pt"
+    torch.save(payload, legacy)
+    restored, _ = _make_agent(
+        buildings=1,
+        reward_normalization_enabled=True,
+    )
+
+    restored.load_checkpoint(str(legacy))
+
+    assert restored.reward_normalization_scope == "global"
+    assert restored.reward_norm_count == source.reward_norm_count
+    assert restored.reward_norm_mean == pytest.approx(source.reward_norm_mean)
+    assert restored.reward_norm_m2 == pytest.approx(source.reward_norm_m2)
+
+
+def test_per_building_checkpoint_restores_exact_normalizer_state(
+    tmp_path: Path,
+) -> None:
+    source, _ = _make_agent(
+        buildings=2,
+        reward_normalization_enabled=True,
+        reward_normalization_scope="per_building",
+    )
+    source._update_reward_normalizer([1.0, 100.0])
+    source._update_reward_normalizer([3.0, 500.0])
+    path = source.save_checkpoint(str(tmp_path), step=5)
+    restored, _ = _make_agent(
+        buildings=2,
+        reward_normalization_enabled=True,
+        reward_normalization_scope="per_building",
+    )
+
+    restored.load_checkpoint(path)
+
+    assert np.array_equal(restored.reward_norm_counts, source.reward_norm_counts)
+    assert np.array_equal(restored.reward_norm_means, source.reward_norm_means)
+    assert np.array_equal(restored.reward_norm_m2s, source.reward_norm_m2s)
+
+
+def test_reward_normalization_scope_mismatch_precedes_mutation(
+    tmp_path: Path,
+) -> None:
+    source, _ = _make_agent(
+        buildings=1,
+        reward_normalization_enabled=True,
+    )
+    path = source.save_checkpoint(str(tmp_path), step=6)
+    target, _ = _make_agent(
+        buildings=1,
+        reward_normalization_enabled=True,
+        reward_normalization_scope="per_building",
+    )
+    actor_before = _parameters(target._per_building[0].actor)
+
+    with pytest.raises(ValueError, match="scope mismatch"):
+        target.load_checkpoint(path)
+
+    assert all(
+        torch.equal(before, after.detach())
+        for before, after in zip(
+            actor_before, target._per_building[0].actor.parameters()
+        )
+    )
+
+
 def test_inference_round_trip_restores_actor_stack_and_operational_step(
     tmp_path: Path,
 ) -> None:
