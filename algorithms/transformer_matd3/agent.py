@@ -160,9 +160,6 @@ class AgentTransformerMATD3(BaseAgent):
         self.reward_normalization_enabled = bool(
             hyperparameters.get("reward_normalization_enabled", False)
         )
-        self.reward_normalization_scope = str(
-            hyperparameters.get("reward_normalization_scope", "global") or "global"
-        ).strip().lower()
         self.reward_normalization_clip = float(
             hyperparameters.get("reward_normalization_clip", 10.0)
         )
@@ -372,9 +369,6 @@ class AgentTransformerMATD3(BaseAgent):
         self.reward_norm_count = 0
         self.reward_norm_mean = 0.0
         self.reward_norm_m2 = 0.0
-        self.reward_norm_counts = np.zeros(0, dtype=np.int64)
-        self.reward_norm_means = np.zeros(0, dtype=np.float64)
-        self.reward_norm_m2s = np.zeros(0, dtype=np.float64)
         self._latest_training_metrics: Dict[str, float] = {}
         tracking_cfg = config.get("tracking", {}) if isinstance(config, dict) else {}
         self.runtime_profiling_enabled = bool(
@@ -572,7 +566,6 @@ class AgentTransformerMATD3(BaseAgent):
             num_agents=len(layouts),
             batch_size=self.batch_size,
         )
-        self._reset_reward_normalizer_state(len(layouts))
 
     def _adapt_compatible_topology(
         self,
@@ -695,7 +688,9 @@ class AgentTransformerMATD3(BaseAgent):
         self._n_step_queue.clear()
         self.exploration_sigma = self.sigma
         self.exploration_step = 0
-        self._reset_reward_normalizer_state(len(layouts))
+        self.reward_norm_count = 0
+        self.reward_norm_mean = 0.0
+        self.reward_norm_m2 = 0.0
         self.bc_a_offline_pretrain_completed_steps = 0
         self.critic_update_count = 0
         self.actor_update_count = 0
@@ -1533,20 +1528,9 @@ class AgentTransformerMATD3(BaseAgent):
                     },
                     "reward_normalization_state": {
                         "enabled": self.reward_normalization_enabled,
-                        "scope": self.reward_normalization_scope,
-                        **(
-                            {
-                                "count": int(self.reward_norm_count),
-                                "mean": float(self.reward_norm_mean),
-                                "m2": float(self.reward_norm_m2),
-                            }
-                            if self.reward_normalization_scope == "global"
-                            else {
-                                "counts": self.reward_norm_counts.tolist(),
-                                "means": self.reward_norm_means.tolist(),
-                                "m2s": self.reward_norm_m2s.tolist(),
-                            }
-                        ),
+                        "count": int(self.reward_norm_count),
+                        "mean": float(self.reward_norm_mean),
+                        "m2": float(self.reward_norm_m2),
                     },
                     "rng_state": {
                         "python": random.getstate(),
@@ -1670,20 +1654,9 @@ class AgentTransformerMATD3(BaseAgent):
             ):
                 setattr(self, name, int(counters[name]))
             reward = payload["reward_normalization_state"]
-            if self.reward_normalization_scope == "global":
-                self.reward_norm_count = int(reward["count"])
-                self.reward_norm_mean = float(reward["mean"])
-                self.reward_norm_m2 = float(reward["m2"])
-            else:
-                self.reward_norm_counts = np.asarray(
-                    reward["counts"], dtype=np.int64
-                ).copy()
-                self.reward_norm_means = np.asarray(
-                    reward["means"], dtype=np.float64
-                ).copy()
-                self.reward_norm_m2s = np.asarray(
-                    reward["m2s"], dtype=np.float64
-                ).copy()
+            self.reward_norm_count = int(reward["count"])
+            self.reward_norm_mean = float(reward["mean"])
+            self.reward_norm_m2 = float(reward["m2"])
             bc_state = payload["bc_state"]
             if self.bc_a_enabled:
                 self.bc_a_offline_pretrain_completed_steps = int(
@@ -3988,25 +3961,7 @@ class AgentTransformerMATD3(BaseAgent):
     def _update_reward_normalizer(self, rewards: Sequence[float]) -> None:
         if not self.reward_normalization_enabled:
             return
-        values = np.asarray(rewards, dtype=np.float64).reshape(-1)
-        if self.reward_normalization_scope == "per_building":
-            if values.size != len(self._per_building):
-                raise ValueError(
-                    "per-building reward normalization requires one reward per building"
-                )
-            for index, value in enumerate(values):
-                if not np.isfinite(value):
-                    continue
-                self.reward_norm_counts[index] += 1
-                delta = float(value) - self.reward_norm_means[index]
-                self.reward_norm_means[index] += (
-                    delta / self.reward_norm_counts[index]
-                )
-                self.reward_norm_m2s[index] += delta * (
-                    float(value) - self.reward_norm_means[index]
-                )
-            return
-        for value in values:
+        for value in np.asarray(rewards, dtype=np.float64).reshape(-1):
             if not np.isfinite(value):
                 continue
             self.reward_norm_count += 1
@@ -4014,39 +3969,8 @@ class AgentTransformerMATD3(BaseAgent):
             self.reward_norm_mean += delta / self.reward_norm_count
             self.reward_norm_m2 += delta * (float(value) - self.reward_norm_mean)
 
-    def _reset_reward_normalizer_state(self, building_count: int) -> None:
-        self.reward_norm_count = 0
-        self.reward_norm_mean = 0.0
-        self.reward_norm_m2 = 0.0
-        self.reward_norm_counts = np.zeros(building_count, dtype=np.int64)
-        self.reward_norm_means = np.zeros(building_count, dtype=np.float64)
-        self.reward_norm_m2s = np.zeros(building_count, dtype=np.float64)
-
     def _normalize_reward_tensor(self, rewards: torch.Tensor) -> torch.Tensor:
-        if not self.reward_normalization_enabled:
-            return rewards
-        if self.reward_normalization_scope == "per_building":
-            if rewards.ndim != 2 or rewards.shape[1] != len(self._per_building):
-                raise ValueError(
-                    "per-building reward tensor width must match building count"
-                )
-            normalized = rewards.clone()
-            for index, count in enumerate(self.reward_norm_counts):
-                if count < 2:
-                    continue
-                variance = max(
-                    self.reward_norm_m2s[index] / (int(count) - 1), 0.0
-                )
-                standard_deviation = max(float(np.sqrt(variance)), 1.0e-8)
-                normalized[:, index] = (
-                    (rewards[:, index] - self.reward_norm_means[index])
-                    / standard_deviation
-                ).clamp(
-                    -self.reward_normalization_clip,
-                    self.reward_normalization_clip,
-                )
-            return normalized
-        if self.reward_norm_count < 2:
+        if not self.reward_normalization_enabled or self.reward_norm_count < 2:
             return rewards
         variance = max(
             self.reward_norm_m2 / (self.reward_norm_count - 1), 0.0
@@ -4274,51 +4198,6 @@ class AgentTransformerMATD3(BaseAgent):
             raise ValueError("checkpoint reward_normalization_state is invalid")
         if reward.get("enabled") is not self.reward_normalization_enabled:
             raise ValueError("checkpoint reward normalization mode mismatch")
-        saved_scope = reward.get("scope", "global")
-        if saved_scope != self.reward_normalization_scope:
-            raise ValueError(
-                "checkpoint reward normalization scope mismatch: "
-                f"checkpoint={saved_scope!r}, configured="
-                f"{self.reward_normalization_scope!r}"
-            )
-        if saved_scope == "per_building":
-            expected_count = len(self._per_building)
-            counts = reward.get("counts")
-            means = reward.get("means")
-            m2s = reward.get("m2s")
-            if (
-                not isinstance(counts, (list, tuple))
-                or not isinstance(means, (list, tuple))
-                or not isinstance(m2s, (list, tuple))
-                or len(counts) != expected_count
-                or len(means) != expected_count
-                or len(m2s) != expected_count
-                or any(
-                    isinstance(value, bool)
-                    or not isinstance(value, int)
-                    or value < 0
-                    for value in counts
-                )
-                or any(
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not np.isfinite(float(value))
-                    for value in means
-                )
-                or any(
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not np.isfinite(float(value))
-                    or float(value) < 0.0
-                    for value in m2s
-                )
-            ):
-                raise ValueError(
-                    "checkpoint per-building reward normalization state is invalid"
-                )
-            self._validate_checkpoint_bc_state(payload["bc_state"])
-            self._validate_rng_state(payload["rng_state"])
-            return replay
         count, mean, m2 = reward.get("count"), reward.get("mean"), reward.get("m2")
         if (
             isinstance(count, bool) or not isinstance(count, int) or count < 0
@@ -4660,10 +4539,6 @@ class AgentTransformerMATD3(BaseAgent):
             raise ValueError("critic_huber_delta must be positive and finite")
         if self.reward_normalization_clip <= 0.0:
             raise ValueError("reward_normalization_clip must be positive")
-        if self.reward_normalization_scope not in {"global", "per_building"}:
-            raise ValueError(
-                "reward_normalization_scope must be 'global' or 'per_building'"
-            )
         if self.noise_clip is not None and self.noise_clip < 0.0:
             raise ValueError("noise_clip must be non-negative")
         if self.random_exploration_steps < 0:
