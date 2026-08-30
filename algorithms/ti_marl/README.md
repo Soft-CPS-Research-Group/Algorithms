@@ -291,6 +291,17 @@ restoration is disabled.
 coverage and per-mode recall make the division between learned control and the
 safety shield measurable.
 
+`storage_planning` is the corresponding optional causal auxiliary for
+stationary batteries. It uses only typed storage SoC/capability, local net
+exchange, the current tariff, and explicitly declared tariff forecasts. It
+labels local-PV capture, materially cheap charging, materially expensive
+import-offset discharge, and deliberate idle decisions. The labels train the
+shared neural actor but never issue runtime commands; compiled bounds and the
+local feasibility projector remain authoritative. As with EV planning, rare
+storage modes use a reason-stratified bounded reservoir that is isolated from
+the on-policy PPO rollout and round-trips in training checkpoints. Keeping the
+block disabled gives the exact pure TI-MAPPO ablation.
+
 An optional typed behavior-cloning warm start can execute deterministic
 `RBCSmartPolicy` actions for complete demonstration episodes and decode those
 actions back into the same valid typed action groups used by the actor.  It

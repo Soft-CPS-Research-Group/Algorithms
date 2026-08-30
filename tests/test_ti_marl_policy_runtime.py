@@ -25,6 +25,7 @@ from algorithms.ti_marl.contracts.models import (
 from algorithms.ti_marl.contracts.enums import HealthState
 from algorithms.ti_marl.learning.mappo import TIMAPPO
 from algorithms.ti_marl.learning.ev_planning import CausalEVPlanner
+from algorithms.ti_marl.learning.storage_planning import CausalStoragePlanner
 from algorithms.ti_marl.learning.behavior_cloning import (
     TypedBehaviorCloningWarmStart,
 )
@@ -2248,6 +2249,271 @@ def test_ev_planning_auxiliary_trains_raw_actor_without_projector(tmp_path):
     assert learner.state_dict()["ev_planning"]["replay"]
 
 
+def _snapshot_with_storage_planning_signals(
+    snapshot,
+    *,
+    current_price: float,
+    future_prices: tuple[float, float, float] | None,
+    storage_soc: float = 0.5,
+    local_net_power_kw: float = 4.0,
+):
+    storage_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "stationary_storage"
+    )
+    parts = [
+        replace(part, values=(current_price,))
+        if part.owner_agent_id == "Building_1"
+        and part.semantic_type == "market_price"
+        else replace(part, values=(storage_soc,))
+        if part.owner_agent_id == "Building_1"
+        and part.sensor_id == storage_group.module_id
+        and part.observation_id == "soc"
+        else part
+        for part in snapshot.observation_parts
+    ]
+    parts.append(
+        ObservationPart(
+            part_id="Building_1:self.energy.net_power_kw",
+            owner_agent_id="Building_1",
+            source_entity_id="Building_1",
+            semantic_type="local_energy",
+            feature_names=("net_power_kw",),
+            values=(local_net_power_kw,),
+            health=HealthState.HEALTHY,
+            sensor_id="self",
+            sensor_type="building_meter",
+            channel_id="energy",
+            observation_id="net_power_kw",
+            unit="kW",
+            scope="local",
+            use="policy_input",
+            policy_input=True,
+        )
+    )
+    if future_prices is not None:
+        for observation_id, value in zip(
+            (
+                "forecast_price_next_15m",
+                "forecast_price_next_1h",
+                "forecast_price_next_3h",
+            ),
+            future_prices,
+        ):
+            parts.append(
+                ObservationPart(
+                    part_id=f"Building_1:community.market.{observation_id}",
+                    owner_agent_id="Building_1",
+                    source_entity_id="district_0",
+                    semantic_type="market_price_forecast",
+                    feature_names=(observation_id,),
+                    values=(value,),
+                    health=HealthState.HEALTHY,
+                    sensor_id="community",
+                    sensor_type="community_aggregate_service",
+                    channel_id="market",
+                    observation_id=observation_id,
+                    unit="EUR/kWh",
+                    scope="community",
+                    use="policy_input",
+                    policy_input=True,
+                )
+            )
+    return replace(snapshot, observation_parts=tuple(parts))
+
+
+def test_causal_storage_planner_uses_typed_price_pv_and_soc(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path, buildings=("Building_1",))
+    planner = CausalStoragePlanner(minimum_price_spread=0.02)
+
+    cases = (
+        (
+            _snapshot_with_storage_planning_signals(
+                base,
+                current_price=0.10,
+                future_prices=(0.20, 0.30, 0.25),
+            ),
+            "CHARGE_STATIONARY",
+            "cheapest_forecast_opportunity",
+        ),
+        (
+            _snapshot_with_storage_planning_signals(
+                base,
+                current_price=0.30,
+                future_prices=(0.20, 0.10, 0.15),
+            ),
+            "DISCHARGE_STATIONARY",
+            "highest_forecast_import_offset",
+        ),
+        (
+            _snapshot_with_storage_planning_signals(
+                base,
+                current_price=0.20,
+                future_prices=(0.20, 0.20, 0.20),
+            ),
+            "IDLE",
+            "no_material_opportunity",
+        ),
+        (
+            _snapshot_with_storage_planning_signals(
+                base,
+                current_price=0.30,
+                future_prices=None,
+                local_net_power_kw=-3.0,
+            ),
+            "CHARGE_STATIONARY",
+            "local_pv_surplus",
+        ),
+    )
+    for snapshot, mode, reason in cases:
+        targets = planner.targets(snapshot, seconds_per_time_step=900.0)
+        assert len(targets) == 1
+        assert targets[0].decision.mode == mode
+        assert targets[0].reason == reason
+
+    full = _snapshot_with_storage_planning_signals(
+        base,
+        current_price=0.10,
+        future_prices=(0.20, 0.30, 0.25),
+        storage_soc=0.95,
+    )
+    assert planner.targets(full, seconds_per_time_step=900.0)[0].decision.mode == "IDLE"
+
+
+def test_storage_planning_auxiliary_trains_actor_and_round_trips_replay(tmp_path):
+    compiler, base = compile_snapshot(tmp_path, buildings=("Building_1",))
+    snapshots = (
+        _snapshot_with_storage_planning_signals(
+            base,
+            current_price=0.10,
+            future_prices=(0.20, 0.30, 0.25),
+        ),
+        _snapshot_with_storage_planning_signals(
+            base,
+            current_price=0.30,
+            future_prices=(0.20, 0.10, 0.15),
+        ),
+        _snapshot_with_storage_planning_signals(
+            base,
+            current_price=0.20,
+            future_prices=(0.20, 0.20, 0.20),
+        ),
+    )
+    torch.manual_seed(191)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+        group_context_kind="action_conditioned",
+    )
+    critic = LocalTypedCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+    )
+    planner = CausalStoragePlanner(minimum_price_spread=0.02)
+    learner = TIMAPPO(
+        actor,
+        critic,
+        learning_rate=2.0e-3,
+        rollout_steps=3,
+        ppo_epochs=8,
+        entropy_coeff=0.0,
+        target_kl=None,
+        storage_planner=planner,
+        storage_planning_auxiliary_coeff=1.0,
+    )
+    target_maps = []
+    for snapshot in snapshots:
+        with torch.no_grad():
+            evaluation = actor(snapshot, deterministic=False)
+            values = critic(snapshot)
+        decisions = {
+            bundle.agent_id: {
+                decision.group_id: decision for decision in bundle.decisions
+            }
+            for bundle in evaluation.bundles
+        }
+        for target in planner.targets(snapshot, seconds_per_time_step=900.0):
+            decisions[target.agent_id][target.group_id] = target.decision
+        target_maps.append(decisions)
+        learner.rollout.add(
+            RolloutStep(
+                snapshot=snapshot,
+                next_snapshot=snapshot,
+                bundles=evaluation.bundles,
+                old_log_probs={
+                    key: float(value)
+                    for key, value in evaluation.log_prob_by_agent.items()
+                },
+                values={key: float(value) for key, value in values.items()},
+                next_values={key: 0.0 for key in snapshot.agent_ids},
+                rewards={key: 0.0 for key in snapshot.agent_ids},
+                terminated_agent_ids=snapshot.agent_ids,
+                truncated=False,
+                final_bundles=evaluation.bundles,
+            )
+        )
+
+    storage_group_id = next(
+        group.group_id
+        for group in snapshots[0].groups_for("Building_1")
+        if group.group_type == "stationary_storage"
+    )
+    with torch.no_grad():
+        before = actor.evaluate_actions_many(tuple(zip(snapshots, target_maps)))
+        before_nll = -torch.stack(
+            [
+                before.mode_log_prob_by_group_step[index]["Building_1"][
+                    storage_group_id
+                ]
+                for index in range(len(snapshots))
+            ]
+        ).mean()
+    metrics = learner.update()
+    with torch.no_grad():
+        after = actor.evaluate_actions_many(tuple(zip(snapshots, target_maps)))
+        after_nll = -torch.stack(
+            [
+                after.mode_log_prob_by_group_step[index]["Building_1"][
+                    storage_group_id
+                ]
+                for index in range(len(snapshots))
+            ]
+        ).mean()
+
+    assert after_nll < before_nll
+    assert metrics["storage_planning_samples"] == 3.0
+    assert metrics["storage_planning_charge_samples"] == 1.0
+    assert metrics["storage_planning_discharge_samples"] == 1.0
+    assert metrics["storage_planning_idle_samples"] == 1.0
+    state = learner.state_dict()
+    assert state["storage_planning"]["replay"]
+
+    restored_actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+        group_context_kind="action_conditioned",
+    )
+    restored_critic = LocalTypedCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+    )
+    restored = TIMAPPO(
+        restored_actor,
+        restored_critic,
+        storage_planner=planner,
+        storage_planning_auxiliary_coeff=1.0,
+    )
+    restored.load_state_dict(state, restore_optimizers=False)
+    assert restored.state_dict()["storage_planning"]["replay"]
+
+
 def test_ev_planning_replay_keeps_only_agents_with_causal_targets(tmp_path):
     _compiler, base = compile_snapshot(tmp_path)
     snapshot = _snapshot_with_ev_planning_signals(
@@ -3192,6 +3458,25 @@ def test_agent_can_require_declared_electrical_service(tmp_path):
 
     with pytest.raises(ValueError, match="Building_1.*grid_import"):
         TIMARL(missing)
+
+
+def test_agent_builds_optional_causal_storage_planner(tmp_path):
+    config = agent_config(tmp_path)
+    config["algorithm"]["hyperparameters"]["storage_planning"] = {
+        "auxiliary_coeff": 0.2,
+        "charge_fraction": 0.6,
+        "discharge_fraction": 0.4,
+        "minimum_soc_ratio": 0.25,
+        "maximum_soc_ratio": 0.85,
+        "minimum_price_spread": 0.02,
+    }
+    agent = TIMARL(config)
+
+    assert agent.learner.storage_planning_auxiliary_coeff == pytest.approx(0.2)
+    assert agent.learner.storage_planner is not None
+    assert agent.learner.storage_planner.configuration()[
+        "minimum_price_spread"
+    ] == pytest.approx(0.02)
 
 
 def ti_ppo_agent_config(tmp_path):

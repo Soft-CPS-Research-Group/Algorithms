@@ -137,6 +137,20 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         "minimum_v2g_price_spread": 0.02,
         "minimum_v2g_departure_hours": 1.5,
     }
+    stage["hyperparameters"]["storage_planning"] = {
+        "auxiliary_coeff": 0.15,
+        "balance_targets": True,
+        "fraction_coeff": 0.3,
+        "replay_capacity_per_reason": 32,
+        "replay_samples_per_reason": 6,
+        "charge_fraction": 0.6,
+        "discharge_fraction": 0.5,
+        "minimum_soc_ratio": 0.25,
+        "maximum_soc_ratio": 0.85,
+        "minimum_price_spread": 0.02,
+        "pv_surplus_threshold_kw": 0.5,
+        "import_threshold_kw": 0.75,
+    }
     stage["hyperparameters"]["entropy_coeff_by_group_type"] = {
         "stationary_storage": 0.05,
         "ev_session": 0.005,
@@ -207,6 +221,19 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         .hyperparameters.ev_planning.minimum_v2g_departure_hours
         == 1.5
     )
+    storage_planning = parsed.pipeline[0].hyperparameters.storage_planning
+    assert storage_planning.auxiliary_coeff == 0.15
+    assert storage_planning.balance_targets
+    assert storage_planning.fraction_coeff == 0.3
+    assert storage_planning.replay_capacity_per_reason == 32
+    assert storage_planning.replay_samples_per_reason == 6
+    assert storage_planning.charge_fraction == 0.6
+    assert storage_planning.discharge_fraction == 0.5
+    assert storage_planning.minimum_soc_ratio == 0.25
+    assert storage_planning.maximum_soc_ratio == 0.85
+    assert storage_planning.minimum_price_spread == 0.02
+    assert storage_planning.pv_surplus_threshold_kw == 0.5
+    assert storage_planning.import_threshold_kw == 0.75
     assert (
         parsed.pipeline[0].hyperparameters.actor.deterministic_mode_strategy
         == "expected_signed"
