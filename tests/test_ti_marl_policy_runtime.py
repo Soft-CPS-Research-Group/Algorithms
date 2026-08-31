@@ -2381,6 +2381,55 @@ def test_causal_storage_planner_uses_typed_price_pv_and_soc(tmp_path):
     assert planner.targets(full, seconds_per_time_step=900.0)[0].decision.mode == "IDLE"
 
 
+def test_causal_storage_planner_supports_relative_forecast_regimes(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path, buildings=("Building_1",))
+    planner = CausalStoragePlanner(
+        charge_fraction=0.60,
+        discharge_fraction=0.50,
+        minimum_price_spread=0.02,
+        price_regime_kind="relative_forecast",
+        scale_price_fraction_by_opportunity=True,
+        minimum_price_fraction_scale=0.50,
+    )
+
+    cheap = _snapshot_with_storage_planning_signals(
+        base,
+        current_price=0.15,
+        future_prices=(0.10, 0.20, 0.30),
+    )
+    cheap_target = planner.targets(cheap, seconds_per_time_step=900.0)[0]
+    assert cheap_target.decision.mode == "CHARGE_STATIONARY"
+    assert cheap_target.reason == "cheap_relative_forecast"
+    assert cheap_target.decision.fraction == pytest.approx(0.525)
+
+    expensive = _snapshot_with_storage_planning_signals(
+        base,
+        current_price=0.25,
+        future_prices=(0.10, 0.20, 0.30),
+        local_net_power_kw=20.0,
+    )
+    expensive_target = planner.targets(
+        expensive,
+        seconds_per_time_step=900.0,
+    )[0]
+    assert expensive_target.decision.mode == "DISCHARGE_STATIONARY"
+    assert expensive_target.reason == "expensive_relative_import_offset"
+    assert expensive_target.decision.fraction == pytest.approx(0.4375)
+
+    middle = _snapshot_with_storage_planning_signals(
+        base,
+        current_price=0.20,
+        future_prices=(0.10, 0.20, 0.30),
+    )
+    middle_target = planner.targets(middle, seconds_per_time_step=900.0)[0]
+    assert middle_target.decision.mode == "IDLE"
+
+
+def test_causal_storage_planner_rejects_invalid_price_regime():
+    with pytest.raises(ValueError, match="price_regime_kind"):
+        CausalStoragePlanner(price_regime_kind="future_oracle")
+
+
 def test_storage_planning_auxiliary_trains_actor_and_round_trips_replay(tmp_path):
     compiler, base = compile_snapshot(tmp_path, buildings=("Building_1",))
     snapshots = (
@@ -3469,6 +3518,9 @@ def test_agent_builds_optional_causal_storage_planner(tmp_path):
         "minimum_soc_ratio": 0.25,
         "maximum_soc_ratio": 0.85,
         "minimum_price_spread": 0.02,
+        "price_regime_kind": "relative_forecast",
+        "scale_price_fraction_by_opportunity": True,
+        "minimum_price_fraction_scale": 0.4,
     }
     agent = TIMARL(config)
 
@@ -3477,6 +3529,12 @@ def test_agent_builds_optional_causal_storage_planner(tmp_path):
     assert agent.learner.storage_planner.configuration()[
         "minimum_price_spread"
     ] == pytest.approx(0.02)
+    assert agent.learner.storage_planner.configuration()[
+        "price_regime_kind"
+    ] == "relative_forecast"
+    assert agent.learner.storage_planner.configuration()[
+        "scale_price_fraction_by_opportunity"
+    ] is True
 
 
 def ti_ppo_agent_config(tmp_path):

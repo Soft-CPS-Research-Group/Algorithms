@@ -64,6 +64,12 @@ class CausalStoragePlanner:
         minimum_price_spread: float = 0.01,
         pv_surplus_threshold_kw: float = 0.25,
         import_threshold_kw: float = 0.25,
+        price_regime_kind: str = "strict_extrema",
+        forecast_mean_margin_fraction: float = 0.20,
+        forecast_edge_margin_fraction: float = 0.10,
+        forecast_spread_floor_ratio: float = 0.05,
+        scale_price_fraction_by_opportunity: bool = False,
+        minimum_price_fraction_scale: float = 0.50,
     ) -> None:
         for name, value in {
             "charge_fraction": charge_fraction,
@@ -85,6 +91,22 @@ class CausalStoragePlanner:
             )
         ):
             raise ValueError("Storage planning tolerances must be non-negative")
+        if price_regime_kind not in {"strict_extrema", "relative_forecast"}:
+            raise ValueError(
+                "Storage planning price_regime_kind must be "
+                "'strict_extrema' or 'relative_forecast'"
+            )
+        for name, value in {
+            "forecast_mean_margin_fraction": forecast_mean_margin_fraction,
+            "forecast_edge_margin_fraction": forecast_edge_margin_fraction,
+            "minimum_price_fraction_scale": minimum_price_fraction_scale,
+        }.items():
+            if not 0.0 <= float(value) <= 1.0:
+                raise ValueError(f"Storage planning {name} must lie in [0, 1]")
+        if float(forecast_spread_floor_ratio) < 0.0:
+            raise ValueError(
+                "Storage planning forecast_spread_floor_ratio must be non-negative"
+            )
         self.charge_fraction = float(charge_fraction)
         self.discharge_fraction = float(discharge_fraction)
         self.minimum_soc_ratio = float(minimum_soc_ratio)
@@ -93,6 +115,20 @@ class CausalStoragePlanner:
         self.minimum_price_spread = float(minimum_price_spread)
         self.pv_surplus_threshold_kw = float(pv_surplus_threshold_kw)
         self.import_threshold_kw = float(import_threshold_kw)
+        self.price_regime_kind = str(price_regime_kind)
+        self.forecast_mean_margin_fraction = float(
+            forecast_mean_margin_fraction
+        )
+        self.forecast_edge_margin_fraction = float(
+            forecast_edge_margin_fraction
+        )
+        self.forecast_spread_floor_ratio = float(forecast_spread_floor_ratio)
+        self.scale_price_fraction_by_opportunity = bool(
+            scale_price_fraction_by_opportunity
+        )
+        self.minimum_price_fraction_scale = float(
+            minimum_price_fraction_scale
+        )
 
     def targets(
         self,
@@ -112,9 +148,9 @@ class CausalStoragePlanner:
                     results.append(target)
         return tuple(results)
 
-    def configuration(self) -> Mapping[str, float | str]:
+    def configuration(self) -> Mapping[str, float | str | bool]:
         return {
-            "kind": "causal_local_storage_opportunity_v1",
+            "kind": "causal_local_storage_opportunity_v2",
             "charge_fraction": self.charge_fraction,
             "discharge_fraction": self.discharge_fraction,
             "minimum_soc_ratio": self.minimum_soc_ratio,
@@ -123,6 +159,20 @@ class CausalStoragePlanner:
             "minimum_price_spread": self.minimum_price_spread,
             "pv_surplus_threshold_kw": self.pv_surplus_threshold_kw,
             "import_threshold_kw": self.import_threshold_kw,
+            "price_regime_kind": self.price_regime_kind,
+            "forecast_mean_margin_fraction": (
+                self.forecast_mean_margin_fraction
+            ),
+            "forecast_edge_margin_fraction": (
+                self.forecast_edge_margin_fraction
+            ),
+            "forecast_spread_floor_ratio": self.forecast_spread_floor_ratio,
+            "scale_price_fraction_by_opportunity": (
+                self.scale_price_fraction_by_opportunity
+            ),
+            "minimum_price_fraction_scale": (
+                self.minimum_price_fraction_scale
+            ),
         }
 
     def _target_for_group(
@@ -151,6 +201,9 @@ class CausalStoragePlanner:
         future_min = min(future_prices) if future_prices else float("nan")
         future_max = max(future_prices) if future_prices else float("nan")
         local_net_demand = self._local_net_demand(parts)
+        cheap_now, expensive_now, charge_score, discharge_score = (
+            self._price_regime(current_price, future_prices)
+        )
 
         mode = "IDLE"
         fraction = 0.0
@@ -180,11 +233,18 @@ class CausalStoragePlanner:
             and future_prices
             and future_max - current_price + self.price_tie_tolerance
             >= self.minimum_price_spread
-            and current_price <= future_min + self.price_tie_tolerance
+            and cheap_now
         ):
             mode = "CHARGE_STATIONARY"
-            fraction = self.charge_fraction
-            reason = "cheapest_forecast_opportunity"
+            fraction = self._price_fraction(
+                self.charge_fraction,
+                charge_score,
+            )
+            reason = (
+                "cheapest_forecast_opportunity"
+                if self.price_regime_kind == "strict_extrema"
+                else "cheap_relative_forecast"
+            )
         elif (
             discharge_port is not None
             and soc > self.minimum_soc_ratio + 1.0e-9
@@ -193,7 +253,7 @@ class CausalStoragePlanner:
             and future_prices
             and current_price - future_min + self.price_tie_tolerance
             >= self.minimum_price_spread
-            and current_price >= future_max - self.price_tie_tolerance
+            and expensive_now
         ):
             available_power = self._available_power(
                 group,
@@ -204,10 +264,17 @@ class CausalStoragePlanner:
             if available_power > 1.0e-9:
                 mode = "DISCHARGE_STATIONARY"
                 fraction = min(
-                    self.discharge_fraction,
+                    self._price_fraction(
+                        self.discharge_fraction,
+                        discharge_score,
+                    ),
                     local_net_demand / available_power,
                 )
-                reason = "highest_forecast_import_offset"
+                reason = (
+                    "highest_forecast_import_offset"
+                    if self.price_regime_kind == "strict_extrema"
+                    else "expensive_relative_import_offset"
+                )
 
         if mode != "IDLE":
             port = charge_port if mode == "CHARGE_STATIONARY" else discharge_port
@@ -240,6 +307,70 @@ class CausalStoragePlanner:
             future_price_max=float(future_max),
             storage_soc=soc,
         )
+
+    def _price_regime(
+        self,
+        current_price: Optional[float],
+        future_prices: Sequence[float],
+    ) -> tuple[bool, bool, float, float]:
+        """Classify the current tariff using only declared causal forecasts.
+
+        ``strict_extrema`` preserves the original v15 behaviour.  The
+        ``relative_forecast`` regime recognizes a wider cheap/expensive band
+        around the forecast distribution, while the independent absolute
+        ``minimum_price_spread`` gate in :meth:`_target_for_group` still
+        rejects economically immaterial opportunities.
+        """
+
+        if current_price is None or not future_prices:
+            return False, False, 0.0, 0.0
+        current = float(current_price)
+        forecast = np.asarray(tuple(future_prices), dtype=np.float64)
+        future_min = float(np.min(forecast))
+        future_max = float(np.max(forecast))
+        future_mean = float(np.mean(forecast))
+        spread = max(
+            future_max - future_min,
+            abs(future_mean) * self.forecast_spread_floor_ratio,
+            1.0e-9,
+        )
+        if self.price_regime_kind == "strict_extrema":
+            cheap = current <= future_min + self.price_tie_tolerance
+            expensive = current >= future_max - self.price_tie_tolerance
+        else:
+            cheap = (
+                current
+                <= future_mean
+                - self.forecast_mean_margin_fraction * spread
+                + self.price_tie_tolerance
+                or current
+                <= future_min
+                + self.forecast_edge_margin_fraction * spread
+                + self.price_tie_tolerance
+            )
+            expensive = (
+                current
+                >= future_mean
+                + self.forecast_mean_margin_fraction * spread
+                - self.price_tie_tolerance
+                or current
+                >= future_max
+                - self.forecast_edge_margin_fraction * spread
+                - self.price_tie_tolerance
+            )
+        charge_score = float(np.clip((future_max - current) / spread, 0.0, 1.0))
+        discharge_score = float(
+            np.clip((current - future_min) / spread, 0.0, 1.0)
+        )
+        return bool(cheap), bool(expensive), charge_score, discharge_score
+
+    def _price_fraction(self, maximum: float, opportunity_score: float) -> float:
+        if not self.scale_price_fraction_by_opportunity:
+            return float(maximum)
+        scale = self.minimum_price_fraction_scale + (
+            1.0 - self.minimum_price_fraction_scale
+        ) * float(np.clip(opportunity_score, 0.0, 1.0))
+        return float(maximum) * scale
 
     @staticmethod
     def _valid_port(

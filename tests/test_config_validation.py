@@ -150,6 +150,12 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         "minimum_price_spread": 0.02,
         "pv_surplus_threshold_kw": 0.5,
         "import_threshold_kw": 0.75,
+        "price_regime_kind": "relative_forecast",
+        "forecast_mean_margin_fraction": 0.15,
+        "forecast_edge_margin_fraction": 0.08,
+        "forecast_spread_floor_ratio": 0.04,
+        "scale_price_fraction_by_opportunity": True,
+        "minimum_price_fraction_scale": 0.45,
     }
     stage["hyperparameters"]["entropy_coeff_by_group_type"] = {
         "stationary_storage": 0.05,
@@ -234,6 +240,12 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     assert storage_planning.minimum_price_spread == 0.02
     assert storage_planning.pv_surplus_threshold_kw == 0.5
     assert storage_planning.import_threshold_kw == 0.75
+    assert storage_planning.price_regime_kind == "relative_forecast"
+    assert storage_planning.forecast_mean_margin_fraction == 0.15
+    assert storage_planning.forecast_edge_margin_fraction == 0.08
+    assert storage_planning.forecast_spread_floor_ratio == 0.04
+    assert storage_planning.scale_price_fraction_by_opportunity
+    assert storage_planning.minimum_price_fraction_scale == 0.45
     assert (
         parsed.pipeline[0].hyperparameters.actor.deterministic_mode_strategy
         == "expected_signed"

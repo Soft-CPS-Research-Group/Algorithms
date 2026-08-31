@@ -302,6 +302,15 @@ storage modes use a reason-stratified bounded reservoir that is isolated from
 the on-policy PPO rollout and round-trips in training checkpoints. Keeping the
 block disabled gives the exact pure TI-MAPPO ablation.
 
+The default `price_regime_kind: strict_extrema` preserves the original
+conservative rule, which acts only when the current tariff is at the edge of
+all declared forecasts. `relative_forecast` is a broader but still causal
+alternative: it classifies the current tariff relative to the mean, minimum,
+maximum and spread of those forecasts, then retains a separate absolute
+`minimum_price_spread` gate. Optional opportunity scaling changes only the
+supervised fraction target. Neither regime reads realized future prices or
+bypasses the actor, typed bounds, health closure or feasibility projection.
+
 An optional typed behavior-cloning warm start can execute deterministic
 `RBCSmartPolicy` actions for complete demonstration episodes and decode those
 actions back into the same valid typed action groups used by the actor.  It

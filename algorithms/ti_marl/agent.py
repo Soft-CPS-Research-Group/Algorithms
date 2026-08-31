@@ -225,6 +225,42 @@ class TIMARL(BaseAgent):
                 import_threshold_kw=float(
                     storage_planning_cfg.get("import_threshold_kw", 0.25)
                 ),
+                price_regime_kind=str(
+                    storage_planning_cfg.get(
+                        "price_regime_kind",
+                        "strict_extrema",
+                    )
+                ),
+                forecast_mean_margin_fraction=float(
+                    storage_planning_cfg.get(
+                        "forecast_mean_margin_fraction",
+                        0.20,
+                    )
+                ),
+                forecast_edge_margin_fraction=float(
+                    storage_planning_cfg.get(
+                        "forecast_edge_margin_fraction",
+                        0.10,
+                    )
+                ),
+                forecast_spread_floor_ratio=float(
+                    storage_planning_cfg.get(
+                        "forecast_spread_floor_ratio",
+                        0.05,
+                    )
+                ),
+                scale_price_fraction_by_opportunity=bool(
+                    storage_planning_cfg.get(
+                        "scale_price_fraction_by_opportunity",
+                        False,
+                    )
+                ),
+                minimum_price_fraction_scale=float(
+                    storage_planning_cfg.get(
+                        "minimum_price_fraction_scale",
+                        0.50,
+                    )
+                ),
             )
             if storage_planning_auxiliary_coeff > 0.0
             else None

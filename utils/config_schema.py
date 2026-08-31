@@ -1459,6 +1459,15 @@ class TIMARLStoragePlanningConfig(BaseModel):
     minimum_price_spread: float = Field(default=0.01, ge=0.0)
     pv_surplus_threshold_kw: float = Field(default=0.25, ge=0.0)
     import_threshold_kw: float = Field(default=0.25, ge=0.0)
+    price_regime_kind: Literal[
+        "strict_extrema",
+        "relative_forecast",
+    ] = "strict_extrema"
+    forecast_mean_margin_fraction: float = Field(default=0.20, ge=0.0, le=1.0)
+    forecast_edge_margin_fraction: float = Field(default=0.10, ge=0.0, le=1.0)
+    forecast_spread_floor_ratio: float = Field(default=0.05, ge=0.0)
+    scale_price_fraction_by_opportunity: bool = False
+    minimum_price_fraction_scale: float = Field(default=0.50, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def validate_soc_band(self) -> "TIMARLStoragePlanningConfig":
