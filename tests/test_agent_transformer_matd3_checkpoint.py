@@ -44,7 +44,7 @@ def _assert_module_equal(left: torch.nn.Module, right: torch.nn.Module) -> None:
     assert all(torch.equal(left_state[key], right_state[key]) for key in left_state)
 
 
-def test_full_format_5_round_trip_restores_training_replay_queue_and_rng(
+def test_full_format_6_round_trip_restores_training_replay_queue_and_rng(
     tmp_path: Path,
 ) -> None:
     source, obs_dim = _make_agent(
@@ -69,7 +69,7 @@ def test_full_format_5_round_trip_restores_training_replay_queue_and_rng(
     restored.load_checkpoint(path)
 
     assert Path(path).name == "transformer_matd3_step41.pt"
-    assert payload["checkpoint_version"] == 5
+    assert payload["checkpoint_version"] == 6
     assert payload["algorithm"] == "AgentTransformerMATD3"
     assert payload["checkpoint_mode"] == "full"
     source_state = source._per_building[0]
@@ -143,7 +143,7 @@ def test_inference_restore_rejects_non_frozen_stage(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("checkpoint_version", 4, "checkpoint_version"),
+        ("checkpoint_version", 5, "checkpoint_version"),
         ("algorithm", "MATD3", "algorithm"),
         ("num_agents", 2, "num_agents"),
         ("building_names", ["Other"], "building_names"),

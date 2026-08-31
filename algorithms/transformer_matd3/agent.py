@@ -96,7 +96,7 @@ class AgentTransformerMATD3(BaseAgent):
 
     supports_dynamic_topology: ClassVar[bool] = True
     requires_final_pipeline_stage: ClassVar[bool] = True
-    checkpoint_version: ClassVar[int] = 5
+    checkpoint_version: ClassVar[int] = 6
     onnx_opset_version: ClassVar[int] = 17
 
     def __init__(self, config: Dict[str, Any]) -> None:
@@ -2155,7 +2155,8 @@ class AgentTransformerMATD3(BaseAgent):
                 actor_grad_norms.append(float(actor_grad))
             if actor_losses:
                 self.actor_update_count += 1
-                self.bc_main_update_count += 1
+                if bc_weight > 0.0 and cloning_actions is not None:
+                    self.bc_main_update_count += 1
         if should_profile:
             runtime_profile_metrics[f"{_METRIC_PREFIX}runtime_actor_update_seconds"] = (
                 time.perf_counter() - phase_start
@@ -4024,7 +4025,7 @@ class AgentTransformerMATD3(BaseAgent):
             or not isinstance(checkpoint_version, int)
             or checkpoint_version != self.checkpoint_version
         ):
-            raise ValueError("Transformer MATD3 checkpoint_version must be exactly 5")
+            raise ValueError("Transformer MATD3 checkpoint_version must be exactly 6")
         if payload.get("algorithm") != "AgentTransformerMATD3":
             raise ValueError("checkpoint algorithm must be AgentTransformerMATD3")
         mode = payload.get("checkpoint_mode")

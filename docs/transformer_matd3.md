@@ -10,6 +10,8 @@ Use this guide for configuration and operation. Use the
 flows. Use the [ADRs](adr/README.md) when changing an architectural decision.
 Terms specific to this controller are defined in the
 [glossary](transformer_matd3_glossary.md).
+The [current status](transformer_matd3_status.md) records the latest validated
+recipe, rejected hypotheses, evidence limits, and next experiments.
 
 ## Supported contract
 
@@ -248,10 +250,11 @@ checkpointing:
   checkpoint_interval: 2048
 ```
 
-Format 5 supports:
+Format 6 supports:
 
 - `full`: actor and target stacks, critics, optimizers, replay, n-step queue,
-  exploration, reward normalization, random generators, and enabled BC state;
+  exploration, successful-update counters, reward normalization, random
+  generators, and enabled BC state;
 - `inference`: actor stacks, action bounds, topology metadata, and the
   operational step needed by the residual schedule.
 
@@ -259,6 +262,9 @@ Restore is strict. Building count, building identity, layout signature, action
 names, action bounds, checkpoint mode, enabled BC paths, and compatible BC-B
 reservoir capacity must match. All validation completes before live state
 changes. An inference checkpoint can only load into a frozen stage.
+Format 5 training checkpoints are rejected because that header was used with
+different replay action-domain and counter schemas. The loader does not infer
+learning semantics from an ambiguous historical payload.
 
 ## Export and deployment
 
@@ -315,7 +321,8 @@ pytest -q -o addopts='' -m slow \
 - BC-A cannot train across historical signatures.
 - Batches cannot mix layout signatures.
 - Building-count changes reset all learned state.
-# Critic loss and diagnostic index mapping
+
+## Critic loss and diagnostic index mapping
 
 `hyperparameters.critic_loss_type` selects `mse` (the backward-compatible
 default) or PyTorch Smooth L1/Huber loss. `critic_huber_delta` is the positive

@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from algorithms.registry import ALGORITHM_REGISTRY
-from tests.test_agent_transformer_matd3 import _parameters
+from tests.test_agent_transformer_matd3 import _parameters, _transition
 from tests.test_agent_transformer_matd3_residual import _agent
 
 
@@ -557,6 +557,22 @@ def test_bc_a_disabled_allocates_no_optimizer_or_optional_replay_fields() -> Non
     assert transition.behavior_actions is None
     assert transition.next_behavior_actions is None
     assert transition.cloning_actions is None
+
+
+def test_bc_a_main_update_advances_counter_when_bc_contributes() -> None:
+    agent, obs_dim = _agent(
+        hyperparameters={"batch_size": 1, "actor_update_interval": 1},
+        replay_bc={
+            "enabled": True,
+            "teacher": "replay_action",
+            "weight": 1.0,
+        },
+    )
+
+    _transition(agent, obs_dim, 0)
+
+    assert agent.actor_update_count == 1
+    assert agent.bc_main_update_count == 1
 
 
 def test_bc_a_weight_decay_reaches_configured_floor() -> None:

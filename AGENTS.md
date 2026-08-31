@@ -10,15 +10,6 @@ Agents live in `algorithms/agents/`, `algorithms/transformer_ppo/`, and
 
 > **Note:** The training loop is handled by the runner. Agents receive already processed observations from the wrapper.
 
-## Delegated Execution
-
-- When suitable subagents are available, delegate each independent deterministic task before executing it in the parent.
-- This includes test runs, log extraction, remote status checks, polling, configuration preparation, artifact collection, and routine validation.
-- Run independent tasks concurrently when practical. Assign one subagent ownership of each remote run through terminal completion and evidence collection.
-- The parent keeps scope, architecture, trade-offs, risk judgments, acceptance decisions, and final synthesis.
-- The parent may execute only work needed to unblock delegation or to verify disputed, high-risk, or decision-critical evidence.
-- Require concise status and evidence from subagents; do not request or retain raw logs unless needed for diagnosis.
-
 ## Base Contract
 
 Extend `algorithms/agents/base_agent.py`:
@@ -160,16 +151,6 @@ Dynamic topology notes:
   Use `RuleBasedPolicy` (or another dynamic-ready agent) for dynamic topology scenarios.
 - `AgentTransformerPPO` supports `entity+dynamic`. Optional behavior cloning collects separate deterministic `RBCSmartPolicy` demonstrations before PPO rollouts and applies an auxiliary actor-only loss; it never changes actor environment actions.
 - On topology changes, TPPO rebuilds the Smart teacher. Demonstrations retain their encoded representation and layout signature. BC pretraining groups layout-compatible demonstrations by stored signature and trains every stored compatible signature group with its stored layout, including historical topologies. TPPO fails before PPO when no usable demonstrations exist.
-
-## Remote Experiment Lifecycle
-
-- Job submission is not experiment completion.
-- A running job is not experiment completion.
-- Completion requires terminal state, artifacts, KPIs, diagnostics, and requested comparisons.
-- Estimate the next useful check from observed progress and runtime.
-- Do not repeatedly poll unchanged remote state.
-- Report only changed state, failures, or requested checkpoints.
-- Do not end a delegated goal while required remote work remains.
 
 ## Tokenizer Fixture (Entity Interface)
 

@@ -25,11 +25,16 @@ incompatible topology.
 
 ## Decisions
 
-### 10a — format version: 5
+### 10a — format version: 6
 
-Global monotonic version chain. `checkpoint_version = 5`. Loader
-accepts version 5 only; historical versions from MATD3 (2) and TPPO
-(≤4) are not cross-loaded.
+Global monotonic version chain. `checkpoint_version = 6`. Loader accepts
+version 6 only. Version 6 requires separated replay action domains,
+successful-update counters, shared actor/BC optimizer ownership, and corrected
+BC-main counter semantics. The format-5 header was used by payloads with
+different replay and counter schemas, so their learning semantics cannot be
+identified reliably from the header. Version 5 is rejected instead of being
+migrated ambiguously. Historical versions from MATD3 (2), TPPO (≤4), and
+Transformer MATD3 (5) are not cross-loaded.
 
 ### 10b — modes: full + inference
 
@@ -86,7 +91,7 @@ under the new layout that does not exist.
 ## Checkpoint payload structure
 
 Header:
-- `checkpoint_version: 5`
+- `checkpoint_version: 6`
 - `algorithm: "AgentTransformerMATD3"`
 - `checkpoint_mode: "full" | "inference"`
 - `step: int`
@@ -118,6 +123,8 @@ Full mode global additions:
 - `replay_buffer` (per ADR-0005/ADR-0006 signature-bucketed state)
 - `n_step_queue` (serialized)
 - `exploration_state: {sigma, exploration_step}`
+- `training_counters` for successful critic, actor, target, BC, exploration,
+  and replay-sample events
 - `reward_normalization_state: {enabled, count, mean, m2}`
 - `rng_state: {python, numpy, torch, torch_cuda}`
 - `bc_state` (optional; per ADR-0007)
@@ -132,7 +139,7 @@ Inference mode global additions:
 ## Restore validation order
 
 1. Load payload with `torch.load(..., weights_only=False)`.
-2. Validate `checkpoint_version == 5`.
+2. Validate `checkpoint_version == 6`.
 3. Validate `algorithm == "AgentTransformerMATD3"`.
 4. Validate `checkpoint_mode` consistent with pipeline stage.
 5. Validate `num_agents` equals live `num_agents`.
@@ -148,7 +155,8 @@ Any mismatch raises before any live state is changed.
 
 - New `save_checkpoint` and `load_checkpoint` on
   `AgentTransformerMATD3`.
-- Test coverage includes: version 5 round-trip, signature-mismatch
+- Test coverage includes: version 6 round-trip, version 5 rejection,
+  signature-mismatch
   rejection, cardinality-mismatch rejection, action-bound mismatch
   rejection, inference-into-non-frozen rejection, n-step queue
   round-trip, BC state round-trip.

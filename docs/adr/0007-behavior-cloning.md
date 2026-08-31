@@ -103,9 +103,9 @@ The following invariants are inviolable and tested:
    update. Actor-only boundaries remain enforced.
 
 Enforcement: the per-building actor optimizer covers only actor + tokenizer +
-backbone parameters. The compatibility fields `bc_a_optimizer_b` and
-`bc_b_optimizer_b` refer to this optimizer when their subsystem is enabled.
-Critic optimizers remain separate.
+backbone parameters. The `bc_a_optimizer` and `bc_b_optimizer` compatibility
+fields refer to this optimizer when their subsystem is enabled. Critic
+optimizers remain separate.
 
 Rationale: policy, BC-A, and BC-B all update the same actor parameters. One
 Adam state prevents independent actor-only moments from competing during the

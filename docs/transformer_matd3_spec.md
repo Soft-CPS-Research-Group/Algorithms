@@ -24,7 +24,7 @@ The controller:
 - owns one actor stack and one twin-critic pair per building;
 - supports optional residual control, two behavior-cloning paths, local action
   safety, and local price conditioning;
-- saves strict format-5 checkpoints;
+- saves strict format-6 checkpoints;
 - exports deterministic per-building ONNX actors.
 
 Current non-goals are cross-building actor weight sharing, mixed-signature
@@ -247,9 +247,16 @@ transferred across this boundary.
 
 ## 9. Checkpoint contract
 
-`checkpoint_version` is 5. Only version 5 and algorithm
+`checkpoint_version` is 6. Only version 6 and algorithm
 `AgentTransformerMATD3` are accepted. Checkpoint mode is configured in the
 top-level `checkpointing.checkpoint_mode` field.
+
+Version 6 records the separated replay action domains, successful-update
+counters, shared actor/BC optimizer ownership, and corrected BC-main counter
+semantics introduced by the stabilized learning path. The format-5 header was
+used by payloads with different replay and counter schemas. Their exact
+learning semantics cannot be inferred from the header, so version 5 is rejected
+instead of being migrated ambiguously.
 
 Full checkpoints contain actor and target stacks, critics and targets, all
 optimizers, replay, n-step queue, current signature, topology versions,
@@ -320,7 +327,7 @@ checkpointing, export, and bundle validation.
 | [0007](adr/0007-behavior-cloning.md) | Independent BC-A and BC-B with actor-only boundaries |
 | [0008](adr/0008-residual-policy.md) | Post-actor residual composition; critics see final actions |
 | [0009](adr/0009-local-price-adapter.md) | Pre-tokenization price conditioning |
-| [0010](adr/0010-checkpoint.md) | Strict format-5 full and inference checkpoints |
+| [0010](adr/0010-checkpoint.md) | Strict format-6 full and inference checkpoints |
 | [0011](adr/0011-onnx-export.md) | Per-building, per-topology opset-17 actor export |
 | [0012](adr/0012-schema-registry-wrapper.md) | Typed schema and capability-based wrapper integration |
 

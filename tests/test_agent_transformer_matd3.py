@@ -279,6 +279,19 @@ def test_actor_delay_counts_successful_critic_updates_not_environment_steps() ->
     assert agent.target_update_count == 1
 
 
+def test_disabled_bc_does_not_advance_bc_main_update_count() -> None:
+    agent, obs_dim = _make_agent(
+        buildings=1,
+        batch_size=1,
+        actor_update_interval=1,
+    )
+
+    _transition(agent, obs_dim, 0)
+
+    assert agent.actor_update_count == 1
+    assert agent.bc_main_update_count == 0
+
+
 def test_pending_actor_metrics_survive_intervening_critic_event() -> None:
     agent, _ = _make_agent(buildings=1)
     agent._merge_latest_training_metrics(
