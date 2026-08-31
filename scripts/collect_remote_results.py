@@ -344,12 +344,17 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
     info: dict[str, Any] = {}
     result: dict[str, Any] = {}
     logs = ""
+    full_logs = ""
+    training_metrics_status = "not_collected"
+    training_metrics_records = ""
     kpi_matrix: dict[str, dict[str, float | None]] = {}
 
     endpoints = [
         ("status", f"/status/{quote(job_id)}", "json"),
         ("job_info", f"/job-info/{quote(job_id)}", "json"),
+        ("progress", f"/progress/{quote(job_id)}", "json"),
         ("result", f"/result/{quote(job_id)}", "json"),
+        ("file_logs", f"/file-logs/{quote(job_id)}", "text"),
         (
             "logs_chunk",
             f"/logs-chunk/{quote(job_id)}?{urlencode({'tail_lines': tail_lines, 'max_bytes': 200000})}",
@@ -362,7 +367,15 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
         try:
             if kind == "text":
                 payload_text = _request_text(base_url, path, timeout=timeout)
-                _write_text(job_dir / f"{name}.yaml", payload_text)
+                if name == "file_logs":
+                    output_name = "logs_full.txt"
+                elif name == "resolved_config":
+                    output_name = "resolved_config.yaml"
+                else:
+                    output_name = f"{name}.txt"
+                _write_text(job_dir / output_name, payload_text)
+                if name == "file_logs":
+                    full_logs = payload_text
                 continue
             payload_json = _request_json(base_url, path, timeout=timeout)
             _write_json(job_dir / f"{name}.json", payload_json)
@@ -395,6 +408,34 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
         files = [str(item) for item in index_dict.get("files", []) if isinstance(item, str)]
         kpi_file = next((item for item in files if item.endswith("exported_kpis.csv")), None)
         session = index_dict.get("session") or session_default or "latest"
+
+        # Union result storage can expose the local JSONL training stream even
+        # though it is not listed as simulator data. Deucalion may not retain
+        # this path; keep that outcome separate from a collection failure.
+        try:
+            metrics_content = _request_text(
+                base_url,
+                "/simulation-data/file",
+                method="POST",
+                payload={"job_id": job_id, "session": session, "relative_path": "logs/metrics.jsonl"},
+                timeout=timeout,
+            )
+            if metrics_content.strip():
+                _write_text(job_dir / "metrics.jsonl", metrics_content)
+                training_metrics_records = str(sum(1 for line in metrics_content.splitlines() if line.strip()))
+                training_metrics_status = "available"
+            else:
+                training_metrics_status = "not_retained"
+        except HTTPError as exc:
+            if exc.code == 404:
+                training_metrics_status = "not_retained"
+            else:
+                errors.append(f"training_metrics: HTTP {exc.code}")
+                training_metrics_status = "not_exposed_by_api"
+        except (URLError, TimeoutError, OSError) as exc:
+            errors.append(f"training_metrics: {exc}")
+            training_metrics_status = "not_exposed_by_api"
+
         if kpi_file:
             kpi_content = _request_text(
                 base_url,
@@ -466,9 +507,11 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
             "deucalion_cpus_per_task": deucalion_options.get("cpus_per_task") or "",
             "deucalion_mem_gb": deucalion_options.get("mem_gb") or "",
             "deucalion_gpus": deucalion_options.get("gpus") or "",
-            "device_selected": _extract_device(logs),
+            "device_selected": _extract_device(full_logs or logs),
             "simulation_data_available": result.get("simulation_data_available"),
             "kpi_source": result.get("kpi_source") or "",
+            "training_metrics_status": training_metrics_status,
+            "training_metrics_records": training_metrics_records,
             "errors": "; ".join(errors),
         }
     )
@@ -509,7 +552,7 @@ def _write_summary(output_dir: Path, rows: list[dict[str, Any]]) -> None:
                 "",
                 "- `summary.csv`: compact KPI comparison table.",
                 "- `summary.json`: same data in JSON.",
-                "- `jobs/<job_id>/`: raw status, job info, result, logs tail, resolved config and KPI CSV when available.",
+                "- `jobs/<job_id>/`: raw status, job info, progress, full log, log tail, resolved config, training `metrics.jsonl` and KPI CSV when available.",
                 "",
             ]
         ),

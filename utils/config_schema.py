@@ -1264,12 +1264,15 @@ class TransformerMATD3Hyperparameters(BaseModel):
     n_step_gamma: Optional[float] = Field(default=None, gt=0.0, le=1.0)
     critic_team_reward_mix: float = Field(default=0.0, ge=0.0, le=1.0)
     critic_target_clip_abs: float = Field(default=0.0, ge=0.0)
+    critic_loss_type: Literal["mse", "huber"] = "mse"
+    critic_huber_delta: float = Field(default=1.0, gt=0.0)
     reward_normalization_enabled: bool = False
     reward_normalization_clip: float = Field(default=10.0, gt=0.0)
     target_policy_smoothing: bool = True
     target_policy_noise: float = Field(ge=0.0)
     target_policy_noise_clip: float = Field(ge=0.0)
     actor_update_interval: int = Field(default=2, gt=0)
+    minimum_successful_critic_updates_before_actor: int = Field(default=1, ge=0)
     actor_policy_loss_weight: float = Field(default=1.0, ge=0.0)
     sigma: float = Field(ge=0.0)
     sigma_decay: float = Field(gt=0.0, le=1.0)
@@ -1295,6 +1298,8 @@ class TransformerMATD3Hyperparameters(BaseModel):
     critic_action_input_mode: Literal["final"] = "final"
     residual_policy_runtime_only_export: bool = False
     local_action_safety_enabled: bool = False
+    local_action_safety_service_teacher_enabled: bool = False
+    local_action_safety_service_teacher_eval_enabled: Optional[bool] = None
     local_action_safety_fail_on_infeasible: bool = False
     local_action_safety_protect_ev_minimum: bool = True
     local_action_safety_ev_minimum_mode: Literal[
@@ -1325,6 +1330,21 @@ class TransformerMATD3Hyperparameters(BaseModel):
         ).strip():
             raise ValueError(
                 "residual_policy_enabled=true requires warm_start_policy_name"
+            )
+        if (
+            (
+                self.local_action_safety_service_teacher_enabled
+                or self.local_action_safety_service_teacher_eval_enabled is True
+            )
+            and not str(self.warm_start_policy_name or "").strip()
+        ):
+            raise ValueError(
+                "local_action_safety_service_teacher_enabled=true requires "
+                "warm_start_policy_name"
+            )
+        if self.local_action_safety_service_teacher_eval_enabled is None:
+            self.local_action_safety_service_teacher_eval_enabled = (
+                self.local_action_safety_service_teacher_enabled
             )
         if self.n_step_gamma is None:
             self.n_step_gamma = self.gamma

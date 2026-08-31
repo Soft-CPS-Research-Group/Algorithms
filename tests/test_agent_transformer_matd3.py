@@ -125,6 +125,61 @@ def test_actor_policy_loss_weight_is_configurable() -> None:
     assert agent.actor_policy_loss_weight == pytest.approx(0.085)
 
 
+def test_critic_loss_defaults_to_mse_and_supports_huber_delta() -> None:
+    mse_agent, _ = _make_agent()
+    expected = torch.tensor([[3.0, 0.0]])
+    target = torch.zeros_like(expected)
+    assert mse_agent.critic_loss_type == "mse"
+    assert mse_agent._critic_regression_loss(expected, target).item() == pytest.approx(4.5)
+
+    huber_agent, _ = _make_agent(critic_loss_type="huber", critic_huber_delta=1.0)
+    assert huber_agent._critic_regression_loss(expected, target).item() == pytest.approx(1.25)
+
+
+def test_critic_huber_delta_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="critic_huber_delta"):
+        _make_agent(critic_loss_type="huber", critic_huber_delta=0.0)
+
+
+def test_policy_replay_q_gap_uses_aligned_actor_update_values() -> None:
+    from algorithms.transformer_matd3.agent import AgentTransformerMATD3
+
+    policy = [torch.tensor([[-2.0], [-1.0]])]
+    replay = [torch.tensor([[1.0], [1.0]])]
+    assert AgentTransformerMATD3._aligned_q_gap(policy, replay) == pytest.approx(2.5)
+    assert AgentTransformerMATD3._aligned_q_gap(policy, []) == 0.0
+
+
+def test_policy_replay_q_gap_is_retained_across_critic_only_flush() -> None:
+    agent, _ = _make_agent(buildings=1)
+    prefix = "TransformerMATD3/"
+    agent._merge_latest_training_metrics(
+        {
+            f"{prefix}actor_update_performed": 1.0,
+            f"{prefix}actor_update_event_count": 3.0,
+            f"{prefix}policy_replay_q_abs_gap": 2.5,
+        }
+    )
+    agent._merge_latest_training_metrics(
+        {
+            f"{prefix}actor_update_performed": 0.0,
+            f"{prefix}actor_update_event_count": 3.0,
+            f"{prefix}policy_replay_q_abs_gap": 0.0,
+        }
+    )
+
+    metrics = agent.consume_latest_training_metrics()
+    assert metrics[f"{prefix}policy_replay_q_abs_gap"] == pytest.approx(2.5)
+    assert metrics[f"{prefix}actor_update_event_count"] == pytest.approx(3.0)
+
+
+def test_policy_replay_q_gap_reports_zero_for_identical_paired_tensors() -> None:
+    from algorithms.transformer_matd3.agent import AgentTransformerMATD3
+
+    values = [torch.tensor([[1.0], [-2.0]])]
+    assert AgentTransformerMATD3._aligned_q_gap(values, values) == pytest.approx(0.0)
+
+
 def test_predict_is_repeatable_and_respects_per_ca_bounds() -> None:
     agent, obs_dim = _make_agent(buildings=1)
     observations = [np.linspace(-1.0, 1.0, obs_dim, dtype=np.float32)]
@@ -204,6 +259,95 @@ def test_actor_and_targets_update_only_on_delayed_due_step() -> None:
     assert _changed(target_before, agent._per_building[0].actor_target)
     assert _changed(critic_1_target_before, agent._per_building[0].critic_1_target)
     assert _changed(critic_2_target_before, agent._per_building[0].critic_2_target)
+
+
+def test_actor_delay_counts_successful_critic_updates_not_environment_steps() -> None:
+    agent, obs_dim = _make_agent(
+        buildings=1,
+        batch_size=1,
+        actor_update_interval=2,
+        minimum_successful_critic_updates_before_actor=1,
+    )
+
+    _transition(agent, obs_dim, 0)
+    assert agent.critic_update_count == 1
+    assert agent.actor_update_count == 0
+    _transition(agent, obs_dim, 1)
+
+    assert agent.critic_update_count == 2
+    assert agent.actor_update_count == 1
+    assert agent.target_update_count == 1
+
+
+def test_disabled_bc_does_not_advance_bc_main_update_count() -> None:
+    agent, obs_dim = _make_agent(
+        buildings=1,
+        batch_size=1,
+        actor_update_interval=1,
+    )
+
+    _transition(agent, obs_dim, 0)
+
+    assert agent.actor_update_count == 1
+    assert agent.bc_main_update_count == 0
+
+
+def test_pending_actor_metrics_survive_intervening_critic_event() -> None:
+    agent, _ = _make_agent(buildings=1)
+    agent._merge_latest_training_metrics(
+        {
+            "TransformerMATD3/actor_update_performed": 1.0,
+            "TransformerMATD3/actor_policy_loss_mean": 2.5,
+            "TransformerMATD3/policy_action_q_mean": -3.0,
+        }
+    )
+    agent._merge_latest_training_metrics(
+        {
+            "TransformerMATD3/actor_update_performed": 0.0,
+            "TransformerMATD3/actor_policy_loss_mean": 0.0,
+            "TransformerMATD3/policy_action_q_mean": 0.0,
+            "TransformerMATD3/critic_loss_mean": 1.25,
+        }
+    )
+
+    metrics = agent.consume_latest_training_metrics()
+
+    assert metrics["TransformerMATD3/actor_update_performed"] == 1.0
+    assert metrics["TransformerMATD3/actor_policy_loss_mean"] == 2.5
+    assert metrics["TransformerMATD3/policy_action_q_mean"] == -3.0
+    assert metrics["TransformerMATD3/critic_loss_mean"] == 1.25
+
+
+def test_action_diagnostic_maxima_are_not_cumulative() -> None:
+    agent, _ = _make_agent(buildings=1)
+    agent._record_action_diagnostics(
+        base_actions=[[0.0, 0.0]],
+        proposed_actions=[[0.2, 0.1]],
+        executed_actions=[[0.0, 0.0]],
+        raw_proposed_actions=[[0.2, 0.1]],
+        exploration=False,
+    )
+    agent._record_action_diagnostics(
+        base_actions=[[0.0, 0.0]],
+        proposed_actions=[[0.5, 0.05]],
+        executed_actions=[[0.0, 0.0]],
+        raw_proposed_actions=[[0.5, 0.05]],
+        exploration=False,
+    )
+
+    metrics = agent.get_diagnostic_metrics()
+
+    assert metrics["TransformerMATD3/base_proposed_abs_delta_storage_max"] == pytest.approx(0.5)
+    assert metrics["TransformerMATD3/proposed_executed_abs_delta_storage_max"] == pytest.approx(0.5)
+
+
+def test_skipped_replay_does_not_advance_critic_update_count() -> None:
+    agent, obs_dim = _make_agent(buildings=1, batch_size=2)
+
+    _transition(agent, obs_dim, 0)
+
+    assert agent.critic_update_count == 0
+    assert agent.actor_update_count == 0
 
 
 def test_target_policy_smoothing_is_clipped_per_ca(monkeypatch) -> None:
@@ -327,6 +471,7 @@ def test_learning_skips_actor_update_for_building_without_actions() -> None:
 
     _transition(agent, obs_dim, 0)
     _transition(agent, obs_dim, 2)
+    _transition(agent, obs_dim, 3)
 
     metrics = agent.consume_latest_training_metrics()
     assert metrics["TransformerMATD3/actor_update_performed"] == 1.0

@@ -20,7 +20,7 @@ or invariants. Consult an ADR when reconsidering its decision or trade-offs.
 | [0007](0007-behavior-cloning.md) | BC-A and BC-B boundaries |
 | [0008](0008-residual-policy.md) | Residual-policy composition |
 | [0009](0009-local-price-adapter.md) | Pre-tokenization local price conditioning |
-| [0010](0010-checkpoint.md) | Strict format-5 checkpoints |
+| [0010](0010-checkpoint.md) | Strict format-6 checkpoints |
 | [0011](0011-onnx-export.md) | Per-building, per-topology ONNX export |
 | [0012](0012-schema-registry-wrapper.md) | Schema, registry, and wrapper integration |
 

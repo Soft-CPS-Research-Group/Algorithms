@@ -10,6 +10,8 @@ Use this guide for configuration and operation. Use the
 flows. Use the [ADRs](adr/README.md) when changing an architectural decision.
 Terms specific to this controller are defined in the
 [glossary](transformer_matd3_glossary.md).
+The [current status](transformer_matd3_status.md) records the latest validated
+recipe, rejected hypotheses, evidence limits, and next experiments.
 
 ## Supported contract
 
@@ -46,6 +48,33 @@ baseline templates use the same dynamic 15-minute dataset and reward.
 
 Copy a template and change the dataset, duration, seed, and hyperparameters.
 Do not enable optional runtime paths without their required inputs.
+
+### Training diagnostics
+
+With MLflow disabled, training diagnostics are written to `logs/metrics.jsonl`.
+`TransformerMATD3/replay_action_q_mean` and
+`replay_action_q_abs_mean` describe critic values at replay actions and persist
+across critic-only updates. `building_<index>_target_*`, `td_abs_*`,
+`gap_abs_*`, and `critic_*_grad_norm` describe the target, absolute TD error,
+twin-critic gap, and critic gradient norms for that building. The corresponding
+`*_max` values are tail diagnostics, not clipped training values.
+
+`policy_replay_q_abs_gap` is the mean absolute difference between policy-action
+and replay-action Q tensors from one actor-update event. It is not the
+difference between aggregate means. `actor_update_event_count` identifies the
+actor event that produced the value; critic-only flushes retain that event's
+value instead of replacing it with a synthetic zero. A zero gap is valid only
+when the paired tensors are equal.
+
+Every 16th critic update, the agent records
+`building_<index>_storage_critic_dq_da_abs_{mean,p95,max}`. These are absolute
+partial derivatives of critic 1 with respect to that building's stored
+electrical-storage action components, evaluated at replay actions. They are
+local critic sensitivity diagnostics, not environment perturbation results, and
+are emitted only when the derivative is available and finite. The companion
+`storage_action_count` and `storage_critic_dq_da_available` fields distinguish
+no storage action or a structurally disconnected critic input from a measured
+zero sensitivity; disconnected derivatives are not reported as numeric zero.
 
 Run locally:
 
@@ -173,7 +202,14 @@ state. Any failed attachment restores the previous controller and random state.
 Set `residual_policy_enabled: true` and provide
 `warm_start_policy_name`. The warm-start policy supplies a base action. The
 Transformer actor supplies a bounded correction scaled by the configured
-authority schedule. The critic observes the final composed action.
+authority schedule. Replay, online critics, target critics, and actor policy-Q
+all use the same proposed action. Runtime safety and service-teacher adapters
+may produce a different executed action.
+
+Set `local_action_safety_service_teacher_enabled: true` to preserve EV and
+deferrable actions from the warm-start teacher. Set
+`local_action_safety_service_teacher_eval_enabled: true` to apply the same
+preservation during deterministic evaluation.
 
 ### Replay behavior cloning (BC-A)
 
@@ -189,8 +225,8 @@ Enable `behavior_cloning.demonstration_based`. BC-B collects deterministic
 pretrains the actor before RL. It can continue as an auxiliary actor loss.
 Pretraining fails before RL when a building has no compatible demonstrations.
 
-BC-A and BC-B have separate optimizers. Neither path updates critics, targets,
-normalizer statistics, or replay state.
+BC-A and BC-B use the actor optimizer for actor-only updates. Neither path
+updates critics, targets, normalizer statistics, or replay state.
 
 ### Local action safety and price conditioning
 
@@ -214,10 +250,11 @@ checkpointing:
   checkpoint_interval: 2048
 ```
 
-Format 5 supports:
+Format 6 supports:
 
 - `full`: actor and target stacks, critics, optimizers, replay, n-step queue,
-  exploration, reward normalization, random generators, and enabled BC state;
+  exploration, successful-update counters, reward normalization, random
+  generators, and enabled BC state;
 - `inference`: actor stacks, action bounds, topology metadata, and the
   operational step needed by the residual schedule.
 
@@ -225,6 +262,9 @@ Restore is strict. Building count, building identity, layout signature, action
 names, action bounds, checkpoint mode, enabled BC paths, and compatible BC-B
 reservoir capacity must match. All validation completes before live state
 changes. An inference checkpoint can only load into a frozen stage.
+Format 5 training checkpoints are rejected because that header was used with
+different replay action-domain and counter schemas. The loader does not infer
+learning semantics from an ambiguous historical payload.
 
 ## Export and deployment
 
@@ -281,3 +321,11 @@ pytest -q -o addopts='' -m slow \
 - BC-A cannot train across historical signatures.
 - Batches cannot mix layout signatures.
 - Building-count changes reset all learned state.
+
+## Critic loss and diagnostic index mapping
+
+`hyperparameters.critic_loss_type` selects `mse` (the backward-compatible
+default) or PyTorch Smooth L1/Huber loss. `critic_huber_delta` is the positive
+Smooth L1 transition delta and defaults to `1.0`. The selected loss is applied
+identically to both centralized critics. Per-building telemetry keys use
+zero-based indices: `building_14_*` therefore refers to simulator `Building_15`.

@@ -73,9 +73,10 @@ controller must preserve it. See the shared Transformer entity contract.
 A critic that consumes every building's observation and every
 building's joint actions to output a single scalar Q. See ADR-0003.
 
-## Checkpoint format 5
+## Checkpoint format 6
 
-The Transformer MATD3 checkpoint schema. See ADR-0010.
+The Transformer MATD3 checkpoint schema with separated replay action domains
+and successful-update counters. See ADR-0010.
 
 ## Dedicated schema class
 

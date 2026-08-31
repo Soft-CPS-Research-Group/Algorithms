@@ -37,6 +37,10 @@ class ReplayTransition:
     rewards: np.ndarray
     terminated: np.ndarray
     truncated: np.ndarray
+    # ``actions`` remains the legacy executed-action field.
+    proposed_actions: Optional[ArrayTuple] = None
+    executed_actions: Optional[ArrayTuple] = None
+    base_actions: Optional[ArrayTuple] = None
     behavior_actions: Optional[ArrayTuple] = None
     next_behavior_actions: Optional[ArrayTuple] = None
     cloning_actions: Optional[ArrayTuple] = None
@@ -52,6 +56,9 @@ class ReplayBatch:
     terminated: np.ndarray
     truncated: np.ndarray
     done: np.ndarray
+    proposed_actions: Optional[ArrayTuple] = None
+    executed_actions: Optional[ArrayTuple] = None
+    base_actions: Optional[ArrayTuple] = None
     behavior_actions: Optional[ArrayTuple] = None
     next_behavior_actions: Optional[ArrayTuple] = None
     cloning_actions: Optional[ArrayTuple] = None

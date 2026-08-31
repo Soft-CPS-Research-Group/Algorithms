@@ -104,6 +104,35 @@ def test_should_copy_inserted_arrays() -> None:
     assert batch.observations[0].dtype == np.float32
 
 
+def test_should_round_trip_explicit_base_proposed_and_executed_actions() -> None:
+    from algorithms.transformer_matd3.replay import SignatureBucketedReplayBuffer
+
+    buffer = SignatureBucketedReplayBuffer(capacity=2, num_agents=1, batch_size=1)
+    signature = _signature()
+    buffer.push(
+        encoded_obs=[np.zeros(6, dtype=np.float32)],
+        next_encoded_obs=[np.ones(6, dtype=np.float32)],
+        actions=[np.array([0.7], dtype=np.float32)],
+        proposed_actions=[np.array([0.4], dtype=np.float32)],
+        executed_actions=[np.array([0.7], dtype=np.float32)],
+        base_actions=[np.array([0.1], dtype=np.float32)],
+        reward=[0.0],
+        terminated=False,
+        truncated=False,
+        layout_signature=signature,
+    )
+
+    transition = buffer.get_state()["transitions"][0]
+    batch = buffer.sample(signature, 1)
+    assert transition.actions[0].tolist() == pytest.approx([0.7])
+    assert transition.proposed_actions[0].tolist() == pytest.approx([0.4])
+    assert transition.executed_actions[0].tolist() == pytest.approx([0.7])
+    assert transition.base_actions[0].tolist() == pytest.approx([0.1])
+    assert batch.proposed_actions[0][0].tolist() == pytest.approx([0.4])
+    assert batch.executed_actions[0][0].tolist() == pytest.approx([0.7])
+    assert batch.base_actions[0][0].tolist() == pytest.approx([0.1])
+
+
 def test_should_reject_action_width_mismatch() -> None:
     from algorithms.transformer_matd3.replay import SignatureBucketedReplayBuffer
 

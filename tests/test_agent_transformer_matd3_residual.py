@@ -158,9 +158,80 @@ def test_local_safety_projection_is_returned_and_stored_in_replay() -> None:
     transition = agent.replay_buffer.get_state()["transitions"][0]
     assert actions == [projected]
     assert transition.actions[0].tolist() == pytest.approx(projected)
+    assert transition.executed_actions[0].tolist() == pytest.approx(projected)
+    assert transition.proposed_actions[0].tolist() != pytest.approx(projected)
     assert agent.get_diagnostic_metrics()[
         "TransformerMATD3/local_action_safety_projections"
     ] == 1.0
+
+
+def test_neutral_residual_returns_warm_start_action_without_projection(
+    monkeypatch,
+) -> None:
+    agent, obs_dim = _agent(
+        hyperparameters=_residual_hyperparameters(
+            residual_storage_action_scale_multiplier=0.0,
+            residual_ev_action_scale_multiplier=0.0,
+            local_action_safety_enabled=True,
+        )
+    )
+
+    class _ConstantPolicy(torch.nn.Module):
+        def predict(self, observations, deterministic):
+            del observations, deterministic
+            return [[0.2, 0.1]]
+
+    agent._warm_start_policy = _ConstantPolicy()
+    monkeypatch.setattr(
+        agent._local_action_safety_adapters[0],
+        "project",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a neutral residual must not re-project its operational base action"
+        ),
+    )
+    observations = [np.zeros(obs_dim, dtype=np.float32)]
+    agent.set_observation_context(raw_observations=observations)
+
+    actions = agent.predict(observations, deterministic=True)
+
+    assert actions[0] == pytest.approx([0.2, 0.1])
+
+
+def test_safety_projection_preserves_action_components_with_neutral_residual(
+    monkeypatch,
+) -> None:
+    agent, obs_dim = _agent(
+        hyperparameters=_residual_hyperparameters(
+            residual_storage_action_scale_multiplier=0.2,
+            residual_ev_action_scale_multiplier=0.0,
+            local_action_safety_enabled=True,
+        )
+    )
+
+    class _ConstantPolicy(torch.nn.Module):
+        def predict(self, observations, deterministic):
+            del observations, deterministic
+            return [[0.2, 0.1]]
+
+    agent._warm_start_policy = _ConstantPolicy()
+    monkeypatch.setattr(
+        agent,
+        "_actor_unit_action",
+        lambda *_args, **_kwargs: torch.ones((1, 2), device=agent.device),
+    )
+    agent._local_action_safety_adapters[0] = SimpleNamespace(
+        project=lambda raw, proposed: SimpleNamespace(
+            executed_actions=[0.4, 0.7],
+            interventions=(),
+            infeasible_reasons=(),
+        )
+    )
+    observations = [np.zeros(obs_dim, dtype=np.float32)]
+    agent.set_observation_context(raw_observations=observations)
+
+    actions = agent.predict(observations, deterministic=True)
+
+    assert actions[0] == pytest.approx([0.4, 0.1])
 
 
 def test_local_safety_requires_raw_observation_context() -> None:
@@ -191,3 +262,71 @@ def test_residual_replay_requires_next_warm_start_context() -> None:
             update_step=False,
             initial_exploration_done=False,
         )
+
+
+def test_residual_actor_starts_at_zero_and_authority_ramps_from_zero() -> None:
+    agent, _ = _agent(
+        hyperparameters=_residual_hyperparameters(
+            residual_action_final_scale=0.3,
+            residual_action_scale=0.3,
+            residual_action_scale_start_step=0,
+            residual_action_scale_growth_steps=4,
+            sigma=0.4,
+            sigma_decay=0.5,
+            min_sigma=0.1,
+        )
+    )
+    assert torch.allclose(
+        agent._per_building[0].actor.mlp[-1].weight,
+        torch.zeros_like(agent._per_building[0].actor.mlp[-1].weight),
+    )
+    assert agent._residual_action_effective_scale(global_learning_step=0) == 0.0
+    assert agent._residual_action_effective_scale(global_learning_step=2) == pytest.approx(0.15)
+    assert agent._residual_action_effective_scale(global_learning_step=4) == pytest.approx(0.3)
+
+
+def test_zero_authority_exploration_does_not_decay_sigma_or_count_as_effective() -> None:
+    agent, obs_dim = _agent(
+        hyperparameters=_residual_hyperparameters(
+            residual_action_final_scale=0.3,
+            residual_action_scale_growth_steps=10,
+            sigma=0.4,
+            sigma_decay=0.5,
+            min_sigma=0.1,
+        )
+    )
+    observations = [np.zeros(obs_dim, dtype=np.float32)]
+    agent.set_observation_context(raw_observations=observations)
+
+    agent.predict(observations, deterministic=False)
+
+    assert agent.exploration_sigma == pytest.approx(0.4)
+    assert agent._effective_exploration_action_count == 0
+
+
+def test_service_teacher_preserves_service_actions_in_deterministic_evaluation() -> None:
+    agent, obs_dim = _agent(
+        hyperparameters={
+            "warm_start_policy_name": "RandomPolicy",
+            "local_action_safety_service_teacher_enabled": True,
+            "local_action_safety_service_teacher_eval_enabled": True,
+        }
+    )
+
+    class _Teacher(torch.nn.Module):
+        def predict(self, observations, deterministic):
+            del observations, deterministic
+            return [[0.33, -0.22]]
+
+    agent._warm_start_policy = _Teacher()
+    observations = [np.zeros(obs_dim, dtype=np.float32)]
+    agent.set_observation_context(raw_observations=observations)
+
+    actions = agent.predict(observations, deterministic=True)
+
+    assert actions[0][1] == pytest.approx(-0.22)
+    assert agent._last_base_actions[0][1] == pytest.approx(-0.22)
+    assert agent._last_proposed_actions[0][1] == pytest.approx(-0.22)
+    assert agent.get_diagnostic_metrics()[
+        "TransformerMATD3/local_action_safety_service_teacher_applied"
+    ] == 1.0

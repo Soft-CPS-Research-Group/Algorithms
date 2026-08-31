@@ -44,7 +44,7 @@ def _assert_module_equal(left: torch.nn.Module, right: torch.nn.Module) -> None:
     assert all(torch.equal(left_state[key], right_state[key]) for key in left_state)
 
 
-def test_full_format_5_round_trip_restores_training_replay_queue_and_rng(
+def test_full_format_6_round_trip_restores_training_replay_queue_and_rng(
     tmp_path: Path,
 ) -> None:
     source, obs_dim = _make_agent(
@@ -69,7 +69,7 @@ def test_full_format_5_round_trip_restores_training_replay_queue_and_rng(
     restored.load_checkpoint(path)
 
     assert Path(path).name == "transformer_matd3_step41.pt"
-    assert payload["checkpoint_version"] == 5
+    assert payload["checkpoint_version"] == 6
     assert payload["algorithm"] == "AgentTransformerMATD3"
     assert payload["checkpoint_mode"] == "full"
     source_state = source._per_building[0]
@@ -92,6 +92,9 @@ def test_full_format_5_round_trip_restores_training_replay_queue_and_rng(
     assert restored.reward_norm_count == source.reward_norm_count
     assert restored.reward_norm_mean == pytest.approx(source.reward_norm_mean)
     assert restored.reward_norm_m2 == pytest.approx(source.reward_norm_m2)
+    assert restored.critic_update_count == source.critic_update_count
+    assert restored.actor_update_count == source.actor_update_count
+    assert restored.target_update_count == source.target_update_count
     assert random.getstate() == payload["rng_state"]["python"]
     assert np.array_equal(np.random.get_state()[1], payload["rng_state"]["numpy"][1])
     assert torch.equal(torch.get_rng_state(), payload["rng_state"]["torch"])
@@ -140,7 +143,7 @@ def test_inference_restore_rejects_non_frozen_stage(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("checkpoint_version", 4, "checkpoint_version"),
+        ("checkpoint_version", 5, "checkpoint_version"),
         ("algorithm", "MATD3", "algorithm"),
         ("num_agents", 2, "num_agents"),
         ("building_names", ["Other"], "building_names"),
@@ -292,3 +295,4 @@ def test_full_checkpoint_restores_bc_a_clock_and_optimizer(tmp_path: Path) -> No
 
     assert target.bc_a_offline_pretrain_completed_steps == 3
     assert target._per_building[0].bc_a_optimizer is not None
+    assert target._per_building[0].bc_a_optimizer is target._per_building[0].actor_optimizer
