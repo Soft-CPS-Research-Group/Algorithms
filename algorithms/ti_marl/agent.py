@@ -25,6 +25,7 @@ from algorithms.ti_marl.learning.behavior_cloning import (
     TypedBehaviorCloningWarmStart,
 )
 from algorithms.ti_marl.learning.ev_planning import CausalEVPlanner
+from algorithms.ti_marl.learning.storage_planning import CausalStoragePlanner
 from algorithms.ti_marl.learning.rollout import RolloutStep
 from algorithms.ti_marl.policy.networks import (
     CentralSetCritic,
@@ -194,6 +195,40 @@ class TIMARL(BaseAgent):
             if ev_planning_auxiliary_coeff > 0.0
             else None
         )
+        storage_planning_cfg = dict(hyper.get("storage_planning", {}))
+        storage_planning_auxiliary_coeff = float(
+            storage_planning_cfg.get("auxiliary_coeff", 0.0)
+        )
+        storage_planner = (
+            CausalStoragePlanner(
+                charge_fraction=float(
+                    storage_planning_cfg.get("charge_fraction", 0.55)
+                ),
+                discharge_fraction=float(
+                    storage_planning_cfg.get("discharge_fraction", 0.45)
+                ),
+                minimum_soc_ratio=float(
+                    storage_planning_cfg.get("minimum_soc_ratio", 0.20)
+                ),
+                maximum_soc_ratio=float(
+                    storage_planning_cfg.get("maximum_soc_ratio", 0.90)
+                ),
+                price_tie_tolerance=float(
+                    storage_planning_cfg.get("price_tie_tolerance", 1.0e-6)
+                ),
+                minimum_price_spread=float(
+                    storage_planning_cfg.get("minimum_price_spread", 0.01)
+                ),
+                pv_surplus_threshold_kw=float(
+                    storage_planning_cfg.get("pv_surplus_threshold_kw", 0.25)
+                ),
+                import_threshold_kw=float(
+                    storage_planning_cfg.get("import_threshold_kw", 0.25)
+                ),
+            )
+            if storage_planning_auxiliary_coeff > 0.0
+            else None
+        )
         self.learner = TIMAPPO(
             self.actor,
             self.critic,
@@ -239,6 +274,22 @@ class TIMARL(BaseAgent):
             ),
             ev_planning_replay_samples_per_reason=int(
                 ev_planning_cfg.get("replay_samples_per_reason", 8)
+            ),
+            storage_planner=storage_planner,
+            storage_planning_auxiliary_coeff=(
+                storage_planning_auxiliary_coeff
+            ),
+            storage_planning_balance_targets=bool(
+                storage_planning_cfg.get("balance_targets", True)
+            ),
+            storage_planning_fraction_coeff=float(
+                storage_planning_cfg.get("fraction_coeff", 0.25)
+            ),
+            storage_planning_replay_capacity_per_reason=int(
+                storage_planning_cfg.get("replay_capacity_per_reason", 16)
+            ),
+            storage_planning_replay_samples_per_reason=int(
+                storage_planning_cfg.get("replay_samples_per_reason", 8)
             ),
             value_coeff=float(hyper.get("value_coeff", 0.5)),
             max_grad_norm=float(hyper.get("max_grad_norm", 0.5)),

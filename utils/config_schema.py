@@ -1463,6 +1463,33 @@ class TIMARLEVPlanningConfig(BaseModel):
     minimum_v2g_departure_hours: float = Field(default=1.0, ge=0.0)
 
 
+class TIMARLStoragePlanningConfig(BaseModel):
+    """Causal auxiliary target for stationary-storage scheduling."""
+
+    auxiliary_coeff: float = Field(default=0.0, ge=0.0)
+    balance_targets: bool = True
+    fraction_coeff: float = Field(default=0.25, ge=0.0)
+    replay_capacity_per_reason: int = Field(default=16, ge=0)
+    replay_samples_per_reason: int = Field(default=8, ge=0)
+    charge_fraction: float = Field(default=0.55, gt=0.0, lt=1.0)
+    discharge_fraction: float = Field(default=0.45, gt=0.0, lt=1.0)
+    minimum_soc_ratio: float = Field(default=0.20, ge=0.0, le=1.0)
+    maximum_soc_ratio: float = Field(default=0.90, ge=0.0, le=1.0)
+    price_tie_tolerance: float = Field(default=1.0e-6, ge=0.0)
+    minimum_price_spread: float = Field(default=0.01, ge=0.0)
+    pv_surplus_threshold_kw: float = Field(default=0.25, ge=0.0)
+    import_threshold_kw: float = Field(default=0.25, ge=0.0)
+
+    @model_validator(mode="after")
+    def validate_soc_band(self) -> "TIMARLStoragePlanningConfig":
+        if self.minimum_soc_ratio >= self.maximum_soc_ratio:
+            raise ValueError(
+                "storage_planning minimum_soc_ratio must be below "
+                "maximum_soc_ratio"
+            )
+        return self
+
+
 class TIMARLHyperparameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1503,6 +1530,7 @@ class TIMARLHyperparameters(BaseModel):
     trace: TIMARLTraceConfig = TIMARLTraceConfig()
     behavior_cloning: Optional[TIMARLBehaviorCloningConfig] = None
     ev_planning: TIMARLEVPlanningConfig = TIMARLEVPlanningConfig()
+    storage_planning: TIMARLStoragePlanningConfig = TIMARLStoragePlanningConfig()
 
     @model_validator(mode="after")
     def validate_learning_architecture(self) -> "TIMARLHyperparameters":

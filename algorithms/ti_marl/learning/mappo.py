@@ -21,6 +21,10 @@ from algorithms.ti_marl.learning.ev_planning import (
     CausalEVPlanner,
     EVPlanningTarget,
 )
+from algorithms.ti_marl.learning.storage_planning import (
+    CausalStoragePlanner,
+    StoragePlanningTarget,
+)
 from algorithms.ti_marl.learning.rollout import TypedRolloutBuffer
 from algorithms.ti_marl.policy.networks import TypedActor
 
@@ -32,6 +36,16 @@ class _EVPlanningReplayItem:
     snapshot: InterfaceSnapshot
     decisions: Mapping[str, Mapping[str, ActionDecision]]
     targets: tuple[EVPlanningTarget, ...]
+    reason: str
+
+
+@dataclass(frozen=True)
+class _StoragePlanningReplayItem:
+    """One immutable, deployment-causal storage auxiliary replay item."""
+
+    snapshot: InterfaceSnapshot
+    decisions: Mapping[str, Mapping[str, ActionDecision]]
+    targets: tuple[StoragePlanningTarget, ...]
     reason: str
 
 
@@ -92,6 +106,12 @@ class TIMAPPO:
         ev_planning_fraction_coeff: float = 0.25,
         ev_planning_replay_capacity_per_reason: int = 16,
         ev_planning_replay_samples_per_reason: int = 8,
+        storage_planner: CausalStoragePlanner | None = None,
+        storage_planning_auxiliary_coeff: float = 0.0,
+        storage_planning_balance_targets: bool = True,
+        storage_planning_fraction_coeff: float = 0.25,
+        storage_planning_replay_capacity_per_reason: int = 16,
+        storage_planning_replay_samples_per_reason: int = 8,
         value_coeff: float = 0.5,
         max_grad_norm: float = 0.5,
         target_kl: float | None = 0.03,
@@ -218,6 +238,51 @@ class TIMAPPO:
             defaultdict(list)
         )
         self._ev_planning_replay_seen: Counter[str] = Counter()
+        self.storage_planner = storage_planner
+        self.storage_planning_auxiliary_coeff = float(
+            storage_planning_auxiliary_coeff
+        )
+        if self.storage_planning_auxiliary_coeff < 0.0:
+            raise ValueError(
+                "TI-MAPPO storage_planning_auxiliary_coeff must be non-negative"
+            )
+        if (
+            self.storage_planning_auxiliary_coeff > 0.0
+            and self.storage_planner is None
+        ):
+            raise ValueError(
+                "TI-MAPPO storage planning auxiliary loss requires a causal "
+                "storage planner"
+            )
+        self.storage_planning_balance_targets = bool(
+            storage_planning_balance_targets
+        )
+        self.storage_planning_fraction_coeff = float(
+            storage_planning_fraction_coeff
+        )
+        if self.storage_planning_fraction_coeff < 0.0:
+            raise ValueError(
+                "TI-MAPPO storage planning fraction coefficient must be "
+                "non-negative"
+            )
+        self.storage_planning_replay_capacity_per_reason = int(
+            storage_planning_replay_capacity_per_reason
+        )
+        self.storage_planning_replay_samples_per_reason = int(
+            storage_planning_replay_samples_per_reason
+        )
+        if self.storage_planning_replay_capacity_per_reason < 0:
+            raise ValueError(
+                "TI-MAPPO storage planning replay capacity must be non-negative"
+            )
+        if self.storage_planning_replay_samples_per_reason < 0:
+            raise ValueError(
+                "TI-MAPPO storage planning replay sample count must be non-negative"
+            )
+        self._storage_planning_replay: dict[
+            str, list[_StoragePlanningReplayItem]
+        ] = defaultdict(list)
+        self._storage_planning_replay_seen: Counter[str] = Counter()
         self.value_coeff = float(value_coeff)
         self.max_grad_norm = float(max_grad_norm)
         self.target_kl = None if target_kl is None else float(target_kl)
@@ -401,6 +466,51 @@ class TIMAPPO:
             for item in ev_planning_items
             for target in item.targets
         )
+        storage_targets_by_step = [
+            (
+                self.storage_planner.targets(
+                    step.snapshot,
+                    seconds_per_time_step=self.seconds_per_time_step,
+                )
+                if self.storage_planner is not None
+                and self.storage_planning_auxiliary_coeff > 0.0
+                else ()
+            )
+            for step in self.rollout.steps
+        ]
+        current_storage_planning_items = self._storage_planning_items(
+            snapshots=tuple(step.snapshot for step in self.rollout.steps),
+            decisions_by_step=decisions_by_step,
+            targets_by_step=storage_targets_by_step,
+        )
+        replay_storage_planning_items = self._sample_storage_planning_replay()
+        storage_planning_items = (
+            current_storage_planning_items + replay_storage_planning_items
+        )
+        storage_planning_current_samples = sum(
+            len(item.targets) for item in current_storage_planning_items
+        )
+        storage_planning_replay_samples = sum(
+            len(item.targets) for item in replay_storage_planning_items
+        )
+        storage_planning_samples = sum(
+            len(item.targets) for item in storage_planning_items
+        )
+        storage_planning_charge_samples = sum(
+            target.decision.mode == "CHARGE_STATIONARY"
+            for item in storage_planning_items
+            for target in item.targets
+        )
+        storage_planning_discharge_samples = sum(
+            target.decision.mode == "DISCHARGE_STATIONARY"
+            for item in storage_planning_items
+            for target in item.targets
+        )
+        storage_planning_reason_counts = Counter(
+            target.reason
+            for item in storage_planning_items
+            for target in item.targets
+        )
         actor_samples_by_group_type = Counter(
             sample.group_type for sample in group_samples
         )
@@ -438,6 +548,15 @@ class TIMAPPO:
                 list
             )
             ev_planning_fraction_losses: list[Tensor] = []
+            storage_planning_losses: list[Tensor] = []
+            storage_planning_losses_by_mode_and_reason: dict[
+                str, dict[str, list[Tensor]]
+            ] = defaultdict(lambda: defaultdict(list))
+            storage_planning_mode_correct: list[Tensor] = []
+            storage_planning_mode_correct_by_mode: dict[
+                str, list[Tensor]
+            ] = defaultdict(list)
+            storage_planning_fraction_losses: list[Tensor] = []
             critic_predictions: list[Tensor] = []
             critic_targets: list[Tensor] = []
             group_critic_predictions: list[Tensor] = []
@@ -474,6 +593,14 @@ class TIMAPPO:
                     tuple(
                         (item.snapshot, item.decisions)
                         for item in ev_planning_items
+                    )
+                )
+            storage_planning_evaluation = None
+            if storage_planning_samples > 0:
+                storage_planning_evaluation = self.actor.evaluate_actions_many(
+                    tuple(
+                        (item.snapshot, item.decisions)
+                        for item in storage_planning_items
                     )
                 )
             values_by_step = self.critic.forward_many(
@@ -676,6 +803,52 @@ class TIMAPPO:
                                 )
                             )
 
+            if storage_planning_evaluation is not None:
+                for replay_index, item in enumerate(storage_planning_items):
+                    for target in item.targets:
+                        target_mode_log_prob = (
+                            storage_planning_evaluation
+                            .mode_log_prob_by_group_step[replay_index][
+                                target.agent_id
+                            ][target.group_id]
+                        )
+                        target_loss = -target_mode_log_prob
+                        storage_planning_losses.append(target_loss)
+                        storage_planning_losses_by_mode_and_reason[
+                            target.decision.mode
+                        ][target.reason].append(target_loss)
+                        predicted_mode = (
+                            storage_planning_evaluation
+                            .predicted_mode_by_group_step[replay_index][
+                                target.agent_id
+                            ][target.group_id]
+                        )
+                        mode_correct = (
+                            predicted_mode == int(target.decision.mode_index)
+                        ).float()
+                        storage_planning_mode_correct.append(mode_correct)
+                        storage_planning_mode_correct_by_mode[
+                            target.decision.mode
+                        ].append(mode_correct)
+                        if target.decision.mode in {
+                            "CHARGE_STATIONARY",
+                            "DISCHARGE_STATIONARY",
+                        }:
+                            predicted_fraction = (
+                                storage_planning_evaluation
+                                .predicted_fraction_by_group_step[replay_index][
+                                    target.agent_id
+                                ][target.group_id]
+                            )
+                            storage_planning_fraction_losses.append(
+                                F.smooth_l1_loss(
+                                    predicted_fraction,
+                                    predicted_fraction.new_tensor(
+                                        float(target.decision.fraction)
+                                    ),
+                                )
+                            )
+
             actor_loss = (
                 torch.stack(actor_losses).mean()
                 if actor_losses
@@ -723,6 +896,45 @@ class TIMAPPO:
             )
             ev_planning_idle_recall = self._mean_or_zero(
                 ev_planning_mode_correct_by_mode.get("IDLE", ()),
+                reference=actor_loss,
+            )
+            storage_planning_unbalanced_mode_loss = (
+                torch.stack(storage_planning_losses).mean()
+                if storage_planning_losses
+                else actor_loss.new_zeros(())
+            )
+            storage_planning_mode_loss = self._storage_planning_loss(
+                storage_planning_losses_by_mode_and_reason,
+                fallback=storage_planning_unbalanced_mode_loss,
+            )
+            storage_planning_fraction_loss = self._mean_or_zero(
+                storage_planning_fraction_losses,
+                reference=actor_loss,
+            )
+            storage_planning_loss = (
+                storage_planning_mode_loss
+                + self.storage_planning_fraction_coeff
+                * storage_planning_fraction_loss
+            )
+            storage_planning_mode_accuracy = (
+                torch.stack(storage_planning_mode_correct).mean()
+                if storage_planning_mode_correct
+                else actor_loss.new_zeros(())
+            )
+            storage_planning_charge_recall = self._mean_or_zero(
+                storage_planning_mode_correct_by_mode.get(
+                    "CHARGE_STATIONARY", ()
+                ),
+                reference=actor_loss,
+            )
+            storage_planning_discharge_recall = self._mean_or_zero(
+                storage_planning_mode_correct_by_mode.get(
+                    "DISCHARGE_STATIONARY", ()
+                ),
+                reference=actor_loss,
+            )
+            storage_planning_idle_recall = self._mean_or_zero(
+                storage_planning_mode_correct_by_mode.get("IDLE", ()),
                 reference=actor_loss,
             )
             entropy = (
@@ -789,6 +1001,8 @@ class TIMAPPO:
                 + self.intervention_distillation_coeff
                 * intervention_distillation_loss
                 + self.ev_planning_auxiliary_coeff * ev_planning_loss
+                + self.storage_planning_auxiliary_coeff
+                * storage_planning_loss
             )
             critic_objective = self.value_coeff * critic_loss
             group_critic_objective = (
@@ -880,6 +1094,30 @@ class TIMAPPO:
             metrics["ev_planning_idle_recall"] += float(
                 ev_planning_idle_recall.detach().cpu()
             )
+            metrics["storage_planning_loss"] += float(
+                storage_planning_loss.detach().cpu()
+            )
+            metrics["storage_planning_mode_loss"] += float(
+                storage_planning_mode_loss.detach().cpu()
+            )
+            metrics["storage_planning_unbalanced_mode_loss"] += float(
+                storage_planning_unbalanced_mode_loss.detach().cpu()
+            )
+            metrics["storage_planning_fraction_loss"] += float(
+                storage_planning_fraction_loss.detach().cpu()
+            )
+            metrics["storage_planning_mode_accuracy"] += float(
+                storage_planning_mode_accuracy.detach().cpu()
+            )
+            metrics["storage_planning_charge_recall"] += float(
+                storage_planning_charge_recall.detach().cpu()
+            )
+            metrics["storage_planning_discharge_recall"] += float(
+                storage_planning_discharge_recall.detach().cpu()
+            )
+            metrics["storage_planning_idle_recall"] += float(
+                storage_planning_idle_recall.detach().cpu()
+            )
             metrics["critic_loss"] += float(critic_loss.detach().cpu())
             metrics["entropy"] += float(entropy.detach().cpu())
             metrics["entropy_bonus"] += float(entropy_bonus.detach().cpu())
@@ -953,6 +1191,7 @@ class TIMAPPO:
                 break
 
         self._remember_ev_planning_items(current_ev_planning_items)
+        self._remember_storage_planning_items(current_storage_planning_items)
         self.update_count += 1
         self.rollout.clear()
         divisor = max(epochs_completed, 1)
@@ -999,6 +1238,33 @@ class TIMAPPO:
                     - ev_planning_charge_samples
                     - ev_planning_discharge_samples
                 ),
+                "storage_planning_auxiliary_coeff": float(
+                    self.storage_planning_auxiliary_coeff
+                ),
+                "storage_planning_balance_targets": float(
+                    self.storage_planning_balance_targets
+                ),
+                "storage_planning_fraction_coeff": float(
+                    self.storage_planning_fraction_coeff
+                ),
+                "storage_planning_samples": float(storage_planning_samples),
+                "storage_planning_current_samples": float(
+                    storage_planning_current_samples
+                ),
+                "storage_planning_replay_samples": float(
+                    storage_planning_replay_samples
+                ),
+                "storage_planning_charge_samples": float(
+                    storage_planning_charge_samples
+                ),
+                "storage_planning_discharge_samples": float(
+                    storage_planning_discharge_samples
+                ),
+                "storage_planning_idle_samples": float(
+                    storage_planning_samples
+                    - storage_planning_charge_samples
+                    - storage_planning_discharge_samples
+                ),
                 "effective_gamma": float(self.gamma),
                 "effective_gae_lambda": float(self.gae_lambda),
                 "seconds_per_time_step": float(self.seconds_per_time_step),
@@ -1035,6 +1301,16 @@ class TIMAPPO:
             result[f"ev_planning_replay_seen_{reason}"] = float(
                 self._ev_planning_replay_seen[reason]
             )
+        for reason, count in sorted(storage_planning_reason_counts.items()):
+            result[f"storage_planning_samples_{reason}"] = float(count)
+        result["storage_planning_replay_size"] = float(
+            sum(len(items) for items in self._storage_planning_replay.values())
+        )
+        for reason, items in sorted(self._storage_planning_replay.items()):
+            result[f"storage_planning_replay_size_{reason}"] = float(len(items))
+            result[f"storage_planning_replay_seen_{reason}"] = float(
+                self._storage_planning_replay_seen[reason]
+            )
         result["evaluated_samples_per_second"] = (
             float(len(samples) * epochs_completed)
             / max(result["update_seconds"], 1.0e-9)
@@ -1070,7 +1346,7 @@ class TIMAPPO:
                         for target in reason_targets
                     )
                 )
-                replay_snapshot = TIMAPPO._compact_ev_planning_snapshot(
+                replay_snapshot = TIMAPPO._compact_planning_snapshot(
                     snapshot,
                     agent_ids=target_agent_ids,
                 )
@@ -1093,7 +1369,58 @@ class TIMAPPO:
         return tuple(items)
 
     @staticmethod
-    def _compact_ev_planning_snapshot(
+    def _storage_planning_items(
+        *,
+        snapshots,
+        decisions_by_step,
+        targets_by_step,
+    ) -> tuple[_StoragePlanningReplayItem, ...]:
+        """Group current storage targets by causal reason for replay."""
+
+        items: list[_StoragePlanningReplayItem] = []
+        for snapshot, raw_decisions, targets in zip(
+            snapshots,
+            decisions_by_step,
+            targets_by_step,
+        ):
+            targets_by_reason: dict[
+                str, list[StoragePlanningTarget]
+            ] = defaultdict(list)
+            for target in targets:
+                targets_by_reason[target.reason].append(target)
+            for reason, reason_targets in sorted(targets_by_reason.items()):
+                target_agent_ids = tuple(
+                    agent_id
+                    for agent_id in snapshot.agent_ids
+                    if any(
+                        target.agent_id == agent_id
+                        for target in reason_targets
+                    )
+                )
+                replay_snapshot = TIMAPPO._compact_planning_snapshot(
+                    snapshot,
+                    agent_ids=target_agent_ids,
+                )
+                overlaid = {
+                    agent_id: dict(raw_decisions.get(agent_id, {}))
+                    for agent_id in target_agent_ids
+                }
+                for target in reason_targets:
+                    overlaid.setdefault(target.agent_id, {})[
+                        target.group_id
+                    ] = target.decision
+                items.append(
+                    _StoragePlanningReplayItem(
+                        snapshot=replay_snapshot,
+                        decisions=overlaid,
+                        targets=tuple(reason_targets),
+                        reason=reason,
+                    )
+                )
+        return tuple(items)
+
+    @staticmethod
+    def _compact_planning_snapshot(
         snapshot: InterfaceSnapshot,
         *,
         agent_ids: tuple[str, ...],
@@ -1140,6 +1467,20 @@ class TIMAPPO:
             )
         return tuple(samples)
 
+    def _sample_storage_planning_replay(
+        self,
+    ) -> tuple[_StoragePlanningReplayItem, ...]:
+        count = self.storage_planning_replay_samples_per_reason
+        if count <= 0:
+            return ()
+        samples: list[_StoragePlanningReplayItem] = []
+        for _reason, reservoir in sorted(self._storage_planning_replay.items()):
+            if reservoir:
+                samples.extend(
+                    random.sample(reservoir, min(count, len(reservoir)))
+                )
+        return tuple(samples)
+
     def _remember_ev_planning_items(
         self,
         items: tuple[_EVPlanningReplayItem, ...],
@@ -1154,6 +1495,27 @@ class TIMAPPO:
             self._ev_planning_replay_seen[reason] += 1
             seen = self._ev_planning_replay_seen[reason]
             reservoir = self._ev_planning_replay[reason]
+            if len(reservoir) < capacity:
+                reservoir.append(item)
+                continue
+            replacement_index = random.randrange(seen)
+            if replacement_index < capacity:
+                reservoir[replacement_index] = item
+
+    def _remember_storage_planning_items(
+        self,
+        items: tuple[_StoragePlanningReplayItem, ...],
+    ) -> None:
+        """Maintain a bounded storage reservoir for every causal reason."""
+
+        capacity = self.storage_planning_replay_capacity_per_reason
+        if capacity <= 0:
+            return
+        for item in items:
+            reason = item.reason
+            self._storage_planning_replay_seen[reason] += 1
+            seen = self._storage_planning_replay_seen[reason]
+            reservoir = self._storage_planning_replay[reason]
             if len(reservoir) < capacity:
                 reservoir.append(item)
                 continue
@@ -1179,6 +1541,29 @@ class TIMAPPO:
         """
 
         if not self.ev_planning_balance_targets:
+            return fallback
+        mode_losses: list[Tensor] = []
+        for reason_groups in losses_by_mode_and_reason.values():
+            reason_losses = [
+                torch.stack(losses).mean()
+                for losses in reason_groups.values()
+                if losses
+            ]
+            if reason_losses:
+                mode_losses.append(torch.stack(reason_losses).mean())
+        return torch.stack(mode_losses).mean() if mode_losses else fallback
+
+    def _storage_planning_loss(
+        self,
+        losses_by_mode_and_reason: Mapping[
+            str, Mapping[str, list[Tensor]]
+        ],
+        *,
+        fallback: Tensor,
+    ) -> Tensor:
+        """Balance rare storage charge/discharge modes against abundant IDLE."""
+
+        if not self.storage_planning_balance_targets:
             return fallback
         mode_losses: list[Tensor] = []
         for reason_groups in losses_by_mode_and_reason.values():
@@ -1353,6 +1738,27 @@ class TIMAPPO:
                     else dict(self.ev_planner.configuration())
                 ),
             },
+            "storage_planning": {
+                "auxiliary_coeff": self.storage_planning_auxiliary_coeff,
+                "balance_targets": self.storage_planning_balance_targets,
+                "fraction_coeff": self.storage_planning_fraction_coeff,
+                "replay_capacity_per_reason": (
+                    self.storage_planning_replay_capacity_per_reason
+                ),
+                "replay_samples_per_reason": (
+                    self.storage_planning_replay_samples_per_reason
+                ),
+                "replay": {
+                    reason: tuple(items)
+                    for reason, items in self._storage_planning_replay.items()
+                },
+                "replay_seen": dict(self._storage_planning_replay_seen),
+                "planner": (
+                    None
+                    if self.storage_planner is None
+                    else dict(self.storage_planner.configuration())
+                ),
+            },
             "policy_anchor_actor": (
                 None
                 if self.policy_anchor_actor is None
@@ -1388,6 +1794,32 @@ class TIMAPPO:
                 str(reason): int(count)
                 for reason, count in (
                     dict(ev_planning_state.get("replay_seen", {})).items()
+                    if restore_rollout
+                    else ()
+                )
+            }
+        )
+        storage_planning_state = dict(payload.get("storage_planning", {}))
+        restored_storage_replay = (
+            dict(storage_planning_state.get("replay", {}))
+            if restore_rollout
+            else {}
+        )
+        storage_capacity = self.storage_planning_replay_capacity_per_reason
+        self._storage_planning_replay = defaultdict(
+            list,
+            {
+                str(reason): list(items)[-storage_capacity:]
+                if storage_capacity > 0
+                else []
+                for reason, items in restored_storage_replay.items()
+            },
+        )
+        self._storage_planning_replay_seen = Counter(
+            {
+                str(reason): int(count)
+                for reason, count in (
+                    dict(storage_planning_state.get("replay_seen", {})).items()
                     if restore_rollout
                     else ()
                 )
