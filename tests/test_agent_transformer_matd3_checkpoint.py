@@ -18,6 +18,11 @@ from tests.test_agent_transformer_matd3 import (
     _parameters,
     _transition,
 )
+from tests.test_agent_transformer_matd3_wrapper_integration import (
+    _attach_layout,
+    _expanded_topology,
+    _without_asset,
+)
 from tests.test_agent_transformer_matd3_behavior_cloning import _bc_b_agent
 from tests.test_agent_transformer_matd3_residual import _agent
 
@@ -99,6 +104,73 @@ def test_full_format_6_round_trip_restores_training_replay_queue_and_rng(
     assert np.array_equal(np.random.get_state()[1], payload["rng_state"]["numpy"][1])
     assert torch.equal(torch.get_rng_state(), payload["rng_state"]["torch"])
     assert len(restored_state.critic_1_optimizer.state) > 0
+
+
+def test_reduced_layout_checkpoint_round_trip_preserves_current_topology(
+    tmp_path: Path,
+) -> None:
+    source, _ = _make_agent(buildings=1)
+    expanded_names, expanded_actions, expanded_space = _expanded_topology()
+    _attach_layout(source, [expanded_names], [expanded_actions], [expanded_space])
+    reduced_names = _without_asset(expanded_names, "Building_1/charger_NEW")
+    _attach_layout(source, [reduced_names], [_ACTION_NAMES])
+    path = source.save_checkpoint(str(tmp_path), step=12)
+
+    restored, _ = _make_agent(buildings=1)
+    restored.load_checkpoint(path)
+    state = restored._per_building[0]
+    assert state.layout.n_ca == 2
+    assert state.action_names == tuple(_ACTION_NAMES)
+    assert state.topology_version == 2
+    assert restored._layout_signature == source._layout_signature
+    _assert_module_equal(source._per_building[0].actor, state.actor)
+
+
+def test_reduced_checkpoint_rejects_incompatible_attached_layout_atomically(
+    tmp_path: Path,
+) -> None:
+    source, _ = _make_agent(buildings=1)
+    expanded_names, expanded_actions, expanded_space = _expanded_topology()
+    _attach_layout(source, [expanded_names], [expanded_actions], [expanded_space])
+    reduced_names = _without_asset(expanded_names, "Building_1/charger_NEW")
+    _attach_layout(source, [reduced_names], [_ACTION_NAMES])
+    path = source.save_checkpoint(str(tmp_path), step=13)
+
+    target, _ = _make_agent(buildings=1)
+    _attach_layout(target, [expanded_names], [expanded_actions], [expanded_space])
+    signature_before = target._layout_signature
+    actor_before = _parameters(target._per_building[0].actor)
+    with pytest.raises(ValueError, match="layout signature"):
+        target.load_checkpoint(path)
+
+    assert target._layout_signature == signature_before
+    assert all(
+        torch.equal(before, after.detach())
+        for before, after in zip(actor_before, target._per_building[0].actor.parameters())
+    )
+
+
+def test_checkpoint_preserves_historical_action_contracts_for_readd(
+    tmp_path: Path,
+) -> None:
+    source, _ = _make_agent(buildings=1)
+    expanded_names, expanded_actions, expanded_space = _expanded_topology()
+    _attach_layout(source, [expanded_names], [expanded_actions], [expanded_space])
+    _transition(source, len(expanded_names), 1)
+    base_names = load_sample_observation_names_for_first_building()
+    _attach_layout(source, [base_names], [_ACTION_NAMES])
+    path = source.save_checkpoint(str(tmp_path), step=14)
+
+    restored, _ = _make_agent(buildings=1)
+    restored.load_checkpoint(path)
+    changed_bounds = _Box([-2.0, -0.5, -0.4], [1.0, 0.75, 0.75])
+    with pytest.raises(ValueError, match="historical layout signature"):
+        _attach_layout(
+            restored,
+            [expanded_names],
+            [expanded_actions],
+            [changed_bounds],
+        )
 
 
 def test_inference_round_trip_restores_actor_stack_and_operational_step(
