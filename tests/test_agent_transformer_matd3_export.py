@@ -7,7 +7,12 @@ import numpy as np
 import onnx
 import pytest
 
-from tests.test_agent_transformer_matd3 import _config, _make_agent, _transition
+from tests.test_agent_transformer_matd3 import _ACTION_NAMES, _config, _make_agent, _transition
+from tests.test_agent_transformer_matd3_wrapper_integration import (
+    _attach_layout,
+    _expanded_topology,
+    _without_asset,
+)
 from utils.artifact_manifest import build_manifest
 from utils.bundle_validator import validate_bundle_contract
 
@@ -101,6 +106,31 @@ def test_export_supports_layout_without_controllable_assets(tmp_path: Path) -> N
 
     assert metadata["agent_models"][0]["n_ca"] == 0
     assert actual.shape == (2, 0)
+
+
+def test_export_after_runtime_removal_uses_reduced_width_and_current_version(
+    tmp_path: Path,
+) -> None:
+    from onnx.reference import ReferenceEvaluator
+
+    agent, _ = _make_agent(buildings=1)
+    expanded_names, expanded_actions, expanded_space = _expanded_topology()
+    _attach_layout(agent, [expanded_names], [expanded_actions], [expanded_space])
+    reduced_names = _without_asset(expanded_names, "Building_1/charger_NEW")
+    _attach_layout(agent, [reduced_names], [_ACTION_NAMES])
+
+    metadata = agent.export_artifacts(str(tmp_path))
+    artifact = metadata["artifacts"][0]
+    assert artifact["path"] == "onnx_models/agent_0__topology_v2.onnx"
+    assert metadata["agent_models"][0]["n_ca"] == 2
+    assert metadata["agent_models"][0]["topology_version"] == 2
+    model_path = tmp_path / artifact["path"]
+    evaluator = ReferenceEvaluator(str(model_path))
+    actual = evaluator.run(
+        None,
+        {"encoded_obs": np.zeros((1, len(reduced_names)), dtype=np.float32)},
+    )[0]
+    assert actual.shape == (1, 2)
 
 
 def test_runtime_only_export_flags_are_loaded_from_hyperparameters() -> None:

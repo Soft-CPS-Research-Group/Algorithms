@@ -359,6 +359,7 @@ class AgentTransformerMATD3(BaseAgent):
         self._layout_builder = EntityTokenLayoutBuilder(self._tokenizer_config)
         self._per_building: List[_PerBuildingState] = []
         self._layout_signature: Optional[LayoutSignature] = None
+        self._signature_action_contracts: Dict[LayoutSignature, Tuple[Any, ...]] = {}
         self.replay_buffer: Optional[SignatureBucketedReplayBuffer] = None
         self._attached_names: Optional[
             Tuple[Tuple[Tuple[str, ...], Tuple[str, ...]], ...]
@@ -480,10 +481,21 @@ class AgentTransformerMATD3(BaseAgent):
             ]
             candidate_signature = self._build_layout_signature(layouts)
             was_attached = self._attached_names is not None
+            topology_summaries = (
+                self._topology_mutation_summaries(
+                    candidate_signature=candidate_signature,
+                    layouts=layouts,
+                    action_names=action_names,
+                    bounds=bounds,
+                )
+                if was_attached and count == len(self._per_building)
+                else []
+            )
             if (
                 was_attached
                 and count == len(self._per_building)
                 and candidate_signature == self._layout_signature
+                and names_key == self._attached_names
                 and all(
                     torch.equal(state.action_low, low)
                     and torch.equal(state.action_high, high)
@@ -539,6 +551,23 @@ class AgentTransformerMATD3(BaseAgent):
                 metadata=metadata,
                 topology_change=was_attached,
             )
+            for summary in topology_summaries:
+                state = self._per_building[summary["building_index"]]
+                logger.info(
+                    "operation=matd3_topology_commit building_id={} "
+                    "topology_version={} old_topology_version={} "
+                    "new_topology_version={} old_n_ca={} new_n_ca={} "
+                    "old_action_names={} new_action_names={} direction={}",
+                    summary["building_id"],
+                    state.topology_version,
+                    summary["old_topology_version"],
+                    state.topology_version,
+                    summary["old_n_ca"],
+                    summary["new_n_ca"],
+                    summary["old_action_names"],
+                    summary["new_action_names"],
+                    summary["direction"],
+                )
         except Exception:
             self.restore_topology_state(snapshot)
             raise
@@ -566,6 +595,10 @@ class AgentTransformerMATD3(BaseAgent):
             num_agents=len(layouts),
             batch_size=self.batch_size,
         )
+        signature = self._build_layout_signature(layouts)
+        self._signature_action_contracts = {
+            signature: self._build_action_contract(action_names, bounds)
+        }
 
     def _adapt_compatible_topology(
         self,
@@ -577,6 +610,20 @@ class AgentTransformerMATD3(BaseAgent):
         candidate_signature: LayoutSignature,
     ) -> None:
         self._validate_compatible_layout_signature(candidate_signature)
+        candidate_action_contract = self._build_action_contract(
+            action_names, bounds
+        )
+        historical_action_contract = self._signature_action_contracts.get(
+            candidate_signature
+        )
+        if (
+            historical_action_contract is not None
+            and historical_action_contract != candidate_action_contract
+        ):
+            raise ValueError(
+                "topology action drift: action names or bounds changed for "
+                "a historical layout signature"
+            )
         for index, (state, layout) in enumerate(zip(self._per_building, layouts)):
             if layout.building_id != state.building_id:
                 raise ValueError(
@@ -594,6 +641,14 @@ class AgentTransformerMATD3(BaseAgent):
                         f"topology change feature width for type {type_name!r} "
                         f"changed {projection.in_features} -> {width}"
                     )
+            self._validate_compatible_action_contract(
+                index=index,
+                state=state,
+                candidate_signature=candidate_signature[index],
+                action_names=action_names[index],
+                action_low=bounds[index][0],
+                action_high=bounds[index][1],
+            )
         self._flush_n_step_topology_boundary()
         for index, (state, layout, names, (low, high)) in enumerate(
             zip(self._per_building, layouts, action_names, bounds)
@@ -609,12 +664,90 @@ class AgentTransformerMATD3(BaseAgent):
             state.action_high = high
             if changed:
                 state.topology_version += 1
+        self._signature_action_contracts[candidate_signature] = (
+            candidate_action_contract
+        )
+
+    @staticmethod
+    def _segment_key(segment: Tuple[Any, ...]) -> Tuple[Any, ...]:
+        return (segment[0], segment[1], segment[2])
+
+    @staticmethod
+    def _build_action_contract(
+        action_names: Sequence[Sequence[str]],
+        bounds: Sequence[Tuple[torch.Tensor, torch.Tensor]],
+    ) -> Tuple[Any, ...]:
+        return tuple(
+            (
+                tuple(names),
+                tuple(float(value) for value in low.detach().cpu().tolist()),
+                tuple(float(value) for value in high.detach().cpu().tolist()),
+            )
+            for names, (low, high) in zip(action_names, bounds)
+        )
+
+    def _validate_compatible_action_contract(
+        self,
+        *,
+        index: int,
+        state: _PerBuildingState,
+        candidate_signature: Tuple[Any, ...],
+        action_names: Sequence[str],
+        action_low: torch.Tensor,
+        action_high: torch.Tensor,
+    ) -> None:
+        """Keep retained action identity and bounds stable across mutations."""
+        assert self._layout_signature is not None
+        old_ca_segments = [
+            segment
+            for segment in self._layout_signature[index][3]
+            if segment[0] == "ca"
+        ]
+        new_ca_segments = [
+            segment for segment in candidate_signature[3] if segment[0] == "ca"
+        ]
+        old_by_key = {
+            self._segment_key(segment): (
+                name,
+                state.action_low[pos],
+                state.action_high[pos],
+            )
+            for pos, (segment, name) in enumerate(
+                zip(old_ca_segments, state.action_names)
+            )
+        }
+        new_by_key = {
+            self._segment_key(segment): (
+                name,
+                action_low[pos],
+                action_high[pos],
+            )
+            for pos, (segment, name) in enumerate(
+                zip(new_ca_segments, action_names)
+            )
+        }
+        for key in old_by_key.keys() & new_by_key.keys():
+            old_name, old_low, old_high = old_by_key[key]
+            new_name, new_low, new_high = new_by_key[key]
+            if old_name != new_name:
+                raise ValueError(
+                    "topology action drift: action name changed for "
+                    f"building {index}, segment {key!r}: "
+                    f"{old_name!r} -> {new_name!r}"
+                )
+            if not torch.equal(old_low, new_low) or not torch.equal(
+                old_high, new_high
+            ):
+                raise ValueError(
+                    "topology action drift: action bounds changed for "
+                    f"building {index}, segment {key!r}"
+                )
 
     def _validate_compatible_layout_signature(
         self,
         candidate_signature: LayoutSignature,
     ) -> None:
-        """Reject schema drift while allowing new controllable assets."""
+        """Reject schema drift while allowing asset additions and removals."""
         assert self._layout_signature is not None
         for building_index, (previous, candidate) in enumerate(
             zip(self._layout_signature, candidate_signature)
@@ -625,13 +758,19 @@ class AgentTransformerMATD3(BaseAgent):
                 (segment[0], segment[1], segment[2])
                 for segment in previous_segments
             ]
-            previous_key_set = set(previous_keys)
-            candidate_existing_keys = [
+            candidate_keys = [
                 (segment[0], segment[1], segment[2])
                 for segment in candidate_segments
-                if (segment[0], segment[1], segment[2]) in previous_key_set
             ]
-            if candidate_existing_keys != previous_keys:
+            previous_key_set = set(previous_keys)
+            candidate_key_set = set(candidate_keys)
+            previous_existing_keys = [
+                key for key in previous_keys if key in candidate_key_set
+            ]
+            candidate_existing_keys = [
+                key for key in candidate_keys if key in previous_key_set
+            ]
+            if candidate_existing_keys != previous_existing_keys:
                 raise ValueError(
                     "topology schema drift: ordered segments changed for "
                     f"building {building_index}"
@@ -642,12 +781,9 @@ class AgentTransformerMATD3(BaseAgent):
             }
             for segment in previous_segments:
                 key = (segment[0], segment[1], segment[2])
-                if candidate_by_key.get(key) != segment:
-                    candidate_segment = candidate_by_key.get(key)
-                    if (
-                        candidate_segment is not None
-                        and len(candidate_segment[3]) != len(segment[3])
-                    ):
+                candidate_segment = candidate_by_key.get(key)
+                if candidate_segment is not None and candidate_segment != segment:
+                    if len(candidate_segment[3]) != len(segment[3]):
                         raise ValueError(
                             "topology schema drift: feature width changed for "
                             f"building {building_index}, segment {key!r}"
@@ -656,6 +792,65 @@ class AgentTransformerMATD3(BaseAgent):
                         "topology schema drift: segment feature names or NFC "
                         f"expression changed for building {building_index}, segment {key!r}"
                     )
+
+    def _topology_mutation_summaries(
+        self,
+        *,
+        candidate_signature: LayoutSignature,
+        layouts: Sequence[BuildingTokenLayout],
+        action_names: Sequence[Sequence[str]],
+        bounds: Sequence[Tuple[torch.Tensor, torch.Tensor]],
+    ) -> List[Dict[str, Any]]:
+        """Capture dynamic mutation details before a transactional attach."""
+        assert self._layout_signature is not None
+        summaries: List[Dict[str, Any]] = []
+        for index, (previous, candidate, layout, names, (low, high)) in enumerate(
+            zip(
+                self._layout_signature,
+                candidate_signature,
+                layouts,
+                action_names,
+                bounds,
+            )
+        ):
+            state = self._per_building[index]
+            if (
+                previous == candidate
+                and torch.equal(state.action_low, low)
+                and torch.equal(state.action_high, high)
+            ):
+                continue
+            old_keys = {
+                (segment[0], segment[1], segment[2])
+                for segment in previous[3]
+            }
+            new_keys = {
+                (segment[0], segment[1], segment[2])
+                for segment in candidate[3]
+            }
+            added = new_keys - old_keys
+            removed = old_keys - new_keys
+            if added and removed:
+                direction = "replacement"
+            elif added:
+                direction = "addition"
+            elif removed:
+                direction = "removal"
+            else:
+                direction = "schema_change"
+            summaries.append(
+                {
+                    "building_index": index,
+                    "building_id": state.building_id,
+                    "old_topology_version": state.topology_version,
+                    "old_n_ca": state.layout.n_ca,
+                    "new_n_ca": layout.n_ca,
+                    "old_action_names": list(state.action_names),
+                    "new_action_names": list(names),
+                    "direction": direction,
+                }
+            )
+        return summaries
 
     def _reset_full_for_building_count_change(
         self,
@@ -1446,6 +1641,9 @@ class AgentTransformerMATD3(BaseAgent):
             "step": int(step),
             "num_agents": len(self._per_building),
             "building_names": [state.building_id for state in self._per_building],
+            "signature_action_contracts": deepcopy(
+                self._signature_action_contracts
+            ),
         }
         for index, state in enumerate(self._per_building):
             payload[f"tokenizer_state_dict_{index}"] = state.tokenizer.state_dict()
@@ -1572,7 +1770,9 @@ class AgentTransformerMATD3(BaseAgent):
         if not path.exists():
             raise FileNotFoundError(f"checkpoint file not found: {path}")
         payload = torch.load(path, map_location=self.device, weights_only=False)
-        prepared_replay = self._validate_checkpoint_payload(payload)
+        prepared_replay, prepared_action_contracts = (
+            self._validate_checkpoint_payload(payload)
+        )
         snapshot = self.snapshot_topology_state()
         try:
             mode = payload["checkpoint_mode"]
@@ -1634,9 +1834,11 @@ class AgentTransformerMATD3(BaseAgent):
                 self.exploration_step = int(
                     payload["inference_policy_state"]["exploration_step"]
                 )
+                self._signature_action_contracts = prepared_action_contracts
                 return
             assert prepared_replay is not None
             self.replay_buffer = prepared_replay
+            self._signature_action_contracts = prepared_action_contracts
             self._n_step_queue = deque(deepcopy(payload["n_step_queue"]))
             exploration = payload["exploration_state"]
             self.exploration_sigma = float(exploration["sigma"])
@@ -4014,9 +4216,105 @@ class AgentTransformerMATD3(BaseAgent):
             f"{_METRIC_PREFIX}replay_bucket_size_current": float(bucket_size),
         })
 
+    def _validate_checkpoint_action_contracts(
+        self,
+        raw_contracts: Any,
+        *,
+        expected_signatures: set[LayoutSignature],
+    ) -> Dict[LayoutSignature, Tuple[Any, ...]]:
+        assert self._layout_signature is not None
+        live_contract = self._build_action_contract(
+            [state.action_names for state in self._per_building],
+            [
+                (state.action_low, state.action_high)
+                for state in self._per_building
+            ],
+        )
+        if raw_contracts is None:
+            if expected_signatures != {self._layout_signature}:
+                raise ValueError(
+                    "checkpoint is missing action contracts for historical "
+                    "replay signatures"
+                )
+            return {self._layout_signature: live_contract}
+        if not isinstance(raw_contracts, Mapping):
+            raise ValueError("checkpoint signature_action_contracts is invalid")
+
+        validator = SignatureBucketedReplayBuffer(
+            capacity=self.buffer_capacity,
+            num_agents=len(self._per_building),
+            batch_size=self.batch_size,
+        )
+        validated: Dict[LayoutSignature, Tuple[Any, ...]] = {}
+        for signature, contract in raw_contracts.items():
+            validator._validate_signature(signature)
+            if not isinstance(contract, tuple) or len(contract) != len(
+                self._per_building
+            ):
+                raise ValueError(
+                    "checkpoint signature action contract building count is invalid"
+                )
+            buildings = []
+            for building_index, (building_signature, entry) in enumerate(
+                zip(signature, contract)
+            ):
+                if not isinstance(entry, tuple) or len(entry) != 3:
+                    raise ValueError(
+                        "checkpoint signature action contract entry is invalid"
+                    )
+                names, low, high = entry
+                n_ca = building_signature[1]
+                if (
+                    not isinstance(names, tuple)
+                    or not all(isinstance(name, str) for name in names)
+                    or not isinstance(low, tuple)
+                    or not isinstance(high, tuple)
+                    or len(names) != n_ca
+                    or len(low) != n_ca
+                    or len(high) != n_ca
+                ):
+                    raise ValueError(
+                        "checkpoint signature action contract width is invalid "
+                        f"for building {building_index}"
+                    )
+                try:
+                    low_values = tuple(float(value) for value in low)
+                    high_values = tuple(float(value) for value in high)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        "checkpoint signature action contract bounds are invalid"
+                    ) from error
+                if (
+                    not np.isfinite(low_values).all()
+                    or not np.isfinite(high_values).all()
+                    or any(
+                        lower >= upper
+                        for lower, upper in zip(low_values, high_values)
+                    )
+                ):
+                    raise ValueError(
+                        "checkpoint signature action contract bounds are invalid"
+                    )
+                buildings.append((tuple(names), low_values, high_values))
+            validated[signature] = tuple(buildings)
+
+        missing = expected_signatures - validated.keys()
+        if missing:
+            raise ValueError(
+                "checkpoint is missing action contracts for replay signatures"
+            )
+        if validated.get(self._layout_signature) != live_contract:
+            raise ValueError(
+                "checkpoint current layout action contract mismatch"
+            )
+        return validated
+
     def _validate_checkpoint_payload(
         self, payload: Any
-    ) -> Optional[SignatureBucketedReplayBuffer]:
+    ) -> Tuple[
+        Optional[SignatureBucketedReplayBuffer],
+        Dict[LayoutSignature, Tuple[Any, ...]],
+    ]:
         if not isinstance(payload, Mapping):
             raise ValueError("Transformer MATD3 checkpoint must be a mapping")
         checkpoint_version = payload.get("checkpoint_version")
@@ -4145,7 +4443,11 @@ class AgentTransformerMATD3(BaseAgent):
             step = inference.get("exploration_step")
             if isinstance(step, bool) or not isinstance(step, int) or step < 0:
                 raise ValueError("checkpoint inference exploration_step is invalid")
-            return None
+            action_contracts = self._validate_checkpoint_action_contracts(
+                payload.get("signature_action_contracts"),
+                expected_signatures={self._layout_signature},
+            )
+            return None, action_contracts
 
         required_global = (
             "replay_buffer", "n_step_queue", "current_layout_signature",
@@ -4163,6 +4465,13 @@ class AgentTransformerMATD3(BaseAgent):
             batch_size=self.batch_size,
         )
         replay.set_state(payload["replay_buffer"])
+        action_contracts = self._validate_checkpoint_action_contracts(
+            payload.get("signature_action_contracts"),
+            expected_signatures={
+                self._layout_signature,
+                *tuple(replay.signatures()),
+            },
+        )
         self._validate_checkpoint_n_step_queue(payload["n_step_queue"], replay)
         exploration = payload["exploration_state"]
         if not isinstance(exploration, Mapping):
@@ -4211,7 +4520,7 @@ class AgentTransformerMATD3(BaseAgent):
             raise ValueError("checkpoint reward normalization state is invalid")
         self._validate_checkpoint_bc_state(payload["bc_state"])
         self._validate_rng_state(payload["rng_state"])
-        return replay
+        return replay, action_contracts
 
     @staticmethod
     def _optimizer_states_equal(left: Any, right: Any) -> bool:

@@ -13,8 +13,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO_ROOT / "configs/templates/dynamic/transformer_matd3_entity_dynamic.yaml"
 DATASET = REPO_ROOT / "datasets/citylearn_three_phase_dynamic_assets_only_demo_15s_parquet/schema.json"
-FIRST_TOPOLOGY_EVENT_STEP = 12
-END_STEP = 24
+TOPOLOGY_EVENT_STEPS = (8, 16)
+END_STEP = 20
 
 pytestmark = pytest.mark.slow
 
@@ -27,8 +27,12 @@ def _dynamic_smoke_schema(work: Path) -> Path:
     schema["root_directory"] = str(DATASET.parent.resolve())
     events = schema.get("topology_events") or []
     assert events, "Dynamic smoke dataset has no topology events"
-    for offset, event in enumerate(events):
-        event["time_step"] = FIRST_TOPOLOGY_EVENT_STEP + 100 * offset
+    # Exercise the existing charger addition and removal without reaching
+    # later asset-type mutations that are outside this bounded smoke.
+    assert len(events) >= len(TOPOLOGY_EVENT_STEPS)
+    schema["topology_events"] = events[: len(TOPOLOGY_EVENT_STEPS)]
+    for event, time_step in zip(schema["topology_events"], TOPOLOGY_EVENT_STEPS):
+        event["time_step"] = time_step
     path = work / "schema.dynamic_smoke.json"
     path.write_text(json.dumps(schema, indent=2), encoding="utf-8")
     return path
@@ -93,11 +97,18 @@ def test_e2e_learning_mutation_checkpoint_and_export(
     artifacts = manifest["agent"]["artifacts"]
 
     assert artifacts
-    assert max(item["config"]["topology_version"] for item in artifacts) >= 1
+    mutated_buildings = {
+        item["config"]["building_id"]
+        for item in artifacts
+        if item["config"]["topology_version"] >= 1
+    }
+    assert {"Building_2", "Building_5"}.issubset(mutated_buildings)
     assert all((job_dir / "bundle" / item["path"]).exists() for item in artifacts)
     assert list((job_dir / "checkpoints").rglob("transformer_matd3_step*.pt"))
     assert (job_dir / "results" / "result.json").exists()
     assert (job_dir / "results" / "summary.json").exists()
+    json.loads((job_dir / "results" / "result.json").read_text(encoding="utf-8"))
+    json.loads((job_dir / "results" / "summary.json").read_text(encoding="utf-8"))
 
     metrics_path = job_dir / "logs" / "metrics.jsonl"
     metric_lines = [json.loads(line) for line in metrics_path.read_text().splitlines()]

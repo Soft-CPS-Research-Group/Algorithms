@@ -230,7 +230,16 @@ state before mutation. Failure restores the full snapshot.
 
 For unchanged building count, the controller permits compatible asset-instance
 changes. It preserves neural weights, optimizer state, replay, BC reservoirs,
-normalizer state, and clocks. It rejects:
+normalizer state, and clocks.
+
+Asset additions and removals compare the intersection of old and candidate
+segment keys. Retained segments must keep their relative order, feature names,
+widths, NFC expressions, and type semantics. The controller does not require
+either complete segment list to be a subsequence of the other.
+An exact historical signature can reuse replay only when its saved action names
+and bounds match the candidate action contract.
+
+It rejects:
 
 - changed building identity;
 - reordered or changed existing segment semantics;
