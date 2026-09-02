@@ -98,6 +98,7 @@ class TIMAPPO:
         advantage_normalization: str = "global",
         policy_credit_assignment: str = "joint_agent",
         policy_anchor_coeff: float = 0.0,
+        policy_anchor_coeff_by_group_type: Mapping[str, float] | None = None,
         exclude_intervened_actions_from_policy_loss: bool = False,
         intervention_distillation_coeff: float = 0.0,
         ev_planner: CausalEVPlanner | None = None,
@@ -176,8 +177,38 @@ class TIMAPPO:
         self.policy_anchor_coeff = float(policy_anchor_coeff)
         if self.policy_anchor_coeff < 0.0:
             raise ValueError("TI-MAPPO policy_anchor_coeff must be non-negative")
+        self.policy_anchor_coeff_by_group_type = {
+            str(key): float(value)
+            for key, value in dict(
+                policy_anchor_coeff_by_group_type or {}
+            ).items()
+        }
+        unknown_anchor_group_types = sorted(
+            set(self.policy_anchor_coeff_by_group_type)
+            - set(actor.group_modes)
+        ) if hasattr(actor, "group_modes") else []
+        if unknown_anchor_group_types:
+            raise ValueError(
+                "Unknown TI-MAPPO policy-anchor action-group type(s): "
+                f"{unknown_anchor_group_types}"
+            )
+        if any(
+            value < 0.0
+            for value in self.policy_anchor_coeff_by_group_type.values()
+        ):
+            raise ValueError(
+                "TI-MAPPO policy-anchor coefficients must be non-negative"
+            )
+        if (
+            self.policy_anchor_coeff_by_group_type
+            and self.policy_credit_assignment != "typed_group"
+        ):
+            raise ValueError(
+                "TI-MAPPO policy_anchor_coeff_by_group_type requires "
+                "typed_group credit"
+            )
         self.policy_anchor_actor: TypedActor | None = None
-        if self.policy_anchor_coeff > 0.0:
+        if self._policy_anchor_enabled():
             self.reset_policy_anchor()
         self.exclude_intervened_actions_from_policy_loss = bool(
             exclude_intervened_actions_from_policy_loss
@@ -332,13 +363,25 @@ class TIMAPPO:
     def reset_policy_anchor(self) -> None:
         """Freeze the current actor as the conservative PPO reference policy."""
 
-        if self.policy_anchor_coeff <= 0.0:
+        if not self._policy_anchor_enabled():
             self.policy_anchor_actor = None
             return
         anchor = deepcopy(self.actor).eval()
         for parameter in anchor.parameters():
             parameter.requires_grad_(False)
         self.policy_anchor_actor = anchor
+
+    def _policy_anchor_enabled(self) -> bool:
+        return self.policy_anchor_coeff > 0.0 or any(
+            value > 0.0
+            for value in self.policy_anchor_coeff_by_group_type.values()
+        )
+
+    def _policy_anchor_coefficient(self, group_type: str) -> float:
+        return self.policy_anchor_coeff_by_group_type.get(
+            str(group_type),
+            self.policy_anchor_coeff,
+        )
 
     @_with_replay_preparation_cache
     def update(
@@ -514,6 +557,15 @@ class TIMAPPO:
         actor_samples_by_group_type = Counter(
             sample.group_type for sample in group_samples
         )
+        anchor_samples_by_group_type = (
+            Counter(
+                sample.group_type
+                for sample in group_samples
+                if self._policy_anchor_coefficient(sample.group_type) > 0.0
+            )
+            if self.policy_credit_assignment == "typed_group"
+            else Counter()
+        )
         intervened_policy_samples_by_group_type: Counter[str] = Counter()
         if self.exclude_intervened_actions_from_policy_loss:
             for sample in group_samples:
@@ -522,7 +574,7 @@ class TIMAPPO:
                 ):
                     intervened_policy_samples_by_group_type[sample.group_type] += 1
         anchor_evaluation = None
-        if self.policy_anchor_coeff > 0.0:
+        if self._policy_anchor_enabled():
             if self.policy_anchor_actor is None:
                 raise RuntimeError("TI-MAPPO policy anchor is not initialized")
             with torch.no_grad():
@@ -538,6 +590,10 @@ class TIMAPPO:
             epoch_started = time.perf_counter()
             actor_losses: list[Tensor] = []
             policy_anchor_losses: list[Tensor] = []
+            weighted_policy_anchor_losses: list[Tensor] = []
+            policy_anchor_losses_by_group_type: dict[
+                str, list[Tensor]
+            ] = defaultdict(list)
             intervention_distillation_losses: list[Tensor] = []
             ev_planning_losses: list[Tensor] = []
             ev_planning_losses_by_mode_and_reason: dict[
@@ -648,8 +704,10 @@ class TIMAPPO:
                             anchor_log_prob = anchor_evaluation.log_prob_by_step[
                                 step_index
                             ][agent_id]
-                            policy_anchor_losses.append(
-                                (new_log_prob - anchor_log_prob).pow(2)
+                            anchor_loss = (new_log_prob - anchor_log_prob).pow(2)
+                            policy_anchor_losses.append(anchor_loss)
+                            weighted_policy_anchor_losses.append(
+                                self.policy_anchor_coeff * anchor_loss
                             )
                         entropies.append(entropy_by_agent[agent_id])
                         agent_entropy_bonus = torch.zeros((), device=ratio.device)
@@ -697,6 +755,29 @@ class TIMAPPO:
                                     device=values[agent_id].device,
                                 )
                             )
+                            new_log_prob = current_log_probs[group_id]
+                            anchor_coefficient = (
+                                self._policy_anchor_coefficient(group_type)
+                            )
+                            if (
+                                anchor_evaluation is not None
+                                and anchor_coefficient > 0.0
+                            ):
+                                anchor_log_prob = (
+                                    anchor_evaluation.log_prob_by_group_step[
+                                        step_index
+                                    ][agent_id][group_id]
+                                )
+                                anchor_loss = (
+                                    new_log_prob - anchor_log_prob
+                                ).pow(2)
+                                policy_anchor_losses.append(anchor_loss)
+                                weighted_policy_anchor_losses.append(
+                                    anchor_coefficient * anchor_loss
+                                )
+                                policy_anchor_losses_by_group_type[
+                                    group_type
+                                ].append(anchor_loss)
                             if (
                                 self.exclude_intervened_actions_from_policy_loss
                                 and (agent_id, group_id)
@@ -713,7 +794,6 @@ class TIMAPPO:
                                         ][agent_id][group_id]
                                     )
                                 continue
-                            new_log_prob = current_log_probs[group_id]
                             old_log_prob = torch.tensor(
                                 float(stored_decisions[group_id].raw_log_prob),
                                 dtype=torch.float32,
@@ -733,15 +813,6 @@ class TIMAPPO:
                             actor_losses.append(
                                 -torch.minimum(unclipped, clipped)
                             )
-                            if anchor_evaluation is not None:
-                                anchor_log_prob = (
-                                    anchor_evaluation.log_prob_by_group_step[
-                                        step_index
-                                    ][agent_id][group_id]
-                                )
-                                policy_anchor_losses.append(
-                                    (new_log_prob - anchor_log_prob).pow(2)
-                                )
                             group_entropy = current_entropies[group_id]
                             entropies.append(group_entropy)
                             coefficient = self.entropy_coeff_by_group_type.get(
@@ -857,6 +928,11 @@ class TIMAPPO:
             policy_anchor_loss = (
                 torch.stack(policy_anchor_losses).mean()
                 if policy_anchor_losses
+                else actor_loss.new_zeros(())
+            )
+            policy_anchor_objective = (
+                torch.stack(weighted_policy_anchor_losses).mean()
+                if weighted_policy_anchor_losses
                 else actor_loss.new_zeros(())
             )
             intervention_distillation_loss = (
@@ -997,7 +1073,7 @@ class TIMAPPO:
             actor_objective = (
                 actor_loss
                 - entropy_bonus
-                + self.policy_anchor_coeff * policy_anchor_loss
+                + policy_anchor_objective
                 + self.intervention_distillation_coeff
                 * intervention_distillation_loss
                 + self.ev_planning_auxiliary_coeff * ev_planning_loss
@@ -1067,6 +1143,15 @@ class TIMAPPO:
             metrics["policy_anchor_loss"] += float(
                 policy_anchor_loss.detach().cpu()
             )
+            metrics["policy_anchor_objective"] += float(
+                policy_anchor_objective.detach().cpu()
+            )
+            for group_type, losses in (
+                policy_anchor_losses_by_group_type.items()
+            ):
+                metrics[f"policy_anchor_loss_{group_type}"] += float(
+                    torch.stack(losses).mean().detach().cpu()
+                )
             metrics["intervention_distillation_loss"] += float(
                 intervention_distillation_loss.detach().cpu()
             )
@@ -1205,6 +1290,9 @@ class TIMAPPO:
                     len(group_samples) if group_samples else len(samples)
                 ),
                 "policy_anchor_coeff": float(self.policy_anchor_coeff),
+                "policy_anchor_samples": float(
+                    len(policy_anchor_losses)
+                ),
                 "intervention_distillation_coeff": float(
                     self.intervention_distillation_coeff
                 ),
@@ -1279,6 +1367,18 @@ class TIMAPPO:
                 "update_seconds": float(time.perf_counter() - update_started),
             }
         )
+        for group_type, coefficient in (
+            self.policy_anchor_coeff_by_group_type.items()
+        ):
+            result[f"policy_anchor_coeff_{group_type}"] = float(
+                coefficient
+            )
+        for group_type, sample_count in sorted(
+            anchor_samples_by_group_type.items()
+        ):
+            result[f"policy_anchor_samples_{group_type}"] = float(
+                sample_count
+            )
         for group_type, sample_count in sorted(
             actor_samples_by_group_type.items()
         ):
@@ -1764,6 +1864,12 @@ class TIMAPPO:
                 if self.policy_anchor_actor is None
                 else self.policy_anchor_actor.state_dict()
             ),
+            "policy_anchor": {
+                "coefficient": self.policy_anchor_coeff,
+                "coefficient_by_group_type": dict(
+                    self.policy_anchor_coeff_by_group_type
+                ),
+            },
         }
 
     def load_state_dict(
@@ -1845,7 +1951,7 @@ class TIMAPPO:
         else:
             self.rollout.clear()
         self.update_count = int(payload.get("update_count", 0))
-        if self.policy_anchor_coeff > 0.0:
+        if self._policy_anchor_enabled():
             anchor_state = payload.get("policy_anchor_actor")
             self.reset_policy_anchor()
             if anchor_state is not None:

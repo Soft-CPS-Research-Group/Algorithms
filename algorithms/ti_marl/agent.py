@@ -288,6 +288,9 @@ class TIMARL(BaseAgent):
             ),
             policy_credit_assignment=self.policy_credit_assignment,
             policy_anchor_coeff=float(hyper.get("policy_anchor_coeff", 0.0)),
+            policy_anchor_coeff_by_group_type=dict(
+                hyper.get("policy_anchor_coeff_by_group_type", {})
+            ),
             exclude_intervened_actions_from_policy_loss=bool(
                 hyper.get(
                     "exclude_intervened_actions_from_policy_loss",

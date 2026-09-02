@@ -116,6 +116,11 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     stage["hyperparameters"]["advantage_normalization"] = "per_agent"
     stage["hyperparameters"]["policy_credit_assignment"] = "typed_group"
     stage["hyperparameters"]["policy_anchor_coeff"] = 0.05
+    stage["hyperparameters"]["policy_anchor_coeff_by_group_type"] = {
+        "stationary_storage": 0.0,
+        "ev_session": 0.1,
+        "deferrable": 0.2,
+    }
     stage["hyperparameters"]["policy_anchor_reset_on_resume"] = True
     stage["hyperparameters"][
         "exclude_intervened_actions_from_policy_loss"
@@ -185,6 +190,14 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
 
     behavior_cloning = parsed.pipeline[0].hyperparameters.behavior_cloning
     assert parsed.pipeline[0].hyperparameters.policy_anchor_coeff == 0.05
+    assert (
+        parsed.pipeline[0].hyperparameters.policy_anchor_coeff_by_group_type
+        == {
+            "stationary_storage": 0.0,
+            "ev_session": 0.1,
+            "deferrable": 0.2,
+        }
+    )
     assert parsed.pipeline[0].hyperparameters.policy_anchor_reset_on_resume
     assert (
         parsed.pipeline[0]
@@ -363,6 +376,41 @@ def test_validate_config_rejects_intervention_mask_with_joint_credit(base_config
     with pytest.raises(
         ValueError,
         match="exclude_intervened_actions_from_policy_loss requires",
+    ):
+        validate_config(config)
+
+
+def test_validate_config_rejects_selective_anchor_with_joint_credit(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["policy_anchor_coeff_by_group_type"] = {
+        "ev_session": 0.1
+    }
+    config["pipeline"] = [stage]
+
+    with pytest.raises(
+        ValueError,
+        match="policy_anchor_coeff_by_group_type requires",
+    ):
+        validate_config(config)
+
+
+def test_validate_config_rejects_negative_selective_anchor(base_config):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["policy_credit_assignment"] = "typed_group"
+    stage["hyperparameters"]["policy_anchor_coeff_by_group_type"] = {
+        "ev_session": -0.1
+    }
+    config["pipeline"] = [stage]
+
+    with pytest.raises(
+        ValueError,
+        match="policy_anchor_coeff_by_group_type",
     ):
         validate_config(config)
 

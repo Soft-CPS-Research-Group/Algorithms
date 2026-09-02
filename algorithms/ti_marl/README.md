@@ -232,6 +232,16 @@ the frozen anchor after loading the actor so the regularizer protects the
 resumed checkpoint rather than an older anchor stored inside it. It is false
 by default and does not affect ordinary checkpoint restoration.
 
+With typed-group credit, `policy_anchor_coeff_by_group_type` can protect only
+selected action families while another family is fine-tuned. Entries override
+the scalar `policy_anchor_coeff`; omitted families inherit that scalar, so a
+zero scalar plus `{ev_session: 0.1, deferrable: 0.1}` leaves stationary storage
+free to learn while resisting collateral drift in EV and deferrable actions.
+The anchor also covers locally intervened groups: those actions remain excluded
+from the PPO ratio, but their policy distribution must not drift merely because
+the safety projector was authoritative. Metrics report the coefficient and
+anchor loss per configured group type.
+
 Deterministic replay can use `actor.deterministic_mode_strategy: expected_signed`
 to preserve the signed mean of a charge/idle/discharge policy instead of reducing
 it to a hard categorical argmax.  The optional

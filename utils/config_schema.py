@@ -1526,6 +1526,9 @@ class TIMARLHyperparameters(BaseModel):
         "joint_agent"
     )
     policy_anchor_coeff: float = Field(default=0.0, ge=0)
+    policy_anchor_coeff_by_group_type: Dict[str, float] = Field(
+        default_factory=dict
+    )
     policy_anchor_reset_on_resume: bool = False
     exclude_intervened_actions_from_policy_loss: bool = False
     intervention_distillation_coeff: float = Field(default=0.0, ge=0)
@@ -1552,6 +1555,22 @@ class TIMARLHyperparameters(BaseModel):
         if any(value < 0.0 for value in self.entropy_coeff_by_group_type.values()):
             raise ValueError(
                 "TIMARL entropy_coeff_by_group_type values must be non-negative"
+            )
+        if any(
+            value < 0.0
+            for value in self.policy_anchor_coeff_by_group_type.values()
+        ):
+            raise ValueError(
+                "TIMARL policy_anchor_coeff_by_group_type values must be "
+                "non-negative"
+            )
+        if (
+            self.policy_anchor_coeff_by_group_type
+            and self.policy_credit_assignment != "typed_group"
+        ):
+            raise ValueError(
+                "TIMARL policy_anchor_coeff_by_group_type requires "
+                "policy_credit_assignment='typed_group'"
             )
         if (
             self.exclude_intervened_actions_from_policy_loss

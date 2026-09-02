@@ -2808,6 +2808,12 @@ def test_ti_ppo_update_reports_finite_ratio_and_value_diagnostics(
         assert metrics["actor_samples"] >= metrics["samples"]
         assert metrics["intervened_policy_samples"] == 1.0
         assert metrics["eligible_actor_samples"] == metrics["actor_samples"] - 1.0
+        assert metrics["policy_anchor_samples"] == metrics["actor_samples"]
+        assert sum(
+            value
+            for key, value in metrics.items()
+            if key.startswith("policy_anchor_samples_")
+        ) == metrics["policy_anchor_samples"]
         assert metrics["intervention_distillation_coeff"] == pytest.approx(0.1)
         assert metrics["intervention_distillation_samples"] == 1.0
         assert np.isfinite(metrics["intervention_distillation_loss"])
@@ -2893,6 +2899,52 @@ def test_ti_mappo_policy_anchor_is_frozen_and_checkpointed(tmp_path):
         for parameter in restored.policy_anchor_actor.parameters()
     )
     assert restored.actor_optimizer.param_groups[0]["lr"] == pytest.approx(1.0e-4)
+
+
+def test_ti_mappo_selective_policy_anchor_validates_group_types(tmp_path):
+    compiler, _snapshot = compile_snapshot(tmp_path / "selective", time_step=0)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    critic = CentralSetCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+    )
+    group_critic = TypedGroupCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+        centralized=True,
+    )
+
+    learner = TIMAPPO(
+        actor,
+        critic,
+        group_critic=group_critic,
+        policy_credit_assignment="typed_group",
+        policy_anchor_coeff_by_group_type={
+            "stationary_storage": 0.0,
+            "ev_session": 0.1,
+        },
+    )
+
+    assert learner.policy_anchor_actor is not None
+    assert learner._policy_anchor_coefficient("stationary_storage") == 0.0
+    assert learner._policy_anchor_coefficient("ev_session") == 0.1
+    assert learner._policy_anchor_coefficient("deferrable") == 0.0
+
+    with pytest.raises(ValueError, match="Unknown TI-MAPPO policy-anchor"):
+        TIMAPPO(
+            actor,
+            critic,
+            group_critic=group_critic,
+            policy_credit_assignment="typed_group",
+            policy_anchor_coeff_by_group_type={"unknown_group": 0.1},
+        )
 
 
 def test_typed_group_advantage_routes_only_related_constraint_penalties(
