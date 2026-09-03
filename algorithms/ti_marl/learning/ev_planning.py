@@ -288,10 +288,21 @@ class CausalEVPlanner:
                 available_power * efficiency * step_hours,
                 1.0e-9,
             )
+            # A fixed economic charge fraction is useful at an ordinary cheap
+            # opportunity, but it must never teach less power than the average
+            # duty already required to reach the service target.  The safety
+            # projector used to hide this mismatch by increasing urgent
+            # actions after the actor, leaving the learned EV head dependent on
+            # repeated takeovers.
+            target_fraction = (
+                max(self.charge_fraction, required_duty_ratio)
+                if urgent
+                else self.charge_fraction
+            )
             fraction = float(
                 np.clip(
                     max(
-                        min(self.charge_fraction, energy_limited_fraction),
+                        min(target_fraction, energy_limited_fraction),
                         float(charge_port.lower_bound)
                         / max(float(charge_port.upper_bound), 1.0e-9),
                     ),

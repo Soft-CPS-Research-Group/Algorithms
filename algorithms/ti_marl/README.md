@@ -108,6 +108,9 @@ hyperparameters:
       stationary_storage: 2.0  # optional deterministic calibration; default 1.0
   critic: {kind: set}      # local when backbone.name is ppo
   policy_credit_assignment: typed_group  # or joint_agent
+  # Optional strict fine-tuning boundary:
+  actor_update_scope: selected_group_heads
+  actor_update_group_types: [ev_session]
 ```
 
 Every observation is classified as policy input, safety dependency, runtime
@@ -218,6 +221,16 @@ shared, this is an objective-level restriction rather than a claim that the
 other neural outputs cannot move; pair it with per-group policy anchors when
 those outputs must be retained. The option requires typed-group credit and is
 unset by default, preserving the previous behavior.
+
+When exact preservation is required, use
+`actor_update_scope: selected_group_heads` together with
+`actor_update_group_types`. The actor optimizer then owns only the categorical
+and Beta heads of those typed action families; the shared typed encoder,
+cross-group interaction and every other action head remain bit-for-bit frozen.
+Training reports the authorized parameter count and stores the scope in the
+checkpoint. Optimizer state cannot be restored across different scopes, so a
+selective stage resumed from a general checkpoint must set
+`restore_optimizers: false`. The default scope is `all`.
 
 With typed-group credit, the optional
 `exclude_intervened_actions_from_policy_loss: true` makes PPO aware of the

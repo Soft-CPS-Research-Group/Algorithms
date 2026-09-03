@@ -2314,6 +2314,8 @@ def test_causal_ev_planner_uses_price_opportunity_and_service_urgency(tmp_path):
     assert expensive_target.reason == "cheaper_forecast_with_service_slack"
     assert urgent_target.decision.mode == "CHARGE_EV"
     assert urgent_target.reason == "service_urgent"
+    assert urgent_target.required_duty_ratio == pytest.approx(1.0)
+    assert urgent_target.decision.fraction == pytest.approx(1.0)
     assert planner.targets(no_forecast, seconds_per_time_step=900.0) == ()
 
 
@@ -3507,11 +3509,18 @@ def test_ti_mappo_selective_ppo_policy_updates_only_named_group_types(tmp_path):
         group_critic=group_critic,
         policy_credit_assignment="typed_group",
         ppo_policy_group_types=["ev_session"],
+        actor_update_scope="selected_group_heads",
+        actor_update_group_types=["ev_session"],
         rollout_steps=1,
         ppo_epochs=1,
         target_kl=None,
         entropy_coeff=0.0,
+        entropy_coeff_by_group_type={"ev_session": 0.01},
     )
+    actor_before = {
+        name: parameter.detach().clone()
+        for name, parameter in actor.named_parameters()
+    }
     with torch.no_grad():
         evaluation = actor(first, deterministic=True)
         values = critic(first)
@@ -3560,6 +3569,21 @@ def test_ti_mappo_selective_ppo_policy_updates_only_named_group_types(tmp_path):
 
     metrics = learner.update()
 
+    ev_head_prefixes = (
+        "mode_heads.ev_session.",
+        "beta_heads.ev_session.",
+    )
+    assert any(
+        not torch.equal(actor_before[name], parameter.detach())
+        for name, parameter in actor.named_parameters()
+        if name.startswith(ev_head_prefixes)
+    )
+    assert all(
+        torch.equal(actor_before[name], parameter.detach())
+        for name, parameter in actor.named_parameters()
+        if not name.startswith(ev_head_prefixes)
+    )
+
     assert metrics["actor_samples"] > metrics["ppo_policy_samples"] > 0.0
     assert metrics["ppo_policy_samples_ev_session"] == metrics[
         "ppo_policy_samples"
@@ -3567,9 +3591,31 @@ def test_ti_mappo_selective_ppo_policy_updates_only_named_group_types(tmp_path):
     assert metrics["ppo_policy_samples_stationary_storage"] == 0.0
     assert metrics["ppo_policy_samples_deferrable"] == 0.0
     assert metrics["eligible_actor_samples"] == metrics["ppo_policy_samples"]
+    assert metrics["actor_update_scope_selected_group_heads"] == 1.0
+    assert metrics["actor_update_parameter_count"] == sum(
+        parameter.numel()
+        for name, parameter in actor.named_parameters()
+        if name.startswith(ev_head_prefixes)
+    )
     assert learner.state_dict()["ppo_policy"]["group_types"] == (
         "ev_session",
     )
+    assert learner.state_dict()["actor_update"]["group_types"] == (
+        "ev_session",
+    )
+
+    incompatible = TIMAPPO(
+        actor,
+        critic,
+        group_critic=group_critic,
+        policy_credit_assignment="typed_group",
+    )
+    with pytest.raises(ValueError, match="different actor update scopes"):
+        incompatible.load_state_dict(
+            learner.state_dict(),
+            restore_optimizers=True,
+            restore_rollout=False,
+        )
 
     with pytest.raises(ValueError, match="Unknown TI-MAPPO PPO policy"):
         TIMAPPO(

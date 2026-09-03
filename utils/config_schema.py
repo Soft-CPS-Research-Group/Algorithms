@@ -1562,6 +1562,8 @@ class TIMARLHyperparameters(BaseModel):
         "joint_agent"
     )
     ppo_policy_group_types: Optional[List[str]] = None
+    actor_update_scope: Literal["all", "selected_group_heads"] = "all"
+    actor_update_group_types: Optional[List[str]] = None
     policy_anchor_coeff: float = Field(default=0.0, ge=0)
     policy_anchor_coeff_by_group_type: Dict[str, float] = Field(
         default_factory=dict
@@ -1631,6 +1633,41 @@ class TIMARLHyperparameters(BaseModel):
                     "policy_credit_assignment='typed_group'"
                 )
             self.ppo_policy_group_types = normalized_group_types
+        if self.actor_update_group_types is not None:
+            normalized_update_group_types = [
+                str(group_type).strip()
+                for group_type in self.actor_update_group_types
+            ]
+            if not normalized_update_group_types or any(
+                not group_type for group_type in normalized_update_group_types
+            ):
+                raise ValueError(
+                    "TIMARL actor_update_group_types must contain at least one "
+                    "non-empty action-group type"
+                )
+            if len(normalized_update_group_types) != len(
+                set(normalized_update_group_types)
+            ):
+                raise ValueError(
+                    "TIMARL actor_update_group_types must not contain duplicates"
+                )
+            self.actor_update_group_types = normalized_update_group_types
+        if self.actor_update_scope == "selected_group_heads":
+            if self.actor_update_group_types is None:
+                raise ValueError(
+                    "TIMARL actor_update_scope='selected_group_heads' requires "
+                    "actor_update_group_types"
+                )
+            if self.policy_credit_assignment != "typed_group":
+                raise ValueError(
+                    "TIMARL selected group-head updates require "
+                    "policy_credit_assignment='typed_group'"
+                )
+        elif self.actor_update_group_types is not None:
+            raise ValueError(
+                "TIMARL actor_update_group_types requires "
+                "actor_update_scope='selected_group_heads'"
+            )
         if (
             self.exclude_intervened_actions_from_policy_loss
             and self.policy_credit_assignment != "typed_group"

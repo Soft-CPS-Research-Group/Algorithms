@@ -139,6 +139,8 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     stage["hyperparameters"]["advantage_normalization"] = "per_agent"
     stage["hyperparameters"]["policy_credit_assignment"] = "typed_group"
     stage["hyperparameters"]["ppo_policy_group_types"] = ["ev_session"]
+    stage["hyperparameters"]["actor_update_scope"] = "selected_group_heads"
+    stage["hyperparameters"]["actor_update_group_types"] = ["ev_session"]
     stage["hyperparameters"]["policy_anchor_coeff"] = 0.05
     stage["hyperparameters"]["policy_anchor_coeff_by_group_type"] = {
         "stationary_storage": 0.0,
@@ -218,6 +220,13 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     behavior_cloning = parsed.pipeline[0].hyperparameters.behavior_cloning
     assert parsed.pipeline[0].hyperparameters.policy_anchor_coeff == 0.05
     assert parsed.pipeline[0].hyperparameters.ppo_policy_group_types == [
+        "ev_session"
+    ]
+    assert (
+        parsed.pipeline[0].hyperparameters.actor_update_scope
+        == "selected_group_heads"
+    )
+    assert parsed.pipeline[0].hyperparameters.actor_update_group_types == [
         "ev_session"
     ]
     assert (
@@ -476,6 +485,50 @@ def test_validate_config_rejects_invalid_selective_ppo_groups(
     config["pipeline"] = [stage]
 
     with pytest.raises(ValueError, match="ppo_policy_group_types"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    ("scope", "group_types", "credit", "error"),
+    [
+        (
+            "selected_group_heads",
+            None,
+            "typed_group",
+            "actor_update_group_types",
+        ),
+        (
+            "selected_group_heads",
+            ["ev_session"],
+            "joint_agent",
+            "selected group-head updates require",
+        ),
+        (
+            "all",
+            ["ev_session"],
+            "typed_group",
+            "actor_update_group_types requires",
+        ),
+    ],
+)
+def test_validate_config_rejects_invalid_actor_update_scope(
+    base_config,
+    scope,
+    group_types,
+    credit,
+    error,
+):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["policy_credit_assignment"] = credit
+    stage["hyperparameters"]["actor_update_scope"] = scope
+    if group_types is not None:
+        stage["hyperparameters"]["actor_update_group_types"] = group_types
+    config["pipeline"] = [stage]
+
+    with pytest.raises(ValueError, match=error):
         validate_config(config)
 
 

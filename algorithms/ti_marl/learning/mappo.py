@@ -98,6 +98,8 @@ class TIMAPPO:
         advantage_normalization: str = "global",
         policy_credit_assignment: str = "joint_agent",
         ppo_policy_group_types: tuple[str, ...] | list[str] | None = None,
+        actor_update_scope: str = "all",
+        actor_update_group_types: tuple[str, ...] | list[str] | None = None,
         policy_anchor_coeff: float = 0.0,
         policy_anchor_coeff_by_group_type: Mapping[str, float] | None = None,
         exclude_intervened_actions_from_policy_loss: bool = False,
@@ -199,6 +201,43 @@ class TIMAPPO:
                     "Unknown TI-MAPPO PPO policy action-group type(s): "
                     f"{unknown_policy_group_types}"
                 )
+        self.actor_update_scope = str(actor_update_scope)
+        if self.actor_update_scope not in {"all", "selected_group_heads"}:
+            raise ValueError(
+                "TI-MAPPO actor_update_scope must be 'all' or "
+                "'selected_group_heads'"
+            )
+        self.actor_update_group_types = (
+            None
+            if actor_update_group_types is None
+            else frozenset(str(value) for value in actor_update_group_types)
+        )
+        if self.actor_update_scope == "selected_group_heads":
+            if not self.actor_update_group_types:
+                raise ValueError(
+                    "TI-MAPPO selected group-head updates require at least one "
+                    "actor_update_group_type"
+                )
+            if self.policy_credit_assignment != "typed_group":
+                raise ValueError(
+                    "TI-MAPPO selected group-head updates require typed_group "
+                    "credit"
+                )
+            unknown_update_group_types = (
+                sorted(self.actor_update_group_types - set(actor.group_modes))
+                if hasattr(actor, "group_modes")
+                else sorted(self.actor_update_group_types)
+            )
+            if unknown_update_group_types:
+                raise ValueError(
+                    "Unknown TI-MAPPO actor-update action-group type(s): "
+                    f"{unknown_update_group_types}"
+                )
+        elif self.actor_update_group_types is not None:
+            raise ValueError(
+                "TI-MAPPO actor_update_group_types requires "
+                "actor_update_scope='selected_group_heads'"
+            )
         self.policy_anchor_coeff = float(policy_anchor_coeff)
         if self.policy_anchor_coeff < 0.0:
             raise ValueError("TI-MAPPO policy_anchor_coeff must be non-negative")
@@ -348,7 +387,11 @@ class TIMAPPO:
         if critic_loss not in {"mse", "huber"}:
             raise ValueError("TIMAPPO critic_loss must be one of {'mse', 'huber'}")
         self.critic_loss = str(critic_loss)
-        self.actor_optimizer = torch.optim.Adam(actor.parameters(), lr=float(learning_rate))
+        self._actor_update_parameters = self._select_actor_update_parameters()
+        self.actor_optimizer = torch.optim.Adam(
+            self._actor_update_parameters,
+            lr=float(learning_rate),
+        )
         self.critic_optimizer = torch.optim.Adam(critic.parameters(), lr=float(learning_rate))
         self.group_critic_optimizer = (
             None
@@ -413,6 +456,48 @@ class TIMAPPO:
             self.ppo_policy_group_types is None
             or str(group_type) in self.ppo_policy_group_types
         )
+
+    def _select_actor_update_parameters(self) -> tuple[nn.Parameter, ...]:
+        """Return the exact actor parameters authorized for this learner.
+
+        Filtering PPO samples by action-group type controls credit assignment,
+        but it does not isolate shared actor parameters.  Head-only fine-tuning
+        is an explicit stronger boundary used when a proven controller for the
+        other action groups must remain bit-for-bit unchanged.
+        """
+
+        if self.actor_update_scope == "all":
+            selected = tuple(self.actor.parameters())
+        else:
+            assert self.actor_update_group_types is not None
+            prefixes = tuple(
+                prefix
+                for group_type in sorted(self.actor_update_group_types)
+                for prefix in (
+                    f"mode_heads.{group_type}.",
+                    f"beta_heads.{group_type}.",
+                )
+            )
+            selected = tuple(
+                parameter
+                for name, parameter in self.actor.named_parameters()
+                if name.startswith(prefixes)
+            )
+        if not selected:
+            raise ValueError(
+                "TI-MAPPO actor update scope selected no trainable parameters"
+            )
+        return selected
+
+    def _discard_protected_actor_gradients(self) -> None:
+        """Avoid accumulating gradients for actor parameters outside the scope."""
+
+        if self.actor_update_scope == "all":
+            return
+        selected_ids = {id(parameter) for parameter in self._actor_update_parameters}
+        for parameter in self.actor.parameters():
+            if id(parameter) not in selected_ids:
+                parameter.grad = None
 
     @_with_replay_preparation_cache
     def update(
@@ -981,7 +1066,7 @@ class TIMAPPO:
             actor_loss = (
                 torch.stack(actor_losses).mean()
                 if actor_losses
-                else next(self.actor.parameters()).sum() * 0.0
+                else self._actor_update_parameters[0].sum() * 0.0
             )
             policy_anchor_loss = (
                 torch.stack(policy_anchor_losses).mean()
@@ -1157,7 +1242,7 @@ class TIMAPPO:
                 if not bool(torch.isfinite(value).all()):
                     raise FloatingPointError(f"Non-finite TI-PPO {name}")
 
-            self.actor_optimizer.zero_grad(set_to_none=True)
+            self.actor.zero_grad(set_to_none=True)
             self.critic_optimizer.zero_grad(set_to_none=True)
             if self.group_critic_optimizer is not None:
                 self.group_critic_optimizer.zero_grad(set_to_none=True)
@@ -1165,7 +1250,11 @@ class TIMAPPO:
             critic_objective.backward()
             if group_critic_objective is not None:
                 group_critic_objective.backward()
-            actor_grad = nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+            self._discard_protected_actor_gradients()
+            actor_grad = nn.utils.clip_grad_norm_(
+                self._actor_update_parameters,
+                self.max_grad_norm,
+            )
             critic_grad = nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
             group_critic_grad = (
                 None
@@ -1175,17 +1264,17 @@ class TIMAPPO:
                 )
             )
             if not bool(torch.isfinite(torch.as_tensor(actor_grad))):
-                self.actor_optimizer.zero_grad(set_to_none=True)
+                self.actor.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)
                 raise FloatingPointError("Non-finite TI-PPO actor gradient")
             if not bool(torch.isfinite(torch.as_tensor(critic_grad))):
-                self.actor_optimizer.zero_grad(set_to_none=True)
+                self.actor.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)
                 raise FloatingPointError("Non-finite TI-PPO critic gradient")
             if group_critic_grad is not None and not bool(
                 torch.isfinite(torch.as_tensor(group_critic_grad))
             ):
-                self.actor_optimizer.zero_grad(set_to_none=True)
+                self.actor.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)
                 assert self.group_critic_optimizer is not None
                 self.group_critic_optimizer.zero_grad(set_to_none=True)
@@ -1348,6 +1437,15 @@ class TIMAPPO:
                     len(group_samples) if group_samples else len(samples)
                 ),
                 "ppo_policy_samples": float(ppo_policy_samples),
+                "actor_update_scope_selected_group_heads": float(
+                    self.actor_update_scope == "selected_group_heads"
+                ),
+                "actor_update_parameter_count": float(
+                    sum(
+                        parameter.numel()
+                        for parameter in self._actor_update_parameters
+                    )
+                ),
                 "policy_anchor_coeff": float(self.policy_anchor_coeff),
                 "policy_anchor_samples": float(
                     len(policy_anchor_losses)
@@ -1945,6 +2043,18 @@ class TIMAPPO:
                     else tuple(sorted(self.ppo_policy_group_types))
                 ),
             },
+            "actor_update": {
+                "scope": self.actor_update_scope,
+                "group_types": (
+                    None
+                    if self.actor_update_group_types is None
+                    else tuple(sorted(self.actor_update_group_types))
+                ),
+                "parameter_count": sum(
+                    parameter.numel()
+                    for parameter in self._actor_update_parameters
+                ),
+            },
         }
 
     def load_state_dict(
@@ -2007,6 +2117,23 @@ class TIMAPPO:
             }
         )
         if restore_optimizers:
+            saved_actor_update = dict(payload.get("actor_update", {}))
+            saved_scope = str(saved_actor_update.get("scope", "all"))
+            saved_group_types = saved_actor_update.get("group_types")
+            saved_group_types = (
+                None
+                if saved_group_types is None
+                else frozenset(str(value) for value in saved_group_types)
+            )
+            if (
+                saved_scope != self.actor_update_scope
+                or saved_group_types != self.actor_update_group_types
+            ):
+                raise ValueError(
+                    "TI-MARL cannot restore the actor optimizer across different "
+                    "actor update scopes; set restore_optimizers=false for "
+                    "selective fine-tuning"
+                )
             self.actor_optimizer.load_state_dict(payload["actor_optimizer"])
             self.critic_optimizer.load_state_dict(payload["critic_optimizer"])
         if self.group_critic_optimizer is not None and restore_optimizers:
