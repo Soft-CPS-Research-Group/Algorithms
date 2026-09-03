@@ -337,6 +337,7 @@ class TIMARL(BaseAgent):
                 hyper.get("advantage_normalization", "global")
             ),
             policy_credit_assignment=self.policy_credit_assignment,
+            ppo_policy_group_types=hyper.get("ppo_policy_group_types"),
             policy_anchor_coeff=float(hyper.get("policy_anchor_coeff", 0.0)),
             policy_anchor_coeff_by_group_type=dict(
                 hyper.get("policy_anchor_coeff_by_group_type", {})

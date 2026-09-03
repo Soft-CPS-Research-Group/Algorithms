@@ -138,6 +138,7 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
     ] = {"ev_session": 0.25}
     stage["hyperparameters"]["advantage_normalization"] = "per_agent"
     stage["hyperparameters"]["policy_credit_assignment"] = "typed_group"
+    stage["hyperparameters"]["ppo_policy_group_types"] = ["ev_session"]
     stage["hyperparameters"]["policy_anchor_coeff"] = 0.05
     stage["hyperparameters"]["policy_anchor_coeff_by_group_type"] = {
         "stationary_storage": 0.0,
@@ -216,6 +217,9 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
 
     behavior_cloning = parsed.pipeline[0].hyperparameters.behavior_cloning
     assert parsed.pipeline[0].hyperparameters.policy_anchor_coeff == 0.05
+    assert parsed.pipeline[0].hyperparameters.ppo_policy_group_types == [
+        "ev_session"
+    ]
     assert (
         parsed.pipeline[0].hyperparameters.policy_anchor_coeff_by_group_type
         == {
@@ -435,6 +439,43 @@ def test_validate_config_rejects_selective_anchor_with_joint_credit(base_config)
         ValueError,
         match="policy_anchor_coeff_by_group_type requires",
     ):
+        validate_config(config)
+
+
+def test_validate_config_rejects_selective_ppo_groups_with_joint_credit(
+    base_config,
+):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["ppo_policy_group_types"] = ["ev_session"]
+    config["pipeline"] = [stage]
+
+    with pytest.raises(
+        ValueError,
+        match="ppo_policy_group_types requires",
+    ):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    "group_types",
+    [[], [""], ["ev_session", "ev_session"]],
+)
+def test_validate_config_rejects_invalid_selective_ppo_groups(
+    base_config,
+    group_types,
+):
+    config = copy.deepcopy(base_config)
+    config["simulator"]["interface"] = "entity"
+    config["simulator"]["central_agent"] = False
+    stage = _ti_marl_stage()
+    stage["hyperparameters"]["policy_credit_assignment"] = "typed_group"
+    stage["hyperparameters"]["ppo_policy_group_types"] = group_types
+    config["pipeline"] = [stage]
+
+    with pytest.raises(ValueError, match="ppo_policy_group_types"):
         validate_config(config)
 
 

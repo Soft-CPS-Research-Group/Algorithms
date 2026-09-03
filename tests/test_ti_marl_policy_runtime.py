@@ -3480,6 +3480,107 @@ def test_ti_mappo_selective_policy_anchor_validates_group_types(tmp_path):
         )
 
 
+def test_ti_mappo_selective_ppo_policy_updates_only_named_group_types(tmp_path):
+    compiler, first = compile_snapshot(tmp_path / "first", time_step=0)
+    _compiler, second = compile_snapshot(tmp_path / "second", time_step=1)
+    torch.manual_seed(31)
+    actor = TypedActor(
+        compiler.type_registry,
+        d_model=32,
+        attention_heads=4,
+        relation_layers=1,
+    )
+    critic = CentralSetCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+    )
+    group_critic = TypedGroupCritic(
+        compiler.type_registry,
+        d_model=32,
+        relation_layers=1,
+        centralized=True,
+    )
+    learner = TIMAPPO(
+        actor,
+        critic,
+        group_critic=group_critic,
+        policy_credit_assignment="typed_group",
+        ppo_policy_group_types=["ev_session"],
+        rollout_steps=1,
+        ppo_epochs=1,
+        target_kl=None,
+        entropy_coeff=0.0,
+    )
+    with torch.no_grad():
+        evaluation = actor(first, deterministic=True)
+        values = critic(first)
+        next_values = critic(second)
+        group_values = group_critic(first)
+        next_group_values = group_critic(second)
+    learner.rollout.add(
+        RolloutStep(
+            snapshot=first,
+            next_snapshot=second,
+            bundles=evaluation.bundles,
+            old_log_probs={
+                key: float(value)
+                for key, value in evaluation.log_prob_by_agent.items()
+            },
+            values={key: float(value) for key, value in values.items()},
+            next_values={key: float(value) for key, value in next_values.items()},
+            rewards={key: 1.0 for key in first.agent_ids},
+            terminated_agent_ids=first.agent_ids,
+            truncated=False,
+            reward_components_by_agent={
+                agent_id: {
+                    "battery_safety_penalty": 0.0,
+                    "ev_service_penalty": 0.0,
+                    "deferrable_service_penalty": 0.0,
+                }
+                for agent_id in first.agent_ids
+            },
+            group_values={
+                agent_id: {
+                    group_id: float(value)
+                    for group_id, value in values_by_group.items()
+                }
+                for agent_id, values_by_group in group_values.items()
+            },
+            next_group_values={
+                agent_id: {
+                    group_id: float(value)
+                    for group_id, value in values_by_group.items()
+                }
+                for agent_id, values_by_group in next_group_values.items()
+            },
+            final_bundles=evaluation.bundles,
+        )
+    )
+
+    metrics = learner.update()
+
+    assert metrics["actor_samples"] > metrics["ppo_policy_samples"] > 0.0
+    assert metrics["ppo_policy_samples_ev_session"] == metrics[
+        "ppo_policy_samples"
+    ]
+    assert metrics["ppo_policy_samples_stationary_storage"] == 0.0
+    assert metrics["ppo_policy_samples_deferrable"] == 0.0
+    assert metrics["eligible_actor_samples"] == metrics["ppo_policy_samples"]
+    assert learner.state_dict()["ppo_policy"]["group_types"] == (
+        "ev_session",
+    )
+
+    with pytest.raises(ValueError, match="Unknown TI-MAPPO PPO policy"):
+        TIMAPPO(
+            actor,
+            critic,
+            group_critic=group_critic,
+            policy_credit_assignment="typed_group",
+            ppo_policy_group_types=["unknown_group"],
+        )
+
+
 def test_typed_group_advantage_routes_only_related_constraint_penalties(
     tmp_path,
 ):

@@ -97,6 +97,7 @@ class TIMAPPO:
         entropy_coeff_by_group_type: Mapping[str, float] | None = None,
         advantage_normalization: str = "global",
         policy_credit_assignment: str = "joint_agent",
+        ppo_policy_group_types: tuple[str, ...] | list[str] | None = None,
         policy_anchor_coeff: float = 0.0,
         policy_anchor_coeff_by_group_type: Mapping[str, float] | None = None,
         exclude_intervened_actions_from_policy_loss: bool = False,
@@ -174,6 +175,30 @@ class TIMAPPO:
             raise ValueError(
                 "TI-MAPPO typed_group credit requires a typed group critic"
             )
+        self.ppo_policy_group_types = (
+            None
+            if ppo_policy_group_types is None
+            else frozenset(str(value) for value in ppo_policy_group_types)
+        )
+        if self.ppo_policy_group_types is not None:
+            if not self.ppo_policy_group_types:
+                raise ValueError(
+                    "TI-MAPPO ppo_policy_group_types must not be empty"
+                )
+            if self.policy_credit_assignment != "typed_group":
+                raise ValueError(
+                    "TI-MAPPO ppo_policy_group_types requires typed_group credit"
+                )
+            unknown_policy_group_types = (
+                sorted(self.ppo_policy_group_types - set(actor.group_modes))
+                if hasattr(actor, "group_modes")
+                else []
+            )
+            if unknown_policy_group_types:
+                raise ValueError(
+                    "Unknown TI-MAPPO PPO policy action-group type(s): "
+                    f"{unknown_policy_group_types}"
+                )
         self.policy_anchor_coeff = float(policy_anchor_coeff)
         if self.policy_anchor_coeff < 0.0:
             raise ValueError("TI-MAPPO policy_anchor_coeff must be non-negative")
@@ -383,6 +408,12 @@ class TIMAPPO:
             self.policy_anchor_coeff,
         )
 
+    def _ppo_policy_group_is_enabled(self, group_type: str) -> bool:
+        return (
+            self.ppo_policy_group_types is None
+            or str(group_type) in self.ppo_policy_group_types
+        )
+
     @_with_replay_preparation_cache
     def update(
         self,
@@ -557,6 +588,26 @@ class TIMAPPO:
         actor_samples_by_group_type = Counter(
             sample.group_type for sample in group_samples
         )
+        ppo_policy_samples_by_group_type = Counter(
+            sample.group_type
+            for sample in group_samples
+            if self._ppo_policy_group_is_enabled(sample.group_type)
+        )
+        ppo_policy_samples = (
+            sum(ppo_policy_samples_by_group_type.values())
+            if self.policy_credit_assignment == "typed_group"
+            else len(samples)
+        )
+        if self.policy_credit_assignment == "typed_group":
+            selected_policy_advantages = [
+                value
+                for sample, value in zip(group_samples, group_advantages)
+                if self._ppo_policy_group_is_enabled(sample.group_type)
+            ]
+            policy_advantages = np.asarray(
+                selected_policy_advantages or [0.0],
+                dtype=np.float32,
+            )
         anchor_samples_by_group_type = (
             Counter(
                 sample.group_type
@@ -569,10 +620,15 @@ class TIMAPPO:
         intervened_policy_samples_by_group_type: Counter[str] = Counter()
         if self.exclude_intervened_actions_from_policy_loss:
             for sample in group_samples:
-                if (sample.agent_id, sample.group_id) in (
+                if self._ppo_policy_group_is_enabled(sample.group_type) and (
+                    sample.agent_id, sample.group_id
+                ) in (
                     intervened_groups_by_step[sample.step_index]
                 ):
                     intervened_policy_samples_by_group_type[sample.group_type] += 1
+            intervened_policy_samples = sum(
+                intervened_policy_samples_by_group_type.values()
+            )
         anchor_evaluation = None
         if self._policy_anchor_enabled():
             if self.policy_anchor_actor is None:
@@ -778,6 +834,8 @@ class TIMAPPO:
                                 policy_anchor_losses_by_group_type[
                                     group_type
                                 ].append(anchor_loss)
+                            if not self._ppo_policy_group_is_enabled(group_type):
+                                continue
                             if (
                                 self.exclude_intervened_actions_from_policy_loss
                                 and (agent_id, group_id)
@@ -1289,6 +1347,7 @@ class TIMAPPO:
                 "actor_samples": float(
                     len(group_samples) if group_samples else len(samples)
                 ),
+                "ppo_policy_samples": float(ppo_policy_samples),
                 "policy_anchor_coeff": float(self.policy_anchor_coeff),
                 "policy_anchor_samples": float(
                     len(policy_anchor_losses)
@@ -1359,7 +1418,7 @@ class TIMAPPO:
                 "intervened_policy_samples": float(intervened_policy_samples),
                 "eligible_actor_samples": float(
                     max(
-                        (len(group_samples) if group_samples else len(samples))
+                        ppo_policy_samples
                         - intervened_policy_samples,
                         0,
                     )
@@ -1390,7 +1449,16 @@ class TIMAPPO:
             ] = float(intervened_count)
             result[
                 f"eligible_actor_samples_{group_type}"
-            ] = float(max(sample_count - intervened_count, 0))
+            ] = float(
+                max(
+                    ppo_policy_samples_by_group_type.get(group_type, 0)
+                    - intervened_count,
+                    0,
+                )
+            )
+            result[f"ppo_policy_samples_{group_type}"] = float(
+                ppo_policy_samples_by_group_type.get(group_type, 0)
+            )
         for reason, count in sorted(ev_planning_reason_counts.items()):
             result[f"ev_planning_samples_{reason}"] = float(count)
         result["ev_planning_replay_size"] = float(
@@ -1868,6 +1936,13 @@ class TIMAPPO:
                 "coefficient": self.policy_anchor_coeff,
                 "coefficient_by_group_type": dict(
                     self.policy_anchor_coeff_by_group_type
+                ),
+            },
+            "ppo_policy": {
+                "group_types": (
+                    None
+                    if self.ppo_policy_group_types is None
+                    else tuple(sorted(self.ppo_policy_group_types))
                 ),
             },
         }

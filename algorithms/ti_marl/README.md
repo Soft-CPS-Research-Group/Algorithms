@@ -208,6 +208,17 @@ populations and asset counts. Typed routing changes the actor estimator and is
 reported as a separate experimental ablation.
 `joint_agent` remains the backward-compatible default.
 
+For a selective fine-tuning stage, `ppo_policy_group_types` restricts the PPO
+surrogate and entropy objectives to the listed typed action families. For
+example, `[ev_session]` lets the EV policy respond to new economic evidence
+without also rewarding stationary-storage or deferrable decisions from that
+rollout. Both critics continue to learn from every transition, and explicitly
+configured planner/anchor objectives remain active. Because the encoder is
+shared, this is an objective-level restriction rather than a claim that the
+other neural outputs cannot move; pair it with per-group policy anchors when
+those outputs must be retained. The option requires typed-group credit and is
+unset by default, preserving the previous behavior.
+
 With typed-group credit, the optional
 `exclude_intervened_actions_from_policy_loss: true` makes PPO aware of the
 local safety shield. If feasibility changes a sampled mode or fraction, the
