@@ -53,6 +53,29 @@ class TIMARL(BaseAgent):
         super().__init__()
         self.config = deepcopy(config)
         hyper = dict(config.get("algorithm", {}).get("hyperparameters", {}))
+        feasibility_cfg = dict(hyper.get("feasibility", {}))
+        simulator_cfg = dict(config.get("simulator") or {})
+        community_market_cfg = dict(
+            simulator_cfg.get("community_market") or {}
+        )
+        settlement_value_ratio = (
+            float(
+                community_market_cfg.get(
+                    "local_price_ratio_to_grid_import",
+                    community_market_cfg.get("intra_community_sell_ratio", 1.0),
+                )
+            )
+            if bool(community_market_cfg.get("enabled", False))
+            else 1.0
+        )
+        configured_v2g_value_ratio = feasibility_cfg.get(
+            "ev_v2g_avoided_import_value_ratio"
+        )
+        effective_v2g_value_ratio = (
+            settlement_value_ratio
+            if configured_v2g_value_ratio is None
+            else float(configured_v2g_value_ratio)
+        )
         checkpoint_cfg = dict(config.get("checkpointing") or {})
         self.restore_optimizers = bool(
             checkpoint_cfg.get("restore_optimizers", True)
@@ -162,6 +185,14 @@ class TIMARL(BaseAgent):
         ev_planning_auxiliary_coeff = float(
             ev_planning_cfg.get("auxiliary_coeff", 0.0)
         )
+        configured_planner_v2g_value_ratio = ev_planning_cfg.get(
+            "v2g_avoided_import_value_ratio"
+        )
+        planner_v2g_value_ratio = (
+            effective_v2g_value_ratio
+            if configured_planner_v2g_value_ratio is None
+            else float(configured_planner_v2g_value_ratio)
+        )
         ev_planner = (
             CausalEVPlanner(
                 charge_fraction=float(
@@ -190,6 +221,25 @@ class TIMARL(BaseAgent):
                 ),
                 minimum_v2g_departure_hours=float(
                     ev_planning_cfg.get("minimum_v2g_departure_hours", 1.0)
+                ),
+                v2g_avoided_import_value_ratio=planner_v2g_value_ratio,
+                v2g_minimum_profit_margin_eur_per_kwh=float(
+                    ev_planning_cfg.get(
+                        "v2g_minimum_profit_margin_eur_per_kwh",
+                        feasibility_cfg.get(
+                            "ev_v2g_minimum_profit_margin_eur_per_kwh",
+                            0.01,
+                        ),
+                    )
+                ),
+                v2g_degradation_cost_eur_per_kwh=float(
+                    ev_planning_cfg.get(
+                        "v2g_degradation_cost_eur_per_kwh",
+                        feasibility_cfg.get(
+                            "ev_v2g_degradation_cost_eur_per_kwh",
+                            0.0,
+                        ),
+                    )
                 ),
             )
             if ev_planning_auxiliary_coeff > 0.0
@@ -379,7 +429,6 @@ class TIMARL(BaseAgent):
             )
             self._bc_teacher_spec = teacher
         self.requires_raw_observation_context = self.behavior_cloning is not None
-        feasibility_cfg = dict(hyper.get("feasibility", {}))
         self.projector = AnalyticLocalProjector(
             enforce_ev_service=bool(feasibility_cfg.get("enforce_ev_service", True)),
             ev_service_margin_ratio=float(
@@ -390,6 +439,42 @@ class TIMARL(BaseAgent):
             ),
             ev_service_tolerance_ratio=float(
                 feasibility_cfg.get("ev_service_tolerance_ratio", 0.05)
+            ),
+            ev_service_jit_buffer_seconds=float(
+                feasibility_cfg.get("ev_service_jit_buffer_seconds", 0.0)
+            ),
+            ev_service_jit_minimum_average_fraction=float(
+                feasibility_cfg.get(
+                    "ev_service_jit_minimum_average_fraction",
+                    0.0,
+                )
+            ),
+            enforce_ev_discharge_reserve=bool(
+                feasibility_cfg.get("enforce_ev_discharge_reserve", True)
+            ),
+            ev_v2g_reserve_margin_ratio=float(
+                feasibility_cfg.get("ev_v2g_reserve_margin_ratio", 0.0)
+            ),
+            enforce_ev_economic_guard=bool(
+                feasibility_cfg.get("enforce_ev_economic_guard", True)
+            ),
+            ev_v2g_avoided_import_value_ratio=float(
+                effective_v2g_value_ratio
+            ),
+            ev_v2g_minimum_profit_margin_eur_per_kwh=float(
+                feasibility_cfg.get(
+                    "ev_v2g_minimum_profit_margin_eur_per_kwh",
+                    0.01,
+                )
+            ),
+            ev_v2g_degradation_cost_eur_per_kwh=float(
+                feasibility_cfg.get(
+                    "ev_v2g_degradation_cost_eur_per_kwh",
+                    0.0,
+                )
+            ),
+            ev_v2g_require_local_demand=bool(
+                feasibility_cfg.get("ev_v2g_require_local_demand", True)
             ),
             headroom_reserve_kw=float(
                 feasibility_cfg.get("headroom_reserve_kw", 0.0)

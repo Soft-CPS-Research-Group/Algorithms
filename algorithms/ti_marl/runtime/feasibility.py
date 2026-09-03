@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
-from typing import Dict, Iterable, Mapping, Tuple
+from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -12,6 +13,12 @@ from algorithms.ti_marl.contracts.models import (
     ActionGroupInstance,
     InterfaceSnapshot,
     LocalActionBundle,
+    ObservationPart,
+)
+
+
+_EXPLICIT_PRICE_HORIZON = re.compile(
+    r"(?:next|forecast)[_-]?(?P<amount>\d+(?:\.\d+)?)(?P<unit>m|h)(?:_|$)"
 )
 
 
@@ -25,6 +32,15 @@ class AnalyticLocalProjector:
         ev_service_margin_ratio: float = 0.05,
         ev_service_strategy: str = "average",
         ev_service_tolerance_ratio: float = 0.05,
+        ev_service_jit_buffer_seconds: float = 0.0,
+        ev_service_jit_minimum_average_fraction: float = 0.0,
+        enforce_ev_discharge_reserve: bool = True,
+        ev_v2g_reserve_margin_ratio: float = 0.0,
+        enforce_ev_economic_guard: bool = True,
+        ev_v2g_avoided_import_value_ratio: float = 1.0,
+        ev_v2g_minimum_profit_margin_eur_per_kwh: float = 0.01,
+        ev_v2g_degradation_cost_eur_per_kwh: float = 0.0,
+        ev_v2g_require_local_demand: bool = True,
         headroom_reserve_kw: float = 0.0,
         deferrable_service_margin_seconds: float = 0.0,
     ) -> None:
@@ -42,6 +58,33 @@ class AnalyticLocalProjector:
         self.ev_service_strategy = str(ev_service_strategy)
         self.ev_service_tolerance_ratio = max(
             float(ev_service_tolerance_ratio), 0.0
+        )
+        self.ev_service_jit_buffer_seconds = max(
+            float(ev_service_jit_buffer_seconds), 0.0
+        )
+        self.ev_service_jit_minimum_average_fraction = float(
+            np.clip(ev_service_jit_minimum_average_fraction, 0.0, 1.0)
+        )
+        self.enforce_ev_discharge_reserve = bool(
+            enforce_ev_discharge_reserve
+        )
+        self.ev_v2g_reserve_margin_ratio = max(
+            float(ev_v2g_reserve_margin_ratio), 0.0
+        )
+        self.enforce_ev_economic_guard = bool(enforce_ev_economic_guard)
+        self.ev_v2g_avoided_import_value_ratio = float(
+            np.clip(ev_v2g_avoided_import_value_ratio, 0.0, 1.0)
+        )
+        self.ev_v2g_minimum_profit_margin_eur_per_kwh = max(
+            float(ev_v2g_minimum_profit_margin_eur_per_kwh),
+            0.0,
+        )
+        self.ev_v2g_degradation_cost_eur_per_kwh = max(
+            float(ev_v2g_degradation_cost_eur_per_kwh),
+            0.0,
+        )
+        self.ev_v2g_require_local_demand = bool(
+            ev_v2g_require_local_demand
         )
         self.headroom_reserve_kw = max(float(headroom_reserve_kw), 0.0)
         self.deferrable_service_margin_seconds = max(
@@ -62,6 +105,27 @@ class AnalyticLocalProjector:
             "ev_service_margin_ratio": self.ev_service_margin_ratio,
             "ev_service_strategy": self.ev_service_strategy,
             "ev_service_tolerance_ratio": self.ev_service_tolerance_ratio,
+            "ev_service_jit_buffer_seconds": (
+                self.ev_service_jit_buffer_seconds
+            ),
+            "ev_service_jit_minimum_average_fraction": (
+                self.ev_service_jit_minimum_average_fraction
+            ),
+            "enforce_ev_discharge_reserve": (
+                self.enforce_ev_discharge_reserve
+            ),
+            "ev_v2g_reserve_margin_ratio": self.ev_v2g_reserve_margin_ratio,
+            "enforce_ev_economic_guard": self.enforce_ev_economic_guard,
+            "ev_v2g_avoided_import_value_ratio": (
+                self.ev_v2g_avoided_import_value_ratio
+            ),
+            "ev_v2g_minimum_profit_margin_eur_per_kwh": (
+                self.ev_v2g_minimum_profit_margin_eur_per_kwh
+            ),
+            "ev_v2g_degradation_cost_eur_per_kwh": (
+                self.ev_v2g_degradation_cost_eur_per_kwh
+            ),
+            "ev_v2g_require_local_demand": self.ev_v2g_require_local_demand,
             "headroom_reserve_kw": self.headroom_reserve_kw,
             "deferrable_service_margin_seconds": (
                 self.deferrable_service_margin_seconds
@@ -176,6 +240,13 @@ class AnalyticLocalProjector:
             interventions,
         )
         ev_service_floors = self._enforce_ev_service(
+            snapshot,
+            bundle.agent_id,
+            groups,
+            decisions,
+            interventions,
+        )
+        self._enforce_ev_economic_guard(
             snapshot,
             bundle.agent_id,
             groups,
@@ -297,6 +368,15 @@ class AnalyticLocalProjector:
             )
             if not connected:
                 continue
+            if self.enforce_ev_discharge_reserve:
+                self._limit_ev_discharge_to_service_reserve(
+                    group,
+                    decision,
+                    values,
+                    decisions,
+                    interventions,
+                )
+            decision = decisions[group_id]
             charge_port = next(
                 (port for port in group.ports if port.mode == "CHARGE_EV" and port.valid),
                 None,
@@ -375,6 +455,412 @@ class AnalyticLocalProjector:
                 )
         return floors
 
+    def _limit_ev_discharge_to_service_reserve(
+        self,
+        group: ActionGroupInstance,
+        decision: ActionDecision,
+        values: Mapping[str, float],
+        decisions: Dict[str, ActionDecision],
+        interventions: list[Mapping[str, object]],
+    ) -> None:
+        """Keep the post-action EV SoC above its declared service reserve.
+
+        The previous guard only noticed an EV that was already below its
+        schedule before the action. A large, physically valid discharge could
+        therefore cross the reserve in one time step. This bound is expressed
+        in grid-side power and includes the discharge efficiency.
+        """
+
+        if decision.mode != "DISCHARGE_EV":
+            return
+        required = (
+            values.get("connected_ev_soc"),
+            values.get("connected_ev_required_soc_departure"),
+            values.get("connected_ev_battery_capacity_kwh"),
+        )
+        if any(
+            value is None or not np.isfinite(float(value))
+            for value in required
+        ) or float(required[2]) <= 0.0:
+            self._set_idle(
+                group,
+                decision,
+                decisions,
+                interventions,
+                "ev_service_reserve_unknown",
+            )
+            return
+
+        soc, required_soc, capacity_kwh = (float(value) for value in required)
+        minimum_soc = max(float(values.get("connected_ev_soc_min_ratio", 0.0)), 0.0)
+        service_floor = max(
+            minimum_soc,
+            float(required_soc) - self.ev_service_tolerance_ratio
+            + self.ev_v2g_reserve_margin_ratio,
+        )
+        service_floor = float(np.clip(service_floor, 0.0, 1.0))
+        surplus_battery_kwh = max(soc - service_floor, 0.0) * capacity_kwh
+        discharge_efficiency = float(
+            np.clip(
+                values.get(
+                    "discharge_efficiency_at_max_ratio",
+                    values.get("charger_efficiency_ratio", 1.0),
+                ),
+                1.0e-3,
+                1.0,
+            )
+        )
+        step_hours = self.seconds_per_time_step / 3600.0
+        maximum_grid_power_kw = (
+            surplus_battery_kwh * discharge_efficiency
+            / max(step_hours, 1.0e-9)
+        )
+        port = next(
+            (item for item in group.ports if item.mode == "DISCHARGE_EV"),
+            None,
+        )
+        available_power_kw = (
+            max(float(group.max_discharge_power_kw), 0.0)
+            * (0.0 if port is None else max(float(port.upper_bound), 0.0))
+        )
+        maximum_fraction = float(
+            np.clip(
+                maximum_grid_power_kw / max(available_power_kw, 1.0e-9),
+                0.0,
+                1.0,
+            )
+        )
+        if maximum_fraction <= 1.0e-9:
+            self._set_idle(
+                group,
+                decision,
+                decisions,
+                interventions,
+                "ev_service_discharge_reserve",
+            )
+            return
+        if decision.fraction <= maximum_fraction + 1.0e-9:
+            return
+        decisions[group.group_id] = replace(
+            decision,
+            fraction=maximum_fraction,
+        )
+        interventions.append(
+            self._intervention(
+                group.group_id,
+                "ev_service_discharge_reserve",
+                decision.mode,
+                decision.mode,
+                decision.fraction,
+                maximum_fraction,
+            )
+        )
+
+    def _enforce_ev_economic_guard(
+        self,
+        snapshot: InterfaceSnapshot,
+        agent_id: str,
+        groups: Mapping[str, ActionGroupInstance],
+        decisions: Dict[str, ActionDecision],
+        interventions: list[Mapping[str, object]],
+    ) -> None:
+        """Reject locally unprofitable or unusable EV discharges.
+
+        This is a causal validity guard, not a community optimizer: it only
+        uses observations available to the local actor and never allocates
+        energy between agents. Flexible charging is deliberately excluded
+        from the demand budget so one EV cannot justify discharging merely
+        because another local EV is charging in the same decision.
+        """
+
+        if not self.enforce_ev_economic_guard:
+            return
+        parts = snapshot.parts_for(agent_id)
+        current_price = self._current_price(parts)
+        local_demand_kw = self._local_inflexible_demand(parts)
+        other_discharge_kw = sum(
+            self._decision_power_kw(groups[group_id], decision, "discharge")
+            for group_id, decision in decisions.items()
+            if groups[group_id].group_type != "ev_session"
+        )
+        remaining_local_demand_kw = max(
+            local_demand_kw - other_discharge_kw,
+            0.0,
+        )
+        accepted_ev_discharge_kw = 0.0
+
+        for group_id in sorted(decisions):
+            decision = decisions[group_id]
+            group = groups[group_id]
+            if group.group_type != "ev_session" or decision.mode != "DISCHARGE_EV":
+                continue
+            values = self._module_scalar_values(parts, group.module_id)
+            hours_until_departure = float(values.get("hours_until_departure", -1.0))
+            if (
+                not np.isfinite(hours_until_departure)
+                or hours_until_departure < 0.0
+            ):
+                self._set_idle(
+                    group,
+                    decision,
+                    decisions,
+                    interventions,
+                    "ev_v2g_schedule_unknown",
+                )
+                continue
+            future_prices = self._future_prices(parts, hours_until_departure)
+            if current_price is None or not future_prices:
+                self._set_idle(
+                    group,
+                    decision,
+                    decisions,
+                    interventions,
+                    "ev_v2g_price_unknown",
+                )
+                continue
+            charge_efficiency = float(
+                np.clip(
+                    values.get(
+                        "charge_efficiency_at_max_ratio",
+                        values.get("charger_efficiency_ratio", 1.0),
+                    ),
+                    1.0e-3,
+                    1.0,
+                )
+            )
+            discharge_efficiency = float(
+                np.clip(
+                    values.get(
+                        "discharge_efficiency_at_max_ratio",
+                        values.get("charger_efficiency_ratio", 1.0),
+                    ),
+                    1.0e-3,
+                    1.0,
+                )
+            )
+            replacement_cost = min(future_prices) / max(
+                charge_efficiency * discharge_efficiency,
+                1.0e-3,
+            )
+            net_margin = (
+                float(current_price) * self.ev_v2g_avoided_import_value_ratio
+                - replacement_cost
+                - self.ev_v2g_degradation_cost_eur_per_kwh
+            )
+            if (
+                net_margin + 1.0e-9
+                < self.ev_v2g_minimum_profit_margin_eur_per_kwh
+            ):
+                self._set_idle(
+                    group,
+                    decision,
+                    decisions,
+                    interventions,
+                    "ev_v2g_unprofitable",
+                )
+                continue
+
+            requested_power_kw = self._decision_power_kw(
+                group,
+                decision,
+                "discharge",
+            )
+            if not self.ev_v2g_require_local_demand:
+                accepted_ev_discharge_kw += requested_power_kw
+                continue
+            available_demand_kw = max(
+                remaining_local_demand_kw - accepted_ev_discharge_kw,
+                0.0,
+            )
+            if available_demand_kw <= 1.0e-9:
+                self._set_idle(
+                    group,
+                    decision,
+                    decisions,
+                    interventions,
+                    "ev_v2g_no_local_demand",
+                )
+                continue
+            if requested_power_kw > available_demand_kw + 1.0e-9:
+                updated_fraction = decision.fraction * (
+                    available_demand_kw / max(requested_power_kw, 1.0e-9)
+                )
+                decisions[group_id] = replace(
+                    decision,
+                    fraction=updated_fraction,
+                )
+                interventions.append(
+                    self._intervention(
+                        group_id,
+                        "ev_v2g_local_demand_cap",
+                        decision.mode,
+                        decision.mode,
+                        decision.fraction,
+                        updated_fraction,
+                    )
+                )
+                accepted_ev_discharge_kw += available_demand_kw
+            else:
+                accepted_ev_discharge_kw += requested_power_kw
+
+    @staticmethod
+    def _module_scalar_values(
+        parts: Sequence[ObservationPart],
+        module_id: str,
+    ) -> Mapping[str, float]:
+        return {
+            part.observation_id: float(part.values[0])
+            for part in parts
+            if part.sensor_id == module_id
+            and part.valid
+            and len(part.values) == 1
+            and np.isfinite(float(part.values[0]))
+        }
+
+    @staticmethod
+    def _current_price(parts: Sequence[ObservationPart]) -> Optional[float]:
+        values = [
+            float(part.values[0])
+            for part in parts
+            if part.semantic_type == "market_price"
+            and part.valid
+            and len(part.values) == 1
+            and np.isfinite(float(part.values[0]))
+        ]
+        return values[0] if values else None
+
+    def _local_inflexible_demand(
+        self,
+        parts: Sequence[ObservationPart],
+    ) -> float:
+        """Return local demand that cannot be created by flexible actions.
+
+        ``net_power_kw`` may already contain the previous EV or stationary
+        storage action. Require explicit non-shiftable load (with optional PV)
+        so a charger cannot create its own apparent demand. Missing evidence
+        fails closed instead of treating flexible net load as useful demand.
+        """
+
+        def value(observation_ids: tuple[str, ...]) -> Optional[float]:
+            candidates = [
+                float(part.values[0])
+                for part in parts
+                if part.observation_id in observation_ids
+                and part.scope == "local"
+                and part.valid
+                and len(part.values) == 1
+                and np.isfinite(float(part.values[0]))
+            ]
+            return candidates[-1] if candidates else None
+
+        step_hours = self.seconds_per_time_step / 3600.0
+        load_power_kw = value(("non_shiftable_load_power_kw",))
+        if load_power_kw is None:
+            load_energy_kwh = value(
+                ("non_shiftable_load", "load_energy_kwh_step")
+            )
+            if load_energy_kwh is not None:
+                load_power_kw = load_energy_kwh / max(step_hours, 1.0e-9)
+
+        pv_power_kw = value(("pv_power_kw",))
+        if pv_power_kw is None:
+            pv_energy_kwh = value(
+                ("solar_generation", "pv_energy_kwh_step")
+            )
+            if pv_energy_kwh is not None:
+                pv_power_kw = pv_energy_kwh / max(step_hours, 1.0e-9)
+
+        if load_power_kw is not None:
+            return max(
+                float(load_power_kw) - max(float(pv_power_kw or 0.0), 0.0),
+                0.0,
+            )
+
+        return 0.0
+
+    @staticmethod
+    def _future_prices(
+        parts: Sequence[ObservationPart],
+        hours_until_departure: float,
+    ) -> Tuple[float, ...]:
+        values: list[tuple[float, float]] = []
+        for part in parts:
+            if (
+                part.semantic_type != "market_price_forecast"
+                or not part.valid
+                or len(part.values) != 1
+            ):
+                continue
+            match = _EXPLICIT_PRICE_HORIZON.search(part.observation_id.lower())
+            if match is None:
+                continue
+            amount = float(match.group("amount"))
+            horizon_hours = amount / 60.0 if match.group("unit") == "m" else amount
+            price = float(part.values[0])
+            if (
+                np.isfinite(price)
+                and price >= 0.0
+                and (
+                    hours_until_departure < 0.0
+                    or horizon_hours <= hours_until_departure + 1.0e-9
+                )
+            ):
+                values.append((horizon_hours, price))
+        return tuple(price for _horizon, price in sorted(values))
+
+    @staticmethod
+    def _decision_power_kw(
+        group: ActionGroupInstance,
+        decision: ActionDecision,
+        direction: str,
+    ) -> float:
+        expected = (
+            decision.mode.startswith("CHARGE_")
+            if direction == "charge"
+            else decision.mode.startswith("DISCHARGE_")
+        )
+        if not expected:
+            return 0.0
+        port = next(
+            (item for item in group.ports if item.mode == decision.mode),
+            None,
+        )
+        rated = (
+            group.max_charge_power_kw
+            if direction == "charge"
+            else group.max_discharge_power_kw
+        )
+        return (
+            max(float(rated), 0.0)
+            * max(float(decision.fraction), 0.0)
+            * (0.0 if port is None else max(float(port.upper_bound), 0.0))
+        )
+
+    def _set_idle(
+        self,
+        group: ActionGroupInstance,
+        decision: ActionDecision,
+        decisions: Dict[str, ActionDecision],
+        interventions: list[Mapping[str, object]],
+        reason: str,
+    ) -> None:
+        decisions[group.group_id] = replace(
+            decision,
+            mode="IDLE",
+            fraction=0.0,
+            mode_index=0,
+        )
+        interventions.append(
+            self._intervention(
+                group.group_id,
+                reason,
+                decision.mode,
+                "IDLE",
+                decision.fraction,
+                0.0,
+            )
+        )
+
     def _ev_service_requested_floor(
         self,
         values: Mapping[str, float],
@@ -419,8 +905,9 @@ class AnalyticLocalProjector:
                         * (1.0 + self.ev_service_margin_ratio)
                     )
                 step_hours = self.seconds_per_time_step / 3600.0
+                buffer_hours = self.ev_service_jit_buffer_seconds / 3600.0
                 future_hours = max(
-                    float(hours_until_departure) - step_hours,
+                    float(hours_until_departure) - step_hours - buffer_hours,
                     0.0,
                 )
                 future_delivery_kwh = (
@@ -436,7 +923,17 @@ class AnalyticLocalProjector:
                     efficiency * step_hours,
                     1.0e-9,
                 )
-                return requested * (1.0 + self.ev_service_margin_ratio)
+                minimum_average = (
+                    energy_needed_kwh
+                    / max(efficiency * hours_until_departure, 1.0e-9)
+                )
+                smoothed_floor = (
+                    minimum_average
+                    * self.ev_service_jit_minimum_average_fraction
+                )
+                return max(requested, smoothed_floor) * (
+                    1.0 + self.ev_service_margin_ratio
+                )
 
         if hours_until_departure <= 0.0 or required_average_power <= 1.0e-9:
             return 0.0

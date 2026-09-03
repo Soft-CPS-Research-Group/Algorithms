@@ -60,6 +60,15 @@ def _ti_marl_stage():
             "feasibility": {
                 "kind": "analytic_projection",
                 "deferrable_service_margin_seconds": 3600.0,
+                "ev_service_jit_buffer_seconds": 1800.0,
+                "ev_service_jit_minimum_average_fraction": 0.25,
+                "enforce_ev_discharge_reserve": True,
+                "ev_v2g_reserve_margin_ratio": 0.02,
+                "enforce_ev_economic_guard": True,
+                "ev_v2g_avoided_import_value_ratio": 0.8,
+                "ev_v2g_minimum_profit_margin_eur_per_kwh": 0.015,
+                "ev_v2g_degradation_cost_eur_per_kwh": 0.0,
+                "ev_v2g_require_local_demand": True,
             },
         },
     }
@@ -77,6 +86,20 @@ def test_validate_config_accepts_ti_marl_entity_dynamic(base_config):
         parsed.pipeline[0].hyperparameters.feasibility.deferrable_service_margin_seconds
         == 3600.0
     )
+    feasibility = parsed.pipeline[0].hyperparameters.feasibility
+    assert feasibility.ev_service_jit_buffer_seconds == pytest.approx(1800.0)
+    assert feasibility.ev_service_jit_minimum_average_fraction == pytest.approx(
+        0.25
+    )
+    assert feasibility.enforce_ev_discharge_reserve
+    assert feasibility.ev_v2g_reserve_margin_ratio == pytest.approx(0.02)
+    assert feasibility.enforce_ev_economic_guard
+    assert feasibility.ev_v2g_avoided_import_value_ratio == pytest.approx(0.8)
+    assert feasibility.ev_v2g_minimum_profit_margin_eur_per_kwh == pytest.approx(
+        0.015
+    )
+    assert feasibility.ev_v2g_degradation_cost_eur_per_kwh == pytest.approx(0.0)
+    assert feasibility.ev_v2g_require_local_demand
 
 
 def test_validate_config_accepts_ti_marl_electrical_service_preflight(base_config):
@@ -141,6 +164,9 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         "minimum_price_spread": 0.001,
         "minimum_v2g_price_spread": 0.02,
         "minimum_v2g_departure_hours": 1.5,
+        "v2g_avoided_import_value_ratio": 0.8,
+        "v2g_minimum_profit_margin_eur_per_kwh": 0.03,
+        "v2g_degradation_cost_eur_per_kwh": 0.01,
     }
     stage["hyperparameters"]["storage_planning"] = {
         "auxiliary_coeff": 0.15,
@@ -239,6 +265,21 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         parsed.pipeline[0]
         .hyperparameters.ev_planning.minimum_v2g_departure_hours
         == 1.5
+    )
+    assert (
+        parsed.pipeline[0]
+        .hyperparameters.ev_planning.v2g_avoided_import_value_ratio
+        == 0.8
+    )
+    assert (
+        parsed.pipeline[0]
+        .hyperparameters.ev_planning.v2g_minimum_profit_margin_eur_per_kwh
+        == 0.03
+    )
+    assert (
+        parsed.pipeline[0]
+        .hyperparameters.ev_planning.v2g_degradation_cost_eur_per_kwh
+        == 0.01
     )
     storage_planning = parsed.pipeline[0].hyperparameters.storage_planning
     assert storage_planning.auxiliary_coeff == 0.15

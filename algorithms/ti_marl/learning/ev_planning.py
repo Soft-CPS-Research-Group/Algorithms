@@ -69,6 +69,9 @@ class CausalEVPlanner:
         minimum_price_spread: float = 0.0,
         minimum_v2g_price_spread: float = 0.01,
         minimum_v2g_departure_hours: float = 1.0,
+        v2g_avoided_import_value_ratio: float = 1.0,
+        v2g_minimum_profit_margin_eur_per_kwh: float = 0.01,
+        v2g_degradation_cost_eur_per_kwh: float = 0.0,
     ) -> None:
         if not 0.0 < float(charge_fraction) < 1.0:
             raise ValueError("EV planning charge_fraction must lie in (0, 1)")
@@ -89,8 +92,14 @@ class CausalEVPlanner:
             or float(minimum_price_spread) < 0.0
             or float(minimum_v2g_price_spread) < 0.0
             or float(minimum_v2g_departure_hours) < 0.0
+            or float(v2g_minimum_profit_margin_eur_per_kwh) < 0.0
+            or float(v2g_degradation_cost_eur_per_kwh) < 0.0
         ):
             raise ValueError("EV planning price tolerances must be non-negative")
+        if not 0.0 <= float(v2g_avoided_import_value_ratio) <= 1.0:
+            raise ValueError(
+                "EV planning V2G avoided-import value ratio must lie in [0, 1]"
+            )
         self.charge_fraction = float(charge_fraction)
         self.discharge_fraction = float(discharge_fraction)
         self.service_tolerance_ratio = float(service_tolerance_ratio)
@@ -100,6 +109,15 @@ class CausalEVPlanner:
         self.minimum_price_spread = float(minimum_price_spread)
         self.minimum_v2g_price_spread = float(minimum_v2g_price_spread)
         self.minimum_v2g_departure_hours = float(minimum_v2g_departure_hours)
+        self.v2g_avoided_import_value_ratio = float(
+            v2g_avoided_import_value_ratio
+        )
+        self.v2g_minimum_profit_margin_eur_per_kwh = float(
+            v2g_minimum_profit_margin_eur_per_kwh
+        )
+        self.v2g_degradation_cost_eur_per_kwh = float(
+            v2g_degradation_cost_eur_per_kwh
+        )
 
     def targets(
         self,
@@ -135,6 +153,15 @@ class CausalEVPlanner:
             "minimum_price_spread": self.minimum_price_spread,
             "minimum_v2g_price_spread": self.minimum_v2g_price_spread,
             "minimum_v2g_departure_hours": self.minimum_v2g_departure_hours,
+            "v2g_avoided_import_value_ratio": (
+                self.v2g_avoided_import_value_ratio
+            ),
+            "v2g_minimum_profit_margin_eur_per_kwh": (
+                self.v2g_minimum_profit_margin_eur_per_kwh
+            ),
+            "v2g_degradation_cost_eur_per_kwh": (
+                self.v2g_degradation_cost_eur_per_kwh
+            ),
         }
 
     def _target_for_group(
@@ -317,11 +344,6 @@ class CausalEVPlanner:
         ):
             return None
         future_min = min(future_prices)
-        if (
-            current_price - future_min + self.price_tie_tolerance
-            < self.minimum_v2g_price_spread
-        ):
-            return None
 
         soc = values.get("connected_ev_soc")
         required_soc = values.get("connected_ev_required_soc_departure")
@@ -352,10 +374,13 @@ class CausalEVPlanner:
                 0.0,
             ),
         )
-        local_net_demand = self._local_net_demand(parts)
+        local_net_demand = self._local_inflexible_demand(
+            parts,
+            seconds_per_time_step=seconds_per_time_step,
+        )
         if available_power <= 1.0e-9 or local_net_demand <= 1.0e-9:
             return None
-        efficiency = float(
+        discharge_efficiency = float(
             np.clip(
                 values.get(
                     "discharge_efficiency_at_max_ratio",
@@ -365,8 +390,33 @@ class CausalEVPlanner:
                 1.0,
             )
         )
+        charge_efficiency = float(
+            np.clip(
+                values.get(
+                    "charge_efficiency_at_max_ratio",
+                    values.get("charger_efficiency_ratio", 1.0),
+                ),
+                1.0e-3,
+                1.0,
+            )
+        )
+        replacement_cost = future_min / max(
+            charge_efficiency * discharge_efficiency,
+            1.0e-3,
+        )
+        net_margin = (
+            float(current_price) * self.v2g_avoided_import_value_ratio
+            - replacement_cost
+            - self.v2g_degradation_cost_eur_per_kwh
+        )
+        required_margin = max(
+            self.minimum_v2g_price_spread,
+            self.v2g_minimum_profit_margin_eur_per_kwh,
+        )
+        if net_margin + self.price_tie_tolerance < required_margin:
+            return None
         step_hours = seconds_per_time_step / 3600.0
-        surplus_fraction = surplus_energy * efficiency / max(
+        surplus_fraction = surplus_energy * discharge_efficiency / max(
             available_power * step_hours,
             1.0e-9,
         )
@@ -477,17 +527,49 @@ class CausalEVPlanner:
         return candidates[0] if candidates else None
 
     @staticmethod
-    def _local_net_demand(parts: Sequence[ObservationPart]) -> float:
-        candidates = [
-            float(part.values[0])
-            for part in parts
-            if part.observation_id == "net_power_kw"
-            and part.scope == "local"
-            and part.valid
-            and len(part.values) == 1
-            and np.isfinite(float(part.values[0]))
-        ]
-        return candidates[-1] if candidates else 0.0
+    def _local_inflexible_demand(
+        parts: Sequence[ObservationPart],
+        *,
+        seconds_per_time_step: float,
+    ) -> float:
+        """Return demand that cannot be fabricated by flexible actions."""
+
+        def value(observation_ids: tuple[str, ...]) -> Optional[float]:
+            candidates = [
+                float(part.values[0])
+                for part in parts
+                if part.observation_id in observation_ids
+                and part.scope == "local"
+                and part.valid
+                and len(part.values) == 1
+                and np.isfinite(float(part.values[0]))
+            ]
+            return candidates[-1] if candidates else None
+
+        step_hours = max(float(seconds_per_time_step) / 3600.0, 1.0e-9)
+        load_power_kw = value(("non_shiftable_load_power_kw",))
+        if load_power_kw is None:
+            load_energy_kwh = value(
+                ("non_shiftable_load", "load_energy_kwh_step")
+            )
+            if load_energy_kwh is not None:
+                load_power_kw = load_energy_kwh / step_hours
+
+        pv_power_kw = value(("pv_power_kw",))
+        if pv_power_kw is None:
+            pv_energy_kwh = value(
+                ("solar_generation", "pv_energy_kwh_step")
+            )
+            if pv_energy_kwh is not None:
+                pv_power_kw = pv_energy_kwh / step_hours
+
+        if load_power_kw is not None:
+            return max(
+                float(load_power_kw) - max(float(pv_power_kw or 0.0), 0.0),
+                0.0,
+            )
+
+        return 0.0
 
     @staticmethod
     def _future_prices(

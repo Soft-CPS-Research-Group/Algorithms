@@ -301,6 +301,37 @@ restoration is disabled.
 coverage and per-mode recall make the division between learned control and the
 safety shield measurable.
 
+V2G targets use the same settlement-aware avoided-import value, round-trip
+replacement cost and inflexible-demand cap as the feasibility shield. Thus the
+auxiliary learner is not rewarded for an action that the runtime guard must
+reject, nor for discharging one flexible asset merely to feed another.
+
+The local feasibility shield independently protects EV service and V2G value.
+`enforce_ev_discharge_reserve` contracts a discharge so the *post-action* SoC,
+including charger efficiency and physical step duration, cannot cross the
+declared departure reserve. This closes the one-step overshoot that a
+pre-action SoC check cannot detect. `ev_service_strategy` remains an explicit
+ablation: `minimum_average` spreads unavoidable service energy, while
+`just_in_time` leaves scheduling to the actor until delaying further would make
+the target infeasible. `ev_service_jit_buffer_seconds` reserves a physical-time
+delivery buffer before that mathematical deadline, protecting service and
+smoothing against late grid/phase headroom scarcity without depending on the
+dataset time-step size. `ev_service_jit_minimum_average_fraction` optionally
+keeps a small fraction of the minimum-average service rate active before the
+JIT deadline. This spreads correlated EV risk while preserving most of the
+actor's freedom to select cheap charging periods; zero preserves pure JIT.
+
+When `enforce_ev_economic_guard` is enabled, V2G requires a current typed
+tariff, a declared tariff forecast before departure and a causal net margin
+after round-trip efficiency. The minimum margin and optional degradation cost
+are configured separately. The avoided-import value ratio defaults to the
+configured community-settlement ratio when that market is enabled, so locally
+traded energy is not silently valued at the full grid tariff. V2G is capped by
+the inflexible local demand derived from non-shiftable load minus PV; flexible
+charging cannot create demand that justifies simultaneous EV discharge. The
+guard can be disabled explicitly for paired legacy ablations, but unknown
+price, reserve or capability data fail safely.
+
 `storage_planning` is the corresponding optional causal auxiliary for
 stationary batteries. It uses only typed storage SoC/capability, local net
 exchange, the current tariff, and explicitly declared tariff forecasts. It

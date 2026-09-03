@@ -1675,6 +1675,44 @@ def test_just_in_time_ev_service_uses_laxity_before_forcing_charge(tmp_path):
     with_slack = projector.project(snapshot, (idle,))[0]
     assert with_slack.decisions[0].mode == "IDLE"
 
+    smoothed = AnalyticLocalProjector(
+        ev_service_strategy="just_in_time",
+        ev_service_margin_ratio=0.0,
+        ev_service_tolerance_ratio=0.05,
+        ev_service_jit_minimum_average_fraction=0.4,
+    )
+    smoothed.set_seconds_per_time_step(900.0)
+    smoothed_decision = smoothed.project(snapshot, (idle,))[0].decisions[0]
+    smoothed_port = next(
+        item for item in ev_group.ports if item.mode == smoothed_decision.mode
+    )
+    smoothed_power = (
+        ev_group.max_charge_power_kw
+        * smoothed_decision.fraction
+        * smoothed_port.upper_bound
+    )
+    assert smoothed_decision.mode == "CHARGE_EV"
+    assert smoothed_power == pytest.approx(1.5)
+
+    three_hour_parts = tuple(
+        replace(part, values=(3.0,))
+        if part.observation_id == "hours_until_departure"
+        else part
+        for part in snapshot.observation_parts
+    )
+    buffered = AnalyticLocalProjector(
+        ev_service_strategy="just_in_time",
+        ev_service_margin_ratio=0.0,
+        ev_service_tolerance_ratio=0.05,
+        ev_service_jit_buffer_seconds=3600.0,
+    )
+    buffered.set_seconds_per_time_step(900.0)
+    buffered_decision = buffered.project(
+        replace(snapshot, observation_parts=three_hour_parts),
+        (idle,),
+    )[0].decisions[0]
+    assert buffered_decision.mode == "CHARGE_EV"
+
     minimum_average = AnalyticLocalProjector(
         ev_service_strategy="minimum_average",
         ev_service_margin_ratio=0.0,
@@ -1720,25 +1758,48 @@ def _snapshot_with_ev_planning_signals(
     required_soc: float = 0.80,
     battery_capacity_kwh: float = 50.0,
     local_net_power_kw: float = 4.0,
+    local_inflexible_demand_kw: float | None = None,
+    charger_efficiency_ratio: float = 1.0,
 ):
     ev_group = next(
         group
         for group in snapshot.groups_for("Building_1")
         if group.group_type == "ev_session"
     )
-    parts = [
-        replace(part, values=(current_price,))
-        if part.owner_agent_id == "Building_1"
-        and part.semantic_type == "market_price"
-        else part
-        for part in snapshot.observation_parts
-    ]
+    inflexible_demand_kw = (
+        local_net_power_kw
+        if local_inflexible_demand_kw is None
+        else local_inflexible_demand_kw
+    )
+    parts = []
+    for part in snapshot.observation_parts:
+        if (
+            part.owner_agent_id == "Building_1"
+            and part.semantic_type == "market_price"
+        ):
+            part = replace(part, values=(current_price,))
+        elif (
+            part.owner_agent_id == "Building_1"
+            and part.observation_id == "non_shiftable_load"
+        ):
+            part = replace(part, values=(inflexible_demand_kw,))
+        elif (
+            part.owner_agent_id == "Building_1"
+            and part.observation_id == "solar_generation"
+        ):
+            part = replace(part, values=(0.0,))
+        parts.append(part)
     for observation_id, value, unit, semantic_type in (
         ("energy_to_required_soc_kwh", energy_needed_kwh, "kWh", "ev_service"),
         ("hours_until_departure", hours_until_departure, "h", "ev_schedule"),
         ("available_charge_power_kw", 7.0, "kW", "ev_capability"),
         ("available_discharge_power_kw", 7.0, "kW", "ev_capability"),
-        ("charger_efficiency_ratio", 1.0, "fraction", "ev_capability"),
+        (
+            "charger_efficiency_ratio",
+            charger_efficiency_ratio,
+            "fraction",
+            "ev_capability",
+        ),
         ("connected_ev_soc", connected_ev_soc, "fraction", "ev_service"),
         (
             "connected_ev_required_soc_departure",
@@ -1793,6 +1854,25 @@ def _snapshot_with_ev_planning_signals(
             policy_input=True,
         )
     )
+    parts.append(
+        ObservationPart(
+            part_id="Building_1:self.energy.non_shiftable_load_power_kw",
+            owner_agent_id="Building_1",
+            source_entity_id="Building_1",
+            semantic_type="local_energy",
+            feature_names=("non_shiftable_load_power_kw",),
+            values=(inflexible_demand_kw,),
+            health=HealthState.HEALTHY,
+            sensor_id="self",
+            sensor_type="building_meter",
+            channel_id="energy",
+            observation_id="non_shiftable_load_power_kw",
+            unit="kW",
+            scope="local",
+            use="policy_input",
+            policy_input=True,
+        )
+    )
     if future_price is not None:
         for observation_id, horizon_price in (
             ("forecast_price_next_15m", future_price),
@@ -1819,6 +1899,379 @@ def _snapshot_with_ev_planning_signals(
                 )
             )
     return replace(snapshot, observation_parts=tuple(parts))
+
+
+def _ev_decision_power_kw(snapshot, decision):
+    group = next(
+        item for item in snapshot.action_groups if item.group_id == decision.group_id
+    )
+    port = next(item for item in group.ports if item.mode == decision.mode)
+    rated = (
+        group.max_discharge_power_kw
+        if decision.mode == "DISCHARGE_EV"
+        else group.max_charge_power_kw
+    )
+    return rated * decision.fraction * port.upper_bound
+
+
+def test_projector_caps_v2g_to_post_action_service_reserve(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path)
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        connected_ev_soc=0.81,
+        required_soc=0.85,
+        battery_capacity_kwh=60.0,
+        local_net_power_kw=20.0,
+    )
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(ev_group.group_id, "DISCHARGE_EV", 1.0, 2),
+        ),
+    )
+    projector = AnalyticLocalProjector(
+        ev_service_strategy="minimum_average",
+        ev_service_tolerance_ratio=0.05,
+        ev_v2g_reserve_margin_ratio=0.0,
+        enforce_ev_economic_guard=False,
+    )
+    projector.set_seconds_per_time_step(900.0)
+
+    projected = projector.project(snapshot, (raw,))[0]
+    decision = projected.decisions[0]
+    power_kw = _ev_decision_power_kw(snapshot, decision)
+    post_action_soc = 0.81 - power_kw * 0.25 / 60.0
+
+    assert decision.mode == "DISCHARGE_EV"
+    assert power_kw == pytest.approx(2.4)
+    assert post_action_soc == pytest.approx(0.80)
+    assert any(
+        item["reason"] == "ev_service_discharge_reserve"
+        for item in projected.interventions
+    )
+
+
+def test_projector_can_disable_post_action_reserve_for_paired_ablation(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path)
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        connected_ev_soc=0.81,
+        required_soc=0.85,
+        battery_capacity_kwh=60.0,
+        local_net_power_kw=20.0,
+    )
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(ev_group.group_id, "DISCHARGE_EV", 1.0, 2),
+        ),
+    )
+    projector = AnalyticLocalProjector(
+        enforce_ev_discharge_reserve=False,
+        enforce_ev_economic_guard=False,
+    )
+    projector.set_seconds_per_time_step(900.0)
+
+    projected = projector.project(snapshot, (raw,))[0]
+
+    assert projected.decisions[0].mode == "DISCHARGE_EV"
+    assert _ev_decision_power_kw(snapshot, projected.decisions[0]) > 2.4
+    assert not any(
+        item["reason"] == "ev_service_discharge_reserve"
+        for item in projected.interventions
+    )
+
+
+def test_projector_rejects_v2g_without_complete_service_reserve(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path)
+    ev_group = next(
+        group
+        for group in base.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    parts = tuple(
+        part
+        for part in base.observation_parts
+        if not (
+            part.sensor_id == ev_group.module_id
+            and part.observation_id == "connected_ev_battery_capacity_kwh"
+        )
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(ev_group.group_id, "DISCHARGE_EV", 1.0, 2),
+        ),
+    )
+
+    projected = AnalyticLocalProjector(
+        enforce_ev_economic_guard=False,
+    ).project(replace(base, observation_parts=parts), (raw,))[0]
+
+    assert projected.decisions[0].mode == "IDLE"
+    assert any(
+        item["reason"] == "ev_service_reserve_unknown"
+        for item in projected.interventions
+    )
+
+
+@pytest.mark.parametrize(
+    ("current_price", "future_price", "expected_reason"),
+    (
+        (0.15, 0.145, "ev_v2g_unprofitable"),
+        (0.30, None, "ev_v2g_price_unknown"),
+    ),
+)
+def test_projector_rejects_noncausal_or_unprofitable_v2g(
+    tmp_path,
+    current_price,
+    future_price,
+    expected_reason,
+):
+    _compiler, base = compile_snapshot(tmp_path)
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=current_price,
+        future_price=future_price,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        battery_capacity_kwh=60.0,
+        local_net_power_kw=20.0,
+    )
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(ev_group.group_id, "DISCHARGE_EV", 1.0, 2),
+        ),
+    )
+
+    projected = AnalyticLocalProjector().project(snapshot, (raw,))[0]
+
+    assert projected.decisions[0].mode == "IDLE"
+    assert any(
+        item["reason"] == expected_reason for item in projected.interventions
+    )
+
+
+def test_projector_values_v2g_with_conservative_settlement_ratio(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path)
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.25,
+        future_price=0.20,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        battery_capacity_kwh=60.0,
+        local_net_power_kw=20.0,
+    )
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(ev_group.group_id, "DISCHARGE_EV", 1.0, 2),
+        ),
+    )
+
+    full_grid_value = AnalyticLocalProjector(
+        ev_v2g_avoided_import_value_ratio=1.0,
+    ).project(snapshot, (raw,))[0]
+    conservative_settlement = AnalyticLocalProjector(
+        ev_v2g_avoided_import_value_ratio=0.8,
+    ).project(snapshot, (raw,))[0]
+
+    assert full_grid_value.decisions[0].mode == "DISCHARGE_EV"
+    assert conservative_settlement.decisions[0].mode == "IDLE"
+    assert any(
+        item["reason"] == "ev_v2g_unprofitable"
+        for item in conservative_settlement.interventions
+    )
+
+
+def test_projector_rejects_v2g_when_departure_schedule_is_unknown(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path)
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        hours_until_departure=-1.0,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        battery_capacity_kwh=60.0,
+        local_net_power_kw=20.0,
+    )
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(ev_group.group_id, "DISCHARGE_EV", 1.0, 2),
+        ),
+    )
+
+    projected = AnalyticLocalProjector().project(snapshot, (raw,))[0]
+
+    assert projected.decisions[0].mode == "IDLE"
+    assert any(
+        item["reason"] == "ev_v2g_schedule_unknown"
+        for item in projected.interventions
+    )
+
+
+def test_projector_caps_profitable_v2g_to_local_inflexible_demand(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path)
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        battery_capacity_kwh=60.0,
+        local_net_power_kw=20.0,
+        local_inflexible_demand_kw=2.0,
+    )
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(ev_group.group_id, "DISCHARGE_EV", 1.0, 2),
+        ),
+    )
+
+    projected = AnalyticLocalProjector().project(snapshot, (raw,))[0]
+    decision = projected.decisions[0]
+
+    assert decision.mode == "DISCHARGE_EV"
+    assert _ev_decision_power_kw(snapshot, decision) == pytest.approx(2.0)
+    assert any(
+        item["reason"] == "ev_v2g_local_demand_cap"
+        for item in projected.interventions
+    )
+
+
+def test_projector_does_not_use_flexible_charging_to_justify_v2g(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path)
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        battery_capacity_kwh=60.0,
+        local_net_power_kw=0.0,
+    )
+    groups = {
+        group.group_type: group for group in snapshot.groups_for("Building_1")
+    }
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(
+                groups["stationary_storage"].group_id,
+                "CHARGE_STATIONARY",
+                1.0,
+                1,
+            ),
+            ActionDecision(
+                groups["ev_session"].group_id,
+                "DISCHARGE_EV",
+                1.0,
+                2,
+            ),
+        ),
+    )
+
+    projected = AnalyticLocalProjector().project(snapshot, (raw,))[0]
+    decisions = {item.group_id: item for item in projected.decisions}
+
+    assert decisions[groups["stationary_storage"].group_id].mode == (
+        "CHARGE_STATIONARY"
+    )
+    assert decisions[groups["ev_session"].group_id].mode == "IDLE"
+    assert any(
+        item["reason"] == "ev_v2g_no_local_demand"
+        for item in projected.interventions
+    )
+
+
+def test_v2g_fails_closed_without_explicit_inflexible_demand(tmp_path):
+    _compiler, base = compile_snapshot(tmp_path)
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        energy_needed_kwh=0.0,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        local_net_power_kw=20.0,
+        local_inflexible_demand_kw=2.0,
+    )
+    snapshot = replace(
+        snapshot,
+        observation_parts=tuple(
+            part
+            for part in snapshot.observation_parts
+            if part.observation_id
+            not in {
+                "non_shiftable_load_power_kw",
+                "non_shiftable_load",
+                "load_energy_kwh_step",
+            }
+        ),
+    )
+    ev_group = next(
+        group
+        for group in snapshot.groups_for("Building_1")
+        if group.group_type == "ev_session"
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(
+            ActionDecision(ev_group.group_id, "DISCHARGE_EV", 1.0, 2),
+        ),
+    )
+
+    projected = AnalyticLocalProjector().project(snapshot, (raw,))[0]
+    planner_target = CausalEVPlanner().targets(
+        snapshot,
+        seconds_per_time_step=900.0,
+    )[0]
+
+    assert projected.decisions[0].mode == "IDLE"
+    assert planner_target.decision.mode == "IDLE"
+    assert any(
+        item["reason"] == "ev_v2g_no_local_demand"
+        for item in projected.interventions
+    )
 
 
 def test_causal_ev_planner_uses_price_opportunity_and_service_urgency(tmp_path):
@@ -2008,6 +2461,86 @@ def test_causal_ev_planner_stops_at_service_target_and_teaches_safe_v2g(tmp_path
     assert planner.targets(
         below_minimum_v2g, seconds_per_time_step=900.0
     )[0].decision.mode == "IDLE"
+
+
+def test_causal_ev_planner_uses_settlement_value_and_inflexible_demand(tmp_path):
+    _compiler, base = compile_snapshot(
+        tmp_path,
+        buildings=("Building_1",),
+    )
+    marginal = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.25,
+        future_price=0.20,
+        energy_needed_kwh=0.0,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        local_net_power_kw=20.0,
+        local_inflexible_demand_kw=2.0,
+    )
+
+    full_value = CausalEVPlanner(
+        discharge_fraction=0.95,
+        v2g_avoided_import_value_ratio=1.0,
+    ).targets(marginal, seconds_per_time_step=900.0)[0]
+    settled_value = CausalEVPlanner(
+        discharge_fraction=0.95,
+        v2g_avoided_import_value_ratio=0.8,
+    ).targets(marginal, seconds_per_time_step=900.0)[0]
+
+    assert full_value.decision.mode == "DISCHARGE_EV"
+    assert _ev_decision_power_kw(marginal, full_value.decision) == pytest.approx(
+        2.0
+    )
+    assert settled_value.decision.mode == "IDLE"
+
+
+def test_causal_ev_planner_does_not_learn_v2g_from_flexible_net_demand(tmp_path):
+    _compiler, base = compile_snapshot(
+        tmp_path,
+        buildings=("Building_1",),
+    )
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        energy_needed_kwh=0.0,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        local_net_power_kw=20.0,
+        local_inflexible_demand_kw=0.0,
+    )
+
+    target = CausalEVPlanner().targets(
+        snapshot,
+        seconds_per_time_step=900.0,
+    )[0]
+
+    assert target.decision.mode == "IDLE"
+
+
+def test_causal_ev_planner_prices_round_trip_efficiency(tmp_path):
+    _compiler, base = compile_snapshot(
+        tmp_path,
+        buildings=("Building_1",),
+    )
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.20,
+        energy_needed_kwh=0.0,
+        connected_ev_soc=0.95,
+        required_soc=0.80,
+        local_inflexible_demand_kw=2.0,
+        charger_efficiency_ratio=0.8,
+    )
+
+    target = CausalEVPlanner().targets(
+        snapshot,
+        seconds_per_time_step=900.0,
+    )[0]
+
+    assert target.decision.mode == "IDLE"
 
 
 def test_ev_control_diagnostics_report_actor_owned_v2g_separately(tmp_path):
@@ -3217,7 +3750,12 @@ def test_discharge_uses_its_own_bound_and_keeps_a_negative_simulator_sign(tmp_pa
             ActionDecision(ev_group.group_id, "DISCHARGE_EV", 1.0, 2),
         ),
     )
-    projected = AnalyticLocalProjector().project(snapshot, (bundle,))[0]
+    # This test isolates typed scaling and simulator sign. Economic/service
+    # validity is covered independently below.
+    projected = AnalyticLocalProjector(
+        enforce_ev_service=False,
+        enforce_ev_economic_guard=False,
+    ).project(snapshot, (bundle,))[0]
     commands = TypedCommandBuilder().build(snapshot, (projected,))
     assert commands[0].action_id == "discharge"
     assert commands[0].value == pytest.approx(3.6)
@@ -3529,6 +4067,29 @@ def agent_config(tmp_path):
         "training": {"seed": 9},
         "runtime": {"job_dir": str(tmp_path)},
     }
+
+
+def test_agent_uses_community_settlement_as_default_v2g_value(tmp_path):
+    config = agent_config(tmp_path / "settlement")
+    config["algorithm"]["hyperparameters"]["ev_planning"] = {
+        "auxiliary_coeff": 0.1,
+    }
+    config["simulator"] = {
+        "community_market": {
+            "enabled": True,
+            "local_price_ratio_to_grid_import": 0.8,
+        }
+    }
+
+    agent = TIMARL(config)
+
+    assert agent.projector.ev_v2g_avoided_import_value_ratio == pytest.approx(
+        0.8
+    )
+    assert agent.learner.ev_planner is not None
+    assert agent.learner.ev_planner.v2g_avoided_import_value_ratio == pytest.approx(
+        0.8
+    )
 
 
 def test_agent_can_require_declared_electrical_service(tmp_path):

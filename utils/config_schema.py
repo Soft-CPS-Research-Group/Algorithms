@@ -1401,6 +1401,29 @@ class TIMARLFeasibilityConfig(BaseModel):
         "just_in_time",
     ] = "average"
     ev_service_tolerance_ratio: float = Field(default=0.05, ge=0.0, le=0.2)
+    ev_service_jit_buffer_seconds: float = Field(default=0.0, ge=0.0)
+    ev_service_jit_minimum_average_fraction: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+    )
+    enforce_ev_discharge_reserve: bool = True
+    ev_v2g_reserve_margin_ratio: float = Field(default=0.0, ge=0.0, le=0.2)
+    enforce_ev_economic_guard: bool = True
+    ev_v2g_avoided_import_value_ratio: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    ev_v2g_minimum_profit_margin_eur_per_kwh: float = Field(
+        default=0.01,
+        ge=0.0,
+    )
+    ev_v2g_degradation_cost_eur_per_kwh: float = Field(
+        default=0.0,
+        ge=0.0,
+    )
+    ev_v2g_require_local_demand: bool = True
     headroom_reserve_kw: float = Field(default=0.0, ge=0.0)
     deferrable_service_margin_seconds: float = Field(default=0.0, ge=0.0)
 
@@ -1461,6 +1484,19 @@ class TIMARLEVPlanningConfig(BaseModel):
     minimum_price_spread: float = Field(default=0.0, ge=0.0)
     minimum_v2g_price_spread: float = Field(default=0.01, ge=0.0)
     minimum_v2g_departure_hours: float = Field(default=1.0, ge=0.0)
+    v2g_avoided_import_value_ratio: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    v2g_minimum_profit_margin_eur_per_kwh: float = Field(
+        default=0.01,
+        ge=0.0,
+    )
+    v2g_degradation_cost_eur_per_kwh: float = Field(
+        default=0.0,
+        ge=0.0,
+    )
 
 
 class TIMARLStoragePlanningConfig(BaseModel):
