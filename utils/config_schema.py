@@ -1407,6 +1407,7 @@ class TIMARLFeasibilityConfig(BaseModel):
         ge=0.0,
         le=1.0,
     )
+    protect_ev_service_target: bool = False
     enforce_ev_discharge_reserve: bool = True
     ev_v2g_reserve_margin_ratio: float = Field(default=0.0, ge=0.0, le=0.2)
     enforce_ev_economic_guard: bool = True
@@ -1497,6 +1498,10 @@ class TIMARLEVPlanningConfig(BaseModel):
         default=0.0,
         ge=0.0,
     )
+    opportunity_value_kind: Literal[
+        "tariff",
+        "community_marginal_import",
+    ] = "tariff"
 
 
 class TIMARLStoragePlanningConfig(BaseModel):

@@ -241,6 +241,9 @@ class TIMARL(BaseAgent):
                         ),
                     )
                 ),
+                opportunity_value_kind=str(
+                    ev_planning_cfg.get("opportunity_value_kind", "tariff")
+                ),
             )
             if ev_planning_auxiliary_coeff > 0.0
             else None
@@ -451,6 +454,9 @@ class TIMARL(BaseAgent):
                     "ev_service_jit_minimum_average_fraction",
                     0.0,
                 )
+            ),
+            protect_ev_service_target=bool(
+                feasibility_cfg.get("protect_ev_service_target", False)
             ),
             enforce_ev_discharge_reserve=bool(
                 feasibility_cfg.get("enforce_ev_discharge_reserve", True)

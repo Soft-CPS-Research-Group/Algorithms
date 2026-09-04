@@ -1461,6 +1461,128 @@ def test_ev_service_floor_records_insufficient_local_headroom(tmp_path):
     )
 
 
+def test_ev_service_target_cap_prevents_policy_overcharge(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
+    ev_group = groups["ev_session"]
+    snapshot = _snapshot_with_ev_service_requirement(
+        snapshot,
+        ev_group,
+        required_average_power_kw=0.0,
+        hours_until_departure=2.0,
+        efficiency=0.9,
+        headroom_kw=20.0,
+    )
+    snapshot = replace(
+        snapshot,
+        observation_parts=snapshot.observation_parts
+        + (
+            ObservationPart(
+                part_id=(
+                    f"Building_1:{ev_group.module_id}.service."
+                    "energy_to_required_soc_kwh"
+                ),
+                owner_agent_id="Building_1",
+                source_entity_id=(
+                    ev_group.adapter_target_entity_id or ev_group.module_id
+                ),
+                semantic_type="ev_service",
+                feature_names=("energy_to_required_soc_kwh",),
+                values=(1.2375,),
+                health=HealthState.HEALTHY,
+                sensor_id=ev_group.module_id,
+                channel_id="service",
+                observation_id="energy_to_required_soc_kwh",
+                unit="kWh",
+                scope="local",
+                use="safety_dependency",
+                policy_input=True,
+                criticality="service",
+            ),
+        ),
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(ActionDecision(ev_group.group_id, "CHARGE_EV", 1.0, 1),),
+    )
+    projector = AnalyticLocalProjector(protect_ev_service_target=True)
+    projector.set_seconds_per_time_step(900.0)
+
+    final = projector.project(snapshot, (raw,))[0]
+    decision = final.decisions[0]
+    port = next(item for item in ev_group.ports if item.mode == decision.mode)
+    power_kw = (
+        ev_group.max_charge_power_kw * port.upper_bound * decision.fraction
+    )
+
+    assert power_kw == pytest.approx(5.5)
+    assert any(
+        item["reason"] == "ev_service_target_charge_cap"
+        for item in final.interventions
+    )
+    assert projector.configuration()["protect_ev_service_target"] is True
+
+
+def test_ev_service_target_cap_never_lowers_mandatory_floor(tmp_path):
+    _compiler, snapshot = compile_snapshot(tmp_path)
+    groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
+    ev_group = groups["ev_session"]
+    snapshot = _snapshot_with_ev_service_requirement(
+        snapshot,
+        ev_group,
+        required_average_power_kw=4.0,
+        hours_until_departure=1.0,
+        efficiency=1.0,
+        headroom_kw=20.0,
+    )
+    snapshot = replace(
+        snapshot,
+        observation_parts=snapshot.observation_parts
+        + (
+            ObservationPart(
+                part_id=(
+                    f"Building_1:{ev_group.module_id}.service."
+                    "energy_to_required_soc_kwh"
+                ),
+                owner_agent_id="Building_1",
+                source_entity_id=(
+                    ev_group.adapter_target_entity_id or ev_group.module_id
+                ),
+                semantic_type="ev_service",
+                feature_names=("energy_to_required_soc_kwh",),
+                values=(0.1,),
+                health=HealthState.HEALTHY,
+                sensor_id=ev_group.module_id,
+                channel_id="service",
+                observation_id="energy_to_required_soc_kwh",
+                unit="kWh",
+                scope="local",
+                use="safety_dependency",
+                policy_input=True,
+                criticality="service",
+            ),
+        ),
+    )
+    raw = LocalActionBundle(
+        agent_id="Building_1",
+        decisions=(ActionDecision(ev_group.group_id, "CHARGE_EV", 1.0, 1),),
+    )
+    projector = AnalyticLocalProjector(
+        protect_ev_service_target=True,
+        ev_service_margin_ratio=0.0,
+    )
+
+    final = projector.project(snapshot, (raw,))[0]
+    decision = final.decisions[0]
+    port = next(item for item in ev_group.ports if item.mode == decision.mode)
+    power_kw = (
+        ev_group.max_charge_power_kw * port.upper_bound * decision.fraction
+    )
+
+    assert decision.mode == "CHARGE_EV"
+    assert power_kw == pytest.approx(4.0)
+
+
 def test_due_deferrable_and_ev_service_share_headroom_by_deadline(tmp_path):
     _compiler, snapshot = compile_snapshot(tmp_path)
     groups = {group.group_type: group for group in snapshot.groups_for("Building_1")}
@@ -1760,6 +1882,8 @@ def _snapshot_with_ev_planning_signals(
     local_net_power_kw: float = 4.0,
     local_inflexible_demand_kw: float | None = None,
     charger_efficiency_ratio: float = 1.0,
+    community_net_power_kw: float | None = None,
+    future_community_net_power_kw: float | None = None,
 ):
     ev_group = next(
         group
@@ -1893,6 +2017,51 @@ def _snapshot_with_ev_planning_signals(
                     channel_id="market",
                     observation_id=observation_id,
                     unit="EUR/kWh",
+                    scope="community",
+                    use="policy_input",
+                    policy_input=True,
+                )
+            )
+    if community_net_power_kw is not None:
+        parts.append(
+            ObservationPart(
+                part_id="Building_1:community.energy.community_net_power_kw",
+                owner_agent_id="Building_1",
+                source_entity_id="district_0",
+                semantic_type="community_energy",
+                feature_names=("community_net_power_kw",),
+                values=(community_net_power_kw,),
+                health=HealthState.HEALTHY,
+                sensor_id="community",
+                sensor_type="community_aggregate_service",
+                channel_id="energy",
+                observation_id="community_net_power_kw",
+                unit="kW",
+                scope="community",
+                use="policy_input",
+                policy_input=True,
+            )
+        )
+    if future_community_net_power_kw is not None:
+        for observation_id in (
+            "forecast_community_net_next_15m_kw",
+            "forecast_community_net_next_1h_kw",
+            "forecast_community_net_next_3h_kw",
+        ):
+            parts.append(
+                ObservationPart(
+                    part_id=f"Building_1:community.forecast.{observation_id}",
+                    owner_agent_id="Building_1",
+                    source_entity_id="district_0",
+                    semantic_type="community_energy_forecast",
+                    feature_names=(observation_id,),
+                    values=(future_community_net_power_kw,),
+                    health=HealthState.HEALTHY,
+                    sensor_id="community",
+                    sensor_type="community_aggregate_service",
+                    channel_id="forecast",
+                    observation_id=observation_id,
+                    unit="kW",
                     scope="community",
                     use="policy_input",
                     policy_input=True,
@@ -2317,6 +2486,104 @@ def test_causal_ev_planner_uses_price_opportunity_and_service_urgency(tmp_path):
     assert urgent_target.required_duty_ratio == pytest.approx(1.0)
     assert urgent_target.decision.fraction == pytest.approx(1.0)
     assert planner.targets(no_forecast, seconds_per_time_step=900.0) == ()
+
+
+def test_causal_ev_planner_can_value_actual_community_import_margin(tmp_path):
+    _compiler, base = compile_snapshot(
+        tmp_path,
+        buildings=("Building_1",),
+    )
+    planner = CausalEVPlanner(
+        opportunity_value_kind="community_marginal_import",
+    )
+
+    # The current tariff is high, but the community exports enough energy to
+    # absorb the planned EV charge.  Waiting would create grid import.
+    export_now = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        community_net_power_kw=-10.0,
+        future_community_net_power_kw=10.0,
+    )
+    target = planner.targets(export_now, seconds_per_time_step=900.0)[0]
+    assert target.decision.mode == "CHARGE_EV"
+    assert target.reason == "community_marginal_cheapest_opportunity"
+    assert target.current_opportunity_value == pytest.approx(0.0)
+    assert target.future_opportunity_value_min == pytest.approx(0.10)
+
+    # Conversely, a low tariff is not a cheap community opportunity if it
+    # creates import while a later, higher-tariff period has surplus.
+    import_now = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.10,
+        future_price=0.30,
+        community_net_power_kw=10.0,
+        future_community_net_power_kw=-10.0,
+    )
+    target = planner.targets(import_now, seconds_per_time_step=900.0)[0]
+    assert target.decision.mode == "IDLE"
+    assert target.reason == (
+        "community_marginal_cheaper_forecast_with_service_slack"
+    )
+    assert target.current_opportunity_value == pytest.approx(0.10)
+    assert target.future_opportunity_value_min == pytest.approx(0.0)
+
+
+def test_community_marginal_ev_planner_fails_closed_without_community_forecast(
+    tmp_path,
+):
+    _compiler, base = compile_snapshot(
+        tmp_path,
+        buildings=("Building_1",),
+    )
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.10,
+        future_price=0.30,
+        community_net_power_kw=-10.0,
+    )
+
+    targets = CausalEVPlanner(
+        opportunity_value_kind="community_marginal_import",
+    ).targets(snapshot, seconds_per_time_step=900.0)
+
+    assert targets == ()
+
+
+def test_community_marginal_ev_planner_values_the_energy_limited_charge(
+    tmp_path,
+):
+    _compiler, base = compile_snapshot(
+        tmp_path,
+        buildings=("Building_1",),
+    )
+    snapshot = _snapshot_with_ev_planning_signals(
+        base,
+        current_price=0.30,
+        future_price=0.10,
+        hours_until_departure=4.0,
+        energy_needed_kwh=0.25,
+        community_net_power_kw=-2.0,
+        future_community_net_power_kw=10.0,
+    )
+
+    target = CausalEVPlanner(
+        opportunity_value_kind="community_marginal_import",
+    ).targets(snapshot, seconds_per_time_step=900.0)[0]
+
+    # Only 1 kW is needed during this 15-minute interval.  That charge fits
+    # entirely inside the 2 kW community export, even though the configured
+    # economic fraction would otherwise request more power.
+    assert target.decision.mode == "CHARGE_EV"
+    assert target.decision.fraction == pytest.approx(1.0 / 7.0)
+    assert target.current_opportunity_value == pytest.approx(0.0)
+    assert target.future_opportunity_value_min == pytest.approx(0.10)
+
+
+def test_causal_ev_planner_rejects_unknown_opportunity_value_kind():
+    with pytest.raises(ValueError, match="opportunity_value_kind"):
+        CausalEVPlanner(opportunity_value_kind="perfect_foresight")
 
 
 def test_causal_ev_planner_stops_at_service_target_and_teaches_safe_v2g(tmp_path):

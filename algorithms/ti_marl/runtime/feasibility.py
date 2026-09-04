@@ -34,6 +34,7 @@ class AnalyticLocalProjector:
         ev_service_tolerance_ratio: float = 0.05,
         ev_service_jit_buffer_seconds: float = 0.0,
         ev_service_jit_minimum_average_fraction: float = 0.0,
+        protect_ev_service_target: bool = False,
         enforce_ev_discharge_reserve: bool = True,
         ev_v2g_reserve_margin_ratio: float = 0.0,
         enforce_ev_economic_guard: bool = True,
@@ -65,6 +66,7 @@ class AnalyticLocalProjector:
         self.ev_service_jit_minimum_average_fraction = float(
             np.clip(ev_service_jit_minimum_average_fraction, 0.0, 1.0)
         )
+        self.protect_ev_service_target = bool(protect_ev_service_target)
         self.enforce_ev_discharge_reserve = bool(
             enforce_ev_discharge_reserve
         )
@@ -111,6 +113,7 @@ class AnalyticLocalProjector:
             "ev_service_jit_minimum_average_fraction": (
                 self.ev_service_jit_minimum_average_fraction
             ),
+            "protect_ev_service_target": self.protect_ev_service_target,
             "enforce_ev_discharge_reserve": (
                 self.enforce_ev_discharge_reserve
             ),
@@ -245,6 +248,14 @@ class AnalyticLocalProjector:
             groups,
             decisions,
             interventions,
+        )
+        self._enforce_ev_service_target(
+            snapshot,
+            bundle.agent_id,
+            groups,
+            decisions,
+            interventions,
+            minimum_power_by_group=ev_service_floors,
         )
         self._enforce_ev_economic_guard(
             snapshot,
@@ -454,6 +465,118 @@ class AnalyticLocalProjector:
                     )
                 )
         return floors
+
+    def _enforce_ev_service_target(
+        self,
+        snapshot: InterfaceSnapshot,
+        agent_id: str,
+        groups: Mapping[str, ActionGroupInstance],
+        decisions: Dict[str, ActionDecision],
+        interventions: list[Mapping[str, object]],
+        *,
+        minimum_power_by_group: Mapping[str, tuple[float, float]],
+    ) -> None:
+        """Avoid charging an EV beyond its declared departure target.
+
+        The policy may deliberately choose any power inside a typed port, but
+        energy above the user's requested departure SoC is neither required
+        service nor free flexibility.  Limit only the current charging step,
+        using battery-side energy and the declared charging efficiency.  A
+        mandatory service floor always takes precedence, so this guard cannot
+        undo a charge required to keep the departure target feasible.
+        """
+
+        if not self.protect_ev_service_target:
+            return
+        step_hours = self.seconds_per_time_step / 3600.0
+        for group_id, decision in tuple(decisions.items()):
+            group = groups[group_id]
+            if group.group_type != "ev_session" or decision.mode != "CHARGE_EV":
+                continue
+            values = {
+                part.observation_id: float(part.values[0])
+                for part in snapshot.parts_for(agent_id)
+                if part.sensor_id == group.module_id
+                and part.valid
+                and len(part.values) == 1
+                and np.isfinite(float(part.values[0]))
+            }
+            if values.get("connected_state", 0.0) <= 0.5:
+                continue
+            energy_to_target_kwh = values.get("energy_to_required_soc_kwh")
+            if energy_to_target_kwh is None:
+                state = (
+                    values.get("connected_ev_soc"),
+                    values.get("connected_ev_required_soc_departure"),
+                    values.get("connected_ev_battery_capacity_kwh"),
+                )
+                if any(value is None for value in state):
+                    continue
+                soc, required_soc, capacity_kwh = (float(value) for value in state)
+                if capacity_kwh <= 0.0:
+                    continue
+                energy_to_target_kwh = max(required_soc - soc, 0.0) * capacity_kwh
+            energy_to_target_kwh = max(float(energy_to_target_kwh), 0.0)
+            efficiency = float(
+                np.clip(
+                    values.get(
+                        "charge_efficiency_at_max_ratio",
+                        values.get("charger_efficiency_ratio", 1.0),
+                    ),
+                    1.0e-3,
+                    1.0,
+                )
+            )
+            port = next(
+                (item for item in group.ports if item.mode == "CHARGE_EV"),
+                None,
+            )
+            available_power_kw = (
+                max(float(group.max_charge_power_kw), 0.0)
+                * (0.0 if port is None else max(float(port.upper_bound), 0.0))
+            )
+            if available_power_kw <= 1.0e-9:
+                continue
+            target_power_kw = energy_to_target_kwh / max(
+                efficiency * step_hours,
+                1.0e-9,
+            )
+            mandatory_power_kw = float(
+                minimum_power_by_group.get(group_id, (0.0, 0.0))[0]
+            )
+            maximum_power_kw = min(
+                max(target_power_kw, mandatory_power_kw),
+                available_power_kw,
+            )
+            current_power_kw = (
+                available_power_kw * max(float(decision.fraction), 0.0)
+            )
+            if current_power_kw <= maximum_power_kw + 1.0e-9:
+                continue
+            maximum_fraction = maximum_power_kw / available_power_kw
+            if maximum_fraction <= 1.0e-9:
+                self._set_idle(
+                    group,
+                    decision,
+                    decisions,
+                    interventions,
+                    "ev_service_target_reached",
+                )
+                continue
+            decisions[group_id] = replace(
+                decision,
+                fraction=maximum_fraction,
+            )
+            interventions.append(
+                self._intervention(
+                    group_id,
+                    "ev_service_target_charge_cap",
+                    decision.mode,
+                    decision.mode,
+                    decision.fraction,
+                    maximum_fraction,
+                )
+            )
 
     def _limit_ev_discharge_to_service_reserve(
         self,

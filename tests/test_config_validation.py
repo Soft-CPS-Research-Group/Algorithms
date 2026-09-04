@@ -62,6 +62,7 @@ def _ti_marl_stage():
                 "deferrable_service_margin_seconds": 3600.0,
                 "ev_service_jit_buffer_seconds": 1800.0,
                 "ev_service_jit_minimum_average_fraction": 0.25,
+                "protect_ev_service_target": True,
                 "enforce_ev_discharge_reserve": True,
                 "ev_v2g_reserve_margin_ratio": 0.02,
                 "enforce_ev_economic_guard": True,
@@ -91,6 +92,7 @@ def test_validate_config_accepts_ti_marl_entity_dynamic(base_config):
     assert feasibility.ev_service_jit_minimum_average_fraction == pytest.approx(
         0.25
     )
+    assert feasibility.protect_ev_service_target
     assert feasibility.enforce_ev_discharge_reserve
     assert feasibility.ev_v2g_reserve_margin_ratio == pytest.approx(0.02)
     assert feasibility.enforce_ev_economic_guard
@@ -170,6 +172,7 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         "v2g_avoided_import_value_ratio": 0.8,
         "v2g_minimum_profit_margin_eur_per_kwh": 0.03,
         "v2g_degradation_cost_eur_per_kwh": 0.01,
+        "opportunity_value_kind": "community_marginal_import",
     }
     stage["hyperparameters"]["storage_planning"] = {
         "auxiliary_coeff": 0.15,
@@ -293,6 +296,11 @@ def test_validate_config_accepts_ti_marl_typed_behavior_cloning(base_config):
         parsed.pipeline[0]
         .hyperparameters.ev_planning.v2g_degradation_cost_eur_per_kwh
         == 0.01
+    )
+    assert (
+        parsed.pipeline[0]
+        .hyperparameters.ev_planning.opportunity_value_kind
+        == "community_marginal_import"
     )
     storage_planning = parsed.pipeline[0].hyperparameters.storage_planning
     assert storage_planning.auxiliary_coeff == 0.15

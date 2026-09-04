@@ -325,6 +325,16 @@ restoration is disabled.
 coverage and per-mode recall make the division between learned control and the
 safety shield measurable.
 
+`ev_planning.opportunity_value_kind` keeps tariff comparison as the default.
+The opt-in `community_marginal_import` mode instead pairs typed tariff and
+community-net forecasts at the same horizons and values only the incremental
+positive grid import created by charging. A charge fully absorbed by existing
+community export therefore has zero marginal grid cost; a charge that crosses
+from export into import pays only for the importing fraction. Missing current
+or paired forecast community evidence produces no auxiliary target, leaving
+PPO and the local safety shield in control. This is a training signal, not a
+community optimization rule inside feasibility.
+
 V2G targets use the same settlement-aware avoided-import value, round-trip
 replacement cost and inflexible-demand cap as the feasibility shield. Thus the
 auxiliary learner is not rewarded for an action that the runtime guard must
@@ -344,6 +354,13 @@ dataset time-step size. `ev_service_jit_minimum_average_fraction` optionally
 keeps a small fraction of the minimum-average service rate active before the
 JIT deadline. This spreads correlated EV risk while preserving most of the
 actor's freedom to select cheap charging periods; zero preserves pure JIT.
+
+When `protect_ev_service_target` is enabled, the projector also caps each
+charging step at the energy still required to reach the declared departure
+SoC. The bound uses typed battery-side energy, charger efficiency and physical
+step duration, never reduces a mandatory service floor, and records every
+intervention. This prevents the actor from buying energy beyond the user's
+requested service while leaving V2G and later charging decisions explicit.
 
 When `enforce_ev_economic_guard` is enabled, V2G requires a current typed
 tariff, a declared tariff forecast before departure and a causal net margin

@@ -31,6 +31,9 @@ from algorithms.ti_marl.contracts.models import (
 _EXPLICIT_PRICE_HORIZON = re.compile(
     r"(?:forecast_)?price_next_(?P<amount>\d+)(?P<unit>m|h)$"
 )
+_EXPLICIT_COMMUNITY_NET_HORIZON = re.compile(
+    r"forecast_community_net_next_(?P<amount>\d+)(?P<unit>m|h)_kw$"
+)
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,8 @@ class EVPlanningTarget:
     current_price: float
     future_price_min: float
     required_duty_ratio: float
+    current_opportunity_value: float = float("nan")
+    future_opportunity_value_min: float = float("nan")
 
 
 class CausalEVPlanner:
@@ -72,6 +77,7 @@ class CausalEVPlanner:
         v2g_avoided_import_value_ratio: float = 1.0,
         v2g_minimum_profit_margin_eur_per_kwh: float = 0.01,
         v2g_degradation_cost_eur_per_kwh: float = 0.0,
+        opportunity_value_kind: str = "tariff",
     ) -> None:
         if not 0.0 < float(charge_fraction) < 1.0:
             raise ValueError("EV planning charge_fraction must lie in (0, 1)")
@@ -100,6 +106,14 @@ class CausalEVPlanner:
             raise ValueError(
                 "EV planning V2G avoided-import value ratio must lie in [0, 1]"
             )
+        if opportunity_value_kind not in {
+            "tariff",
+            "community_marginal_import",
+        }:
+            raise ValueError(
+                "EV planning opportunity_value_kind must be 'tariff' or "
+                "'community_marginal_import'"
+            )
         self.charge_fraction = float(charge_fraction)
         self.discharge_fraction = float(discharge_fraction)
         self.service_tolerance_ratio = float(service_tolerance_ratio)
@@ -118,6 +132,7 @@ class CausalEVPlanner:
         self.v2g_degradation_cost_eur_per_kwh = float(
             v2g_degradation_cost_eur_per_kwh
         )
+        self.opportunity_value_kind = str(opportunity_value_kind)
 
     def targets(
         self,
@@ -162,6 +177,7 @@ class CausalEVPlanner:
             "v2g_degradation_cost_eur_per_kwh": (
                 self.v2g_degradation_cost_eur_per_kwh
             ),
+            "opportunity_value_kind": self.opportunity_value_kind,
         }
 
     def _target_for_group(
@@ -203,7 +219,11 @@ class CausalEVPlanner:
         if energy_needed is None:
             return None
         current_price = self._current_price(parts)
-        future_prices = self._future_prices(parts, float(hours_until_departure))
+        future_price_points = self._future_price_points(
+            parts,
+            float(hours_until_departure),
+        )
+        future_prices = tuple(value for _horizon, value in future_price_points)
         if energy_needed <= 1.0e-9:
             v2g_target = self._v2g_target(
                 agent_id=agent_id,
@@ -274,20 +294,60 @@ class CausalEVPlanner:
             or energy_needed > future_capacity + 1.0e-9
             or required_duty_ratio >= self.urgency_duty_ratio
         )
+        energy_limited_fraction = energy_needed / max(
+            available_power * efficiency * step_hours,
+            1.0e-9,
+        )
+        economic_fraction = float(
+            np.clip(
+                max(
+                    min(self.charge_fraction, energy_limited_fraction),
+                    float(charge_port.lower_bound)
+                    / max(float(charge_port.upper_bound), 1.0e-9),
+                ),
+                0.0,
+                1.0,
+            )
+        )
+        planned_charge_power_kw = available_power * economic_fraction
         future_min = min(future_prices)
-        price_spread = future_min - current_price
+        current_opportunity_value = float(current_price)
+        future_opportunity_values = future_prices
+        if self.opportunity_value_kind == "community_marginal_import":
+            current_community_net = self._community_net_power(parts)
+            future_community_net = dict(
+                self._future_community_net_points(
+                    parts,
+                    float(hours_until_departure),
+                )
+            )
+            paired_future_values = tuple(
+                self._marginal_import_value(
+                    price=future_price,
+                    community_net_power_kw=future_community_net[horizon],
+                    incremental_power_kw=planned_charge_power_kw,
+                )
+                for horizon, future_price in future_price_points
+                if horizon in future_community_net
+            )
+            if current_community_net is None or not paired_future_values:
+                return None
+            current_opportunity_value = self._marginal_import_value(
+                price=float(current_price),
+                community_net_power_kw=current_community_net,
+                incremental_power_kw=planned_charge_power_kw,
+            )
+            future_opportunity_values = paired_future_values
+        future_opportunity_min = min(future_opportunity_values)
+        price_spread = future_opportunity_min - current_opportunity_value
         cheap_now = (
-            current_price
-            <= future_min + self.price_tie_tolerance
+            current_opportunity_value
+            <= future_opportunity_min + self.price_tie_tolerance
             and price_spread + self.price_tie_tolerance
             >= self.minimum_price_spread
         )
         if urgent or cheap_now:
             mode = "CHARGE_EV"
-            energy_limited_fraction = energy_needed / max(
-                available_power * efficiency * step_hours,
-                1.0e-9,
-            )
             # A fixed economic charge fraction is useful at an ordinary cheap
             # opportunity, but it must never teach less power than the average
             # duty already required to reach the service target.  The safety
@@ -310,11 +370,20 @@ class CausalEVPlanner:
                     1.0,
                 )
             )
-            reason = "service_urgent" if urgent else "cheapest_forecast_opportunity"
+            if urgent:
+                reason = "service_urgent"
+            elif self.opportunity_value_kind == "community_marginal_import":
+                reason = "community_marginal_cheapest_opportunity"
+            else:
+                reason = "cheapest_forecast_opportunity"
         else:
             mode = "IDLE"
             fraction = 0.0
-            reason = "cheaper_forecast_with_service_slack"
+            reason = (
+                "community_marginal_cheaper_forecast_with_service_slack"
+                if self.opportunity_value_kind == "community_marginal_import"
+                else "cheaper_forecast_with_service_slack"
+            )
         return EVPlanningTarget(
             agent_id=agent_id,
             group_id=group.group_id,
@@ -328,6 +397,8 @@ class CausalEVPlanner:
             current_price=float(current_price),
             future_price_min=float(future_min),
             required_duty_ratio=required_duty_ratio,
+            current_opportunity_value=float(current_opportunity_value),
+            future_opportunity_value_min=float(future_opportunity_min),
         )
 
     def _v2g_target(
@@ -587,6 +658,19 @@ class CausalEVPlanner:
         parts: Sequence[ObservationPart],
         hours_until_departure: float,
     ) -> Tuple[float, ...]:
+        return tuple(
+            value
+            for _horizon, value in CausalEVPlanner._future_price_points(
+                parts,
+                hours_until_departure,
+            )
+        )
+
+    @staticmethod
+    def _future_price_points(
+        parts: Sequence[ObservationPart],
+        hours_until_departure: float,
+    ) -> Tuple[tuple[float, float], ...]:
         values: list[tuple[float, float]] = []
         for part in parts:
             if (
@@ -606,4 +690,72 @@ class CausalEVPlanner:
                 and np.isfinite(value)
             ):
                 values.append((horizon_hours, value))
-        return tuple(value for _horizon, value in sorted(values))
+        return tuple(sorted(values))
+
+    @staticmethod
+    def _community_net_power(
+        parts: Sequence[ObservationPart],
+    ) -> Optional[float]:
+        candidates = [
+            float(part.values[0])
+            for part in parts
+            if part.scope == "community"
+            and part.observation_id == "community_net_power_kw"
+            and part.valid
+            and len(part.values) == 1
+            and np.isfinite(float(part.values[0]))
+        ]
+        return candidates[-1] if candidates else None
+
+    @staticmethod
+    def _future_community_net_points(
+        parts: Sequence[ObservationPart],
+        hours_until_departure: float,
+    ) -> Tuple[tuple[float, float], ...]:
+        values: list[tuple[float, float]] = []
+        for part in parts:
+            if (
+                part.scope != "community"
+                or not part.valid
+                or len(part.values) != 1
+            ):
+                continue
+            match = _EXPLICIT_COMMUNITY_NET_HORIZON.search(
+                part.observation_id.lower()
+            )
+            if match is None:
+                continue
+            amount = float(match.group("amount"))
+            horizon_hours = (
+                amount / 60.0 if match.group("unit") == "m" else amount
+            )
+            value = float(part.values[0])
+            if (
+                horizon_hours <= hours_until_departure + 1.0e-9
+                and np.isfinite(value)
+            ):
+                values.append((horizon_hours, value))
+        return tuple(sorted(values))
+
+    @staticmethod
+    def _marginal_import_value(
+        *,
+        price: float,
+        community_net_power_kw: float,
+        incremental_power_kw: float,
+    ) -> float:
+        """Return settlement cost per incremental kWh of flexible demand.
+
+        Community grid export has zero value on the frozen experimental
+        surface.  Flexible demand inside an existing export therefore has
+        zero marginal grid cost; only the portion crossing into positive
+        community import is valued at the retail tariff.
+        """
+
+        increment = max(float(incremental_power_kw), 0.0)
+        if increment <= 1.0e-9:
+            return max(float(price), 0.0)
+        before = max(float(community_net_power_kw), 0.0)
+        after = max(float(community_net_power_kw) + increment, 0.0)
+        imported_fraction = np.clip((after - before) / increment, 0.0, 1.0)
+        return max(float(price), 0.0) * float(imported_fraction)
