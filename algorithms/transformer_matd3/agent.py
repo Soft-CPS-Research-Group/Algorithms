@@ -181,6 +181,11 @@ class AgentTransformerMATD3(BaseAgent):
         self.actor_policy_loss_weight = float(
             hyperparameters.get("actor_policy_loss_weight", 1.0)
         )
+        # The environment may project proposed actions before execution.  This
+        # opt-in term aligns the actor with those replayed executed actions.
+        self.actor_projection_consistency_loss_weight = float(
+            hyperparameters.get("actor_projection_consistency_loss_weight", 0.0)
+        )
         self.sigma = float(hyperparameters.get("sigma", 0.0))
         self.sigma_decay = float(hyperparameters.get("sigma_decay", 1.0))
         self.min_sigma = float(hyperparameters.get("min_sigma", 0.0))
@@ -1953,6 +1958,9 @@ class AgentTransformerMATD3(BaseAgent):
             ),
             f"{_METRIC_PREFIX}critic_update_count": float(self.critic_update_count),
             f"{_METRIC_PREFIX}actor_update_count": float(self.actor_update_count),
+            f"{_METRIC_PREFIX}actor_projection_consistency_loss_weight": float(
+                self.actor_projection_consistency_loss_weight
+            ),
             f"{_METRIC_PREFIX}target_update_count": float(self.target_update_count),
             f"{_METRIC_PREFIX}bc_main_update_count": float(self.bc_main_update_count),
             f"{_METRIC_PREFIX}bc_extra_update_count": float(self.bc_extra_update_count),
@@ -2262,6 +2270,7 @@ class AgentTransformerMATD3(BaseAgent):
         actor_losses: List[float] = []
         actor_policy_losses: List[float] = []
         actor_bc_losses: List[float] = []
+        actor_projection_consistency_losses: List[float] = []
         actor_bc_type_losses: Dict[str, List[float]] = {
             "ev": [],
             "storage": [],
@@ -2314,6 +2323,14 @@ class AgentTransformerMATD3(BaseAgent):
                     )
                     policy_loss = -q_policy.mean()
                     bc_loss = policy_loss.new_tensor(0.0)
+                    projection_consistency_loss = policy_loss.new_tensor(0.0)
+                    if self.actor_projection_consistency_loss_weight > 0.0:
+                        projection_consistency_loss = nn.functional.mse_loss(
+                            self._normalize_action(index, joint_actions[index]),
+                            self._normalize_action(
+                                index, executed_actions[index].detach()
+                            ),
+                        )
                     if (
                         bc_weight > 0.0
                         and cloning_actions is not None
@@ -2338,6 +2355,8 @@ class AgentTransformerMATD3(BaseAgent):
                     actor_loss = (
                         self.actor_policy_loss_weight * policy_loss
                         + bc_weight * bc_loss
+                        + self.actor_projection_consistency_loss_weight
+                        * projection_consistency_loss
                     )
                     state.actor_optimizer.zero_grad(set_to_none=True)
                     actor_loss.backward()
@@ -2351,6 +2370,9 @@ class AgentTransformerMATD3(BaseAgent):
                 actor_losses.append(float(actor_loss.detach()))
                 actor_policy_losses.append(float(policy_loss.detach()))
                 actor_bc_losses.append(float(bc_loss.detach()))
+                actor_projection_consistency_losses.append(
+                    float(projection_consistency_loss.detach())
+                )
                 actor_q_abs.append(float(q_policy.detach().abs().mean()))
                 policy_q_values.append(q_policy.detach().reshape(-1))
                 actor_replay_q_values.append(expected_1_values[index].reshape(-1))
@@ -2486,6 +2508,12 @@ class AgentTransformerMATD3(BaseAgent):
             ),
             f"{_METRIC_PREFIX}actor_policy_loss_weight": float(
                 self.actor_policy_loss_weight
+            ),
+            f"{_METRIC_PREFIX}actor_projection_consistency_loss_weight": float(
+                self.actor_projection_consistency_loss_weight
+            ),
+            f"{_METRIC_PREFIX}actor_projection_consistency_loss_mean": self._mean_or_zero(
+                actor_projection_consistency_losses
             ),
             f"{_METRIC_PREFIX}actor_policy_q_abs_mean": self._mean_or_zero(
                 actor_q_abs
@@ -4835,6 +4863,13 @@ class AgentTransformerMATD3(BaseAgent):
             or self.actor_policy_loss_weight < 0.0
         ):
             raise ValueError("actor_policy_loss_weight must be non-negative")
+        if (
+            not np.isfinite(self.actor_projection_consistency_loss_weight)
+            or self.actor_projection_consistency_loss_weight < 0.0
+        ):
+            raise ValueError(
+                "actor_projection_consistency_loss_weight must be non-negative"
+            )
         if self.sigma < 0.0 or not 0.0 <= self.min_sigma <= self.sigma:
             raise ValueError("exploration sigma values are invalid")
         if not 0.0 < self.sigma_decay <= 1.0:

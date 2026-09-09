@@ -1274,6 +1274,7 @@ class TransformerMATD3Hyperparameters(BaseModel):
     actor_update_interval: int = Field(default=2, gt=0)
     minimum_successful_critic_updates_before_actor: int = Field(default=1, ge=0)
     actor_policy_loss_weight: float = Field(default=1.0, ge=0.0)
+    actor_projection_consistency_loss_weight: float = Field(default=0.0, ge=0.0)
     sigma: float = Field(ge=0.0)
     sigma_decay: float = Field(gt=0.0, le=1.0)
     min_sigma: float = Field(ge=0.0)

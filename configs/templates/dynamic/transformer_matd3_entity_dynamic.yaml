@@ -122,6 +122,7 @@ pipeline:
       target_policy_noise_clip: 0.5
       actor_update_interval: 2
       actor_policy_loss_weight: 1.0
+      actor_projection_consistency_loss_weight: 0.1
       sigma: 0.1
       sigma_decay: 0.9995
       min_sigma: 0.01
