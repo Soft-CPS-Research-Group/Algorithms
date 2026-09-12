@@ -2211,11 +2211,25 @@ class AgentTransformerMATD3(BaseAgent):
         replay_q_values: List[torch.Tensor] = []
         per_building_diagnostics: Dict[int, Dict[str, float]] = {}
         for state, target in zip(self._per_building, targets):
+            # Bellman consistency: the online critic must regress on the
+            # actions that produced the observed reward and next observation.
+            # The environment executes the safety-projected action, not the
+            # raw actor proposal, so ``executed_actions`` is the correct
+            # domain here. The actor still evaluates the critic at its own
+            # proposal below to obtain a policy-improvement gradient.
+            #
+            # The target critic (computed above) still consumes the target
+            # policy proposal at ``s'`` because safety projection is not
+            # differentiable and successor raw observations are not stored
+            # in replay. In TD3 the target action is always the smoothed
+            # policy action, so this matches the standard target semantics.
+            # Aligning the target with the executed successor action is a
+            # follow-up if this MVP does not close the TD/twin-gap.
             expected_1 = state.critic_1(
-                observations, self._layouts, proposed_actions
+                observations, self._layouts, executed_actions
             )
             expected_2 = state.critic_2(
-                observations, self._layouts, proposed_actions
+                observations, self._layouts, executed_actions
             )
             loss_1 = self._critic_regression_loss(expected_1, target)
             loss_2 = self._critic_regression_loss(expected_2, target)
