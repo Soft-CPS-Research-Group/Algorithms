@@ -237,6 +237,41 @@ observation before tokenization. Price conditioning requires the
 
 Both adapters are outside the exported ONNX graph.
 
+#### EV minimum enforcement mode
+
+The `local_action_safety_ev_minimum_mode` hyperparameter controls how the
+adapter computes the minimum EV action required to avoid infeasible departure.
+
+- `average` (recommended): reads
+  `min_required_action_normalized` from the simulator observation. This value
+  is the average action needed over remaining time to reach the minimum
+  acceptable SoC. It spreads charging demand uniformly and avoids urgency near
+  the deadline.
+- `deadline_feasible`: computes the energy that cannot be deferred at this
+  step, using departure margin, hours until departure, charger efficiency, and
+  the effective import envelope. This mode is more responsive to the current
+  state, but combines with the charger deadband floor
+  (`min_charging_power / max_charging_power`) to force charging even for
+  residual energy demand. Repeated activations near the deadline push the SoC
+  above the target within-tolerance band.
+
+Match the mode to the policy's departure precision target. Prefer `average` for
+production and residual-training recipes where the actor should learn the
+target-SoC objective without adapter-driven overshoot. Prefer `deadline_feasible`
+only when a bounded intra-step guarantee is required and overshoot is
+acceptable.
+
+Related hyperparameters:
+
+- `local_action_safety_headroom_reserve_kw` reserves a fixed slice of the
+  local import envelope for discretionary controls. Set `0.0` to expose the
+  full envelope to the projector. The default in schema is `0.0`; the older
+  templates set `0.25`. Use `0.0` when the safety mode already governs the EV
+  minimum precisely.
+- `local_action_safety_protect_ev_service_target` adds an upper cap that
+  bounds charging by the energy required to reach the target SoC. It is safe
+  to leave enabled; it does not defeat minimum enforcement.
+
 ## Checkpoints and resume
 
 Checkpoint settings belong in the top-level `checkpointing` block, not inside
