@@ -23,6 +23,7 @@ or invariants. Consult an ADR when reconsidering its decision or trade-offs.
 | [0010](0010-checkpoint.md) | Strict format-6 checkpoints |
 | [0011](0011-onnx-export.md) | Per-building, per-topology ONNX export |
 | [0012](0012-schema-registry-wrapper.md) | Schema, registry, and wrapper integration |
+| [0013](0013-executed-action-critic-and-average-ev-minimum.md) | Executed-action critic training and `average` EV minimum mode |
 
 ## Change policy
 
