@@ -495,3 +495,75 @@ def test_validate_config_loads_tokenizer_json(tmp_path):
     cfg = _make_minimal_transformer_ppo_cfg(tokenizer_path=str(bad_tokenizer))
     with pytest.raises(ValueError, match="ghost"):
         validate_config(cfg)
+
+
+def _load_sample_from_fixture(path: str):
+    import json as _json
+    from utils.entity_tokenizer_schema import EntityPayloadSample
+
+    payload = _json.loads(open(path).read())
+    tables = payload["tables"]
+    fnpt = {
+        t: (
+            [f"district__{n}" for n in tab["features"]]
+            if t == "district"
+            else list(tab["features"])
+        )
+        for t, tab in tables.items()
+        if isinstance(tab, dict) and isinstance(tab.get("features"), list)
+    }
+    return EntityPayloadSample(feature_names_per_table=fnpt)
+
+
+def test_electrical_service_tokenizer_classifies_deferrable_as_ca():
+    """The electrical-service tokenizer variant declares the deferrable
+    appliance as a controllable asset so datasets that emit a deferrable
+    action can be tokenised. Coverage and action-field rules must pass."""
+    from utils.entity_tokenizer_schema import (
+        load_entity_tokenizer_config,
+        validate_against_payload,
+    )
+
+    cfg = load_entity_tokenizer_config(
+        "configs/tokenizers/entity_electrical_service.json"
+    )
+    assert "deferrable_appliance" in cfg.ca_types
+    assert cfg.ca_types["deferrable_appliance"].action_field == "deferrable_appliance"
+
+    sample = _load_sample_from_fixture(
+        "configs/tokenizers/fixtures/entity_obs_sample_electrical_service.json"
+    )
+    action_names = [
+        [
+            "electrical_storage",
+            "electric_vehicle_storage",
+            "deferrable_appliance",
+        ]
+    ]
+    validate_against_payload(cfg, sample, action_names)  # must not raise
+
+
+def test_deferrable_layout_builds_ca_segment_when_declared_as_ca():
+    """When the tokenizer declares deferrable_appliance as a ca_type, a
+    building that emits a deferrable action gets a CA segment for it, instead
+    of the historical CA-count mismatch."""
+    from algorithms.transformer_shared.entity_token_layout import (
+        EntityTokenLayoutBuilder,
+    )
+    from utils.entity_tokenizer_schema import load_entity_tokenizer_config
+
+    cfg = load_entity_tokenizer_config(
+        "configs/tokenizers/entity_electrical_service.json"
+    )
+    builder = EntityTokenLayoutBuilder(cfg)
+    observation_names = [
+        "district__hour",
+        "non_shiftable_load",
+        "solar_generation",
+        "storage::storage_1::soc",
+        "deferrable_appliance::deferrable_appliance_1::pending",
+    ]
+    action_names = ["electrical_storage", "deferrable_appliance_deferrable_appliance_1"]
+    layout = builder.build("Building_1", observation_names, action_names)
+    ca_types = [seg.type_name for seg in layout.segments if seg.family == "ca"]
+    assert "deferrable_appliance" in ca_types
