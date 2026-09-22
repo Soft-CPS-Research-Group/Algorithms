@@ -155,8 +155,8 @@ class EntityTokenLayoutBuilder:
         }
         # Adapter prefix (e.g. "storage", "charger") → CA type_name.
         self._ca_prefix_to_type: Dict[str, str] = {
-            "storage": "storage",
-            "charger": "charger",
+            ca.entity_table: type_name
+            for type_name, ca in tokenizer_config.ca_types.items()
         }
 
     # ------------------------------------------------------------------
