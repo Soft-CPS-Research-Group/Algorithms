@@ -5,83 +5,106 @@ Use the [operational guide](transformer_matd3.md),
 [technical specification](transformer_matd3_spec.md), and
 [ADRs](adr/README.md) for implementation details and invariants.
 
-## Retained implementation
+## Retained recipe
 
-The current branch stabilizes the residual-learning path and its diagnostics:
+The current validated recipe for the entity dynamic 15-minute pipeline is
+the H7 configuration:
 
-- Neutral residual components preserve the RBC base action.
-- Replay keeps proposed, executed, base, behaviour, and cloning action domains
-  distinct. Critics and actor policy-Q learning use proposed actions; executed
-  actions remain available for safety and control diagnostics.
-- Actor, critic, and target updates advance only after successful updates.
-- Delayed actor telemetry remains aligned with its actor-update event.
-- Per-building critic gap, TD error, Q-target, gradient, and storage
-  sensitivity diagnostics distinguish unavailable values from measured zero.
-- Critic loss supports MSE and Huber modes. The validated recipe uses Huber.
-- Checkpoint format 6 persists the stabilized replay domains and update
-  counters; incompatible format-5 training checkpoints fail explicitly.
-- The remote-results collector recovers complete metric streams and simulator
-  artifacts when the OPEVA API exposes them.
-
-Per-building reward normalization was removed after evaluation. Global reward
-normalization remains the supported mode.
+- Reward `CostServiceCommunityPrecisionValueRewardV51` with
+  `ev_over_service_penalty: 2400.0`.
+- Local action safety with
+  `local_action_safety_ev_minimum_mode: average`,
+  `local_action_safety_headroom_reserve_kw: 0.0`,
+  `local_action_safety_protect_ev_service_target: true`.
+- Replay BC enabled with `min_weight: 0.04`, `ev_multiplier: 18.0`,
+  `storage_multiplier: 0.08`; RBCSmartPolicy as warm-start teacher.
+- Online critic trained on executed actions
+  ([ADR 0013](adr/0013-executed-action-critic-and-average-ev-minimum.md)).
 
 ## Current evidence
 
 The controlled comparison surface uses
 `citylearn_three_phase_dynamic_assets_only_demo_15min_parquet`, steps
-`0..3400`, the entity interface, dynamic topology, four training episodes, and
-one deterministic evaluation episode. The retained recipe uses global reward
-normalization, unclipped Q targets, Huber critic loss, and storage residual
-authority `0.75`.
+`4..11003`, the entity interface, dynamic topology (six add/remove events
+between steps 5200 and 9200), two training episodes, and one deterministic
+evaluation episode.
 
-Default gates are EV minimum feasible rate `>= 0.999`, EV within-tolerance
-rate `>= 0.80`, and electrical violation `<= 1e-6 kWh`. Cost is compared only
-after these gates pass.
+Default gates are EV departure success ratio `>= 0.90`, cost/BAU `<= 1.00`,
+peak-daily/BAU `<= 1.53`, critic TD absolute late `<= 0.15`, and twin-gap
+absolute late `<= 0.15`.
 
-| Candidate | Seed 17 cost delta | Seed 29 cost delta | Decision |
-|---|---:|---:|---|
-| Global `0.75` reference | `2244.4147 EUR` | `2233.7479 EUR` | Retain |
-| Q-target clip `10` | `+17.82 EUR` | `+49.62 EUR` | Reject |
-| Per-building normalization | `+1.5518%` | `+1.2967%` | Reject |
-| Storage authority `0.375` | `-0.4651%` | `+0.2687%` | Reject |
-| Storage authority `0.50` | `-0.2816%` | `+0.4370%` | Reject |
+| Metric | V51 baseline | H7 (retained) |
+|---|---:|---:|
+| District cost/BAU | 1.028 | 0.953 |
+| District emissions/BAU | 1.125 | 1.014 |
+| District peak all-time/BAU | 1.392 | 0.916 |
+| District peak daily/BAU | 1.532 | 0.998 |
+| District ramping/BAU | 2.013 | 1.532 |
+| EV within-tolerance ratio | 0.198 | 0.902 |
+| EV departure success ratio | 0.948 | 0.965 |
+| EV soc-surplus mean | 0.111 | 0.026 |
+| EV soc-deficit mean | 0.002 | 0.002 |
+| Critic TD abs late | 0.204 | 0.123 |
+| Critic twin-gap abs late | 0.180 | 0.096 |
 
-All authority candidates passed the default service and grid gates. Lower
-authority reduced storage proposed-to-executed mismatch and safety
-interventions, but did not improve learning consistently. Seed 29 regressed
-cost, and actor saturation or critic clipping remained above the matched
-references. Building 15 service remained stable. Lower losses alone did not
-predict better simulator KPIs.
+Three-seed validation of H7 kept cost/BAU coefficient of variation under
+1% and EV within-tolerance CV under 6%. Peak-daily CV was 5.4%.
 
-The campaign identifiers are:
+RBC baselines under the same window and reward:
 
-- `tmatd3_dynamic15min_qtarget_clip10_20260829`
-- `tmatd3_dynamic15min_per_building_reward_norm_20260830`
-- `tmatd3_dynamic15min_storage_authority_0375_20260830`
-- `tmatd3_dynamic15min_storage_authority_0500_20260830`
+| Metric | RBCSmart | RBCCommunity |
+|---|---:|---:|
+| Cost/BAU | 0.841 | 0.908 |
+| Peak all-time/BAU | 1.229 | 2.171 |
+| Peak daily/BAU | 1.160 | 1.572 |
+| EV within-tolerance | 0.968 | 0.951 |
+| EV departure success | 0.051 | 0.099 |
+| EV soc-deficit mean | 0.028 | 0.026 |
 
-Detailed artifacts remain outside Git under `runs/remote_results/`. Recollect
-them from OPEVA by campaign or job identity when they are not present locally.
+RBCSmart and RBCCommunity land cars precisely inside the tolerance band
+but below the target SoC. They report high within-tolerance ratios while
+meeting the target only 5–10% of departures. RBCCommunity also breaks
+peak and ramping. H7 is the only policy in evidence that meets the EV
+target and stabilizes the grid at the same time.
+
+The campaign identifiers for this evidence are:
+
+- `tmatd3_dynamic15min_reward_variants_20260911` (V51 baseline)
+- `tmatd3_dynamic15min_critic_executed_20260912` (executed-action critic)
+- `tmatd3_dynamic15min_passo3_matrix_20260913` (reward and BC sweep)
+- `tmatd3_dynamic15min_passo4_safety_bc_20260913` (safety mode sweep,
+  H7 identified)
+- `tmatd3_dynamic15min_passo5_validate_optimize_20260913` (seed
+  robustness and further BC/reward sweeps; nothing beat H7)
+- `tmatd3_dynamic15min_rbc_baselines_20260914` (RBC baselines on the
+  same 11000-step window)
+- `tmatd3_dynamic15min_8mo_final_comparison_20260914` (8-month final
+  comparison of H7 against the three RBC policies)
+
+Detailed artifacts remain outside Git under `runs/remote_results/`.
+Recollect them from OPEVA by campaign or job identity when they are not
+present locally.
 
 ## Evidence limits and next work
 
-The results are short-window evidence. They do not establish full-year
-performance, transfer, deployment readiness, or learned cardinality
-generalization. Dynamic-layout support proves structural compatibility, not
-unchanged performance on unseen entity counts.
+The 11000-step window covers roughly 4 months of 15-minute data. The
+8-month final-comparison campaign extends the same recipe to 23040
+steps per episode and spans the full topology-event window. Full-year
+performance and cross-year transfer remain out of scope for this
+evidence.
 
-Do not run another storage-authority sweep or increase the episode budget from
-the current evidence. The next controlled work is:
+Do not chase reward or BC tuning in isolation. Passo 3 and Passo 5
+established diminishing returns on within-tolerance once safety mode is
+`average`. The candidate follow-ups are:
 
-1. Add per-action-type actor-output quantiles, saturation direction,
-   proposed-to-executed deltas, and safety-projection causes. First determine
-   whether saturation belongs to storage actions, zero-authority heads, or the
-   safety interface. Do not invent a saturation-penalty weight before this.
-2. Freeze the retained recipe and evaluate compatible held-out CA and SRO
-   cardinalities within the existing buildings, schema, and entity types.
-   Require both seeds to pass the default gates, preserve Building 15 service,
-   and avoid material mismatch or safety-intervention regressions.
+1. Store raw next observations in `ReplayTransition` and project the
+   target action through the safety adapter to close the remaining
+   online-target Bellman gap. Requires a checkpoint format bump.
+2. Add multi-seed validation as a default gate for future recipe
+   promotions. Passo 5 showed peak metrics keep 5–8% seed variance even
+   after H7 is applied.
+3. Extend the diagnostic suite so `storage_critic_dq_da_*` is measured
+   at executed actions after the target-side projection lands.
 
 ## Suggested skills
 

@@ -141,7 +141,9 @@ match the existing projection.
 At runtime, a changed layout re-runs the layout checks against the active names.
 The controller intentionally skips startup-only rule 5 on runtime mutation. An
 asset can disappear while its configured CA type remains valid.
-Feature-schema drift still fails.
+Asset additions and removals compare only the intersection of old and candidate
+segment keys. Retained segments must preserve relative order, feature names,
+widths, NFC expressions, and type semantics. Feature-schema drift still fails.
 
 ## 5. Encoding and tokenizer contract
 

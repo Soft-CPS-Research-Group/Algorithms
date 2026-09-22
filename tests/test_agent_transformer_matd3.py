@@ -125,6 +125,129 @@ def test_actor_policy_loss_weight_is_configurable() -> None:
     assert agent.actor_policy_loss_weight == pytest.approx(0.085)
 
 
+def test_projection_consistency_loss_is_disabled_by_default_and_configurable() -> None:
+    default_agent, _ = _make_agent()
+    enabled_agent, _ = _make_agent(
+        actor_projection_consistency_loss_weight=0.1
+    )
+
+    assert default_agent.actor_projection_consistency_loss_weight == 0.0
+    assert enabled_agent.actor_projection_consistency_loss_weight == pytest.approx(0.1)
+
+
+def test_projection_consistency_loss_uses_executed_action_target() -> None:
+    agent, _ = _make_agent(buildings=1)
+    predicted = torch.tensor([[0.0, 0.0]])
+    executed = torch.tensor([[-2.0, 0.75]])
+    proposed = torch.tensor([[1.0, -0.5]])
+
+    predicted_unit = agent._normalize_action(0, predicted)
+    executed_unit = agent._normalize_action(0, executed)
+    proposed_unit = agent._normalize_action(0, proposed)
+    executed_loss = torch.nn.functional.mse_loss(predicted_unit, executed_unit)
+    proposed_loss = torch.nn.functional.mse_loss(predicted_unit, proposed_unit)
+
+    assert executed_loss.item() != pytest.approx(proposed_loss.item())
+    assert executed_loss.item() == pytest.approx(1.6088889)
+
+
+def test_actor_update_reports_projection_loss_from_replay_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, obs_dim = _make_agent(
+        buildings=1,
+        batch_size=1,
+        actor_update_interval=1,
+        actor_projection_consistency_loss_weight=0.1,
+    )
+    rng = np.random.default_rng(7)
+    observations = [rng.standard_normal(obs_dim).astype(np.float32)]
+    next_observations = [rng.standard_normal(obs_dim).astype(np.float32)]
+    proposed = [[0.0, 0.0]]
+    def fixed_policy(index, state, observation, *, target=False, base_action=None):
+        return torch.zeros(
+            (1, state.layout.n_ca),
+            dtype=torch.float32,
+            device=agent.device,
+            requires_grad=True,
+        )
+
+    monkeypatch.setattr(agent, "_policy_action", fixed_policy)
+    agent._last_proposed_actions = [[1.0, -0.5]]
+    agent._last_executed_actions = [[-2.0, 0.75]]
+    agent.update(
+        observations,
+        proposed,
+        [0.0],
+        next_observations,
+        False,
+        False,
+        update_target_step=True,
+        global_learning_step=0,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    metrics = agent.consume_latest_training_metrics()
+    expected = torch.nn.functional.mse_loss(
+        agent._normalize_action(0, torch.zeros((1, 2))),
+        agent._normalize_action(0, torch.tensor([[-2.0, 0.75]])),
+    )
+    assert metrics[
+        "TransformerMATD3/actor_projection_consistency_loss_mean"
+    ] == pytest.approx(float(expected), rel=1e-5)
+
+
+def test_critic_online_regresses_on_executed_actions_not_proposed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The online critic must be trained on the actions actually executed by
+    the environment. Reward and next observation reflect the safety-projected
+    action, so regressing Q against the raw proposal breaks Bellman
+    consistency and destabilises value/target agreement.
+    """
+    agent, obs_dim = _make_agent(
+        buildings=1,
+        batch_size=1,
+        actor_update_interval=1,
+    )
+    rng = np.random.default_rng(11)
+    observations = [rng.standard_normal(obs_dim).astype(np.float32)]
+    next_observations = [rng.standard_normal(obs_dim).astype(np.float32)]
+    proposed = [[1.0, -0.5]]
+    executed = [[-2.0, 0.75]]
+    agent._last_proposed_actions = proposed
+    agent._last_executed_actions = executed
+
+    captured: list[torch.Tensor] = []
+    state = agent._per_building[0]
+    original_forward = state.critic_1.forward
+
+    def spy_forward(observations_in, layouts_in, actions_in):
+        captured.append(actions_in[0].detach().clone())
+        return original_forward(observations_in, layouts_in, actions_in)
+
+    monkeypatch.setattr(state.critic_1, "forward", spy_forward)
+
+    agent.update(
+        observations,
+        proposed,
+        [0.0],
+        next_observations,
+        False,
+        False,
+        update_target_step=True,
+        global_learning_step=0,
+        update_step=True,
+        initial_exploration_done=True,
+    )
+
+    assert captured, "critic_1 was not invoked during update"
+    critic_regression_input = captured[0].reshape(-1).tolist()
+    assert critic_regression_input == pytest.approx(executed[0])
+    assert critic_regression_input != pytest.approx(proposed[0])
+
+
 def test_critic_loss_defaults_to_mse_and_supports_huber_delta() -> None:
     mse_agent, _ = _make_agent()
     expected = torch.tensor([[3.0, 0.0]])
