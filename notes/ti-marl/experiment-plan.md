@@ -1,5 +1,10 @@
 # TI-MARL experiment plan
 
+> **Historical plan — retired 2026-09-25.** The author has abandoned this
+> experimental line while retaining implementation knowledge and evidence.
+> The sequence below must not be resumed automatically. New experiments follow
+> the author's next instructions; see [current research status](../README.md).
+
 The first vertical slice is a software/evidence gate and is not required to
 beat PPO or SMART. Performance claims begin only after the architecture gates
 pass.

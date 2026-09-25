@@ -505,8 +505,10 @@ python scripts/validate_ti_marl_interfaces.py \
 end-to-end vertical slice runs against the installed package; using an adjacent
 Simulator checkout is only a deliberate development override.
 
-Training, development checkpoint selection and confirmation follow
+Historical training, development checkpoint selection and confirmation followed
 [`notes/ti-marl/experiment-protocol-v1.md`](../../notes/ti-marl/experiment-protocol-v1.md).
-The protocol separates neural and Simulator seeds, fingerprints every paired
-evaluation surface and prevents confirmation results from influencing model
-selection.
+That experimental line was retired on 2026-09-25. Its protocol remains available
+to interpret existing artefacts; it does not define the next campaign. See
+the [current research status](../../notes/README.md). The implemented protocol
+tools still separate neural and Simulator seeds, fingerprint paired evaluation
+surfaces and prevent confirmation results from influencing model selection.
