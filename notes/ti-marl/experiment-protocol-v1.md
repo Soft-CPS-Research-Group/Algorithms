@@ -1,5 +1,10 @@
 # TI-MARL experiment protocol v1
 
+> **Historical protocol — retired 2026-09-25.** Retained to interpret existing
+> artefacts and selection hashes. Its splits, budgets and promotion rules do
+> not govern the next campaign. No new experimental protocol has been selected;
+> see [current research status](../README.md).
+
 ## Purpose
 
 This protocol prevents checkpoint cherry-picking and comparisons made on
@@ -105,7 +110,7 @@ replaces a checkpoint.
 
 ## Frozen selection rule
 
-The current canonical rule is
+The canonical rule for this retired protocol was
 `algorithms/ti_marl/experiments/selection_rules_v3.yaml`. The original v1 and
 v2 files remain immutable so their content hashes continue to verify the
 development evidence already collected with them.

@@ -4,6 +4,21 @@ This log incorporates the frozen v16 decisions and the approved implementation
 clarifications. A decision can only be changed by an explicit later entry; it
 must not be silently reinterpreted in code.
 
+## 2026-09-25 — Previous experimental line retired
+
+The author explicitly retired the previous testing campaign, preserving what
+was learned. Existing implementation and evidence remain valid within their
+recorded scope; old plans, splits, budgets and selection rules are historical
+and do not determine future experiments. The unexecuted `THESIS-EXP-V1`
+planning package was moved outside the repository, retaining dataset context
+and clearly labelled illustrative result tables. Observed provisional results
+are summarised separately in [provisional-results-2026-09.md](provisional-results-2026-09.md).
+
+The next campaign will follow the author's next instructions. No remote job
+state was changed by this decision, and no existing learning or regression-test
+implementation was removed. Prior evidence and immutable rule files remain
+available for interpretation and reproduction when explicitly requested.
+
 ## Frozen decisions
 
 1. One building controller is one local agent in the principal formulation.
