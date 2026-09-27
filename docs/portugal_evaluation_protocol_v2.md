@@ -1,6 +1,6 @@
 # Portugal — construção dos datasets
 
-Catálogo corrente: `portugal-native-2023-2024-v3`, para o Simulator original
+Catálogo corrente: `portugal-native-2023-2024-v3.1`, para o Simulator original
 `978be68b0e0740deab15ecf536805f323b86fa57`. A tarefa atual é construir os dados;
 avaliações de utilização, referências de controlo e experiências estão suspensas.
 
@@ -34,3 +34,5 @@ alterados nesta revisão. A integração e a avaliação serão tratadas quando
 retomarmos explicitamente as experiências.
 
 2024 é continuação cronológica: 70176 registos ao todo, sem reinício de membros/equipamentos nem repetição da topologia. Os inputs foram verificados estaticamente; não se executaram avaliações de controladores. Janelas isoladas de 2024 devem respeitar o estado acumulado. O fecho de 2023 foi preservado no Simulator, commit `393cd200`.
+
+As histórias são geradas dos eventos por configuração. As previsões de preço no fim de 2024 usam um dia externo de apoio, mantendo o período simulado. A variabilidade foi quantificada estaticamente em `Simulator/docs/portugal_rec_native/Previsoes_e_historias.md`. A persistência diária não modela uma degradação progressiva da qualidade com o horizonte. O recorte nativo das previsões derivadas de consumo/PV na fronteira do episódio permanece; não houve alterações ao motor ou ao pipeline Algorithms.
