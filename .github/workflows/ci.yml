@@ -21,9 +21,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Soft-CPS-Research-Group/Simulator
-          # Exact source commit used to publish softcpsrecsimulator 1.8.0.
+          # Exact source commit used to publish softcpsrecsimulator 1.8.1.
           # The inherited upstream repository already owns an unrelated v1.8.0 tag.
-          ref: 978be68b0e0740deab15ecf536805f323b86fa57
+          ref: d41063b31cadc461b0699bfd2f0370865c1e23c2
           path: .ci/Simulator
       - name: Set up Python
         uses: actions/setup-python@v5
