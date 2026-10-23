@@ -17,13 +17,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Simulator 1.8.0 benchmark data
+      - name: Checkout Simulator 1.8.2 benchmark data
         uses: actions/checkout@v4
         with:
           repository: Soft-CPS-Research-Group/Simulator
-          # Exact source commit used to publish softcpsrecsimulator 1.8.1.
+          # Exact source commit used to publish softcpsrecsimulator 1.8.2.
           # The inherited upstream repository already owns an unrelated v1.8.0 tag.
-          ref: d41063b31cadc461b0699bfd2f0370865c1e23c2
+          ref: 2ebe03940fa5855c4f94f01bf53de1e34613ea88
           path: .ci/Simulator
       - name: Set up Python
         uses: actions/setup-python@v5
