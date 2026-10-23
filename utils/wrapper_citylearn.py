@@ -3282,6 +3282,7 @@ class Wrapper_CityLearn(RLC):
             "building_names": building_names,
             "interface": getattr(self.env, "interface", "flat"),
             "topology_mode": getattr(self.env, "topology_mode", "static"),
+            "topology_version": getattr(self.env, "topology_version", None),
             "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "entity_encoding": {
                 "enabled": bool(self._entity_encoding_enabled),

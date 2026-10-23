@@ -599,6 +599,10 @@ def test_run_experiment_mlflow_disabled_writes_stable_outputs(monkeypatch, tmp_p
     assert captured_env_kwargs["render_directory"] == str(job_root / "results" / "simulation_data")
     result_payload = json.loads((job_root / "results" / "result.json").read_text(encoding="utf-8"))
     assert result_payload["status"] == "completed"
+    manifest = json.loads((bundle_root / 'artifact_manifest.json').read_text())
+    assert result_payload['provenance'] == manifest['provenance']
+    assert result_payload['provenance']['job_id'] == 'job-mlflow-off'
+    assert result_payload['manifest_sha256']
     assert result_payload["kpi_source"] == "simulator_export"
     assert result_payload["export_kpis_on_episode_end"] is True
     assert "reward_function" in result_payload

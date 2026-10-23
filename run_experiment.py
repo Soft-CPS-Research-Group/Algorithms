@@ -36,6 +36,7 @@ import mlflow
 import numpy as np
 import yaml
 import citylearn
+from utils.training_provenance import seal_manifest
 from loguru import logger
 from pydantic import ValidationError
 
@@ -1097,10 +1098,6 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         }
 
         result_path = path_info["result_path"]
-        with open(result_path, "w", encoding="utf-8") as result_file:
-            json.dump(result_payload, result_file, indent=2)
-        logger.info("Result payload written to {}", result_path)
-
         artifacts_root = path_info["bundle_dir"].resolve()
         # Dynamic entity mode can change agent cardinality at runtime.
         # Persist final topology before exporting artifacts/manifest.
@@ -1119,9 +1116,15 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             },
         )
         manifest = build_manifest(config, environment_metadata, agent_metadata)
+        seal_manifest(manifest, artifacts_root, resolved_config_path, job_id)
         validate_bundle_contract(manifest, artifacts_root)
         manifest_path = write_manifest(manifest, str(artifacts_root))
         logger.info("Artifact manifest written to {}", manifest_path)
+        result_payload['provenance'] = manifest['provenance']
+        result_payload['manifest_sha256'] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        with open(result_path, "w", encoding="utf-8") as result_file:
+            json.dump(result_payload, result_file, indent=2)
+        logger.info("Result payload written to {}", result_path)
 
         summary_payload = {
             "job_id": job_id,
@@ -1131,6 +1134,8 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             "tracking_uri": tracking_uri,
             "mlflow_enabled": mlflow_enabled,
             "artifact_profile": artifact_profile,
+            "provenance": manifest['provenance'],
+            "manifest_sha256": result_payload['manifest_sha256'],
             "kpi_metric_count": 0,
             "bundle_dir": str(path_info["bundle_dir"]),
             "timestamp": datetime.utcnow().isoformat() + "Z",

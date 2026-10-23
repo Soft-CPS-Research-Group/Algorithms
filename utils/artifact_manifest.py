@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from loguru import logger
+from utils.training_provenance import build_provenance
 
 
 def build_manifest(
@@ -36,6 +37,7 @@ def build_manifest(
         "pipeline": _summarise_pipeline(config),
         "environment": environment_metadata,
         "agent": normalized_agent_metadata,
+        "provenance": build_provenance(config, environment_metadata, normalized_agent_metadata),
     }
     return manifest
 
@@ -130,7 +132,7 @@ def _flatten_pipeline_metadata(pipeline_meta: Dict[str, Any]) -> Dict[str, Any]:
         stage_index = stage.get("stage_index", fallback_index)
         flattened = _flatten_composite_metadata(stage, path_prefix=f"stage_{stage_index}")
         for artifact in flattened.get("artifacts") or []:
-            artifacts.append(dict(artifact))
+            artifacts.append({**artifact, "stage_index": stage_index})
 
     result = {k: v for k, v in pipeline_meta.items() if k not in ("format", "artifacts")}
     result["format"] = top_format
