@@ -224,8 +224,11 @@ jobs:
       - name: Build and publish SIF OCI artifacts
         env:
           DOCKER_TAGS: ${{ steps.meta_sif.outputs.tags }}
+          # The CUDA image exceeds the RAM-backed /tmp quota on newer runners.
+          APPTAINER_TMPDIR: ${{ runner.temp }}/apptainer-build
         run: |
           set -euo pipefail
+          mkdir -p "${APPTAINER_TMPDIR}"
 
           mapfile -t refs < <(printf '%s\n' "${DOCKER_TAGS}" | tr ',' '\n' | sed '/^[[:space:]]*$/d')
           if [ "${#refs[@]}" -eq 0 ]; then
