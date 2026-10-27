@@ -354,3 +354,36 @@ def test_evaluation_does_not_advance_exploration_counter(name):
     before = agent.exploration_step
     agent.predict([np.zeros(3), np.zeros(2)], deterministic=True)
     assert agent.exploration_step == before
+
+
+def test_dynamic_inventory_includes_future_members_and_asset_sources(tmp_path):
+    from algorithms.runtime.inputs import validate_inputs
+
+    schema = {
+        "root_directory": str(tmp_path),
+        "buildings": {
+            "future": {"include": False, "filename": "future.bin"},
+            "source": {"include": False, "filename": "source.bin"},
+            "unused": {"include": False, "filename": "not-consumed.bin"},
+        },
+        "topology_events": [
+            {"operation": "add_member", "target_member_id": "future", "time_step": 2},
+            {
+                "operation": "add_asset",
+                "source_member_id": "source",
+                "target_member_id": "future",
+                "time_step": 3,
+            },
+        ],
+    }
+    config = {"simulator": {"topology_mode": "dynamic"}}
+    with pytest.raises(FileNotFoundError, match="future.bin"):
+        validate_inputs(config, schema)
+    (tmp_path / "future.bin").write_bytes(b"future")
+    (tmp_path / "source.bin").write_bytes(b"source")
+    first = validate_inputs(config, schema)
+    assert first["future_building_ids"] == ["future", "source"]
+    assert {Path(item["path"]).name for item in first["files"]} == {"future.bin", "source.bin"}
+    assert not schema["buildings"]["future"]["include"]
+    (tmp_path / "source.bin").write_bytes(b"changed source")
+    assert first["identity_sha256"] != validate_inputs(config, schema)["identity_sha256"]

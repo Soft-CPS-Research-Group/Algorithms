@@ -82,7 +82,9 @@ must be measured in the later hardware/scientific matrix.
 
 `inputs.json` records the resolved schema/overlays, declared window, ordered member
 mapping and SHA-256/size of referenced selected data and auxiliary assets, including
-tokenizer/typed-interface files and offline model/data directories. This is a
+tokenizer/typed-interface files and offline model/data directories. Initially excluded
+members referenced by later topology events (including asset donors) are also
+inventoried without changing their initial activation state. This is a
 conservative inventory of declared inputs, not a system-call trace of individual
 bytes read. Missing inputs fail; no substitute physical model is synthesized.
 

@@ -4,7 +4,7 @@ The 29 stage-3 actions from the master plan are implemented with the supported
 scope and limitations in [reliability.md](reliability.md). Branch consolidation and
 common interfaces remain the foundation; agents retain their numerical methods.
 
-Local acceptance: **1,798 unit/integration tests passed; 18 explicit skips**
+Local acceptance: **1,799 unit/integration tests passed; 18 explicit skips**
 (4 unavailable CUDA and 14 historical external assets). The complete-job suite
 contains **27 passing real-job tests**, including seven representative families,
 recovered/hierarchical and offline jobs, four independent-process seed/repeat/resume
