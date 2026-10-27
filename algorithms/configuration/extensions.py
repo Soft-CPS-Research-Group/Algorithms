@@ -4,7 +4,9 @@ No default values are injected here. The numerical agent owns defaults and
 cross-parameter semantics. This boundary rejects misspellings and wrong types.
 """
 
-from typing import Any
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
 
 from pydantic import ConfigDict, TypeAdapter
 from typing_extensions import TypedDict
@@ -16,7 +18,7 @@ class ActorParameters(TypedDict, total=False):
     actor_action_l2_penalty: float
     actor_action_saturation_penalty: float
     actor_action_saturation_threshold: float
-    actor_auxiliary_hidden_layers: list[int] | None
+    actor_auxiliary_hidden_layers: Optional[List[int]]
     actor_auxiliary_loss_weight: float
     actor_behavior_cloning_clip_target_to_residual_authority: bool
     actor_behavior_cloning_decay_start_step: int
@@ -28,12 +30,12 @@ class ActorParameters(TypedDict, total=False):
     actor_behavior_cloning_replay_capacity: int
     actor_behavior_cloning_source: str
     actor_behavior_cloning_teacher_action_scope: str
-    actor_behavior_cloning_teacher_hyperparameters: dict[str, Any] | None
-    actor_behavior_cloning_teacher_policy: str | None
+    actor_behavior_cloning_teacher_hyperparameters: Optional[Dict[str, Any]]
+    actor_behavior_cloning_teacher_policy: Optional[str]
     actor_behavior_cloning_weight: float
     actor_community_context_enabled: bool
-    actor_community_context_features: list[str] | None
-    actor_community_observation_mask_tokens: list[str] | None
+    actor_community_context_features: Optional[List[str]]
+    actor_community_observation_mask_tokens: Optional[List[str]]
     actor_community_observation_masking: bool
     actor_deferrable_behavior_cloning_multiplier: float
     actor_deferrable_behavior_cloning_positive_target_power: float
@@ -84,10 +86,10 @@ class ActorParameters(TypedDict, total=False):
     entropy_alpha: float
     entropy_coef: float
     ev_negative_exploration_noise_multiplier: float
-    frozen_checkpoint_path: str | None
+    frozen_checkpoint_path: Optional[str]
     gae_lambda: float
     gamma: float
-    initial_exploration_strategy: str | None
+    initial_exploration_strategy: Optional[str]
     initial_exploration_training_start_step: int
     initial_log_std: float
     local_action_safety_allow_discretionary_deferrable_start: bool
@@ -112,7 +114,7 @@ class ActorParameters(TypedDict, total=False):
     n_step_gamma: float
     n_step_priority_aggregation: str
     n_step_returns: int
-    noise_clip: float | None
+    noise_clip: Optional[float]
     noop_actor_initialization: bool
     noop_actor_initialization_epsilon: float
     noop_noise_scale: float
@@ -126,12 +128,12 @@ class ActorParameters(TypedDict, total=False):
     residual_action_growth_steps: int
     residual_action_scale: float
     residual_action_start_step: int
-    residual_base_policy: str | None
+    residual_base_policy: Optional[str]
     residual_base_policy_deterministic: bool
-    residual_base_policy_hyperparameters: dict[str, Any] | None
+    residual_base_policy_hyperparameters: Optional[Dict[str, Any]]
     residual_base_price_conditioning_enabled: bool
-    residual_building_deadbands: dict[str, float]
-    residual_building_gain_multipliers: dict[str, float]
+    residual_building_deadbands: Dict[str, float]
+    residual_building_gain_multipliers: Dict[str, float]
     residual_deferrable_action_scale_multiplier: float
     residual_ev_action_scale_multiplier: float
     residual_policy_enabled: bool
@@ -147,8 +149,8 @@ class ActorParameters(TypedDict, total=False):
     signal_aware_actor_obs_gain: float
     signal_aware_base: bool
     storage_exploration_noise_multiplier: float
-    target_entropy: float | None
-    target_kl: float | None
+    target_entropy: Optional[float]
+    target_kl: Optional[float]
     target_policy_noise: float
     target_policy_noise_clip: float
     target_policy_smoothing: bool
@@ -156,9 +158,9 @@ class ActorParameters(TypedDict, total=False):
     train_during_initial_exploration: bool
     use_amp: bool
     value_loss_coef: float
-    warm_start_policy: str | None
+    warm_start_policy: Optional[str]
     warm_start_policy_deterministic: bool
-    warm_start_policy_hyperparameters: dict[str, Any] | None
+    warm_start_policy_hyperparameters: Optional[Dict[str, Any]]
     warm_start_policy_noise_scale: float
     warm_start_policy_phaseout_mode: str
     warm_start_policy_phaseout_steps: int

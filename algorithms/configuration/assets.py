@@ -1,5 +1,7 @@
 """Resolve bundled configuration assets while retaining explicit local overrides."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 

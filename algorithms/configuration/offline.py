@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Annotated, List
+from typing import List
 
 from pydantic import ConfigDict, Field, TypeAdapter
 from pydantic.dataclasses import dataclass
+from typing_extensions import Annotated
 
 
 @dataclass(config=ConfigDict(extra="forbid"))

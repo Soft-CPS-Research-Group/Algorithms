@@ -27,3 +27,10 @@ datasets/
 mlruns/
 runs/
 .pytest_cache/
+
+# Packaging and static analysis outputs
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
