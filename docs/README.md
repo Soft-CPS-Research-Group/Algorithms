@@ -1,11 +1,20 @@
 # Documentacao Ativa
 
-Snapshot: 2026-08-23
+Snapshot: 2026-10-27
 
 Este diretorio fica reduzido aos documentos que ainda ajudam trabalho futuro.
 Historico de fases antigas, configs remotos ja executados e relatorios
 intermedios foram removidos do repo. Resultados brutos devem ficar em
 `runs/`, que e ignorado pelo git.
+
+## Runtime comum e organização do repositório
+
+- [Guia da etapa 2](runtime/README.md): arquitetura, jobs, perfis e outputs.
+- [Configuração e migração](runtime/configuration.md): contrato v1 e os 46 templates.
+- [Desenvolver agentes](runtime/agents.md): interfaces, capacidades e extensões.
+- [Instalação](runtime/installation.md): configuração, CPU, tracking e export.
+- [Entrega da etapa 2](runtime/delivery.md): critérios e limites do trabalho.
+- [Catálogo](agent_catalogue.md) e [consolidação](consolidation/README.md): agentes e proveniência.
 
 ## Leitura Principal
 

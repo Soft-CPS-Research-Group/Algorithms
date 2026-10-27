@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import mlflow
+from algorithms.runtime.tracking import mlflow
 import numpy as np
 import torch
 from loguru import logger

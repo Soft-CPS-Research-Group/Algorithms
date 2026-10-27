@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 # HIRO local template: CC (frozen) + 17 Building Agents
 # Phase 2 training: CC frozen, BAs learn to execute o1 signal
 
@@ -97,7 +98,6 @@ pipeline:
       clip_coef: 0.2
       vf_coef: 0.5
       ent_coef: 0.02
-      w_factor: 1.0
       max_grad_norm: 0.5
       target_kl: 0.1
 

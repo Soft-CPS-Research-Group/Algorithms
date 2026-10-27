@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 metadata:
   experiment_name: "random_local_template"
   run_name: "RandomPolicy 15s"

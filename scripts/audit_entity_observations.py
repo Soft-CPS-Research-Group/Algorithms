@@ -22,7 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from citylearn.citylearn import CityLearnEnv
 from reward_function.registry import REWARD_FUNCTION_MAP
-from run_experiment import _resolve_citylearn_schema_input, _validate_dynamic_entity_schema_input
+from algorithms.runtime.simulator import _resolve_citylearn_schema_input, _validate_dynamic_entity_schema_input
 from utils.config_schema import validate_config
 from utils.wrapper_citylearn import Wrapper_CityLearn
 

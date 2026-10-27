@@ -58,26 +58,22 @@ class MyAgent(BaseAgent):
         return {"model_path": "...", ...}
 ```
 
-### 2. Register (Required)
+### 2. Register implementation, schema and capabilities
 
-In `algorithms/registry.py`:
+Add one `AgentSpec` to `algorithms/catalogue.py`, with lazy `module:Symbol`
+references to the implementation and its lightweight stage schema. Declare
+capabilities that the implementation actually supports. The schema inherits
+`StrictModel` and rejects unknown keys. See [the agent guide](docs/runtime/agents.md).
+Programmatic extensions may call `algorithms.registry.register_agent`.
+Do not add numerical imports to the catalogue or a new algorithm branch to the runner.
 
-```python
-from algorithms.agents.my_agent import MyAgent
+### 3. Configure and verify
 
-ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
-    "MADDPG": MADDPG,
-    "RuleBasedPolicy": RuleBasedPolicy,
-    "MyAgent": MyAgent,  # Add here
-}
-```
-
-⚠️ **Without registration, the agent cannot be instantiated by the runner.**
-
-### 3. Config & Schema
-
-- `configs/config.yaml` → add parameters under `algorithm.hyperparameters`
-- `utils/config_schema.py` → add validation model if needed
+Use `schema_version: algorithms.config.v1` and a `pipeline` list in reusable
+configuration. Common schemas live in `algorithms/configuration/common.py`;
+agent schemas live in `agents.py` or their own lightweight package. Validate with
+`algorithms-job --config ... --validate`; use `--dry-run` to check the environment.
+Add representative coverage under the common job contract when adding a family.
 
 ## Available Algorithms
 
@@ -102,6 +98,12 @@ for TPPO. For Transformer MATD3, start with the
 [technical specification](docs/transformer_matd3_spec.md) and
 [ADRs](docs/adr/README.md) when changing architecture.
 
+Current ownership, profiles and output requests are documented in
+[the common runtime guide](docs/runtime/README.md). Numerical replay/rollout/offline
+learning stays in the agent; the core owns job setup and finalization. Typed
+`StageContext`, `Transition` and `UpdateSchedule` preserve identity and step timing
+through Pipeline/Ensemble while adapting existing `predict`/`update` methods.
+
 ## Runtime Flow
 
 ```
@@ -120,7 +122,9 @@ export_artifacts() → runs/jobs/<job_id>/
 
 ## Wrapper
 
-`utils/wrapper_citylearn.py` handles:
+`algorithms/runtime/controller.py` owns the simulation facade; the compatibility
+module `utils/wrapper_citylearn.py` delegates to it. The facade and its shared
+loop, resource and diagnostic services handle:
 - Episodes and step management
 - Observation encoding (via `configs/encoders/default.json`)
 - Update scheduling (respects `update_step`, `update_target_step` flags)
@@ -198,12 +202,14 @@ runs/jobs/<job_id>/
 │   ├── summary.json
 │   └── simulation_data/
 ├── checkpoints/               # Training checkpoints (if enabled)
-├── onnx_models/               # Exported ONNX models
+├── bundle/
+│   ├── artifact_manifest.json  # When a bundle is requested
+│   └── ...                     # ONNX, policy descriptions or research artifacts
 ├── config.resolved.yaml       # Full resolved configuration
-└── artifact_manifest.json     # Metadata for all exported artifacts
+
 ```
 
-The manifest (`artifact_manifest.json`) contains metadata returned by `export_artifacts()` and is used for bundle validation and deployment.
+The manifest (`bundle/artifact_manifest.json`) contains metadata returned by `export_artifacts()` and is used for bundle validation and deployment.
 
 ## Tests
 

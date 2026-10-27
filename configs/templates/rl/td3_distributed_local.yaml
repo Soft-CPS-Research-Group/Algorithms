@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 metadata:
   experiment_name: "td3_distributed_local"
   run_name: "TD3 distributed local"

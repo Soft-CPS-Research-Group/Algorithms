@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 metadata:
   experiment_name: "random_2022_all_plus_evs_local"
   run_name: "RandomPolicy 2022 All Plus EVs"

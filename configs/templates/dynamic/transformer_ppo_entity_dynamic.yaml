@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 # Local AgentTransformerPPO template for entity interface with dynamic asset-only events.
 # Smoke-tested by tests/test_e2e_transformer_ppo_entity_dynamic.py.
 

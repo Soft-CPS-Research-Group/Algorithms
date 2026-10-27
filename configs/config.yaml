@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 # -----------------------------------------------------------------------------
 # Canonical training config.
 # Keep this file as the single non-template config under configs/.
@@ -220,7 +221,6 @@ pipeline:
         actor_behavior_cloning_min_weight: 0.0
         actor_behavior_cloning_decay_start_step: 0
         actor_behavior_cloning_decay_steps: 0
-        actor_behavior_cloning_replay_capacity: 0
         actor_behavior_cloning_source: replay_action
 
 # Optional worker-specific overrides (e.g., Deucalion). Keep null for local runs.

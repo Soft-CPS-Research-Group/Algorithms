@@ -1601,7 +1601,10 @@ def _build_run_config(
 
     algorithm = _pipeline_stage(config)
     hyperparameters = algorithm.setdefault("hyperparameters", {})
-    hyperparameters["seed"] = int(seed)
+    # Baseline agents own a local seed. Neural agents use training.seed; their
+    # former hyperparameters.seed was discarded by the configuration schema.
+    if agent_key != "maddpg":
+        hyperparameters["seed"] = int(seed)
     hyperparameters.update(
         _parse_hyperparameter_overrides(getattr(args, "hyperparameter_override", []))
     )

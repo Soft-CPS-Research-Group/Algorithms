@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 # Local AgentTransformerPPO template for entity interface with dynamic asset-only events and behavior cloning.
 # Smoke-tested by tests/test_template_transformer_ppo_bc_entity_dynamic.py.
 

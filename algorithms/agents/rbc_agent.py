@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import mlflow
+from algorithms.runtime.tracking import mlflow
 import numpy as np
 
 from algorithms.agents.base_agent import BaseAgent

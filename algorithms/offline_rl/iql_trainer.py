@@ -78,29 +78,7 @@ def bellman_target(
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass
-class IQLTrainingConfig:
-    # Architecture
-    hidden_layers: List[int] = dataclasses.field(default_factory=lambda: [256, 256])
-    dropout: float = 0.1
-    log_std_init: float = math.log(0.1)
-    # IQL hyperparameters
-    tau_expectile: float = 0.7
-    beta_advantage: float = 3.0
-    advantage_clip: float = 100.0
-    gamma: float = 0.99
-    tau_target: float = 0.005
-    # Optimisation
-    learning_rate: float = 3e-4
-    weight_decay: float = 1e-5
-    gradient_clip_norm: float = 1.0
-    batch_size: int = 256
-    gradient_steps: int = 150_000
-    eval_every_n_steps: int = 2_500
-    checkpoint_every_n_steps: int = 5_000
-    """Persist ``checkpoint_latest.pt`` every N gradient steps (Phase 2 resume)."""
-    val_fraction: float = 0.1
-    device: str = "cpu"
+from algorithms.configuration.offline import IQLTrainingConfig
 
 
 # ---------------------------------------------------------------------------

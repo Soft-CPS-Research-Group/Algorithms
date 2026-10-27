@@ -1,0 +1,294 @@
+[
+  {
+    "path": "configs/config.yaml",
+    "changes": [
+      "pipeline[0].exploration.params.actor_behavior_cloning_replay_capacity was unused by MADDPG; removed."
+    ]
+  },
+  {
+    "path": "configs/templates/baselines/normal_2022_all_plus_evs_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/baselines/normal_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/baselines/normal_no_battery_2022_all_plus_evs_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/baselines/normal_no_battery_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/baselines/random_2022_all_plus_evs_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/baselines/random_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/baselines/rbc_basic_15min_local.yaml",
+    "changes": [
+      "pipeline[0].hyperparameters.ev_subhour_deadline_buffer_steps=1.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_min_service_margin_rate=0.05 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_service_guard_steps=4.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter."
+    ]
+  },
+  {
+    "path": "configs/templates/baselines/rbc_basic_2022_all_plus_evs_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/baselines/rbc_basic_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/baselines/rbc_community_15min_local.yaml",
+    "changes": [
+      "pipeline[0].hyperparameters.deferrable_community_import_block_threshold_kw=8.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.deferrable_import_block_threshold_kw=2.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_deadline_buffer_steps=1.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_min_service_margin_rate=0.05 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_service_guard_steps=4.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_v2g_guard_steps=4.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_v2g_reserve_soc=0.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_v2g_buffer_soc=0.12 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter."
+    ]
+  },
+  {
+    "path": "configs/templates/baselines/rbc_community_2022_all_plus_evs_local.yaml",
+    "changes": [
+      "pipeline[0].hyperparameters.deferrable_community_import_block_threshold_kw=8.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.deferrable_import_block_threshold_kw=2.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_v2g_buffer_soc=0.12 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter."
+    ]
+  },
+  {
+    "path": "configs/templates/baselines/rbc_community_local.yaml",
+    "changes": [
+      "pipeline[0].hyperparameters.deferrable_community_import_block_threshold_kw=8.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.deferrable_import_block_threshold_kw=2.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_v2g_buffer_soc=0.12 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter."
+    ]
+  },
+  {
+    "path": "configs/templates/baselines/rbc_smart_15min_local.yaml",
+    "changes": [
+      "pipeline[0].hyperparameters.deferrable_import_block_threshold_kw=2.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_deadline_buffer_steps=1.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_min_service_margin_rate=0.05 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_service_guard_steps=4.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_v2g_guard_steps=4.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_subhour_v2g_reserve_soc=0.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_v2g_buffer_soc=0.12 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter."
+    ]
+  },
+  {
+    "path": "configs/templates/baselines/rbc_smart_2022_all_plus_evs_local.yaml",
+    "changes": [
+      "pipeline[0].hyperparameters.deferrable_import_block_threshold_kw=2.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_v2g_buffer_soc=0.12 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter."
+    ]
+  },
+  {
+    "path": "configs/templates/baselines/rbc_smart_local.yaml",
+    "changes": [
+      "pipeline[0].hyperparameters.deferrable_import_block_threshold_kw=2.0 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter.",
+      "pipeline[0].hyperparameters.ev_v2g_buffer_soc=0.12 was ignored by the legacy schema; retained the agent default. Set schema_version='algorithms.config.v1' explicitly to use this parameter."
+    ]
+  },
+  {
+    "path": "configs/templates/baselines/rule_based_2022_all_plus_evs_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/baselines/rule_based_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/rbc_community_entity_dynamic_15min_cost4.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/rbc_smart_entity_dynamic_15min_cost4.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/rule_based_entity_dynamic_assets_only_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/rule_based_entity_dynamic_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/transformer_matd3_entity_dynamic.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/transformer_matd3_entity_dynamic_bc.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/transformer_matd3_entity_dynamic_cost4_faithful.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/transformer_matd3_entity_dynamic_cost4_realistic_fast_pilot.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/transformer_matd3_entity_dynamic_cost4_realistic_pilot.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/transformer_matd3_entity_dynamic_cost4_realistic_speed_pilot.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/transformer_matd3_entity_dynamic_residual.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/transformer_ppo_bc_entity_dynamic.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/experimental/bcagent_evaluation.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/experimental/cc_capacity_smoke.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/experimental/cc_directional_smoke.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/experimental/cqlentityagent_evaluation.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/experimental/iqlagent_evaluation.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/experimental/iqlentityagent_evaluation.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/experimental/transformer_maddpg_smoke.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/hiro_local.yaml",
+    "changes": [
+      "pipeline[0].hyperparameters.w_factor was unused by CommunityCoordinator; removed."
+    ]
+  },
+  {
+    "path": "configs/templates/maddpg/maddpg_2022_all_plus_evs_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/maddpg/maddpg_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/rl/happo_local.yaml",
+    "changes": [
+      "pipeline[0].exploration.params.actor_update_interval was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.bias was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.critic_update_mode was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.decay was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.deferrable_on_probability was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.deferrable_trigger_threshold was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.ev_negative_exploration_noise_multiplier was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.min_sigma was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.noise_clip was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.noop_actor_initialization was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.noop_actor_initialization_epsilon was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.noop_noise_scale was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.reward_normalization was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.reward_normalization_clip was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.reward_normalization_epsilon was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.sigma was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.storage_exploration_noise_multiplier was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.target_policy_noise was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.target_policy_noise_clip was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.target_policy_smoothing was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.tau was unused by HAPPO; removed.",
+      "pipeline[0].exploration.params.use_amp was unused by HAPPO; removed."
+    ]
+  },
+  {
+    "path": "configs/templates/rl/ippo_local.yaml",
+    "changes": [
+      "pipeline[0].exploration.params.actor_update_interval was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.bias was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.critic_update_mode was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.decay was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.deferrable_on_probability was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.deferrable_trigger_threshold was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.ev_negative_exploration_noise_multiplier was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.min_sigma was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.noise_clip was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.noop_actor_initialization was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.noop_actor_initialization_epsilon was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.noop_noise_scale was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.reward_normalization was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.reward_normalization_clip was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.reward_normalization_epsilon was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.sigma was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.storage_exploration_noise_multiplier was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.target_policy_noise was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.target_policy_noise_clip was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.target_policy_smoothing was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.tau was unused by IPPO; removed.",
+      "pipeline[0].exploration.params.use_amp was unused by IPPO; removed."
+    ]
+  },
+  {
+    "path": "configs/templates/rl/mappo_local.yaml",
+    "changes": [
+      "pipeline[0].exploration.params.actor_update_interval was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.bias was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.critic_update_mode was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.decay was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.deferrable_on_probability was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.deferrable_trigger_threshold was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.ev_negative_exploration_noise_multiplier was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.min_sigma was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.noise_clip was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.noop_actor_initialization was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.noop_actor_initialization_epsilon was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.noop_noise_scale was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.reward_normalization was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.reward_normalization_clip was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.reward_normalization_epsilon was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.sigma was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.storage_exploration_noise_multiplier was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.target_policy_noise was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.target_policy_noise_clip was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.target_policy_smoothing was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.tau was unused by MAPPO; removed.",
+      "pipeline[0].exploration.params.use_amp was unused by MAPPO; removed."
+    ]
+  },
+  {
+    "path": "configs/templates/rl/masac_local.yaml",
+    "changes": []
+  },
+  {
+    "path": "configs/templates/rl/td3_distributed_local.yaml",
+    "changes": []
+  }
+]

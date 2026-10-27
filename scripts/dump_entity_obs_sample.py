@@ -34,7 +34,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from citylearn.citylearn import CityLearnEnv
 from reward_function.registry import REWARD_FUNCTION_MAP
-from run_experiment import (
+from algorithms.runtime.simulator import (
     _resolve_citylearn_schema_input,
     _validate_dynamic_entity_schema_input,
 )

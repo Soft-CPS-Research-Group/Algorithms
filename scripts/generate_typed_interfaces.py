@@ -28,7 +28,7 @@ from algorithms.ti_marl.contracts.profile_registry import (
     SENSOR_ENTITY_TYPES,
     channel_for,
 )
-from run_experiment import _resolve_citylearn_schema_input
+from algorithms.runtime.simulator import _resolve_citylearn_schema_input
 from scripts.dump_entity_obs_sample import _build_env
 from utils.config_schema import validate_config
 

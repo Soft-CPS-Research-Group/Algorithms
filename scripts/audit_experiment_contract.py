@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from run_experiment import _resolve_agent_observation_dimensions
+from algorithms.runtime.simulator import _resolve_agent_observation_dimensions
 from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
 from scripts.audit_action_rollout import _build_wrapper_and_agent, _describe_actions
 from utils.artifact_manifest import build_manifest, write_manifest

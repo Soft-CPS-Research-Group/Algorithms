@@ -103,7 +103,8 @@ class EntityTokenizerConfig(_Strict):
 
 def load_entity_tokenizer_config(path: str | Path) -> EntityTokenizerConfig:
     """Read the JSON file at ``path`` and validate it as an EntityTokenizerConfig."""
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    from algorithms.configuration.assets import configuration_asset
+    raw = json.loads(configuration_asset(path).read_text(encoding="utf-8"))
     return EntityTokenizerConfig.model_validate(raw)
 
 

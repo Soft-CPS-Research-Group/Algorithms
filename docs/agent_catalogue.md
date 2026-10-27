@@ -1,6 +1,8 @@
 # Agent catalogue
 
-The authoritative list is `algorithms.registry.supported_algorithms()`: **38**
+Declarations and capabilities live in `algorithms/catalogue.py`; inspect them with
+`algorithms-job --list-agents` without loading model dependencies.
+The authoritative name list is `algorithms.registry.supported_algorithms()`: **38**
 registered agent/controller names after the first consolidation. A registered name
 means it can enter the common job builder; deployment readiness and model quality
 are separate properties.

@@ -63,23 +63,7 @@ from algorithms.offline_rl.iql_trainer import (
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass
-class CQLTrainingConfig(IQLTrainingConfig):
-    """Hyperparameters for CQL training.
-
-    Inherits all IQL fields; adds conservative Q-learning params.
-    """
-
-    # CQL-specific
-    cql_alpha: float = 0.2
-    """Weight of the conservative Q penalty."""
-
-    cql_n_random_actions: int = 10
-    """Random actions sampled per state for the logsumexp approximation."""
-
-    cql_min_q_weight: float = 0.0
-    """If > 0, used as a lower bound on the CQL penalty (target action gap).
-    Set to 0.0 to disable (standard CQL without gap target)."""
+from algorithms.configuration.offline import CQLTrainingConfig
 
 
 # ---------------------------------------------------------------------------
