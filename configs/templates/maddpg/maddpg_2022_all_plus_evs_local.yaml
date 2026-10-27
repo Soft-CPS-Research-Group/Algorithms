@@ -106,8 +106,6 @@ simulator:
     community_grid_export_price: 0.0
     scale_state_penalties_by_time_step: true
     state_penalty_reference_seconds: 3600.0
-  episodes: 1
-  deterministic_finish: false
   simulation_start_time_step: 0
   simulation_end_time_step: 1999
   episode_time_steps: 2000
@@ -128,6 +126,7 @@ simulator:
     squash: none
 
 training:
+  episodes: 1
   seed: 123
   steps_between_training_updates: 4
   target_update_interval: 2
@@ -209,3 +208,6 @@ pipeline:
       reward_normalization: true
       reward_normalization_clip: 10.0
       reward_normalization_epsilon: 1.0e-8
+
+evaluation:
+  episodes: 0

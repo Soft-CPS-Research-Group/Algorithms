@@ -102,6 +102,8 @@ class AgentTransformerMATD3(BaseAgent):
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
         self.config = config
+        from algorithms.runtime.randomness import seed_all
+        seed_all(int(config.get("training", {}).get("seed", 22)))
         self.checkpoint_mode = str(
             (config.get("checkpointing") or {}).get("checkpoint_mode", "full")
             or "full"

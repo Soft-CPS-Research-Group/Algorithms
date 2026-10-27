@@ -35,7 +35,7 @@ configs = ["**/*.json", "**/*.yaml"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-include = ["algorithms/runtime/*.py", "algorithms/configuration/*.py", "algorithms/contracts.py", "algorithms/catalogue.py", "algorithms/registry.py", "algorithms/execution_unit.py", "algorithms/pipeline.py", "algorithms/agents/environment_validation.py", "tests/test_common_runtime_contract.py", "tests/e2e/test_common_job_profiles.py"]
+include = ["algorithms/runtime/*.py", "algorithms/configuration/*.py", "algorithms/contracts.py", "algorithms/catalogue.py", "algorithms/registry.py", "algorithms/execution_unit.py", "algorithms/pipeline.py", "algorithms/agents/environment_validation.py", "tests/test_common_runtime_contract.py", "tests/test_runtime_reliability.py", "tests/e2e/test_runtime_reliability.py", "tests/e2e/test_common_job_profiles.py"]
 
 [tool.ruff.lint]
 select = ["E9", "F", "I"]

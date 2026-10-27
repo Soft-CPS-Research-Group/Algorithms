@@ -85,7 +85,6 @@ simulator:
     community_peak_import_penalty: 0.001
     community_export_penalty: 0.0
     community_penalty_divide_by_agents: true
-  episodes: 1
   # Optional simulation window overrides (null = dataset schema defaults).
   simulation_start_time_step: 0
   simulation_end_time_step: 5759
@@ -109,6 +108,7 @@ simulator:
 
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:
+  episodes: 1
   seed: 22
   steps_between_training_updates: 1
   target_update_interval: 0
@@ -146,3 +146,6 @@ pipeline:
 
 # Optional worker-specific overrides; omitted for local execution.
 execution: null
+
+evaluation:
+  episodes: 0

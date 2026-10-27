@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from typing import Any, List, Mapping, Union
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.tracking import mlflow, metrics_active
 import numpy as np
 
 from reward_function.cc_reward_level1 import CCRewardLevel1
@@ -190,7 +190,7 @@ class CCRewardLevel2Capacity(CCRewardLevel1):
 
         # ── MLflow logging (sampled) ─────────────────────────────────────────
         self._step += 1
-        if mlflow.active_run() and self._step % self._log_interval == 0:
+        if metrics_active(mlflow) and self._step % self._log_interval == 0:
             n_ev_connected = sum(
                 1 for obs in observations
                 if any(ev.get("connected", False)

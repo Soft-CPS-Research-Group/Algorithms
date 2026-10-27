@@ -59,7 +59,6 @@ simulator:
     clip: true
   reward_function: RewardFunction
   reward_function_kwargs: {}
-  episodes: 1
   # Keep a shorter window for local smoke/debug.
   simulation_start_time_step: 0
   simulation_end_time_step: 3400
@@ -81,6 +80,7 @@ simulator:
     squash: none
 
 training:
+  episodes: 1
   seed: 22
   steps_between_training_updates: 1
   target_update_interval: 0
@@ -113,3 +113,6 @@ pipeline:
     exploration: null
 
 execution: null
+
+evaluation:
+  episodes: 0

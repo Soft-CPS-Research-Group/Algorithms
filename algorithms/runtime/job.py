@@ -101,7 +101,7 @@ from algorithms.runtime.checkpoints import (
 )
 from algorithms.runtime.cli import build_argument_parser, cli_main
 from algorithms.runtime.context import JobContext, OutputPlan
-from algorithms.runtime.outputs import finalize_outputs
+from algorithms.runtime.outputs import commit_completion, finalize_outputs
 from algorithms.runtime.paths import (
     _derive_job_id,
     _mark_failed_outputs,
@@ -131,6 +131,28 @@ DEFAULT_LOCAL_BASE = Path(os.environ.get("OPEVA_BASE_DIR", "./runs"))
 
 
 def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> None:
+    """Own the complete attempt, including configuration failures and cancellation."""
+    if sys.version_info < (3, 10):
+        raise RuntimeError(
+            "The reliable job runtime requires Python >= 3.10; the Python 3.8 Jetson image remains a legacy platform pending migration."
+        )
+    from algorithms.runtime.lifecycle import cancellation_signals
+
+    resolved_id = _derive_job_id(job_id)
+    paths = _prepare_paths(Path(base_dir).resolve(), resolved_id)
+    try:
+        with cancellation_signals():
+            result = _run_experiment(config_path, resolved_id, Path(base_dir), paths)
+        return result
+    except BaseException as exc:
+        try:
+            _mark_failed_outputs(paths, exc)
+        except OSError:
+            logger.exception("Could not persist attempt failure")
+        raise
+
+
+def _run_experiment(config_path, job_id, base_dir, path_info):
     """Execute training with outputs written under ``base_dir``/jobs/<job_id>."""
     job_id = _derive_job_id(job_id)
     base_dir = base_dir.resolve()
@@ -155,7 +177,9 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
     _startup_trace("config validated")
 
     config = config_model.to_dict()
-    path_info = _prepare_paths(base_dir, job_id)
+    from algorithms.runtime.randomness import initialize_job
+
+    random_metadata = initialize_job(config)
     _startup_trace(f"paths prepared job_dir={path_info['job_dir']}")
     pipeline_cfg = config.get("pipeline") or []
     if not pipeline_cfg:
@@ -183,11 +207,15 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         metadata["run_name"] = job_name_override
         config["metadata"] = metadata
     runtime = config.setdefault("runtime", {})
+    runtime["randomness"] = random_metadata
+    from algorithms.configuration.episodes import episode_plan
+
+    runtime["episode_plan"] = episode_plan(config)
     tracking = config.get("tracking", {})
     artifact_profile = (
         str(tracking.get("mlflow_artifacts_profile", "minimal")).strip().lower() or "minimal"
     )
-    mlflow_enabled = bool(tracking.get("mlflow_enabled", True))
+    mlflow_enabled = bool(tracking.get("mlflow_enabled", False))
     log_level = str(tracking.get("log_level", "INFO")).upper()
     active_log_file = path_info["log_dir"] / f"{job_id}.log"
     # Keep a single canonical log file per job (`<job_id>.log`).
@@ -220,11 +248,18 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
 
     env = None
     wrapper = None
+    from algorithms.runtime.tracking import tracking_session
+
+    tracking_context = tracking_session(config, path_info)
+    tracking_state = tracking_context.__enter__()
     try:
         start_mlflow_run(config=config)
         run = mlflow.active_run()
         if mlflow_enabled and run is None:
-            raise RuntimeError("MLflow run could not be started.")
+            if tracking_state["failed"]:
+                mlflow_enabled = False
+            else:
+                raise RuntimeError("MLflow run could not be started.")
 
         experiment_id: Optional[str] = None
         if run is None:
@@ -380,18 +415,48 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
 
         validate_environment_layout(config, wrapper)
         agent = build_execution_unit(config=config)
+        from algorithms.runtime.resume import leaves
+
+        runtime["randomness"]["agents"] = [
+            getattr(unit, "runtime_identity", {}) for _, unit in leaves(agent)
+        ]
         prepare_training = getattr(agent, "prepare_training", None)
         if callable(prepare_training):
-            prepare_training(
-                str(path_info["job_dir"] / "offline_training"), context={"config": config}
+            from algorithms.runtime.randomness import call_hook
+
+            call_hook(
+                agent,
+                "prepare_training",
+                str(path_info["job_dir"] / "offline_training"),
+                context={"config": config},
             )
         wrapper.set_model(agent)
-        _resume_agent_from_checkpoint(
+        checkpoint_path = _resume_agent_from_checkpoint(
             agent=agent,
             config=config,
             tracking_uri=tracking_uri,
             checkpoints_dir=path_info["checkpoints_dir"],
         )
+
+        from algorithms.runtime.checkpoint_index import resolve_index
+        from algorithms.runtime.resume import capture_runtime, restore_runtime
+
+        if getattr(wrapper, "checkpoint_manager", None) is not None:
+            wrapper.checkpoint_manager.runtime_state = lambda: capture_runtime(wrapper)
+        if config["checkpointing"].get("resume_mode") == "episode":
+            import torch
+
+            source = config["checkpointing"].get("checkpoint_local_path")
+            indexed = resolve_index(Path(source)) if source else None
+            if indexed is None:
+                raise ValueError("Episode resume requires a local indexed checkpoint")
+            state = torch.load(
+                indexed[2] / "runtime_state.pt", map_location="cpu", weights_only=False
+            )
+            restore_runtime(wrapper, state)
+        if checkpoint_path is not None:
+            runtime["loaded_checkpoint"] = str(checkpoint_path)
+        _write_resolved_config(config, resolved_config_path)
 
         logger.info("Starting training loop")
         wrapper.learn(
@@ -405,7 +470,9 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         # checkpoint as ``latest_checkpoint.pth``.
         checkpoint_manager = getattr(wrapper, "checkpoint_manager", None)
         save_final_checkpoint = getattr(checkpoint_manager, "save_final", None)
-        if OutputPlan.from_config(config).explicit_checkpoint:
+        if getattr(wrapper, "_final_training_checkpoint", None) is not None:
+            pass
+        elif OutputPlan.from_config(config).explicit_checkpoint:
             if checkpoint_manager is None:
                 raise RuntimeError("Checkpoint output requested without a checkpoint service")
             checkpoint_path = checkpoint_manager.save(
@@ -419,24 +486,20 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
                 step=max(0, int(getattr(wrapper, "global_step", 0) or 0)),
             )
 
-        finalize_outputs(
-            JobContext(
-                config,
-                path_info,
-                job_id,
-                run_id,
-                run_name,
-                experiment_id,
-                tracking_uri,
-                mlflow_enabled,
-                artifact_profile,
-            ),
-            wrapper,
-            agent,
-            algorithm_name,
+        context = JobContext(
+            config,
+            path_info,
+            job_id,
+            run_id,
+            run_name,
+            experiment_id,
+            tracking_uri,
+            mlflow_enabled,
+            artifact_profile,
         )
+        result_payload = finalize_outputs(context, wrapper, agent, algorithm_name)
 
-        logger.info("Experiment complete")
+        logger.info("Finalizing experiment resources")
     except Exception as exc:
         logger.exception("Experiment failed")
         try:
@@ -464,9 +527,13 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
             except Exception:
                 logger.exception("Resource cleanup failed: {}", cleanup)
         try:
-            logger.remove(file_sink_id)
-        except ValueError:
-            pass
+            tracking_context.__exit__(*sys.exc_info())
+        finally:
+            try:
+                logger.remove(file_sink_id)
+            except ValueError:
+                pass
+    commit_completion(context, wrapper, result_payload)
 
 
 if __name__ == "__main__":

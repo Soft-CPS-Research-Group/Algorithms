@@ -129,3 +129,5 @@ See [installation](docs/runtime/installation.md) for test dependencies and
 [ownership/provenance](docs/runtime/ownership.md) for contribution boundaries and
 the repository's unresolved licensing decision. Submit changes through a PR and
 preserve source provenance when consolidating research implementations.
+
+See the [stage-3 reliability contract](docs/runtime/reliability.md) for explicit training/evaluation budgets, data validation, seeds, checkpoint/resume limits, platform support and the measured optional-tracking decision.

@@ -134,7 +134,8 @@ def test_distributed_builder_creates_strict_local_learners(name, agent_cls):
     assert [agent.num_agents for agent in unit.agents] == [1, 1]
     assert [agent.observation_dimension for agent in unit.agents] == [[3], [2]]
     assert [agent.action_dimension for agent in unit.agents] == [[1], [2]]
-    assert [agent.seed for agent in unit.agents] == [7, 8]
+    from algorithms.runtime.randomness import derived_seed
+    assert [agent.seed for agent in unit.agents] == [derived_seed(7, "stage", 0, "member", i) for i in range(2)]
 
 
 @pytest.mark.parametrize("name", ["PPO", "TD3"])

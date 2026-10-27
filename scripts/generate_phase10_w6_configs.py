@@ -1642,8 +1642,8 @@ def _apply_simulator(
     )
     simulator["reward_function"] = str(reward_function)
     simulator["reward_function_kwargs"] = dict(reward_kwargs or {})
-    simulator["episodes"] = int(episodes)
-    simulator["deterministic_finish"] = bool(deterministic_finish)
+    from algorithms.configuration.episodes import set_legacy_episode_budget
+    set_legacy_episode_budget(config, episodes, deterministic_finish)
     simulator["simulation_start_time_step"] = int(start)
     simulator["simulation_end_time_step"] = int(start + steps - 1)
     simulator["episode_time_steps"] = int(steps)

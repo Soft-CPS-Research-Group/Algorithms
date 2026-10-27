@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.tracking import mlflow, metrics_active
 import numpy as np
 import torch
 from loguru import logger
@@ -924,7 +924,8 @@ class _PPOBase(BaseAgent):
     ) -> List[List[float]]:
         observations = self._apply_local_price_context(observations, context)
         deterministic = bool(deterministic)
-        self.exploration_step += 1
+        if not deterministic:
+            self.exploration_step += 1
         self._last_service_teacher_applied = False
         self._last_warm_start_policy_actions = None
         self._reset_behavior_teacher_projection()
@@ -2663,7 +2664,7 @@ class _PPOBase(BaseAgent):
 
     def _record_training_metrics(self, metrics: Dict[str, float], step: int) -> None:
         self._latest_training_metrics = dict(metrics)
-        if mlflow.active_run() and not bool(getattr(self, "managed_by_ensemble", False)):
+        if metrics_active(mlflow) and not bool(getattr(self, "managed_by_ensemble", False)):
             mlflow.log_metrics(metrics, step=step)
 
     def save_checkpoint(self, output_dir: str, step: int) -> str:

@@ -10,6 +10,7 @@ from loguru import logger
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.execution_unit import ExecutionUnit
 from algorithms.pipeline import Pipeline
+from algorithms.runtime.checkpoint_index import discover_legacy, resolve_index
 from algorithms.runtime.tracking import mlflow
 from utils.experiment_protocol import file_sha256
 
@@ -66,7 +67,15 @@ def _download_checkpoint_from_mlflow(
     download_dir: Path,
 ) -> Path:
     """Download checkpoint artifact from MLflow using current API with fallback paths."""
-    mlflow.set_tracking_uri(tracking_uri)
+    # Explicit reads are independent of this job's logging policy.
+    from algorithms.runtime.tracking import OptionalMLflow
+
+    if isinstance(mlflow, OptionalMLflow):
+        from importlib import import_module
+
+        import_module("mlflow").set_tracking_uri(tracking_uri)
+    else:
+        mlflow.set_tracking_uri(tracking_uri)
     artifact_candidates = _build_checkpoint_artifact_candidates(checkpoint_artifact)
     last_error: Optional[Exception] = None
 
@@ -116,6 +125,13 @@ def _resolve_local_checkpoint_path(
         checkpoints_dir,
         checkpoints_dir.parent / "logs" / "checkpoints",
     ]
+    for root in checkpoint_roots:
+        indexed = resolve_index(root) if root.exists() else None
+        if indexed:
+            return indexed[1]
+        legacy = discover_legacy(root, artifact) if root.exists() else root
+        if legacy.is_file():
+            return legacy
     candidate_paths = [root / artifact for root in checkpoint_roots]
     candidate_paths.append(Path(artifact))
     for candidate in candidate_paths:
@@ -204,6 +220,7 @@ def _resume_agent_from_checkpoint(
             checkpoints_dir=checkpoints_dir,
         )
 
+    checkpoint_path = discover_legacy(checkpoint_path, checkpoint_artifact)
     protocol = config.get("experiment_protocol") or {}
     expected_checkpoint_sha256 = protocol.get("selected_checkpoint_sha256")
     if expected_checkpoint_sha256:

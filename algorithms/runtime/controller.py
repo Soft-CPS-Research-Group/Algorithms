@@ -237,7 +237,7 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
             self.default_episodes = 1
         self.target_update_interval = training_cfg.get("target_update_interval", 0)
         self.log_dir = config.get("runtime", {}).get("log_dir")
-        self.mlflow_enabled = tracking_cfg.get("mlflow_enabled", True)
+        self.mlflow_enabled = tracking_cfg.get("mlflow_enabled", False)
         try:
             self.log_frequency = int(tracking_cfg.get("log_frequency", 1) or 1)
         except (TypeError, ValueError):
@@ -442,7 +442,9 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
         self.checkpoint_manager = CheckpointManager(
             base_dir=checkpoint_base_dir,
             interval=checkpoint_cfg.get("checkpoint_interval"),
-            log_to_mlflow=tracking_cfg.get("mlflow_enabled", True),
+            save_final=bool(checkpoint_cfg.get("save_final", True)),
+            min_free_disk_mb=checkpoint_cfg.get("min_free_disk_mb", 64),
+            log_to_mlflow=tracking_cfg.get("mlflow_enabled", False),
             require_update_step=bool(checkpoint_cfg.get("require_update_step", True)),
             require_initial_exploration_done=bool(
                 checkpoint_cfg.get("require_initial_exploration_done", True)
@@ -451,7 +453,7 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
             keep_episode_checkpoints=bool(checkpoint_cfg.get("keep_episode_checkpoints", False)),
         )
         self.local_metrics_logger = None
-        if not self.mlflow_enabled:
+        if not self.mlflow_enabled and tracking_cfg.get("metrics_enabled", True):
             self.local_metrics_logger = LocalMetricsLogger(self.log_dir)
 
         # Ensure encoders are initialised for observation metadata and encoding
@@ -732,7 +734,12 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
 
         attach = getattr(self.model, "attach_environment", None)
         if callable(attach):
-            attach(
+            from algorithms.runtime.randomness import call_hook
+
+            call_hook(
+                self.model,
+                "attach_environment",
+                stream="initialization",
                 observation_names=self.observation_names,
                 action_names=self.action_names,
                 action_space=self.action_space,
@@ -1061,39 +1068,36 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
         return self._entity_adapter.to_entity_actions(actions, self.action_names)
 
     def _clip_actions(self, actions: List[List[float]]) -> List[List[float]]:
-        """Clip model actions to each agent action-space bounds."""
+        """Reject malformed actions; clipping is an explicit, recorded policy."""
         if not isinstance(actions, list):
             raise ValueError("Model predicted actions must be provided as a list.")
-
-        action_bounds = self._get_action_bounds_cache()
-        clipped_actions: List[List[float]] = []
-        for agent_idx, (low, high) in enumerate(action_bounds):
-            raw = actions[agent_idx] if agent_idx < len(actions) else []
-            action_array = np.asarray(raw, dtype=np.float64).reshape(-1)
-            if low.shape[0] == 0 or high.shape[0] == 0:
-                clipped_actions.append(action_array.tolist())
-                continue
-
-            expected_dim = low.shape[0]
-            if action_array.shape[0] != expected_dim:
-                logger.warning(
-                    "Action dimension mismatch for agent {}: predicted={}, expected={}. "
-                    "Padding/truncating before clipping.",
-                    agent_idx,
-                    action_array.shape[0],
-                    expected_dim,
+        bounds = self._get_action_bounds_cache()
+        if len(actions) != len(bounds):
+            raise ValueError(
+                f"Action agent count mismatch: predicted={len(actions)}, expected={len(bounds)}"
+            )
+        policy = self.config.get("simulator", {}).get("action_policy", "clip")
+        result = []
+        for index, (raw, (low, high)) in enumerate(zip(actions, bounds)):
+            values = np.asarray(raw, dtype=np.float64)
+            if values.ndim != 1 or values.shape != low.shape:
+                raise ValueError(
+                    f"Action dimension mismatch for agent {index}: predicted={values.shape}, expected={low.shape}"
                 )
-                fixed = np.zeros(expected_dim, dtype=np.float64)
-                copy_dim = min(expected_dim, action_array.shape[0])
-                if copy_dim > 0:
-                    fixed[:copy_dim] = action_array[:copy_dim]
-                action_array = fixed
-
-            action_array = np.clip(action_array, low, high)
-
-            clipped_actions.append(action_array.tolist())
-
-        return clipped_actions
+            if not np.isfinite(values).all():
+                raise ValueError(f"Non-finite action for agent {index}")
+            clipped = np.clip(values, low, high)
+            if not np.array_equal(clipped, values):
+                if policy == "reject":
+                    raise ValueError(f"Action outside bounds for agent {index}")
+                logger.warning(
+                    "Action clipped: agent={} proposed={} submitted={}",
+                    index,
+                    values.tolist(),
+                    clipped.tolist(),
+                )
+            result.append(clipped.tolist())
+        return result
 
     def _get_action_bounds_cache(self) -> List[tuple[np.ndarray, np.ndarray]]:
         cached = getattr(self, "_action_bounds_cache", None)
@@ -1235,7 +1239,7 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
             info=self._entity_step_info if getattr(self, "_entity_interface_mode", False) else None,
         )
         schedule = UpdateSchedule(
-            self.global_step,
+            getattr(self, "learning_step", self.global_step),
             self.update_step,
             self.update_target_step,
             self.initial_exploration_done,
@@ -1249,26 +1253,32 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
         if not self.steps_between_training_updates or self.steps_between_training_updates <= 1:
             self.update_step = True
         else:
-            self.update_step = self.global_step % self.steps_between_training_updates == 0
+            self.update_step = (
+                getattr(self, "learning_step", self.global_step)
+                % self.steps_between_training_updates
+                == 0
+            )
         logger.debug(
             "Time step - Doing Update" if self.update_step else "Time step - Skipping Update"
         )
 
         # Exploration phase ownership belongs to the algorithm.
         self.initial_exploration_done = bool(
-            self.model.is_initial_exploration_done(self.global_step)
+            self.model.is_initial_exploration_done(getattr(self, "learning_step", self.global_step))
         )
         logger.debug(
             "Initial exploration done: {} (global step={})",
             self.initial_exploration_done,
-            self.global_step,
+            getattr(self, "learning_step", self.global_step),
         )
 
         # Determine whether to update the target networks
         if not self.target_update_interval:
             self.update_target_step = False
         else:
-            self.update_target_step = self.global_step % self.target_update_interval == 0
+            self.update_target_step = (
+                getattr(self, "learning_step", self.global_step) % self.target_update_interval == 0
+            )
         logger.debug(
             "Time step - Doing Target Update"
             if self.update_target_step

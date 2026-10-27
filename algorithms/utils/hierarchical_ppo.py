@@ -118,6 +118,7 @@ class HierarchicalActorCritic(nn.Module):
         community: torch.Tensor,
         buildings: torch.Tensor,
         action: torch.Tensor | None = None,
+        *, deterministic: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample (or evaluate) per-building actions and the community value.
 
@@ -150,7 +151,7 @@ class HierarchicalActorCritic(nn.Module):
         dist = Normal(means, std)
 
         if action is None:
-            action = dist.sample().clamp(-1.0 + 1e-6, 1.0 - 1e-6)   # (B, N)
+            action = (means if deterministic else dist.sample()).clamp(-1.0 + 1e-6, 1.0 - 1e-6)   # (B, N)
 
         log_prob = dist.log_prob(action).sum(dim=-1)                # (B,)
         entropy = dist.entropy().sum(dim=-1)                        # (B,)

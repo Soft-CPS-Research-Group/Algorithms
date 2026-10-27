@@ -35,6 +35,7 @@ from loguru import logger
 from algorithms.contracts import StageContext, Transition, UpdateSchedule
 from algorithms.execution_unit import ExecutionUnit, TopologyTransactional
 from algorithms.runtime.interaction import decide, learn_transition
+from algorithms.runtime.randomness import call_hook
 
 
 def _checkpoint_transaction_root(root: Path, step: int) -> tuple[Path, Path]:
@@ -373,11 +374,23 @@ class Pipeline(ExecutionUnit):
     # ------------------------------------------------------------------
     def on_episode_start(self, *, episode: int, training: bool) -> None:
         for stage in self.stages:
-            stage.on_episode_start(episode=episode, training=training)
+            call_hook(
+                stage,
+                "on_episode_start",
+                episode=episode,
+                training=training and not stage.frozen,
+                stream="learning" if training and not stage.frozen else "evaluation",
+            )
 
     def on_episode_end(self, *, episode: int, training: bool) -> None:
         for stage in self.stages:
-            stage.on_episode_end(episode=episode, training=training)
+            call_hook(
+                stage,
+                "on_episode_end",
+                episode=episode,
+                training=training and not stage.frozen,
+                stream="learning" if training and not stage.frozen else "evaluation",
+            )
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return all(stage.is_initial_exploration_done(global_learning_step) for stage in self.stages)
@@ -411,7 +424,10 @@ class Pipeline(ExecutionUnit):
 
     def prepare_training(self, output_dir: str, context=None) -> None:
         for index, stage in enumerate(self.stages):
-            stage.prepare_training(str(Path(output_dir) / f"stage_{index}"), context)
+            if not stage.frozen:
+                call_hook(
+                    stage, "prepare_training", str(Path(output_dir) / f"stage_{index}"), context
+                )
 
     def attach_environment(self, **kwargs) -> None:
         self.member_ids = tuple((kwargs.get("metadata") or {}).get("building_names") or ())
@@ -445,7 +461,7 @@ class Pipeline(ExecutionUnit):
                     stage_kwargs["observation_names"] = raw_observation_names
                 elif not stage.use_raw_observations and encoded_observation_names is not None:
                     stage_kwargs["observation_names"] = encoded_observation_names
-                stage.attach_environment(**stage_kwargs)
+                call_hook(stage, "attach_environment", stream="initialization", **stage_kwargs)
         except Exception:
             if snapshot is not None:
                 self.restore_topology_state(snapshot)
@@ -874,11 +890,23 @@ class Ensemble(ExecutionUnit):
     # ------------------------------------------------------------------
     def on_episode_start(self, *, episode: int, training: bool) -> None:
         for agent in self.agents:
-            agent.on_episode_start(episode=episode, training=training)
+            call_hook(
+                agent,
+                "on_episode_start",
+                episode=episode,
+                training=training and not agent.frozen,
+                stream="learning" if training and not agent.frozen else "evaluation",
+            )
 
     def on_episode_end(self, *, episode: int, training: bool) -> None:
         for agent in self.agents:
-            agent.on_episode_end(episode=episode, training=training)
+            call_hook(
+                agent,
+                "on_episode_end",
+                episode=episode,
+                training=training and not agent.frozen,
+                stream="learning" if training and not agent.frozen else "evaluation",
+            )
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
         return all(agent.is_initial_exploration_done(global_learning_step) for agent in self.agents)
@@ -921,7 +949,10 @@ class Ensemble(ExecutionUnit):
 
     def prepare_training(self, output_dir: str, context=None) -> None:
         for index, member in enumerate(self.agents):
-            member.prepare_training(str(Path(output_dir) / f"agent_{index}"), context)
+            if not member.frozen:
+                call_hook(
+                    member, "prepare_training", str(Path(output_dir) / f"agent_{index}"), context
+                )
 
     def attach_environment(
         self,
@@ -957,7 +988,10 @@ class Ensemble(ExecutionUnit):
                     value = member_metadata.get(key)
                     if isinstance(value, (list, tuple)) and index < len(value):
                         member_metadata[key] = [value[index]]
-                agent.attach_environment(
+                call_hook(
+                    agent,
+                    "attach_environment",
+                    stream="initialization",
                     observation_names=(
                         [observation_names[index]] if index < len(observation_names) else []
                     ),

@@ -1,0 +1,462 @@
+{
+  "method": "One unmeasured warmup; three independent processes per mode by default. Same MADDPG 2 training + 1 evaluation, 17 state points, pinned CPU runtime; file MLflow, no network latency. Local detailed profiling enabled deliberately; totals overlap and must not be added. Peak RSS includes imports; wall time excludes imports but includes job setup, validation and output. Full uploads all artifacts and logs every step; minimal samples every 10 steps.",
+  "results": [
+    {
+      "mode": "local_0",
+      "wall_seconds": 1.322382177999316,
+      "cpu_seconds": 1.296171701,
+      "peak_rss_mb": 647.2265625,
+      "gpu": "not used",
+      "job_bytes": 1490989,
+      "tracking": {
+        "enabled": false,
+        "failed": false,
+        "metrics_enabled": true,
+        "failure_policy": "local",
+        "sample_interval": 10,
+        "profile": "minimal",
+        "models": false,
+        "checkpoints": false,
+        "remote_calls": 0,
+        "remote_seconds": 0.0,
+        "local_bytes": 623348
+      },
+      "finalization": {
+        "output_seconds": 0.03963133300021582,
+        "checkpoint_seconds": 0.009735372999784886
+      },
+      "sampled_runtime_totals": {
+        "Runtime/predict_seconds": 0.03444207300526614,
+        "Runtime/action_prepare_seconds": 0.00396261400419462,
+        "Runtime/env_step_seconds": 0.08682129600310873,
+        "Runtime/observation_encoding_seconds": 0.008452259995465283,
+        "Runtime/entity_layout_seconds": 0.008452259995465283,
+        "Runtime/reward_shaping_seconds": 0.0009349539977847598,
+        "Runtime/agent_update_seconds": 0.18019044300126552,
+        "Runtime/model_observation_encoding_seconds": 0.0023482229971705237,
+        "Runtime/model_update_seconds": 0.18019044300126552,
+        "Runtime/checkpoint_seconds": 6.249300531635527e-05,
+        "Runtime/step_seconds": 0.3166332244873047,
+        "Runtime/normal_step_seconds": 0.13644278148603917,
+        "Runtime/update_seconds": 0.18019044300126552,
+        "Runtime/step_perf_seconds": 0.31695234600374533,
+        "Runtime/diagnostics_build_seconds": 0.013009654996494646
+      }
+    },
+    {
+      "mode": "local_1",
+      "wall_seconds": 1.252729186999204,
+      "cpu_seconds": 1.2250406360000001,
+      "peak_rss_mb": 648.359375,
+      "gpu": "not used",
+      "job_bytes": 1490956,
+      "tracking": {
+        "enabled": false,
+        "failed": false,
+        "metrics_enabled": true,
+        "failure_policy": "local",
+        "sample_interval": 10,
+        "profile": "minimal",
+        "models": false,
+        "checkpoints": false,
+        "remote_calls": 0,
+        "remote_seconds": 0.0,
+        "local_bytes": 623316
+      },
+      "finalization": {
+        "output_seconds": 0.0398587800009409,
+        "checkpoint_seconds": 0.009401101000548806
+      },
+      "sampled_runtime_totals": {
+        "Runtime/predict_seconds": 0.033070056002543424,
+        "Runtime/action_prepare_seconds": 0.00380503499036422,
+        "Runtime/env_step_seconds": 0.08359590900181502,
+        "Runtime/observation_encoding_seconds": 0.008085411998763448,
+        "Runtime/entity_layout_seconds": 0.008085411998763448,
+        "Runtime/reward_shaping_seconds": 0.0008965449978859397,
+        "Runtime/agent_update_seconds": 0.1720726749917958,
+        "Runtime/model_observation_encoding_seconds": 0.002226270999017288,
+        "Runtime/model_update_seconds": 0.1720726749917958,
+        "Runtime/checkpoint_seconds": 5.528599831450265e-05,
+        "Runtime/step_seconds": 0.3032999038696289,
+        "Runtime/normal_step_seconds": 0.1312272288778331,
+        "Runtime/update_seconds": 0.1720726749917958,
+        "Runtime/step_perf_seconds": 0.3036091560006753,
+        "Runtime/diagnostics_build_seconds": 0.012689430001046276
+      }
+    },
+    {
+      "mode": "local_2",
+      "wall_seconds": 1.3187039809999987,
+      "cpu_seconds": 1.2903446979999997,
+      "peak_rss_mb": 648.5703125,
+      "gpu": "not used",
+      "job_bytes": 1491009,
+      "tracking": {
+        "enabled": false,
+        "failed": false,
+        "metrics_enabled": true,
+        "failure_policy": "local",
+        "sample_interval": 10,
+        "profile": "minimal",
+        "models": false,
+        "checkpoints": false,
+        "remote_calls": 0,
+        "remote_seconds": 0.0,
+        "local_bytes": 623368
+      },
+      "finalization": {
+        "output_seconds": 0.04026321499986807,
+        "checkpoint_seconds": 0.009970343999157194
+      },
+      "sampled_runtime_totals": {
+        "Runtime/predict_seconds": 0.036163469005259685,
+        "Runtime/action_prepare_seconds": 0.00399663498501468,
+        "Runtime/env_step_seconds": 0.09001310700114118,
+        "Runtime/observation_encoding_seconds": 0.008723106997422292,
+        "Runtime/entity_layout_seconds": 0.008723106997422292,
+        "Runtime/reward_shaping_seconds": 0.001002103004793753,
+        "Runtime/agent_update_seconds": 0.1904642000044987,
+        "Runtime/model_observation_encoding_seconds": 0.002453051007250906,
+        "Runtime/model_update_seconds": 0.1904642000044987,
+        "Runtime/checkpoint_seconds": 5.471999793371651e-05,
+        "Runtime/step_seconds": 0.3323395252227783,
+        "Runtime/normal_step_seconds": 0.1418753252182796,
+        "Runtime/update_seconds": 0.1904642000044987,
+        "Runtime/step_perf_seconds": 0.3326605840011325,
+        "Runtime/diagnostics_build_seconds": 0.013629483997647185
+      }
+    },
+    {
+      "mode": "mlflow_full_0",
+      "wall_seconds": 2.3477159240010224,
+      "cpu_seconds": 2.293560648,
+      "peak_rss_mb": 688.390625,
+      "gpu": "not used",
+      "job_bytes": 1490993,
+      "tracking": {
+        "enabled": true,
+        "failed": false,
+        "metrics_enabled": true,
+        "failure_policy": "local",
+        "sample_interval": 1,
+        "profile": "full",
+        "models": true,
+        "checkpoints": true,
+        "remote_calls": 98,
+        "remote_seconds": 1.0164185900157463,
+        "local_bytes": 623399
+      },
+      "finalization": {
+        "output_seconds": 0.033889653999722213,
+        "checkpoint_seconds": 0.026529860999289667
+      },
+      "sampled_runtime_totals": {
+        "Runtime/predict_seconds": 0.04331416299464763,
+        "Runtime/action_prepare_seconds": 0.004402877995744348,
+        "Runtime/env_step_seconds": 0.09028287399451074,
+        "Runtime/observation_encoding_seconds": 0.008708103003300494,
+        "Runtime/entity_layout_seconds": 0.008708103003300494,
+        "Runtime/reward_shaping_seconds": 0.0009792030014068587,
+        "Runtime/agent_update_seconds": 0.3127235799947812,
+        "Runtime/model_observation_encoding_seconds": 0.0024268479992315406,
+        "Runtime/model_update_seconds": 0.3127235799947812,
+        "Runtime/checkpoint_seconds": 5.6146993301808834e-05,
+        "Runtime/step_seconds": 0.46274447441101074,
+        "Runtime/normal_step_seconds": 0.15002089441622957,
+        "Runtime/update_seconds": 0.3127235799947812,
+        "Runtime/step_perf_seconds": 0.4630845280025824,
+        "Runtime/diagnostics_build_seconds": 0.014596230003007804
+      }
+    },
+    {
+      "mode": "mlflow_full_1",
+      "wall_seconds": 2.3316187979999086,
+      "cpu_seconds": 2.296504421,
+      "peak_rss_mb": 688.37890625,
+      "gpu": "not used",
+      "job_bytes": 1490894,
+      "tracking": {
+        "enabled": true,
+        "failed": false,
+        "metrics_enabled": true,
+        "failure_policy": "local",
+        "sample_interval": 1,
+        "profile": "full",
+        "models": true,
+        "checkpoints": true,
+        "remote_calls": 98,
+        "remote_seconds": 1.0182613109955128,
+        "local_bytes": 623301
+      },
+      "finalization": {
+        "output_seconds": 0.03451539299931028,
+        "checkpoint_seconds": 0.027210414000364835
+      },
+      "sampled_runtime_totals": {
+        "Runtime/predict_seconds": 0.04384780699729163,
+        "Runtime/action_prepare_seconds": 0.004435044993442716,
+        "Runtime/env_step_seconds": 0.09035064399904513,
+        "Runtime/observation_encoding_seconds": 0.008569499001168879,
+        "Runtime/entity_layout_seconds": 0.008569499001168879,
+        "Runtime/reward_shaping_seconds": 0.0009602520058251685,
+        "Runtime/agent_update_seconds": 0.3157353239985241,
+        "Runtime/model_observation_encoding_seconds": 0.0023683149920543656,
+        "Runtime/model_update_seconds": 0.3157353239985241,
+        "Runtime/checkpoint_seconds": 6.322000081127044e-05,
+        "Runtime/step_seconds": 0.4662609100341797,
+        "Runtime/normal_step_seconds": 0.15052558603565558,
+        "Runtime/update_seconds": 0.3157353239985241,
+        "Runtime/step_perf_seconds": 0.4665933539999969,
+        "Runtime/diagnostics_build_seconds": 0.014356922987644793
+      }
+    },
+    {
+      "mode": "mlflow_full_2",
+      "wall_seconds": 2.2817878249989008,
+      "cpu_seconds": 2.2454480840000004,
+      "peak_rss_mb": 688.296875,
+      "gpu": "not used",
+      "job_bytes": 1490922,
+      "tracking": {
+        "enabled": true,
+        "failed": false,
+        "metrics_enabled": true,
+        "failure_policy": "local",
+        "sample_interval": 1,
+        "profile": "full",
+        "models": true,
+        "checkpoints": true,
+        "remote_calls": 98,
+        "remote_seconds": 1.0003075590138906,
+        "local_bytes": 623329
+      },
+      "finalization": {
+        "output_seconds": 0.03361994500119181,
+        "checkpoint_seconds": 0.026742594000097597
+      },
+      "sampled_runtime_totals": {
+        "Runtime/predict_seconds": 0.043298685994159314,
+        "Runtime/action_prepare_seconds": 0.00432689199806191,
+        "Runtime/env_step_seconds": 0.08617742599744815,
+        "Runtime/observation_encoding_seconds": 0.00807419099874096,
+        "Runtime/entity_layout_seconds": 0.00807419099874096,
+        "Runtime/reward_shaping_seconds": 0.0009291179976571584,
+        "Runtime/agent_update_seconds": 0.3076116779957374,
+        "Runtime/model_observation_encoding_seconds": 0.0023222440049721627,
+        "Runtime/model_update_seconds": 0.3076116779957374,
+        "Runtime/checkpoint_seconds": 8.295499355881475e-05,
+        "Runtime/step_seconds": 0.4528489112854004,
+        "Runtime/normal_step_seconds": 0.14523723328966298,
+        "Runtime/update_seconds": 0.3076116779957374,
+        "Runtime/step_perf_seconds": 0.4531717510017188,
+        "Runtime/diagnostics_build_seconds": 0.014127855996775907
+      }
+    },
+    {
+      "mode": "mlflow_minimal_0",
+      "wall_seconds": 1.9202492839995102,
+      "cpu_seconds": 1.884312104,
+      "peak_rss_mb": 688.33984375,
+      "gpu": "not used",
+      "job_bytes": 1490985,
+      "tracking": {
+        "enabled": true,
+        "failed": false,
+        "metrics_enabled": true,
+        "failure_policy": "local",
+        "sample_interval": 10,
+        "profile": "minimal",
+        "models": false,
+        "checkpoints": false,
+        "remote_calls": 17,
+        "remote_seconds": 0.6224716750002699,
+        "local_bytes": 623337
+      },
+      "finalization": {
+        "output_seconds": 0.033520412998768734,
+        "checkpoint_seconds": 0.009804028000871767
+      },
+      "sampled_runtime_totals": {
+        "Runtime/predict_seconds": 0.034597990996189765,
+        "Runtime/action_prepare_seconds": 0.00391118799780088,
+        "Runtime/env_step_seconds": 0.08512946798509802,
+        "Runtime/observation_encoding_seconds": 0.008195313008400262,
+        "Runtime/entity_layout_seconds": 0.008195313008400262,
+        "Runtime/reward_shaping_seconds": 0.0009207340008288156,
+        "Runtime/agent_update_seconds": 0.18831126899749506,
+        "Runtime/model_observation_encoding_seconds": 0.0022900849962752545,
+        "Runtime/model_update_seconds": 0.18831126899749506,
+        "Runtime/checkpoint_seconds": 7.673400432395283e-05,
+        "Runtime/step_seconds": 0.3229959011077881,
+        "Runtime/normal_step_seconds": 0.13468463211029302,
+        "Runtime/update_seconds": 0.18831126899749506,
+        "Runtime/step_perf_seconds": 0.3233263279980747,
+        "Runtime/diagnostics_build_seconds": 0.013092669996694895
+      }
+    },
+    {
+      "mode": "mlflow_minimal_1",
+      "wall_seconds": 1.9121497929991165,
+      "cpu_seconds": 1.8798167090000002,
+      "peak_rss_mb": 687.3203125,
+      "gpu": "not used",
+      "job_bytes": 1490965,
+      "tracking": {
+        "enabled": true,
+        "failed": false,
+        "metrics_enabled": true,
+        "failure_policy": "local",
+        "sample_interval": 10,
+        "profile": "minimal",
+        "models": false,
+        "checkpoints": false,
+        "remote_calls": 17,
+        "remote_seconds": 0.6248554289977619,
+        "local_bytes": 623318
+      },
+      "finalization": {
+        "output_seconds": 0.03266164900014701,
+        "checkpoint_seconds": 0.009871603000647156
+      },
+      "sampled_runtime_totals": {
+        "Runtime/predict_seconds": 0.03512359499836748,
+        "Runtime/action_prepare_seconds": 0.003924607995941187,
+        "Runtime/env_step_seconds": 0.08641594299479038,
+        "Runtime/observation_encoding_seconds": 0.008183000998542411,
+        "Runtime/entity_layout_seconds": 0.008183000998542411,
+        "Runtime/reward_shaping_seconds": 0.00092412299636635,
+        "Runtime/agent_update_seconds": 0.18777011800739274,
+        "Runtime/model_observation_encoding_seconds": 0.0022573650039703352,
+        "Runtime/model_update_seconds": 0.18777011800739274,
+        "Runtime/checkpoint_seconds": 6.246199700399302e-05,
+        "Runtime/step_seconds": 0.3242807388305664,
+        "Runtime/normal_step_seconds": 0.13651062082317367,
+        "Runtime/update_seconds": 0.18777011800739274,
+        "Runtime/step_perf_seconds": 0.3245977229980781,
+        "Runtime/diagnostics_build_seconds": 0.0128474580051261
+      }
+    },
+    {
+      "mode": "mlflow_minimal_2",
+      "wall_seconds": 1.959197360998587,
+      "cpu_seconds": 1.9274924880000002,
+      "peak_rss_mb": 687.82421875,
+      "gpu": "not used",
+      "job_bytes": 1491025,
+      "tracking": {
+        "enabled": true,
+        "failed": false,
+        "metrics_enabled": true,
+        "failure_policy": "local",
+        "sample_interval": 10,
+        "profile": "minimal",
+        "models": false,
+        "checkpoints": false,
+        "remote_calls": 17,
+        "remote_seconds": 0.6442418350052321,
+        "local_bytes": 623378
+      },
+      "finalization": {
+        "output_seconds": 0.03466708799896878,
+        "checkpoint_seconds": 0.009978505000617588
+      },
+      "sampled_runtime_totals": {
+        "Runtime/predict_seconds": 0.035977927003841614,
+        "Runtime/action_prepare_seconds": 0.004013101000964525,
+        "Runtime/env_step_seconds": 0.08796486099709,
+        "Runtime/observation_encoding_seconds": 0.008532372008630773,
+        "Runtime/entity_layout_seconds": 0.008532372008630773,
+        "Runtime/reward_shaping_seconds": 0.0009225310059264302,
+        "Runtime/agent_update_seconds": 0.19435316699491523,
+        "Runtime/model_observation_encoding_seconds": 0.0023335040004894836,
+        "Runtime/model_update_seconds": 0.19435316699491523,
+        "Runtime/checkpoint_seconds": 6.698500510537997e-05,
+        "Runtime/step_seconds": 0.3337252140045166,
+        "Runtime/normal_step_seconds": 0.13937204700960137,
+        "Runtime/update_seconds": 0.19435316699491523,
+        "Runtime/step_perf_seconds": 0.3340506680051476,
+        "Runtime/diagnostics_build_seconds": 0.013348140995731228
+      }
+    },
+    {
+      "mode": "off_0",
+      "wall_seconds": 1.2815847120000399,
+      "cpu_seconds": 1.2558167430000002,
+      "peak_rss_mb": 647.0078125,
+      "gpu": "not used",
+      "job_bytes": 867606,
+      "tracking": {
+        "enabled": false,
+        "failed": false,
+        "metrics_enabled": false,
+        "failure_policy": "local",
+        "sample_interval": 10,
+        "profile": "minimal",
+        "models": false,
+        "checkpoints": false,
+        "remote_calls": 0,
+        "remote_seconds": 0.0,
+        "local_bytes": 0
+      },
+      "finalization": {
+        "output_seconds": 0.04012508300002082,
+        "checkpoint_seconds": 0.009127942999839433
+      },
+      "sampled_runtime_totals": {}
+    },
+    {
+      "mode": "off_1",
+      "wall_seconds": 1.2597745680013759,
+      "cpu_seconds": 1.2332556280000002,
+      "peak_rss_mb": 647.69921875,
+      "gpu": "not used",
+      "job_bytes": 867606,
+      "tracking": {
+        "enabled": false,
+        "failed": false,
+        "metrics_enabled": false,
+        "failure_policy": "local",
+        "sample_interval": 10,
+        "profile": "minimal",
+        "models": false,
+        "checkpoints": false,
+        "remote_calls": 0,
+        "remote_seconds": 0.0,
+        "local_bytes": 0
+      },
+      "finalization": {
+        "output_seconds": 0.03983288900053594,
+        "checkpoint_seconds": 0.009220632000506157
+      },
+      "sampled_runtime_totals": {}
+    },
+    {
+      "mode": "off_2",
+      "wall_seconds": 1.2724661020001804,
+      "cpu_seconds": 1.2447078520000001,
+      "peak_rss_mb": 647.7421875,
+      "gpu": "not used",
+      "job_bytes": 867607,
+      "tracking": {
+        "enabled": false,
+        "failed": false,
+        "metrics_enabled": false,
+        "failure_policy": "local",
+        "sample_interval": 10,
+        "profile": "minimal",
+        "models": false,
+        "checkpoints": false,
+        "remote_calls": 0,
+        "remote_seconds": 0.0,
+        "local_bytes": 0
+      },
+      "finalization": {
+        "output_seconds": 0.041225540000596084,
+        "checkpoint_seconds": 0.010237382999548572
+      },
+      "sampled_runtime_totals": {}
+    }
+  ],
+  "mlflow_store_bytes_total": 2871893
+}

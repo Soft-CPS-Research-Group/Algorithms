@@ -28,6 +28,7 @@ Extend `algorithms/agents/base_agent.py`:
 | `save_checkpoint(output_dir, step)` | Persist training state |
 | `load_checkpoint(checkpoint_path)` | Resume from checkpoint |
 | `attach_environment(observation_names, action_names, action_space, observation_space, metadata)` | Receive environment metadata |
+| `select_evaluation_policy()` | Return final selection by default, or a validated selection record before evaluation hashing |
 | `is_initial_exploration_done(global_learning_step)` | Gate warm-up phase |
 
 **Notes:**
@@ -227,3 +228,5 @@ Coverage includes:
 - **Checkpointing** - Save/resume functionality
 - **Manifest** - Artifact metadata generation
 - **Bundle validation** - Export contract compliance
+
+Stage-3 jobs use explicit `training.episodes` plus `evaluation.episodes`, named seed streams, atomic checkpoint indexes and isolated attempts. Declare checkpoint capabilities truthfully: BuildingAgent currently has no serializer. Read [the reliability contract](docs/runtime/reliability.md) before adding new serializers or changing evaluation behavior.

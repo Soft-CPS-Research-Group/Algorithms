@@ -62,7 +62,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.tracking import mlflow, metrics_active
 import numpy as np
 import torch
 from loguru import logger
@@ -1018,7 +1018,7 @@ class CCLevel2CapacityAgent(BaseAgent):
             "CC-L2 BC pretraining done | steps={} | loss={:.6f}",
             self._bc_train_steps, mean_loss,
         )
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_metrics(
                 {
                     "CC2/bc_pretrain_loss":              mean_loss,
@@ -1210,7 +1210,7 @@ class CCLevel2CapacityAgent(BaseAgent):
             "CC-L2 PPO | pg={:.4f} v={:.4f} ent={:.4f} kl={:.4f} log_std={:.3f} kl_stop={}",
             pg_loss.item(), v_loss.item(), ent_loss.item(), approx_kl, log_std_mean, kl_stop,
         )
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_metrics(
                 {
                     "CC2/PPO_pg_loss":    pg_loss.item(),
@@ -1332,7 +1332,7 @@ class CCLevel2CapacityAgent(BaseAgent):
             mult_mean_ep, intra_spread_ep,
             ev_harm_ep, ev_harm_peak_ep, ev_harm_high_frac, n_ev_mean,
         )
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_artifact(tmp_path, artifact_path="decision_traces")
             metrics: dict = {
                 # Multiplier quality

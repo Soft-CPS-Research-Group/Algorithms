@@ -185,7 +185,7 @@ def _single_agent_member_view(
     member_view["topology"] = topology
 
     training = dict(member_view.get("training") or {})
-    base_seed = int(training.get("seed", 22) or 22)
+    base_seed = int(training.get("seed", 22))
     training["seed"] = base_seed + int(member_index)
     member_view["training"] = training
 
@@ -219,8 +219,21 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
         logger.error(message)
         raise ValueError(message)
 
+    from algorithms.runtime.randomness import RandomStreams, derived_seed, seeded
+
+    def construct(agent_cls, view, stage_index, member_index):
+        view = deepcopy(view)
+        root_seed = int((config.get("training") or {}).get("seed", 22))
+        seed = derived_seed(root_seed, "stage", stage_index, "member", member_index)
+        view.setdefault("training", {})["seed"] = seed
+        with seeded(seed):
+            unit = agent_cls(config=view)
+        unit.random_streams = RandomStreams(seed)
+        unit.runtime_identity = {"stage": stage_index, "member": member_index, "seed": seed}
+        return unit
+
     stages: List[ExecutionUnit] = []
-    for stage_cfg in pipeline_cfg:
+    for stage_index, stage_cfg in enumerate(pipeline_cfg):
         algorithm_name = stage_cfg.get("algorithm")
         if not is_algorithm_supported(algorithm_name):
             message = build_unsupported_algorithm_message(algorithm_name)
@@ -238,7 +251,7 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
         frozen = bool(stage_cfg.get("frozen", False))
 
         if count == 1:
-            unit = agent_cls(config=agent_view)
+            unit = construct(agent_cls, agent_view, stage_index, 0)
             unit.agent_name = algorithm_name
             if algorithm_name in AGENT_SPECS:
                 unit.capabilities = AGENT_SPECS[algorithm_name].capabilities
@@ -247,16 +260,18 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
         else:
             if bool(getattr(agent_cls, "single_agent_only", False)):
                 members = [
-                    agent_cls(
-                        config=_single_agent_member_view(
-                            agent_view,
-                            member_index=member_index,
-                        )
+                    construct(
+                        agent_cls,
+                        _single_agent_member_view(agent_view, member_index=member_index),
+                        stage_index,
+                        member_index,
                     )
                     for member_index in range(count)
                 ]
             else:
-                members = [agent_cls(config=agent_view) for _ in range(count)]
+                members = [
+                    construct(agent_cls, agent_view, stage_index, member) for member in range(count)
+                ]
             ensemble = Ensemble(members)
             for member in members:
                 member.agent_name = algorithm_name

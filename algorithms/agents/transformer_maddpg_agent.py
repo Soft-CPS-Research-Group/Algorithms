@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.tracking import mlflow, metrics_active
 import numpy as np
 import torch
 from loguru import logger
@@ -432,7 +432,7 @@ class TransformerMADDPG(BaseAgent):
 
         # Logging
         should_log = global_learning_step % self.mlflow_step_sample_interval == 0
-        if should_log and mlflow.active_run():
+        if should_log and metrics_active(mlflow):
             mlflow.log_metrics(
                 {
                     "critic_loss": critic_loss.item(),

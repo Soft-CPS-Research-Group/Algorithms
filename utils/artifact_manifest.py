@@ -47,8 +47,8 @@ def write_manifest(manifest: Dict[str, Any], output_dir: str) -> Path:
     path = Path(output_dir) / "artifact_manifest.json"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as handle:
-            json.dump(manifest, handle, indent=2, default=_json_default)
+        from algorithms.runtime.atomic import atomic_text
+        atomic_text(path, json.dumps(manifest, indent=2, default=_json_default, allow_nan=False))
     except Exception as exc:
         logger.error("Failed to write artifact manifest: {}", exc)
         raise

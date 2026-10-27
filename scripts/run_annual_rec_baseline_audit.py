@@ -555,7 +555,6 @@ def _build_config(
             "central_agent": False,
             "interface": "entity",
             "topology_mode": topology_mode,
-            "episodes": 1,
             "simulation_start_time_step": start,
             # CityLearn represents T controlled intervals with T+1 state
             # points. The canonical files contain exactly the 35,040 physical
@@ -578,8 +577,10 @@ def _build_config(
         "kpi_round_decimals": None,
         "session_name": job_id,
     }
+    config["evaluation"] = {"episodes": 0}
     config["training"] = {
         **dict(config.get("training") or {}),
+        "episodes": 1,
         "seed": 123,
         "steps_between_training_updates": 1,
         "target_update_interval": 0,

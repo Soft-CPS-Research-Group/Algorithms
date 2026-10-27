@@ -12,6 +12,7 @@ import yaml
 
 from algorithms.contracts import SimulatorStep
 from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS
+from algorithms.runtime.inputs import unique_object, validate_inputs
 
 
 class SimulatorAdapter:
@@ -184,7 +185,7 @@ def _resolve_citylearn_schema_input(
 
     try:
         with candidate.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+            payload = json.load(handle, object_pairs_hook=unique_object)
     except (OSError, json.JSONDecodeError):
         return dataset_path_value
 
@@ -309,6 +310,7 @@ def create_environment(config, simulation_data_dir, *, env_factory=None):
     _validate_dynamic_entity_schema_input(
         schema_input, interface=interface_mode, topology_mode=topology_mode
     )
+    validate_inputs(config, schema_input)
     path_info = {"simulation_data_dir": simulation_data_dir}
     env_kwargs = {
         "schema": schema_input,

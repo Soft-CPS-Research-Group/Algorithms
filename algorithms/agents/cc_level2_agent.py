@@ -66,7 +66,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.tracking import mlflow, metrics_active
 import numpy as np
 import torch
 from loguru import logger
@@ -1036,6 +1036,15 @@ class CCLevel2Agent(BaseAgent):
         if position == self._training_episodes_per_validation:
             return "validation"
         return "training"
+
+    def select_evaluation_policy(self) -> Dict[str, Any]:
+        if not self._restore_best_policy_for_deterministic:
+            return {"selection": "final"}
+        if self._best_policy_state is None or self._best_validation_objective is None:
+            raise ValueError("Best-policy evaluation requires an available validation record")
+        self._restore_best_policy()
+        return {"selection": "validated_best", "source": self._best_policy_source,
+                "episode": self._best_validation_episode, "objective": self._best_validation_objective}
 
     def _restore_best_policy(self) -> None:
         if self._best_policy_restored:
@@ -2313,7 +2322,7 @@ class CCLevel2Agent(BaseAgent):
             mean_loss,
             total_seconds,
         )
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_metrics(
                 {
                     "CC2/bc_pretrain_loss":          mean_loss,
@@ -2612,7 +2621,7 @@ class CCLevel2Agent(BaseAgent):
             log_std_mean,
             kl_stop,
         )
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_metrics(
                 {
                     "CC2/PPO_pg_loss":    pg_loss.item(),
@@ -2806,7 +2815,7 @@ class CCLevel2Agent(BaseAgent):
             mult_mean_ep, intra_spread_ep,
             ev_harm_ep, ev_harm_peak_ep, ev_harm_high_frac, n_ev_mean,
         )
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_artifact(tmp_path, artifact_path="decision_traces")
             metrics: dict = {
                 # Multiplier quality

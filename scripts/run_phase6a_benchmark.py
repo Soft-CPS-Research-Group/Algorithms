@@ -1576,8 +1576,8 @@ def _build_run_config(
     tracking["reward_diagnostics_detail"] = getattr(args, "reward_diagnostics_detail", "summary")
 
     simulator = config.setdefault("simulator", {})
-    simulator["episodes"] = max(int(args.episodes), 1)
-    simulator["deterministic_finish"] = bool(getattr(args, "deterministic_finish", False))
+    from algorithms.configuration.episodes import set_legacy_episode_budget
+    set_legacy_episode_budget(config, max(int(args.episodes), 1), bool(getattr(args, "deterministic_finish", False)))
     if not args.full_window:
         steps = _selected_steps(dataset_key, args)
         start = max(int(args.start), 0)

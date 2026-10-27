@@ -11,7 +11,11 @@ from utils.config_schema import validate_config
 def base_config():
     config_path = Path("configs/config.yaml")
     with config_path.open("r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+        config = yaml.safe_load(handle)
+        # This suite exercises legacy episode aliases; canonical counts have separate tests.
+        config.get("training", {}).pop("episodes", None)
+        config.pop("evaluation", None)
+        return config
 
 
 def test_validate_config_success(base_config):

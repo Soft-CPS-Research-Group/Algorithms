@@ -115,7 +115,8 @@ class MASAC(MADDPG):
         context: Any = None,
     ) -> List[List[float]]:
         _ = context
-        self.exploration_step += 1
+        if not deterministic:
+            self.exploration_step += 1
         if not deterministic and self.exploration_step <= self.random_exploration_steps:
             initial_strategy = getattr(self, "initial_exploration_strategy", "uniform_full_range")
             if initial_strategy == "policy":

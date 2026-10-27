@@ -13,6 +13,13 @@ from utils.local_metrics import LocalMetricsLogger
 from utils.experiment_protocol import file_sha256
 
 
+@pytest.fixture(autouse=True)
+def isolate_dataset_validation_for_runner_unit_tests(monkeypatch):
+    # These tests replace CityLearn with a fake. Real input validation is covered
+    # by test_runtime_reliability and the complete-job suite.
+    monkeypatch.setattr("algorithms.runtime.simulator.validate_inputs", lambda *_args: {})
+
+
 def test_local_checkpoint_resolution_supports_ensemble_and_legacy_layout(tmp_path):
     current_root = tmp_path / "job" / "checkpoints"
     legacy_root = tmp_path / "job" / "logs" / "checkpoints"

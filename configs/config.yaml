@@ -118,9 +118,7 @@ simulator:
     community_local_price_ratio: 0.8
     community_grid_export_price: 0.0
   # Number of episodes executed by the training loop.
-  episodes: 1
   # When true, the final episode uses deterministic actions and disables updates.
-  deterministic_finish: false
   # Optional simulation window overrides (null = dataset schema defaults).
   simulation_start_time_step: 0
   simulation_end_time_step: 5759
@@ -144,6 +142,7 @@ simulator:
     squash: none
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:
+  episodes: 1
   seed: 22
   steps_between_training_updates: 5
   target_update_interval: 2
@@ -225,3 +224,6 @@ pipeline:
 
 # Optional worker-specific overrides (e.g., Deucalion). Keep null for local runs.
 execution: null
+
+evaluation:
+  episodes: 0

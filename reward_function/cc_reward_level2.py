@@ -52,7 +52,7 @@ from __future__ import annotations
 
 from typing import Any, List, Mapping, Union
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.tracking import mlflow, metrics_active
 from citylearn.reward_function import RewardFunction
 
 from reward_function.community_settlement import community_settlement_components
@@ -493,7 +493,7 @@ class CCRewardLevel2(RewardFunction):
 
         # ── MLflow logging (sampled) ─────────────────────────────────────────
         self._step += 1
-        if mlflow.active_run() and self._step % self._log_interval == 0:
+        if metrics_active(mlflow) and self._step % self._log_interval == 0:
             mlflow.log_metrics(
                 {
                     "CC2_rf/community_term":  community_term,

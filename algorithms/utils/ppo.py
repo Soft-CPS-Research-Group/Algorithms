@@ -99,6 +99,7 @@ class PPOActorCritic(nn.Module):
         self,
         x: torch.Tensor,
         action: torch.Tensor | None = None,
+        *, deterministic: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample (or evaluate) an action and return everything PPO needs.
 
@@ -130,7 +131,7 @@ class PPOActorCritic(nn.Module):
 
         if action is None:
             # Rollout: sample raw action and squash to (-1, 1) with tanh.
-            raw_action = dist.sample()
+            raw_action = action_mean if deterministic else dist.sample()
             action = torch.tanh(raw_action)
         else:
             # PPO update: invert tanh to recover the raw action that was stored.

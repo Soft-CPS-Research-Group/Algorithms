@@ -40,7 +40,6 @@ simulator:
     community_settlement_cost_weight: 0.0
     community_local_price_ratio: 0.8
     community_grid_export_price: 0.0
-  episodes: 1
   simulation_start_time_step: 0
   simulation_end_time_step: 5759
   episode_time_steps: 5760
@@ -54,6 +53,7 @@ simulator:
     session_name: "rbc-smart-15s-local"
 
 training:
+  episodes: 1
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
@@ -97,3 +97,6 @@ pipeline:
     deferrable_urgency_threshold: 0.6
     deferrable_slack_threshold: 0.4
     deferrable_safety_margin_steps: 1.0
+
+evaluation:
+  episodes: 0

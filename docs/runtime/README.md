@@ -73,8 +73,9 @@ Use a unique job ID for each independent execution; resume by providing a checkp
 
 MLflow is an optional extra and is loaded only when tracking is requested. Local
 metrics and results remain available with `tracking.mlflow_enabled: false`.
-This stage separates the dependency; it does not claim a new tracking performance
-benchmark or remove MLflow from existing published deployment images.
+Stage 3 centralizes sampling/uploads and failure policy and records an isolated
+tracking benchmark in [the reliability contract](reliability.md). The production
+MLflow service remains removed; no automatic artifact expiration is introduced.
 
 ## Research tools and ownership
 
@@ -86,3 +87,5 @@ multi-seed experiments or comparisons, not an alternative supported production
 job contract. They reuse the simulator input adapter instead of importing the
 whole job runner. See [ownership and provenance](ownership.md) and the
 [architecture decision](adr-001-common-runtime.md).
+
+See the [stage-3 reliability contract](reliability.md) for explicit training/evaluation budgets, data validation, seeds, checkpoint/resume limits, platform support and the measured optional-tracking decision.

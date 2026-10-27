@@ -103,6 +103,17 @@ def migrate_config(
                 notes.append(
                     f"pipeline[{index}].hyperparameters.{key}={value!r} was ignored by the legacy schema; retained the agent default. Set schema_version={SCHEMA_VERSION!r} explicitly to use this parameter."
                 )
+    if legacy_algorithm and "simulator" in payload:
+        from algorithms.configuration.episodes import episode_plan
+
+        plan = episode_plan(payload)
+        payload.setdefault("training", {})["episodes"] = plan["training"]
+        payload.setdefault("evaluation", {})["episodes"] = plan["evaluation"]
+        payload["simulator"].pop("episodes", None)
+        payload["simulator"].pop("deterministic_finish", None)
+        notes.append(
+            f"Preserved {plan['training']} training and {plan['evaluation']} evaluation episodes explicitly."
+        )
     payload["schema_version"] = SCHEMA_VERSION
     return payload, notes
 

@@ -121,7 +121,7 @@ def test_checkpoint_manager_saves_final_unaligned_step(tmp_path):
 
 
 def test_checkpoint_manager_skips_final_when_disabled(tmp_path):
-    manager = CheckpointManager(base_dir=str(tmp_path), interval=None)
+    manager = CheckpointManager(base_dir=str(tmp_path), interval=None, save_final=False)
     agent = DummyAgent()
 
     assert manager.save_final(agent, step=7) is None
@@ -145,7 +145,8 @@ def test_checkpoint_manager_preserves_trainable_episode_boundaries(tmp_path):
     )
 
     assert path is not None
-    assert path.name == "episode_001_step_35039_dummy_35039.pth"
+    assert path.name == "dummy_35039.pth"
+    assert path.parent.name.startswith("step_000000035039_")
     assert path.read_text() == "checkpoint"
     assert agent.saved_steps == [35039]
     latest = tmp_path / "checkpoints" / "dummy_35039.pth"
@@ -157,7 +158,8 @@ def test_checkpoint_manager_preserves_trainable_episode_boundaries(tmp_path):
         episode=0,
         deterministic=False,
     )
-    assert repeated == path
+    assert repeated != path
+    assert path.read_text() == "checkpoint"  # previous generation retained
     assert os.path.samefile(repeated, latest)
     assert agent.saved_steps == [35039, 35039]
 

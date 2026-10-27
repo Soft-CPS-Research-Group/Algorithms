@@ -56,7 +56,6 @@ simulator:
     community_penalty_divide_by_agents: true
     scale_state_penalties_by_time_step: true
     state_penalty_reference_seconds: 3600.0
-  episodes: 1
   simulation_start_time_step: 0
   simulation_end_time_step: 35039
   episode_time_steps: 35040
@@ -72,6 +71,7 @@ simulator:
     session_name: "rbc-basic-15min-local"
 
 training:
+  episodes: 1
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
@@ -101,3 +101,6 @@ pipeline:
     deferrable_urgency_threshold: 0.6
     deferrable_slack_threshold: 0.4
     deferrable_safety_margin_steps: 1.0
+
+evaluation:
+  episodes: 0

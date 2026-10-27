@@ -49,7 +49,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.tracking import mlflow, metrics_active
 import numpy as np
 import torch
 from loguru import logger
@@ -800,7 +800,7 @@ class CCLevel1Agent(BaseAgent):
             "BC pretraining done | steps={} | loss={:.6f} | corr(price,mult)={:+.3f}",
             self._bc_train_steps, mean_loss, corr,
         )
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             metrics: dict = {
                 "CC/bc_pretrain_loss":             mean_loss,
                 "CC/bc_pretrain_collect_n":        float(N),
@@ -984,7 +984,7 @@ class CCLevel1Agent(BaseAgent):
             "CC PPO | pg={:.4f} v={:.4f} ent={:.4f} kl_stop={}",
             pg_loss.item(), v_loss.item(), ent_loss.item(), kl_stop,
         )
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_metrics(
                 {
                     "PPO_pg_loss":      pg_loss.item(),
@@ -1056,7 +1056,7 @@ class CCLevel1Agent(BaseAgent):
             "carbon_import={:.4f} peak_import={:.3f}",
             ep, len(imports), self_sufficiency, load_factor, carbon_import, peak_import,
         )
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_artifact(tmp_path, artifact_path="decision_traces")
             metrics = {
                 "CC_self_sufficiency": self_sufficiency if not np.isnan(self_sufficiency) else 0.0,
