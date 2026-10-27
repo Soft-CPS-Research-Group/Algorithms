@@ -177,7 +177,24 @@ def validate_inputs(config, schema):
     contract_path = simulator.get("data_contract_path")
     contracts = json.loads(Path(contract_path).read_text()) if contract_path else {}
     records, checked = [], {}
-    for label, kind, filename in references(schema):
+    declared_references = list(references(schema))
+    future_building_ids = []
+    if simulator.get("topology_mode", "static") == "dynamic":
+        # Initially excluded members can be loaded by later events or supply
+        # equipment to active members. Their declared assets are also inputs.
+        referenced_members = {
+            event[key]
+            for event in schema.get("topology_events", [])
+            for key in ("target_member_id", "source_member_id")
+            if isinstance(event, dict) and event.get(key)
+        }
+        for member_id, member in schema.get("buildings", {}).items():
+            if member_id in referenced_members and member.get("include") is False:
+                future_building_ids.append(member_id)
+                declared_references.extend(
+                    references({**member, "include": True}, f"buildings.{member_id}")
+                )
+    for label, kind, filename in declared_references:
         path = (root / filename).resolve()
         if not path.is_file():
             raise FileNotFoundError(f"Missing dataset/auxiliary input {label}: {path}")
@@ -269,6 +286,8 @@ def validate_inputs(config, schema):
         ],
         "files": records,
     }
+    if future_building_ids:
+        report["future_building_ids"] = future_building_ids
     report["identity_sha256"] = hashlib.sha256(
         json.dumps(report, sort_keys=True, allow_nan=False).encode()
     ).hexdigest()
