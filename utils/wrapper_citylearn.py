@@ -688,6 +688,10 @@ class Wrapper_CityLearn(RLC):
                 }
                 for space in self.observation_space
             ],
+            "building_battery_capacity_kwh": [
+                float((item.get("electrical_storage") or {}).get("capacity", 0.0) or 0.0)
+                for item in (self.building_metadata or [])
+            ],
         }
 
         try:

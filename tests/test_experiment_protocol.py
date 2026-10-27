@@ -210,9 +210,12 @@ def test_canonical_v3_treats_ev_minimum_as_safety_and_symmetric_target_as_guardr
 
     assert rules["hard_gates"]["ev_min_acceptable_feasible_rate"]["min"] == 0.99
     assert "ev_within_tolerance_feasible_rate" not in rules["hard_gates"]
-    assert rules["reference_guardrails"][
-        "ev_within_tolerance_feasible_rate"
-    ]["max_absolute_decrease"] == 0.0
+    assert (
+        rules["reference_guardrails"]["ev_within_tolerance_feasible_rate"][
+            "max_absolute_decrease"
+        ]
+        == 0.0
+    )
 
 
 def test_pairing_fingerprint_separates_simulator_and_neural_seeds(tmp_path):
@@ -260,8 +263,12 @@ def test_selection_requires_every_paired_surface_and_rejects_bad_scorecard():
     candidates = [
         _record("good", "winter", "a" * 64, role="candidate", cost=95.0),
         _record("good", "summer", "a" * 64, role="candidate", cost=110.0),
-        _record("unsafe", "winter", "b" * 64, role="candidate", cost=80.0, violations=0.4),
-        _record("unsafe", "summer", "b" * 64, role="candidate", cost=80.0, violations=0.4),
+        _record(
+            "unsafe", "winter", "b" * 64, role="candidate", cost=80.0, violations=0.4
+        ),
+        _record(
+            "unsafe", "summer", "b" * 64, role="candidate", cost=80.0, violations=0.4
+        ),
         _record("bad-peak", "winter", "c" * 64, role="candidate", cost=70.0, peak=1.2),
         _record("bad-peak", "summer", "c" * 64, role="candidate", cost=70.0, peak=1.2),
         _record(
@@ -308,14 +315,20 @@ def test_selection_refuses_confirmation_records():
     candidate["phase"] = "confirmation"
 
     with pytest.raises(ValueError, match="development records only"):
-        select_checkpoint(references=[reference], candidates=[candidate], rules=_rules())
+        select_checkpoint(
+            references=[reference], candidates=[candidate], rules=_rules()
+        )
 
 
 def test_confirmation_report_verifies_frozen_provenance_and_paired_scorecard():
     selection = _selection_record()
     references = [
-        _confirmation_record("smart-winter", "winter", None, role="reference", cost=100.0),
-        _confirmation_record("smart-summer", "summer", None, role="reference", cost=120.0),
+        _confirmation_record(
+            "smart-winter", "winter", None, role="reference", cost=100.0
+        ),
+        _confirmation_record(
+            "smart-summer", "summer", None, role="reference", cost=120.0
+        ),
     ]
     candidates = [
         _confirmation_record(
@@ -351,9 +364,7 @@ def test_confirmation_report_verifies_frozen_provenance_and_paired_scorecard():
     assert report["reference_metrics"]["cost_eur"] == pytest.approx(220.0)
     assert report["candidate_metrics"]["cost_eur"] == pytest.approx(205.0)
     assert report["metric_deltas"]["cost_eur"] == pytest.approx(-15.0)
-    assert report["metric_relative_deltas"]["cost_eur"] == pytest.approx(
-        -15.0 / 220.0
-    )
+    assert report["metric_relative_deltas"]["cost_eur"] == pytest.approx(-15.0 / 220.0)
     assert len(report["paired_windows"]) == 2
     assert len(report["report_sha256"]) == 64
 
@@ -417,7 +428,9 @@ def test_confirmation_cli_forwards_the_frozen_selection(tmp_path):
     completed = subprocess.run(
         [
             sys.executable,
-            str(Path(__file__).parents[1] / "scripts" / "ti_marl_experiment_protocol.py"),
+            str(
+                Path(__file__).parents[1] / "scripts" / "ti_marl_experiment_protocol.py"
+            ),
             "confirm",
             "--reference",
             str(reference_path),
@@ -445,7 +458,9 @@ def test_selection_rejects_a_tampered_evaluation_record():
     candidate["metrics"]["cost_eur"] = 1.0
 
     with pytest.raises(ValueError, match="payload/hash mismatch"):
-        select_checkpoint(references=[reference], candidates=[candidate], rules=_rules())
+        select_checkpoint(
+            references=[reference], candidates=[candidate], rules=_rules()
+        )
 
 
 def test_selected_checkpoint_verification(tmp_path):
@@ -455,3 +470,104 @@ def test_selected_checkpoint_verification(tmp_path):
     assert verify_selected_checkpoint(selection, checkpoint)
     checkpoint.write_bytes(b"changed")
     assert not verify_selected_checkpoint(selection, checkpoint)
+
+
+def test_audited_surface_hashes_external_event_contents(tmp_path):
+    config = _config(tmp_path)
+    schema_path = Path(config["simulator"]["dataset_path"])
+    events = tmp_path / "events.csv"
+    events.write_text("step,power\n10,2\n")
+    schema_path.write_text(
+        json.dumps(
+            {
+                "experimental_design": {
+                    "version": "portugal-evaluation-v2",
+                    "phase": "development",
+                    "factors": {"D": True},
+                },
+                "root_directory": ".",
+                "demand_response": {"requests_file": "events.csv"},
+            }
+        )
+    )
+    before = build_pairing_fingerprint(config)
+    events.write_text("step,power\n10,3\n")
+    after = build_pairing_fingerprint(config)
+    assert before["sha256"] != after["sha256"]
+    events.unlink()
+    with pytest.raises(FileNotFoundError):
+        build_pairing_fingerprint(config)
+
+
+def test_scorecard_preserves_zero_and_negative_cost_and_rejects_nan(tmp_path):
+    p = tmp_path / "kpis.csv"
+    for value in (0.0, -2.0):
+        _write_kpis(p, district_cost_community_market_settled_total_eur=value)
+        assert extract_scorecard(p)["cost_eur"] == value
+    _write_kpis(p, district_cost_community_market_settled_total_eur=float("nan"))
+    assert "cost_eur" not in extract_scorecard(p)
+
+
+def test_current_profile_missing_service_evidence_fails_closed():
+    from utils.experiment_protocol import _gate_reasons
+
+    assert "missing_required:ev_min" in _gate_reasons(
+        {}, {"required_metrics": ["ev_min"]}, {}
+    )
+
+
+def test_diagnostics_bind_traces_and_cannot_overwrite_official_cost(tmp_path):
+    from utils.experiment_protocol import _load_diagnostics
+
+    trace = tmp_path / "trace.csv"
+    trace.write_text("step,response\n1,3\n")
+    p = tmp_path / "diagnostics.json"
+    data = {
+        "format": "portugal_paired_diagnostics_v1",
+        "pairing_sha256": "a" * 64,
+        "sources": [{"path": "trace.csv", "sha256": file_sha256(trace)}],
+        "metrics": {"dr_additional_signed_kwh": 3.0},
+    }
+    p.write_text(json.dumps(data))
+    metrics, _ = _load_diagnostics(p, "a" * 64)
+    assert metrics["dr_additional_signed_kwh"] == 3
+    with pytest.raises(ValueError, match="exact paired"):
+        _load_diagnostics(p, "b" * 64)
+    data["metrics"]["cost_eur"] = 1
+    p.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="Unsupported"):
+        _load_diagnostics(p, "a" * 64)
+    data["metrics"].pop("cost_eur")
+    p.write_text(json.dumps(data))
+    trace.write_text("changed")
+    with pytest.raises(ValueError, match="hash mismatch"):
+        _load_diagnostics(p, "a" * 64)
+
+
+def test_dr_reference_coverage_has_fraction_units_and_conservative_aggregation(
+    tmp_path,
+):
+    from utils.experiment_protocol import _load_diagnostics, DEFAULT_AGGREGATION
+
+    trace = tmp_path / "reference.csv"
+    trace.write_text("step,valid\n1,1\n2,0\n")
+    p = tmp_path / "diagnostics.json"
+    data = dict(
+        format="portugal_paired_diagnostics_v1",
+        pairing_sha256="a" * 64,
+        sources=[dict(path=trace.name, sha256=file_sha256(trace))],
+        metrics=dict(
+            dr_reference_valid_fraction=0.5,
+            dr_reference_uncertainty_kw=3.0,
+            dr_credit_without_response_kwh=0.1,
+        ),
+    )
+    p.write_text(json.dumps(data))
+    metrics, _ = _load_diagnostics(p, "a" * 64)
+    assert metrics["dr_reference_valid_fraction"] == 0.5
+    assert DEFAULT_AGGREGATION["dr_reference_valid_fraction"] == "min"
+    assert DEFAULT_AGGREGATION["dr_reference_uncertainty_kw"] == "max"
+    data["metrics"]["dr_reference_valid_fraction"] = 50.0
+    p.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="fraction"):
+        _load_diagnostics(p, "a" * 64)

@@ -1,0 +1,44 @@
+# Set model_dir and the dataset to those used by the offline trainer.
+metadata:
+  experiment_name: consolidation_smoke
+  run_name: IQLAgent-evaluation
+  community_name: two-buildings
+tracking:
+  mlflow_enabled: false
+  log_level: WARNING
+  log_frequency: 64
+  progress_update_interval: 64
+simulator:
+  dataset_name: citylearn_three_phase_electrical_service_demo
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo/schema.json
+  central_agent: false
+  interface: flat
+  topology_mode: static
+  entity_encoding:
+    enabled: false
+    normalization: minmax_space
+    clip: true
+  reward_function: CCRewardLevel1V2
+  episodes: 1
+  deterministic_finish: true
+  simulation_start_time_step: 0
+  simulation_end_time_step: 16
+  episode_time_steps: 17
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    final_episode_only: true
+    kpis_final_episode_only: true
+    timeseries_final_episode_only: true
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: false
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 2
+pipeline:
+- algorithm: IQLAgent
+  frozen: true
+  hyperparameters:
+    model_dir: ./runs/offline/IQLAgent/seed_22
+    device: cpu

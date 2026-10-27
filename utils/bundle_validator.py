@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from loguru import logger
 
-SUPPORTED_ARTIFACT_FORMATS = {"onnx", "rule_based", "ti_marl_torch"}
+SUPPORTED_ARTIFACT_FORMATS = {"onnx", "rule_based", "ti_marl_torch", "research_torch"}
 
 
 class BundleValidationError(ValueError):
@@ -117,10 +117,10 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
         raise BundleValidationError("agent.artifacts must be a non-empty list")
 
     hierarchical_pipeline = bool(agent.get("stages"))
-    shared_ti_marl_artifact = top_level_format == "ti_marl_torch"
+    shared_ti_marl_artifact = top_level_format in {"ti_marl_torch", "research_torch"}
     if shared_ti_marl_artifact and agent.get("deployable") is not False:
         raise BundleValidationError(
-            "ti_marl_torch bundles must declare agent.deployable=false"
+            "Research torch bundles must declare agent.deployable=false"
         )
     seen_agent_indices: set[int] = set()
 
@@ -165,7 +165,7 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
                     f"rule_based artifact for agent {agent_index} must be named {expected_name}, "
                     f"got {artifact_path.name}"
                 )
-        elif artifact_format == "ti_marl_torch":
+        elif artifact_format in {"ti_marl_torch", "research_torch"}:
             if artifact_path.suffix.lower() not in {".pth", ".pt"}:
                 raise BundleValidationError(
                     f"ti_marl_torch artifact must end with .pth or .pt, got {artifact_path_value}"
@@ -174,6 +174,16 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
                 raise BundleValidationError(
                     "ti_marl_torch artifacts must explicitly declare deployable=false"
                 )
+
+        if artifact_format == "research_torch":
+            if not artifact_config or not artifact_config.get("loader"):
+                raise BundleValidationError("research_torch artifacts require a loader identifier")
+            auxiliary = artifact_config.get("auxiliary_paths", [])
+            if not isinstance(auxiliary, list):
+                raise BundleValidationError("auxiliary_paths must be a list")
+            for path in auxiliary:
+                if not isinstance(path, str) or not _resolve_bundle_path(root, path, field="auxiliary_paths").is_file():
+                    raise BundleValidationError(f"Missing research artifact sidecar: {path}")
 
         if num_agents is not None and agent_index >= num_agents:
             raise BundleValidationError(

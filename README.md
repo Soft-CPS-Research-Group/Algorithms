@@ -1,5 +1,8 @@
 # Algorithms for Energy Flexibility Optimization
 
+Start with the [agent catalogue](docs/agent_catalogue.md) and the
+[branch consolidation record](docs/consolidation/README.md) for supported implementations, origins and known limits.
+
 This repository hosts the training side of the energAIze platform. It runs
 multi‑agent reinforcement learning experiments on
 [CityLearn](https://github.com/intelligent-environments-lab/CityLearn), exports
