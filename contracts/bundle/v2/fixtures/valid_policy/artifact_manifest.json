@@ -1,0 +1,232 @@
+{
+  "manifest_version": 2,
+  "generated_at": "2026-10-27T09:55:12.928036Z",
+  "metadata": {
+    "experiment_name": "synthetic-contract-fixture",
+    "run_name": "policy"
+  },
+  "simulator": {
+    "dataset_name": null,
+    "dataset_path": null,
+    "central_agent": null,
+    "reward_function": null
+  },
+  "training": {
+    "seed": 31
+  },
+  "topology": {
+    "num_agents": 1,
+    "observation_dimensions": [
+      2
+    ],
+    "action_dimensions": [
+      1
+    ]
+  },
+  "pipeline": [
+    {
+      "stage_index": 0,
+      "algorithm": "RandomPolicy",
+      "count": 1,
+      "hyperparameters": {}
+    }
+  ],
+  "environment": {
+    "observation_names": [
+      [
+        "a",
+        "b"
+      ]
+    ],
+    "encoders": [
+      [
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ]
+    ],
+    "action_bounds": [
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      }
+    ],
+    "action_names_by_agent": {
+      "0": [
+        "action"
+      ]
+    },
+    "reward_function": {
+      "name": "fixture",
+      "params": {}
+    },
+    "building_names": [
+      "SyntheticBuilding"
+    ]
+  },
+  "agent": {
+    "format": "algorithms_policy",
+    "artifacts": [
+      {
+        "path": "policy.json",
+        "agent_index": 0,
+        "format": "algorithms_policy",
+        "config": {
+          "loader": "algorithms.export.policy_json:load_policy",
+          "scope": "joint"
+        },
+        "node_id": "root",
+        "artifact_id": "root:0",
+        "deployable": true,
+        "output_signal": "actions"
+      }
+    ],
+    "deployable": true,
+    "composition": {
+      "version": 1,
+      "root": "root",
+      "nodes": [
+        {
+          "id": "root",
+          "parent": null,
+          "position": 0,
+          "kind": "agent",
+          "algorithm": "RandomPolicy",
+          "input": "raw",
+          "input_signal": "none",
+          "output_signal": "actions",
+          "model_runtimes": {},
+          "verification": "verification.json",
+          "references": "references.json",
+          "verification_status": "passed",
+          "reason": null,
+          "format": "algorithms_policy",
+          "deployable": true,
+          "requirements": [
+            "energaize-algorithms"
+          ],
+          "topology_scope": "exported_layout"
+        }
+      ]
+    },
+    "deployment": {
+      "eligible": true,
+      "status": "verified",
+      "consumer_contract": "algorithms.bundle.v2",
+      "requires": [
+        "energaize-algorithms"
+      ],
+      "reasons": []
+    }
+  },
+  "provenance": {
+    "workspace_id": "laboratory",
+    "community_id": null,
+    "datasets": [],
+    "version": 1,
+    "mapping_status": "unmapped",
+    "mapping_issues": [
+      "Runtime buildings have no frozen platform site mapping"
+    ],
+    "sites": [],
+    "bindings": [
+      {
+        "artifact_path": "policy.json",
+        "agent_index": 0,
+        "stage_index": null,
+        "node_id": "root",
+        "scope": "community",
+        "building_ids": [
+          "SyntheticBuilding"
+        ],
+        "site_ids": [],
+        "agent_id": null
+      }
+    ],
+    "topology": {
+      "num_agents": 1,
+      "central_agent": false,
+      "building_ids": [
+        "SyntheticBuilding"
+      ],
+      "mode": "static",
+      "version": null,
+      "entity_specs_digest": null
+    },
+    "job_id": "synthetic-policy",
+    "resolved_config_sha256": "87f595d6a832ece1db6dd00a543b8994c8600c7f0d71dd08683c12fd87f2a291",
+    "identity_sha256": "720579cfdcef49bcd904e3e1282731b56afa263e3aa5a3188963eeac0fd8b953"
+  },
+  "contract": "algorithms.bundle.v2",
+  "algorithm": {
+    "name": "RandomPolicy"
+  },
+  "execution": {
+    "version": 1,
+    "root": "root",
+    "nodes": [
+      {
+        "id": "root",
+        "parent": null,
+        "position": 0,
+        "kind": "agent",
+        "algorithm": "RandomPolicy",
+        "input": "raw",
+        "input_signal": "none",
+        "output_signal": "actions",
+        "model_runtimes": {},
+        "verification": "verification.json",
+        "references": "references.json",
+        "verification_status": "passed",
+        "reason": null,
+        "format": "algorithms_policy",
+        "deployable": true,
+        "requirements": [
+          "energaize-algorithms"
+        ],
+        "topology_scope": "exported_layout"
+      }
+    ]
+  },
+  "deployment": {
+    "eligible": true,
+    "status": "verified",
+    "consumer_contract": "algorithms.bundle.v2",
+    "requires": [
+      "energaize-algorithms"
+    ],
+    "reasons": []
+  },
+  "evaluation": {
+    "fixture": true
+  },
+  "build": {
+    "fixture": true,
+    "versions": {
+      "energaize-algorithms": "0.3.0"
+    }
+  },
+  "evidence": {
+    "fixture": {
+      "path": "fixture.json",
+      "sha256": "87f595d6a832ece1db6dd00a543b8994c8600c7f0d71dd08683c12fd87f2a291"
+    }
+  },
+  "files": {
+    "export_details.json": "c311753f38cdf75eac09e650347cbefc0cbd06ec8ae71d53760836494d886121",
+    "fixture.json": "87f595d6a832ece1db6dd00a543b8994c8600c7f0d71dd08683c12fd87f2a291",
+    "policy.json": "bf331df939170d6eefcdc258d6e4a1515dad5a3ab81711286fe7bbc955483a27",
+    "policy_agent_0.json": "201a81701138c4702ec4d60ca6aa078b34142646be0b0d3b1ff5ae57c1a227e8",
+    "references.json": "baf61234a9e2571209c075e7b7d2c5cffdf169b60b4ea72bd0d100b9e59274b8",
+    "verification.json": "de4cd29e05104bbff4003b14b830ff0039fc2bbf5d9425475d630e68c8ad2e70"
+  }
+}

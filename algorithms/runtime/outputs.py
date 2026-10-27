@@ -11,8 +11,10 @@ from typing import Any, Mapping
 import citylearn
 from loguru import logger
 
+from algorithms.export.bundle import complete_manifest, export_tree
 from algorithms.runtime.atomic import atomic_json
 from algorithms.runtime.context import JobContext, OutputPlan
+from algorithms.runtime.kpis import write_scorecard
 from algorithms.runtime.simulator import _resolve_agent_observation_dimensions
 from algorithms.runtime.tracking import _log_curated_artifacts, mlflow
 from utils.artifact_manifest import build_manifest, write_manifest
@@ -36,6 +38,7 @@ def finalize_outputs(
             export_cfg[key] = export_cfg.get("final_episode_only", False)
     resolved_config_path = path_info["resolved_config_path"]
     output_plan = OutputPlan.from_config(config)
+    scorecard = write_scorecard(context, wrapper)
     kpi_source = (
         "simulator_export"
         if export_cfg.get("export_kpis_on_episode_end", False)
@@ -116,9 +119,19 @@ def finalize_outputs(
         "evaluated_policy": getattr(wrapper, "evaluated_policy", None),
         "randomness": config.get("runtime", {}).get("randomness"),
         "episode_plan": config.get("runtime", {}).get("episode_plan"),
+        "training_status": "completed",
+        "export_status": "pending" if output_plan.bundle else "not_requested",
+        "kpis": {
+            "path": "results/kpis.json",
+            "schema_version": scorecard["schema_version"],
+            "eligible_for_scorecard": scorecard["eligible_for_scorecard"],
+            "missing_reason": scorecard["missing_reason"],
+        },
     }
 
     result_path = path_info["result_path"]
+    # Preserve completed training and KPI evidence if bundle production fails.
+    atomic_json(result_path, result_payload)
     artifacts_root = path_info["bundle_dir"].resolve()
     # Dynamic entity mode can change agent cardinality at runtime.
     # Persist final topology before exporting artifacts/manifest.
@@ -131,8 +144,9 @@ def finalize_outputs(
 
     environment_metadata = wrapper.describe_environment()
     if output_plan.bundle:
-        agent_metadata = agent.export_artifacts(
-            output_dir=str(artifacts_root),
+        agent_metadata = export_tree(
+            agent,
+            artifacts_root,
             context={
                 "topology": config.get("topology", {}),
                 "environment": environment_metadata,
@@ -140,12 +154,15 @@ def finalize_outputs(
             },
         )
         manifest = build_manifest(config, environment_metadata, agent_metadata)
+        complete_manifest(manifest, context, wrapper)
         seal_manifest(manifest, artifacts_root, resolved_config_path, job_id)
         validate_bundle_contract(manifest, artifacts_root)
         manifest_path = write_manifest(manifest, str(artifacts_root))
         logger.info("Artifact manifest written to {}", manifest_path)
         result_payload["provenance"] = manifest["provenance"]
         result_payload["manifest_sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        result_payload["export_status"] = "completed"
+        result_payload["deployment"] = manifest["deployment"]
     else:
         provenance = build_provenance(config, environment_metadata, {"artifacts": []})
         provenance["job_id"] = job_id
@@ -155,7 +172,8 @@ def finalize_outputs(
         manifest_path = None
         result_payload["provenance"] = provenance
         result_payload["manifest_sha256"] = None
-    result_payload["output_contract_version"] = "algorithms.outputs.v1"
+        result_payload["deployment"] = {"eligible": False, "status": "not_requested"}
+    result_payload["output_contract_version"] = "algorithms.outputs.v2"
     result_payload["model_artifacts"] = (config.get("outputs") or {}).get(
         "model_artifacts"
     ) or "configured"
@@ -172,7 +190,11 @@ def finalize_outputs(
         "artifact_profile": artifact_profile,
         "provenance": manifest["provenance"],
         "manifest_sha256": result_payload["manifest_sha256"],
-        "kpi_metric_count": 0,
+        "schema_version": "algorithms.summary.v2",
+        "kpi_metric_count": len(scorecard["metrics"]),
+        "kpi_valid_count": sum(item["valid"] for item in scorecard["metrics"]),
+        "export_status": result_payload["export_status"],
+        "deployment": result_payload["deployment"],
         "bundle_dir": str(path_info["bundle_dir"]),
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "experiment_protocol": experiment_protocol,
@@ -195,6 +217,11 @@ def finalize_outputs(
         path_info["results_dir"] / "finalization.json",
         {
             "output_seconds": time.perf_counter() - started,
+            "episode_exports": getattr(wrapper, "export_measurements", []),
+            "simulation_bytes": sum(
+                p.stat().st_size for p in path_info["simulation_data_dir"].rglob("*") if p.is_file()
+            ),
+            "bundle_bytes": sum(p.stat().st_size for p in artifacts_root.rglob("*") if p.is_file()),
             "checkpoint_seconds": getattr(
                 getattr(wrapper, "checkpoint_manager", None), "total_seconds", 0.0
             ),

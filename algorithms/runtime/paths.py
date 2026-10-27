@@ -86,12 +86,22 @@ def _mark_failed_outputs(path_info: dict[str, Path], exc: BaseException) -> None
     from algorithms.runtime.lifecycle import JobCancelled
 
     status = "cancelled" if isinstance(exc, (KeyboardInterrupt, JobCancelled)) else "failed"
-    result_payload = {
-        "status": status,
-        "error_type": type(exc).__name__,
-        "error": str(exc),
-        "timestamp": timestamp,
-    }
+    result_payload = {}
+    if path_info["result_path"].is_file():
+        try:
+            result_payload = json.loads(path_info["result_path"].read_text())
+        except (ValueError, OSError):
+            pass
+    if result_payload.get("export_status") == "pending":
+        result_payload["export_status"] = "failed"
+    result_payload.update(
+        {
+            "status": status,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "timestamp": timestamp,
+        }
+    )
     result_payload["traceback"] = traceback.format_exc()
     atomic_json(path_info["result_path"], result_payload)
 

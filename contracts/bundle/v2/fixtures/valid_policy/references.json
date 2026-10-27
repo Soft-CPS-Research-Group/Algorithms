@@ -1,0 +1,65 @@
+{
+  "version": "algorithms.policy_references.v1",
+  "samples": [
+    {
+      "observations": [
+        {
+          "$array": [
+            0.0,
+            0.0
+          ],
+          "dtype": "float64"
+        }
+      ],
+      "context": null,
+      "raw_observations": null,
+      "encoded_observations": null,
+      "episode_step": null,
+      "output": [
+        [
+          0.0
+        ]
+      ]
+    },
+    {
+      "observations": [
+        {
+          "$array": [
+            1.0,
+            0.0
+          ],
+          "dtype": "float64"
+        }
+      ],
+      "context": null,
+      "raw_observations": null,
+      "encoded_observations": null,
+      "episode_step": null,
+      "output": [
+        [
+          0.0
+        ]
+      ]
+    },
+    {
+      "observations": [
+        {
+          "$array": [
+            0.0,
+            1.0
+          ],
+          "dtype": "float64"
+        }
+      ],
+      "context": null,
+      "raw_observations": null,
+      "encoded_observations": null,
+      "episode_step": null,
+      "output": [
+        [
+          0.0
+        ]
+      ]
+    }
+  ]
+}

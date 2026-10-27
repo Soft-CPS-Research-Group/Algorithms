@@ -663,27 +663,10 @@ class TransformerMADDPG(BaseAgent):
         logger.info("Layers frozen - actor={}, critic={}", freeze_actor, freeze_critic)
 
     def export_artifacts(self, output_dir: str, context=None) -> Dict[str, Any]:
-        """Preserve the complete learner and tokenizer as a research checkpoint.
-
-        The historical ONNX helper exports already-tokenized inputs. It is not
-        an end-to-end serving model and must not be advertised as deployable.
-        """
-        import json
+        """Export the joint deterministic policy with the learned tokenizer embedded."""
+        from algorithms.export.joint_transformer import export_joint_transformer
+        metadata = export_joint_transformer(self, output_dir)
         root = Path(output_dir)
         checkpoint = Path(self.save_checkpoint(str(root / "research_models"), step=0))
-        configuration = root / "research_models" / "configuration.json"
-        configuration.write_text(json.dumps({
-            "config": self.config,
-            "observation_names": self.observation_names,
-            "action_names": self.action_names,
-        }, indent=2, default=str))
-        return {
-            "format": "research_torch", "deployable": False,
-            "architecture": "TransformerMADDPG",
-            "artifacts": [{
-                "agent_index": 0, "path": str(checkpoint.relative_to(root)),
-                "format": "research_torch", "deployable": False,
-                "config": {"loader": "TransformerMADDPG.load_checkpoint",
-                           "auxiliary_paths": [str(configuration.relative_to(root))]},
-            }],
-        }
+        metadata["checkpoint_path"] = checkpoint.relative_to(root).as_posix()
+        return metadata

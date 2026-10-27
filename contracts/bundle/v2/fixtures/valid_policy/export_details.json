@@ -1,0 +1,14 @@
+{
+  "format": "algorithms_policy",
+  "artifacts": [
+    {
+      "path": "policy.json",
+      "agent_index": 0,
+      "format": "algorithms_policy",
+      "config": {
+        "loader": "algorithms.export.policy_json:load_policy",
+        "scope": "joint"
+      }
+    }
+  ]
+}

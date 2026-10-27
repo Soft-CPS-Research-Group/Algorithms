@@ -70,7 +70,9 @@ def test_offline_training_runs_inside_the_common_job(name, tmp_path):
     manifest_path = next(job.rglob('artifact_manifest.json'))
     manifest = json.loads(manifest_path.read_text())
     validate_bundle_contract(manifest, manifest_path.parent)
-    assert manifest['agent']['deployable'] is False
+    assert manifest['agent']['deployable'] is True
+    from algorithms.export.consumer import verify_bundle
+    assert verify_bundle(manifest_path.parent)['status'] == 'passed'
     result = json.loads(next(job.rglob('result.json')).read_text())
     assert result['status'] == 'completed'
     assert result['kpi_source'] == 'simulator_export'

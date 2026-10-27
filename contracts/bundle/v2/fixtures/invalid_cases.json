@@ -1,0 +1,45 @@
+[
+  {
+    "name": "missing_model",
+    "operation": "delete",
+    "path": "model.onnx"
+  },
+  {
+    "name": "wrong_hash",
+    "operation": "corrupt",
+    "path": "model.onnx"
+  },
+  {
+    "name": "absolute_path",
+    "operation": "artifact_path",
+    "value": "/tmp/model.onnx"
+  },
+  {
+    "name": "traversal",
+    "operation": "artifact_path",
+    "value": "../model.onnx"
+  },
+  {
+    "name": "unsupported_version",
+    "operation": "version",
+    "value": 99
+  },
+  {
+    "name": "unknown_format",
+    "operation": "format",
+    "value": "unrecognised_policy"
+  },
+  {
+    "name": "duplicate_node",
+    "operation": "duplicate_node"
+  },
+  {
+    "name": "unsealed_file",
+    "operation": "extra_file"
+  },
+  {
+    "name": "symlink",
+    "operation": "symlink",
+    "path": "model.onnx"
+  }
+]

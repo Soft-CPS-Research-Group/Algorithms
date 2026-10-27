@@ -248,10 +248,13 @@ class TotalHomeOracleReplayPolicy(BaseAgent):
         del context
         destination = Path(output_dir)
         destination.mkdir(parents=True, exist_ok=True)
+        from algorithms.export.dependencies import export_schedule
+
+        schedule_path, schedule_hash = export_schedule(self.schedule, output_dir)
         shared = {
             "policy_type": "total_home_oracle_replay",
-            "schedule_path": str(self.schedule_path),
-            "schedule_sha256": self.schedule_sha256,
+            "schedule_path": schedule_path,
+            "schedule_sha256": schedule_hash,
             "schedule_problem_id": self.schedule.problem_id,
             "schedule_horizon": self.schedule.horizon,
             "perfect_foresight": True,
@@ -304,7 +307,7 @@ class TotalHomeOracleReplayPolicy(BaseAgent):
                     "agent_index": agent_index,
                     "path": policy_path.name,
                     "format": "rule_based",
-                    "config": {"use_preprocessor": False},
+                    "config": {"use_preprocessor": False, "auxiliary_paths": [schedule_path]},
                 }
             )
         return {

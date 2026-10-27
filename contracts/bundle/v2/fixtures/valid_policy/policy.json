@@ -1,0 +1,93 @@
+{
+  "format": "algorithms_policy_v1",
+  "algorithm": "RandomPolicy",
+  "state": {
+    "pv_charge_threshold": 0.0,
+    "flexibility_hours": 3.0,
+    "emergency_hours": 1.0,
+    "pv_preferred_charge_rate": 0.6,
+    "flex_trickle_charge": 0.0,
+    "min_charge_rate": 0.0,
+    "emergency_charge_rate": 1.0,
+    "energy_epsilon": 0.001,
+    "electrical_service_headroom_safety_margin_kw": 0.05,
+    "use_current_base_service_headroom": true,
+    "non_flexible_chargers": {
+      "$set": []
+    },
+    "default_capacity": 60.0,
+    "control_storage": true,
+    "control_evs": true,
+    "control_deferrables": true,
+    "deferrable_start_action": 1.0,
+    "deferrable_urgency_threshold": 0.75,
+    "deferrable_slack_threshold": 0.25,
+    "deferrable_priority_threshold": 0.5,
+    "_dataset_info": null,
+    "_obs_index": [
+      {
+        "a": 0,
+        "b": 1
+      }
+    ],
+    "_action_labels": [
+      [
+        "action"
+      ]
+    ],
+    "_action_bounds": [
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      }
+    ],
+    "_agent_buildings": {
+      "$mapping": [
+        [
+          0,
+          "agent_0"
+        ]
+      ]
+    },
+    "_ev_action_mapping": {
+      "$mapping": [
+        [
+          0,
+          []
+        ]
+      ]
+    },
+    "_ev_action_position_mapping": {
+      "$mapping": [
+        [
+          0,
+          {}
+        ]
+      ]
+    },
+    "step_hours": 1.0,
+    "seed": 979518510,
+    "_rng": {
+      "$rng": {
+        "bit_generator": "PCG64",
+        "state": {
+          "state": 14937888131576610031924363602583303957,
+          "inc": 12444532954527199717279997471757226891
+        },
+        "has_uint32": 0,
+        "uinteger": 0
+      }
+    },
+    "runtime_identity": {
+      "stage": 0,
+      "member": 0,
+      "seed": 979518510
+    },
+    "agent_name": "RandomPolicy",
+    "frozen": false
+  }
+}

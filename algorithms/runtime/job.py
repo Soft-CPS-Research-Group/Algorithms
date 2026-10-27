@@ -164,6 +164,10 @@ def _run_experiment(config_path, job_id, base_dir, path_info):
         with open(config_path, "r", encoding="utf-8") as config_file:
             raw_config = yaml.safe_load(config_file) or {}
     _startup_trace("config yaml loaded")
+    from algorithms.export.portable import encode
+    from algorithms.runtime.atomic import atomic_json
+
+    atomic_json(path_info["job_dir"] / "config.initial.json", encode(raw_config))
 
     try:
         config_model = validate_config(raw_config)

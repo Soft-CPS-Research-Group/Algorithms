@@ -75,6 +75,13 @@ configuration. Common schemas live in `algorithms/configuration/common.py`;
 agent schemas live in `agents.py` or their own lightweight package. Validate with
 `algorithms-job --config ... --validate`; use `--dry-run` to check the environment.
 Add representative coverage under the common job contract when adding a family.
+Exporters supply model files and declared dependencies; the shared finalizer owns
+v2 manifests, integrity, provenance and evaluation references. A deployable policy
+must reproduce actual deterministic decisions in the reference consumer. Include
+learned preprocessing and temporal/context semantics, or declare research-only
+requirements. See [export responsibilities](docs/runtime/exports.md) and
+[the bundle contract](docs/inference_bundle.md). Do not add per-agent export
+branches to the job runner or silently drop guards to make ONNX pass.
 
 ## Available Algorithms
 

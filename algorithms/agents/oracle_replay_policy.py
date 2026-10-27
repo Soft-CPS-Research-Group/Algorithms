@@ -235,10 +235,15 @@ class FixedServiceOracleReplayPolicy(RBCSmartLocalPolicy):
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         metadata = super().export_artifacts(output_dir, context)
+        from algorithms.export.dependencies import export_schedule
+
+        schedule_path, schedule_hash = export_schedule(self.schedule, output_dir)
+        for artifact in metadata.get("artifacts", []):
+            artifact.setdefault("config", {})["auxiliary_paths"] = [schedule_path]
         metadata.setdefault("parameters", {})["oracle_schedule"] = {
             "problem_id": self.schedule.problem_id,
-            "path": str(self.schedule_path),
-            "sha256": self.schedule_sha256,
+            "path": schedule_path,
+            "sha256": schedule_hash,
             "horizon": self.schedule.horizon,
             "schedule_step_offset": self.schedule_step_offset,
             "perfect_foresight": True,

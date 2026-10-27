@@ -310,6 +310,13 @@ class IQLEntityAgent(OfflineTrainingPreparation, BaseAgent):
         (out_root / "iql_entity_manifest.json").write_text(
             json.dumps(manifest, indent=2)
         )
+        if self._obs_dims_per_agent is not None:
+            from algorithms.export.offline import export_entity_policies
+            executable = export_entity_policies(self, output_dir)
+            executable["artifact_type"] = "iql_entity_agent"
+            for index, artifact in enumerate(executable["artifacts"]):
+                artifact["config"]["auxiliary_paths"] = manifest["artifacts"][index]["config"]["auxiliary_paths"]
+            return executable
         return manifest
 
     # ------------------------------------------------------------------

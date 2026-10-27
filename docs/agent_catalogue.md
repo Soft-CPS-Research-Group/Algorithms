@@ -15,7 +15,7 @@ are separate properties.
 | Hierarchical coordination | `BuildingAgent`, `CommunityCoordinator`, `CCLevel1`, `CCLevel2`, `CausalPriceSignal`, `FixedPriceSignal` | Existing implementations retained. |
 | Baselines and signal policies | `RuleBasedPolicy`, `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `RBCCommunityPolicy`, `RBCSmartPolicy`, `RBCSmartLocalPolicy`, `SignalAwareRBC`, `SignalAwareRBCSmartLocal` | Existing implementations retained. |
 | Oracle replays | `FixedServiceOracleReplayPolicy`, `TotalHomeOracleReplayPolicy`, `TotalOracleReplayPolicy` | Existing audit/reference implementations retained. |
-| Historical Transformer | `TransformerMADDPG` | Recovered experimental joint actor. Static topology, uniform nonzero action dimensions. Complete research checkpoint; no inference deployment claim. |
+| Historical Transformer | `TransformerMADDPG` | Recovered experimental joint actor. Static topology, uniform nonzero action dimensions. Joint ONNX includes learned tokenizer and actor; deterministic parity checked. Complete research checkpoint retained. |
 | Offline policies | `BCAgent`, `IQLAgent`, `IQLEntityAgent`, `CQLEntityAgent` | Recovered trainers and policies. Common job preparation, simulation, KPI and model export. Static, matching dataset layout required. |
 | Capacity coordinator | `CCLevel2Capacity` | Recovered distinct capacity-aware teacher/network. Does not replace current CCLevel2. Research checkpoint. |
 | Recovered signal workers | `SignalAwareRBCCommunity`, `SignalDirectedRBC` | Community price multiplier / directional stationary-battery worker. Common hierarchy; requires manager context for serving. |
@@ -37,3 +37,9 @@ is a schema placeholder and remains rejected. Old GNN/Transformer skeletons and
 superseded prototypes are not counted as additional implemented agents.
 
 Origins, validation scope and pending work: [first consolidation](consolidation/README.md).
+
+## Export support after stage 4
+
+All 38 names share finalization, KPI and bundle contracts. The [v2 export matrix](inference_bundle.md#delivery-formats) separates 14 neural names with verified ONNX, 14 rules/signal names with executable JSON, and 10 names requiring specialised research adapters. Counts describe the tested base configurations, not every optional residual/safety variant or model quality. Hierarchical leaves are consumed as part of their declared graph.
+
+`bundle.require_deployable: true` rejects known specialised families during configuration validation and requires actual final-evaluation parity for the others. Ordinary exports retain research artifacts and explicit limitations. The [stage 4 delivery](runtime/export_delivery.md) records the acceptance evidence.

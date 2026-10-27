@@ -8,6 +8,7 @@ import yaml
 
 import run_experiment as runner
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.contracts import AgentCapabilities
 from algorithms.pipeline import Pipeline
 from utils.local_metrics import LocalMetricsLogger
 from utils.experiment_protocol import file_sha256
@@ -17,7 +18,14 @@ from utils.experiment_protocol import file_sha256
 def isolate_dataset_validation_for_runner_unit_tests(monkeypatch):
     # These tests replace CityLearn with a fake. Real input validation is covered
     # by test_runtime_reliability and the complete-job suite.
-    monkeypatch.setattr("algorithms.runtime.simulator.validate_inputs", lambda *_args: {})
+    def fake_inputs(config, *_args):
+        root = config.get("runtime", {}).get("job_dir")
+        if root:
+            Path(root, "inputs.json").write_text('{"version":"unit-test-inputs","files":[]}')
+        return {}
+    monkeypatch.setattr("algorithms.runtime.simulator.validate_inputs", fake_inputs)
+    # Fake agents write placeholders; real model execution lives in the e2e suite.
+    monkeypatch.setattr("algorithms.export.bundle.inspect_model_files", lambda *_args: {})
 
 
 def test_local_checkpoint_resolution_supports_ensemble_and_legacy_layout(tmp_path):
@@ -281,6 +289,7 @@ class _DummyDynamicWrapper(_DummyWrapper):
 
 
 class _DummyAgent:
+    capabilities = AgentCapabilities(learning="replay", observations="encoded")
     def export_artifacts(self, output_dir: str, context: dict | None = None):
         _ = context
         output_path = Path(output_dir) / "onnx_models" / "agent_0.onnx"

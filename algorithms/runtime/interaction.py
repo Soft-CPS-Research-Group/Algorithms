@@ -10,12 +10,22 @@ from algorithms.contracts import StageContext, Transition, UpdateSchedule
 def decide(
     unit: Any, observations: Any, deterministic: bool | None, context: StageContext | None = None
 ) -> Any:
+    from algorithms.export.references import capture_input, capture_output
+
+    sample = (
+        capture_input(unit, observations, None if context is None else context.value)
+        if deterministic
+        else None
+    )
     hook = getattr(unit, "decide", None)
     if callable(hook):
-        return hook(observations, deterministic, context=context)
-    if context is None:
-        return unit.predict(observations, deterministic)
-    return unit.predict(observations, deterministic, context=context.value)
+        result = hook(observations, deterministic, context=context)
+    elif context is None:
+        result = unit.predict(observations, deterministic)
+    else:
+        result = unit.predict(observations, deterministic, context=context.value)
+    capture_output(unit, sample, result)
+    return result
 
 
 def learn_transition(unit: Any, transition: Transition, schedule: UpdateSchedule) -> Any:
