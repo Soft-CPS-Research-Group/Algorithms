@@ -12,7 +12,7 @@ import torch
 
 from algorithms.configuration.project import validate_config
 from algorithms.runtime.atomic import atomic_json
-from algorithms.runtime.checkpoint_index import resolve_index
+from algorithms.runtime.checkpoint_index import discover_legacy, resolve_index
 from algorithms.runtime.controller import SimulationController
 from algorithms.runtime.inputs import unique_object, validate_table
 from algorithms.runtime.paths import _prepare_paths
@@ -119,6 +119,7 @@ def test_checkpoint_index_detects_tampering_and_preserves_same_step_versions(tmp
     assert first != second and first.read_bytes() == second.read_bytes()
     entry, artifact, _ = resolve_index(tmp_path / "checkpoints")
     assert artifact == second
+    assert discover_legacy(tmp_path / "checkpoints/index.json") == second
     assert entry["resume_capability"] == "weights"
     second.write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="integrity mismatch"):

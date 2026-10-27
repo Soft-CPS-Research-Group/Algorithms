@@ -45,11 +45,11 @@ def resolve_index(path: Path, *, verify=True):
 
 def discover_legacy(path: Path, artifact="latest_checkpoint.pth") -> Path:
     """Read old layouts, including TPPO's nested numbered .pt files."""
-    if path.is_file():
-        return path
     indexed = resolve_index(path)
     if indexed:
         return indexed[1]
+    if path.is_file():
+        return path
     direct = path / artifact
     if direct.is_file():
         return direct
