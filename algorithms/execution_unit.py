@@ -68,6 +68,14 @@ class ExecutionUnit(ABC):
     # used as the leaf of a Pipeline.
     requires_final_pipeline_stage: bool = False
 
+    def prepare_training(self, output_dir: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """Optional one-time preparation before environment attachment.
+
+        Offline agents optimize on their transition dataset here. Online agents
+        use the default no-op; the common wrapper still owns simulation/evaluation.
+        """
+        return None
+
     # ------------------------------------------------------------------
     # Core interaction loop
     # ------------------------------------------------------------------

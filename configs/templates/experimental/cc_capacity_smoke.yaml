@@ -1,0 +1,58 @@
+# Short integration check; not a model-quality benchmark.
+metadata:
+  experiment_name: consolidation_smoke
+  run_name: cc_capacity_smoke
+  community_name: two-buildings
+tracking:
+  mlflow_enabled: false
+  log_level: WARNING
+  log_frequency: 64
+  progress_update_interval: 64
+simulator:
+  dataset_name: citylearn_three_phase_electrical_service_demo
+  dataset_path: ./datasets/citylearn_three_phase_electrical_service_demo/schema.json
+  building_ids:
+  - Building_1
+  - Building_2
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    clip: true
+  reward_function: CCRewardLevel1V2
+  episodes: 2
+  deterministic_finish: true
+  simulation_start_time_step: 0
+  simulation_end_time_step: 16
+  episode_time_steps: 17
+  export:
+    mode: end
+    export_kpis_on_episode_end: true
+    final_episode_only: true
+    kpis_final_episode_only: true
+    timeseries_final_episode_only: true
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: false
+training:
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 2
+pipeline:
+- algorithm: CCLevel2Capacity
+  hyperparameters:
+    num_buildings: 2
+    hidden_dims:
+    - 16
+    - 16
+    num_steps: 4
+    mini_batch_size: 2
+    num_epochs: 1
+    cc_action_interval: 1
+    bc_pretrain_enabled: false
+    cc_capacity_reference_kwh: 100.0
+- algorithm: SignalAwareRBCCommunity
+  frozen: true
+  count: 1
+  hyperparameters: {}

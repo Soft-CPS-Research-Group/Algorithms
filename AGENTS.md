@@ -24,6 +24,7 @@ Extend `algorithms/agents/base_agent.py`:
 
 | Method | Description |
 |--------|-------------|
+| `prepare_training(output_dir, context)` | Optional offline optimization before environment attachment; the runner owns job outputs |
 | `save_checkpoint(output_dir, step)` | Persist training state |
 | `load_checkpoint(checkpoint_path)` | Resume from checkpoint |
 | `attach_environment(observation_names, action_names, action_space, observation_space, metadata)` | Receive environment metadata |
@@ -79,6 +80,10 @@ ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
 - `utils/config_schema.py` → add validation model if needed
 
 ## Available Algorithms
+
+See the complete [38-name agent catalogue](docs/agent_catalogue.md). Offline agents
+use the same job runner via `prepare_training`; recovered experiments and serving
+limitations are described in [the consolidation record](docs/consolidation/README.md).
 
 | Algorithm | Description |
 |-----------|-------------|

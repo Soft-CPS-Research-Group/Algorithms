@@ -394,6 +394,10 @@ class Pipeline(ExecutionUnit):
     def consume_latest_training_metrics(self) -> Dict[str, float]:
         return self._collect_stage_metric_hook("consume_latest_training_metrics")
 
+    def prepare_training(self, output_dir: str, context=None) -> None:
+        for index, stage in enumerate(self.stages):
+            stage.prepare_training(str(Path(output_dir) / f"stage_{index}"), context)
+
     def attach_environment(self, **kwargs) -> None:
         metadata = kwargs.get("metadata") or {}
         raw_observation_names = metadata.get("raw_observation_names")
@@ -860,6 +864,10 @@ class Ensemble(ExecutionUnit):
     def consume_latest_training_metrics(self) -> Dict[str, float]:
         """Consume and aggregate the latest independent learner metrics."""
         return self._aggregate_metric_hook("consume_latest_training_metrics")
+
+    def prepare_training(self, output_dir: str, context=None) -> None:
+        for index, member in enumerate(self.agents):
+            member.prepare_training(str(Path(output_dir) / f"agent_{index}"), context)
 
     def attach_environment(
         self,

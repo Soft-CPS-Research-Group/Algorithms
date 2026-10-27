@@ -39,6 +39,8 @@ from algorithms.agents.baseline_policies import (
     RBCSmartPolicy,
     RandomPolicy,
     SignalAwareRBC,
+    SignalAwareRBCCommunity,
+    SignalDirectedRBC,
     SignalAwareRBCSmartLocal,
 )
 _registry_trace("after baseline policies import")
@@ -55,6 +57,7 @@ from algorithms.agents.cc_level1_agent import CCLevel1Agent
 _registry_trace("after cc level1 import")
 _registry_trace("before cc level2 import")
 from algorithms.agents.cc_level2_agent import CCLevel2Agent
+from algorithms.agents.cc_level2_capacity_agent import CCLevel2CapacityAgent
 _registry_trace("after cc level2 import")
 _registry_trace("before community coordinator import")
 from algorithms.agents.community_coordinator_agent import CommunityCoordinatorAgent
@@ -94,10 +97,24 @@ _registry_trace("before pipeline import")
 from algorithms.pipeline import Ensemble, Pipeline
 _registry_trace("after pipeline import")
 
+from algorithms.agents.transformer_maddpg_agent import TransformerMADDPG
+from algorithms.offline_rl.bc_agent import BCAgent
+from algorithms.offline_rl.iql_agent import IQLAgent
+from algorithms.offline_rl.iql_entity_agent import IQLEntityAgent
+from algorithms.offline_rl.cql_entity_agent import CQLEntityAgent
+
 ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
+    "TransformerMADDPG": TransformerMADDPG,
+    "BCAgent": BCAgent,
+    "IQLAgent": IQLAgent,
+    "IQLEntityAgent": IQLEntityAgent,
+    "CQLEntityAgent": CQLEntityAgent,
     "BuildingAgent": BuildingAgent,
     "CCLevel1": CCLevel1Agent,
     "CCLevel2": CCLevel2Agent,
+    "CCLevel2Capacity": CCLevel2CapacityAgent,
+    "SignalAwareRBCCommunity": SignalAwareRBCCommunity,
+    "SignalDirectedRBC": SignalDirectedRBC,
     "CausalPriceSignal": CausalPriceSignalAgent,
     "CommunityCoordinator": CommunityCoordinatorAgent,
     "HAPPO": HAPPO,
@@ -196,7 +213,7 @@ def _stage_to_agent_view(global_config: Dict[str, Any], stage_cfg: Dict[str, Any
         "name": stage_cfg["algorithm"],
         "hyperparameters": stage_cfg.get("hyperparameters", {}) or {},
     }
-    for optional_key in ("networks", "replay_buffer", "exploration", "policy", "tokenizer_config_path", "transformer", "behavior_cloning"):
+    for optional_key in ("networks", "replay_buffer", "exploration", "policy", "tokenizer", "tokenizer_config_path", "transformer", "behavior_cloning"):
         if optional_key in stage_cfg and stage_cfg[optional_key] is not None:
             algorithm_block[optional_key] = stage_cfg[optional_key]
     agent_view["algorithm"] = algorithm_block

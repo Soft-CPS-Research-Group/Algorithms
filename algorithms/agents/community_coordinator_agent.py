@@ -124,6 +124,14 @@ class CommunityCoordinatorAgent(BaseAgent):
         # Balances ~0.05 price_delta against ~5 kW net_power → default 0.01.
         self._net_weight: float = float(hyper.get("net_weight", 0.01))
 
+        # Reward source. When True, train on the environment/community reward
+        # (e.g. CCRewardLevel1) produced by the downstream worker's actions, so
+        # learning flows CC signal → worker → env → community reward. Used for the
+        # hierarchical directional-worker setup (CommunityCoordinator → SignalDirectedRBC).
+        # Default False preserves the original standalone direct-control behaviour
+        # (self-contained internal decision reward).
+        self._use_env_reward: bool = bool(hyper.get("use_env_reward", False))
+
         self.actor_critic = HierarchicalActorCritic(c_dim, b_dim, hidden_dims)
         self.ppo_optim    = Adam(self.actor_critic.parameters(), lr=hyper.get("lr", 1e-4))
 
@@ -244,10 +252,17 @@ class CommunityCoordinatorAgent(BaseAgent):
         """
         done = terminated or truncated
 
-        # ── Internal reward: decision quality at decision time ──────────
-        # reward_i = -o1_i × (price_now - ref_price)
-        # Summed over buildings → one scalar per env step.
-        cc_reward = self._compute_decision_reward()
+        # ── Reward source ───────────────────────────────────────────────
+        # use_env_reward: the community reward (e.g. CCRewardLevel1) that resulted
+        #   from the downstream worker's actions — learning flows CC signal →
+        #   worker → env → reward (hierarchical directional-worker setup).
+        # else: the self-contained internal decision reward
+        #   reward_i = -o1_i × (price_now - ref_price), summed over buildings
+        #   (original standalone direct-control behaviour).
+        if self._use_env_reward:
+            cc_reward = float(sum(rewards)) if rewards else 0.0
+        else:
+            cc_reward = self._compute_decision_reward()
         self._accumulated_reward += cc_reward
         self._step_in_interval   += 1
 

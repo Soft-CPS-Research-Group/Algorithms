@@ -38,10 +38,15 @@ from reward_function.cost_hard_constraint_reward import (
 )
 from reward_function.cost_minimization_reward import CostMinimizationReward
 
+from reward_function.cc_reward_level1_v2 import CCRewardLevel1V2
+from reward_function.cc_reward_level2_capacity import CCRewardLevel2Capacity
+
 REWARD_FUNCTION_MAP: Dict[str, Type[RewardFunction]] = {
     "BAReward": BAReward,
     "RewardFunction": RewardFunction,
     "CCReward": CCReward,
+    "CCRewardLevel1V2": CCRewardLevel1V2,
+    "CCRewardLevel2Capacity": CCRewardLevel2Capacity,
     "CCRewardLevel1": CCRewardLevel1,
     "CCRewardLevel2": CCRewardLevel2,
     "CCRewardPhase1": CCRewardPhase1,

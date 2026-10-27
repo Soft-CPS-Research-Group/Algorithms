@@ -979,6 +979,9 @@ def run_experiment(config_path: str, job_id: Optional[str], base_dir: Path) -> N
         logger.info("Resolved runtime config written to {}", resolved_config_path)
 
         agent = build_execution_unit(config=config)
+        prepare_training = getattr(agent, "prepare_training", None)
+        if callable(prepare_training):
+            prepare_training(str(path_info["job_dir"] / "offline_training"), context={"config": config})
         wrapper.set_model(agent)
         _resume_agent_from_checkpoint(
             agent=agent,

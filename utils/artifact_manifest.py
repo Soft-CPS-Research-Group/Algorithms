@@ -111,6 +111,8 @@ def _normalize_agent_metadata(agent_metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     metadata["format"] = top_format
     metadata["artifacts"] = normalized_artifacts
+    if any(item.get("deployable") is False for item in normalized_artifacts):
+        metadata["deployable"] = False
     return metadata
 
 
@@ -205,6 +207,13 @@ def _prefix_artifact_path(artifact: Dict[str, Any], prefix: str) -> None:
         return
 
     artifact["path"] = str(Path(prefix) / path)
+    config = dict(artifact.get("config") or {})
+    if "auxiliary_paths" in config:
+        config["auxiliary_paths"] = [
+            str(Path(prefix) / sidecar) if not Path(sidecar).is_absolute() else sidecar
+            for sidecar in config["auxiliary_paths"]
+        ]
+        artifact["config"] = config
 
 
 def _json_default(obj: Any) -> Any:
