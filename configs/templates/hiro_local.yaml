@@ -57,7 +57,6 @@ simulator:
     clip: true
   reward_function: CostServiceCommunityFeasiblePrecisionRewardV46
   reward_function_kwargs: {}  # Use V46 battle-tested defaults
-  episodes: 2
   episode_time_steps: 11520 # 5760
   simulation_start_time_step: 0
   simulation_end_time_step: 2102399
@@ -67,6 +66,7 @@ simulator:
     session_name: null
 
 training:
+  episodes: 2
   seed: 22
   steps_between_training_updates: 1
   target_update_interval: 0
@@ -124,3 +124,6 @@ pipeline:
       constraint_penalty_weight: 0.5
 
 execution: null
+
+evaluation:
+  episodes: 0

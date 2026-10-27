@@ -255,7 +255,7 @@ class _DummyModel:
 
     def predict(self, observations, deterministic=None):
         _ = deterministic
-        return [[0.0 for _ in obs[:2]] for obs in observations]
+        return [[0.0, 0.0, 0.0] for _ in observations]
 
     def update(self, **_kwargs):
         return None

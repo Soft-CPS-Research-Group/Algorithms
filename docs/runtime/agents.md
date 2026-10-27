@@ -84,3 +84,5 @@ Update `configs/tokenizers/fixtures/entity_obs_sample.json` only when the simula
 schema changes, using `scripts/dump_entity_obs_sample.py`, then validate tokenizer
 coverage. TI-MARL interfaces are generated against the actual dataset with
 `scripts/generate_typed_interfaces.py`; do not reuse an unrelated unit-test fixture.
+
+Evaluation must not change learned normalizers, exploration clocks or replay. Implement `select_evaluation_policy()` only when selecting a validated alternative to the final policy, and return its selection evidence. New exact-episode resume support requires an audited full serializer and the independent-process continuation test before extending the allowlist.

@@ -44,8 +44,6 @@ simulator:
   reward_function_kwargs:
     # Shared with PPO so scorecard comparisons use the same local objective.
     reward_scale: 0.01
-  episodes: 2
-  deterministic_finish: true
   simulation_start_time_step: 0
   simulation_end_time_step: 35039
   episode_time_steps: 35040
@@ -58,6 +56,7 @@ simulator:
     session_name: "td3-distributed-local"
 
 training:
+  episodes: 1
   seed: 123
   steps_between_training_updates: 2
   target_update_interval: 2
@@ -122,3 +121,6 @@ pipeline:
         tau: 0.005
 
 execution: null
+
+evaluation:
+  episodes: 1

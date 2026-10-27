@@ -140,7 +140,8 @@ def _mutate_config(
     checkpointing["require_initial_exploration_done"] = True
 
     simulator = config.setdefault("simulator", {})
-    simulator["episodes"] = max(args.episodes, 1)
+    from algorithms.configuration.episodes import set_legacy_episode_budget
+    set_legacy_episode_budget(config, max(args.episodes, 1), False)
     simulator["simulation_start_time_step"] = max(args.start, 0)
     simulator["simulation_end_time_step"] = max(args.start, 0) + max(args.steps, 1) - 1
     simulator["episode_time_steps"] = max(args.steps, 1)

@@ -31,6 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SIMULATOR_REPO: ${{ github.workspace }}/.ci/Simulator
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +64,7 @@ jobs:
       - name: Run tests
         run: pytest
       - name: Run consolidated agent job contracts
-        run: pytest -o addopts="" tests/e2e/test_e2e_consolidated_agents.py tests/e2e/test_common_job_profiles.py
+        run: pytest -o addopts="" tests/e2e/test_e2e_consolidated_agents.py tests/e2e/test_common_job_profiles.py tests/e2e/test_runtime_reliability.py
 
   version:
     if: github.event_name == 'push'
@@ -130,7 +133,9 @@ jobs:
           cache-to: type=registry,ref=calof/opeva_simulator:buildcache,mode=max
 
   jetson_docker:
-    if: github.event_name == 'push'
+    # L4T r35 Python 3.8 cannot install the supported Python >=3.10 runtime.
+    # Preserve the last working legacy tag until its platform migration is validated.
+    if: ${{ false }}
     needs: [test, version]
     runs-on: ubuntu-latest
 

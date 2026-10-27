@@ -107,7 +107,7 @@ def test_cost4_realistic_pilot_keeps_recipe_and_limits_episode_budget() -> None:
     hyperparameters = stage["hyperparameters"]
     replay = stage["behavior_cloning"]["replay_based"]
 
-    assert config["simulator"]["episodes"] == 2
+    assert config["training"]["episodes"] + config["evaluation"]["episodes"] == 2
     assert config["simulator"]["episode_time_steps"] == 3401
     assert config["simulator"]["dataset_name"].endswith("15min_parquet")
     assert config["simulator"]["reward_function"] == (
@@ -130,7 +130,7 @@ def test_cost4_realistic_fast_pilot_keeps_bc_without_extra_updates() -> None:
     stage = config["pipeline"][0]
     replay = stage["behavior_cloning"]["replay_based"]
 
-    assert config["simulator"]["episodes"] == 1
+    assert config["training"]["episodes"] + config["evaluation"]["episodes"] == 1
     assert config["simulator"]["episode_time_steps"] == 3401
     assert config["simulator"]["dataset_name"].endswith("15min_parquet")
     assert config["simulator"]["reward_function"] == (
@@ -148,7 +148,7 @@ def test_cost4_realistic_speed_pilot_bounds_learner_schedule() -> None:
     stage = config["pipeline"][0]
     replay = stage["behavior_cloning"]["replay_based"]
 
-    assert config["simulator"]["episodes"] == 1
+    assert config["training"]["episodes"] + config["evaluation"]["episodes"] == 1
     assert config["simulator"]["episode_time_steps"] == 3401
     assert config["simulator"]["dataset_name"].endswith("15min_parquet")
     assert config["simulator"]["reward_function"] == (

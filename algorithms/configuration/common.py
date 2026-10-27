@@ -42,6 +42,10 @@ class MetadataConfig(BaseModel):
 
 
 class RuntimeConfig(BaseModel):
+    randomness: Optional[Dict[str, Any]] = None
+    episode_plan: Optional[Dict[str, Any]] = None
+    input_identity: Optional[str] = None
+    loaded_checkpoint: Optional[str] = None
     log_dir: Optional[str] = Field(
         default=None, description="Resolved at runtime; path for log files"
     )
@@ -72,7 +76,8 @@ class RuntimeConfig(BaseModel):
 
 
 class TrackingConfig(BaseModel):
-    mlflow_enabled: bool = Field(default=True, description="If false, skips MLflow tracking")
+    metrics_enabled: bool = True
+    mlflow_enabled: bool = Field(default=False, description="If false, skips MLflow tracking")
     tags: Dict[str, Any] = Field(
         default_factory=dict,
         description="Optional run labels preserved in resolved configs and artifacts.",
@@ -84,7 +89,10 @@ class TrackingConfig(BaseModel):
         ge=1,
         description="Sample MLflow step metrics every N steps to reduce logging overhead",
     )
-    mlflow_artifacts_profile: Literal["minimal", "curated"] = Field(
+    mlflow_failure_policy: Literal["local", "abort"] = "local"
+    mlflow_upload_models: bool = False
+    mlflow_upload_checkpoints: bool = False
+    mlflow_artifacts_profile: Literal["minimal", "curated", "full"] = Field(
         default="minimal",
         description="Artifact logging profile for MLflow",
     )
@@ -259,6 +267,9 @@ class CheckpointingConfig(BaseModel):
     restore_replay_buffer: Optional[bool] = None
     restore_exploration_state: bool = True
     restore_reward_normalizer: bool = True
+    save_final: bool = True
+    resume_mode: Literal["weights", "episode"] = "weights"
+    min_free_disk_mb: float = Field(default=64.0, ge=0)
     checkpoint_interval: Optional[int] = Field(default=None, ge=1)
     checkpoint_on_episode_end: bool = Field(
         default=False,
@@ -295,6 +306,29 @@ class CheckpointingConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_checkpoint_source(self) -> "CheckpointingConfig":
+        if self.resume_mode == "episode":
+            if (
+                not self.resume_training
+                or not self.checkpoint_local_path
+                or self.stage_checkpoint_local_paths
+            ):
+                raise ValueError(
+                    "episode resume requires one local indexed checkpoint and resume_training=true"
+                )
+            if (
+                self.checkpoint_mode != "full"
+                or self.reset_replay_buffer
+                or self.fine_tune
+                or self.freeze_pretrained_layers
+            ):
+                raise ValueError("episode resume requires full state without reset/fine-tuning")
+            if (
+                self.restore_optimizers is False
+                or self.restore_replay_buffer is False
+                or not self.restore_exploration_state
+                or not self.restore_reward_normalizer
+            ):
+                raise ValueError("episode resume cannot disable state restoration")
         if not self.stage_checkpoint_local_paths:
             return self
         if not self.resume_training:
@@ -381,11 +415,13 @@ class CommunityMarketConfig(BaseModel):
 class SimulatorConfig(BaseModel):
     dataset_name: str
     dataset_path: str
+    data_contract_path: Optional[str] = None
     building_ids: Optional[List[str]] = None
     electrical_service_overrides_path: Optional[str] = None
     central_agent: bool = False
     interface: Literal["flat", "entity"] = "flat"
     topology_mode: Literal["static", "dynamic"] = "static"
+    action_policy: Literal["reject", "clip"] = "clip"
     reward_function: str
     reward_function_kwargs: Dict[str, Any] = Field(default_factory=dict)
     episodes: int = Field(default=1, ge=1)
@@ -461,8 +497,15 @@ class SimulatorConfig(BaseModel):
         return self
 
 
+class EvaluationConfig(BaseModel):
+    episodes: int = Field(default=1, ge=0, le=1)
+    policy: Literal["final"] = "final"
+
+
 class TrainingConfig(BaseModel):
-    seed: int = 22
+    episodes: Optional[int] = Field(default=None, ge=0)
+    seed: int = Field(default=22, ge=0, le=4294967295)
+    determinism: Literal["seeded", "strict"] = "seeded"
     steps_between_training_updates: int = Field(default=1, ge=1)
     target_update_interval: int = Field(default=0, ge=0)
 

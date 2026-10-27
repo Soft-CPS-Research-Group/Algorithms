@@ -200,13 +200,13 @@ class BuildingAgent(BaseAgent):
         net_input_raw = np.concatenate([obs_raw, [o1]], dtype=np.float32)
 
         # Normalize.
-        norm_input = self._normalize_obs(net_input_raw, update_stats=True)
+        norm_input = self._normalize_obs(net_input_raw, update_stats=not bool(deterministic))
         self._cached_obs = norm_input
 
         state_tensor = torch.tensor(norm_input, dtype=torch.float32).unsqueeze(0)
 
         with torch.no_grad():
-            action, log_prob, _, value = self.actor_critic.get_action_and_value(state_tensor)
+            action, log_prob, _, value = self.actor_critic.get_action_and_value(state_tensor, deterministic=bool(deterministic))
 
         self._cached_logprob = float(log_prob.item())
         self._cached_value   = float(value.item())

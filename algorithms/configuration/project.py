@@ -16,6 +16,7 @@ from algorithms.configuration.agents import (
 from algorithms.configuration.common import (
     BundleConfig,
     CheckpointingConfig,
+    EvaluationConfig,
     ExecutionConfig,
     ExperimentProtocolConfig,
     JobConfig,
@@ -43,6 +44,7 @@ class ProjectConfig(BaseModel):
     checkpointing: CheckpointingConfig = CheckpointingConfig()
     simulator: SimulatorConfig
     training: TrainingConfig = TrainingConfig()
+    evaluation: EvaluationConfig = EvaluationConfig()
     topology: TopologyConfig = TopologyConfig()
     pipeline: List[SerializeAsAny[BaseModel]] = Field(
         ...,

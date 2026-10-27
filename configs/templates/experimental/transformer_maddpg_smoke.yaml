@@ -23,8 +23,6 @@ simulator:
     normalization: minmax_space
     clip: true
   reward_function: RewardFunction
-  episodes: 2
-  deterministic_finish: true
   simulation_start_time_step: 0
   simulation_end_time_step: 16
   episode_time_steps: 17
@@ -37,6 +35,7 @@ simulator:
     include_business_as_usual: true
     export_business_as_usual_timeseries: false
 training:
+  episodes: 1
   seed: 22
   steps_between_training_updates: 1
   target_update_interval: 2
@@ -53,3 +52,6 @@ pipeline:
     batch_size: 4
   hyperparameters:
     gamma: 0.99
+
+evaluation:
+  episodes: 1

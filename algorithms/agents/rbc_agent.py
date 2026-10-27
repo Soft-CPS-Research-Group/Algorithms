@@ -317,6 +317,11 @@ class RuleBasedPolicy(BaseAgent):
             if hasattr(self, attr):
                 hyperparameters[attr] = getattr(self, attr)
 
+        # Omitted optional limits mean unbounded; JSON Infinity is not portable.
+        for key in ("deferrable_import_block_threshold_kw", "deferrable_community_import_block_threshold_kw"):
+            if key in hyperparameters and not np.isfinite(hyperparameters[key]):
+                hyperparameters.pop(key)
+
         export_root = Path(output_dir)
         export_root.mkdir(parents=True, exist_ok=True)
         agent_action_labels = self._action_labels or [[]]
@@ -345,7 +350,7 @@ class RuleBasedPolicy(BaseAgent):
 
             output_path = export_root / f"policy_agent_{global_agent_index}.json"
             with output_path.open("w", encoding="utf-8") as handle:
-                json.dump(policy, handle, indent=2)
+                json.dump(policy, handle, indent=2, allow_nan=False)
             if mlflow.active_run():
                 mlflow.log_artifact(str(output_path), artifact_path="model")
 

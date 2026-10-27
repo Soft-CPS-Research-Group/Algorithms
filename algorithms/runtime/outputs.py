@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -11,6 +11,7 @@ from typing import Any, Mapping
 import citylearn
 from loguru import logger
 
+from algorithms.runtime.atomic import atomic_json
 from algorithms.runtime.context import JobContext, OutputPlan
 from algorithms.runtime.simulator import _resolve_agent_observation_dimensions
 from algorithms.runtime.tracking import _log_curated_artifacts, mlflow
@@ -23,37 +24,18 @@ from utils.training_provenance import build_provenance, digest, file_digest, sea
 def finalize_outputs(
     context: JobContext, wrapper: Any, agent: Any, algorithm_name: str | None
 ) -> dict[str, Any]:
+    started = time.perf_counter()
     config, path_info = context.config, context.paths
     job_id, run_id, run_name = context.job_id, context.run_id, context.run_name
     experiment_id, tracking_uri = context.experiment_id, context.tracking_uri
     mlflow_enabled, artifact_profile = context.mlflow_enabled, context.artifact_profile
     simulator_cfg = config["simulator"]
-    export_cfg = simulator_cfg.get("export", {})
+    export_cfg = dict(simulator_cfg.get("export") or {})
+    for key in ("kpis_final_episode_only", "timeseries_final_episode_only"):
+        if export_cfg.get(key) is None:
+            export_cfg[key] = export_cfg.get("final_episode_only", False)
     resolved_config_path = path_info["resolved_config_path"]
     output_plan = OutputPlan.from_config(config)
-    # Ensure progress file reaches terminal state with 100% completion.
-    completed_episodes = int(simulator_cfg.get("episodes", 1) or 1)
-    final_step_total = max(
-        int(getattr(wrapper, "episode_time_steps", 0) or 0) - 1,
-        0,
-    )
-    final_step = max(0, final_step_total - 1)
-    final_global_step = max(0, int(getattr(wrapper, "global_step", 0) or 0))
-    final_global_step_total = (
-        completed_episodes * final_step_total if final_step_total > 0 else None
-    )
-    if getattr(wrapper, "progress_tracker", None) is not None:
-        wrapper.progress_tracker.update(
-            episode=max(0, completed_episodes - 1),
-            step=final_step,
-            global_step=final_global_step,
-            episode_total=completed_episodes,
-            step_total=final_step_total if final_step_total > 0 else None,
-            global_step_total=final_global_step_total,
-            status="completed",
-            force_complete=True,
-        )
-
     kpi_source = (
         "simulator_export"
         if export_cfg.get("export_kpis_on_episode_end", False)
@@ -107,7 +89,7 @@ def finalize_outputs(
         else []
     )
     result_payload = {
-        "status": "completed",
+        "status": "finalizing",
         "kpi_source": kpi_source,
         "export_kpis_on_episode_end": bool(export_cfg.get("export_kpis_on_episode_end", False)),
         "export_final_episode_only": bool(export_cfg.get("final_episode_only", False)),
@@ -131,6 +113,9 @@ def finalize_outputs(
         "experiment_protocol": experiment_protocol,
         "pairing_fingerprint": pairing_fingerprint,
         "episode_execution": episode_execution,
+        "evaluated_policy": getattr(wrapper, "evaluated_policy", None),
+        "randomness": config.get("runtime", {}).get("randomness"),
+        "episode_plan": config.get("runtime", {}).get("episode_plan"),
     }
 
     result_path = path_info["result_path"]
@@ -174,8 +159,7 @@ def finalize_outputs(
     result_payload["model_artifacts"] = (config.get("outputs") or {}).get(
         "model_artifacts"
     ) or "configured"
-    with open(result_path, "w", encoding="utf-8") as result_file:
-        json.dump(result_payload, result_file, indent=2)
+    atomic_json(result_path, result_payload)
     logger.info("Result payload written to {}", result_path)
 
     summary_payload = {
@@ -197,15 +181,50 @@ def finalize_outputs(
         ),
     }
     summary_path = path_info["summary_path"]
-    with open(summary_path, "w", encoding="utf-8") as summary_file:
-        json.dump(summary_payload, summary_file, indent=2)
+    atomic_json(summary_path, summary_payload)
 
-    if mlflow.active_run() and artifact_profile == "curated":
+    if mlflow.active_run() and artifact_profile in {"curated", "full"}:
         _log_curated_artifacts(
             resolved_config_path=resolved_config_path,
             manifest_path=Path(manifest_path) if manifest_path is not None else None,
             result_path=result_path,
             summary_path=summary_path,
+        )
+
+    atomic_json(
+        path_info["results_dir"] / "finalization.json",
+        {
+            "output_seconds": time.perf_counter() - started,
+            "checkpoint_seconds": getattr(
+                getattr(wrapper, "checkpoint_manager", None), "total_seconds", 0.0
+            ),
+        },
+    )
+    # The caller commits completion after tracking and resource finalization.
+    result_payload["status"] = "completed"
+    return result_payload
+
+
+def commit_completion(context, wrapper, result_payload):
+    path_info, simulator_cfg = context.paths, context.config["simulator"]
+    completed_episodes = int(simulator_cfg.get("episodes", 1) or 1)
+    final_step_total = max(int(getattr(wrapper, "episode_time_steps", 0) or 0) - 1, 0)
+    final_step = max(0, final_step_total - 1)
+    final_global_step = max(0, int(getattr(wrapper, "global_step", 0) or 0))
+    final_global_step_total = (
+        completed_episodes * final_step_total if final_step_total > 0 else None
+    )
+    atomic_json(path_info["result_path"], result_payload)
+    if getattr(wrapper, "progress_tracker", None) is not None:
+        wrapper.progress_tracker.update(
+            episode=max(0, completed_episodes - 1),
+            step=final_step,
+            global_step=final_global_step,
+            episode_total=completed_episodes,
+            step_total=final_step_total if final_step_total > 0 else None,
+            global_step_total=final_global_step_total,
+            status="completed",
+            force_complete=True,
         )
 
     return result_payload

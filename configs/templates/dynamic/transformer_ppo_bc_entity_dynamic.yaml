@@ -63,7 +63,6 @@ simulator:
   reward_function: CostHardConstraintReward
   reward_function_kwargs:
     squash: 1   # tanh-squash rewards to [-1, 1] to prevent PPO gradient explosion
-  episodes: 26  # ~6.5h based on ~15min/episode observed in my_test_run
   simulation_start_time_step: 0
   simulation_end_time_step: 3400
   episode_time_steps: 3401
@@ -83,6 +82,7 @@ simulator:
     squash: none
 
 training:
+  episodes: 26
   seed: 7
   steps_between_training_updates: 256  # PPO is on-policy: collect a real trajectory before each update. Must be >= minibatch_size.
   target_update_interval: 0  # PPO doesn't use a target net; preserved for schema parity
@@ -131,3 +131,6 @@ pipeline:
         hyperparameters: {}
 
 execution: null
+
+evaluation:
+  episodes: 0

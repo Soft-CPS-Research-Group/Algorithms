@@ -78,10 +78,10 @@ class TIMARL(BaseAgent):
         )
         checkpoint_cfg = dict(config.get("checkpointing") or {})
         self.restore_optimizers = bool(
-            checkpoint_cfg.get("restore_optimizers", True)
+            checkpoint_cfg.get("restore_optimizers") is not False
         )
         self.restore_rollout = bool(
-            checkpoint_cfg.get("restore_replay_buffer", True)
+            checkpoint_cfg.get("restore_replay_buffer") is not False
         )
         backbone = dict(hyper.get("backbone", {}))
         critic_cfg = dict(hyper.get("critic", {}))

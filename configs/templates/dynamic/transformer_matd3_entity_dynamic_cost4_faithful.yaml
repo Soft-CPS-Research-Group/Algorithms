@@ -67,7 +67,6 @@ simulator:
   reward_function_kwargs:
     community_settlement_cost_weight: 1.55
     battery_throughput_penalty: 0.0015
-  episodes: 26
   simulation_start_time_step: 0
   simulation_end_time_step: 3400
   episode_time_steps: 3401
@@ -87,6 +86,7 @@ simulator:
     squash: none
 
 training:
+  episodes: 26
   seed: 7
   steps_between_training_updates: 2
   target_update_interval: 2
@@ -190,3 +190,6 @@ pipeline:
           hyperparameters: {}
 
 execution: null
+
+evaluation:
+  episodes: 0

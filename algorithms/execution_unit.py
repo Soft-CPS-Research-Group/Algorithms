@@ -78,24 +78,38 @@ class ExecutionUnit(ABC):
         context: Optional[StageContext] = None,
     ) -> Any:
         """Typed runtime entry; legacy numerical predict methods keep their API."""
-        return self.predict(
-            observations, deterministic, context=None if context is None else context.value
-        )
+        from contextlib import nullcontext
+
+        from algorithms.runtime.evaluation import evaluation_mode
+        from algorithms.runtime.randomness import agent_scope
+
+        with (
+            agent_scope(self, "evaluation" if deterministic else "exploration"),
+            evaluation_mode(self) if deterministic else nullcontext(),
+        ):
+            return self.predict(
+                observations, deterministic, context=None if context is None else context.value
+            )
 
     def learn_transition(self, transition: Transition, schedule: UpdateSchedule) -> None:
         """Deliver a transition without moving replay/rollout logic into the core."""
-        return self.update(
-            observations=transition.observations,
-            actions=transition.submitted_actions,
-            rewards=transition.rewards,
-            next_observations=transition.next_observations,
-            terminated=transition.terminated,
-            truncated=transition.truncated,
-            update_target_step=schedule.update_targets,
-            global_learning_step=schedule.global_step,
-            update_step=schedule.update,
-            initial_exploration_done=schedule.exploration_done,
-        )
+        from algorithms.runtime.randomness import agent_scope
+
+        if self.frozen:
+            return None
+        with agent_scope(self, "learning"):
+            return self.update(
+                observations=transition.observations,
+                actions=transition.submitted_actions,
+                rewards=transition.rewards,
+                next_observations=transition.next_observations,
+                terminated=transition.terminated,
+                truncated=transition.truncated,
+                update_target_step=schedule.update_targets,
+                global_learning_step=schedule.global_step,
+                update_step=schedule.update,
+                initial_exploration_done=schedule.exploration_done,
+            )
 
     def prepare_training(self, output_dir: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Optional one-time preparation before environment attachment.
@@ -174,6 +188,10 @@ class ExecutionUnit(ABC):
     # ------------------------------------------------------------------
     # Lifecycle hooks
     # ------------------------------------------------------------------
+    def select_evaluation_policy(self) -> Dict[str, Any]:
+        """Select before hashing/evaluation; learned policies default to final weights."""
+        return {"selection": "final"}
+
     def on_episode_start(self, *, episode: int, training: bool) -> None:
         """Observe the start of an episode."""
         _ = episode, training

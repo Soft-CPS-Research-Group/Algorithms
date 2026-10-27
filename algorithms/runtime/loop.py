@@ -10,7 +10,8 @@ import psutil
 import torch
 from loguru import logger
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.randomness import call_hook
+from algorithms.runtime.tracking import metrics_active, mlflow
 
 if TYPE_CHECKING:
     from algorithms.runtime.controller import SimulationController
@@ -29,16 +30,20 @@ def run_episodes(
     episodes = episodes or self.default_episodes
     deterministic_finish = deterministic_finish if deterministic_finish is not None else False
     deterministic = deterministic if deterministic is not None else False
-    self._episode_execution_history = []
+    if not getattr(self, "_resume_episode", 0):
+        self._episode_execution_history = []
+    self.learning_step = getattr(self, "learning_step", 0)
 
     total_rewards_across_episodes = []  # To track overall reward trends
 
-    for episode in range(episodes):
+    for episode in range(getattr(self, "_resume_episode", 0), episodes):
+        self._at_episode_boundary = False
         start_episode_time = time.time()
         episode_deterministic = bool(deterministic) or (
             deterministic_finish and episode >= episodes - 1
         )
         export_this_episode = self._configure_episode_exports(episode, episodes)
+
         self._entity_model_observations_direct = self._can_use_direct_entity_model_observations()
         self._write_phase_progress(
             phase="episode_reset_start",
@@ -64,10 +69,42 @@ def run_episodes(
             observations = raw_observations
         on_episode_start = getattr(self.model, "on_episode_start", None)
         if callable(on_episode_start):
-            on_episode_start(
+            call_hook(
+                self.model,
+                "on_episode_start",
+                stream="evaluation" if episode_deterministic else "learning",
                 episode=episode,
                 training=not episode_deterministic,
             )
+        if episode_deterministic:
+            from algorithms.runtime.evaluation import policy_digest
+            from algorithms.runtime.resume import leaves
+
+            selections = []
+            for path, unit in leaves(self.model):
+                selector = getattr(unit, "select_evaluation_policy", None)
+                selected = (
+                    call_hook(unit, "select_evaluation_policy", stream="evaluation")
+                    if callable(selector)
+                    else {"selection": "final"}
+                )
+                selections.append({"path": path, **selected})
+            final_policy = all(item["selection"] == "final" for item in selections)
+            self.evaluated_policy = {
+                "selection": "final" if final_policy else "validated_selection",
+                "stages": selections,
+                "sha256": policy_digest(self.model),
+                "checkpoint": getattr(self.checkpoint_manager, "latest_entry", None)
+                if final_policy
+                else None,
+                "seed": self.config.get("simulator", {}).get("random_seed"),
+                "window": [
+                    getattr(self.episode_tracker, "episode_start_time_step", None),
+                    getattr(self.episode_tracker, "episode_end_time_step", None),
+                ],
+                "topology": self.describe_environment(),
+            }
+
         self.episode_time_steps = self.episode_tracker.episode_time_steps
         self._record_episode_execution(
             episode=episode,
@@ -92,6 +129,8 @@ def run_episodes(
         while not (terminated or truncated):
             step_start_time = time.time()
             self.global_step += 1
+            if not episode_deterministic:
+                self.learning_step += 1
             should_profile_step = (
                 self.runtime_profiling_enabled
                 and self.global_step % self.runtime_profiling_interval == 0
@@ -617,7 +656,7 @@ def run_episodes(
                         time.perf_counter() - diagnostics_start_time
                     )
 
-                if mlflow.active_run():
+                if metrics_active(mlflow):
                     mlflow.log_metrics(metrics, step=self.global_step)
                 elif self.local_metrics_logger:
                     self.local_metrics_logger.log(metrics, self.global_step)
@@ -706,7 +745,10 @@ def run_episodes(
             if callable(set_training_progress):
                 set_training_progress(report_boundary_training_progress)
             try:
-                on_episode_end(
+                call_hook(
+                    self.model,
+                    "on_episode_end",
+                    stream="evaluation" if episode_deterministic else "learning",
                     episode=episode,
                     training=not episode_deterministic,
                 )
@@ -725,7 +767,7 @@ def run_episodes(
             )
         boundary_training_metrics = self._consume_model_training_metrics()
         if boundary_training_metrics:
-            if mlflow.active_run():
+            if metrics_active(mlflow):
                 mlflow.log_metrics(boundary_training_metrics, step=self.global_step)
             elif self.local_metrics_logger:
                 self.local_metrics_logger.log(
@@ -748,6 +790,12 @@ def run_episodes(
             episode=episode,
             is_final_episode=episode + 1 >= episodes,
         )
+        self._at_episode_boundary = True
+        self._next_episode = episode + 1
+        if not episode_deterministic and episode + 1 == episodes - int(bool(deterministic_finish)):
+            self._final_training_checkpoint = self.checkpoint_manager.save_final(
+                self.model, self.global_step
+            )
         self.checkpoint_manager.save_episode_end(
             self.model,
             step=self.global_step,
@@ -773,7 +821,7 @@ def run_episodes(
                 episode_total=episodes,
                 step_total=episode_step_total,
                 global_step_total=global_step_total,
-                status="completed" if episode + 1 >= episodes else "running",
+                status="finalizing" if episode + 1 >= episodes else "running",
                 extra={
                     "phase": "episode_end",
                     **self._runtime_resource_snapshot(),
@@ -841,7 +889,7 @@ def run_episodes(
 
         episode_duration = time.time() - start_episode_time
         episode_metrics["Episode_Duration"] = episode_duration
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_metrics(episode_metrics, step=episode)
         elif self.local_metrics_logger:
             self.local_metrics_logger.log(episode_metrics, episode)
@@ -911,7 +959,7 @@ def run_episodes(
         overall_metrics[f"Agent_{i}_Overall_Reward_Min"] = overall_rewards_summary["min"][i]
         overall_metrics[f"Agent_{i}_Overall_Reward_Max"] = overall_rewards_summary["max"][i]
 
-    if mlflow.active_run():
+    if metrics_active(mlflow):
         mlflow.log_metrics(overall_metrics)
     elif self.local_metrics_logger:
         # Use -1 to denote aggregate metrics when logging locally.

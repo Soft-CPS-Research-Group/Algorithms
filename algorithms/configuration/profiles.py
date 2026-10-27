@@ -36,6 +36,7 @@ def resolve_profile(raw: Mapping[str, Any]) -> dict[str, Any]:
             stage["frozen"] = True
         checkpointing["checkpoint_interval"] = None
         checkpointing["checkpoint_on_episode_end"] = False
+        checkpointing["save_final"] = False
     elif profile == "smoke":
         simulator["episodes"] = 2
         simulator["deterministic_finish"] = True
@@ -62,10 +63,30 @@ def resolve_profile(raw: Mapping[str, Any]) -> dict[str, Any]:
                     raise ValueError("offline_training.parameters must be a mapping")
                 length_key = "epochs" if stage.get("algorithm") == "BCAgent" else "gradient_steps"
                 parameters[length_key] = min(int(parameters.get(length_key, 2)), 2)
+    from algorithms.configuration.episodes import episode_plan
+
+    plan = episode_plan(config)
+    if sum((plan["training"], plan["evaluation"])) < 1:
+        raise ValueError("At least one training or evaluation episode is required")
+    total = plan["training"] + plan["evaluation"]
+    if plan["source"] == "explicit":
+        if simulator.get("episodes") is not None and simulator["episodes"] != total:
+            raise ValueError(
+                "Conflicting episode counts: use training.episodes + evaluation.episodes; remove legacy simulator.episodes"
+            )
+        if simulator.get("deterministic_finish") is not None and bool(
+            simulator["deterministic_finish"]
+        ) != bool(plan["evaluation"]):
+            raise ValueError(
+                "Conflicting evaluation counts: remove legacy simulator.deterministic_finish"
+            )
+    simulator["episodes"] = total
+    simulator["deterministic_finish"] = bool(plan["evaluation"])
     requested = outputs.get("model_artifacts")
     if requested in {"none", "bundle"}:
         checkpointing["checkpoint_interval"] = None
         checkpointing["checkpoint_on_episode_end"] = False
+        checkpointing["save_final"] = False
     return config
 
 

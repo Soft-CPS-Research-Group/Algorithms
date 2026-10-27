@@ -17,7 +17,7 @@ from algorithms.transformer_matd3.types import (
 class SignatureBucketedReplayBuffer:
     STATE_FORMAT = "signature_bucketed_v1"
 
-    def __init__(self, capacity: int, num_agents: int, batch_size: int) -> None:
+    def __init__(self, capacity: int, num_agents: int, batch_size: int, seed: Optional[int] = None) -> None:
         if capacity <= 0:
             raise ValueError("replay capacity must be positive")
         if num_agents <= 0:
@@ -33,7 +33,7 @@ class SignatureBucketedReplayBuffer:
         self._global_fifo: deque[tuple[int, LayoutSignature]] = deque()
         self._next_sequence_id = 0
         self._total_size = 0
-        self._rng = random.Random()
+        self._rng = random.Random(random.getrandbits(64) if seed is None else seed)
 
     def push(
         self,

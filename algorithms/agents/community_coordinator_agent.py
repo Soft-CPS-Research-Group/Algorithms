@@ -39,7 +39,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.tracking import mlflow, metrics_active
 import numpy as np
 import torch
 from loguru import logger
@@ -187,6 +187,11 @@ class CommunityCoordinatorAgent(BaseAgent):
 
     # ─────────────────────── Per-step interaction ───────────────────────
 
+    def on_episode_start(self, *, episode: int, training: bool) -> None:
+        self._step_in_interval = 0
+        self._accumulated_reward = 0.0
+        self._return_running = 0.0
+
     def predict(
         self,
         observations: List[np.ndarray],
@@ -202,7 +207,9 @@ class CommunityCoordinatorAgent(BaseAgent):
         All other slots = 0.0.
         """
         if self._step_in_interval == 0:
-            self._sample_new_decision(observations)
+            self._sample_new_decision(observations, deterministic=bool(deterministic))
+        if deterministic:
+            self._step_in_interval = (self._step_in_interval + 1) % self._cc_action_interval
 
         if self._output_mode == "signal":
             return self._cached_o1
@@ -390,13 +397,13 @@ class CommunityCoordinatorAgent(BaseAgent):
 
     # ───────────────────── Internal: state & action ─────────────────────
 
-    def _sample_new_decision(self, observations: List[np.ndarray]) -> None:
+    def _sample_new_decision(self, observations: List[np.ndarray], deterministic: bool = False) -> None:
         """Run actor-critic once and cache result for the next K env steps."""
         raw_community = self._build_community_context(observations)
         raw_buildings = self._build_building_features(observations)
 
         norm_community, norm_buildings = self._normalize_state(
-            raw_community, raw_buildings, update_stats=True
+            raw_community, raw_buildings, update_stats=not deterministic
         )
 
         community_t = torch.tensor(norm_community, dtype=torch.float32).unsqueeze(0)
@@ -404,7 +411,7 @@ class CommunityCoordinatorAgent(BaseAgent):
 
         with torch.no_grad():
             action, log_prob, _, value = self.actor_critic.get_action_and_value(
-                community_t, buildings_t
+                community_t, buildings_t, deterministic=deterministic
             )
 
         self._cached_o1            = action.squeeze(0).numpy().astype(np.float32)
@@ -626,7 +633,7 @@ class CommunityCoordinatorAgent(BaseAgent):
             pg_loss.item(), v_loss.item(), entropy_loss.item(), kl_exceeded,
         )
 
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_metrics(
                 {
                     "PPO_pg_loss": pg_loss.item(),
@@ -713,7 +720,7 @@ class CommunityCoordinatorAgent(BaseAgent):
             float(rewards.mean()), cross_building_std, tmp_path,
         )
 
-        if mlflow.active_run():
+        if metrics_active(mlflow):
             mlflow.log_artifact(tmp_path, artifact_path="decision_traces")
             mlflow.log_metrics(
                 {

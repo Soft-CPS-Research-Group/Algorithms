@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.tracking import mlflow, metrics_active
 from loguru import logger
 
 from utils.helpers import flatten_dict
@@ -16,7 +16,7 @@ def log_to_mlflow(metric_name, value, step=None):
     - value: Value of the metric.
     - step: Step associated with the metric (optional).
     """
-    if mlflow.active_run():
+    if metrics_active(mlflow):
         mlflow.log_metric(metric_name, value, step)
 
 def log_param_to_mlflow(param_name, value):

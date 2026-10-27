@@ -107,8 +107,6 @@ simulator:
     community_grid_export_price: 0.0
     scale_state_penalties_by_time_step: true
     state_penalty_reference_seconds: 3600.0
-  episodes: 1
-  deterministic_finish: false
   # Optional simulation window overrides (null = dataset schema defaults).
   simulation_start_time_step: 0
   simulation_end_time_step: 5759
@@ -131,6 +129,7 @@ simulator:
     squash: none
 # Training schedule knobs used by the wrapper/agent update cadence.
 training:
+  episodes: 1
   seed: 123
   steps_between_training_updates: 4
   target_update_interval: 2
@@ -211,3 +210,6 @@ pipeline:
 
 # Optional worker-specific overrides; omitted for local execution.
 execution: null
+
+evaluation:
+  episodes: 0

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import traceback
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+
+from algorithms.runtime.atomic import atomic_json, atomic_text
 
 
 def _derive_job_id(job_id: Optional[str]) -> str:
@@ -21,6 +24,27 @@ def _derive_job_id(job_id: Optional[str]) -> str:
 
 def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
     job_dir = base_dir / "jobs" / job_id
+    logical_job_dir = job_dir
+    job_dir.mkdir(parents=True, exist_ok=True)
+    claim = job_dir / ".attempt"
+    if (
+        claim.exists()
+        or (job_dir / "config.resolved.yaml").exists()
+        or (job_dir / "results/result.json").exists()
+    ):
+        job_dir = job_dir / "attempts" / uuid.uuid4().hex
+        job_dir.mkdir(parents=True, exist_ok=False)
+        claim = job_dir / ".attempt"
+    try:
+        claim.touch(exist_ok=False)
+    except FileExistsError:
+        job_dir = logical_job_dir / "attempts" / uuid.uuid4().hex
+        job_dir.mkdir(parents=True, exist_ok=False)
+        (job_dir / ".attempt").touch(exist_ok=False)
+    atomic_json(
+        logical_job_dir / "latest_attempt.json",
+        {"path": str(job_dir.relative_to(logical_job_dir)), "job_id": job_id},
+    )
     bundle_dir = job_dir / "bundle"
     results_dir = job_dir / "results"
     progress_dir = job_dir / "progress"
@@ -53,22 +77,23 @@ def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
 
 def _write_resolved_config(config: dict, output_path: Path) -> None:
     """Persist the runtime-resolved configuration for reproducibility."""
-    with output_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(config, handle, sort_keys=False)
+    atomic_text(output_path, yaml.safe_dump(config, sort_keys=False))
 
 
-def _mark_failed_outputs(path_info: dict[str, Path], exc: Exception) -> None:
+def _mark_failed_outputs(path_info: dict[str, Path], exc: BaseException) -> None:
     """Persist a terminal failure state for orchestrators and long local runs."""
     timestamp = datetime.utcnow().isoformat() + "Z"
+    from algorithms.runtime.lifecycle import JobCancelled
+
+    status = "cancelled" if isinstance(exc, (KeyboardInterrupt, JobCancelled)) else "failed"
     result_payload = {
-        "status": "failed",
+        "status": status,
         "error_type": type(exc).__name__,
         "error": str(exc),
         "timestamp": timestamp,
     }
     result_payload["traceback"] = traceback.format_exc()
-    with open(path_info["result_path"], "w", encoding="utf-8") as result_file:
-        json.dump(result_payload, result_file, indent=2)
+    atomic_json(path_info["result_path"], result_payload)
 
     progress_payload: dict[str, Any] = {}
     if path_info["progress_path"].exists():
@@ -79,11 +104,10 @@ def _mark_failed_outputs(path_info: dict[str, Path], exc: Exception) -> None:
             progress_payload = {}
     progress_payload.update(
         {
-            "status": "failed",
+            "status": status,
             "timestamp": timestamp,
             "error_type": type(exc).__name__,
             "error": str(exc),
         }
     )
-    with open(path_info["progress_path"], "w", encoding="utf-8") as progress_file:
-        json.dump(progress_payload, progress_file, indent=2)
+    atomic_json(path_info["progress_path"], progress_payload)

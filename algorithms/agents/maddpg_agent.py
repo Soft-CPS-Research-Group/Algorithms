@@ -8,7 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from algorithms.runtime.tracking import mlflow
+from algorithms.runtime.tracking import mlflow, metrics_active
 import numpy as np
 import torch
 from loguru import logger
@@ -2963,7 +2963,7 @@ class MADDPG(BaseAgent):
         if not metrics:
             return
         self._latest_training_metrics = dict(metrics)
-        if mlflow.active_run() and not bool(getattr(self, "managed_by_ensemble", False)):
+        if metrics_active(mlflow) and not bool(getattr(self, "managed_by_ensemble", False)):
             mlflow.log_metrics(metrics, step=step)
 
     def _soft_update(self, local_model, target_model, tau):

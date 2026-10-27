@@ -35,7 +35,8 @@ def test_offline_training_runs_inside_the_common_job(name, tmp_path):
     from utils.entity_adapter import EntityContractAdapter
     config = yaml.safe_load(Path('configs/templates/experimental/transformer_maddpg_smoke.yaml').read_text())
     config['simulator']['building_ids'] = ['Building_2']
-    config['simulator']['episodes'] = 1
+    config['training']['episodes'] = 0
+    config['evaluation'] = {'episodes': 1}
     env = CityLearnEnv(schema=_resolve_citylearn_schema_input(config['simulator']['dataset_path'], config['simulator']),
                       central_agent=False, interface='entity', episode_time_steps=2)
     try:

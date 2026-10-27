@@ -1,0 +1,278 @@
+[
+  {
+    "file": "configs/config.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/normal_2022_all_plus_evs_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/normal_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/normal_no_battery_2022_all_plus_evs_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/normal_no_battery_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/random_2022_all_plus_evs_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/random_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rbc_basic_15min_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rbc_basic_2022_all_plus_evs_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rbc_basic_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rbc_community_15min_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rbc_community_2022_all_plus_evs_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rbc_community_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rbc_smart_15min_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rbc_smart_2022_all_plus_evs_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rbc_smart_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rule_based_2022_all_plus_evs_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/baselines/rule_based_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/rbc_community_entity_dynamic_15min_cost4.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/rbc_smart_entity_dynamic_15min_cost4.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/rule_based_entity_dynamic_assets_only_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/rule_based_entity_dynamic_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/transformer_matd3_entity_dynamic.yaml",
+    "legacy_total": 26,
+    "training": 26,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/transformer_matd3_entity_dynamic_bc.yaml",
+    "legacy_total": 26,
+    "training": 26,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/transformer_matd3_entity_dynamic_cost4_faithful.yaml",
+    "legacy_total": 26,
+    "training": 26,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/transformer_matd3_entity_dynamic_cost4_realistic_fast_pilot.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/transformer_matd3_entity_dynamic_cost4_realistic_pilot.yaml",
+    "legacy_total": 2,
+    "training": 2,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/transformer_matd3_entity_dynamic_cost4_realistic_speed_pilot.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/transformer_matd3_entity_dynamic_residual.yaml",
+    "legacy_total": 26,
+    "training": 26,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/transformer_ppo_bc_entity_dynamic.yaml",
+    "legacy_total": 26,
+    "training": 26,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml",
+    "legacy_total": 26,
+    "training": 26,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/experimental/bcagent_evaluation.yaml",
+    "legacy_total": 1,
+    "training": 0,
+    "evaluation": 1
+  },
+  {
+    "file": "configs/templates/experimental/cc_capacity_smoke.yaml",
+    "legacy_total": 2,
+    "training": 1,
+    "evaluation": 1
+  },
+  {
+    "file": "configs/templates/experimental/cc_directional_smoke.yaml",
+    "legacy_total": 2,
+    "training": 1,
+    "evaluation": 1
+  },
+  {
+    "file": "configs/templates/experimental/cqlentityagent_evaluation.yaml",
+    "legacy_total": 1,
+    "training": 0,
+    "evaluation": 1
+  },
+  {
+    "file": "configs/templates/experimental/iqlagent_evaluation.yaml",
+    "legacy_total": 1,
+    "training": 0,
+    "evaluation": 1
+  },
+  {
+    "file": "configs/templates/experimental/iqlentityagent_evaluation.yaml",
+    "legacy_total": 1,
+    "training": 0,
+    "evaluation": 1
+  },
+  {
+    "file": "configs/templates/experimental/transformer_maddpg_smoke.yaml",
+    "legacy_total": 2,
+    "training": 1,
+    "evaluation": 1
+  },
+  {
+    "file": "configs/templates/hiro_local.yaml",
+    "legacy_total": 2,
+    "training": 2,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/maddpg/maddpg_2022_all_plus_evs_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/maddpg/maddpg_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/rl/happo_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/rl/ippo_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/rl/mappo_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/rl/masac_local.yaml",
+    "legacy_total": 1,
+    "training": 1,
+    "evaluation": 0
+  },
+  {
+    "file": "configs/templates/rl/td3_distributed_local.yaml",
+    "legacy_total": 2,
+    "training": 1,
+    "evaluation": 1
+  }
+]

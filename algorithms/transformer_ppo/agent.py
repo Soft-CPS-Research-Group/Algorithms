@@ -187,6 +187,8 @@ class AgentTransformerPPO(BaseAgent):
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
         self.config = config
+        from algorithms.runtime.randomness import seed_all
+        seed_all(int(config.get("training", {}).get("seed", 22)))
         algo = config["algorithm"]
 
         self._tokenizer_config_path: str = str(algo["tokenizer_config_path"])
@@ -208,7 +210,7 @@ class AgentTransformerPPO(BaseAgent):
             algorithm_name="AgentTransformerPPO",
         )
         _log_torch_runtime(self.device)
-        torch.backends.cudnn.benchmark = self.device.type == "cuda"
+        torch.backends.cudnn.benchmark = False
         self._lr = float(h["learning_rate"])
         self._gamma = float(h["gamma"])
         self._gae_lambda = float(h["gae_lambda"])
