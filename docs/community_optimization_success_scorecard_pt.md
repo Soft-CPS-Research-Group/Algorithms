@@ -1,6 +1,6 @@
 # Scorecard de Sucesso para Otimizacao Comunitaria
 
-Este scorecard fica congelado como criterio pratico inicial para comparar baselines, MADDPG e outros algoritmos RL/MARL. Pode ser expandido mais tarde com objetivos comunitarios adicionais, mas por agora evita comparacoes soltas por reward interna.
+Para os datasets Portugal, consultar o [protocolo do motor original](portugal_evaluation_protocol_v2.md). A recuperação fixa `978be68b` sem extensões. A convenção financeira está definida: tarifa comum e fator de 80% no schema da experiência, usando a liquidação original. A tarefa corrente limita-se à construção dos dados, com avaliações suspensas. As regras executáveis Portugal anteriores não estão certificadas para este contrato; a integração de métricas será revista quando retomarmos as experiências. Os critérios gerais abaixo são orientação e os resultados históricos conservam as suas regras.
 
 ## Gates Obrigatorios
 
@@ -23,7 +23,7 @@ Depois de passar os gates, a ordenacao deve olhar para:
 | Prioridade | KPI | Leitura |
 |---:|---|---|
 | 1 | `community_cost_eur` | menor e melhor |
-| 2 | `cost_delta_to_bau_eur` / `cost_ratio_to_bau` | negativo ou ratio `< 1` e melhor, quando BAU estiver disponivel |
+| 2 | `cost_delta_to_bau_eur` / `cost_ratio_to_bau` | diferença em euros; percentagem com denominador absoluto não nulo; não ordenar custos negativos por um quociente simples |
 | 3 | `ev_within_tolerance_feasible_rate` | maior e melhor; mede precisao face ao SOC escolhido |
 | 4 | `peak_daily_ratio_to_bau` / `peak_all_time_ratio_to_bau` | menor e melhor, quando BAU estiver disponivel |
 | 5 | `community_solar_self_consumption_rate` | maior e melhor |
@@ -42,6 +42,18 @@ quando o mercado comunitario esta ativo, primeiro
 `district_cost_total_control_eur`. Nao usamos custo alternativo recalculado
 deste lado. Import/export/self-consumption ficam apenas como KPIs de diagnostico
 e qualidade da politica.
+
+## Referência comercial de DR
+
+O motor original usa a média da hora anterior e DR apenas no Premium All-in. Não tem o contrato calibrado do motor alterado. As métricas abaixo descrevem a revisão histórica e objetivos de análise; não são garantidas pelos datasets correntes nem podem ser preenchidas com zero para aprovar uma execução:
+
+- `dr_reference_valid_fraction`: fração dos pedidos/passos com referência qualificada, sem omitir recusas;
+- `dr_reference_member_coverage`, `dr_reference_bess_power_coverage` e `dr_reference_charger_coverage`: população e equipamentos efetivamente representados;
+- `dr_baseline_mae_kw`, `dr_reference_uncertainty_kw` e `dr_reference_interval_coverage`: erro observado, margem e cobertura empírica;
+- `dr_credit_without_response_kwh`: crédito residual no par que ignora o pedido;
+- adicionalidade, cumprimento físico por quarto de hora e rebound, já presentes no diagnóstico emparelhado.
+
+Coberturas usam frações entre 0 e 1. O resumo conserva o mínimo de cobertura e o máximo de incerteza; esses extremos não substituem a leitura das janelas individuais. A calibração não altera o custo oficial nem transforma um pedido sem referência válida em resposta cumprida.
 
 ## Regras de Decisao
 

@@ -38,7 +38,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
-    record = commands.add_parser("record", help="Create one deterministic replay record")
+    record = commands.add_parser(
+        "record", help="Create one deterministic replay record"
+    )
     record.add_argument("--candidate-id", required=True)
     record.add_argument("--role", choices=("candidate", "reference"), required=True)
     record.add_argument("--config", required=True)
@@ -49,6 +51,9 @@ def _parser() -> argparse.ArgumentParser:
         help="Runner result.json containing the authoritative remote pairing fingerprint",
     )
     record.add_argument("--simulator-version")
+    record.add_argument(
+        "--diagnostics", help="Hashed paired physical/health/DR trace diagnostics"
+    )
     record.add_argument("--output", required=True)
 
     select = commands.add_parser("select", help="Promote from development records only")
@@ -89,6 +94,7 @@ def main() -> int:
             checkpoint_path=args.checkpoint,
             simulator_version=args.simulator_version,
             pairing_fingerprint=pairing,
+            diagnostics_path=args.diagnostics,
         )
         _write_json(args.output, payload)
         return 0

@@ -12,7 +12,9 @@ from __future__ import annotations
 from collections import defaultdict
 import csv
 import hashlib
+import importlib.util
 import json
+import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -70,21 +72,11 @@ KPI_ROWS: Mapping[str, tuple[str, ...]] = {
     "deferrable_unserved_energy_kwh": (
         "district_deferrable_appliance_service_unserved_energy_total_kwh",
     ),
-    "battery_throughput_kwh": (
-        "district_battery_total_throughput_kwh",
-    ),
-    "v2g_export_kwh": (
-        "district_ev_total_v2g_export_kwh",
-    ),
-    "community_import_kwh": (
-        "district_energy_grid_total_import_control_kwh",
-    ),
-    "community_export_kwh": (
-        "district_energy_grid_total_export_control_kwh",
-    ),
-    "gini_benefit_ratio": (
-        "district_equity_distribution_gini_benefit_ratio",
-    ),
+    "battery_throughput_kwh": ("district_battery_total_throughput_kwh",),
+    "v2g_export_kwh": ("district_ev_total_v2g_export_kwh",),
+    "community_import_kwh": ("district_energy_grid_total_import_control_kwh",),
+    "community_export_kwh": ("district_energy_grid_total_export_control_kwh",),
+    "gini_benefit_ratio": ("district_equity_distribution_gini_benefit_ratio",),
 }
 
 
@@ -103,6 +95,162 @@ DEFAULT_AGGREGATION: Mapping[str, str] = {
     "deferrable_missed_cycles_count": "sum",
     "deferrable_unserved_energy_kwh": "sum",
 }
+
+# Settlement is a commercial estimate. Causal response/rebound are imported
+# separately from matched counterfactual traces, never relabelled as these KPIs.
+for _suffix in (
+    "requested_total_kwh",
+    "valid_requested_total_kwh",
+    "delivered_total_kwh",
+    "credited_total_kwh",
+    "shortfall_total_kwh",
+    "revenue_total_eur",
+    "penalty_total_eur",
+    "net_revenue_total_eur",
+    "invalid_baseline_time_step_count",
+):
+    KPI_ROWS["dr_" + _suffix] = ("district_demand_response_" + _suffix,)
+    DEFAULT_AGGREGATION["dr_" + _suffix] = "sum"
+KPI_ROWS["dr_settlement_compliance_ratio"] = (
+    "district_demand_response_compliance_ratio",
+)
+DEFAULT_AGGREGATION["dr_settlement_compliance_ratio"] = "min"
+
+DIAGNOSTIC_METRICS = {
+    "soc_bound_violations",
+    "energy_balance_residual_kwh",
+    "external_trip_unserved_kwh",
+    "outside_charge_kwh",
+    "native_unserved_kwh",
+    "ev_departure_deficit_kwh",
+    "health_exposed_asset_hours",
+    "health_changed_dispatch_kwh",
+    "recovery_hours",
+    "recovery_censored",
+    "terminal_state_l1_kwh",
+    "dr_additional_signed_kwh",
+    "dr_additional_credited_kwh",
+    "dr_quarter_hour_compliance_ratio",
+    "dr_baseline_mae_kw",
+    "dr_reference_valid_fraction",
+    "dr_reference_member_coverage",
+    "dr_reference_bess_power_coverage",
+    "dr_reference_charger_coverage",
+    "dr_reference_uncertainty_kw",
+    "dr_reference_interval_coverage",
+    "dr_credit_without_response_kwh",
+    "dr_rebound_2h_kwh",
+    "dr_rebound_6h_kwh",
+    "dr_rebound_24h_kwh",
+    "dr_rebound_168h_kwh",
+}
+DR_REFERENCE_FRACTIONS = {
+    "dr_reference_valid_fraction",
+    "dr_reference_member_coverage",
+    "dr_reference_bess_power_coverage",
+    "dr_reference_charger_coverage",
+    "dr_reference_interval_coverage",
+}
+for _metric in DIAGNOSTIC_METRICS:
+    DEFAULT_AGGREGATION[_metric] = (
+        "max"
+        if _metric
+        in {
+            "energy_balance_residual_kwh",
+            "recovery_hours",
+            "recovery_censored",
+            "terminal_state_l1_kwh",
+            "dr_baseline_mae_kw",
+            "dr_reference_uncertainty_kw",
+        }
+        else (
+            "min"
+            if _metric
+            in {
+                "dr_quarter_hour_compliance_ratio",
+                "dr_reference_valid_fraction",
+                "dr_reference_member_coverage",
+                "dr_reference_bess_power_coverage",
+                "dr_reference_charger_coverage",
+                "dr_reference_interval_coverage",
+            }
+            else "sum"
+        )
+    )
+
+
+def _load_diagnostics(path: str | Path, pairing_hash: str) -> tuple[dict, dict]:
+    source = Path(path).resolve()
+    data = json.loads(source.read_text(encoding="utf-8"))
+    if (
+        data.get("format") != "portugal_paired_diagnostics_v1"
+        or data.get("pairing_sha256") != pairing_hash
+    ):
+        raise ValueError("Diagnostics must match the exact paired simulator surface")
+    if not data.get("sources"):
+        raise ValueError("Diagnostics require content-addressed source traces")
+    for item in data["sources"]:
+        trace = Path(item["path"])
+        if not trace.is_absolute():
+            trace = source.parent / trace
+        if file_sha256(trace) != item["sha256"]:
+            raise ValueError("Diagnostics source trace hash mismatch")
+    metrics = {}
+    for name, value in data.get("metrics", {}).items():
+        if name not in DIAGNOSTIC_METRICS or not math.isfinite(float(value)):
+            raise ValueError(f"Unsupported or non-finite diagnostic metric: {name}")
+        if name in DR_REFERENCE_FRACTIONS and not 0.0 <= float(value) <= 1.0:
+            raise ValueError(
+                f"DR reference coverage must be a fraction in [0, 1]: {name}"
+            )
+        metrics[name] = float(value)
+    return metrics, {
+        "path": str(source),
+        "sha256": file_sha256(source),
+        "sources": data["sources"],
+    }
+
+
+def _audited_dataset_inputs(schema_path: Any) -> Mapping[str, Any] | None:
+    """Hash actual referenced inputs for current Portugal overlays only.
+
+    Preserve historical fingerprint semantics for previously archived records.
+    """
+    if not schema_path or not Path(str(schema_path)).is_file():
+        return None
+    path = Path(str(schema_path)).resolve()
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    design = schema.get("experimental_design", {})
+    if design.get("version") != "portugal-evaluation-v2":
+        return None
+    root = Path(schema.get("root_directory") or ".")
+    if not root.is_absolute():
+        root = path.parent / root
+    inputs = {}
+
+    def visit(value):
+        if isinstance(value, dict):
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+        elif isinstance(value, str) and value.endswith((".parquet", ".csv")):
+            source = Path(value)
+            if not source.is_absolute():
+                source = root / source
+            if not source.is_file():
+                raise FileNotFoundError(f"Audited dataset input is missing: {source}")
+            inputs[value] = file_sha256(source)
+
+    visit(schema)
+    return {
+        "profile": design["version"],
+        "phase": design["phase"],
+        "factors": design["factors"],
+        "inputs_sha256": canonical_sha256(inputs),
+        "input_file_count": len(inputs),
+    }
 
 
 def canonical_sha256(payload: Any) -> str:
@@ -173,6 +321,20 @@ def build_pairing_fingerprint(
         "include_business_as_usual": export.get("include_business_as_usual", True),
         "simulator_version": simulator_version,
     }
+    audited = _audited_dataset_inputs(simulator.get("dataset_path"))
+    if audited is not None:
+        payload["audited_dataset_inputs"] = audited
+        spec = importlib.util.find_spec("citylearn")
+        if spec is None or not spec.origin:
+            raise RuntimeError(
+                "Portugal evaluation requires an inspectable Simulator runtime"
+            )
+        runtime_root = Path(spec.origin).parent
+        runtime_sources = {
+            str(p.relative_to(runtime_root)): file_sha256(p)
+            for p in sorted(runtime_root.rglob("*.py"))
+        }
+        payload["simulator_source_sha256"] = canonical_sha256(runtime_sources)
     return {
         "format": "paired_simulator_surface_v1",
         "sha256": canonical_sha256(payload),
@@ -200,7 +362,10 @@ def extract_scorecard(exported_kpis_path: str | Path) -> Mapping[str, float]:
             if value in (None, ""):
                 continue
             try:
-                metrics[metric] = float(value)
+                number = float(value)
+                if not math.isfinite(number):
+                    continue
+                metrics[metric] = number
             except (TypeError, ValueError):
                 continue
             break
@@ -216,14 +381,13 @@ def build_evaluation_record(
     checkpoint_path: str | Path | None = None,
     simulator_version: str | None = None,
     pairing_fingerprint: Mapping[str, Any] | None = None,
+    diagnostics_path: str | Path | None = None,
 ) -> Mapping[str, Any]:
     """Build one immutable local evidence record for a deterministic replay."""
 
     protocol = dict(config.get("experiment_protocol") or {})
     if protocol.get("version") != PROTOCOL_VERSION:
-        raise ValueError(
-            f"experiment_protocol.version must be {PROTOCOL_VERSION!r}"
-        )
+        raise ValueError(f"experiment_protocol.version must be {PROTOCOL_VERSION!r}")
     if protocol.get("phase") not in {"development", "confirmation"}:
         raise ValueError("Evaluation records require development or confirmation phase")
     if role not in {"candidate", "reference"}:
@@ -285,6 +449,12 @@ def build_evaluation_record(
         },
         "metrics": dict(extract_scorecard(kpis)),
     }
+    if diagnostics_path is not None:
+        diagnostic_metrics, provenance = _load_diagnostics(
+            diagnostics_path, pairing["sha256"]
+        )
+        payload["metrics"].update(diagnostic_metrics)
+        payload["diagnostics"] = provenance
     payload["record_sha256"] = canonical_sha256(payload)
     return payload
 
@@ -326,6 +496,11 @@ def _gate_reasons(
     reference: Mapping[str, float],
 ) -> list[str]:
     reasons: list[str] = []
+    for metric in rules.get("required_metrics", []):
+        if metric not in metrics or not math.isfinite(float(metrics[metric])):
+            reasons.append(f"missing_required:{metric}")
+        if metric not in reference or not math.isfinite(float(reference[metric])):
+            reasons.append(f"missing_reference:{metric}")
     for metric, bounds in (rules.get("hard_gates") or {}).items():
         if metric not in metrics:
             # A service gate is not applicable when the paired reference also
@@ -355,7 +530,7 @@ def _guardrail_reasons(
         value = float(metrics[metric])
         baseline = float(reference[metric])
         if "max_relative_increase" in guardrail:
-            limit = baseline * (1.0 + float(guardrail["max_relative_increase"]))
+            limit = baseline + abs(baseline) * float(guardrail["max_relative_increase"])
             if value > limit:
                 reasons.append(f"{metric}>{limit}")
         if "max_absolute_increase" in guardrail:
@@ -369,7 +544,9 @@ def _guardrail_reasons(
     return reasons
 
 
-def _selection_key(metrics: Mapping[str, float], rules: Mapping[str, Any]) -> tuple[float, ...]:
+def _selection_key(
+    metrics: Mapping[str, float], rules: Mapping[str, Any]
+) -> tuple[float, ...]:
     promotion = dict(rules.get("promotion") or {})
     primary = str(promotion.get("metric", "cost_eur"))
     direction = str(promotion.get("direction", "minimize"))
@@ -397,7 +574,9 @@ def select_checkpoint(
         raise ValueError("Unsupported checkpoint-selection rules version")
     if not references or not candidates:
         raise ValueError("Selection requires reference and candidate records")
-    if any(record.get("phase") != "development" for record in [*references, *candidates]):
+    if any(
+        record.get("phase") != "development" for record in [*references, *candidates]
+    ):
         raise ValueError("Checkpoint selection may consume development records only")
     for record in [*references, *candidates]:
         if record.get("format") != EVALUATION_RECORD_VERSION:
@@ -413,8 +592,7 @@ def select_checkpoint(
         raise ValueError("Candidate inputs must have role='candidate'")
     rules_hash = canonical_sha256(rules)
     configured_rule_hashes = {
-        record.get("selection_rules_sha256")
-        for record in [*references, *candidates]
+        record.get("selection_rules_sha256") for record in [*references, *candidates]
     }
     if configured_rule_hashes != {rules_hash}:
         raise ValueError("Evaluation records do not match the supplied frozen rules")
@@ -427,7 +605,9 @@ def select_checkpoint(
     for record in references:
         pairing_hash = str((record.get("pairing") or {}).get("sha256") or "")
         if not pairing_hash or pairing_hash in reference_by_pairing:
-            raise ValueError("References must contain one unique record per paired surface")
+            raise ValueError(
+                "References must contain one unique record per paired surface"
+            )
         reference_by_pairing[pairing_hash] = record
 
     grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
@@ -438,11 +618,15 @@ def select_checkpoint(
         grouped[candidate_id].append(record)
     expected_surfaces = set(reference_by_pairing)
     aggregation = dict(rules.get("aggregation") or {})
-    reference_metrics = aggregate_records(list(reference_by_pairing.values()), aggregation=aggregation)
+    reference_metrics = aggregate_records(
+        list(reference_by_pairing.values()), aggregation=aggregation
+    )
 
     evaluated: list[dict[str, Any]] = []
     for candidate_id, records in sorted(grouped.items()):
-        surfaces = {str((record.get("pairing") or {}).get("sha256") or "") for record in records}
+        surfaces = {
+            str((record.get("pairing") or {}).get("sha256") or "") for record in records
+        }
         if surfaces != expected_surfaces or len(records) != len(expected_surfaces):
             raise ValueError(
                 f"Candidate {candidate_id!r} does not cover the exact paired development surfaces"
@@ -470,9 +654,15 @@ def select_checkpoint(
                 * float(promotion.get("minimum_relative_improvement", 0.0)),
             )
             direction = str(promotion.get("direction", "minimize"))
-            if direction == "minimize" and metrics[primary] > reference_metrics[primary] - improvement:
+            if (
+                direction == "minimize"
+                and metrics[primary] > reference_metrics[primary] - improvement
+            ):
                 reasons.append(f"no_required_improvement:{primary}")
-            if direction == "maximize" and metrics[primary] < reference_metrics[primary] + improvement:
+            if (
+                direction == "maximize"
+                and metrics[primary] < reference_metrics[primary] + improvement
+            ):
                 reasons.append(f"no_required_improvement:{primary}")
 
         evaluated.append(
@@ -480,14 +670,18 @@ def select_checkpoint(
                 "candidate_id": candidate_id,
                 "checkpoint": records[0]["checkpoint"],
                 "metrics": metrics,
-                "record_sha256s": sorted(str(record["record_sha256"]) for record in records),
+                "record_sha256s": sorted(
+                    str(record["record_sha256"]) for record in records
+                ),
                 "accepted": not reasons,
                 "rejection_reasons": reasons,
             }
         )
 
     accepted = [item for item in evaluated if item["accepted"]]
-    accepted.sort(key=lambda item: (_selection_key(item["metrics"], rules), item["candidate_id"]))
+    accepted.sort(
+        key=lambda item: (_selection_key(item["metrics"], rules), item["candidate_id"])
+    )
     selected = accepted[0] if accepted else None
     payload: dict[str, Any] = {
         "format": SELECTION_RECORD_VERSION,
@@ -559,7 +753,9 @@ def build_confirmation_report(
     if not selection_hash or canonical_sha256(unhashed_selection) != selection_hash:
         raise ValueError("Checkpoint-selection record payload/hash mismatch")
     if selection_hashes != {selection_hash}:
-        raise ValueError("Confirmation does not reference the supplied selection record")
+        raise ValueError(
+            "Confirmation does not reference the supplied selection record"
+        )
     if selection.get("status") != "selected":
         raise ValueError("Confirmation requires a successful checkpoint selection")
     if selection.get("rules_sha256") != rules_hash:
@@ -595,20 +791,28 @@ def build_confirmation_report(
     for record in references:
         pairing_hash = str((record.get("pairing") or {}).get("sha256") or "")
         if not pairing_hash or pairing_hash in reference_by_pairing:
-            raise ValueError("References must contain one unique record per paired surface")
+            raise ValueError(
+                "References must contain one unique record per paired surface"
+            )
         reference_by_pairing[pairing_hash] = record
     candidate_by_pairing: dict[str, Mapping[str, Any]] = {}
     for record in candidates:
         pairing_hash = str((record.get("pairing") or {}).get("sha256") or "")
         if not pairing_hash or pairing_hash in candidate_by_pairing:
-            raise ValueError("Candidates must contain one unique record per paired surface")
+            raise ValueError(
+                "Candidates must contain one unique record per paired surface"
+            )
         candidate_by_pairing[pairing_hash] = record
     if set(candidate_by_pairing) != set(reference_by_pairing):
-        raise ValueError("Candidate does not cover the exact paired confirmation surfaces")
+        raise ValueError(
+            "Candidate does not cover the exact paired confirmation surfaces"
+        )
     for pairing_hash, candidate in candidate_by_pairing.items():
         reference = reference_by_pairing[pairing_hash]
         if candidate.get("paired_reference_id") != reference.get("candidate_id"):
-            raise ValueError("Candidate paired_reference_id does not match its reference")
+            raise ValueError(
+                "Candidate paired_reference_id does not match its reference"
+            )
 
     aggregation = dict(rules.get("aggregation") or {})
     reference_metrics = aggregate_records(references, aggregation=aggregation)
@@ -652,7 +856,9 @@ def build_confirmation_report(
     for pairing_hash in sorted(reference_by_pairing):
         reference = reference_by_pairing[pairing_hash]
         candidate = candidate_by_pairing[pairing_hash]
-        shared = sorted(set(reference.get("metrics") or {}) & set(candidate.get("metrics") or {}))
+        shared = sorted(
+            set(reference.get("metrics") or {}) & set(candidate.get("metrics") or {})
+        )
         paired_windows.append(
             {
                 "window_id": candidate.get("window_id"),

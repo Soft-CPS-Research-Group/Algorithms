@@ -4,8 +4,10 @@
 
 The author has retired the previous experimental line. Its campaign plans,
 queue of follow-up variants, temporal splits, budgets and promotion rules do
-not define the next campaign. Further experiments will follow the author's
-next instructions.
+not define the next campaign. At the author's subsequent request, the corrected Portugal dataset evaluation
+contract is now recorded in [Portugal evaluation v2](../docs/portugal_evaluation_protocol_v2.md).
+It prepares paired scorecards and confirmation inputs without reopening the old
+training campaign or launching jobs.
 
 The implementation, dataset contracts, collected evidence and lessons remain
 available. Retiring a research campaign does not disable software regression
