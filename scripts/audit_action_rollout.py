@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from algorithms.registry import ENCODED_OBSERVATION_ALGORITHMS, build_execution_unit
-from run_experiment import _resolve_agent_observation_dimensions
+from algorithms.runtime.simulator import _resolve_agent_observation_dimensions
 from scripts.audit_entity_observations import _agent_building_name, _build_environment, _load_config
 from utils.pipeline_utils import pipeline_algorithm_names
 from utils.wrapper_citylearn import Wrapper_CityLearn

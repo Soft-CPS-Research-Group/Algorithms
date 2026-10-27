@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-import mlflow
+from algorithms.runtime.tracking import mlflow
 from loguru import logger
 
 from algorithms.exceptions import DeferredCheckpointError

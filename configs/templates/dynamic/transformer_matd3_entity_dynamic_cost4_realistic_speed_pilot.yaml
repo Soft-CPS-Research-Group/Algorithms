@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 # Controlled speed pilot for the 15-minute cost4 Transformer MATD3 recipe.
 # It keeps the model and reward unchanged, but performs one learner update
 # every eight environment steps to bound the remote iteration time.

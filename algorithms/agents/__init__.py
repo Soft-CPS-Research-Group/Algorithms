@@ -1,15 +1,16 @@
-"""Agent package exports."""
+"""Compatibility exports, loaded only when the requested agent is used."""
 
-from algorithms.agents.baseline_policies import (  # noqa: F401
-    NormalNoBatteryPolicy,
-    NormalPolicy,
-    RBCBasicPolicy,
-    RBCCommunityPolicy,
-    RBCSmartLocalPolicy,
-    RBCSmartPolicy,
-    RandomPolicy,
-    SignalAwareRBCSmartLocal,
-)
-from algorithms.agents.maddpg_agent import MADDPG  # noqa: F401
-from algorithms.agents.rbc_agent import RuleBasedPolicy  # noqa: F401
-from algorithms.agents.total_oracle_replay_policy import TotalOracleReplayPolicy  # noqa: F401
+__all__ = [
+    "NormalNoBatteryPolicy", "NormalPolicy", "RBCBasicPolicy", "RBCCommunityPolicy",
+    "RBCSmartLocalPolicy", "RBCSmartPolicy", "RandomPolicy", "SignalAwareRBCSmartLocal",
+    "MADDPG", "RuleBasedPolicy", "TotalOracleReplayPolicy",
+]
+
+
+def __getattr__(name):
+    if name not in __all__:
+        raise AttributeError(name)
+    from algorithms.registry import ALGORITHM_REGISTRY
+    value = ALGORITHM_REGISTRY[name]
+    globals()[name] = value
+    return value

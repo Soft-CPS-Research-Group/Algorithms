@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 import numpy as np
 import numpy.typing as npt
 
+from algorithms.contracts import StageContext, Transition, UpdateSchedule
+
 
 @runtime_checkable
 class TopologyTransactional(Protocol):
@@ -67,6 +69,33 @@ class ExecutionUnit(ABC):
     # Learners that retain their own emitted environment action may only be
     # used as the leaf of a Pipeline.
     requires_final_pipeline_stage: bool = False
+
+    def decide(
+        self,
+        observations: Any,
+        deterministic: Optional[bool] = None,
+        *,
+        context: Optional[StageContext] = None,
+    ) -> Any:
+        """Typed runtime entry; legacy numerical predict methods keep their API."""
+        return self.predict(
+            observations, deterministic, context=None if context is None else context.value
+        )
+
+    def learn_transition(self, transition: Transition, schedule: UpdateSchedule) -> None:
+        """Deliver a transition without moving replay/rollout logic into the core."""
+        return self.update(
+            observations=transition.observations,
+            actions=transition.submitted_actions,
+            rewards=transition.rewards,
+            next_observations=transition.next_observations,
+            terminated=transition.terminated,
+            truncated=transition.truncated,
+            update_target_step=schedule.update_targets,
+            global_learning_step=schedule.global_step,
+            update_step=schedule.update,
+            initial_exploration_done=schedule.exploration_done,
+        )
 
     def prepare_training(self, output_dir: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Optional one-time preparation before environment attachment.
@@ -187,15 +216,11 @@ class ExecutionUnit(ABC):
     # ------------------------------------------------------------------
     def save_checkpoint(self, output_dir: str, step: int) -> Optional[str]:
         """Persist training state and return the checkpoint path."""
-        raise NotImplementedError(
-            "Execution unit does not implement checkpoint saving."
-        )
+        raise NotImplementedError("Execution unit does not implement checkpoint saving.")
 
     def load_checkpoint(self, checkpoint_path: str) -> None:
         """Restore training state from ``checkpoint_path``."""
-        raise NotImplementedError(
-            "Execution unit does not implement checkpoint loading."
-        )
+        raise NotImplementedError("Execution unit does not implement checkpoint loading.")
 
     def export_artifacts(
         self,

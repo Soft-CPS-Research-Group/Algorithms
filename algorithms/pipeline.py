@@ -21,9 +21,10 @@ the configuration that drives the builder in :mod:`run_experiment`.
 
 from __future__ import annotations
 
-from copy import deepcopy
-from pathlib import Path
 import re
+from copy import deepcopy
+from dataclasses import replace
+from pathlib import Path
 from shutil import rmtree
 from typing import Any, Callable, Dict, List, Optional, Sequence
 from uuid import uuid4
@@ -31,7 +32,9 @@ from uuid import uuid4
 import numpy as np
 from loguru import logger
 
+from algorithms.contracts import StageContext, Transition, UpdateSchedule
 from algorithms.execution_unit import ExecutionUnit, TopologyTransactional
+from algorithms.runtime.interaction import decide, learn_transition
 
 
 def _checkpoint_transaction_root(root: Path, step: int) -> tuple[Path, Path]:
@@ -51,9 +54,7 @@ def _require_topology_hooks(unit: ExecutionUnit, label: str) -> tuple[Any, Any]:
     return unit.snapshot_topology_state, unit.restore_topology_state
 
 
-def _snapshot_children(
-    children: Sequence[ExecutionUnit], *, label: str
-) -> List[Any]:
+def _snapshot_children(children: Sequence[ExecutionUnit], *, label: str) -> List[Any]:
     """Snapshot each child that may mutate during topology reattachment."""
     snapshots = []
     for index, child in enumerate(children):
@@ -62,9 +63,7 @@ def _snapshot_children(
     return snapshots
 
 
-def _restore_children(
-    children: Sequence[ExecutionUnit], snapshots: Any, *, label: str
-) -> None:
+def _restore_children(children: Sequence[ExecutionUnit], snapshots: Any, *, label: str) -> None:
     """Restore children in reverse attachment order."""
     if not isinstance(snapshots, list) or len(snapshots) != len(children):
         raise TypeError(f"Invalid {label} topology snapshot.")
@@ -97,9 +96,7 @@ def _save_composite_checkpoint(
     """Preflight, write, and atomically publish one composite checkpoint."""
     root.mkdir(parents=True, exist_ok=True)
     indexed_children = [
-        (index, child)
-        for index, child in enumerate(children)
-        if not skip_child(child)
+        (index, child) for index, child in enumerate(children) if not skip_child(child)
     ]
     for _, child in indexed_children:
         preflight = getattr(child, "preflight_checkpoint", None)
@@ -212,9 +209,7 @@ class Pipeline(ExecutionUnit):
         profiled_encoded_next_observations: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._profiled_encoded_observations = dict(profiled_encoded_observations or {})
-        self._profiled_encoded_next_observations = dict(
-            profiled_encoded_next_observations or {}
-        )
+        self._profiled_encoded_next_observations = dict(profiled_encoded_next_observations or {})
 
     def set_observation_context(
         self,
@@ -274,6 +269,9 @@ class Pipeline(ExecutionUnit):
     # ------------------------------------------------------------------
     # Core loop
     # ------------------------------------------------------------------
+    def decide(self, observations, deterministic=None, *, context=None):
+        return self.predict(observations, deterministic, context=context)
+
     def predict(
         self,
         observations: Any,
@@ -281,9 +279,13 @@ class Pipeline(ExecutionUnit):
         *,
         context: Any = None,
     ) -> Any:
-        ctx = context
+        ctx = (
+            context
+            if isinstance(context, StageContext)
+            else (None if context is None else StageContext(context))
+        )
         result: Any = None
-        for stage in self.stages:
+        for index, stage in enumerate(self.stages):
             stage_observations = self._observations_for_stage(stage, observations)
             # A frozen stage is an immutable behavioural dependency of the
             # trainable stages around it.  Letting it keep sampling actions
@@ -291,15 +293,20 @@ class Pipeline(ExecutionUnit):
             # reward even though its parameters cannot adapt.  In particular,
             # a trainable CC must explore against the exact deterministic PPO
             # policy that will be used at evaluation/deployment time.
-            stage_deterministic = (
-                True if getattr(stage, "frozen", False) else deterministic
-            )
-            result = stage.predict(
+            stage_deterministic = True if getattr(stage, "frozen", False) else deterministic
+            result = decide(
+                stage,
                 stage_observations,
                 stage_deterministic,
                 context=ctx,
             )
-            ctx = result
+            cap = getattr(stage, "capabilities", None)
+            ctx = StageContext(
+                result,
+                source_stage=index,
+                kind=getattr(cap, "output_signal", "legacy"),
+                member_ids=getattr(self, "member_ids", ()),
+            )
         return result
 
     def update(
@@ -316,29 +323,37 @@ class Pipeline(ExecutionUnit):
         update_step: bool,
         initial_exploration_done: bool,
     ) -> None:
+        self.learn_transition(
+            Transition(observations, next_observations, rewards, actions, terminated, truncated),
+            UpdateSchedule(
+                global_learning_step, update_step, update_target_step, initial_exploration_done
+            ),
+        )
+
+    def learn_transition(self, transition: Transition, schedule: UpdateSchedule) -> None:
         for stage in self.stages:
             if getattr(stage, "frozen", False):
                 continue
-            stage_observations = self._observations_for_stage(stage, observations)
-            stage_next_observations = self._next_observations_for_stage(
+            learn_transition(
                 stage,
-                next_observations,
-            )
-            stage.update(
-                stage_observations,
-                actions,
-                rewards,
-                stage_next_observations,
-                terminated,
-                truncated,
-                update_target_step=update_target_step,
-                global_learning_step=global_learning_step,
-                update_step=update_step,
-                initial_exploration_done=initial_exploration_done,
+                replace(
+                    transition,
+                    observations=self._observations_for_stage(stage, transition.observations),
+                    next_observations=self._next_observations_for_stage(
+                        stage, transition.next_observations
+                    ),
+                ),
+                schedule,
             )
 
     def record_topology_transition(
-        self, *, observations, actions, rewards, terminated: bool, truncated: bool,
+        self,
+        *,
+        observations,
+        actions,
+        rewards,
+        terminated: bool,
+        truncated: bool,
         global_learning_step: int,
     ) -> None:
         for stage in self.stages:
@@ -346,8 +361,11 @@ class Pipeline(ExecutionUnit):
                 continue
             stage.record_topology_transition(
                 observations=self._observations_for_stage(stage, observations),
-                actions=actions, rewards=rewards, terminated=terminated,
-                truncated=truncated, global_learning_step=global_learning_step,
+                actions=actions,
+                rewards=rewards,
+                terminated=terminated,
+                truncated=truncated,
+                global_learning_step=global_learning_step,
             )
 
     # ------------------------------------------------------------------
@@ -362,10 +380,7 @@ class Pipeline(ExecutionUnit):
             stage.on_episode_end(episode=episode, training=training)
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
-        return all(
-            stage.is_initial_exploration_done(global_learning_step)
-            for stage in self.stages
-        )
+        return all(stage.is_initial_exploration_done(global_learning_step) for stage in self.stages)
 
     def _collect_stage_metric_hook(self, hook_name: str) -> Dict[str, float]:
         """Expose diagnostics from every hierarchy stage without collisions."""
@@ -399,6 +414,7 @@ class Pipeline(ExecutionUnit):
             stage.prepare_training(str(Path(output_dir) / f"stage_{index}"), context)
 
     def attach_environment(self, **kwargs) -> None:
+        self.member_ids = tuple((kwargs.get("metadata") or {}).get("building_names") or ())
         metadata = kwargs.get("metadata") or {}
         raw_observation_names = metadata.get("raw_observation_names")
         encoded_observation_names = metadata.get("encoded_observation_names")
@@ -415,13 +431,11 @@ class Pipeline(ExecutionUnit):
         try:
             for stage in self.stages:
                 stage_kwargs = dict(kwargs)
-                profile = str(
-                    getattr(stage, "observation_encoding_profile", "") or ""
-                ).strip().lower()
+                profile = (
+                    str(getattr(stage, "observation_encoding_profile", "") or "").strip().lower()
+                )
                 if profile and profile in profiled_encoded_observation_names:
-                    stage_kwargs["observation_names"] = profiled_encoded_observation_names[
-                        profile
-                    ]
+                    stage_kwargs["observation_names"] = profiled_encoded_observation_names[profile]
                 elif (
                     stage.use_raw_observations
                     or bool(getattr(stage, "requires_raw_observation_context", False))
@@ -448,21 +462,23 @@ class Pipeline(ExecutionUnit):
             "raw_next_observations": deepcopy(self._raw_next_observations),
             "encoded_next_observations": deepcopy(self._encoded_next_observations),
             "profiled_encoded_observations": deepcopy(self._profiled_encoded_observations),
-            "profiled_encoded_next_observations": deepcopy(self._profiled_encoded_next_observations),
+            "profiled_encoded_next_observations": deepcopy(
+                self._profiled_encoded_next_observations
+            ),
             "topology_attachment_completed": self._topology_attachment_completed,
         }
 
     def restore_topology_state(self, snapshot: Dict[str, Any]) -> None:
         """Restore child stages in reverse order after a failed reattachment."""
-        _restore_children(
-            self.stages, snapshot.get("stages"), label="Pipeline stage"
-        )
+        _restore_children(self.stages, snapshot.get("stages"), label="Pipeline stage")
         self._raw_observations = deepcopy(snapshot["raw_observations"])
         self._encoded_observations = deepcopy(snapshot["encoded_observations"])
         self._raw_next_observations = deepcopy(snapshot["raw_next_observations"])
         self._encoded_next_observations = deepcopy(snapshot["encoded_next_observations"])
         self._profiled_encoded_observations = deepcopy(snapshot["profiled_encoded_observations"])
-        self._profiled_encoded_next_observations = deepcopy(snapshot["profiled_encoded_next_observations"])
+        self._profiled_encoded_next_observations = deepcopy(
+            snapshot["profiled_encoded_next_observations"]
+        )
         self._topology_attachment_completed = bool(snapshot["topology_attachment_completed"])
 
     # ------------------------------------------------------------------
@@ -701,6 +717,9 @@ class Ensemble(ExecutionUnit):
     # ------------------------------------------------------------------
     # Core loop
     # ------------------------------------------------------------------
+    def decide(self, observations, deterministic=None, *, context=None):
+        return self.predict(observations, deterministic, context=context)
+
     def predict(
         self,
         observations: Any,
@@ -708,6 +727,9 @@ class Ensemble(ExecutionUnit):
         *,
         context: Any = None,
     ) -> List[Any]:
+        envelope = context if isinstance(context, StageContext) else None
+        if envelope is not None:
+            context = envelope.value
         # Per-member context distribution. A hierarchical manager (e.g. the CC)
         # emits ONE signal per member as an array of length == ensemble size.
         # In that case member i receives its own element context[i]. A scalar
@@ -734,7 +756,22 @@ class Ensemble(ExecutionUnit):
                 obs_slice = [observations[index]]
 
             member_context = context[index] if ctx_is_per_member else context
-            output = agent.predict(obs_slice, deterministic, context=member_context)
+            output = decide(
+                agent,
+                obs_slice,
+                deterministic,
+                context=(
+                    None
+                    if member_context is None
+                    else replace(
+                        envelope,
+                        value=member_context,
+                        member_ids=envelope.member_ids[index : index + 1],
+                    )
+                    if envelope is not None
+                    else StageContext(value=member_context)
+                ),
+            )
 
             # Contract: each member receives one obs slice and must return
             # exactly one row (the action vector for that member). Anything
@@ -767,29 +804,48 @@ class Ensemble(ExecutionUnit):
         update_step: bool,
         initial_exploration_done: bool,
     ) -> None:
-        n_obs = len(observations)
-        if n_obs != len(self.agents):
-            raise RuntimeError(
-                f"Ensemble.update: observations length ({n_obs}) does not match "
-                f"ensemble size ({len(self.agents)}). "
-                "Ensure the wrapper supplies one observation slice per ensemble member."
-            )
+        self.learn_transition(
+            Transition(observations, next_observations, rewards, actions, terminated, truncated),
+            UpdateSchedule(
+                global_learning_step, update_step, update_target_step, initial_exploration_done
+            ),
+        )
+
+    def learn_transition(self, transition: Transition, schedule: UpdateSchedule) -> None:
+        if len(transition.observations) != len(self.agents):
+            raise RuntimeError("Ensemble.update: observations length does not match ensemble size")
         for index, agent in enumerate(self.agents):
-            agent.update(
-                [observations[index]],
-                [actions[index]] if index < len(actions) else [],
-                [rewards[index]] if index < len(rewards) else [],
-                [next_observations[index]] if index < len(next_observations) else [],
-                terminated,
-                truncated,
-                update_target_step=update_target_step,
-                global_learning_step=global_learning_step,
-                update_step=update_step,
-                initial_exploration_done=initial_exploration_done,
+
+            def row(values):
+                return [values[index]] if index < len(values) else []
+
+            learn_transition(
+                agent,
+                replace(
+                    transition,
+                    observations=row(transition.observations),
+                    next_observations=row(transition.next_observations),
+                    rewards=row(transition.rewards),
+                    submitted_actions=row(transition.submitted_actions),
+                    proposed_actions=None
+                    if transition.proposed_actions is None
+                    else row(transition.proposed_actions),
+                    executed_actions=None
+                    if transition.executed_actions is None
+                    else row(transition.executed_actions),
+                    member_ids=transition.member_ids[index : index + 1],
+                ),
+                schedule,
             )
 
     def record_topology_transition(
-        self, *, observations, actions, rewards, terminated: bool, truncated: bool,
+        self,
+        *,
+        observations,
+        actions,
+        rewards,
+        terminated: bool,
+        truncated: bool,
         global_learning_step: int,
     ) -> None:
         expected_count = len(self.agents)
@@ -808,7 +864,8 @@ class Ensemble(ExecutionUnit):
                 observations=[observations[index]],
                 actions=[actions[index]],
                 rewards=[rewards[index]],
-                terminated=terminated, truncated=truncated,
+                terminated=terminated,
+                truncated=truncated,
                 global_learning_step=global_learning_step,
             )
 
@@ -824,10 +881,7 @@ class Ensemble(ExecutionUnit):
             agent.on_episode_end(episode=episode, training=training)
 
     def is_initial_exploration_done(self, global_learning_step: int) -> bool:
-        return all(
-            agent.is_initial_exploration_done(global_learning_step)
-            for agent in self.agents
-        )
+        return all(agent.is_initial_exploration_done(global_learning_step) for agent in self.agents)
 
     def _aggregate_metric_hook(self, hook_name: str) -> Dict[str, float]:
         values_by_key: Dict[str, List[float]] = {}
@@ -904,10 +958,14 @@ class Ensemble(ExecutionUnit):
                     if isinstance(value, (list, tuple)) and index < len(value):
                         member_metadata[key] = [value[index]]
                 agent.attach_environment(
-                    observation_names=([observation_names[index]] if index < len(observation_names) else []),
+                    observation_names=(
+                        [observation_names[index]] if index < len(observation_names) else []
+                    ),
                     action_names=([action_names[index]] if index < len(action_names) else []),
                     action_space=([action_space[index]] if index < len(action_space) else []),
-                    observation_space=([observation_space[index]] if index < len(observation_space) else []),
+                    observation_space=(
+                        [observation_space[index]] if index < len(observation_space) else []
+                    ),
                     metadata=member_metadata,
                 )
         except Exception:
@@ -918,12 +976,13 @@ class Ensemble(ExecutionUnit):
 
     def snapshot_topology_state(self) -> Dict[str, Any]:
         snapshots = _snapshot_children(self.agents, label="Ensemble member")
-        return {"agents": snapshots, "topology_attachment_completed": self._topology_attachment_completed}
+        return {
+            "agents": snapshots,
+            "topology_attachment_completed": self._topology_attachment_completed,
+        }
 
     def restore_topology_state(self, snapshot: Dict[str, Any]) -> None:
-        _restore_children(
-            self.agents, snapshot.get("agents"), label="Ensemble member"
-        )
+        _restore_children(self.agents, snapshot.get("agents"), label="Ensemble member")
         self._topology_attachment_completed = bool(snapshot["topology_attachment_completed"])
 
     # ------------------------------------------------------------------
@@ -957,9 +1016,7 @@ class Ensemble(ExecutionUnit):
                     or "latest_checkpoint.pth"
                 )
                 artifact_path = agent_dir / artifact_name
-                agent.load_checkpoint(
-                    str(artifact_path if artifact_path.exists() else agent_dir)
-                )
+                agent.load_checkpoint(str(artifact_path if artifact_path.exists() else agent_dir))
             except NotImplementedError:
                 logger.debug(
                     "Ensemble member {} ({}) does not implement load_checkpoint; skipping.",

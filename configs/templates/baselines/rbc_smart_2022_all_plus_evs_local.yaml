@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 metadata:
   experiment_name: "rbc_smart_2022_all_plus_evs_local"
   run_name: "RBCSmartPolicy 2022 All Plus EVs"
@@ -85,7 +86,6 @@ pipeline:
     ev_deadline_buffer_hours: 0.25
     ev_v2g_min_departure_hours: 1.0
     ev_v2g_service_margin_soc: 0.02
-    ev_v2g_buffer_soc: 0.12
     price_charge_rate: 0.0
     price_discharge_rate: 0.15
     pv_charge_rate: 0.45
@@ -106,4 +106,3 @@ pipeline:
     deferrable_urgency_threshold: 0.6
     deferrable_slack_threshold: 0.4
     deferrable_safety_margin_steps: 1.0
-    deferrable_import_block_threshold_kw: 2.0

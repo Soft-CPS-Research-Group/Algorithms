@@ -1,180 +1,48 @@
-# Training Platform Guide
+# Training platform guide
 
-This document explains how the fixed part of the project is structured, what responsibilities it owns, and how students can extend it with new algorithms. Treat this as the reference manual for anyone onboarding to the codebase. For a high-level overview and quick commands, start with the repository [README](../README.md).
+The current reference is the [common runtime guide](runtime/README.md). It replaces
+the former monolithic runner/wrapper layout and top-level `algorithm` examples.
 
-## 1. Architecture Overview
+A job follows one path: validate configuration, create output locations and
+optional tracking, construct the simulator, resolve topology, prepare the agent,
+attach/resume it, run the common episode loop, and finalize results/artifacts.
+`ExecutionUnit` lets that path operate on a single agent, a vertical `Pipeline`
+or a horizontal `Ensemble`.
 
-```
-┌─────────────────────────┐      ┌────────────────────────────┐
-│ configs/*.yaml          │      │ utils/config_schema.py     │
-│ (student-editable)      │ ───▶ │ Pydantic validation        │
-└─────────────────────────┘      └──────────────┬─────────────┘
-                                                │ validated config
-                                        ┌───────▼─────────────────────┐
-                                        │ run_experiment.py           │
-                                        │ - MLflow, logging, job dirs │
-                                        │ - create_agent via registry │
-                                        └───────┬─────────────────────┘
-                                                │ BaseAgent instance
-                                 ┌──────────────▼─────────────┐
-                                 │ utils/wrapper_citylearn.py │
-                                 │ - wraps CityLearn Env      │
-                                 │ - encoding, progress,      │
-                                 │   checkpoint managers      │
-                                 └──────────────┬─────────────┘
-                                                │ observations/actions
-                                   ┌────────────▼───────────┐
-                                   │ algorithms/agents/*    │
-                                   │ (student extensions)   │
-                                   └────────────────────────┘
-```
+- [Configuration and migration](runtime/configuration.md): schema v1, strict
+  fields, overrides, train/evaluate/smoke and output requests.
+- [Agent development](runtime/agents.md): lazy declaration, typed contracts,
+  capabilities, numerical responsibilities and environment validators.
+- [Installation](runtime/installation.md): configuration-only wheel, CPU lock,
+  accelerator profiles and optional MLflow/export/offline/solver dependencies.
+- [Architecture decision](runtime/adr-001-common-runtime.md): ownership and the
+  retained compatibility interfaces.
+- [Agent catalogue](agent_catalogue.md): 38 names and implementation limitations.
+- [Delivery evidence](runtime/delivery.md): the accepted stage 2 scope.
 
-Key responsibilities:
-- **run_experiment.py** orchestrates a run end-to-end: validates config, prepares directories, starts MLflow (if enabled), instantiates the algorithm class, and writes an artifact manifest after training.
-- **Wrapper_CityLearn** hides CityLearn-specific plumbing. It encodes observations, logs metrics, writes progress files, schedules checkpoints, and exposes environment metadata for inference. Encoders are built from `configs/encoders/default.json`.
-- **BaseAgent + registry** define the contract students must fulfil. Algorithms handle model logic, replay buffers, ONNX export (using `DEFAULT_ONNX_OPSET`), and provide metadata consumed by the manifest. The `update` method must accept the scheduler-aware signature (`observations`, `actions`, `rewards`, `next_observations`, `terminated`, `truncated`, `update_step`, `update_target_step`, `initial_exploration_done`, `global_learning_step`), and exploration ownership belongs to the algorithm (`BaseAgent.is_initial_exploration_done`).
+## Troubleshooting
 
-### 1.1 Interface modes (`flat` vs `entity`)
+Use `--validate` for unknown fields and unsupported combinations. Use `--dry-run`
+to check dataset/environment compatibility without simulator steps or training.
+An error from a registered environment validator belongs to the agent/dataset
+contract; do not suppress it and proceed with different dimensions or guessed
+observations.
 
-- `flat`: legacy vector contract with fixed dimensions per episode.
-- `entity`: table/edge contract (`tables`, `edges`, `meta`) adapted by
-  `utils/entity_adapter.py` into per-agent vectors.
-- `dynamic topology`: requires `interface=entity`; the wrapper rebuilds layout on
-  `topology_version` changes.
+When a job fails, inspect `results/result.json` and `logs/<job_id>.log`.
+Progress is in `progress/progress.json`. When tracking is disabled, step metrics
+remain under the job's logs as JSONL. A requested bundle is rooted in `bundle/`;
+its manifest describes actual agent artifacts. A missing required final
+checkpoint is a job failure rather than a completed export.
 
-For a practical PT-oriented walkthrough (including code call points and team
-message text), see [`docs/entity_interface_playbook_pt.md`](entity_interface_playbook_pt.md).
+Checkpoint recovery restores supported agent state. The simulator still restarts
+its episode; see [simulator limits](simulator_limits.md). Runtime-only residual
+policies and research Torch formats retain their deployment restrictions.
 
-## 2. Configuration & Schema
+## Entity-specific contracts
 
-All configurations are validated against `utils/config_schema.py` before training begins.
-
-Sections:
-- `metadata`: experiment/run identifiers plus optional catalog fields (`community_name`, `description`, etc.).
-- `runtime`: paths injected at runtime (leave null in files).
-- `tracking`: log level, MLflow toggle.
-- `checkpointing`: resume/transfer-learning parameters and cadence.
-- `simulator`: dataset/schema path, reward function, optional window controls
-  (`simulation_start_time_step`, `simulation_end_time_step`,
-  `episode_time_steps`), and export controls under `simulator.export`.
-- `training`: global update cadence knobs.
-- `topology`: **derived** environment dimensions (num agents, observation/action shapes). These remain null in version-controlled configs and are filled by the wrapper.
-- `algorithm`: algorithm name and its parameters. Runtime-supported algorithms include `PPO`, `TD3`, `MADDPG`, `MATD3`, `AgentTransformerPPO`, `AgentTransformerMATD3`, `MASAC`, `IPPO`, `MAPPO`, `HAPPO`, `RuleBasedPolicy`, `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `RBCSmartPolicy`, `RBCSmartLocalPolicy` and `RBCCommunityPolicy`. `RBCSmartLocalPolicy` masks all raw community observations and is the admissible RBC baseline/teacher for strict building-local experiments. `PPO` and `TD3` are strict single-agent implementations and use an `Ensemble` with one learner per building for distributed control. Fixed-layout neural algorithms are rejected for `entity + dynamic` topology. Use `AgentTransformerPPO`, `AgentTransformerMATD3`, or a dynamic-ready rule-based policy for that mode.
-- `bundle`: manifest/export options shared by all algorithms (`bundle_version`, `description`, alias map hint, artifact config defaults).
-
-### Validation
-
-`validate_config(raw_config)` throws on missing keys/invalid values. Errors list the exact field:
-```
-Configuration validation failed:
-- algorithm -> networks -> actor -> layers: layers must contain at least one hidden dimension
-```
-This prevents students from launching malformed runs.
-
-## 3. Runtime Workflow
-
-1. **Configuration** – Student clones `configs/config.yaml` or a template under `configs/templates/` and sets algorithm-specific values.
-2. **run_experiment** – CLI parses args, validates config, sets runtime paths, and logs the start of the run. It also writes `jobs/<job_id>/config.resolved.yaml` with runtime-injected fields (for example `runtime.job_id`, `runtime.run_id`) plus derived topology. If enabled, simulator CSV exports are written under `jobs/<job_id>/results/simulation_data/`. If MLflow is disabled, a warning is issued and metrics fall back to local JSONL logs.
-3. **Agent instantiation** – `create_agent(config)` looks up `algorithm.name` in `algorithms/registry.py`; the registry maps names to classes.
-4. **Wrapper** – handles the CityLearn loop, invoking `BaseAgent.predict`/`update`. It logs metrics and checkpoints using helper classes. Observation encoders are built from `configs/encoders/default.json` so training and serving stay aligned; update the JSON when the simulator exposes new features.
-5. **Artifacts** – After training, `agent.export_artifacts` writes ONNX models under `jobs/<job_id>/onnx_models/` (or `policy_agent_<index>.json` for rule-based baselines), and `build_manifest` drops `jobs/<job_id>/artifact_manifest.json` capturing topology, encoders, reward config, and algorithm metadata for inference deployment. The training runner validates the bundle contract (`utils/bundle_validator.py`) before finalizing output. See also [`docs/inference_bundle.md`](inference_bundle.md) for the exact bundle served to the API.
-
-## 4. Checkpointing
-
-Checkpoints are managed by `utils/checkpoint_manager.CheckpointManager`:
-- Saves every `checkpoint_interval` steps to `<log_dir>/checkpoints/`.
-- Gating defaults are `update_step == true` and `initial_exploration_done == true`.
-- Optionally logs to MLflow when tracking is enabled.
-- Agents must implement `save_checkpoint(output_dir, step)` returning the checkpoint path. The MADDPG example stores PyTorch state dicts and replay buffer state.
-
-**Resuming**: Setting `checkpointing.resume_training: true` uses a runner-level generic flow that calls `agent.load_checkpoint(path)`:
-- If `checkpoint_run_id` is set, the runner downloads from MLflow via `mlflow.artifacts.download_artifacts`.
-- Artifact lookup order is `checkpoints/<checkpoint_artifact>` first, then legacy `<checkpoint_artifact>`.
-- If `use_best_checkpoint_artifact=true` and no run id is provided, runner uses `agent.get_best_checkpoint(experiment_name)` when available.
-- If the agent does not implement `load_checkpoint`, runner fails before the training loop starts.
-
-The simulator still restarts from the beginning of the episode because CityLearn does not expose environment snapshots. See [`docs/simulator_limits.md`](simulator_limits.md) for the formal Phase 1 limits/backlog.
-
-## 5. Metrics and Logging
-
-- **MLflow Enabled**: Per-step metrics honour sampled cadence (`tracking.mlflow_step_sample_interval`) and episode summaries are logged.
-- **MLflow Disabled**: Metrics are appended to `<log_dir>/metrics.jsonl` via `LocalMetricsLogger`. The file uses JSONL (one record per line) for easy ingestion.
-- `tracking.log_level` controls Loguru output; informative messages (`info`, `debug`) are sprinkled through the runner and wrapper to aid debugging.
-- `tracking.progress_updates_enabled` and `tracking.progress_update_interval` control progress file writes.
-- `tracking.system_metrics_enabled` and `tracking.system_metrics_interval` control CPU/RAM/GPU telemetry (debug-oriented, disabled by default).
-
-## 6. Artifact Manifest
-
-`artifact_manifest.json` (written beside `onnx_models/`) contains:
-- Config snapshot (`metadata`, `training`, `topology`, algorithm hyperparameters).
-- Environment metadata from `Wrapper_CityLearn.describe_environment()`:
-  - `observation_names` and per-observation encoder definitions (type + parameters like `x_min`, `x_max`, `classes`, etc.).
-  - `action_bounds`, `action_names`, and optional `action_names_by_agent` for heterogeneous multi-agent setups.
-  - Reward function class name and non-private attributes (parameters used during training).
-- Agent metadata returned by `BaseAgent.export_artifacts` (e.g., ONNX paths, observation/action dimensions).
-
-This manifest enables a separate inference service to apply the same preprocessing and routing logic that was used during training.
-
-### Manifest Fields in Detail
-
-- `manifest_version`: increment when the structure changes to keep inference code compatible.
-- `metadata`: mirrors config metadata (for example `experiment_name`, `run_name`, `community_name`) so manifests can be catalogued.
-- `topology`: injected by the wrapper; contains agent counts and per-agent observation/action dimensionality.
-- `environment`: detailed encoder definitions (type + params), action names/bounds, reward configuration.
-- `agent`: metadata returned by the agent with one artifact entry per agent (`agent_index`, `path`, `format`, `config`), plus optional dimensions for ONNX exports.
-- `training`: seed and schedule parameters used during training, useful for reproducibility.
-
-## 7. Extending the Platform with New Algorithms
-
-1. **Implement the Agent**
-   - Subclass `BaseAgent` and implement `predict`, `update`, `save_checkpoint`, `export_artifacts` (and optionally `load_checkpoint`). The `update` method must accept the full scheduler-aware signature (`observations`, `actions`, `rewards`, `next_observations`, `terminated`, `truncated`, plus keyword-only flags for `update_step`, `update_target_step`, `initial_exploration_done`, `global_learning_step`).
-   - Reuse helper utilities (replay buffers, noise, etc.) as needed.
-
-2. **Register the Agent**
-   - Add an entry to `algorithms/registry.py` mapping the algorithm name to the new class.
-   - Registry errors include supported names and known placeholders for fail-fast diagnostics.
-
-3. **Extend the Schema**
-   - Create a new Pydantic model mirroring the algorithm’s configuration needs.
-   - Update `ProjectConfig.algorithm` to accept the new model.
-   - Add a template config in `configs/templates/` highlighting the new fields.
-
-4. **Export Metadata**
- - Ensure `export_artifacts` writes whatever the inference service requires. For ONNX-based policies, call `mlflow.log_artifact` if MLflow is active and return a metadata dict describing the exports. Use the shared `DEFAULT_ONNX_OPSET` constant so exported graphs stay compatible with the serving stack.
-  - For `RuleBasedPolicy`, export `policy_agent_<index>.json` files alongside the manifest so inference can load each agent directly.
-
-5. **Testing & Documentation**
-   - Provide small smoke tests and update documentation to explain how to use the new algorithm.
-
-### Worked Example: Adding a New Agent
-
-1. Duplicate `configs/templates/maddpg/maddpg_local.yaml` and adjust fields for the new algorithm.
-2. Implement the agent class under `algorithms/agents/` and ensure it inherits `BaseAgent`.
-3. Register the agent name/class mapping in `algorithms/registry.py`.
-4. Extend `utils/config_schema.py` with a new Pydantic model if the algorithm introduces unique config fields.
-5. Implement `export_artifacts` to export ONNX graphs (or other artefacts) plus metadata.
-6. Add unit tests covering key behaviours (config validation edge cases, manifest metadata).
-7. Update `docs/platform_guide.md` with any algorithm-specific quirks.
-
-### Troubleshooting
-
-- **Missing artefacts in manifest**: Ensure `export_artifacts` returns a metadata dict and that the files reside under the job directory (manifest root).
-- **MLflow disabled but metrics missing**: Confirm `tracking.mlflow_enabled: false` and inspect `<log_dir>/metrics.jsonl`; metrics are appended in JSONL format.
-- **Checkpoint resume not restoring simulator state**: Currently only the agent state is persisted; see the roadmap for plans to snapshot the environment.
-
-## 8. Logging Guidelines
-
-- Use `logger.info` for high-level progress (episode completion, training start/end).
-- Use `logger.debug` for detailed diagnostics (derived topology, checkpoint events, local metrics writes).
-- Reserve `logger.warning` for recoverable issues (e.g., failing to write progress files).
-- Reserve `logger.error` for fatal configuration/runtime problems.
-
-## 9. Roadmap / To-Do
-
-- Add unit tests for config validation, wrapper scheduling, checkpoint manager, and manifest generation.
-- Extend schema/templates for additional algorithms (single-agent RL, hierarchical RL, rule-based policies).
-- Enhance CityLearn wrapper if/when environment state persistence becomes available for true resume.
-- Provide ready-to-run notebooks/examples for students.
-- Integrate automated CI (e.g., GitHub Actions) to execute the test suite and linting on every contribution.
-
-Once these tasks are completed, the platform can be considered “closed” and students should only modify configurations, algorithm classes, and registry entries.
+The [entity playbook](entity_interface_playbook_pt.md) explains flat/entity inputs.
+Use the [shared entity/Transformer contract](transformer_entity_controller.md),
+[TPPO specification](transformer_ppo_spec.md), [Transformer MATD3 guide](transformer_matd3.md)
+and [ADRs](adr/README.md) for those numerical packages. TI-MARL typed interfaces
+must bind to the actual simulator catalogue, including any schema-dependent
+feature names.

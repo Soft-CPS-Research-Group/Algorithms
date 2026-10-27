@@ -1,5 +1,10 @@
 # Config Templates
 
+All tracked templates use `schema_version: algorithms.config.v1`. See the
+[configuration and migration guide](../../docs/runtime/configuration.md); the
+[per-file migration record](../../docs/runtime/template_migration.json) identifies
+previously ignored parameters. Use `--validate` before running a modified template.
+
 Templates are grouped by purpose:
 
 - `maddpg/`: current MADDPG training templates for the supported static datasets.
@@ -10,6 +15,9 @@ Templates are grouped by purpose:
 - `dynamic/`: entity dynamic-topology smoke/debug templates. This group includes
   Transformer PPO and Transformer MATD3 default, residual, and behavior-cloning
   variants.
+
+- `experimental/`: recovered Transformer/hierarchy smoke jobs and offline model
+  evaluation recipes. Research status and input requirements remain explicit.
 
 Transformer MATD3 templates:
 

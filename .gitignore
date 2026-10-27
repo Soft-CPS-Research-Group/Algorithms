@@ -49,6 +49,11 @@
 venv/
 .venv/
 __pycache__/
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
 *.py[cod]
 .git-credentials
 .idea

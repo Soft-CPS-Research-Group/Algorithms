@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 metadata:
   experiment_name: "normal_no_battery_2022_all_plus_evs_local"
   run_name: "NormalNoBatteryPolicy 2022 All Plus EVs"

@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 # AgentTransformerMATD3 dynamic template with independent BC-A and BC-B paths.
 
 metadata:

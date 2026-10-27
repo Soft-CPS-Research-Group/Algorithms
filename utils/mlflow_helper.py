@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 
-import mlflow
+from algorithms.runtime.tracking import mlflow
 from loguru import logger
 
 from utils.helpers import flatten_dict

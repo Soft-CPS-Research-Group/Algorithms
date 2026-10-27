@@ -1,160 +1,79 @@
-"""Algorithm registry and execution-unit builder for the training entrypoint."""
+"""Lazy agent registry and the single shared execution-unit builder."""
 
 from __future__ import annotations
 
-import os
-import sys
-import time
+from collections.abc import Iterator, MutableMapping
 from copy import deepcopy
-from typing import Any, Dict, List, Type
+from importlib import import_module
+from typing import TYPE_CHECKING, Any, Dict, List
 
-
-_REGISTRY_TRACE_ENABLED = (
-    os.environ.get("OPEVA_STARTUP_TRACE", "1").strip().lower() not in {"0", "false", "no", "off"}
-    and os.path.basename(sys.argv[0]) == "run_experiment.py"
-)
-_REGISTRY_TRACE_T0 = time.monotonic()
-
-
-def _registry_trace(message: str) -> None:
-    if not _REGISTRY_TRACE_ENABLED:
-        return
-    elapsed = time.monotonic() - _REGISTRY_TRACE_T0
-    print(f"[opeva-registry +{elapsed:.3f}s] {message}", file=sys.stderr, flush=True)
-
-
-_registry_trace("module import started")
-
-_registry_trace("before loguru import")
 from loguru import logger
-_registry_trace("after loguru import")
 
-_registry_trace("before baseline policies import")
-from algorithms.agents.baseline_policies import (
-    NormalNoBatteryPolicy,
-    NormalPolicy,
-    RBCBasicPolicy,
-    RBCCommunityPolicy,
-    RBCSmartLocalPolicy,
-    RBCSmartPolicy,
-    RandomPolicy,
-    SignalAwareRBC,
-    SignalAwareRBCCommunity,
-    SignalDirectedRBC,
-    SignalAwareRBCSmartLocal,
+from algorithms.catalogue import AGENT_SPECS
+from algorithms.contracts import AgentSpec
+
+if TYPE_CHECKING:
+    from algorithms.execution_unit import ExecutionUnit
+
+
+def import_symbol(path: str) -> Any:
+    module, name = path.split(":", 1)
+    return getattr(import_module(module), name)
+
+
+class LazyAgentRegistry(MutableMapping):
+    """Mapping compatibility for callers, with imports deferred until lookup."""
+
+    def __init__(self) -> None:
+        self._loaded: dict[str, Any] = {}
+
+    def __getitem__(self, name: str) -> Any:
+        if name not in self._loaded:
+            self._loaded[name] = import_symbol(AGENT_SPECS[name].implementation)
+        return self._loaded[name]
+
+    def __setitem__(self, name: str, value: Any) -> None:
+        self._loaded[name] = value
+
+    def __delitem__(self, name: str) -> None:
+        self._loaded.pop(name, None)
+        AGENT_SPECS.pop(name, None)
+        ENCODED_OBSERVATION_ALGORITHMS.discard(name)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(dict.fromkeys([*AGENT_SPECS, *self._loaded]))
+
+    def __len__(self) -> int:
+        return len(set(AGENT_SPECS) | set(self._loaded))
+
+    def __contains__(self, name: object) -> bool:
+        return name in AGENT_SPECS or name in self._loaded
+
+
+ALGORITHM_REGISTRY = LazyAgentRegistry()
+PLACEHOLDER_ALGORITHMS = {"SingleAgentRL"}
+ENCODED_OBSERVATION_ALGORITHMS = set(
+    name for name, spec in AGENT_SPECS.items() if spec.capabilities.observations == "encoded"
 )
-_registry_trace("after baseline policies import")
-_registry_trace("before base agent import")
-from algorithms.agents.base_agent import BaseAgent
-_registry_trace("after base agent import")
-from algorithms.agents.fixed_price_signal_agent import FixedPriceSignalAgent
-from algorithms.agents.causal_price_signal_agent import CausalPriceSignalAgent
-_registry_trace("before building agent import")
-from algorithms.agents.building_agent import BuildingAgent
-_registry_trace("after building agent import")
-_registry_trace("before cc level1 import")
-from algorithms.agents.cc_level1_agent import CCLevel1Agent
-_registry_trace("after cc level1 import")
-_registry_trace("before cc level2 import")
-from algorithms.agents.cc_level2_agent import CCLevel2Agent
-from algorithms.agents.cc_level2_capacity_agent import CCLevel2CapacityAgent
-_registry_trace("after cc level2 import")
-_registry_trace("before community coordinator import")
-from algorithms.agents.community_coordinator_agent import CommunityCoordinatorAgent
-_registry_trace("after community coordinator import")
-_registry_trace("before MADDPG import")
-from algorithms.agents.maddpg_agent import MADDPG
-_registry_trace("after MADDPG import")
-_registry_trace("before MASAC import")
-from algorithms.agents.masac_agent import MASAC
-_registry_trace("after MASAC import")
-_registry_trace("before MATD3 import")
-from algorithms.agents.matd3_agent import MATD3
-_registry_trace("after MATD3 import")
-_registry_trace("before PPO agents import")
-from algorithms.agents.ppo_agents import HAPPO, IPPO, MAPPO, PPO
-_registry_trace("after PPO agents import")
-_registry_trace("before TD3 import")
-from algorithms.agents.td3_agent import TD3
-_registry_trace("after TD3 import")
-from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolicy
-from algorithms.agents.total_home_oracle_replay_policy import TotalHomeOracleReplayPolicy
-from algorithms.agents.total_oracle_replay_policy import TotalOracleReplayPolicy
-_registry_trace("before AgentTransformerPPO agents import")
-from algorithms.transformer_ppo.agent import AgentTransformerPPO
-_registry_trace("after AgentTransformerPPO agents import")
-from algorithms.ti_marl.agent import TIMARL
-_registry_trace("before AgentTransformerMATD3 agents import")
-from algorithms.transformer_matd3.agent import AgentTransformerMATD3
-_registry_trace("after AgentTransformerMATD3 agents import")
-_registry_trace("before RuleBasedPolicy import")
-from algorithms.agents.rbc_agent import RuleBasedPolicy
-_registry_trace("after RuleBasedPolicy import")
-_registry_trace("before execution unit import")
-from algorithms.execution_unit import ExecutionUnit
-_registry_trace("after execution unit import")
-_registry_trace("before pipeline import")
-from algorithms.pipeline import Ensemble, Pipeline
-_registry_trace("after pipeline import")
 
-from algorithms.agents.transformer_maddpg_agent import TransformerMADDPG
-from algorithms.offline_rl.bc_agent import BCAgent
-from algorithms.offline_rl.iql_agent import IQLAgent
-from algorithms.offline_rl.iql_entity_agent import IQLEntityAgent
-from algorithms.offline_rl.cql_entity_agent import CQLEntityAgent
 
-ALGORITHM_REGISTRY: Dict[str, Type[BaseAgent]] = {
-    "TransformerMADDPG": TransformerMADDPG,
-    "BCAgent": BCAgent,
-    "IQLAgent": IQLAgent,
-    "IQLEntityAgent": IQLEntityAgent,
-    "CQLEntityAgent": CQLEntityAgent,
-    "BuildingAgent": BuildingAgent,
-    "CCLevel1": CCLevel1Agent,
-    "CCLevel2": CCLevel2Agent,
-    "CCLevel2Capacity": CCLevel2CapacityAgent,
-    "SignalAwareRBCCommunity": SignalAwareRBCCommunity,
-    "SignalDirectedRBC": SignalDirectedRBC,
-    "CausalPriceSignal": CausalPriceSignalAgent,
-    "CommunityCoordinator": CommunityCoordinatorAgent,
-    "HAPPO": HAPPO,
-    "IPPO": IPPO,
-    "MADDPG": MADDPG,
-    "MAPPO": MAPPO,
-    "MASAC": MASAC,
-    "MATD3": MATD3,
-    "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
-    "NormalPolicy": NormalPolicy,
-    "RBCBasicPolicy": RBCBasicPolicy,
-    "RBCCommunityPolicy": RBCCommunityPolicy,
-    "RBCSmartLocalPolicy": RBCSmartLocalPolicy,
-    "RBCSmartPolicy": RBCSmartPolicy,
-    "RandomPolicy": RandomPolicy,
-    "RuleBasedPolicy": RuleBasedPolicy,
-    "SignalAwareRBC": SignalAwareRBC,
-    "SignalAwareRBCSmartLocal": SignalAwareRBCSmartLocal,
-    "PPO": PPO,
-    "TD3": TD3,
-    "FixedServiceOracleReplayPolicy": FixedServiceOracleReplayPolicy,
-    "FixedPriceSignal": FixedPriceSignalAgent,
-    "TotalHomeOracleReplayPolicy": TotalHomeOracleReplayPolicy,
-    "TotalOracleReplayPolicy": TotalOracleReplayPolicy,
-    "AgentTransformerPPO": AgentTransformerPPO,
-    "TIMARL": TIMARL,
-    "AgentTransformerMATD3": AgentTransformerMATD3,
-}
+def agent_spec(name: str) -> AgentSpec:
+    try:
+        return AGENT_SPECS[name]
+    except KeyError as error:
+        raise ValueError(build_unsupported_algorithm_message(name)) from error
 
-PLACEHOLDER_ALGORITHMS = {
-    "SingleAgentRL",
-}
 
-# Derived from the registry: algorithms whose class sets _use_raw_observations=False
-# (i.e. neural agents that need the wrapper's observation encoding).
-ENCODED_OBSERVATION_ALGORITHMS: frozenset[str] = frozenset(
-    name for name, cls in ALGORITHM_REGISTRY.items()
-    if not cls._use_raw_observations
-)
-_registry_trace("registry built")
+def register_agent(spec: AgentSpec) -> None:
+    """Register implementation, parameter schema and capabilities together."""
+    if spec.name in AGENT_SPECS or spec.name in PLACEHOLDER_ALGORITHMS:
+        raise ValueError(f"Algorithm {spec.name!r} is already registered")
+    for path in (spec.implementation, spec.configuration):
+        if ":" not in path:
+            raise ValueError("Implementation and configuration use module:Symbol paths")
+    AGENT_SPECS[spec.name] = spec
+    if spec.capabilities.observations == "encoded":
+        ENCODED_OBSERVATION_ALGORITHMS.add(spec.name)
 
 
 def supported_algorithms() -> List[str]:
@@ -198,7 +117,9 @@ def build_unsupported_algorithm_message(name: str | None) -> str:
     )
 
 
-def _stage_to_agent_view(global_config: Dict[str, Any], stage_cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _stage_to_agent_view(
+    global_config: Dict[str, Any], stage_cfg: Dict[str, Any]
+) -> Dict[str, Any]:
     """Synthesise an agent-facing config view for a single pipeline stage.
 
     Existing agent constructors read ``self.config["algorithm"][...]`` as
@@ -213,7 +134,16 @@ def _stage_to_agent_view(global_config: Dict[str, Any], stage_cfg: Dict[str, Any
         "name": stage_cfg["algorithm"],
         "hyperparameters": stage_cfg.get("hyperparameters", {}) or {},
     }
-    for optional_key in ("networks", "replay_buffer", "exploration", "policy", "tokenizer", "tokenizer_config_path", "transformer", "behavior_cloning"):
+    for optional_key in (
+        "networks",
+        "replay_buffer",
+        "exploration",
+        "policy",
+        "tokenizer",
+        "tokenizer_config_path",
+        "transformer",
+        "behavior_cloning",
+    ):
         if optional_key in stage_cfg and stage_cfg[optional_key] is not None:
             algorithm_block[optional_key] = stage_cfg[optional_key]
     agent_view["algorithm"] = algorithm_block
@@ -281,6 +211,8 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
     Adding a new hierarchy level is purely a configuration change — no
     code change here, in the wrapper, or in any agent class.
     """
+    from algorithms.pipeline import Ensemble, Pipeline
+
     pipeline_cfg = config.get("pipeline") or []
     if not pipeline_cfg:
         message = build_unsupported_algorithm_message(None)
@@ -299,19 +231,17 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
         agent_view = _stage_to_agent_view(config, stage_cfg)
         count = int(stage_cfg.get("count", 1) or 1)
         if count < 1:
-            raise ValueError(
-                f"Stage '{algorithm_name}' has count={count}; must be >= 1."
-            )
-        if (
-            algorithm_name in {"AgentTransformerPPO", "AgentTransformerMATD3"}
-            and count != 1
-        ):
+            raise ValueError(f"Stage '{algorithm_name}' has count={count}; must be >= 1.")
+        if algorithm_name in {"AgentTransformerPPO", "AgentTransformerMATD3"} and count != 1:
             raise ValueError(f"{algorithm_name} pipeline stages require count=1")
 
         frozen = bool(stage_cfg.get("frozen", False))
 
         if count == 1:
             unit = agent_cls(config=agent_view)
+            unit.agent_name = algorithm_name
+            if algorithm_name in AGENT_SPECS:
+                unit.capabilities = AGENT_SPECS[algorithm_name].capabilities
             unit.frozen = frozen
             stages.append(unit)
         else:
@@ -328,6 +258,12 @@ def build_execution_unit(config: Dict[str, Any]) -> ExecutionUnit:
             else:
                 members = [agent_cls(config=agent_view) for _ in range(count)]
             ensemble = Ensemble(members)
+            for member in members:
+                member.agent_name = algorithm_name
+                if algorithm_name in AGENT_SPECS:
+                    member.capabilities = AGENT_SPECS[algorithm_name].capabilities
+            if algorithm_name in AGENT_SPECS:
+                ensemble.capabilities = AGENT_SPECS[algorithm_name].capabilities
             ensemble.frozen = frozen
             stages.append(ensemble)
 

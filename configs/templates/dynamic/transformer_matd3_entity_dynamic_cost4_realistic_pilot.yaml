@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 # Transformer MATD3 translation of the Tiago cost4 residual recipe.
 # The actor-policy weight is explicit so the Transformer objective can match
 # the classic MATD3 recipe. BC values are the strong-EV translation used for

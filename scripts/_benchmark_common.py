@@ -46,7 +46,7 @@ _loguru_logger.remove()
 _loguru_logger.add(sys.stderr, level="WARNING")
 
 from citylearn.citylearn import CityLearnEnv  # noqa: E402
-from run_experiment import _resolve_citylearn_schema_input  # noqa: E402
+from algorithms.runtime.simulator import _resolve_citylearn_schema_input  # noqa: E402
 
 from algorithms.agents.base_agent import BaseAgent  # noqa: E402
 from algorithms.agents.rbc_agent import RuleBasedPolicy  # noqa: E402

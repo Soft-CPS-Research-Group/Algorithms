@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 metadata:
   experiment_name: "normal_local_template"
   run_name: "NormalPolicy 15s"

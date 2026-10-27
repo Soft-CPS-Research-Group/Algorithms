@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 # Set model_dir and the dataset to those used by the offline trainer.
 metadata:
   experiment_name: consolidation_smoke

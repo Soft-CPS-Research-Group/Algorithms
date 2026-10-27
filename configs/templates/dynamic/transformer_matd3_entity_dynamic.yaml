@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 # Local AgentTransformerMATD3 template for entity mode with dynamic asset events.
 # Verified by tests/test_template_transformer_matd3_entity_dynamic.py.
 

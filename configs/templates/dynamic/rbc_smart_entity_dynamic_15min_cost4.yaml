@@ -1,3 +1,4 @@
+schema_version: algorithms.config.v1
 metadata:
   experiment_name: "rbc_smart_entity_dynamic_15min_cost4"
   run_name: "RBCSmart 15min cost4 baseline"

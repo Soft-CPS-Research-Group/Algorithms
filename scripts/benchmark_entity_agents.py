@@ -49,7 +49,7 @@ _loguru_logger.add(sys.stderr, level="WARNING")
 
 # Use the pinned Simulator; the former 1.0.2 patch targets removed internals.
 from citylearn.citylearn import CityLearnEnv  # noqa: E402
-from run_experiment import _resolve_citylearn_schema_input  # noqa: E402
+from algorithms.runtime.simulator import _resolve_citylearn_schema_input  # noqa: E402
 from reward_function import CostServiceCommunityFeasiblePrecisionRewardV46  # noqa: E402
 from utils.entity_adapter import EntityContractAdapter  # noqa: E402
 from algorithms.agents.baseline_policies import RBCSmartPolicy  # noqa: E402

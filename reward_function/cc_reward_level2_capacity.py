@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from typing import Any, List, Mapping, Union
 
-import mlflow
+from algorithms.runtime.tracking import mlflow
 import numpy as np
 
 from reward_function.cc_reward_level1 import CCRewardLevel1

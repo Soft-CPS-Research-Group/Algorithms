@@ -45,19 +45,7 @@ from algorithms.offline_rl.bc_policy import BCPolicy
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass
-class BCTrainingConfig:
-    hidden_layers: List[int] = dataclasses.field(default_factory=lambda: [256, 256])
-    dropout: float = 0.1
-    learning_rate: float = 3e-4
-    weight_decay: float = 1e-5
-    gradient_clip_norm: float = 1.0
-    batch_size: int = 256
-    epochs: int = 50
-    val_fraction: float = 0.1
-    device: str = "cpu"
-    num_workers: int = 0  # in-memory dataset; workers add overhead
-    log_every_n_epochs: int = 1
+from algorithms.configuration.offline import BCTrainingConfig
 
 
 # ---------------------------------------------------------------------------

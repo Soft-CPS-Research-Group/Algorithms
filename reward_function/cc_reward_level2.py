@@ -52,7 +52,7 @@ from __future__ import annotations
 
 from typing import Any, List, Mapping, Union
 
-import mlflow
+from algorithms.runtime.tracking import mlflow
 from citylearn.reward_function import RewardFunction
 
 from reward_function.community_settlement import community_settlement_components

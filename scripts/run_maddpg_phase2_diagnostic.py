@@ -30,7 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from algorithms.registry import build_execution_unit
 from reward_function.registry import REWARD_FUNCTION_MAP
-from run_experiment import _resolve_agent_observation_dimensions
+from algorithms.runtime.simulator import _resolve_agent_observation_dimensions
 from utils.config_schema import validate_config
 from utils.wrapper_citylearn import Wrapper_CityLearn
 

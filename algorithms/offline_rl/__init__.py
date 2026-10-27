@@ -1,7 +1,6 @@
-"""Offline RL package.
+"""Offline policies and trainer implementations for the common job runtime.
 
-This package mirrors the v1 ``algorithms/offline/`` tree but lives in parallel.
-Owns schema, data loader, reward and trainers for the offline pipeline.
-
-See ``OFFLINE_RL_AGENTS.md`` at the repo root for context.
+The prepare_training hook owns offline optimization; algorithms.runtime owns
+job configuration, simulation, evaluation and published artifacts. Collection
+and multi-seed research commands remain in scripts; see docs/runtime/README.md.
 """

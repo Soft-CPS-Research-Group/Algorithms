@@ -1,289 +1,131 @@
 # Algorithms for Energy Flexibility Optimization
 
-Start with the [agent catalogue](docs/agent_catalogue.md) and the
-[branch consolidation record](docs/consolidation/README.md) for supported implementations, origins and known limits.
+Algorithms is the training side of energAIze: configurations and datasets enter a
+common job runtime; agents train or evaluate through shared simulator interfaces;
+results, KPIs and requested model artifacts leave the job directory.
 
-This repository hosts the training side of the energAIze platform. It runs
-multi‑agent reinforcement learning experiments on
-[CityLearn](https://github.com/intelligent-environments-lab/CityLearn), exports
-ONNX policies plus metadata, and feeds the
-[`energAIze_inference`](https://github.com/your-org/energAIze_inference) serving
-layer. Students extend the *algorithms* while the platform handles
-orchestration, logging, and packaging.
+Start with the [runtime guide](docs/runtime/README.md),
+[38-agent catalogue](docs/agent_catalogue.md), and [documentation index](docs/README.md).
+The [branch consolidation record](docs/consolidation/README.md) preserves historical
+origins. The [stage 2 delivery](docs/runtime/delivery.md) records the common-core
+reorganization and its verification.
 
-## Documentation Map
+## Quick start
 
-- 📘 [Training Platform Guide](docs/platform_guide.md): architecture, config
-  schema, extension workflow, troubleshooting.
-- 📄 [Manifest example](docs/examples/manifest_example.json): sample
-  `artifact_manifest.json` emitted after training.
-- 🔌 [Inference bundle contract](docs/inference_bundle.md): files the serving API
-  expects and how to load them.
-- 🧭 [Simulator limits](docs/simulator_limits.md): what is and is not supported in
-  this phase (resume, stepping contracts, next backlog).
-- 🧱 [Entity Interface Playbook (PT)](docs/entity_interface_playbook_pt.md):
-  practical guide for `interface=entity` (including dynamic topology).
-- 🧩 [Transformer Entity Controller Contract](docs/transformer_entity_controller.md):
-  shared entity, token, layout, topology, and deployment invariants.
-- 🎯 [AgentTransformerPPO Specification](docs/transformer_ppo_spec.md): current
-  TPPO lifecycle, BC, safety, configuration, metrics, checkpoints, and export.
-- 🤖 [AgentTransformerMATD3 Guide](docs/transformer_matd3.md): dynamic MATD3
-  templates, runtime constraints, and ADR-to-test traceability.
+Python 3.10 and `softcpsrecsimulator==1.8.3` are the tested baseline. Imports from
+the simulator remain `citylearn.*`. Use a fresh environment to avoid conflicting
+CityLearn distributions.
 
-## Prerequisites
-
-- Python 3.10
-- `pip install -r requirements.txt`
-- Simulator dependency is pinned to `softcpsrecsimulator==1.8.0` (imports remain `citylearn.*`)
-- If your environment already had `CityLearn`, run `pip uninstall -y CityLearn` first (or recreate the venv)
-- (Optional) `mlflow` if you want the UI locally
-- Docker (optional, for containerised runs)
-
-## Quick Start
-
-### Local training
+For configuration validation only:
 
 ```bash
-python run_experiment.py --config configs/config.yaml --job_id dev-run
+python -m venv .venv
+. .venv/bin/activate
+pip install .
+algorithms-job --list-agents
+algorithms-job --config configs/config.yaml --validate
 ```
 
-Outputs are written to `./runs/`:
-
-- `runs/jobs/<job_id>/` – logs, checkpoints, ONNX exports, manifest.
-- `runs/mlflow/mlruns/` – MLflow tracking store (serve the UI with
-  `mlflow ui --backend-store-uri file:./runs/mlflow/mlruns`).
-
-### Inside Docker
-
-The Docker image sets `OPEVA_BASE_DIR=/data`. Mount a volume at `/data` and run
-with the same arguments:
+For CPU jobs without MLflow:
 
 ```bash
-python run_experiment.py --config /data/configs/<experiment>.yaml --job_id <job_id>
+pip install -r requirements/lock-cpu-py310-linux-x86_64.txt
+pip install . --no-deps
+algorithms-job --config configs/templates/experimental/transformer_maddpg_smoke.yaml --dry-run
+algorithms-job --config configs/templates/experimental/transformer_maddpg_smoke.yaml --profile smoke --job_id smoke-001
 ```
 
-Artefacts appear under `/data/jobs/<job_id>/`, ready to publish or archive for
-inference.
+See [installation profiles](docs/runtime/installation.md) for GPU/platform-specific
+wheels, optional tracking/export/offline/solver dependencies and developer tools.
+`python run_experiment.py` accepts the same CLI arguments as `algorithms-job`.
+Datasets are separate job inputs; local smoke recipes use the bundled repository
+dataset, which is not included in the Python wheel.
 
-### Published Docker image
+## Configuration and outputs
 
-Pushes to `main`, `gj/*`, and version tags publish `calof/opeva_simulator` as a
-multi-arch image for `linux/amd64` and `linux/arm64`.
+Use `schema_version: algorithms.config.v1` and an ordered `pipeline` of agents.
+Common initialization, simulator settings, training cadence, tracking, checkpoints
+and outputs are configured once. Each stage owns its numerical parameters.
+See [configuration, profiles and migration](docs/runtime/configuration.md).
 
-- `linux/amd64` keeps the CUDA 12.1 PyTorch wheels from `requirements.txt`.
-- `linux/arm64` uses PyPI arm64 PyTorch wheels because the `+cu121` wheels are
-  not available for ARM.
+- `train` preserves the configured training schedule.
+- `evaluate` runs one deterministic episode from an explicit trained source.
+- `smoke` runs a bounded integration check with a deterministic final episode.
+- `outputs.model_artifacts` selects `none`, `checkpoint`, `bundle` or `both`;
+  omitted/null retains legacy configured behavior.
+- `simulator.export` controls KPI/time-series collection. Global export-policy
+  corrections remain a separate planned stage.
 
-Jetson Xavier GPU runs use a separate L4T image tag built from NVIDIA's
-`nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3`, validated on JetPack 5.1.1 /
-L4T 35.3.1 with CUDA visible to PyTorch:
+The output root is `--base-dir`, `OPEVA_BASE_DIR`, or `./runs`, in that order:
 
-- default branch: `calof/opeva_simulator:latest-jetson-r35.3.1`
-- commit tags: `calof/opeva_simulator:sha-<short_sha>-jetson-r35.3.1`
-- release tags: `calof/opeva_simulator:<tag>-jetson-r35.3.1`
-
-Use the Jetson tag when targeting the `jetson-xavier` worker with GPU.
-
-### Deucalion/SIF parity
-
-The same training entrypoint is compatible with the Deucalion worker runtime:
-
-- default worker command: `--config /data/<config_path> --job_id <job_id>`
-- keep simulator datasets under `/data/datasets/...` inside the container/SIF
-- per-job outputs remain under `/data/jobs/<job_id>/...` in both Docker and SIF
-
-## Repository Layout
-
-- `run_experiment.py` – entrypoint used both locally and in Docker.
-- `algorithms/agents/` – algorithm implementations; every class inherits
-  `BaseAgent`.
-- `algorithms/constants.py` – shared constants (e.g., ONNX opset pin).
-- `utils/wrapper_citylearn.py` – wrapper around CityLearn (encoders, logging,
-  checkpoints, manifest metadata).
-- `configs/` – experiment configs and encoder rules (`configs/encoders/*.json`).
-- `reward_function/` – custom reward implementations.
-- `tests/` – unit tests for encoders, config validation, etc.
-- `docs/` – platform guide, inference bundle spec, manifest example.
-- `runs/` – generated at runtime to mirror the `/data` mount.
-
-## Training Flow at a Glance
-
-```
-┌────────────────┐       ┌────────────────────────────┐
-│ YAML Config(s) │──────▶│ run_experiment.py (entry)  │
-└────────────────┘       │ - validates config         │
-                         │ - boots MLflow + logging   │
-                         └─────────┬──────────────────┘
-                                   │
-                                   ▼
-                        ┌────────────────────────────┐
-                        │ Wrapper_CityLearn          │
-                        │ - builds encoders from     │
-                        │   configs/encoders/*.json  │
-                        │ - drives CityLearn loop    │
-                        └──────────┬─────────────────┘
-                                   │
-                     ┌─────────────┴─────────────┐
-                     │                           │
-                     ▼                           ▼
-        ┌────────────────────────────┐   ┌────────────────────┐
-        │ CityLearn Simulator        │   │ BaseAgent (MADDPG) │
-        │ datasets/<schema>.json     │   │ algorithms/agents  │
-        └────────────┬───────────────┘   └────────┬───────────┘
-                     │                            │
-                     ▼                            ▼
-        ┌────────────────────────────┐   ┌────────────────────┐
-        │ Training Artefacts         │   │ MLflow Tracking    │
-        │ runs/jobs/<job_id>/        │   │ runs/mlflow/mlruns │
-        │ ├─ checkpoints/            │   └────────────────────┘
-        │ ├─ onnx_models/            │
-        │ └─ artifact_manifest.json  │
-        └────────────┬───────────────┘
-                     │ exported bundle
-                     ▼
-        ┌─────────────────────────────────────────────┐
-        │ energAIze_inference service (separate repo) │
-        │ consumes manifest + ONNX per agent          │
-        └─────────────────────────────────────────────┘
+```text
+runs/jobs/<job_id>/
+  config.resolved.yaml
+  job_info.json
+  logs/<job_id>.log
+  progress/progress.json
+  results/result.json
+  results/summary.json
+  results/simulation_data/       # KPIs/time series when requested
+  checkpoints/                  # supported/requested training state
+  bundle/artifact_manifest.json # when a bundle is requested
+  bundle/...                    # agent-specific artifacts and metadata
 ```
 
-Use this diagram as the mental model when wiring CI or new algorithms.
+Results include provenance and the output contract version. Supported neural
+agents export ONNX; baselines export policy descriptions; experimental agents may
+export research Torch artifacts. The common manifest does not by itself certify
+an artifact for the inference service. See the [bundle contract](docs/inference_bundle.md)
+and each agent's capability declaration.
 
-## Configuration Essentials
+## Repository organization
 
-- Base config lives in `configs/config.yaml` (students typically copy this).
-- `configs/` keeps a single canonical config file outside templates: `configs/config.yaml`.
-- Validation happens in `utils/config_schema.py` (Pydantic models).
-- Observation encoders are defined in `configs/encoders/default.json` so training
-  and inference stay aligned.
-- Templates under `configs/templates/` provide algorithm x environment
-  starting points, grouped by purpose:
-  `maddpg/maddpg_local.yaml`,
-  `rl/td3_distributed_local.yaml`,
-  `baselines/rbc_community_local.yaml`,
-  `baselines/rbc_smart_local.yaml`,
-  `dynamic/rule_based_entity_dynamic_local.yaml`,
-  `dynamic/transformer_ppo_entity_dynamic.yaml`, and
-  `dynamic/transformer_matd3_entity_dynamic.yaml`.
-  Executor/runtime specifics are chosen at launch time (UI/payload), not in template YAML.
-- Project-specific experiment recipes, demonstrations and result evidence are
-  intentionally kept outside the tracked repository.
+| Area | Owner |
+| --- | --- |
+| `algorithms/configuration/` | Versioned common and agent schemas, migration, profiles |
+| `algorithms/catalogue.py`, `registry.py` | Capabilities, lazy registration, composition builder |
+| `algorithms/runtime/` | Job, environment, common loop, controller, resources, diagnostics, tracking, checkpoints, outputs |
+| `algorithms/agents/`, Transformer, TI-MARL and offline packages | Policies, networks, losses, optimizers and buffers |
+| `algorithms/contracts.py`, `execution_unit.py`, `pipeline.py` | Typed interfaces and agent/Pipeline/Ensemble composition |
+| `configs/` | Reusable templates, encoder rules and tokenizer resources |
+| `reward_function/` | Reward implementations |
+| `scripts/` | Research tools, data collection, campaigns and diagnostics |
+| `utils/` | Shared utilities and compatibility imports |
+| `tests/`, `docs/` | Verification, contracts, decisions and guides |
 
-Important knobs:
+New agents implement/register their schema, capabilities and numerical logic.
+They reuse the job lifecycle. Follow [AGENTS.md](AGENTS.md) and the
+[extension guide](docs/runtime/agents.md). Entity agents also follow the
+[shared Transformer/entity contract](docs/transformer_entity_controller.md),
+[TPPO specification](docs/transformer_ppo_spec.md) or
+[Transformer MATD3 guide](docs/transformer_matd3.md).
 
-- `tracking.mlflow_enabled` – switch between MLflow and JSONL logging.
-- `tracking.log_frequency` – legacy step logging control (kept for compatibility).
-- `tracking.mlflow_step_sample_interval` – sampled MLflow step metric interval
-  (default 10, low-overhead mode).
-- `tracking.mlflow_artifacts_profile` – `minimal|curated` artifact policy for
-  MLflow uploads (default `minimal`).
-- `tracking.progress_updates_enabled` / `tracking.progress_update_interval` –
-  enable and pace writes to `progress/progress.json`.
-- `tracking.system_metrics_enabled` / `tracking.system_metrics_interval` –
-  optional CPU/RAM/GPU telemetry for debug (disabled by default).
-- `checkpointing.resume_training` – reload agent state from MLflow (simulator
-  still restarts).
-- `simulator.simulation_start_time_step`, `simulator.simulation_end_time_step`,
-  `simulator.episode_time_steps` – optional overrides for simulation window and
-  episode length.
-- `simulator.episodes` – number of training episodes to execute.
-- `simulator.export.*` – CityLearn export controls:
-  `mode` (`none|during|end`), KPI CSV toggle, optional fixed session name.
-- `metadata.community_name` – optional business/domain grouping key (useful for UI filtering/catalogs).
-- `bundle.*` – manifest/export metadata (`bundle_version`, `description`,
-  `alias_mapping_path`) and default `artifact.config` knobs (for example
-  `require_observations_envelope`).
-- `training.*` – exploration warm-up, update cadence, target refresh.
-- `algorithm.*` – hyperparameters, network sizes, replay buffer type, exploration
-  policy. Rule-based baselines replace neural network knobs with heuristic
-  thresholds and charger overrides. Strict single-agent `PPO` and `TD3` are
-  runtime implementations; use `count` equal to the number of buildings for
-  a fully distributed run. The generic `SingleAgentRL` name remains a schema
-  placeholder only.
+## Containers and operation
 
-## Training Outputs & Inference Hand-off
+The existing image entry point remains `python run_experiment.py`. Mount the
+job volume at `/data` and pass `--config /data/config.yaml --job_id <id>`;
+`OPEVA_BASE_DIR=/data` keeps outputs under `/data/jobs/<id>/`.
+The [CI workflow](.github/workflows/ci.yml) defines Docker, Jetson, Union and SIF
+builds, current image tags and publishing conditions. A successful build does not
+replace hardware-specific execution certification. Deucalion remains suspended
+operationally; its retained build definition is not authorization to run jobs there.
 
-Every job produces:
+MLflow is optional in local code. `tracking.mlflow_enabled: false` retains local
+JSONL metrics and result files without importing MLflow. Agent checkpoints restore
+agent state; they do not promise a mid-episode simulator snapshot. Job outputs,
+logs and models have no automatic expiry introduced by this reorganization.
 
-- `jobs/<job_id>/logs/<run_id>.log` – Loguru trace.
-- `jobs/<job_id>/progress/progress.json` – progress updates for dashboards.
-- `jobs/<job_id>/results/result.json` – canonical run result payload (status +
-  KPI source metadata).
-- `jobs/<job_id>/results/simulation_data/<session|timestamp>/` – optional
-  simulator CSV exports (`exported_*.csv`, `exported_kpis.csv`) when
-  `simulator.export.mode != none` or KPI export is enabled.
-- `jobs/<job_id>/checkpoints/` – optional checkpoints.
-- `jobs/<job_id>/onnx_models/` – one ONNX actor per agent.
-- `jobs/<job_id>/artifact_manifest.json` – metadata consumed by the inference
-  repo.
-- `jobs/<job_id>/config.resolved.yaml` – runtime-resolved config snapshot
-  (auto-populated `runtime.*` and derived topology).
-- `jobs/<job_id>/results/summary.json` – lightweight final run summary with
-  MLflow identity/URI linkage.
-- `jobs/<job_id>/policy_agent_<index>.json` – exported rule-based policy files
-  when a rule-based baseline runs.
+## Verification and contribution
 
-Bundle the manifest, ONNX directory, and optional alias map as described in
-[`docs/inference_bundle.md`](docs/inference_bundle.md) to deploy a trained agent.
+```bash
+ruff check
+ruff format --check
+mypy
+pytest
+pytest -o addopts='' tests/e2e/test_e2e_consolidated_agents.py tests/e2e/test_common_job_profiles.py
+```
 
-## Extending the Platform (Students)
-
-1. Implement an agent under `algorithms/agents/` inheriting `BaseAgent`.
-2. Register it in `algorithms/registry.py`.
-   Fail-fast errors list supported names and known placeholders.
-3. Honour the full `BaseAgent.update` signature (scheduler flags are
-   keyword-only and mandatory).
-4. Extend `configs/templates/` and `utils/config_schema.py` if new
-   hyperparameters are needed.
-5. Implement `export_artifacts` so ONNX + metadata are written under the run
-   directory. Use the algorithm's validated ONNX opset; TPPO uses opset 17.
-6. Add unit tests (`pytest`) for new utilities or encoders.
-
-The [Training Platform Guide](docs/platform_guide.md) walks through this process
-in detail and contains troubleshooting tips.
-
-## Monitoring & Logging
-
-- MLflow tracking URI resolution priority is:
-  `MLFLOW_TRACKING_URI` env -> `runtime.mlflow_uri`/`runtime.tracking_uri` ->
-  local `file:.../mlflow/mlruns`.
-- Resume checkpoint download path policy is:
-  `checkpoints/<checkpoint_artifact>` first, then legacy `<checkpoint_artifact>`.
-- MLflow records step metrics using sampled intervals
-  (`tracking.mlflow_step_sample_interval`) plus episode-level reward summaries.
-- If MLflow is disabled (`tracking.mlflow_enabled: false`), metrics go to
-  `<log_dir>/metrics.jsonl` via `LocalMetricsLogger`.
-- Wrapper_CityLearn samples CPU/RAM/GPU only when
-  `tracking.system_metrics_enabled=true` (interval controlled by
-  `tracking.system_metrics_interval`).
-- Use Loguru levels consistently (`info` for progress, `debug` for verbose state,
-  `warning` for recoverable issues).
-
-## Contributing
-
-1. Create a virtual environment and install dependencies (`pip install -r requirements.txt`).
-2. Run a smoke test: `python run_experiment.py --config configs/config.yaml --job_id smoke-test`.
-3. Execute the test suite: `pytest`.
-4. Submit focused PRs with documentation updates when behaviour changes.
-
-## FAQ
-
-- **Can I resume mid-episode?** No. Checkpoint resume reloads the agent state but
-  CityLearn restarts at the beginning of the episode. See
-  [`docs/simulator_limits.md`](docs/simulator_limits.md) for details and backlog.
-- **How do I disable MLflow logging?** Set `tracking.mlflow_enabled: false`.
-  Metrics stream to `<log_dir>/metrics.jsonl`.
-- **Where do I inspect preprocessing metadata?** Open
-  `jobs/<job_id>/artifact_manifest.json`; it lists encoders, action bounds,
-  reward configuration, and ONNX artefacts.
-
-## Roadmap
-
-- Capture CityLearn environment state for true mid-episode resume.
-- Extend schema/templates for additional algorithm families.
-- Provide inference-side manifest validation scripts.
-- Publish tutorial notebooks and CI integration examples.
-
-## License
-
-MIT
+See [installation](docs/runtime/installation.md) for test dependencies and
+[ownership/provenance](docs/runtime/ownership.md) for contribution boundaries and
+the repository's unresolved licensing decision. Submit changes through a PR and
+preserve source provenance when consolidating research implementations.
