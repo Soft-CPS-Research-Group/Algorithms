@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "generated_at": "2026-10-27T09:55:12.864595Z",
+  "generated_at": "2026-10-28T12:53:53.635721Z",
   "metadata": {
     "experiment_name": "synthetic-contract-fixture",
     "run_name": "onnx"
@@ -227,7 +227,7 @@
   "build": {
     "fixture": true,
     "versions": {
-      "energaize-algorithms": "0.3.0"
+      "energaize-algorithms": "0.4.0"
     }
   },
   "evidence": {
