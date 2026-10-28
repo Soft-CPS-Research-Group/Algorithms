@@ -1,6 +1,6 @@
-"""RBC — bug-fix wrapper around ``RuleBasedPolicy``.
+"""RBC — bug-fix wrapper around ``LegacyEVPolicy``.
 
-The v1 ``RuleBasedPolicy`` (algorithms/agents/rbc_agent.py) looks up EV-related
+The v1 ``LegacyEVPolicy`` (algorithms/agents/rbc_agent.py) looks up EV-related
 observations using bare names like ``electric_vehicle_charger_state`` and
 ``electric_vehicle_soc``. The CityLearn env, however, exposes those fields with
 **charger-namespaced** names:
@@ -30,7 +30,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from algorithms.agents.rbc_agent import ChargerInfo, RuleBasedPolicy
+from algorithms.agents.rbc_agent import ChargerInfo
+from algorithms.agents.legacy_ev_policy import LegacyEVPolicy
 
 
 # Mapping from v1 bare names to a list of "namespaced" patterns. Each pattern
@@ -54,8 +55,8 @@ _NAMESPACED_FALLBACKS: Dict[str, List[str]] = {
 }
 
 
-class OfflineRBC(RuleBasedPolicy):
-    """RuleBasedPolicy with charger-namespaced obs lookup.
+class OfflineRBC(LegacyEVPolicy):
+    """LegacyEVPolicy with charger-namespaced obs lookup.
 
     Behaviour and hyperparameters are identical to v1. The only change is
     ``_compute_ev_action`` now actually receives non-default values for

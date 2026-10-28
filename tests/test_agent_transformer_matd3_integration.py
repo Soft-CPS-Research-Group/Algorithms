@@ -151,7 +151,7 @@ def test_schema_and_runtime_require_matd3_to_be_final_stage() -> None:
     from utils.config_schema import validate_config
 
     config = _project_config()
-    config["pipeline"].append({"algorithm": "RuleBasedPolicy", "count": 1})
+    config["pipeline"].append({"algorithm": "RBCBasicPolicy", "count": 1})
 
     with pytest.raises(ValueError, match="must be the final pipeline stage"):
         validate_config(config)

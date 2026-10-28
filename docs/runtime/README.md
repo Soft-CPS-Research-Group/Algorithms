@@ -6,7 +6,7 @@ results plus the requested model artifacts. Agent implementations own numerical
 learning; they do not create a second job lifecycle.
 
 Start with [configuration and migration](configuration.md), [installation](installation.md),
-and the [agent extension guide](agents.md). The [38-agent catalogue](../agent_catalogue.md)
+and the [agent extension guide](agents.md). The [37-agent catalogue](../agent_catalogue.md)
 records implementations and research limitations. The [stage 2 delivery](delivery.md)
 records the initial architecture scope. See [reliability](reliability.md) for stage 3 and [exports](exports.md) / [stage 4 delivery](export_delivery.md) for final KPIs and verified portable policy bundles.
 

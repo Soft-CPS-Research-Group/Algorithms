@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from algorithms.agents.rbc_agent import RuleBasedPolicy
+from algorithms.agents.baseline_policies import RBCBasicPolicy
 from utils.wrapper_citylearn import Wrapper_CityLearn
 
 
@@ -45,7 +45,7 @@ def test_rule_based_dynamic_entity_smoke_1000_steps():
             "progress_updates_enabled": False,
         },
         "algorithm": {
-            "name": "RuleBasedPolicy",
+            "name": "RBCBasicPolicy",
             "hyperparameters": {
                 "pv_charge_threshold": 0.0,
                 "flexibility_hours": 3.0,
@@ -92,7 +92,7 @@ def test_rule_based_dynamic_entity_smoke_1000_steps():
         config=config,
         job_id="dynamic-smoke",
     )
-    agent = RuleBasedPolicy(config)
+    agent = RBCBasicPolicy(config)
     wrapper.set_model(agent)
 
     wrapper.learn(episodes=1)

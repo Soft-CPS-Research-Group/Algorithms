@@ -1,4 +1,4 @@
-"""Rule-based controller tailored for electric vehicle charging."""
+"""Shared observation, equipment and export helpers for rule policies."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from algorithms.runtime.tracking import mlflow
 import numpy as np
 
 from algorithms.agents.base_agent import BaseAgent
+from algorithms.runtime.tracking import mlflow
 from utils.artifact_config_builder import build_auto_artifact_config
 
 
@@ -51,8 +51,8 @@ class ElectricalServiceInfo:
             self.phase_export_kw = {}
 
 
-class RuleBasedPolicy(BaseAgent):
-    """Simple heuristic controller that prioritises PV utilisation while respecting EV requirements."""
+class RulePolicyBase(BaseAgent):
+    """Shared equipment, observation, safety and serialization helpers for rule policies."""
 
     _use_raw_observations: bool = True
     supports_dynamic_topology = True
@@ -61,7 +61,7 @@ class RuleBasedPolicy(BaseAgent):
         super().__init__()
 
         self._config = config
-        hyper = (config.get("algorithm", {}).get("hyperparameters") or {})
+        hyper = config.get("algorithm", {}).get("hyperparameters") or {}
 
         self.pv_charge_threshold: float = float(hyper.get("pv_charge_threshold", 0.0))
         self.flexibility_hours: float = float(hyper.get("flexibility_hours", 3.0))
@@ -75,20 +75,30 @@ class RuleBasedPolicy(BaseAgent):
             0.0,
             float(hyper.get("electrical_service_headroom_safety_margin_kw", 0.05)),
         )
-        self.use_current_base_service_headroom: bool = bool(hyper.get("use_current_base_service_headroom", True))
+        self.use_current_base_service_headroom: bool = bool(
+            hyper.get("use_current_base_service_headroom", True)
+        )
         self.non_flexible_chargers: set[str] = set(hyper.get("non_flexible_chargers", []) or [])
         self.default_capacity: float = float(hyper.get("default_capacity_kwh", 60.0))
         self.control_storage: bool = bool(hyper.get("control_storage", True))
         self.control_evs: bool = bool(hyper.get("control_evs", True))
         self.control_deferrables: bool = bool(hyper.get("control_deferrables", True))
         self.deferrable_start_action: float = float(hyper.get("deferrable_start_action", 1.0))
-        self.deferrable_urgency_threshold: float = float(hyper.get("deferrable_urgency_threshold", 0.75))
-        self.deferrable_slack_threshold: float = float(hyper.get("deferrable_slack_threshold", 0.25))
-        self.deferrable_priority_threshold: float = float(hyper.get("deferrable_priority_threshold", 0.5))
+        self.deferrable_urgency_threshold: float = float(
+            hyper.get("deferrable_urgency_threshold", 0.75)
+        )
+        self.deferrable_slack_threshold: float = float(
+            hyper.get("deferrable_slack_threshold", 0.25)
+        )
+        self.deferrable_priority_threshold: float = float(
+            hyper.get("deferrable_priority_threshold", 0.5)
+        )
 
         dataset_path = Path(config.get("simulator", {}).get("dataset_path", ""))
         self._dataset_path = dataset_path
-        self._dataset_info = self._load_dataset_info(dataset_path) if dataset_path.is_file() else None
+        self._dataset_info = (
+            self._load_dataset_info(dataset_path) if dataset_path.is_file() else None
+        )
 
         self._obs_index: List[Dict[str, int]] = []
         self._action_labels: List[List[str]] = []
@@ -152,72 +162,6 @@ class RuleBasedPolicy(BaseAgent):
 
         self._build_ev_action_mapping(action_names)
 
-    def predict(
-        self,
-        observations: List[np.ndarray],
-        deterministic: bool | None = None,
-        *,
-        context: Any = None,
-    ) -> List[List[float]]:
-        _ = context
-        actions: List[List[float]] = []
-
-        for agent_idx, obs in enumerate(observations):
-            obs = np.asarray(obs, dtype=float)
-            obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
-            action_names = self._action_labels[agent_idx] if agent_idx < len(self._action_labels) else []
-            agent_actions: List[float] = []
-            residual_headroom: Dict[Tuple[int, str, bool], float] = {}
-
-            for action_position, action_name in enumerate(action_names):
-                bounds = self._get_action_bounds(agent_idx, action_position)
-
-                if self.control_storage and self._is_storage_action_name(action_name):
-                    value = self._compute_storage_action(agent_idx, obs, obs_map, action_name, bounds)
-                    value = self._apply_storage_dynamic_headroom_limit(
-                        value,
-                        obs,
-                        obs_map,
-                        self._get_storage_info(agent_idx),
-                        bounds,
-                        agent_idx,
-                        residual_headroom,
-                    )
-                    value = self._apply_storage_soc_limit(value, obs, obs_map, bounds)
-                elif "electric_vehicle" in action_name and self.control_evs:
-                    charger_info = self._get_charger_info(agent_idx, action_position)
-                    normalised = self._compute_ev_action(
-                        agent_idx,
-                        obs,
-                        obs_map,
-                        charger_info,
-                        bounds,
-                        action_name,
-                    )
-                    high = bounds[1]
-                    value = normalised * high if high > 1.0 else normalised
-                    value = self._apply_ev_dynamic_headroom_limit(
-                        value,
-                        obs,
-                        obs_map,
-                        charger_info,
-                        bounds,
-                        agent_idx,
-                        residual_headroom,
-                    )
-                elif self.control_deferrables and self._is_deferrable_action_name(action_name, obs_map):
-                    value = self._compute_deferrable_action(obs, obs_map, action_name, bounds)
-                else:
-                    value = 0.0
-
-                value = max(bounds[0], min(bounds[1], value))
-                agent_actions.append(value)
-
-            actions.append(agent_actions)
-
-        self.actions = actions
-        return actions
-
     def update(
         self,
         observations: List[np.ndarray],
@@ -241,7 +185,7 @@ class RuleBasedPolicy(BaseAgent):
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         context = context or {}
-        bundle_cfg = ((context.get("config") or {}).get("bundle") or {})
+        bundle_cfg = (context.get("config") or {}).get("bundle") or {}
         require_observations_envelope = bool(bundle_cfg.get("require_observations_envelope", False))
         global_artifact_config = dict(bundle_cfg.get("artifact_config") or {})
         raw_per_agent_config = bundle_cfg.get("per_agent_artifact_config") or {}
@@ -318,7 +262,10 @@ class RuleBasedPolicy(BaseAgent):
                 hyperparameters[attr] = getattr(self, attr)
 
         # Omitted optional limits mean unbounded; JSON Infinity is not portable.
-        for key in ("deferrable_import_block_threshold_kw", "deferrable_community_import_block_threshold_kw"):
+        for key in (
+            "deferrable_import_block_threshold_kw",
+            "deferrable_community_import_block_threshold_kw",
+        ):
             if key in hyperparameters and not np.isfinite(hyperparameters[key]):
                 hyperparameters.pop(key)
 
@@ -385,30 +332,10 @@ class RuleBasedPolicy(BaseAgent):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-    def _policy_type(self) -> str:
-        if self.control_evs and self.control_deferrables:
-            return "rule_based_ev_deferrable"
-        if self.control_evs:
-            return "rule_based_ev_only"
-        if self.control_deferrables:
-            return "rule_based_deferrable_only"
-        return "zero_action"
 
     @staticmethod
     def _is_storage_action_name(action_name: str) -> bool:
         return str(action_name or "") == "electrical_storage"
-
-    def _compute_storage_action(
-        self,
-        agent_idx: int,
-        obs: np.ndarray,
-        obs_map: Dict[str, int],
-        action_name: str,
-        bounds: Sequence[float],
-    ) -> float:
-        del agent_idx, obs, obs_map, action_name
-        low, high = bounds
-        return float(np.clip(0.0, low, high))
 
     def _apply_ev_dynamic_headroom_limit(
         self,
@@ -420,7 +347,7 @@ class RuleBasedPolicy(BaseAgent):
         agent_idx: Optional[int] = None,
         residual_headroom: Optional[Dict[Tuple[int, str, bool], float]] = None,
     ) -> float:
-        if charger_info is None or not charger_info.phase_connection or value == 0.0:
+        if charger_info is None or value == 0.0:
             return value
 
         export = value < 0.0
@@ -442,7 +369,11 @@ class RuleBasedPolicy(BaseAgent):
             obs_map,
             export=export,
         )
-        current_power_kw = 0.0 if current_base_headroom else self._current_charger_power_kw(obs, obs_map, charger_info)
+        current_power_kw = (
+            0.0
+            if current_base_headroom
+            else self._current_charger_power_kw(obs, obs_map, charger_info)
+        )
         low, high = bounds
         if value > 0.0:
             available_kw = max(0.0, available_kw + current_power_kw)
@@ -511,7 +442,9 @@ class RuleBasedPolicy(BaseAgent):
             obs_map,
             export=export,
         )
-        current_power_kw = 0.0 if current_base_headroom else self._current_storage_power_kw(obs, obs_map)
+        current_power_kw = (
+            0.0 if current_base_headroom else self._current_storage_power_kw(obs, obs_map)
+        )
         low, high = bounds
         power_scale = max(storage_info.nominal_power, 1.0e-6)
         if value > 0.0:
@@ -683,7 +616,9 @@ class RuleBasedPolicy(BaseAgent):
         residual_headroom: Optional[Dict[Tuple[int, str, bool], float]] = None,
     ) -> Optional[float]:
         candidates: List[float] = []
-        building_name = "charging_building_export_headroom_kw" if export else "charging_building_headroom_kw"
+        building_name = (
+            "charging_building_export_headroom_kw" if export else "charging_building_headroom_kw"
+        )
         building_headroom = self._residual_headroom_value(
             residual_headroom,
             agent_idx,
@@ -786,8 +721,14 @@ class RuleBasedPolicy(BaseAgent):
             return float("nan")
 
         phase = scope.split(":", 1)[1]
-        base_phase_kw = self._split_unassigned_base_power_kw(base_total_kw, service_info).get(phase, 0.0)
-        limit = service_info.phase_export_kw.get(phase) if export else service_info.phase_import_kw.get(phase)
+        base_phase_kw = self._split_unassigned_base_power_kw(base_total_kw, service_info).get(
+            phase, 0.0
+        )
+        limit = (
+            service_info.phase_export_kw.get(phase)
+            if export
+            else service_info.phase_import_kw.get(phase)
+        )
         if limit is None or not math.isfinite(float(limit)):
             return float("nan")
         return max(0.0, float(limit) + base_phase_kw if export else float(limit) - base_phase_kw)
@@ -838,7 +779,9 @@ class RuleBasedPolicy(BaseAgent):
         return float(base_load_power - pv_power)
 
     def _non_controllable_load_power_kw(self, obs: np.ndarray, obs_map: Dict[str, int]) -> float:
-        load_power = self._get_value(obs, obs_map, "non_shiftable_load_power_kw", default=float("nan"))
+        load_power = self._get_value(
+            obs, obs_map, "non_shiftable_load_power_kw", default=float("nan")
+        )
         if math.isfinite(load_power):
             return float(load_power)
 
@@ -874,7 +817,11 @@ class RuleBasedPolicy(BaseAgent):
         base_total_kw: float,
         service_info: ElectricalServiceInfo,
     ) -> Dict[str, float]:
-        phases = tuple(service_info.phase_import_kw.keys() or service_info.phase_export_kw.keys() or ("L1", "L2", "L3"))
+        phases = tuple(
+            service_info.phase_import_kw.keys()
+            or service_info.phase_export_kw.keys()
+            or ("L1", "L2", "L3")
+        )
         split = str(service_info.default_split or "balanced").strip().upper()
         if split in {"L1", "L2", "L3"}:
             return {phase: float(base_total_kw if phase == split else 0.0) for phase in phases}
@@ -896,7 +843,9 @@ class RuleBasedPolicy(BaseAgent):
             return
 
         suffix = "export_headroom_kw" if export else "headroom_kw"
-        building_name = "charging_building_export_headroom_kw" if export else "charging_building_headroom_kw"
+        building_name = (
+            "charging_building_export_headroom_kw" if export else "charging_building_headroom_kw"
+        )
         building_key = (agent_idx, "building", export)
         building_value = self._residual_headroom_value(
             residual_headroom,
@@ -1002,7 +951,15 @@ class RuleBasedPolicy(BaseAgent):
             return ()
 
         raw = str(phase_connection).strip().upper().replace("-", "_").replace(" ", "_")
-        if raw in {"ALL_PHASES", "THREE_PHASE", "THREE_PHASES", "3_PHASE", "3_PHASES", "3PHASE", "BALANCED"}:
+        if raw in {
+            "ALL_PHASES",
+            "THREE_PHASE",
+            "THREE_PHASES",
+            "3_PHASE",
+            "3_PHASES",
+            "3PHASE",
+            "BALANCED",
+        }:
             return ("L1", "L2", "L3")
         if raw in {"L1", "L2", "L3"}:
             return (raw,)
@@ -1057,8 +1014,22 @@ class RuleBasedPolicy(BaseAgent):
                 for position, name in enumerate(names)
                 if "electric_vehicle" in name
             ]
-            for slot_index, (position, _) in enumerate(ev_slots):
-                charger_info = available_sorted[slot_index] if slot_index < len(available_sorted) else None
+            for slot_index, (position, action_name) in enumerate(ev_slots):
+                # Layout order is not charger identity (and changes with topology).
+                matches = [
+                    info
+                    for info in available_sorted
+                    if str(action_name).endswith("_" + info.charger_id)
+                ]
+                charger_info = (
+                    max(matches, key=lambda info: len(info.charger_id)) if matches else None
+                )
+                if (
+                    charger_info is None
+                    and action_name == "electric_vehicle_storage"
+                    and len(available_sorted) == 1
+                ):
+                    charger_info = available_sorted[0]
                 mapping.append(charger_info)
                 position_mapping[position] = charger_info
             self._ev_action_mapping[agent_idx] = mapping
@@ -1091,117 +1062,6 @@ class RuleBasedPolicy(BaseAgent):
         if math.isnan(high) or high == 0:
             high = 1.0
         return (float(low), float(high))
-
-    def _compute_ev_action(
-        self,
-        agent_idx: int,
-        obs: np.ndarray,
-        obs_map: Dict[str, int],
-        charger_info: Optional[ChargerInfo],
-        bounds: Sequence[float],
-        action_name: str = "",
-    ) -> float:
-        charger_id = self._resolve_ev_charger_id(action_name, charger_info)
-        building_name = self._agent_buildings.get(agent_idx)
-        if charger_info is None:
-            capacity = self.default_capacity
-            max_power = 7.4
-        else:
-            capacity = charger_info.capacity or self.default_capacity
-            max_power = charger_info.max_power or 7.4
-
-        capacity = self._get_ev_value(
-            obs,
-            obs_map,
-            charger_id=charger_id,
-            building_name=building_name,
-            feature="battery_capacity",
-            generic_names=["connected_electric_vehicle_at_charger_battery_capacity"],
-            default=capacity,
-        )
-
-        current_soc = self._get_ev_value(
-            obs,
-            obs_map,
-            charger_id=charger_id,
-            building_name=building_name,
-            feature="soc",
-            generic_names=["electric_vehicle_soc", "connected_electric_vehicle_at_charger_soc"],
-            default=0.0,
-        )
-        required_soc = self._get_ev_value(
-            obs,
-            obs_map,
-            charger_id=charger_id,
-            building_name=building_name,
-            feature="required_soc_departure",
-            generic_names=[
-                "electric_vehicle_required_soc_departure",
-                "connected_electric_vehicle_at_charger_required_soc_departure",
-            ],
-            default=current_soc,
-        )
-        charger_state = self._get_ev_value(
-            obs,
-            obs_map,
-            charger_id=charger_id,
-            building_name=building_name,
-            feature="connected_state",
-            generic_names=[
-                "electric_vehicle_charger_state",
-                "electric_vehicle_charger_connected_state",
-            ],
-            default=0.0,
-        )
-
-        if charger_state <= 0.0:
-            return 0.0
-
-        soc_gap_fraction = self._soc_gap_fraction(current_soc, required_soc)
-        energy_needed = soc_gap_fraction * capacity
-        if energy_needed <= self.energy_epsilon:
-            return 0.0
-
-        time_to_departure = self._get_ev_departure_hours(
-            obs,
-            obs_map,
-            charger_id=charger_id,
-            building_name=building_name,
-            default=self.flexibility_hours,
-        )
-        time_to_departure = max(time_to_departure, self.step_hours)
-
-        flex_flag = self._get_value(obs, obs_map, "electric_vehicle_is_flexible", default=1.0)
-        is_flexible = flex_flag > 0.5 and (not charger_info or charger_info.charger_id not in self.non_flexible_chargers)
-
-        solar_generation = self._get_value(obs, obs_map, "pv_power_kw", default=float("nan"))
-        if math.isnan(solar_generation):
-            solar_generation = self._get_value(obs, obs_map, "solar_generation", default=float("nan"))
-        if math.isnan(solar_generation):
-            solar_generation = self._get_value(obs, obs_map, "electricity_generation", default=0.0)
-        solar_generation = max(0.0, solar_generation)
-
-        required_power = energy_needed / time_to_departure
-        if max_power <= 0:
-            max_power = 7.4
-
-        normalised = min(1.0, required_power / max_power)
-
-        if solar_generation >= self.pv_charge_threshold:
-            normalised = max(normalised, self.pv_preferred_charge_rate)
-
-        if time_to_departure <= self.emergency_hours or not is_flexible:
-            normalised = max(normalised, self.emergency_charge_rate)
-
-        elif is_flexible and solar_generation < self.pv_charge_threshold and time_to_departure > self.flexibility_hours:
-            normalised = max(self.flex_trickle_charge, min(normalised, self.flex_trickle_charge))
-
-        if normalised > 0:
-            normalised = max(normalised, self.min_charge_rate)
-
-        low, high = bounds
-        normalised = float(np.clip(normalised, 0.0 if low <= 0 else low, 1.0 if high >= 1 else high))
-        return normalised
 
     @staticmethod
     def _resolve_ev_charger_id(
@@ -1312,7 +1172,9 @@ class RuleBasedPolicy(BaseAgent):
             "electric_vehicle_departure_time",
             default=current_time + default,
         )
-        if "hour" not in obs_map and ("district__hour" in obs_map or any(name.startswith("charger::") for name in obs_map)):
+        if "hour" not in obs_map and (
+            "district__hour" in obs_map or any(name.startswith("charger::") for name in obs_map)
+        ):
             return max(departure_time, 0.0) * self.step_hours
 
         departure_time = departure_time % 24.0
@@ -1336,46 +1198,12 @@ class RuleBasedPolicy(BaseAgent):
             return True
         return False
 
-    def _compute_deferrable_action(
-        self,
-        obs: np.ndarray,
-        obs_map: Dict[str, int],
-        action_name: str,
-        bounds: Sequence[float],
-    ) -> float:
-        prefix = self._resolve_deferrable_observation_prefix(action_name, obs_map)
-        if prefix is None:
-            return 0.0
-
-        pending = self._get_deferrable_value(obs, obs_map, prefix, "pending", default=0.0)
-        running = self._get_deferrable_value(obs, obs_map, prefix, "running", default=0.0)
-        can_start = self._get_deferrable_value(obs, obs_map, prefix, "can_start", default=0.0)
-        deadline_missed = self._get_deferrable_value(obs, obs_map, prefix, "deadline_missed", default=0.0)
-
-        if pending <= 0.5 or running > 0.5 or can_start <= 0.5 or deadline_missed > 0.5:
-            return 0.0
-
-        urgency = self._get_deferrable_value(obs, obs_map, prefix, "urgency_ratio", default=0.0)
-        slack = self._get_deferrable_value(obs, obs_map, prefix, "slack_ratio", default=1.0)
-        priority = self._get_deferrable_value(obs, obs_map, prefix, "priority", default=0.0)
-
-        should_start = (
-            urgency >= self.deferrable_urgency_threshold
-            or slack <= self.deferrable_slack_threshold
-            or priority >= self.deferrable_priority_threshold
-        )
-        if not should_start:
-            return 0.0
-
-        low, high = bounds
-        return float(np.clip(self.deferrable_start_action, low, high))
-
     @staticmethod
     def _deferrable_observation_prefixes(obs_map: Dict[str, int]) -> List[str]:
         prefixes: List[str] = []
         seen: set[str] = set()
         for name in obs_map:
-            prefix = RuleBasedPolicy._parse_deferrable_observation_prefix(name)
+            prefix = RulePolicyBase._parse_deferrable_observation_prefix(name)
             if prefix is None or prefix in seen:
                 continue
             seen.add(prefix)
@@ -1507,9 +1335,7 @@ class RuleBasedPolicy(BaseAgent):
             schema = json.load(handle)
 
         building_order = list(schema.get("buildings", {}).keys())
-        charger_info: Dict[str, List[ChargerInfo]] = {
-            name: [] for name in building_order
-        }
+        charger_info: Dict[str, List[ChargerInfo]] = {name: [] for name in building_order}
         storage_info: Dict[str, StorageInfo] = {}
         electrical_service_info: Dict[str, ElectricalServiceInfo] = {}
         charger_to_building: Dict[str, str] = {}
@@ -1539,11 +1365,18 @@ class RuleBasedPolicy(BaseAgent):
                 )
 
             storage_data = data.get("electrical_storage") or {}
-            storage_attrs = storage_data.get("attributes", {}) if isinstance(storage_data, dict) else {}
+            storage_attrs = (
+                storage_data.get("attributes", {}) if isinstance(storage_data, dict) else {}
+            )
             if storage_attrs:
                 storage_info[building_name] = StorageInfo(
-                    nominal_power=float(storage_attrs.get("nominal_power", storage_attrs.get("power", 0.0)) or 0.0),
-                    capacity=float(storage_attrs.get("capacity", storage_attrs.get("energy_capacity", 0.0)) or 0.0),
+                    nominal_power=float(
+                        storage_attrs.get("nominal_power", storage_attrs.get("power", 0.0)) or 0.0
+                    ),
+                    capacity=float(
+                        storage_attrs.get("capacity", storage_attrs.get("energy_capacity", 0.0))
+                        or 0.0
+                    ),
                     phase_connection=storage_attrs.get("phase_connection"),
                 )
 
@@ -1551,7 +1384,11 @@ class RuleBasedPolicy(BaseAgent):
                 attributes = charger_data.get("attributes", {})
                 info = ChargerInfo(
                     charger_id=charger_id,
-                    max_power=float(attributes.get("max_charging_power", attributes.get("nominal_power", 0.0) or 0.0)),
+                    max_power=float(
+                        attributes.get(
+                            "max_charging_power", attributes.get("nominal_power", 0.0) or 0.0
+                        )
+                    ),
                     min_power=float(attributes.get("min_charging_power", 0.0) or 0.0),
                     max_discharge_power=float(attributes.get("max_discharging_power", 0.0) or 0.0),
                     min_discharge_power=float(attributes.get("min_discharging_power", 0.0) or 0.0),

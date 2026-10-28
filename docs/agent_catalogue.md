@@ -2,8 +2,8 @@
 
 Declarations and capabilities live in `algorithms/catalogue.py`; inspect them with
 `algorithms-job --list-agents` without loading model dependencies.
-The authoritative name list is `algorithms.registry.supported_algorithms()`: **38**
-registered agent/controller names after the first consolidation. A registered name
+The authoritative name list is `algorithms.registry.supported_algorithms()`: **37**
+registered agent/controller names after the BAU/RBC review. A registered name
 means it can enter the common job builder; deployment readiness and model quality
 are separate properties.
 
@@ -13,7 +13,7 @@ are separate properties.
 | Shared entity Transformers | `AgentTransformerPPO`, `AgentTransformerMATD3` | Current main implementations retained, including dynamic topology and BC paths. |
 | Typed multi-agent | `TIMARL` | Existing main implementation retained; research export. |
 | Hierarchical coordination | `BuildingAgent`, `CommunityCoordinator`, `CCLevel1`, `CCLevel2`, `CausalPriceSignal`, `FixedPriceSignal` | Existing implementations retained. |
-| Baselines and signal policies | `RuleBasedPolicy`, `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `RBCCommunityPolicy`, `RBCSmartPolicy`, `RBCSmartLocalPolicy`, `SignalAwareRBC`, `SignalAwareRBCSmartLocal` | Existing implementations retained. |
+| Baselines and signal policies | `RandomPolicy`, `NormalPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `RBCCommunityPolicy`, `RBCSmartPolicy`, `RBCSmartLocalPolicy`, `SignalAwareRBC`, `SignalAwareRBCSmartLocal` | Existing implementations retained. |
 | Oracle replays | `FixedServiceOracleReplayPolicy`, `TotalHomeOracleReplayPolicy`, `TotalOracleReplayPolicy` | Existing audit/reference implementations retained. |
 | Historical Transformer | `TransformerMADDPG` | Recovered experimental joint actor. Static topology, uniform nonzero action dimensions. Joint ONNX includes learned tokenizer and actor; deterministic parity checked. Complete research checkpoint retained. |
 | Offline policies | `BCAgent`, `IQLAgent`, `IQLEntityAgent`, `CQLEntityAgent` | Recovered trainers and policies. Common job preparation, simulation, KPI and model export. Static, matching dataset layout required. |
@@ -40,6 +40,8 @@ Origins, validation scope and pending work: [first consolidation](consolidation/
 
 ## Export support after stage 4
 
-All 38 names share finalization, KPI and bundle contracts. The [v2 export matrix](inference_bundle.md#delivery-formats) separates 14 neural names with verified ONNX, 14 rules/signal names with executable JSON, and 10 names requiring specialised research adapters. Counts describe the tested base configurations, not every optional residual/safety variant or model quality. Hierarchical leaves are consumed as part of their declared graph.
+All 37 names share finalization, KPI and bundle contracts. The [v2 export matrix](inference_bundle.md#delivery-formats) separates 14 neural names with verified ONNX, 13 rules/signal names with executable JSON, and 10 names requiring specialised research adapters. Counts describe the tested base configurations, not every optional residual/safety variant or model quality. Hierarchical leaves are consumed as part of their declared graph.
 
 `bundle.require_deployable: true` rejects known specialised families during configuration validation and requires actual final-evaluation parity for the others. Ordinary exports retain research artifacts and explicit limitations. The [stage 4 delivery](runtime/export_delivery.md) records the acceptance evidence.
+
+The [BAU/RBC behavior contract](baseline_controllers.md) defines the five principal baselines, retires `RuleBasedPolicy`, and retains Smart only for compatibility.

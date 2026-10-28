@@ -1,6 +1,6 @@
 # Policy bundle contract v2
 
-Algorithms 0.3 produces `algorithms.bundle.v2` manifests through the common job
+Algorithms 0.4 produces `algorithms.bundle.v2` manifests through the common job
 finalizer. Every registered family uses the same transaction. Training completion,
 successful export and deployment eligibility are distinct fields. An ONNX file
 alone does not establish that the whole evaluated policy was exported.
@@ -8,7 +8,7 @@ alone does not establish that the whole evaluated policy was exported.
 The reference consumer and replay command ship with Algorithms:
 
 ```sh
-pip install '.[training,export]'  # from an Algorithms 0.3 checkout
+pip install '.[training,export]'  # from an Algorithms 0.4 checkout
 algorithms-bundle /path/to/job/bundle
 ```
 

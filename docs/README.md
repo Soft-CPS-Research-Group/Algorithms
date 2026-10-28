@@ -57,3 +57,5 @@ intermedios foram removidos do repo. Resultados brutos devem ficar em
 O ciclo remoto pode ser preparado, submetido, acompanhado e arquivado com
 `scripts/manage_remote_experiment.py`. A submissao exige sempre
 `--confirm-submit`; o CLI nao inclui comandos de stop/delete.
+
+- [BAU e RBCs: comportamento, correções e limites](baseline_controllers.md).

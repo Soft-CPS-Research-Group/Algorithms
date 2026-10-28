@@ -32,7 +32,7 @@ Extend `algorithms/agents/base_agent.py`:
 | `is_initial_exploration_done(global_learning_step)` | Gate warm-up phase |
 
 **Notes:**
-- Set `self.use_raw_observations = True` if your agent needs unprocessed observations (see `RuleBasedPolicy`)
+- Set `self.use_raw_observations = True` if your agent needs unprocessed observations (see `RBCBasicPolicy`)
 - If `resume_training` is enabled in config, the runner calls `load_checkpoint(...)`
 
 ## Creating a New Agent
@@ -85,14 +85,14 @@ branches to the job runner or silently drop guards to make ONNX pass.
 
 ## Available Algorithms
 
-See the complete [38-name agent catalogue](docs/agent_catalogue.md). Offline agents
+See the complete [37-name agent catalogue](docs/agent_catalogue.md). Offline agents
 use the same job runner via `prepare_training`; recovered experiments and serving
 limitations are described in [the consolidation record](docs/consolidation/README.md).
 
 | Algorithm | Description |
 |-----------|-------------|
 | `MADDPG` | Multi-Agent DDPG with replay buffer, actor-critic networks |
-| `RuleBasedPolicy` | Heuristic controller for EV charging (uses raw observations) |
+| `RBCBasicPolicy` | Heuristic controller for EV charging (uses raw observations) |
 | `AgentTransformerPPO` | Entity-interface Transformer PPO with dynamic-topology support and optional auxiliary behavior-cloning loss from separate deterministic `RBCSmartPolicy` demonstrations |
 | `AgentTransformerMATD3` | Entity-interface MATD3 with per-building Transformer actors, centralized twin critics, dynamic topology, residual control, and optional behavior cloning |
 | `SingleAgentRL` | Schema placeholder only |
@@ -165,7 +165,7 @@ Dynamic topology notes:
 - If `simulator.topology_mode: dynamic`, topology can change during runtime.
 - Wrapper rebuilds layout automatically on `topology_version` change.
 - Current guardrail: `MADDPG` in `entity+dynamic` raises fail-fast on runtime topology mutation.
-  Use `RuleBasedPolicy` (or another dynamic-ready agent) for dynamic topology scenarios.
+  Use `RBCBasicPolicy` (or another dynamic-ready agent) for dynamic topology scenarios.
 - `AgentTransformerPPO` supports `entity+dynamic`. Optional behavior cloning collects separate deterministic `RBCSmartPolicy` demonstrations before PPO rollouts and applies an auxiliary actor-only loss; it never changes actor environment actions.
 - On topology changes, TPPO rebuilds the Smart teacher. Demonstrations retain their encoded representation and layout signature. BC pretraining groups layout-compatible demonstrations by stored signature and trains every stored compatible signature group with its stored layout, including historical topologies. TPPO fails before PPO when no usable demonstrations exist.
 
@@ -183,7 +183,7 @@ emission order changed):
 
 ```bash
 python scripts/dump_entity_obs_sample.py \
-    --config configs/templates/dynamic/rule_based_entity_dynamic_assets_only_local.yaml \
+    --config configs/templates/dynamic/rbc_basic_entity_dynamic_assets_only_local.yaml \
     --output configs/tokenizers/fixtures/entity_obs_sample.json
 ```
 

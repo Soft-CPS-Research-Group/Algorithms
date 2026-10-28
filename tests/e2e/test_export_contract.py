@@ -23,7 +23,6 @@ from utils.bundle_validator import validate_bundle_contract
         "NormalPolicy",
         "NormalNoBatteryPolicy",
         "RandomPolicy",
-        "RuleBasedPolicy",
         "RBCBasicPolicy",
         "RBCCommunityPolicy",
         "RBCSmartPolicy",

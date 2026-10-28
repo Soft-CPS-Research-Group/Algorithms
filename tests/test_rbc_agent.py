@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from algorithms.agents.rbc_agent import RuleBasedPolicy
+from algorithms.agents.legacy_ev_policy import LegacyEVPolicy
 
 
 class DummySpace:
@@ -16,7 +16,7 @@ def make_agent():
     config = {
         "simulator": {"dataset_path": "datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json"},
         "algorithm": {
-            "name": "RuleBasedPolicy",
+            "name": "LegacyEVPolicy",
             "hyperparameters": {
                 "pv_charge_threshold": 2.0,
                 "flexibility_hours": 3.0,
@@ -30,7 +30,7 @@ def make_agent():
             },
         },
     }
-    agent = RuleBasedPolicy(config)
+    agent = LegacyEVPolicy(config)
     observation_names = [
         [
             "hour",
@@ -81,11 +81,11 @@ def test_rbc_emergency_window_forces_full_charge():
 
 
 def test_rbc_reads_namespaced_citylearn_ev_observations():
-    agent = RuleBasedPolicy(
+    agent = LegacyEVPolicy(
         {
             "simulator": {"dataset_path": "datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json"},
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                 "hyperparameters": {
                     "pv_charge_threshold": 2.0,
                     "flexibility_hours": 3.0,
@@ -123,11 +123,11 @@ def test_rbc_reads_namespaced_citylearn_ev_observations():
 
 
 def test_rbc_reads_entity_charger_specific_ev_observations():
-    agent = RuleBasedPolicy(
+    agent = LegacyEVPolicy(
         {
             "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                     "hyperparameters": {
                         "pv_charge_threshold": 2.0,
                         "flexibility_hours": 3.0,
@@ -203,11 +203,11 @@ def test_rbc_reads_entity_charger_specific_ev_observations():
 
 
 def test_rbc_clips_ev_charge_to_phase_headroom():
-    agent = RuleBasedPolicy(
+    agent = LegacyEVPolicy(
         {
             "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                 "hyperparameters": {
                     "pv_charge_threshold": 2.0,
                     "flexibility_hours": 3.0,
@@ -249,11 +249,11 @@ def test_rbc_clips_ev_charge_to_phase_headroom():
 
 
 def test_rbc_ev_headroom_clip_allows_existing_charger_power():
-    agent = RuleBasedPolicy(
+    agent = LegacyEVPolicy(
         {
             "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                 "hyperparameters": {
                     "pv_charge_threshold": 2.0,
                     "flexibility_hours": 3.0,
@@ -295,11 +295,11 @@ def test_rbc_ev_headroom_clip_allows_existing_charger_power():
 
 
 def test_rbc_current_base_headroom_limits_ev_setpoint_not_delta():
-    agent = RuleBasedPolicy(
+    agent = LegacyEVPolicy(
         {
             "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                 "hyperparameters": {
                     "pv_charge_threshold": 2.0,
                     "flexibility_hours": 3.0,
@@ -340,11 +340,11 @@ def test_rbc_current_base_headroom_limits_ev_setpoint_not_delta():
 
 
 def test_rbc_current_base_prefers_non_shiftable_step_energy_over_ev_loaded_power():
-    agent = RuleBasedPolicy(
+    agent = LegacyEVPolicy(
         {
             "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                 "hyperparameters": {
                     "pv_charge_threshold": 2.0,
                     "flexibility_hours": 3.0,
@@ -394,11 +394,11 @@ def test_rbc_current_base_prefers_non_shiftable_step_energy_over_ev_loaded_power
     ],
 )
 def test_rbc_ev_headroom_clip_allows_v3_existing_charger_power_features(power_feature):
-    agent = RuleBasedPolicy(
+    agent = LegacyEVPolicy(
         {
             "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                 "hyperparameters": {
                     "pv_charge_threshold": 2.0,
                     "flexibility_hours": 3.0,
@@ -440,11 +440,11 @@ def test_rbc_ev_headroom_clip_allows_v3_existing_charger_power_features(power_fe
 
 
 def test_rbc_converts_entity_departure_steps_to_hours():
-    agent = RuleBasedPolicy(
+    agent = LegacyEVPolicy(
         {
             "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                 "hyperparameters": {
                     "pv_charge_threshold": 2.0,
                     "flexibility_hours": 3.0,
@@ -480,11 +480,11 @@ def test_rbc_converts_entity_departure_steps_to_hours():
 
 
 def test_rbc_can_disable_ev_and_deferrable_controls():
-    agent = RuleBasedPolicy(
+    agent = LegacyEVPolicy(
         {
             "simulator": {},
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                 "hyperparameters": {
                     "control_evs": False,
                     "control_deferrables": False,
@@ -519,11 +519,11 @@ def test_rbc_can_disable_ev_and_deferrable_controls():
 
 
 def test_rbc_starts_flat_deferrable_appliance_when_urgent():
-    agent = RuleBasedPolicy(
+    agent = LegacyEVPolicy(
         {
             "simulator": {},
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                 "hyperparameters": {
                     "deferrable_urgency_threshold": 0.75,
                     "deferrable_slack_threshold": 0.25,
@@ -555,7 +555,7 @@ def test_rbc_starts_flat_deferrable_appliance_when_urgent():
 
 
 def test_rbc_matches_entity_deferrable_appliance_by_action_suffix():
-    agent = RuleBasedPolicy({"simulator": {}, "algorithm": {"name": "RuleBasedPolicy"}})
+    agent = LegacyEVPolicy({"simulator": {}, "algorithm": {"name": "LegacyEVPolicy"}})
     observation_names = [
         [
             "deferrable_appliance::B1/deferrable_appliance_1::pending",

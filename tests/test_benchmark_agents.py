@@ -55,7 +55,7 @@ def test_compare_export_roots_reports_pass_when_all_gates_hold(tmp_path):
     _write_job(
         rbc_root,
         "rbc-1",
-        algorithm="RuleBasedPolicy",
+        algorithm="RBCBasicPolicy",
         seed=11,
         kpis={
             "community_settled_cost_total_eur": 100.0,
@@ -66,7 +66,7 @@ def test_compare_export_roots_reports_pass_when_all_gates_hold(tmp_path):
     _write_job(
         rbc_root,
         "rbc-2",
-        algorithm="RuleBasedPolicy",
+        algorithm="RBCBasicPolicy",
         seed=22,
         kpis={
             "community_settled_cost_total_eur": 101.0,
@@ -103,7 +103,7 @@ def test_compare_export_roots_reports_fail_when_cost_or_ev_breaks_threshold(tmp_
     _write_job(
         rbc_root,
         "rbc-1",
-        algorithm="RuleBasedPolicy",
+        algorithm="RBCBasicPolicy",
         seed=33,
         kpis={
             "community_settled_cost_total_eur": 100.0,
@@ -152,7 +152,7 @@ def test_compare_export_roots_falls_back_to_result_json_evaluation_payload(tmp_p
     (rbc_job / "results" / "result.json").write_text(json.dumps(rbc_result), encoding="utf-8")
 
     maddpg_config = {"algorithm": {"name": "MADDPG"}, "training": {"seed": 1}}
-    rbc_config = {"algorithm": {"name": "RuleBasedPolicy"}, "training": {"seed": 1}}
+    rbc_config = {"algorithm": {"name": "RBCBasicPolicy"}, "training": {"seed": 1}}
     (maddpg_job / "config.resolved.yaml").write_text(yaml.safe_dump(maddpg_config), encoding="utf-8")
     (rbc_job / "config.resolved.yaml").write_text(yaml.safe_dump(rbc_config), encoding="utf-8")
 
@@ -180,7 +180,7 @@ def test_compare_export_roots_uses_legacy_ev_success_when_feasible_kpis_are_miss
     _write_job(
         rbc_root,
         "rbc-legacy",
-        algorithm="RuleBasedPolicy",
+        algorithm="RBCBasicPolicy",
         seed=1,
         kpis={
             "community_settled_cost_total_eur": 100.0,
@@ -224,7 +224,7 @@ def test_compare_export_roots_maps_citylearn_exported_kpi_names(tmp_path):
     _write_job(
         rbc_root,
         "rbc-citylearn",
-        algorithm="RuleBasedPolicy",
+        algorithm="RBCBasicPolicy",
         seed=1,
         kpis={
             "district_cost_total_control_eur": -100.0,

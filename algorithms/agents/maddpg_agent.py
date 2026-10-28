@@ -1050,7 +1050,6 @@ class MADDPG(BaseAgent):
             RBCSmartPolicy,
             RandomPolicy,
         )
-        from algorithms.agents.rbc_agent import RuleBasedPolicy
         from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolicy
         from algorithms.agents.total_home_oracle_replay_policy import (
             TotalHomeOracleReplayPolicy,
@@ -1060,7 +1059,6 @@ class MADDPG(BaseAgent):
         )
 
         policy_registry = {
-            "RuleBasedPolicy": RuleBasedPolicy,
             "RandomPolicy": RandomPolicy,
             "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
             "NormalPolicy": NormalPolicy,
@@ -1157,12 +1155,10 @@ class MADDPG(BaseAgent):
             RandomPolicy,
         )
         from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolicy
-        from algorithms.agents.rbc_agent import RuleBasedPolicy
         from algorithms.agents.total_home_oracle_replay_policy import TotalHomeOracleReplayPolicy
         from algorithms.agents.total_oracle_replay_policy import TotalOracleReplayPolicy
 
         policy_registry = {
-            "RuleBasedPolicy": RuleBasedPolicy,
             "RandomPolicy": RandomPolicy,
             "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
             "NormalPolicy": NormalPolicy,

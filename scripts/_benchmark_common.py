@@ -49,7 +49,7 @@ from citylearn.citylearn import CityLearnEnv  # noqa: E402
 from algorithms.runtime.simulator import _resolve_citylearn_schema_input  # noqa: E402
 
 from algorithms.agents.base_agent import BaseAgent  # noqa: E402
-from algorithms.agents.rbc_agent import RuleBasedPolicy  # noqa: E402
+from algorithms.agents.legacy_ev_policy import LegacyEVPolicy  # noqa: E402
 from reward_function.V2G_Reward import V2GPenaltyReward  # noqa: E402
 
 
@@ -263,7 +263,7 @@ def rollout(agent: BaseAgent, *, env_seed: int, label: str) -> Dict[str, Any]:
 def run_rbc_rollouts(env_seeds: Sequence[int]) -> List[Dict[str, Any]]:
     runs: List[Dict[str, Any]] = []
     for env_seed in env_seeds:
-        agent = RuleBasedPolicy(config={
+        agent = LegacyEVPolicy(config={
             "algorithm": {"hyperparameters": {}},
             "simulator": {"dataset_path": DATASET_SCHEMA},
         })

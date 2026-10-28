@@ -1,3 +1,5 @@
+# Compatibility recipe: prefer RBCSmartLocalPolicy for new local-information baselines.
+# See docs/baseline_controllers.md; this filename means local execution, not local information.
 schema_version: algorithms.config.v1
 metadata:
   experiment_name: "rbc_smart_2022_all_plus_evs_local"

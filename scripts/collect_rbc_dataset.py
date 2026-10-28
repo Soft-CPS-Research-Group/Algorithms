@@ -1,4 +1,4 @@
-"""Collect an offline-RL v2 dataset by rolling out the RuleBasedPolicy.
+"""Collect an offline-RL v2 dataset by rolling out the LegacyEVPolicy.
 
 Output (per seed):
     datasets/offline_rl/rbc/seed_<N>.parquet

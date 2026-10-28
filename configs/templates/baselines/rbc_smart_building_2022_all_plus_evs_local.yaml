@@ -1,51 +1,9 @@
 schema_version: algorithms.config.v1
-# Local RuleBasedPolicy template for the hourly CityLearn Challenge 2022 all-plus-EVs dataset.
-
 metadata:
-  experiment_name: "rule_based_2022_all_plus_evs_local"
-  run_name: "RuleBasedPolicy 2022 All Plus EVs"
+  experiment_name: "rbc_smart_building_2022_all_plus_evs_local"
+  run_name: "RBCSmartLocalPolicy 2022 All Plus EVs"
   community_name: "citylearn_2022"
-  description: "Rule-based baseline on the hourly CityLearn Challenge 2022 all-plus-EVs dataset"
-
-runtime:
-  log_dir: null
-  job_dir: null
-  mlflow_uri: null
-  job_id: null
-  run_id: null
-  run_name: null
-  tracking_uri: null
-  experiment_id: null
-  mlflow_run_url: null
-
-tracking:
-  mlflow_enabled: false
-  log_level: "INFO"
-  log_frequency: 1
-  mlflow_step_sample_interval: 10
-  mlflow_artifacts_profile: minimal
-  progress_updates_enabled: true
-  progress_update_interval: 5
-  system_metrics_enabled: false
-  system_metrics_interval: 10
-
-checkpointing:
-  resume_training: false
-  checkpoint_run_id: null
-  checkpoint_artifact: "rule_based_checkpoint.json"
-  use_best_checkpoint_artifact: false
-  reset_replay_buffer: false
-  freeze_pretrained_layers: false
-  fine_tune: false
-  checkpoint_interval: 5000
-
-bundle:
-  bundle_version: null
-  description: "Rule-based baseline bundle for CityLearn Challenge 2022 all-plus-EVs"
-  alias_mapping_path: null
-  require_observations_envelope: false
-  artifact_config: {}
-  per_agent_artifact_config: {}
+  description: "Strict building-local solar, price and peak-aware baseline on the hourly CityLearn Challenge 2022 all-plus-EVs dataset"
 
 simulator:
   dataset_name: citylearn_challenge_2022_phase_all_plus_evs
@@ -88,6 +46,9 @@ simulator:
     community_peak_import_penalty: 0.001
     community_export_penalty: 0.0
     community_penalty_divide_by_agents: true
+    community_settlement_cost_weight: 0.0
+    community_local_price_ratio: 0.8
+    community_grid_export_price: 0.0
   simulation_start_time_step: 0
   simulation_end_time_step: 1999
   episode_time_steps: 2000
@@ -98,47 +59,53 @@ simulator:
     include_business_as_usual: true
     export_business_as_usual_timeseries: true
     kpi_round_decimals: null
-    session_name: rule-based-2022-all-plus-evs-local
-  wrapper_reward:
-    enabled: false
-    profile: cost_limits_v1
-    clip_enabled: true
-    clip_min: -10.0
-    clip_max: 10.0
-    squash: none
+    session_name: "rbc-smart-2022-all-plus-evs-local"
+
 training:
   episodes: 1
   seed: 123
   steps_between_training_updates: 1
   target_update_interval: 0
-topology:
-  num_agents: null
-  observation_dimensions: null
-  action_dimensions: null
-  action_space: null
-execution: null
 pipeline:
-- algorithm: RuleBasedPolicy
+- algorithm: RBCSmartLocalPolicy
   count: 1
   hyperparameters:
-    pv_charge_threshold: 2.0
+    allow_v2g: true
     flexibility_hours: 3.0
     emergency_hours: 1.0
-    pv_preferred_charge_rate: 0.7
     flex_trickle_charge: 0.0
-    min_charge_rate: 0.0
     emergency_charge_rate: 1.0
-    default_capacity_kwh: 60.0
-    non_flexible_chargers: []
-    control_evs: true
-    control_deferrables: true
+    ev_price_charge_rate: 0.7
+    ev_pv_charge_rate: 0.85
+    ev_v2g_discharge_rate: 0.18
+    ev_v2g_reserve_soc: 0.0
+    ev_service_margin_rate: 0.05
+    ev_service_floor_rate: 0.25
+    ev_service_lookahead_hours: 4.0
+    ev_service_target_soc: 0.0
+    ev_deadline_buffer_hours: 0.25
+    ev_v2g_min_departure_hours: 1.0
+    ev_v2g_service_margin_soc: 0.02
+    price_charge_rate: 0.0
+    price_discharge_rate: 0.15
+    pv_charge_rate: 0.45
+    peak_discharge_rate: 0.25
+    storage_min_soc: 0.35
+    storage_max_soc: 0.75
+    storage_target_soc: 0.60
+    storage_price_charge_soc_ceiling: 0.60
+    storage_price_discharge_soc_floor: 0.45
+    storage_peak_discharge_soc_floor: 0.45
+    storage_discharge_import_threshold_kw: 0.50
+    community_local_price_ratio: 0.8
+    community_grid_export_price: 0.0
+    pv_surplus_threshold_kw: 0.50
+    import_peak_threshold_kw: 10.0
+    low_headroom_threshold_kw: 1.0
     deferrable_start_action: 1.0
-    deferrable_urgency_threshold: 0.75
-    deferrable_slack_threshold: 0.25
-    deferrable_priority_threshold: 0.5
-  networks: null
-  replay_buffer: null
-  exploration: null
+    deferrable_urgency_threshold: 0.6
+    deferrable_slack_threshold: 0.4
+    deferrable_safety_margin_steps: 1.0
 
 evaluation:
   episodes: 0

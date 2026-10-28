@@ -2,7 +2,7 @@
 
 This agent is the Milestone-2 successor to :class:`EVDataCollectionRBC`:
 
-* It uses the existing :class:`RuleBasedPolicy` as the **clean** behaviour
+* It uses the existing :class:`LegacyEVPolicy` as the **clean** behaviour
   policy (so the same EV-aware reference controller drives both data sets).
 * It runs across the **whole district**, not a single target building.
 * It supports **noise injection on selected episodes** to widen state-action
@@ -36,7 +36,7 @@ import numpy.typing as npt
 from loguru import logger
 
 from algorithms.agents.base_agent import BaseAgent
-from algorithms.agents.rbc_agent import RuleBasedPolicy
+from algorithms.agents.legacy_ev_policy import LegacyEVPolicy
 
 
 class DistrictDataCollectionRBC(BaseAgent):
@@ -44,7 +44,7 @@ class DistrictDataCollectionRBC(BaseAgent):
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__()
-        # We delegate predict() to RuleBasedPolicy, which uses raw observations.
+        # We delegate predict() to LegacyEVPolicy, which uses raw observations.
         self.use_raw_observations = True
 
         self._config = config
@@ -65,7 +65,7 @@ class DistrictDataCollectionRBC(BaseAgent):
         # picks up its own hyperparameters from `algorithm.rbc_hyperparameters`
         # if provided; otherwise it uses its own defaults.
         rbc_config = self._build_inner_rbc_config(config)
-        self._rbc = RuleBasedPolicy(rbc_config)
+        self._rbc = LegacyEVPolicy(rbc_config)
 
         # Populated by attach_environment ---------------------------------
         self._observation_names: List[List[str]] = []
@@ -96,10 +96,10 @@ class DistrictDataCollectionRBC(BaseAgent):
     # ------------------------------------------------------------------
     @staticmethod
     def _build_inner_rbc_config(outer_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Build a sub-config for the inner RuleBasedPolicy.
+        """Build a sub-config for the inner LegacyEVPolicy.
 
         We forward the simulator block (so RBC can load schema/charger info)
-        and synthesise an algorithm block with name='RuleBasedPolicy' and any
+        and synthesise an algorithm block with name='LegacyEVPolicy' and any
         explicit RBC hyperparameters provided under
         `algorithm.rbc_hyperparameters` in the outer config.
         """
@@ -108,7 +108,7 @@ class DistrictDataCollectionRBC(BaseAgent):
         return {
             "simulator": dict(outer_config.get("simulator", {}) or {}),
             "algorithm": {
-                "name": "RuleBasedPolicy",
+                "name": "LegacyEVPolicy",
                 "hyperparameters": rbc_hyper,
             },
         }

@@ -41,7 +41,7 @@ def test_validation_and_catalogue_do_not_import_numerical_or_tracking_libraries(
 import sys
 from algorithms.configuration.project import validate_config
 from algorithms.catalogue import AGENT_SPECS
-assert len(AGENT_SPECS) == 38
+assert len(AGENT_SPECS) == 37
 assert not ({"torch", "citylearn", "mlflow", "numpy", "onnx"} & sys.modules.keys())
 """
     subprocess.run([sys.executable, "-c", code], check=True)

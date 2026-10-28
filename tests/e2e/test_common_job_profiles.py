@@ -65,7 +65,7 @@ def config_for(name, tmp_path):
                 directory,
                 interfaces,
                 coverage,
-                source="Simulator 1.8.3",
+                source="Simulator 1.9.0",
                 simulator_bindings=bindings,
             )
         finally:

@@ -25,7 +25,7 @@ def test_build_execution_unit_error_for_placeholder_includes_supported_and_place
     assert "SingleAgentRL" in message
     assert "Supported algorithms" in message
     assert "MADDPG" in message
-    assert "RuleBasedPolicy" in message
+    assert "RBCBasicPolicy" in message
     assert "Known placeholders" in message
 
 
@@ -224,7 +224,7 @@ class TestStageToAgentView:
             "metadata": {"experiment_name": "exp"},
             "training": {"seed": 7},
             "simulator": {"central_agent": False},
-            "pipeline": [{"algorithm": "RuleBasedPolicy"}],
+            "pipeline": [{"algorithm": "RBCBasicPolicy"}],
         }
         stage = global_config["pipeline"][0]
 
@@ -235,7 +235,7 @@ class TestStageToAgentView:
         assert view["simulator"] == {"central_agent": False}
 
     def test_omits_optional_subblocks_when_absent_or_none(self) -> None:
-        stage = {"algorithm": "RuleBasedPolicy", "networks": None, "exploration": None}
+        stage = {"algorithm": "RBCBasicPolicy", "networks": None, "exploration": None}
         view = _stage_to_agent_view({}, stage)
 
         algorithm_block = view["algorithm"]
@@ -262,7 +262,7 @@ class TestStageToAgentView:
 
     def test_does_not_mutate_input_global_config(self) -> None:
         global_config = {"metadata": {"experiment_name": "exp"}}
-        stage = {"algorithm": "RuleBasedPolicy"}
+        stage = {"algorithm": "RBCBasicPolicy"}
 
         _stage_to_agent_view(global_config, stage)
 

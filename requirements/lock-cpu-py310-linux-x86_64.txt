@@ -46,7 +46,7 @@ scikit-learn==1.2.2
 scipy==1.15.1
 simplejson==3.19.3
 six==1.17.0
-softcpsrecsimulator==1.8.3
+softcpsrecsimulator==1.9.1
 soupsieve==2.6
 sympy==1.13.1
 threadpoolctl==3.5.0

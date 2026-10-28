@@ -164,9 +164,7 @@ def test_failed_export_never_commits_completed(tmp_path, monkeypatch):
     assert not (root / "bundle/artifact_manifest.json").exists()
 
 
-@pytest.mark.parametrize(
-    "name", ["RuleBasedPolicy", "AgentTransformerPPO", "AgentTransformerMATD3"]
-)
+@pytest.mark.parametrize("name", ["RBCBasicPolicy", "AgentTransformerPPO", "AgentTransformerMATD3"])
 def test_dynamic_member_and_asset_changes_use_common_runtime(name, tmp_path, monkeypatch):
     import yaml
 
@@ -175,7 +173,7 @@ def test_dynamic_member_and_asset_changes_use_common_runtime(name, tmp_path, mon
 
     dataset = (
         "citylearn_three_phase_dynamic_topology_demo_v1"
-        if name == "RuleBasedPolicy"
+        if name == "RBCBasicPolicy"
         else "citylearn_three_phase_dynamic_assets_only_demo_15s_parquet"
     )
     source = Path("datasets") / dataset / "schema.json"
@@ -190,9 +188,9 @@ def test_dynamic_member_and_asset_changes_use_common_runtime(name, tmp_path, mon
     target = tmp_path / "dynamic.json"
     target.write_text(json.dumps(schema))
     config = yaml.safe_load(
-        Path("configs/templates/dynamic/rule_based_entity_dynamic_local.yaml").read_text()
+        Path("configs/templates/dynamic/rbc_basic_entity_dynamic_local.yaml").read_text()
     )
-    if name != "RuleBasedPolicy":
+    if name != "RBCBasicPolicy":
         config["pipeline"] = config_for(name, tmp_path)["pipeline"]
     config["simulator"].update(
         dataset_path=str(target), simulation_end_time_step=10, episode_time_steps=11

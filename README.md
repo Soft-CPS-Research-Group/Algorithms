@@ -5,14 +5,16 @@ common job runtime; agents train or evaluate through shared simulator interfaces
 results, KPIs and requested model artifacts leave the job directory.
 
 Start with the [runtime guide](docs/runtime/README.md),
-[38-agent catalogue](docs/agent_catalogue.md), and [documentation index](docs/README.md).
+[37-agent catalogue](docs/agent_catalogue.md), and [documentation index](docs/README.md).
 The [branch consolidation record](docs/consolidation/README.md) preserves historical
 origins. The [stage 2 delivery](docs/runtime/delivery.md) records the common-core
 reorganization and its verification. The [stage 4 delivery](docs/runtime/export_delivery.md) covers final KPIs, portable manifests and policy parity, with explicit support limits.
 
+See the [BAU/RBC behavior contract](docs/baseline_controllers.md) for the audited baselines, migration and Simulator 1.9.1.
+
 ## Quick start
 
-Python 3.10 and `softcpsrecsimulator==1.8.3` are the tested baseline. Imports from
+Python 3.10 and `softcpsrecsimulator==1.9.1` are the tested baseline. Imports from
 the simulator remain `citylearn.*`. Use a fresh environment to avoid conflicting
 CityLearn distributions.
 
