@@ -285,6 +285,18 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
             self._init_dispatch_budget(agent_idx, np.asarray(raw_obs, dtype=float), obs_map)
 
+        if self.uses_community_dispatch and observations:
+            passive_nets = [
+                self._observed_passive_net_kw(np.asarray(obs, dtype=float), self._obs_index[idx])
+                for idx, obs in enumerate(observations)
+            ]
+            if all(value is not None for value in passive_nets):
+                net = sum(passive_nets)
+                self._shared_community_budget = {
+                    "community_surplus_kw": max(0.0, -net),
+                    "community_import_kw": max(0.0, net),
+                }
+
         try:
             for agent_idx, raw_obs in enumerate(observations):
                 obs = np.asarray(raw_obs, dtype=float)
@@ -821,7 +833,26 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             ),
         )
 
+    def _observed_passive_net_kw(self, obs, obs_map):
+        """Remove previous EV/BESS commands before allocating their next commands.
+
+        Simulator entity electrical metrics are simultaneous settled measurements.
+        Net import already contains those controllable powers; adding the next
+        EV command to that measurement would count its energy twice.
+        """
+        values = [
+            self._get_first_value(obs, obs_map, [name], default=float("nan"))
+            for name in ("net_power_kw", "bess_power_kw", "ev_charging_power_kw")
+        ]
+        if all(math.isfinite(value) for value in values):
+            net, bess, ev = values
+            return net - bess - ev
+        return None
+
     def _get_import_power(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
+        passive_net = self._observed_passive_net_kw(obs, obs_map)
+        if passive_net is not None:
+            return max(0.0, passive_net)
         import_power = self._get_first_value(
             obs, obs_map, ["import_power_kw"], default=float("nan")
         )
@@ -968,6 +999,9 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         )
 
     def _pv_surplus_kw(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
+        passive_net = self._observed_passive_net_kw(obs, obs_map)
+        if passive_net is not None:
+            return min(self._get_pv_power(obs, obs_map), max(0.0, -passive_net))
         physical_surplus = max(
             0.0, self._get_pv_power(obs, obs_map) - self._get_load_power(obs, obs_map)
         )

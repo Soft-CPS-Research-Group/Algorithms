@@ -103,6 +103,26 @@ def test_required_washing_cycle_can_wait_until_latest_start(cls):
     assert agent.predict([obs])[0] == [1.0]
 
 
+@pytest.mark.parametrize("pv,bess,net,expected", [(10.0, 1.6, 0.0, 0.16), (0.0, -4.0, 4.4, -0.84)])
+def test_bau_does_not_double_count_previous_settled_ev_and_bess(pv, bess, net, expected):
+    values = {
+        "electrical_storage_soc": 0.5,
+        "pv_power_kw": pv,
+        "load_power_kw": 8.4,
+        "net_power_kw": net,
+        "import_power_kw": max(0.0, net),
+        "export_power_kw": max(0.0, -net),
+        "bess_power_kw": bess,
+        "ev_charging_power_kw": 7.4,
+        **ev(),
+    }
+    agent, obs = policy(
+        NormalPolicy, values, ("electrical_storage", "electric_vehicle_storage_charger_1")
+    )
+    # The next EV command is 7.4 kW. Passive household demand is only 1 kW.
+    assert agent.predict([obs])[0] == pytest.approx([expected, 1.0])
+
+
 def test_bau_battery_uses_only_pv_left_after_ev_and_washer():
     values = {
         "electrical_storage_soc": 0.5,
