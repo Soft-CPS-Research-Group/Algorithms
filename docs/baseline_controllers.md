@@ -139,3 +139,7 @@ O Simulator 1.9.0 publicado omitia `citylearn.utils` e falhava a exportação do
 manifesto dos KPIs. A correção 1.9.1 inclui o módulo e testa o pacote instalado fora
 do código-fonte antes de publicar. Os ambientes suportados ficam fixados na 1.9.1;
 a imagem Jetson antiga continua suspensa até à sua migração de plataforma.
+
+Validação local em checkout limpo: 1 880 testes unitários/integração passaram,
+23 foram ignorados com motivos explícitos, e 65 testes de jobs completos passaram.
+Ruff, formatação, mypy, dependências e instalação mínima fora do checkout passaram.
