@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Union
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Literal
 
+from algorithms.configuration.baseline_defaults import policy_defaults
 from algorithms.configuration.model import StrictModel as BaseModel
 
 
@@ -655,7 +656,6 @@ class ActorCriticAlgorithmConfig(ActorStageConfig):
 
 class RuleBasedAlgorithmConfig(BaseModel):
     algorithm: Literal[
-        "RuleBasedPolicy",
         "RandomPolicy",
         "NormalPolicy",
         "NormalNoBatteryPolicy",
@@ -674,6 +674,21 @@ class RuleBasedAlgorithmConfig(BaseModel):
     count: int = Field(default=1, ge=1)
     frozen: bool = False
     hyperparameters: RuleBasedHyperparameters = RuleBasedHyperparameters()
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_policy_defaults(cls, value):
+        if not isinstance(value, dict):
+            return value
+        value = dict(value)
+        hyper = dict(value.get("hyperparameters") or {})
+        name = value.get("algorithm")
+        defaults = policy_defaults(name)
+        for key, default in defaults.items():
+            hyper.setdefault(key, default)
+        value["hyperparameters"] = hyper
+        return value
+
     networks: Optional[AlgorithmNetworks] = None
     replay_buffer: Optional[ReplayBufferConfig] = None
     exploration: Optional[ExplorationParams] = None
@@ -697,7 +712,7 @@ class SingleAgentRLStageConfig(BaseModel):
         raise ValueError(
             "Algorithm 'SingleAgentRL' is a schema placeholder and has no runtime "
             "implementation yet. Use one of: MADDPG, MATD3, MASAC, IPPO, MAPPO, HAPPO, "
-            "RuleBasedPolicy, RBCBasicPolicy, RBCSmartLocalPolicy, RBCSmartPolicy, SignalAwareRBC, "
+            "RBCBasicPolicy, RBCSmartLocalPolicy, RBCSmartPolicy, SignalAwareRBC, "
             "SignalAwareRBCSmartLocal, "
             "RandomPolicy, NormalPolicy, NormalNoBatteryPolicy."
         )

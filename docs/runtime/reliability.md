@@ -1,11 +1,17 @@
 # Reliable execution (stage 3)
 
+The table below preserves the stage-3 evidence. The active runtime was upgraded
+to SoftCPS Simulator 1.9.1 in the [BAU/RBC review](../baseline_controllers.md),
+which reran the full default suite and 65 complete job contracts. The catalogue
+now has 37 names after retiring the public `RuleBasedPolicy`. Jetson remains
+suspended; historical platform evidence is not a new hardware certification.
+
 The common runtime owns input validation, initialization, execution, checkpoint
 publication and attempt completion. Agents retain their numerical methods. The
 public entry point and 38 registered names remain available; this stage does not
 claim scientific quality, production inference compatibility or GPU certification.
 
-## Supported runtime
+## Runtime evidence at stage 3
 
 | Target | Python / PyTorch / CUDA / Simulator | Evidence and support decision |
 |---|---|---|

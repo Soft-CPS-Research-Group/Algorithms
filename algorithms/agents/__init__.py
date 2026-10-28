@@ -3,7 +3,7 @@
 __all__ = [
     "NormalNoBatteryPolicy", "NormalPolicy", "RBCBasicPolicy", "RBCCommunityPolicy",
     "RBCSmartLocalPolicy", "RBCSmartPolicy", "RandomPolicy", "SignalAwareRBCSmartLocal",
-    "MADDPG", "RuleBasedPolicy", "TotalOracleReplayPolicy",
+    "MADDPG", "TotalOracleReplayPolicy",
 ]
 
 

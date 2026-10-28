@@ -1,11 +1,11 @@
 schema_version: algorithms.config.v1
-# Local RuleBasedPolicy template for entity interface with dynamic asset-only events.
+# Local RBCBasicPolicy template for entity interface with dynamic topology.
 
 metadata:
-  experiment_name: "rule_based_entity_dynamic_assets_only_template"
-  run_name: "Rule Based Entity Dynamic Assets-Only Local"
+  experiment_name: "rbc_basic_entity_dynamic_template"
+  run_name: "Rule Based Entity Dynamic Local"
   community_name: "default_community"
-  description: "Entity+dynamic assets-only topology template run"
+  description: "Entity+dynamic topology template run"
 
 runtime:
   log_dir: null
@@ -32,7 +32,7 @@ tracking:
 checkpointing:
   resume_training: false
   checkpoint_run_id: null
-  checkpoint_artifact: "rule_based_checkpoint.json"
+  checkpoint_artifact: "rbc_basic_checkpoint.json"
   use_best_checkpoint_artifact: false
   reset_replay_buffer: false
   freeze_pretrained_layers: false
@@ -48,8 +48,8 @@ bundle:
   per_agent_artifact_config: {}
 
 simulator:
-  dataset_name: citylearn_three_phase_dynamic_assets_only_demo_15s_parquet
-  dataset_path: ./datasets/citylearn_three_phase_dynamic_assets_only_demo_15s_parquet/schema.json
+  dataset_name: citylearn_three_phase_dynamic_topology_demo
+  dataset_path: ./datasets/citylearn_three_phase_dynamic_topology_demo/schema.json
   central_agent: false
   interface: entity
   topology_mode: dynamic
@@ -92,7 +92,7 @@ topology:
   action_space: null
 
 pipeline:
-  - algorithm: "RuleBasedPolicy"
+  - algorithm: "RBCBasicPolicy"
     count: 1
     hyperparameters:
       pv_charge_threshold: 2.0

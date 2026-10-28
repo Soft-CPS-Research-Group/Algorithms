@@ -3721,7 +3721,6 @@ class AgentTransformerMATD3(BaseAgent):
         from algorithms.agents.oracle_replay_policy import (
             FixedServiceOracleReplayPolicy,
         )
-        from algorithms.agents.rbc_agent import RuleBasedPolicy
         from algorithms.agents.total_home_oracle_replay_policy import (
             TotalHomeOracleReplayPolicy,
         )
@@ -3730,7 +3729,6 @@ class AgentTransformerMATD3(BaseAgent):
         )
 
         policy_classes = {
-            "RuleBasedPolicy": RuleBasedPolicy,
             "RandomPolicy": RandomPolicy,
             "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
             "NormalPolicy": NormalPolicy,

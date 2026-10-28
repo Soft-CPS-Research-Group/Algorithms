@@ -103,6 +103,9 @@ def build_unsupported_algorithm_message(name: str | None) -> str:
             f"Known placeholders: {placeholders}."
         )
 
+    if name == "RuleBasedPolicy":
+        return "RuleBasedPolicy was retired. Select NormalPolicy, RBCBasicPolicy, RBCSmartLocalPolicy or RBCCommunityPolicy explicitly; their behavior differs."
+
     if name in PLACEHOLDER_ALGORITHMS:
         return (
             f"Algorithm '{name}' is a schema placeholder and has no runtime implementation yet. "

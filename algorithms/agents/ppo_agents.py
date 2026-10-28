@@ -743,7 +743,6 @@ class _PPOBase(BaseAgent):
             SignalAwareRBCSmartLocal,
             RandomPolicy,
         )
-        from algorithms.agents.rbc_agent import RuleBasedPolicy
         from algorithms.agents.oracle_replay_policy import FixedServiceOracleReplayPolicy
         from algorithms.agents.total_home_oracle_replay_policy import (
             TotalHomeOracleReplayPolicy,
@@ -753,7 +752,6 @@ class _PPOBase(BaseAgent):
         )
 
         policy_registry = {
-            "RuleBasedPolicy": RuleBasedPolicy,
             "RandomPolicy": RandomPolicy,
             "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
             "NormalPolicy": NormalPolicy,
@@ -814,10 +812,8 @@ class _PPOBase(BaseAgent):
             RandomPolicy,
             SignalAwareRBCSmartLocal,
         )
-        from algorithms.agents.rbc_agent import RuleBasedPolicy
 
         policy_registry = {
-            "RuleBasedPolicy": RuleBasedPolicy,
             "RandomPolicy": RandomPolicy,
             "NormalNoBatteryPolicy": NormalNoBatteryPolicy,
             "NormalPolicy": NormalPolicy,

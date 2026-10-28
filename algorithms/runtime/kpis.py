@@ -2,6 +2,7 @@
 
 import csv
 import math
+from importlib.metadata import PackageNotFoundError, version
 
 from algorithms.runtime.atomic import atomic_json
 from utils.training_provenance import file_digest
@@ -20,11 +21,52 @@ UNITS = {
 }
 
 
+def baseline_reference(enabled):
+    """Name the simulator counterfactual; it is not Algorithms' NormalPolicy."""
+    if not enabled:
+        return None
+    try:
+        simulator_version = version("softcpsrecsimulator")
+    except PackageNotFoundError:
+        simulator_version = None
+    return {
+        "implementation": "citylearn.agents.baseline.BusinessAsUsualAgent",
+        "package": "softcpsrecsimulator",
+        "version": simulator_version,
+        "equivalent_to_normal_policy": False,
+        "description": (
+            "Simulator native counterfactual, with deadline-spread EV charging. "
+            "Algorithms NormalPolicy instead requests immediate charging. "
+            "Compare separate jobs with identical inputs for a NormalPolicy baseline."
+        ),
+    }
+
+
+def _kpi_rows(path):
+    if path.suffix == ".parquet":
+        import pandas as pd
+
+        frame = pd.read_parquet(path)
+        if not len(frame.columns) or frame.columns[0] != "KPI":
+            raise ValueError("Unrecognised simulator KPI columns")
+        yield from frame.to_dict(orient="records")
+    else:
+        with path.open(newline="") as stream:
+            reader = csv.DictReader(stream)
+            if not reader.fieldnames or reader.fieldnames[0] != "KPI":
+                raise ValueError("Unrecognised simulator KPI columns")
+            yield from reader
+
+
 def write_scorecard(context, wrapper):
     paths = context.paths
     export = context.config["simulator"]["export"]
     evaluated = getattr(wrapper, "evaluated_policy", None)
-    candidates = sorted(paths["simulation_data_dir"].rglob("exported_kpis.csv"))
+    candidates = sorted(
+        path
+        for suffix in ("csv", "parquet")
+        for path in paths["simulation_data_dir"].rglob(f"exported_kpis.{suffix}")
+    )
     requested = export.get("export_kpis_on_episode_end", True)
     reason = "not_requested" if not requested else "no_final_evaluation" if not evaluated else None
     if requested and evaluated and len(candidates) != 1:
@@ -35,35 +77,31 @@ def write_scorecard(context, wrapper):
             sources.append(
                 {"path": path.relative_to(paths["job_dir"]).as_posix(), "sha256": file_digest(path)}
             )
-            with path.open(newline="") as stream:
-                reader = csv.DictReader(stream)
-                if not reader.fieldnames or reader.fieldnames[0] != "KPI":
-                    raise ValueError("Unrecognised simulator KPI columns")
-                for row in reader:
-                    name = row.pop("KPI")
-                    for entity, raw in row.items():
-                        scope = "community" if entity == "District" else "building"
-                        if name.startswith("district_") != (scope == "community"):
-                            continue
-                        try:
-                            value = float(raw)
-                            valid = math.isfinite(value)
-                            missing = None if valid else "simulator_nonfinite"
-                        except (TypeError, ValueError):
-                            value, valid, missing = None, False, "simulator_unavailable"
-                        unit = UNITS.get(name.rsplit("_", 1)[-1])
-                        records.append(
-                            {
-                                "name": name,
-                                "entity": entity,
-                                "level": scope,
-                                "value": value if valid else None,
-                                "valid": valid,
-                                "missing_reason": missing,
-                                "unit": unit,
-                                "unit_source": "simulator_metric_suffix" if unit else "undeclared",
-                            }
-                        )
+            for row in _kpi_rows(path):
+                name = row.pop("KPI")
+                for entity, raw in row.items():
+                    scope = "community" if entity == "District" else "building"
+                    if name.startswith("district_") != (scope == "community"):
+                        continue
+                    try:
+                        value = float(raw)
+                        valid = math.isfinite(value)
+                        missing = None if valid else "simulator_nonfinite"
+                    except (TypeError, ValueError):
+                        value, valid, missing = None, False, "simulator_unavailable"
+                    unit = UNITS.get(name.rsplit("_", 1)[-1])
+                    records.append(
+                        {
+                            "name": name,
+                            "entity": entity,
+                            "level": scope,
+                            "value": value if valid else None,
+                            "valid": valid,
+                            "missing_reason": missing,
+                            "unit": unit,
+                            "unit_source": "simulator_metric_suffix" if unit else "undeclared",
+                        }
+                    )
     result = {
         "schema_version": "algorithms.kpis.v1",
         "eligible_for_scorecard": reason is None,
@@ -71,6 +109,7 @@ def write_scorecard(context, wrapper):
         "evaluation": evaluated,
         "sources": sources,
         "baseline_calculation_enabled": export.get("include_business_as_usual", True),
+        "baseline_reference": baseline_reference(export.get("include_business_as_usual", True)),
         "metrics": records,
     }
     atomic_json(paths["results_dir"] / "kpis.json", result)

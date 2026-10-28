@@ -62,9 +62,9 @@ pipeline:
     ev_normal_target_soc: 1.0
     storage_min_soc: 0.2
     storage_max_soc: 0.9
-    storage_charge_rate: 0.35
-    storage_discharge_rate: 0.35
-    normal_storage_discharge_import_threshold_kw: 2.0
+    storage_charge_rate: 1.0
+    storage_discharge_rate: 1.0
+    normal_storage_discharge_import_threshold_kw: 0.05
     deferrable_start_action: 1.0
 
 evaluation:

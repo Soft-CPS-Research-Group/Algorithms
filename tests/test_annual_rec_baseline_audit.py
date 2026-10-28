@@ -27,6 +27,15 @@ SIMULATOR_ROOT = Path(
 ).resolve()
 SIMULATOR_VERSION = "1.8.0"
 
+# These exact catalogue counts describe the retired 2023-q15-v1.9 dataset,
+# not the Portugal 2023–2024 v3.1 inputs shipped by Simulator 1.9.x.
+# Keep historical regressions runnable when their explicit data is provided.
+# Current dataset/job/export acceptance lives in e2e/test_baseline_semantics.py.
+legacy_catalogue = pytest.mark.skipif(
+    not (SIMULATOR_ROOT / "data/datasets/rec_2023_micro_4_q/schema.json").is_file(),
+    reason="Historical annual catalogue is not shipped in Simulator 1.9.x; current dataset tested separately",
+)
+
 
 def _template():
     return yaml.safe_load(
@@ -80,6 +89,7 @@ def test_full_year_config_has_35040_transitions_and_terminal_state() -> None:
     assert validate_config(config).simulator.terminal_observation_padding is True
 
 
+@legacy_catalogue
 def test_ev_departure_obligation_audit_matches_static_catalogue() -> None:
     schema = SIMULATOR_ROOT / "data/datasets/rec_2023_micro_4_q/schema.json"
 
@@ -95,6 +105,7 @@ def test_ev_departure_obligation_audit_matches_static_catalogue() -> None:
     }
 
 
+@legacy_catalogue
 def test_deferrable_service_audit_matches_static_catalogue() -> None:
     schema = SIMULATOR_ROOT / "data/datasets/rec_2023_micro_4_q/schema.json"
 
@@ -110,6 +121,7 @@ def test_deferrable_service_audit_matches_static_catalogue() -> None:
     }
 
 
+@legacy_catalogue
 def test_deferrable_service_audit_exposes_dynamic_censoring() -> None:
     core_schema = (
         SIMULATOR_ROOT
@@ -162,6 +174,7 @@ def test_extract_scorecard_supports_simulator_parquet_export(tmp_path) -> None:
     }
 
 
+@legacy_catalogue
 def test_annual_rec_schema_contract_rejects_oracle_load_pv_forecasts() -> None:
     schema_path = SIMULATOR_ROOT / "data/datasets/rec_2023_micro_4_q/schema.json"
     schema = yaml.safe_load(schema_path.read_text(encoding="utf-8"))
@@ -177,6 +190,7 @@ def test_annual_rec_schema_contract_rejects_oracle_load_pv_forecasts() -> None:
         raise AssertionError("Oracle load/PV forecasts must be rejected.")
 
 
+@legacy_catalogue
 def test_annual_rec_schema_contract_rejects_unpublished_price_oracle() -> None:
     schema_path = SIMULATOR_ROOT / "data/datasets/rec_2023_micro_4_q/schema.json"
     schema = yaml.safe_load(schema_path.read_text(encoding="utf-8"))

@@ -782,7 +782,7 @@ def test_validate_config_rejects_non_leaf_transformer_ppo() -> None:
     with config_path.open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
     config["pipeline"].append(
-        {"algorithm": "RuleBasedPolicy", "count": 1, "hyperparameters": {}}
+        {"algorithm": "RBCBasicPolicy", "count": 1, "hyperparameters": {}}
     )
 
     with pytest.raises(ValueError, match="must be the final pipeline stage"):
@@ -793,7 +793,7 @@ def test_validate_config_rejects_legacy_algorithm_key(base_config):
     config = copy.deepcopy(base_config)
     config.pop("pipeline", None)
     config["algorithm"] = {
-        "name": "RuleBasedPolicy",
+        "name": "RBCBasicPolicy",
         "hyperparameters": {},
     }
     with pytest.raises(ValueError, match="deprecated top-level 'algorithm'"):
@@ -1310,7 +1310,7 @@ def test_validate_config_accepts_rule_based_with_entity_dynamic(base_config):
     config["simulator"]["dataset_path"] = "./datasets/citylearn_three_phase_dynamic_topology_demo_v1/schema.json"
     config["pipeline"] = [
         {
-            "algorithm": "RuleBasedPolicy",
+            "algorithm": "RBCBasicPolicy",
             "count": 1,
             "hyperparameters": {
                 "pv_charge_threshold": 0.0,

@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from algorithms.agents.rbc_agent import ChargerInfo, RuleBasedPolicy
+from algorithms.agents.rbc_agent import ChargerInfo, RulePolicyBase
+from algorithms.configuration.baseline_defaults import NORMAL_DEFAULTS, SMART_DEFAULTS
 
 
-class RandomPolicy(RuleBasedPolicy):
+class RandomPolicy(RulePolicyBase):
     """Random controller that samples every available action within its bounds."""
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
-        hyper = (config.get("algorithm", {}).get("hyperparameters") or {})
+        hyper = config.get("algorithm", {}).get("hyperparameters") or {}
         seed = hyper.get("seed")
         if seed is None:
             seed = config.get("training", {}).get("seed", 22)
@@ -79,12 +81,14 @@ class RandomPolicy(RuleBasedPolicy):
         return "random_policy"
 
 
-class _OperationalBaselinePolicy(RuleBasedPolicy):
+class _OperationalBaselinePolicy(RulePolicyBase):
     """Shared helpers for deterministic non-learning baselines."""
+
+    uses_community_dispatch = False
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
-        hyper = (config.get("algorithm", {}).get("hyperparameters") or {})
+        hyper = config.get("algorithm", {}).get("hyperparameters") or {}
         self.storage_min_soc: float = float(hyper.get("storage_min_soc", 0.20))
         self.storage_max_soc: float = float(hyper.get("storage_max_soc", 0.90))
         self.storage_target_soc: float = float(hyper.get("storage_target_soc", 0.50))
@@ -108,7 +112,10 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             hyper.get("normal_storage_discharge_import_threshold_kw", self.pv_surplus_threshold_kw)
         )
         self.storage_discharge_import_threshold_kw: float = float(
-            hyper.get("storage_discharge_import_threshold_kw", self.normal_storage_discharge_import_threshold_kw)
+            hyper.get(
+                "storage_discharge_import_threshold_kw",
+                self.normal_storage_discharge_import_threshold_kw,
+            )
         )
         self.ev_normal_charge_rate: float = float(hyper.get("ev_normal_charge_rate", 1.0))
         self.ev_normal_target_soc: float = float(hyper.get("ev_normal_target_soc", 1.0))
@@ -118,11 +125,15 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         self.allow_v2g: bool = bool(hyper.get("allow_v2g", False))
         self.import_peak_threshold_kw: float = float(hyper.get("import_peak_threshold_kw", 7.0))
         self.low_headroom_threshold_kw: float = float(hyper.get("low_headroom_threshold_kw", 2.0))
-        self.ev_community_charge_rate: float = float(hyper.get("ev_community_charge_rate", self.ev_pv_charge_rate))
+        self.ev_community_charge_rate: float = float(
+            hyper.get("ev_community_charge_rate", self.ev_pv_charge_rate)
+        )
         self.community_v2g_discharge_rate: float = float(
             hyper.get("community_v2g_discharge_rate", self.ev_v2g_discharge_rate)
         )
-        self.community_storage_charge_rate: float = float(hyper.get("community_storage_charge_rate", self.pv_charge_rate))
+        self.community_storage_charge_rate: float = float(
+            hyper.get("community_storage_charge_rate", self.pv_charge_rate)
+        )
         self.community_storage_discharge_rate: float = float(
             hyper.get("community_storage_discharge_rate", self.peak_discharge_rate)
         )
@@ -136,8 +147,12 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             hyper.get("community_import_threshold_kw", self.import_peak_threshold_kw)
         )
         self.ev_v2g_reserve_soc: float = float(hyper.get("ev_v2g_reserve_soc", 0.15))
-        self.ev_service_margin_rate: float = max(0.0, float(hyper.get("ev_service_margin_rate", 0.05)))
-        self.ev_service_floor_rate: float = max(0.0, float(hyper.get("ev_service_floor_rate", 0.25)))
+        self.ev_service_margin_rate: float = max(
+            0.0, float(hyper.get("ev_service_margin_rate", 0.05))
+        )
+        self.ev_service_floor_rate: float = max(
+            0.0, float(hyper.get("ev_service_floor_rate", 0.25))
+        )
         self.ev_service_lookahead_hours: float = max(
             0.0,
             float(hyper.get("ev_service_lookahead_hours", 4.0)),
@@ -145,9 +160,15 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         self.ev_service_target_soc: float = float(
             np.clip(float(hyper.get("ev_service_target_soc", 0.0) or 0.0), 0.0, 1.0)
         )
-        self.ev_deadline_buffer_hours: float = max(0.0, float(hyper.get("ev_deadline_buffer_hours", 0.25)))
-        self.ev_v2g_min_departure_hours: float = max(0.0, float(hyper.get("ev_v2g_min_departure_hours", 2.0)))
-        self.ev_v2g_service_margin_soc: float = max(0.0, float(hyper.get("ev_v2g_service_margin_soc", 0.05)))
+        self.ev_deadline_buffer_hours: float = max(
+            0.0, float(hyper.get("ev_deadline_buffer_hours", 0.25))
+        )
+        self.ev_v2g_min_departure_hours: float = max(
+            0.0, float(hyper.get("ev_v2g_min_departure_hours", 2.0))
+        )
+        self.ev_v2g_service_margin_soc: float = max(
+            0.0, float(hyper.get("ev_v2g_service_margin_soc", 0.05))
+        )
         self.ev_v2g_buffer_soc: float = max(0.0, float(hyper.get("ev_v2g_buffer_soc", 0.0)))
         self.ev_subhour_service_guard_steps: float = max(
             0.0,
@@ -184,12 +205,20 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             hyper.get("deferrable_import_block_threshold_kw", float("inf"))
         )
         self.deferrable_community_import_block_threshold_kw: float = float(
-            hyper.get("deferrable_community_import_block_threshold_kw", self.deferrable_import_block_threshold_kw)
+            hyper.get(
+                "deferrable_community_import_block_threshold_kw",
+                self.deferrable_import_block_threshold_kw,
+            )
         )
-        self.community_local_price_ratio: float = float(hyper.get("community_local_price_ratio", 0.8))
-        self.community_grid_export_price: float = float(hyper.get("community_grid_export_price", 0.0))
+        self.community_local_price_ratio: float = float(
+            hyper.get("community_local_price_ratio", 0.8)
+        )
+        self.community_grid_export_price: float = float(
+            hyper.get("community_grid_export_price", 0.0)
+        )
         self._obs_match_cache: Dict[int, Dict[tuple, List[tuple[str, int]]]] = {}
         self._dispatch_budgets: Dict[int, Dict[str, float]] = {}
+        self._shared_community_budget: Optional[Dict[str, float]] = None
 
     def attach_environment(
         self,
@@ -209,6 +238,23 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         )
         self._obs_match_cache = {}
         self._dispatch_budgets = {}
+        self._shared_community_budget = None
+        for agent_idx, names in enumerate(action_names):
+            obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
+            unsupported = [
+                name
+                for name in names
+                if not (
+                    self._is_storage_action_name(str(name))
+                    or "electric_vehicle" in str(name)
+                    or self._is_deferrable_action_name(str(name), obs_map)
+                )
+            ]
+            if unsupported:
+                raise ValueError(
+                    f"{type(self).__name__} does not define control for actions {unsupported}. "
+                    "Supported assets: electrical storage, EV chargers and deferrable appliances."
+                )
 
     def _policy_type(self) -> str:
         return self.__class__.__name__
@@ -225,38 +271,61 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         The base rule-based loop evaluates actions in action-space order. For
         the operational RBCs we deliberately evaluate EVs before stationary
         storage so local PV is first offered to connected cars, then remaining
-        surplus is offered to the building battery and deferrables. Returned
+        surplus serves appliances before the stationary battery. Decisions are
+        recorded after action limiting, so the next device sees remaining power. Returned
         actions still preserve the original action order.
         """
 
         del deterministic, context
         actions: List[List[float]] = []
         self._dispatch_budgets = {}
+        self._shared_community_budget = None
+
+        for agent_idx, raw_obs in enumerate(observations):
+            obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
+            self._init_dispatch_budget(agent_idx, np.asarray(raw_obs, dtype=float), obs_map)
+
+        if self.uses_community_dispatch and observations:
+            passive_nets = [
+                self._observed_passive_net_kw(np.asarray(obs, dtype=float), self._obs_index[idx])
+                for idx, obs in enumerate(observations)
+            ]
+            if all(value is not None for value in passive_nets):
+                net = sum(passive_nets)
+                self._shared_community_budget = {
+                    "community_surplus_kw": max(0.0, -net),
+                    "community_import_kw": max(0.0, net),
+                }
 
         try:
             for agent_idx, raw_obs in enumerate(observations):
                 obs = np.asarray(raw_obs, dtype=float)
                 obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
-                action_names = self._action_labels[agent_idx] if agent_idx < len(self._action_labels) else []
+                action_names = (
+                    self._action_labels[agent_idx] if agent_idx < len(self._action_labels) else []
+                )
                 agent_actions: List[float] = [0.0 for _ in action_names]
                 residual_headroom: Dict[Tuple[int, str, bool], float] = {}
-                self._init_dispatch_budget(agent_idx, obs, obs_map)
 
                 def priority(position_and_name: tuple[int, str]) -> tuple[int, int]:
                     position, name = position_and_name
                     if "electric_vehicle" in str(name) and self.control_evs:
                         return (0, position)
                     if self.control_storage and self._is_storage_action_name(str(name)):
-                        return (1, position)
-                    if self.control_deferrables and self._is_deferrable_action_name(str(name), obs_map):
                         return (2, position)
+                    if self.control_deferrables and self._is_deferrable_action_name(
+                        str(name), obs_map
+                    ):
+                        return (1, position)
                     return (3, position)
 
                 for action_position, action_name in sorted(enumerate(action_names), key=priority):
                     bounds = self._get_action_bounds(agent_idx, action_position)
 
                     if self.control_storage and self._is_storage_action_name(str(action_name)):
-                        value = self._compute_storage_action(agent_idx, obs, obs_map, str(action_name), bounds)
+                        value = self._compute_storage_action(
+                            agent_idx, obs, obs_map, str(action_name), bounds
+                        )
                         value = self._apply_storage_dynamic_headroom_limit(
                             value,
                             obs,
@@ -270,6 +339,25 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
                         self._record_storage_dispatch(agent_idx, value)
                     elif "electric_vehicle" in str(action_name) and self.control_evs:
                         charger_info = self._get_charger_info(agent_idx, action_position)
+                        ctx = self._connected_ev_context(
+                            agent_idx, obs, obs_map, charger_info, str(action_name)
+                        )
+                        if charger_info is None:
+                            charger_info = ChargerInfo(
+                                str(ctx["charger_id"] or ""),
+                                float(ctx["max_power"]),
+                                0.0,
+                                float(ctx["max_discharge_power"]),
+                                0.0,
+                                1.0,
+                                float(ctx["capacity"]),
+                            )
+                        else:
+                            charger_info = replace(
+                                charger_info,
+                                max_power=float(ctx["max_power"]),
+                                max_discharge_power=float(ctx["max_discharge_power"]),
+                            )
                         normalised = self._compute_ev_action(
                             agent_idx,
                             obs,
@@ -289,8 +377,23 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
                             agent_idx,
                             residual_headroom,
                         )
-                    elif self.control_deferrables and self._is_deferrable_action_name(str(action_name), obs_map):
-                        value = self._compute_deferrable_action(agent_idx, obs, obs_map, str(action_name), bounds)
+                        ctx = self._connected_ev_context(
+                            agent_idx, obs, obs_map, charger_info, str(action_name)
+                        )
+                        rate = value / high if high > 1.0 else value
+                        if rate >= 0.0:
+                            self._record_ev_charge_dispatch(agent_idx, ctx, rate)
+                        else:
+                            self._record_ev_discharge_dispatch(agent_idx, ctx, -rate)
+                    elif self.control_deferrables and self._is_deferrable_action_name(
+                        str(action_name), obs_map
+                    ):
+                        value = self._compute_deferrable_action(
+                            agent_idx, obs, obs_map, str(action_name), bounds
+                        )
+                        self._record_deferrable_dispatch(
+                            agent_idx, obs, obs_map, str(action_name), value
+                        )
                     else:
                         value = 0.0
 
@@ -299,11 +402,14 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
                 actions.append(agent_actions)
         finally:
             self._dispatch_budgets = {}
+            self._shared_community_budget = None
 
         self.actions = actions
         return actions
 
-    def _init_dispatch_budget(self, agent_idx: int, obs: np.ndarray, obs_map: Mapping[str, int]) -> None:
+    def _init_dispatch_budget(
+        self, agent_idx: int, obs: np.ndarray, obs_map: Mapping[str, int]
+    ) -> None:
         self._dispatch_budgets[agent_idx] = {
             "local_surplus_kw": max(0.0, self._pv_surplus_kw(obs, obs_map)),
             "local_import_kw": max(0.0, self._get_import_power(obs, obs_map)),
@@ -311,19 +417,30 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             "community_import_kw": max(0.0, self._get_community_import_power(obs, obs_map)),
         }
 
+        if self.uses_community_dispatch and self._shared_community_budget is None:
+            self._shared_community_budget = {
+                key: self._dispatch_budgets[agent_idx][key]
+                for key in ("community_surplus_kw", "community_import_kw")
+            }
+
+    def _budget_container(self, agent_idx, key):
+        if self.uses_community_dispatch and key.startswith("community_"):
+            return self._shared_community_budget
+        return self._dispatch_budgets.get(agent_idx)
+
     def _budget_value(
         self,
         agent_idx: int,
         key: str,
         fallback: float,
     ) -> float:
-        budget = self._dispatch_budgets.get(agent_idx)
+        budget = self._budget_container(agent_idx, key)
         if budget is None:
             return max(0.0, fallback)
         return max(0.0, budget.get(key, fallback))
 
     def _consume_budget_kw(self, agent_idx: int, key: str, amount_kw: float) -> float:
-        budget = self._dispatch_budgets.get(agent_idx)
+        budget = self._budget_container(agent_idx, key)
         amount = max(0.0, amount_kw)
         if budget is None or amount <= self.energy_epsilon:
             return 0.0
@@ -331,27 +448,33 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         budget[key] = max(0.0, budget.get(key, 0.0) - consumed)
         return consumed
 
+    def _consume_other_local_budgets(self, agent_idx: int, key: str, power_kw: float) -> None:
+        """Reserve shared energy at its local source so it cannot be offered twice."""
+        for other_idx in self._dispatch_budgets:
+            if other_idx != agent_idx and power_kw > self.energy_epsilon:
+                power_kw -= self._consume_budget_kw(other_idx, key, power_kw)
+
     def _record_ev_charge_dispatch(
         self,
         agent_idx: int,
         ctx: Mapping[str, float | bool | None],
         rate: float,
-        *,
-        local_first: bool = True,
-        community_first: bool = False,
     ) -> None:
         charge_kw = max(0.0, rate) * float(ctx["max_power"])
         if charge_kw <= self.energy_epsilon:
             return
-        remaining = charge_kw
-        if local_first:
-            remaining -= self._consume_budget_kw(agent_idx, "local_surplus_kw", remaining)
-        if community_first and remaining > self.energy_epsilon:
-            remaining -= self._consume_budget_kw(agent_idx, "community_surplus_kw", remaining)
-        if remaining > self.energy_epsilon:
-            budget = self._dispatch_budgets.get(agent_idx)
-            if budget is not None:
-                budget["local_import_kw"] = max(0.0, budget.get("local_import_kw", 0.0)) + remaining
+        local_used = self._consume_budget_kw(agent_idx, "local_surplus_kw", charge_kw)
+        remaining = charge_kw - local_used
+        if self.uses_community_dispatch and self._shared_community_budget is not None:
+            shared_used = self._consume_budget_kw(agent_idx, "community_surplus_kw", charge_kw)
+            self._shared_community_budget["community_import_kw"] += charge_kw - shared_used
+            remote_used = min(remaining, max(0.0, shared_used - local_used))
+            self._consume_other_local_budgets(agent_idx, "local_surplus_kw", remote_used)
+            if self._community_energy_is_discounted():
+                remaining -= remote_used
+        budget = self._dispatch_budgets.get(agent_idx)
+        if budget is not None and remaining > self.energy_epsilon:
+            budget["local_import_kw"] = budget.get("local_import_kw", 0.0) + remaining
 
     def _record_ev_discharge_dispatch(
         self,
@@ -362,26 +485,50 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         discharge_kw = max(0.0, rate) * float(ctx.get("max_discharge_power") or ctx["max_power"])
         if discharge_kw <= self.energy_epsilon:
             return
-        remaining = discharge_kw
-        remaining -= self._consume_budget_kw(agent_idx, "local_import_kw", remaining)
-        if remaining > self.energy_epsilon:
-            self._consume_budget_kw(agent_idx, "community_import_kw", remaining)
+        local_used = self._consume_budget_kw(agent_idx, "local_import_kw", discharge_kw)
+        if self.uses_community_dispatch and self._shared_community_budget is not None:
+            shared_used = self._consume_budget_kw(agent_idx, "community_import_kw", discharge_kw)
+            self._consume_other_local_budgets(
+                agent_idx, "local_import_kw", max(0.0, shared_used - local_used)
+            )
+            # V2G/BESS energy is not fresh PV surplus for another battery.
+
+    def _record_deferrable_dispatch(self, agent_idx, obs, obs_map, action_name, value):
+        if value <= 0.0:
+            return
+        prefix = self._resolve_deferrable_observation_prefix(action_name, obs_map)
+        if prefix is None:
+            return
+        power = self._get_deferrable_value(
+            obs, obs_map, prefix, "start_power_kw", default=float("nan")
+        )
+        if not math.isfinite(power):
+            energy = self._get_deferrable_value(
+                obs, obs_map, prefix, "start_energy_kwh_step", default=float("nan")
+            )
+            power = energy / self.step_hours
+        if not math.isfinite(power):
+            power = self._get_deferrable_value(
+                obs, obs_map, prefix, "cycle_peak_power_kw", default=0.0
+            )
+        self._record_ev_charge_dispatch(
+            agent_idx,
+            {"max_power": max(0.0, power)},
+            1.0,
+        )
 
     def _record_storage_dispatch(self, agent_idx: int, value: float) -> None:
         storage_info = self._get_storage_info(agent_idx)
         if storage_info is None or storage_info.nominal_power <= self.energy_epsilon:
             return
-        power_kw = abs(float(value)) * storage_info.nominal_power
+        ctx = {
+            "max_power": storage_info.nominal_power,
+            "max_discharge_power": storage_info.nominal_power,
+        }
         if value > self.energy_epsilon:
-            remaining = power_kw
-            remaining -= self._consume_budget_kw(agent_idx, "local_surplus_kw", remaining)
-            if remaining > self.energy_epsilon:
-                self._consume_budget_kw(agent_idx, "community_surplus_kw", remaining)
+            self._record_ev_charge_dispatch(agent_idx, ctx, value)
         elif value < -self.energy_epsilon:
-            remaining = power_kw
-            remaining -= self._consume_budget_kw(agent_idx, "local_import_kw", remaining)
-            if remaining > self.energy_epsilon:
-                self._consume_budget_kw(agent_idx, "community_import_kw", remaining)
+            self._record_ev_discharge_dispatch(agent_idx, ctx, -value)
 
     def _cached_observation_matches(
         self,
@@ -448,9 +595,14 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         return default
 
     def _get_hour(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
-        return self._get_first_value(obs, obs_map, ["hour", "district__hour"], default=0.0) % 24.0
+        return (
+            self._get_first_value(obs, obs_map, ["hour", "district__hour"], default=float("nan"))
+            % 24.0
+        )
 
-    def _get_price_context(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> Dict[str, float | bool]:
+    def _get_price_context(
+        self, obs: np.ndarray, obs_map: Mapping[str, int]
+    ) -> Dict[str, float | bool]:
         price = self._get_first_value(
             obs,
             obs_map,
@@ -461,12 +613,17 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             self._get_first_value(
                 obs,
                 obs_map,
-                [f"electricity_pricing_predicted_{idx}", f"district__electricity_pricing_predicted_{idx}"],
+                [
+                    f"electricity_pricing_predicted_{idx}",
+                    f"district__electricity_pricing_predicted_{idx}",
+                ],
                 default=float("nan"),
             )
             for idx in (1, 2, 3)
         ]
-        for _name, index in self._cached_observation_matches(obs_map, include_tokens=("forecast_price",)):
+        for _name, index in self._cached_observation_matches(
+            obs_map, include_tokens=("forecast_price",)
+        ):
             if index >= len(obs):
                 continue
             value = obs[index]
@@ -478,7 +635,12 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             hour = self._get_hour(obs, obs_map)
             cheap = hour <= 7.0 or hour >= 22.0
             expensive = 17.0 <= hour <= 21.0
-            return {"price": 0.0, "cheap": cheap, "expensive": expensive, "near_forecast_peak": expensive}
+            return {
+                "price": 0.0,
+                "cheap": cheap,
+                "expensive": expensive,
+                "near_forecast_peak": expensive,
+            }
 
         if not valid:
             return {"price": price, "cheap": False, "expensive": False, "near_forecast_peak": False}
@@ -486,10 +648,14 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         forecast_mean = float(np.mean(valid))
         forecast_min = float(np.min(valid))
         forecast_max = float(np.max(valid))
+        if max(abs(price - value) for value in valid) <= 1.0e-9:
+            return {"price": price, "cheap": False, "expensive": False, "near_forecast_peak": False}
         spread = max(forecast_max - forecast_min, abs(forecast_mean) * 0.05, 1.0e-9)
         cheap = price <= forecast_mean - 0.20 * spread or price <= forecast_min + 0.10 * spread
         expensive = price >= forecast_mean + 0.20 * spread or price >= forecast_max - 0.10 * spread
-        near_forecast_peak = price >= forecast_max - max(0.10 * spread, 0.005)
+        if cheap and expensive:
+            cheap = expensive = False
+        near_forecast_peak = expensive and price >= forecast_max - max(0.10 * spread, 0.005)
         return {
             "price": price,
             "cheap": cheap,
@@ -552,14 +718,20 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         candidates.extend(
             self._forecast_values(obs, obs_map, ["forecast_export"], exclude_tokens=["community"])
         )
-        net_values = self._forecast_values(obs, obs_map, ["forecast_net"], exclude_tokens=["community"])
+        net_values = self._forecast_values(
+            obs, obs_map, ["forecast_net"], exclude_tokens=["community"]
+        )
         candidates.extend(-value for value in net_values if value < 0.0)
         positive = [max(0.0, value) for value in candidates]
         return max(positive) if positive else 0.0
 
     def _forecast_local_import_peak_kw(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
-        candidates = self._forecast_values(obs, obs_map, ["forecast_import"], exclude_tokens=["community"])
-        net_values = self._forecast_values(obs, obs_map, ["forecast_net"], exclude_tokens=["community"])
+        candidates = self._forecast_values(
+            obs, obs_map, ["forecast_import"], exclude_tokens=["community"]
+        )
+        net_values = self._forecast_values(
+            obs, obs_map, ["forecast_net"], exclude_tokens=["community"]
+        )
         candidates.extend(value for value in net_values if value > 0.0)
         positive = [max(0.0, value) for value in candidates]
         return max(positive) if positive else 0.0
@@ -581,14 +753,18 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         positive = [max(0.0, value) for value in candidates]
         return max(positive) if positive else 0.0
 
-    def _forecast_community_import_peak_kw(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
+    def _forecast_community_import_peak_kw(
+        self, obs: np.ndarray, obs_map: Mapping[str, int]
+    ) -> float:
         candidates = self._forecast_values(obs, obs_map, ["forecast_community_import"])
         net_values = self._forecast_values(obs, obs_map, ["forecast_community_net"])
         candidates.extend(value for value in net_values if value > 0.0)
         positive = [max(0.0, value) for value in candidates]
         return max(positive) if positive else 0.0
 
-    def _forecast_community_headroom_min_kw(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
+    def _forecast_community_headroom_min_kw(
+        self, obs: np.ndarray, obs_map: Mapping[str, int]
+    ) -> float:
         return self._min_forecast_value(
             obs,
             obs_map,
@@ -596,25 +772,36 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             default=float("inf"),
         )
 
-    def _forecast_solar_resource_expected(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> bool:
-        pv_values = self._forecast_values(obs, obs_map, ["forecast_pv"], exclude_tokens=["community"])
+    def _forecast_solar_resource_expected(
+        self, obs: np.ndarray, obs_map: Mapping[str, int]
+    ) -> bool:
+        pv_values = self._forecast_values(
+            obs, obs_map, ["forecast_pv"], exclude_tokens=["community"]
+        )
         community_pv_values = self._forecast_values(obs, obs_map, ["forecast_community_pv"])
         irradiance_values = self._forecast_values(obs, obs_map, ["solar_irradiance_predicted"])
         return (
-            max((max(0.0, value) for value in pv_values), default=0.0) > self.pv_surplus_threshold_kw
+            max((max(0.0, value) for value in pv_values), default=0.0)
+            > self.pv_surplus_threshold_kw
             or max((max(0.0, value) for value in community_pv_values), default=0.0)
             > self.community_surplus_threshold_kw
             or max((max(0.0, value) for value in irradiance_values), default=0.0) > 100.0
         )
 
     def _get_storage_soc(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
-        value = self._storage_soc_ratio(np.asarray(obs, dtype=float), obs_map, default=self.storage_target_soc)
+        value = self._storage_soc_ratio(
+            np.asarray(obs, dtype=float), obs_map, default=self.storage_target_soc
+        )
         if math.isnan(value):
             return float(np.clip(self.storage_target_soc, 0.0, 1.0))
         return value
 
-    def _storage_strategy_limits(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> tuple[float, float]:
-        observed_min, observed_max = self._observed_storage_soc_limits(np.asarray(obs, dtype=float), obs_map)
+    def _storage_strategy_limits(
+        self, obs: np.ndarray, obs_map: Mapping[str, int]
+    ) -> tuple[float, float]:
+        observed_min, observed_max = self._observed_storage_soc_limits(
+            np.asarray(obs, dtype=float), obs_map
+        )
         min_soc = max(self.storage_min_soc, observed_min)
         max_soc = min(self.storage_max_soc, observed_max)
         if min_soc > max_soc:
@@ -627,9 +814,10 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             self._get_first_value(
                 obs,
                 obs_map,
-                ["pv_power_kw", "solar_generation"],
+                ["pv_power_kw"],
                 suffixes=("::generation_power_kw",),
-                default=0.0,
+                default=self._get_first_value(obs, obs_map, ["solar_generation"], default=0.0)
+                / self.step_hours,
             ),
         )
 
@@ -639,23 +827,59 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             self._get_first_value(
                 obs,
                 obs_map,
-                ["load_power_kw", "non_shiftable_load"],
-                default=0.0,
+                ["load_power_kw"],
+                default=self._get_first_value(obs, obs_map, ["non_shiftable_load"], default=0.0)
+                / self.step_hours,
             ),
         )
 
+    def _observed_passive_net_kw(self, obs, obs_map):
+        """Remove previous EV/BESS commands before allocating their next commands.
+
+        Simulator entity electrical metrics are simultaneous settled measurements.
+        Net import already contains those controllable powers; adding the next
+        EV command to that measurement would count its energy twice.
+        """
+        values = [
+            self._get_first_value(obs, obs_map, [name], default=float("nan"))
+            for name in ("net_power_kw", "bess_power_kw", "ev_charging_power_kw")
+        ]
+        if all(math.isfinite(value) for value in values):
+            net, bess, ev = values
+            return net - bess - ev
+        return None
+
     def _get_import_power(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
-        import_power = self._get_first_value(obs, obs_map, ["import_power_kw"], default=float("nan"))
+        passive_net = self._observed_passive_net_kw(obs, obs_map)
+        if passive_net is not None:
+            return max(0.0, passive_net)
+        import_power = self._get_first_value(
+            obs, obs_map, ["import_power_kw"], default=float("nan")
+        )
         if not math.isnan(import_power):
             return max(0.0, import_power)
-        net_power = self._get_first_value(obs, obs_map, ["net_power_kw", "net_electricity_consumption"], default=0.0)
+        net_power = self._get_first_value(obs, obs_map, ["net_power_kw"], default=float("nan"))
+        if not math.isfinite(net_power):
+            net_power = (
+                self._get_first_value(obs, obs_map, ["net_electricity_consumption"], default=0.0)
+                / self.step_hours
+            )
         return max(0.0, net_power)
 
     def _get_export_power(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
-        export_power = self._get_first_value(obs, obs_map, ["export_power_kw"], default=float("nan"))
+        export_power = self._get_first_value(
+            obs, obs_map, ["export_power_kw"], default=float("nan")
+        )
         if not math.isnan(export_power):
             return max(0.0, export_power)
-        net_power = self._get_first_value(obs, obs_map, ["net_power_kw", "net_electricity_consumption"], default=float("nan"))
+        net_power = self._get_first_value(obs, obs_map, ["net_power_kw"], default=float("nan"))
+        if not math.isfinite(net_power):
+            net_power = (
+                self._get_first_value(
+                    obs, obs_map, ["net_electricity_consumption"], default=float("nan")
+                )
+                / self.step_hours
+            )
         if not math.isnan(net_power):
             return max(0.0, -net_power)
         return 0.0
@@ -769,10 +993,18 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         headroom = self._forecast_community_headroom_min_kw(obs, obs_map)
         if math.isfinite(headroom) and headroom <= self.low_headroom_threshold_kw:
             return True
-        return self._forecast_community_import_peak_kw(obs, obs_map) >= self.community_import_threshold_kw
+        return (
+            self._forecast_community_import_peak_kw(obs, obs_map)
+            >= self.community_import_threshold_kw
+        )
 
     def _pv_surplus_kw(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
-        physical_surplus = max(0.0, self._get_pv_power(obs, obs_map) - self._get_load_power(obs, obs_map))
+        passive_net = self._observed_passive_net_kw(obs, obs_map)
+        if passive_net is not None:
+            return min(self._get_pv_power(obs, obs_map), max(0.0, -passive_net))
+        physical_surplus = max(
+            0.0, self._get_pv_power(obs, obs_map) - self._get_load_power(obs, obs_map)
+        )
         export_power = self._get_export_power(obs, obs_map)
         import_power = self._get_import_power(obs, obs_map)
         has_explicit_import_export = any(
@@ -789,7 +1021,11 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             # export can be caused by a previous storage/V2G discharge and
             # should not be reclassified as fresh solar available to charge.
             if export_power > self.energy_epsilon:
-                return min(export_power, physical_surplus) if physical_surplus > self.energy_epsilon else 0.0
+                return (
+                    min(export_power, physical_surplus)
+                    if physical_surplus > self.energy_epsilon
+                    else 0.0
+                )
             if import_power > self.energy_epsilon:
                 return 0.0
             return physical_surplus
@@ -802,7 +1038,9 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             return True
         return self._get_import_power(obs, obs_map) >= self.import_peak_threshold_kw
 
-    def _is_grid_stressed_or_forecast_stressed(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> bool:
+    def _is_grid_stressed_or_forecast_stressed(
+        self, obs: np.ndarray, obs_map: Mapping[str, int]
+    ) -> bool:
         if self._is_grid_stressed(obs, obs_map):
             return True
         headroom = self._forecast_local_headroom_min_kw(obs, obs_map)
@@ -848,7 +1086,9 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             if not math.isnan(can_charge) and can_charge <= 0.5:
                 return float(np.clip(0.0, bounds[0], bounds[1]))
 
-            available = self._get_first_storage_value(obs, obs_map, "available_charge_action_normalized")
+            available = self._get_first_storage_value(
+                obs, obs_map, "available_charge_action_normalized"
+            )
             if not math.isnan(available):
                 value = min(value, max(0.0, available))
 
@@ -857,7 +1097,9 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             if not math.isnan(can_discharge) and can_discharge <= 0.5:
                 return float(np.clip(0.0, bounds[0], bounds[1]))
 
-            available = self._get_first_storage_value(obs, obs_map, "available_discharge_action_normalized")
+            available = self._get_first_storage_value(
+                obs, obs_map, "available_discharge_action_normalized"
+            )
             if not math.isnan(available):
                 value = -min(abs(value), max(0.0, available))
 
@@ -980,7 +1222,10 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             charger_id=charger_id,
             building_name=building_name,
             feature="connected_state",
-            generic_names=["electric_vehicle_charger_state", "electric_vehicle_charger_connected_state"],
+            generic_names=[
+                "electric_vehicle_charger_state",
+                "electric_vehicle_charger_connected_state",
+            ],
             default=0.0,
         )
         current_soc = self._get_ev_value(
@@ -1004,7 +1249,11 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             ],
             default=current_soc,
         )
-        fallback_capacity = self.default_capacity if charger_info is None else charger_info.capacity or self.default_capacity
+        fallback_capacity = (
+            self.default_capacity
+            if charger_info is None
+            else charger_info.capacity or self.default_capacity
+        )
         capacity = self._get_ev_value(
             obs,
             obs_map,
@@ -1031,6 +1280,25 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             if charger_info is None
             else charger_info.max_discharge_power or charger_info.max_power or 7.4
         )
+        # Dynamic entity layouts can add or resize chargers after dataset loading.
+        for feature, fallback in (
+            ("max_charging_power_kw", max_power),
+            ("max_discharging_power_kw", max_discharge_power),
+        ):
+            observed = self._get_ev_value(
+                obs,
+                obs_map,
+                charger_id=charger_id,
+                building_name=building_name,
+                feature=feature,
+                generic_names=[],
+                default=float("nan"),
+            )
+            power = observed if math.isfinite(observed) and observed >= 0.0 else fallback
+            if feature == "max_charging_power_kw":
+                max_power = power
+            else:
+                max_discharge_power = power
         can_charge = self._get_ev_value(
             obs,
             obs_map,
@@ -1164,16 +1432,23 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             return float("nan")
         return parsed if math.isfinite(parsed) else float("nan")
 
-    def _required_ev_charge_rate(self, ctx: Mapping[str, float | bool | None], *, margin_rate: float = 0.0) -> float:
+    def _required_ev_charge_rate(
+        self, ctx: Mapping[str, float | bool | None], *, margin_rate: float = 0.0
+    ) -> float:
         if not ctx.get("connected"):
             return 0.0
 
         simulator_required = self._ctx_float(ctx, "min_required_action")
         service_gap = self._ev_service_gap(ctx)
-        if service_gap <= self.energy_epsilon and (math.isnan(simulator_required) or simulator_required <= 0.0):
+        if service_gap <= self.energy_epsilon and (
+            math.isnan(simulator_required) or simulator_required <= 0.0
+        ):
             return 0.0
 
-        hours = max(float(ctx["hours_to_departure"]) - self._effective_ev_deadline_buffer_hours(), self.step_hours)
+        hours = max(
+            float(ctx["hours_to_departure"]) - self._effective_ev_deadline_buffer_hours(),
+            self.step_hours,
+        )
         required_rate = service_gap * float(ctx["capacity"]) / (hours * float(ctx["max_power"]))
         if not math.isnan(simulator_required):
             required_rate = max(required_rate, simulator_required)
@@ -1187,7 +1462,10 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         departure_feasibility = self._ctx_float(ctx, "departure_feasibility")
         # Simulator ratio is required energy divided by maximum deliverable energy.
         # Values <= 1 are feasible; values > 1 indicate the charger cannot hit the target.
-        return not math.isnan(departure_feasibility) and departure_feasibility > 1.0 + self.energy_epsilon
+        return (
+            not math.isnan(departure_feasibility)
+            and departure_feasibility > 1.0 + self.energy_epsilon
+        )
 
     def _ev_departure_is_tight(self, ctx: Mapping[str, float | bool | None]) -> bool:
         if self._ev_departure_is_infeasible(ctx):
@@ -1211,7 +1489,9 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
     ) -> bool:
         if self._ev_departure_is_infeasible(ctx):
             return False
-        if float(ctx["hours_to_departure"]) <= max(self.emergency_hours, self._effective_ev_service_lookahead_hours()):
+        if float(ctx["hours_to_departure"]) <= max(
+            self.emergency_hours, self._effective_ev_service_lookahead_hours()
+        ):
             return False
         if self._ev_departure_is_tight(ctx):
             return False
@@ -1238,7 +1518,9 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         if float(ctx["soc"]) >= target_soc - self.ev_service_soc_tolerance:
             return 0.0
         gap_to_target = max(target_soc - float(ctx["soc"]), 0.0)
-        max_target_rate = gap_to_target * float(ctx["capacity"]) / (self.step_hours * float(ctx["max_power"]))
+        max_target_rate = (
+            gap_to_target * float(ctx["capacity"]) / (self.step_hours * float(ctx["max_power"]))
+        )
         simulator_required = self._ctx_float(ctx, "min_required_action")
         if not math.isnan(simulator_required):
             max_target_rate = max(max_target_rate, simulator_required)
@@ -1246,13 +1528,17 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
 
         return self._clip_non_v2g_charge(requested_rate, bounds)
 
-    def _ev_v2g_buffered_context(self, ctx: Mapping[str, float | bool | None]) -> Dict[str, float | bool | None]:
+    def _ev_v2g_buffered_context(
+        self, ctx: Mapping[str, float | bool | None]
+    ) -> Dict[str, float | bool | None]:
         buffered = dict(ctx)
         if (
             self.allow_v2g
             and self.ev_v2g_buffer_soc > self.energy_epsilon
-            and float(ctx["hours_to_departure"]) > (
-                self._effective_ev_v2g_min_departure_hours() + self._effective_ev_deadline_buffer_hours()
+            and float(ctx["hours_to_departure"])
+            > (
+                self._effective_ev_v2g_min_departure_hours()
+                + self._effective_ev_deadline_buffer_hours()
             )
         ):
             target_soc = max(float(ctx["required_soc"]), self.ev_service_target_soc)
@@ -1260,7 +1546,9 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         return buffered
 
     def _minimum_ev_service_charge_rate(self, ctx: Mapping[str, float | bool | None]) -> float:
-        required_rate = self._required_ev_charge_rate(ctx, margin_rate=self._effective_ev_service_margin_rate())
+        required_rate = self._required_ev_charge_rate(
+            ctx, margin_rate=self._effective_ev_service_margin_rate()
+        )
         if required_rate <= self.energy_epsilon:
             return 0.0
 
@@ -1312,13 +1600,17 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             return 0.0
 
         target_soc = max(float(ctx["required_soc"]), self.ev_service_target_soc)
-        reserve_floor = target_soc + self._effective_ev_v2g_reserve_soc() + self.ev_v2g_service_margin_soc
+        reserve_floor = (
+            target_soc + self._effective_ev_v2g_reserve_soc() + self.ev_v2g_service_margin_soc
+        )
         available_soc = float(ctx["soc"]) - reserve_floor
         if available_soc <= self.energy_epsilon:
             return 0.0
 
         max_discharge_power = float(ctx.get("max_discharge_power") or ctx["max_power"])
-        available_rate = available_soc * float(ctx["capacity"]) / (self.step_hours * max_discharge_power)
+        available_rate = (
+            available_soc * float(ctx["capacity"]) / (self.step_hours * max_discharge_power)
+        )
         simulator_available = self._ctx_float(ctx, "available_discharge_action")
         if not math.isnan(simulator_available):
             available_rate = min(available_rate, max(0.0, simulator_available))
@@ -1334,7 +1626,9 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         pending = self._get_deferrable_value(obs, obs_map, prefix, "pending", default=0.0)
         running = self._get_deferrable_value(obs, obs_map, prefix, "running", default=0.0)
         can_start = self._get_deferrable_value(obs, obs_map, prefix, "can_start", default=0.0)
-        deadline_missed = self._get_deferrable_value(obs, obs_map, prefix, "deadline_missed", default=0.0)
+        deadline_missed = self._get_deferrable_value(
+            obs, obs_map, prefix, "deadline_missed", default=0.0
+        )
         return pending > 0.5 and running <= 0.5 and can_start > 0.5 and deadline_missed <= 0.5
 
     def _deferrable_must_start_now(
@@ -1343,15 +1637,15 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
         obs_map: Mapping[str, int],
         prefix: str,
     ) -> bool:
-        must_start_now = self._get_deferrable_value(obs, obs_map, prefix, "must_start_now", default=0.0)
+        must_start_now = self._get_deferrable_value(
+            obs, obs_map, prefix, "must_start_now", default=0.0
+        )
         if must_start_now > 0.5:
             return True
 
-        must_run = self._get_deferrable_value(obs, obs_map, prefix, "must_run", default=0.0)
-        if must_run > 0.5:
-            return True
-
-        slack_steps = self._get_deferrable_value(obs, obs_map, prefix, "slack_steps", default=float("nan"))
+        slack_steps = self._get_deferrable_value(
+            obs, obs_map, prefix, "slack_steps", default=float("nan")
+        )
         if not math.isnan(slack_steps) and slack_steps >= 0.0:
             return slack_steps <= self.deferrable_safety_margin_steps
 
@@ -1393,7 +1687,9 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
             and not math.isnan(remaining_steps)
             and remaining_steps > 0.0
         ):
-            required_hours = (remaining_steps + self.deferrable_safety_margin_steps) * self.step_hours
+            required_hours = (
+                remaining_steps + self.deferrable_safety_margin_steps
+            ) * self.step_hours
             return hours_until_deadline <= required_hours
 
         return False
@@ -1401,16 +1697,23 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
     def _deferrable_start_value(self, bounds: Sequence[float]) -> float:
         return float(np.clip(self.deferrable_start_action, bounds[0], bounds[1]))
 
-    def _deferrable_grid_import_is_blocking(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> bool:
+    def _deferrable_grid_import_is_blocking(
+        self, obs: np.ndarray, obs_map: Mapping[str, int]
+    ) -> bool:
         threshold = self.deferrable_import_block_threshold_kw
         if not math.isfinite(threshold):
             return False
         return self._get_import_power(obs, obs_map) >= threshold
 
-    def _deferrable_community_import_is_blocking(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> bool:
+    def _deferrable_community_import_is_blocking(
+        self, obs: np.ndarray, obs_map: Mapping[str, int]
+    ) -> bool:
         local_threshold = self.deferrable_import_block_threshold_kw
         community_threshold = self.deferrable_community_import_block_threshold_kw
-        local_block = math.isfinite(local_threshold) and self._get_import_power(obs, obs_map) >= local_threshold
+        local_block = (
+            math.isfinite(local_threshold)
+            and self._get_import_power(obs, obs_map) >= local_threshold
+        )
         community_block = (
             math.isfinite(community_threshold)
             and self._get_community_import_power(obs, obs_map) >= community_threshold
@@ -1488,6 +1791,16 @@ class _OperationalBaselinePolicy(RuleBasedPolicy):
 class NormalPolicy(_OperationalBaselinePolicy):
     """Day-to-day behaviour: immediate EV charge, earliest deferrable start, simple self-consumption BESS."""
 
+    def __init__(self, config: Dict[str, Any]) -> None:
+        config = dict(config)
+        algorithm = dict(config.get("algorithm") or {})
+        hyper = dict(algorithm.get("hyperparameters") or {})
+        for key, default in NORMAL_DEFAULTS.items():
+            hyper.setdefault(key, default)
+        algorithm["hyperparameters"] = hyper
+        config["algorithm"] = algorithm
+        super().__init__(config)
+
     def _policy_type(self) -> str:
         return "normal_policy"
 
@@ -1501,7 +1814,9 @@ class NormalPolicy(_OperationalBaselinePolicy):
         action_name: str = "",
     ) -> float:
         ctx = self._connected_ev_context(agent_idx, obs, obs_map, charger_info, action_name)
-        target_soc = max(float(ctx["required_soc"]), float(np.clip(self.ev_normal_target_soc, 0.0, 1.0)))
+        target_soc = max(
+            float(ctx["required_soc"]), float(np.clip(self.ev_normal_target_soc, 0.0, 1.0))
+        )
         gap = max(target_soc - float(ctx["soc"]), 0.0)
         if not ctx["connected"] or gap <= self.energy_epsilon:
             return 0.0
@@ -1524,7 +1839,9 @@ class NormalPolicy(_OperationalBaselinePolicy):
         pending = self._get_deferrable_value(obs, obs_map, prefix, "pending", default=0.0)
         running = self._get_deferrable_value(obs, obs_map, prefix, "running", default=0.0)
         can_start = self._get_deferrable_value(obs, obs_map, prefix, "can_start", default=0.0)
-        deadline_missed = self._get_deferrable_value(obs, obs_map, prefix, "deadline_missed", default=0.0)
+        deadline_missed = self._get_deferrable_value(
+            obs, obs_map, prefix, "deadline_missed", default=0.0
+        )
         if pending > 0.5 and running <= 0.5 and can_start > 0.5 and deadline_missed <= 0.5:
             return float(np.clip(self.deferrable_start_action, bounds[0], bounds[1]))
         return 0.0
@@ -1540,8 +1857,12 @@ class NormalPolicy(_OperationalBaselinePolicy):
         del action_name
         soc = self._get_storage_soc(obs, obs_map)
         min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
-        surplus = self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
-        import_power = self._budget_value(agent_idx, "local_import_kw", self._get_import_power(obs, obs_map))
+        surplus = self._budget_value(
+            agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map)
+        )
+        import_power = self._budget_value(
+            agent_idx, "local_import_kw", self._get_import_power(obs, obs_map)
+        )
         low, high = bounds
 
         if surplus > self.pv_surplus_threshold_kw and soc < max_soc:
@@ -1614,7 +1935,9 @@ class RBCBasicPolicy(_OperationalBaselinePolicy):
         price_ctx = self._get_price_context(obs, obs_map)
 
         if bool(price_ctx["cheap"]):
-            return self._safe_ev_charge_rate(ctx, max(service_rate, self.ev_price_charge_rate), bounds)
+            return self._safe_ev_charge_rate(
+                ctx, max(service_rate, self.ev_price_charge_rate), bounds
+            )
         return self._safe_ev_charge_rate(ctx, service_rate, bounds)
 
     def _compute_deferrable_action(
@@ -1659,8 +1982,21 @@ class RBCBasicPolicy(_OperationalBaselinePolicy):
         low, high = bounds
         if bool(price_ctx["cheap"]) and soc < min(max_soc, self.storage_price_charge_soc_ceiling):
             return self._clip_storage_action(self.price_charge_rate, obs, obs_map, bounds)
-        if bool(price_ctx["expensive"]) and soc > max(min_soc, self.storage_price_discharge_soc_floor):
-            return self._clip_storage_action(-self.price_discharge_rate, obs, obs_map, bounds)
+        if bool(price_ctx["expensive"]) and soc > max(
+            min_soc, self.storage_price_discharge_soc_floor
+        ):
+            import_power = self._budget_value(
+                agent_idx, "local_import_kw", self._get_import_power(obs, obs_map)
+            )
+            rate = self._storage_power_limited_discharge_rate(
+                agent_idx,
+                import_power,
+                self.price_discharge_rate,
+                obs=obs,
+                obs_map=obs_map,
+                reserve_soc=max(min_soc, self.storage_price_discharge_soc_floor),
+            )
+            return self._clip_storage_action(-rate, obs, obs_map, bounds)
         return float(np.clip(0.0, low, high))
 
 
@@ -1669,9 +2005,9 @@ class RBCSmartPolicy(RBCBasicPolicy):
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
-        hyper = (config.get("algorithm", {}).get("hyperparameters") or {})
+        hyper = config.get("algorithm", {}).get("hyperparameters") or {}
         if "price_charge_rate" not in hyper:
-            self.price_charge_rate = 0.0
+            self.price_charge_rate = SMART_DEFAULTS["price_charge_rate"]
 
     def _policy_type(self) -> str:
         return "rbc_smart_policy"
@@ -1693,14 +2029,18 @@ class RBCSmartPolicy(RBCBasicPolicy):
         urgent_service = self._ev_service_is_urgent(ctx)
         wait_for_solar = self._ev_can_wait_for_expected_solar(ctx, obs, obs_map)
         price_ctx = self._get_price_context(obs, obs_map)
-        surplus = self._pv_surplus_kw(obs, obs_map)
+        surplus = self._budget_value(
+            agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map)
+        )
         forecast_surplus = self._forecast_local_surplus_kw(obs, obs_map)
         stressed = self._is_grid_stressed(obs, obs_map)
         stressed_or_forecast = self._is_grid_stressed_or_forecast_stressed(obs, obs_map)
         low, high = bounds
         safe_v2g_rate = self._safe_ev_v2g_rate(ctx)
         useful_local_import = self._has_useful_local_import(obs, obs_map)
-        import_power = self._get_import_power(obs, obs_map)
+        import_power = self._budget_value(
+            agent_idx, "local_import_kw", self._get_import_power(obs, obs_map)
+        )
 
         if (
             self.allow_v2g
@@ -1712,7 +2052,6 @@ class RBCSmartPolicy(RBCBasicPolicy):
         ):
             v2g_rate = self._ev_power_limited_discharge_rate(ctx, import_power, safe_v2g_rate)
             if v2g_rate > self.energy_epsilon:
-                self._record_ev_discharge_dispatch(agent_idx, ctx, v2g_rate)
                 return float(np.clip(-v2g_rate, low, high))
 
         if service_gap <= self.energy_epsilon and service_rate <= self.energy_epsilon:
@@ -1727,7 +2066,6 @@ class RBCSmartPolicy(RBCBasicPolicy):
                 allow_service_import=urgent_service,
             )
             action = self._safe_ev_charge_rate(buffered_ctx, charge_rate, bounds)
-            self._record_ev_charge_dispatch(agent_idx, buffered_ctx, action, local_first=True)
             return action
         if wait_for_solar or not urgent_service:
             return 0.0
@@ -1737,11 +2075,11 @@ class RBCSmartPolicy(RBCBasicPolicy):
             and surplus <= self.pv_surplus_threshold_kw
             and forecast_surplus <= self.pv_surplus_threshold_kw
         ):
-            action = self._safe_ev_charge_rate(ctx, max(service_rate, self.ev_price_charge_rate), bounds)
-            self._record_ev_charge_dispatch(agent_idx, ctx, action, local_first=True)
+            action = self._safe_ev_charge_rate(
+                ctx, max(service_rate, self.ev_price_charge_rate), bounds
+            )
             return action
         action = self._safe_ev_charge_rate(ctx, service_rate, bounds)
-        self._record_ev_charge_dispatch(agent_idx, ctx, action, local_first=True)
         return action
 
     def _compute_deferrable_action(
@@ -1760,7 +2098,9 @@ class RBCSmartPolicy(RBCBasicPolicy):
 
         urgency = self._get_deferrable_value(obs, obs_map, prefix, "urgency_ratio", default=0.0)
         slack = self._get_deferrable_value(obs, obs_map, prefix, "slack_ratio", default=1.0)
-        surplus = self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
+        surplus = self._budget_value(
+            agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map)
+        )
         stressed_or_forecast = self._is_grid_stressed_or_forecast_stressed(obs, obs_map)
         import_blocking = self._deferrable_grid_import_is_blocking(obs, obs_map)
 
@@ -1790,10 +2130,14 @@ class RBCSmartPolicy(RBCBasicPolicy):
         del action_name
         soc = self._get_storage_soc(obs, obs_map)
         min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
-        surplus = self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
+        surplus = self._budget_value(
+            agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map)
+        )
         forecast_surplus = self._forecast_local_surplus_kw(obs, obs_map)
         price_ctx = self._get_price_context(obs, obs_map)
-        import_power = self._budget_value(agent_idx, "local_import_kw", self._get_import_power(obs, obs_map))
+        import_power = self._budget_value(
+            agent_idx, "local_import_kw", self._get_import_power(obs, obs_map)
+        )
         has_ev_service_demand = self._agent_has_ev_service_demand(agent_idx, obs, obs_map)
         has_deferrable_demand = self._agent_has_deferrable_demand(agent_idx, obs, obs_map)
         low_headroom = self._has_low_headroom(obs, obs_map)
@@ -1801,9 +2145,8 @@ class RBCSmartPolicy(RBCBasicPolicy):
         stressed_or_forecast = self._is_grid_stressed_or_forecast_stressed(obs, obs_map)
         forecast_headroom = self._forecast_local_headroom_min_kw(obs, obs_map)
         forecast_stressed = (
-            (math.isfinite(forecast_headroom) and forecast_headroom <= self.low_headroom_threshold_kw)
-            or self._forecast_local_import_peak_kw(obs, obs_map) >= self.import_peak_threshold_kw
-        )
+            math.isfinite(forecast_headroom) and forecast_headroom <= self.low_headroom_threshold_kw
+        ) or self._forecast_local_import_peak_kw(obs, obs_map) >= self.import_peak_threshold_kw
         low, high = bounds
         price_charge_ceiling = min(max_soc, self.storage_price_charge_soc_ceiling)
         local_surplus_now = surplus > self.pv_surplus_threshold_kw
@@ -1831,7 +2174,10 @@ class RBCSmartPolicy(RBCBasicPolicy):
         if (
             (
                 import_power > self.storage_discharge_import_threshold_kw
-                or ((has_ev_service_demand or has_deferrable_demand) and import_power > self.energy_epsilon)
+                or (
+                    (has_ev_service_demand or has_deferrable_demand)
+                    and import_power > self.energy_epsilon
+                )
             )
             and not local_surplus_now
             and soc > max(min_soc, self.storage_price_discharge_soc_floor)
@@ -1892,9 +2238,7 @@ class RBCSmartPolicy(RBCBasicPolicy):
                 reserve_soc=max(min_soc, self.storage_price_discharge_soc_floor),
             )
             return self._clip_storage_action(-discharge_rate, obs, obs_map, bounds)
-        if (
-            price_charge_allowed
-        ):
+        if price_charge_allowed:
             return self._clip_storage_action(self.price_charge_rate, obs, obs_map, bounds)
         return float(np.clip(0.0, low, high))
 
@@ -1966,8 +2310,7 @@ class RBCSmartLocalPolicy(RBCSmartPolicy):
         return (
             max((max(0.0, value) for value in pv_values), default=0.0)
             > self.pv_surplus_threshold_kw
-            or max((max(0.0, value) for value in irradiance_values), default=0.0)
-            > 100.0
+            or max((max(0.0, value) for value in irradiance_values), default=0.0) > 100.0
         )
 
     def _get_headroom_kw(self, obs: np.ndarray, obs_map: Mapping[str, int]) -> float:
@@ -1989,9 +2332,7 @@ class RBCSmartLocalPolicy(RBCSmartPolicy):
         local_values: List[float] = []
         for name, index in matches:
             if index >= len(obs) or not (
-                "building" in name.lower()
-                or "phase" in name.lower()
-                or "charging" in name.lower()
+                "building" in name.lower() or "phase" in name.lower() or "charging" in name.lower()
             ):
                 continue
             value = self._get_value(obs, obs_map, name, default=float("nan"))
@@ -2059,6 +2400,8 @@ class RBCSmartLocalPolicy(RBCSmartPolicy):
 class RBCCommunityPolicy(RBCSmartPolicy):
     """Community-aware heuristic that prioritises REC surplus and peak relief."""
 
+    uses_community_dispatch = True
+
     def _policy_type(self) -> str:
         return "rbc_community_policy"
 
@@ -2080,11 +2423,17 @@ class RBCCommunityPolicy(RBCSmartPolicy):
         urgent_service = self._ev_service_is_urgent(ctx)
         wait_for_solar = self._ev_can_wait_for_expected_solar(ctx, obs, obs_map)
         price_ctx = self._get_price_context(obs, obs_map)
-        local_surplus = self._pv_surplus_kw(obs, obs_map)
-        community_surplus = self._community_surplus_kw(obs, obs_map)
+        local_surplus = self._budget_value(
+            agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map)
+        )
+        community_surplus = self._budget_value(
+            agent_idx, "community_surplus_kw", self._community_surplus_kw(obs, obs_map)
+        )
         forecast_community_surplus = self._forecast_community_surplus_kw(obs, obs_map)
         community_stressed = self._is_community_stressed(obs, obs_map)
-        community_stressed_or_forecast = self._is_community_stressed_or_forecast_stressed(obs, obs_map)
+        community_stressed_or_forecast = self._is_community_stressed_or_forecast_stressed(
+            obs, obs_map
+        )
         local_stressed = self._is_grid_stressed(obs, obs_map)
         community_discounted = self._community_energy_is_discounted()
         low, high = bounds
@@ -2094,8 +2443,12 @@ class RBCCommunityPolicy(RBCSmartPolicy):
         )
         useful_community_import = self._has_useful_community_import(obs, obs_map)
         useful_local_import = self._has_useful_local_import(obs, obs_map)
-        import_power = self._budget_value(agent_idx, "local_import_kw", self._get_import_power(obs, obs_map))
-        community_import = self._budget_value(agent_idx, "community_import_kw", self._get_community_import_power(obs, obs_map))
+        import_power = self._budget_value(
+            agent_idx, "local_import_kw", self._get_import_power(obs, obs_map)
+        )
+        community_import = self._budget_value(
+            agent_idx, "community_import_kw", self._get_community_import_power(obs, obs_map)
+        )
 
         if (
             self.allow_v2g
@@ -2114,7 +2467,6 @@ class RBCCommunityPolicy(RBCSmartPolicy):
             useful_power = max(import_power, community_import)
             v2g_rate = self._ev_power_limited_discharge_rate(ctx, useful_power, safe_v2g_rate)
             if v2g_rate > self.energy_epsilon:
-                self._record_ev_discharge_dispatch(agent_idx, ctx, v2g_rate)
                 return float(np.clip(-v2g_rate, low, high))
 
         if service_gap <= self.energy_epsilon and service_rate <= self.energy_epsilon:
@@ -2130,9 +2482,12 @@ class RBCCommunityPolicy(RBCSmartPolicy):
                 allow_service_import=urgent_service,
             )
             action = self._safe_ev_charge_rate(buffered_ctx, charge_rate, bounds)
-            self._record_ev_charge_dispatch(agent_idx, buffered_ctx, action, local_first=True)
             return action
-        if community_discounted and community_surplus > self.community_surplus_threshold_kw and not community_stressed:
+        if (
+            community_discounted
+            and community_surplus > self.community_surplus_threshold_kw
+            and not community_stressed
+        ):
             buffered_ctx = self._ev_v2g_buffered_context(ctx)
             charge_rate = self._ev_power_limited_charge_rate(
                 buffered_ctx,
@@ -2142,13 +2497,6 @@ class RBCCommunityPolicy(RBCSmartPolicy):
                 allow_service_import=urgent_service,
             )
             action = self._safe_ev_charge_rate(buffered_ctx, charge_rate, bounds)
-            self._record_ev_charge_dispatch(
-                agent_idx,
-                buffered_ctx,
-                action,
-                local_first=False,
-                community_first=True,
-            )
             return action
         if wait_for_solar or not urgent_service:
             return 0.0
@@ -2159,23 +2507,11 @@ class RBCCommunityPolicy(RBCSmartPolicy):
             and community_surplus <= self.community_surplus_threshold_kw
             and forecast_community_surplus <= self.community_surplus_threshold_kw
         ):
-            action = self._safe_ev_charge_rate(ctx, max(service_rate, self.ev_price_charge_rate), bounds)
-            self._record_ev_charge_dispatch(
-                agent_idx,
-                ctx,
-                action,
-                local_first=True,
-                community_first=community_discounted,
+            action = self._safe_ev_charge_rate(
+                ctx, max(service_rate, self.ev_price_charge_rate), bounds
             )
             return action
         action = self._safe_ev_charge_rate(ctx, service_rate, bounds)
-        self._record_ev_charge_dispatch(
-            agent_idx,
-            ctx,
-            action,
-            local_first=True,
-            community_first=community_discounted,
-        )
         return action
 
     def _compute_deferrable_action(
@@ -2194,13 +2530,17 @@ class RBCCommunityPolicy(RBCSmartPolicy):
 
         urgency = self._get_deferrable_value(obs, obs_map, prefix, "urgency_ratio", default=0.0)
         slack = self._get_deferrable_value(obs, obs_map, prefix, "slack_ratio", default=1.0)
-        local_surplus = self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
+        local_surplus = self._budget_value(
+            agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map)
+        )
         community_surplus = self._budget_value(
             agent_idx,
             "community_surplus_kw",
             self._community_surplus_kw(obs, obs_map),
         )
-        community_stressed_or_forecast = self._is_community_stressed_or_forecast_stressed(obs, obs_map)
+        community_stressed_or_forecast = self._is_community_stressed_or_forecast_stressed(
+            obs, obs_map
+        )
         community_discounted = self._community_energy_is_discounted()
         import_blocking = self._deferrable_community_import_is_blocking(obs, obs_map)
 
@@ -2235,7 +2575,9 @@ class RBCCommunityPolicy(RBCSmartPolicy):
         del action_name
         soc = self._get_storage_soc(obs, obs_map)
         min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
-        local_surplus = self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
+        local_surplus = self._budget_value(
+            agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map)
+        )
         community_surplus = self._budget_value(
             agent_idx,
             "community_surplus_kw",
@@ -2244,25 +2586,32 @@ class RBCCommunityPolicy(RBCSmartPolicy):
         forecast_community_surplus = self._forecast_community_surplus_kw(obs, obs_map)
         price_ctx = self._get_price_context(obs, obs_map)
         community_stressed = self._is_community_stressed(obs, obs_map)
-        community_stressed_or_forecast = self._is_community_stressed_or_forecast_stressed(obs, obs_map)
+        community_stressed_or_forecast = self._is_community_stressed_or_forecast_stressed(
+            obs, obs_map
+        )
         community_discounted = self._community_energy_is_discounted()
-        community_import = self._budget_value(agent_idx, "community_import_kw", self._get_community_import_power(obs, obs_map))
+        community_import = self._budget_value(
+            agent_idx, "community_import_kw", self._get_community_import_power(obs, obs_map)
+        )
         forecast_community_headroom = self._forecast_community_headroom_min_kw(obs, obs_map)
         forecast_community_stressed = (
-            (
-                math.isfinite(forecast_community_headroom)
-                and forecast_community_headroom <= self.low_headroom_threshold_kw
-            )
-            or self._forecast_community_import_peak_kw(obs, obs_map) >= self.community_import_threshold_kw
+            math.isfinite(forecast_community_headroom)
+            and forecast_community_headroom <= self.low_headroom_threshold_kw
+        ) or self._forecast_community_import_peak_kw(
+            obs, obs_map
+        ) >= self.community_import_threshold_kw
+        import_power = self._budget_value(
+            agent_idx, "local_import_kw", self._get_import_power(obs, obs_map)
         )
-        import_power = self._budget_value(agent_idx, "local_import_kw", self._get_import_power(obs, obs_map))
         has_ev_service_demand = self._agent_has_ev_service_demand(agent_idx, obs, obs_map)
         has_deferrable_demand = self._agent_has_deferrable_demand(agent_idx, obs, obs_map)
         low, high = bounds
         price_charge_ceiling = min(max_soc, self.storage_price_charge_soc_ceiling)
         local_surplus_now = local_surplus > self.pv_surplus_threshold_kw
         community_surplus_now = community_surplus > self.community_surplus_threshold_kw
-        community_surplus_expected = forecast_community_surplus > self.community_surplus_threshold_kw
+        community_surplus_expected = (
+            forecast_community_surplus > self.community_surplus_threshold_kw
+        )
         price_charge_allowed = (
             self.price_charge_rate > 0.0
             and soc < price_charge_ceiling
@@ -2455,8 +2804,12 @@ class SignalAwareRBC(RBCSmartPolicy):
         effective_price = ctx["price"] * self._price_multiplier
         forecasts = [
             self._get_first_value(
-                obs, obs_map,
-                [f"electricity_pricing_predicted_{i}", f"district__electricity_pricing_predicted_{i}"],
+                obs,
+                obs_map,
+                [
+                    f"electricity_pricing_predicted_{i}",
+                    f"district__electricity_pricing_predicted_{i}",
+                ],
                 default=float("nan"),
             )
             for i in (1, 2, 3)
@@ -2465,13 +2818,15 @@ class SignalAwareRBC(RBCSmartPolicy):
         if not valid:
             return {**ctx, "price": effective_price}
         forecast_mean = float(np.mean(valid))
-        forecast_min  = float(np.min(valid))
-        forecast_max  = float(np.max(valid))
+        forecast_min = float(np.min(valid))
+        forecast_max = float(np.max(valid))
         spread = max(forecast_max - forecast_min, abs(forecast_mean) * 0.05, 1e-9)
         return {
-            "price":             effective_price,
-            "cheap":             effective_price <= forecast_mean - 0.20 * spread or effective_price <= forecast_min + 0.10 * spread,
-            "expensive":         effective_price >= forecast_mean + 0.20 * spread or effective_price >= forecast_max - 0.10 * spread,
+            "price": effective_price,
+            "cheap": effective_price <= forecast_mean - 0.20 * spread
+            or effective_price <= forecast_min + 0.10 * spread,
+            "expensive": effective_price >= forecast_mean + 0.20 * spread
+            or effective_price >= forecast_max - 0.10 * spread,
             "near_forecast_peak": effective_price >= forecast_max - max(0.10 * spread, 0.005),
         }
 
@@ -2494,9 +2849,9 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
             0.0,
             float(hyper.get("signal_price_charge_rate", 0.0) or 0.0),
         )
-        self.signal_price_response_mode = str(
-            hyper.get("signal_price_response_mode", "binary") or "binary"
-        ).strip().lower()
+        self.signal_price_response_mode = (
+            str(hyper.get("signal_price_response_mode", "binary") or "binary").strip().lower()
+        )
         if self.signal_price_response_mode not in {
             "binary",
             "linear_discount",
@@ -2510,12 +2865,8 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
             hyper.get("signal_price_charge_reference_multiplier", 0.90)
         )
         if not 0.0 < self.signal_price_charge_reference_multiplier < 1.0:
-            raise ValueError(
-                "signal_price_charge_reference_multiplier must lie within (0, 1)"
-            )
-        self.signal_price_charge_gain_max = float(
-            hyper.get("signal_price_charge_gain_max", 1.5)
-        )
+            raise ValueError("signal_price_charge_reference_multiplier must lie within (0, 1)")
+        self.signal_price_charge_gain_max = float(hyper.get("signal_price_charge_gain_max", 1.5))
         if self.signal_price_charge_gain_max <= 0.0:
             raise ValueError("signal_price_charge_gain_max must be positive")
         self.signal_price_discharge_rate = max(
@@ -2526,9 +2877,7 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
             hyper.get("signal_price_discharge_reference_multiplier", 1.10)
         )
         if self.signal_price_discharge_reference_multiplier <= 1.0:
-            raise ValueError(
-                "signal_price_discharge_reference_multiplier must be greater than 1"
-            )
+            raise ValueError("signal_price_discharge_reference_multiplier must be greater than 1")
         self.signal_price_discharge_gain_max = float(
             hyper.get("signal_price_discharge_gain_max", 1.5)
         )
@@ -2686,8 +3035,8 @@ class SignalAwareRBCCommunity(RBCCommunityPolicy):
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
-        self._price_multiplier: float = 1.0                       # scalar / broadcast
-        self._price_multipliers: Optional[np.ndarray] = None      # per-building (CCLevel2)
+        self._price_multiplier: float = 1.0  # scalar / broadcast
+        self._price_multipliers: Optional[np.ndarray] = None  # per-building (CCLevel2)
         self._current_agent_idx: int = 0
 
     def export_artifacts(self, output_dir, context=None):
@@ -2695,10 +3044,13 @@ class SignalAwareRBCCommunity(RBCCommunityPolicy):
         metadata["deployable"] = False
         for artifact in metadata.get("artifacts", []):
             artifact["deployable"] = False
-            artifact.setdefault("config", {}).update({
-                "deployable": False, "requires_manager_context": True,
-                "runtime_only_reason": "hierarchical_signal_policy",
-            })
+            artifact.setdefault("config", {}).update(
+                {
+                    "deployable": False,
+                    "requires_manager_context": True,
+                    "runtime_only_reason": "hierarchical_signal_policy",
+                }
+            )
         return metadata
 
     def _policy_type(self) -> str:
@@ -2737,7 +3089,9 @@ class SignalAwareRBCCommunity(RBCCommunityPolicy):
             self.set_price_multiplier(context)
         return super().predict(observations, deterministic)
 
-    def _init_dispatch_budget(self, agent_idx: int, obs: np.ndarray, obs_map: Mapping[str, int]) -> None:
+    def _init_dispatch_budget(
+        self, agent_idx: int, obs: np.ndarray, obs_map: Mapping[str, int]
+    ) -> None:
         # The parent dispatch loop calls this once per building, before any
         # _get_price_context call for that building — so it is the reliable place
         # to record which building's multiplier applies to the price context.
@@ -2763,8 +3117,12 @@ class SignalAwareRBCCommunity(RBCCommunityPolicy):
         effective_price = ctx["price"] * multiplier
         forecasts = [
             self._get_first_value(
-                obs, obs_map,
-                [f"electricity_pricing_predicted_{i}", f"district__electricity_pricing_predicted_{i}"],
+                obs,
+                obs_map,
+                [
+                    f"electricity_pricing_predicted_{i}",
+                    f"district__electricity_pricing_predicted_{i}",
+                ],
                 default=float("nan"),
             )
             for i in (1, 2, 3)
@@ -2773,13 +3131,15 @@ class SignalAwareRBCCommunity(RBCCommunityPolicy):
         if not valid:
             return {**ctx, "price": effective_price}
         forecast_mean = float(np.mean(valid))
-        forecast_min  = float(np.min(valid))
-        forecast_max  = float(np.max(valid))
+        forecast_min = float(np.min(valid))
+        forecast_max = float(np.max(valid))
         spread = max(forecast_max - forecast_min, abs(forecast_mean) * 0.05, 1e-9)
         return {
-            "price":             effective_price,
-            "cheap":             effective_price <= forecast_mean - 0.20 * spread or effective_price <= forecast_min + 0.10 * spread,
-            "expensive":         effective_price >= forecast_mean + 0.20 * spread or effective_price >= forecast_max - 0.10 * spread,
+            "price": effective_price,
+            "cheap": effective_price <= forecast_mean - 0.20 * spread
+            or effective_price <= forecast_min + 0.10 * spread,
+            "expensive": effective_price >= forecast_mean + 0.20 * spread
+            or effective_price >= forecast_max - 0.10 * spread,
             "near_forecast_peak": effective_price >= forecast_max - max(0.10 * spread, 0.005),
         }
 
@@ -2821,10 +3181,13 @@ class SignalDirectedRBC(RBCSmartPolicy):
         metadata["deployable"] = False
         for artifact in metadata.get("artifacts", []):
             artifact["deployable"] = False
-            artifact.setdefault("config", {}).update({
-                "deployable": False, "requires_manager_context": True,
-                "runtime_only_reason": "hierarchical_signal_policy",
-            })
+            artifact.setdefault("config", {}).update(
+                {
+                    "deployable": False,
+                    "requires_manager_context": True,
+                    "runtime_only_reason": "hierarchical_signal_policy",
+                }
+            )
         return metadata
 
     def _policy_type(self) -> str:

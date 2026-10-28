@@ -117,7 +117,7 @@ def _distributed_config(name: str) -> dict:
 def _attach(ensemble: Ensemble) -> None:
     ensemble.attach_environment(
         observation_names=[["a", "b", "c"], ["a", "b"]],
-        action_names=[["storage"], ["charger", "appliance"]],
+        action_names=[["electrical_storage"], ["electric_vehicle_storage_charger_1", "deferrable_appliance_washer"]],
         action_space=[_Box([-2.0], [2.0]), _Box([0.0, 0.0], [7.4, 1.0])],
         observation_space=[None, None],
         metadata={"building_names": ["Building_1", "Building_2"]},

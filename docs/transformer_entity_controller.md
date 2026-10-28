@@ -17,7 +17,7 @@ The authoritative sources are the runtime [entity adapter](../utils/entity_adapt
 [backbone](../algorithms/transformer_shared/transformer_backbone.py), together with
 the shipped [tokenizer configuration](../configs/tokenizers/entity_default.json)
 and its [schema fixture](../configs/tokenizers/fixtures/entity_obs_sample.json).
-The tested simulator package is `softcpsrecsimulator==1.5.6` from
+The tested simulator package is `softcpsrecsimulator==1.9.1` from
 [`requirements.txt`](../requirements.txt). Historical PRs, including closed
 PR 23, are not normative.
 

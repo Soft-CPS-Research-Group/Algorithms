@@ -17,9 +17,9 @@ def test_maddpg_does_not_support_dynamic_topology() -> None:
 
 
 def test_rule_based_policy_supports_dynamic_topology() -> None:
-    from algorithms.agents.rbc_agent import RuleBasedPolicy
+    from algorithms.agents.baseline_policies import RBCBasicPolicy
 
-    assert RuleBasedPolicy.supports_dynamic_topology is True
+    assert RBCBasicPolicy.supports_dynamic_topology is True
 
 
 def test_agent_transformer_ppo_supports_dynamic_topology() -> None:

@@ -37,14 +37,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Simulator 1.8.3 benchmark data
+      - name: Checkout Simulator 1.9.1 benchmark data
         uses: actions/checkout@v4
         with:
           repository: Soft-CPS-Research-Group/Simulator
-          # Exact source commit used to publish softcpsrecsimulator 1.8.3.
+          # Exact source commit used to publish softcpsrecsimulator 1.9.1.
           # The inherited upstream repository already owns an unrelated v1.8.0 tag.
-          ref: 0ca1696884cb372ff8f09f443eddf6f50dccd238
+          ref: dae69ec3ad2e0b11bd580221b41db8b47b7a5a04
           path: .ci/Simulator
+          # Source attestation plus the exact fixtures exercised by this suite.
+          sparse-checkout: |
+            citylearn
+            tests/data/minute_ev_demo
+            data/datasets/rec_pt_2023_micro_4_v2
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -64,7 +69,7 @@ jobs:
       - name: Run tests
         run: pytest
       - name: Run consolidated agent job contracts
-        run: pytest -o addopts="" tests/e2e/test_e2e_consolidated_agents.py tests/e2e/test_common_job_profiles.py tests/e2e/test_runtime_reliability.py tests/e2e/test_export_contract.py
+        run: pytest -o addopts="" tests/e2e/test_e2e_consolidated_agents.py tests/e2e/test_baseline_semantics.py tests/e2e/test_common_job_profiles.py tests/e2e/test_runtime_reliability.py tests/e2e/test_export_contract.py
 
   version:
     if: github.event_name == 'push'

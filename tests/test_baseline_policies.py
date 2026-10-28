@@ -220,7 +220,8 @@ def test_normal_policy_controls_storage_ev_and_deferrable():
 
     actions = agent.predict([obs])
 
-    assert actions[0][0] > 0.0
+    # Immediate EV demand exceeds PV: the battery must supply the deficit.
+    assert actions[0][0] < 0.0
     assert actions[0][1] > 0.0
     assert actions[0][2] == pytest.approx(1.0)
 
@@ -865,7 +866,7 @@ def test_rbc_smart_policy_defers_nonurgent_ev_service_without_surplus():
     assert actions[0][1] == pytest.approx(0.0)
 
 
-def test_rbc_smart_policy_keeps_required_ev_rate_under_grid_stress():
+def test_rbc_smart_policy_caps_required_ev_rate_to_available_grid_headroom():
     agent = RBCSmartPolicy(
         {
             "algorithm": {
@@ -908,7 +909,7 @@ def test_rbc_smart_policy_keeps_required_ev_rate_under_grid_stress():
 
     actions = agent.predict([obs])
 
-    assert actions[0][1] == pytest.approx((0.8 - 0.2) * 60.0 / (10.0 * 7.4), abs=1e-6)
+    assert actions[0][1] == pytest.approx((1.0 - 0.05) / 7.4, abs=1e-6)
 
 
 def test_rbc_smart_policy_uses_simulator_min_required_ev_action():
@@ -1812,7 +1813,7 @@ def test_rbc_smart_policy_can_use_conservative_v2g_when_enabled():
     assert actions[0][2] == pytest.approx(0.0)
 
 
-def test_rbc_smart_policy_uses_v2g_for_useful_import_without_price_spike():
+def test_rbc_smart_policy_does_not_trigger_v2g_from_a_flat_price():
     agent = RBCSmartPolicy(
         {
             "algorithm": {
@@ -1850,7 +1851,7 @@ def test_rbc_smart_policy_uses_v2g_for_useful_import_without_price_spike():
 
     actions = agent.predict([obs])
 
-    assert actions[0][1] < 0.0
+    assert actions[0][1] == pytest.approx(0.0)
 
 
 def test_rbc_smart_policy_caps_ev_charge_at_required_soc_target():
