@@ -1,4 +1,4 @@
-# Common job runtime — stage 2
+# Common job runtime
 
 An Algorithms job receives one versioned configuration and its referenced datasets,
 constructs the simulator and execution unit, runs training/evaluation, and writes
@@ -8,7 +8,7 @@ learning; they do not create a second job lifecycle.
 Start with [configuration and migration](configuration.md), [installation](installation.md),
 and the [agent extension guide](agents.md). The [38-agent catalogue](../agent_catalogue.md)
 records implementations and research limitations. The [stage 2 delivery](delivery.md)
-records the acceptance scope and evidence.
+records the initial architecture scope. See [reliability](reliability.md) for stage 3 and [exports](exports.md) / [stage 4 delivery](export_delivery.md) for final KPIs and verified portable policy bundles.
 
 ```text
 run_experiment.py / algorithms-job

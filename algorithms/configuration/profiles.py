@@ -91,8 +91,19 @@ def resolve_profile(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_capabilities(project: Any) -> None:
+    from algorithms.export.support import SPECIALISED_ADAPTERS
+
     stages = project.pipeline
+    if project.bundle.require_deployable:
+        if project.outputs.model_artifacts not in {"bundle", "both"}:
+            raise ValueError("require_deployable requires an explicit bundle output request")
+        if not project.simulator.deterministic_finish:
+            raise ValueError("require_deployable requires final deterministic evaluation")
     for index, stage in enumerate(stages):
+        if project.bundle.require_deployable and stage.algorithm in SPECIALISED_ADAPTERS:
+            raise ValueError(
+                f"{stage.algorithm} requires a specialised export runtime; cannot promise a deployable bundle"
+            )
         spec = agent_spec(stage.algorithm)
         cap = spec.capabilities
         if project.simulator.interface not in cap.interfaces:

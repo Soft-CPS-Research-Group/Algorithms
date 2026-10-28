@@ -72,6 +72,11 @@ def test_oracle_replay_converts_kw_to_normalized_action_and_wraps_episode(
     assert agent.predict(observation)[0] == pytest.approx([0.2])
 
     metadata = agent.export_artifacts(str(tmp_path / "artifacts"))
+    from algorithms.export.bundle import export_tree
+    common = export_tree(agent, tmp_path / "common", {"config": {}})
+    assert common["deployment"]["eligible"] is False
+    assert common["artifacts"][0]["config"]["auxiliary_paths"] == ["schedule.json"]
+    assert (tmp_path / "common/schedule.json").is_file()
     assert metadata["parameters"]["service_teacher"] == {
         "algorithm": "RBCSmartLocalPolicy",
         "observation_scope": "building_plus_public_exogenous",

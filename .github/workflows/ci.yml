@@ -64,7 +64,7 @@ jobs:
       - name: Run tests
         run: pytest
       - name: Run consolidated agent job contracts
-        run: pytest -o addopts="" tests/e2e/test_e2e_consolidated_agents.py tests/e2e/test_common_job_profiles.py tests/e2e/test_runtime_reliability.py
+        run: pytest -o addopts="" tests/e2e/test_e2e_consolidated_agents.py tests/e2e/test_common_job_profiles.py tests/e2e/test_runtime_reliability.py tests/e2e/test_export_contract.py
 
   version:
     if: github.event_name == 'push'
@@ -125,6 +125,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          build-args: ALGORITHMS_COMMIT=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -166,6 +167,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          build-args: ALGORITHMS_COMMIT=${{ github.sha }}
           file: Dockerfile.jetson
           platforms: linux/arm64
           push: true
@@ -204,6 +206,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          build-args: ALGORITHMS_COMMIT=${{ github.sha }}
           file: Dockerfile.union
           platforms: linux/amd64
           push: true

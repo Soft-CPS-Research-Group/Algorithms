@@ -349,15 +349,31 @@ class CheckpointingConfig(BaseModel):
 
 
 class SimulatorExportConfig(BaseModel):
+    profile: Literal["final", "diagnostic"] = "final"
     mode: Literal["none", "during", "end"] = "none"
-    export_kpis_on_episode_end: bool = False
-    final_episode_only: bool = False
+    export_kpis_on_episode_end: bool = True
+    final_episode_only: bool = True
     kpis_final_episode_only: Optional[bool] = None
     timeseries_final_episode_only: Optional[bool] = None
     include_business_as_usual: bool = True
-    export_business_as_usual_timeseries: bool = True
+    export_business_as_usual_timeseries: bool = False
     kpi_round_decimals: Optional[int] = Field(default=None, ge=0)
     session_name: Optional[str] = None
+    diagnostic_max_episodes: int = Field(default=3, ge=1, le=100)
+    diagnostic_max_mb: float = Field(default=128, gt=0)
+
+    @model_validator(mode="after")
+    def resolve_export_policy(self):
+        # Historical false flags require an explicit diagnostic profile now.
+        # None inherits the common flag instead of silently becoming False.
+        for name in ("kpis_final_episode_only", "timeseries_final_episode_only"):
+            if getattr(self, name) is None:
+                setattr(self, name, self.final_episode_only)
+        if self.profile == "final":
+            self.final_episode_only = True
+            self.kpis_final_episode_only = True
+            self.timeseries_final_episode_only = True
+        return self
 
 
 class WrapperRewardConfig(BaseModel):
@@ -565,6 +581,10 @@ class ExecutionConfig(BaseModel):
 
 
 class BundleConfig(BaseModel):
+    verification_samples: int = Field(default=32, ge=2, le=1024)
+    verification_atol: float = Field(default=1e-5, gt=0)
+    verification_rtol: float = Field(default=1e-4, gt=0)
+    require_deployable: bool = False
     bundle_version: Optional[str] = Field(
         default=None, description="Bundle version published in manifest metadata"
     )

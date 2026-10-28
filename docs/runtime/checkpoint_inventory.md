@@ -20,9 +20,9 @@ also restores additional state. Only explicitly tested complete paths advertise
 | CC-L1 / CommunityCoordinator | Policy and optimizer with family-specific dimensions/counters | Hierarchical round-trip tests cover routing; no complete operational/rollout continuation promise |
 | CC-L2 directional | Policy/optimizer, reward moments, counters, selected validation-policy state/history and protocol state | Best-policy selection requires validation evidence. Common capability weights only; hierarchy continuation not certified |
 | CC-L2 capacity | Policy/optimizer, reward moments, PPO/CC counters and BC references | Does not persist full interval/rollout/simulator state; weights only |
-| BuildingAgent | No implemented training checkpoint (its methods raise NotImplementedError); catalogue corrected to save/load false | Explicit requests fail before execution; research model export remains available |
+| BuildingAgent | No implemented training checkpoint (its methods raise NotImplementedError); catalogue corrected to save/load false | Explicit requests fail before execution; verified ONNX policy export remains available; it is not a training checkpoint |
 | RBC/BAU/random/reference/solver policies | Stateless/rule parameters or no training checkpoint, as declared in the catalogue | No learned optimizer/replay to resume; output requests respect declared capabilities |
-| BCAgent/IQL/CQL entity/offline variants | Offline trainer's model/normalizer files and research export | Common checkpoint loading/saving not declared; offline optimization restart is not advertised as job resume |
+| BCAgent/IQL/CQL entity/offline variants | Offline trainer's model/normalizer files; entity IQL/CQL also export normalized ONNX | Common checkpoint loading/saving not declared; offline optimization restart is not advertised as job resume |
 | Pipeline/Ensemble | Manifest plus child payloads using stable stage/member routing | Full episode capability requires every leaf to be allowlisted and complete; frozen/partial-stage resumes are initializers |
 
 The precise 38-name capabilities and implementation paths are in

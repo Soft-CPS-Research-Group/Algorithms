@@ -111,7 +111,7 @@ def test_representative_families_share_job_results_and_bundle(name, tmp_path):
     job = tmp_path / "jobs" / name
     result = json.loads((job / "results/result.json").read_text())
     assert result["status"] == "completed"
-    assert result["output_contract_version"] == "algorithms.outputs.v1"
+    assert result["output_contract_version"] == "algorithms.outputs.v2"
     assert result["model_artifacts"] == "bundle"
     assert len(result["episode_execution"]) == 2
     assert result["episode_execution"][-1]["deterministic"] is True

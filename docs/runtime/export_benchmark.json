@@ -1,0 +1,691 @@
+{
+  "version": 1,
+  "agent": "NormalPolicy",
+  "building_ids": [
+    "Building_2",
+    "Building_3"
+  ],
+  "training_episodes": 2,
+  "evaluation_episodes": 1,
+  "tracking": "disabled",
+  "model_export": "disabled",
+  "rows": [
+    {
+      "size": "small",
+      "steps_per_episode": 24,
+      "profile": "final_kpis",
+      "repetition": 0,
+      "wall_seconds": 2.3219970899954205,
+      "output_seconds": 0.02223812000011094,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.19345452100242255,
+          "total_bytes": 33240,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 33240,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "small",
+      "steps_per_episode": 24,
+      "profile": "final_kpis",
+      "repetition": 1,
+      "wall_seconds": 0.4983891230003792,
+      "output_seconds": 0.023753504996420816,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.18892090499866754,
+          "total_bytes": 33240,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 33240,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "small",
+      "steps_per_episode": 24,
+      "profile": "final_kpis",
+      "repetition": 2,
+      "wall_seconds": 0.49862918400322087,
+      "output_seconds": 0.022445271999458782,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.19289779300015653,
+          "total_bytes": 33240,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 33240,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "small",
+      "steps_per_episode": 24,
+      "profile": "previous_final_timeseries",
+      "repetition": 0,
+      "wall_seconds": 0.567496065996238,
+      "output_seconds": 0.023077368998201564,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.21946576500340598,
+          "total_bytes": 54418,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 54418,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "small",
+      "steps_per_episode": 24,
+      "profile": "previous_final_timeseries",
+      "repetition": 1,
+      "wall_seconds": 0.5073926410041167,
+      "output_seconds": 0.021639596001477912,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.1920901529956609,
+          "total_bytes": 54418,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 54418,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "small",
+      "steps_per_episode": 24,
+      "profile": "previous_final_timeseries",
+      "repetition": 2,
+      "wall_seconds": 0.5000379150005756,
+      "output_seconds": 0.021263123002427164,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.1897481659980258,
+          "total_bytes": 54418,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 54418,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "small",
+      "steps_per_episode": 24,
+      "profile": "diagnostic_all",
+      "repetition": 0,
+      "wall_seconds": 0.8908025170021574,
+      "output_seconds": 0.021125848004885484,
+      "episode_exports": [
+        {
+          "episode": 0,
+          "seconds": 0.18962377600109903,
+          "total_bytes": 62626,
+          "final_evaluation": false
+        },
+        {
+          "episode": 1,
+          "seconds": 0.19087113700516056,
+          "total_bytes": 125326,
+          "final_evaluation": false
+        },
+        {
+          "episode": 2,
+          "seconds": 0.19447956099611474,
+          "total_bytes": 188021,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 188021,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "small",
+      "steps_per_episode": 24,
+      "profile": "diagnostic_all",
+      "repetition": 1,
+      "wall_seconds": 0.8894402839941904,
+      "output_seconds": 0.023631427997315768,
+      "episode_exports": [
+        {
+          "episode": 0,
+          "seconds": 0.19010656199679943,
+          "total_bytes": 62626,
+          "final_evaluation": false
+        },
+        {
+          "episode": 1,
+          "seconds": 0.19213977900653845,
+          "total_bytes": 125326,
+          "final_evaluation": false
+        },
+        {
+          "episode": 2,
+          "seconds": 0.18980101899796864,
+          "total_bytes": 188021,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 188021,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "small",
+      "steps_per_episode": 24,
+      "profile": "diagnostic_all",
+      "repetition": 2,
+      "wall_seconds": 0.8909582749984111,
+      "output_seconds": 0.024185335998481605,
+      "episode_exports": [
+        {
+          "episode": 0,
+          "seconds": 0.18987278200074797,
+          "total_bytes": 62626,
+          "final_evaluation": false
+        },
+        {
+          "episode": 1,
+          "seconds": 0.19090480799786747,
+          "total_bytes": 125326,
+          "final_evaluation": false
+        },
+        {
+          "episode": 2,
+          "seconds": 0.19156670500524342,
+          "total_bytes": 188021,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 188021,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "representative",
+      "steps_per_episode": 168,
+      "profile": "final_kpis",
+      "repetition": 0,
+      "wall_seconds": 1.5221883710037218,
+      "output_seconds": 0.020883931996650063,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.29960815099911997,
+          "total_bytes": 33625,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 33625,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "representative",
+      "steps_per_episode": 168,
+      "profile": "final_kpis",
+      "repetition": 1,
+      "wall_seconds": 1.7061219140014146,
+      "output_seconds": 0.03701520799950231,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.424716867004463,
+          "total_bytes": 33625,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 33625,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "representative",
+      "steps_per_episode": 168,
+      "profile": "final_kpis",
+      "repetition": 2,
+      "wall_seconds": 1.6940951159995166,
+      "output_seconds": 0.023687867003900465,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.3082636070030276,
+          "total_bytes": 33625,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 33625,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "representative",
+      "steps_per_episode": 168,
+      "profile": "previous_final_timeseries",
+      "repetition": 0,
+      "wall_seconds": 1.932825240000966,
+      "output_seconds": 0.027935290003370028,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.37802325599477626,
+          "total_bytes": 176958,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 176958,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "representative",
+      "steps_per_episode": 168,
+      "profile": "previous_final_timeseries",
+      "repetition": 1,
+      "wall_seconds": 1.8225144450043445,
+      "output_seconds": 0.02610711099987384,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.3352197099957266,
+          "total_bytes": 176958,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 176958,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "representative",
+      "steps_per_episode": 168,
+      "profile": "previous_final_timeseries",
+      "repetition": 2,
+      "wall_seconds": 1.714461459996528,
+      "output_seconds": 0.025594873004592955,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.33412567200139165,
+          "total_bytes": 176958,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 176958,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "representative",
+      "steps_per_episode": 168,
+      "profile": "diagnostic_all",
+      "repetition": 0,
+      "wall_seconds": 2.509015139999974,
+      "output_seconds": 0.04052430099545745,
+      "episode_exports": [
+        {
+          "episode": 0,
+          "seconds": 0.3491102789994329,
+          "total_bytes": 232764,
+          "final_evaluation": false
+        },
+        {
+          "episode": 1,
+          "seconds": 0.3414121609966969,
+          "total_bytes": 465381,
+          "final_evaluation": false
+        },
+        {
+          "episode": 2,
+          "seconds": 0.3972676869962015,
+          "total_bytes": 697695,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 697695,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "representative",
+      "steps_per_episode": 168,
+      "profile": "diagnostic_all",
+      "repetition": 1,
+      "wall_seconds": 2.4025976340053603,
+      "output_seconds": 0.023339997002040036,
+      "episode_exports": [
+        {
+          "episode": 0,
+          "seconds": 0.3371932750014821,
+          "total_bytes": 232764,
+          "final_evaluation": false
+        },
+        {
+          "episode": 1,
+          "seconds": 0.3348160000023199,
+          "total_bytes": 465381,
+          "final_evaluation": false
+        },
+        {
+          "episode": 2,
+          "seconds": 0.3348719620043994,
+          "total_bytes": 697695,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 697695,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "representative",
+      "steps_per_episode": 168,
+      "profile": "diagnostic_all",
+      "repetition": 2,
+      "wall_seconds": 2.4122990489995573,
+      "output_seconds": 0.026434715000505093,
+      "episode_exports": [
+        {
+          "episode": 0,
+          "seconds": 0.3322568579969811,
+          "total_bytes": 232764,
+          "final_evaluation": false
+        },
+        {
+          "episode": 1,
+          "seconds": 0.33437524100008886,
+          "total_bytes": 465381,
+          "final_evaluation": false
+        },
+        {
+          "episode": 2,
+          "seconds": 0.33365298300486756,
+          "total_bytes": 697695,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 697695,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "large",
+      "steps_per_episode": 720,
+      "profile": "final_kpis",
+      "repetition": 0,
+      "wall_seconds": 6.022985326999333,
+      "output_seconds": 0.024352784996153787,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.7917382360028569,
+          "total_bytes": 33633,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 33633,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "large",
+      "steps_per_episode": 720,
+      "profile": "final_kpis",
+      "repetition": 1,
+      "wall_seconds": 6.0051720140036196,
+      "output_seconds": 0.024317284995049704,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.784487518001697,
+          "total_bytes": 33633,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 33633,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "large",
+      "steps_per_episode": 720,
+      "profile": "final_kpis",
+      "repetition": 2,
+      "wall_seconds": 5.994229767005891,
+      "output_seconds": 0.023827193996112328,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.7884770529999514,
+          "total_bytes": 33633,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 33633,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "large",
+      "steps_per_episode": 720,
+      "profile": "previous_final_timeseries",
+      "repetition": 0,
+      "wall_seconds": 6.010056321996672,
+      "output_seconds": 0.024429306999081746,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.7885594459949061,
+          "total_bytes": 651432,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 651432,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "large",
+      "steps_per_episode": 720,
+      "profile": "previous_final_timeseries",
+      "repetition": 1,
+      "wall_seconds": 5.974325455004873,
+      "output_seconds": 0.02349977999983821,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.7884595720024663,
+          "total_bytes": 651432,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 651432,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "large",
+      "steps_per_episode": 720,
+      "profile": "previous_final_timeseries",
+      "repetition": 2,
+      "wall_seconds": 5.997699947998626,
+      "output_seconds": 0.040037558996118605,
+      "episode_exports": [
+        {
+          "episode": 2,
+          "seconds": 0.7638729269965552,
+          "total_bytes": 651432,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 651432,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "large",
+      "steps_per_episode": 720,
+      "profile": "diagnostic_all",
+      "repetition": 0,
+      "wall_seconds": 7.86201226599951,
+      "output_seconds": 0.024561758000345435,
+      "episode_exports": [
+        {
+          "episode": 0,
+          "seconds": 0.8730455280019669,
+          "total_bytes": 887180,
+          "final_evaluation": false
+        },
+        {
+          "episode": 1,
+          "seconds": 0.8038516379965586,
+          "total_bytes": 1772890,
+          "final_evaluation": false
+        },
+        {
+          "episode": 2,
+          "seconds": 0.8099741569967591,
+          "total_bytes": 2659417,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 2659417,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "large",
+      "steps_per_episode": 720,
+      "profile": "diagnostic_all",
+      "repetition": 1,
+      "wall_seconds": 7.83731817700027,
+      "output_seconds": 0.024050177999015432,
+      "episode_exports": [
+        {
+          "episode": 0,
+          "seconds": 0.8241256600013003,
+          "total_bytes": 887180,
+          "final_evaluation": false
+        },
+        {
+          "episode": 1,
+          "seconds": 0.7969005229970207,
+          "total_bytes": 1772890,
+          "final_evaluation": false
+        },
+        {
+          "episode": 2,
+          "seconds": 0.7993124619970331,
+          "total_bytes": 2659417,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 2659417,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    },
+    {
+      "size": "large",
+      "steps_per_episode": 720,
+      "profile": "diagnostic_all",
+      "repetition": 2,
+      "wall_seconds": 7.846504111003014,
+      "output_seconds": 0.023838978006097022,
+      "episode_exports": [
+        {
+          "episode": 0,
+          "seconds": 0.8102016709963209,
+          "total_bytes": 887180,
+          "final_evaluation": false
+        },
+        {
+          "episode": 1,
+          "seconds": 0.8003578919961001,
+          "total_bytes": 1772890,
+          "final_evaluation": false
+        },
+        {
+          "episode": 2,
+          "seconds": 0.7984452660020906,
+          "total_bytes": 2659417,
+          "final_evaluation": true
+        }
+      ],
+      "simulation_bytes": 2659417,
+      "bundle_bytes": 0,
+      "checkpoint_seconds": 0.0
+    }
+  ],
+  "summary": [
+    {
+      "size": "small",
+      "profile": "final_kpis",
+      "median_wall_seconds": 0.49862918400322087,
+      "median_simulation_bytes": 33240
+    },
+    {
+      "size": "small",
+      "profile": "previous_final_timeseries",
+      "median_wall_seconds": 0.5073926410041167,
+      "median_simulation_bytes": 54418
+    },
+    {
+      "size": "small",
+      "profile": "diagnostic_all",
+      "median_wall_seconds": 0.8908025170021574,
+      "median_simulation_bytes": 188021
+    },
+    {
+      "size": "representative",
+      "profile": "final_kpis",
+      "median_wall_seconds": 1.6940951159995166,
+      "median_simulation_bytes": 33625
+    },
+    {
+      "size": "representative",
+      "profile": "previous_final_timeseries",
+      "median_wall_seconds": 1.8225144450043445,
+      "median_simulation_bytes": 176958
+    },
+    {
+      "size": "representative",
+      "profile": "diagnostic_all",
+      "median_wall_seconds": 2.4122990489995573,
+      "median_simulation_bytes": 697695
+    },
+    {
+      "size": "large",
+      "profile": "final_kpis",
+      "median_wall_seconds": 6.0051720140036196,
+      "median_simulation_bytes": 33633
+    },
+    {
+      "size": "large",
+      "profile": "previous_final_timeseries",
+      "median_wall_seconds": 5.997699947998626,
+      "median_simulation_bytes": 651432
+    },
+    {
+      "size": "large",
+      "profile": "diagnostic_all",
+      "median_wall_seconds": 7.846504111003014,
+      "median_simulation_bytes": 2659417
+    }
+  ]
+}

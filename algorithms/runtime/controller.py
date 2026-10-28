@@ -383,12 +383,20 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
             )
         )
         self._export_final_episode_only = bool(export_cfg.get("final_episode_only", False))
-        self._export_kpis_final_episode_only = bool(
-            export_cfg.get("kpis_final_episode_only", self._export_final_episode_only)
+        self._export_kpis_final_episode_only = (
+            self._export_final_episode_only
+            if export_cfg.get("kpis_final_episode_only") is None
+            else bool(export_cfg["kpis_final_episode_only"])
         )
-        self._export_timeseries_final_episode_only = bool(
-            export_cfg.get("timeseries_final_episode_only", self._export_final_episode_only)
+        self._export_timeseries_final_episode_only = (
+            self._export_final_episode_only
+            if export_cfg.get("timeseries_final_episode_only") is None
+            else bool(export_cfg["timeseries_final_episode_only"])
         )
+        self._export_profile = export_cfg.get("profile", "final")
+        self._diagnostic_max_episodes = export_cfg.get("diagnostic_max_episodes", 3)
+        self._diagnostic_max_mb = export_cfg.get("diagnostic_max_mb", 128)
+        self.export_measurements = []
         self._export_include_business_as_usual = bool(
             export_cfg.get("include_business_as_usual", True)
         )
@@ -396,12 +404,7 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
             export_cfg.get("export_business_as_usual_timeseries", True)
         )
         self._export_kpi_round_decimals = export_cfg.get("kpi_round_decimals")
-        self._manual_kpi_export = self._configured_export_kpis_on_episode_end and (
-            not self._export_include_business_as_usual
-            or not self._export_business_as_usual_timeseries
-            or self._export_kpi_round_decimals is not None
-            or not self._export_kpis_final_episode_only
-        )
+        self._manual_kpi_export = self._configured_export_kpis_on_episode_end
         self._manual_kpi_exported_episodes: set[int | None] = set()
 
         self.wrapper_reward_enabled = bool(wrapper_reward_cfg.get("enabled", False))
@@ -746,6 +749,10 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
                 observation_space=self.observation_space,
                 metadata=metadata,
             )
+            if hasattr(self.model, "_export_references"):
+                from algorithms.export.references import begin_capture
+
+                begin_capture(self.model, self.config)
 
     def _resolve_building_names(self) -> Optional[List[str]]:
         env = getattr(self, "env", None)
@@ -804,7 +811,9 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
                 dimensions.append(0)
         return dimensions
 
-    def _configure_episode_exports(self, episode: int, episodes: int) -> bool:
+    def _configure_episode_exports(
+        self, episode: int, episodes: int, *, deterministic=True
+    ) -> bool:
         """Enable KPI export and timeseries rendering independently per episode."""
 
         is_final_episode = episode >= episodes - 1
@@ -814,6 +823,16 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
         render_this_episode = self._configured_render_enabled and (
             not self._export_timeseries_final_episode_only or is_final_episode
         )
+        if getattr(self, "_export_profile", None) == "final":
+            export_this_episode = export_this_episode and is_final_episode and deterministic
+            render_this_episode = render_this_episode and is_final_episode and deterministic
+        elif getattr(self, "_export_profile", None) == "diagnostic" and not (
+            is_final_episode and deterministic
+        ):
+            allowed = episode < self._diagnostic_max_episodes
+            export_this_episode = export_this_episode and allowed
+            render_this_episode = render_this_episode and allowed
+        self._export_episode_deterministic = deterministic
 
         if hasattr(self.env, "render_enabled"):
             self.env.render_enabled = render_this_episode
@@ -834,10 +853,7 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
         if not export_this_episode or not self._manual_kpi_export:
             return
         if not hasattr(self.env, "export_final_kpis"):
-            logger.warning(
-                "Simulator does not expose export_final_kpis(); skipping manual KPI export."
-            )
-            return
+            raise RuntimeError("Requested KPIs require simulator.export_final_kpis()")
         if episode in self._manual_kpi_exported_episodes:
             return
 
@@ -854,6 +870,12 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
         }
         if not self._export_kpis_final_episode_only and episode is not None:
             candidate_kwargs["filepath"] = f"exported_kpis_ep{episode}.csv"
+        # A training diagnostic must never occupy the final-scorecard filename.
+        if getattr(self, "_export_profile", None) == "diagnostic":
+            if is_final_episode and getattr(self, "_export_episode_deterministic", False):
+                candidate_kwargs.pop("filepath", None)
+            else:
+                candidate_kwargs["filepath"] = f"diagnostic_kpis_ep{episode}.csv"
 
         sig = inspect.signature(self.env.export_final_kpis)
         has_var_keyword = any(
@@ -863,12 +885,40 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
             kwargs = candidate_kwargs
         else:
             kwargs = {k: v for k, v in candidate_kwargs.items() if k in sig.parameters}
+        export_started = time.perf_counter()
         self.env.export_final_kpis(**kwargs)
-        if not self._export_kpis_final_episode_only and is_final_episode and episode is not None:
+        if (
+            getattr(self, "_export_profile", None) is None
+            and not self._export_kpis_final_episode_only
+            and is_final_episode
+            and episode is not None
+        ):
             final_kwargs = {k: v for k, v in kwargs.items() if k != "filepath"}
             self.env.export_final_kpis(**final_kwargs)
 
         self._manual_kpi_exported_episodes.add(episode)
+        root = getattr(self.env, "render_output_root", None)
+        size = (
+            sum(path.stat().st_size for path in Path(root).rglob("*") if path.is_file())
+            if root
+            else 0
+        )
+        if hasattr(self, "export_measurements"):
+            self.export_measurements.append(
+                {
+                    "episode": episode,
+                    "seconds": time.perf_counter() - export_started,
+                    "total_bytes": size,
+                    "final_evaluation": bool(
+                        is_final_episode and getattr(self, "_export_episode_deterministic", False)
+                    ),
+                }
+            )
+        if (
+            getattr(self, "_export_profile", None) == "diagnostic"
+            and size > self._diagnostic_max_mb * 1024**2
+        ):
+            raise RuntimeError("Diagnostic export exceeded simulator.export.diagnostic_max_mb")
 
     def set_model(self, model: ExecutionUnit):
         """Set the model (any :class:`ExecutionUnit`) after initialization."""
@@ -1011,6 +1061,9 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
             encoded_observations = self._encode_observations_for_model(observations)
 
         self._current_model_episode_step = None if episode_step is None else int(episode_step)
+        from algorithms.export.references import set_capture_step
+
+        set_capture_step(self.model, self._current_model_episode_step)
         episode_context_hook = getattr(self.model, "set_episode_context", None)
         if callable(episode_context_hook):
             episode_context_hook(

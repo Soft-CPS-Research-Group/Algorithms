@@ -60,17 +60,19 @@ def build_provenance(config, environment, agent):
     artifacts = agent.get('artifacts') or []
     groups = {}
     for artifact in artifacts:
-        groups.setdefault(artifact.get('stage_index'), []).append(artifact)
-    last_stage = max((k for k in groups if k is not None), default=None)
+        groups.setdefault(artifact.get('node_id', artifact.get('stage_index')), []).append(artifact)
+    last_stage = max((k for k in groups if isinstance(k, int)), default=None)
     bindings = []
     for artifact in artifacts:
         stage = artifact.get('stage_index')
-        group = groups[stage]
+        group = groups[artifact.get('node_id', stage)]
         index = artifact.get('agent_index')
         indices = [item.get('agent_index') for item in group]
-        shared = artifact.get('format', agent.get('format')) == 'ti_marl_torch'
-        coordinator = stage is not None and stage != last_stage and len(group) == 1 and index == 0
-        if buildings and len(group) == 1 and index == 0 and (central and count == 1 or shared or coordinator):
+        shared = artifact.get('format', agent.get('format')) == 'ti_marl_torch' or (artifact.get('config') or {}).get('scope') == 'joint'
+        coordinator = (stage is not None and stage != last_stage or artifact.get('output_signal') not in (None, 'actions')) and len(group) == 1 and index == 0
+        if isinstance(artifact.get('member_index'), int) and artifact['member_index'] < len(buildings):
+            controlled, scope = [buildings[artifact['member_index']]], 'site'
+        elif buildings and len(group) == 1 and index == 0 and (central and count == 1 or shared or coordinator):
             controlled = buildings
             scope = 'community'
         elif not central and count == len(buildings) and all(isinstance(i, int) for i in indices) and sorted(indices) == list(range(len(buildings))) and isinstance(index, int):
@@ -82,9 +84,9 @@ def build_provenance(config, environment, agent):
         site_ids = [sites[b]['site_id'] for b in controlled if b in sites]
         verified = bool(controlled) and len(site_ids) == len(controlled)
         bindings.append({'artifact_path': artifact['path'], 'agent_index': index,
-                         'stage_index': stage, 'scope': scope, 'building_ids': controlled,
+                         'stage_index': stage, 'node_id': artifact.get('node_id'), 'scope': scope, 'building_ids': controlled,
                          'site_ids': site_ids if verified else [],
-                         'agent_id': 'agent_' + digest([source['workspace_id'], stage, scope, sorted(site_ids)])[:24] if verified else None})
+                         'agent_id': 'agent_' + digest([source['workspace_id'], artifact.get('node_id', stage), scope, sorted(site_ids)])[:24] if verified else None})
     provenance = {**source, 'version': 1, 'mapping_status': 'verified' if not problems and source['community_id'] else 'unmapped',
                   'mapping_issues': sorted(set(problems)), 'sites': selected_sites, 'bindings': bindings,
                   'topology': {'num_agents': count, 'central_agent': central, 'building_ids': buildings,
@@ -104,7 +106,9 @@ def seal_manifest(manifest, artifacts_root, resolved_config_path, job_id):
     root = Path(artifacts_root).resolve()
     files = {}
     for path in sorted(root.rglob('*')):
-        if path.is_file() and path.name != 'artifact_manifest.json':
+        if path.is_symlink():
+            raise ValueError('Symlinks are not permitted in a portable bundle')
+        if path.is_file() and path != root / 'artifact_manifest.json':
             if not path.resolve().is_relative_to(root):
                 raise ValueError('Bundle file escapes its artifact directory')
             files[path.relative_to(root).as_posix()] = file_digest(path)

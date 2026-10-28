@@ -42,7 +42,9 @@ def run_episodes(
         episode_deterministic = bool(deterministic) or (
             deterministic_finish and episode >= episodes - 1
         )
-        export_this_episode = self._configure_episode_exports(episode, episodes)
+        export_this_episode = self._configure_episode_exports(
+            episode, episodes, deterministic=episode_deterministic
+        )
 
         self._entity_model_observations_direct = self._can_use_direct_entity_model_observations()
         self._write_phase_progress(
@@ -77,6 +79,8 @@ def run_episodes(
                 training=not episode_deterministic,
             )
         if episode_deterministic:
+            from algorithms.export.references import begin_capture
+            from algorithms.runtime.context import OutputPlan
             from algorithms.runtime.evaluation import policy_digest
             from algorithms.runtime.resume import leaves
 
@@ -90,6 +94,8 @@ def run_episodes(
                 )
                 selections.append({"path": path, **selected})
             final_policy = all(item["selection"] == "final" for item in selections)
+            if OutputPlan.from_config(self.config).bundle:
+                begin_capture(self.model, self.config)
             self.evaluated_policy = {
                 "selection": "final" if final_policy else "validated_selection",
                 "stages": selections,
@@ -199,6 +205,10 @@ def run_episodes(
             phase_start_time = time.perf_counter() if should_profile_step else 0.0
             self._last_proposed_actions = [np.asarray(row).copy() for row in actions]
             actions = self._clip_actions(actions)
+            if episode_deterministic:
+                from algorithms.export.references import capture_submission
+
+                capture_submission(self.model, actions, time_step)
             if not self._entity_interface_mode:
                 self.actions = actions
             logger.debug("Predicted actions: {}", actions)

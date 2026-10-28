@@ -83,6 +83,11 @@ def test_total_replay_is_standalone_raw_policy_without_rbc_teacher(tmp_path: Pat
         },
     )
     exported = agent.export_artifacts(str(tmp_path / "artifacts"))
+    from algorithms.export.bundle import export_tree
+    common = export_tree(agent, tmp_path / "common", {"config": {}})
+    assert common["deployment"]["eligible"] is False
+    assert common["artifacts"][0]["config"]["auxiliary_paths"] == ["schedule.json"]
+    assert (tmp_path / "common/schedule.json").is_file()
     assert exported["format"] == "rule_based"
     assert exported["parameters"]["semantic_policy_format"] == "semantic_schedule_replay"
     assert exported["parameters"]["service_teacher"] is None
@@ -92,7 +97,7 @@ def test_total_replay_is_standalone_raw_policy_without_rbc_teacher(tmp_path: Pat
             "agent_index": 0,
             "path": "policy_agent_0.json",
             "format": "rule_based",
-            "config": {"use_preprocessor": False},
+            "config": {"use_preprocessor": False, "auxiliary_paths": ["schedule.json"]},
         }
     ]
     assert (tmp_path / "artifacts" / "policy_agent_0.json").is_file()

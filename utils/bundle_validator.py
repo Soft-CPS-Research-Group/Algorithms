@@ -21,6 +21,14 @@ def validate_bundle_contract(manifest: Mapping[str, Any], artifacts_root: Path |
         BundleValidationError: if the manifest/artifacts do not satisfy the v1 contract.
     """
     root = Path(artifacts_root).resolve()
+    if manifest.get("manifest_version") == 2:
+        from algorithms.export.validation import validate_v2
+
+        try:
+            validate_v2(manifest, root)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise BundleValidationError(str(exc)) from exc
+        return
     required_sections = [
         "manifest_version",
         "metadata",
@@ -154,6 +162,8 @@ def _validate_agent(agent: Mapping[str, Any], root: Path, num_agents: int | None
         artifact_config = artifact.get("config")
         if artifact_config is not None and not isinstance(artifact_config, dict):
             raise BundleValidationError(f"agent.artifacts[{idx}].config must be an object when provided")
+        for sidecar in (artifact_config or {}).get("auxiliary_paths", []):
+            _resolve_bundle_path(root, sidecar, field="auxiliary_paths sidecar")
 
         if artifact_format == "onnx":
             if artifact_path.suffix.lower() != ".onnx":
@@ -209,13 +219,9 @@ def _require_mapping(value: Any, *, field: str) -> Mapping[str, Any]:
 
 
 def _resolve_bundle_path(root: Path, raw_path: str, *, field: str) -> Path:
-    path = Path(raw_path)
-    if path.is_absolute():
-        resolved = path.resolve()
-    else:
-        resolved = (root / path).resolve()
+    from algorithms.export.portable import confined_path
 
-    if not path.is_absolute() and resolved != root and root not in resolved.parents:
-        raise BundleValidationError(f"{field} points outside bundle root: {raw_path!r}")
-
-    return resolved
+    try:
+        return confined_path(root, raw_path)
+    except ValueError as exc:
+        raise BundleValidationError(f"{field}: {exc}") from exc

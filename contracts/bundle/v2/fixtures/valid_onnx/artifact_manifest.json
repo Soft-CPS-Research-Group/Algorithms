@@ -1,0 +1,246 @@
+{
+  "manifest_version": 2,
+  "generated_at": "2026-10-27T09:55:12.864595Z",
+  "metadata": {
+    "experiment_name": "synthetic-contract-fixture",
+    "run_name": "onnx"
+  },
+  "simulator": {
+    "dataset_name": null,
+    "dataset_path": null,
+    "central_agent": null,
+    "reward_function": null
+  },
+  "training": {
+    "seed": 31
+  },
+  "topology": {
+    "num_agents": 1,
+    "observation_dimensions": [
+      2
+    ],
+    "action_dimensions": [
+      1
+    ]
+  },
+  "pipeline": [
+    {
+      "stage_index": 0,
+      "algorithm": "SyntheticLinearFixture",
+      "count": 1,
+      "hyperparameters": {}
+    }
+  ],
+  "environment": {
+    "observation_names": [
+      [
+        "a",
+        "b"
+      ]
+    ],
+    "encoders": [
+      [
+        {
+          "type": "NoNormalization",
+          "params": {}
+        },
+        {
+          "type": "NoNormalization",
+          "params": {}
+        }
+      ]
+    ],
+    "action_bounds": [
+      {
+        "low": [
+          -1.0
+        ],
+        "high": [
+          1.0
+        ]
+      }
+    ],
+    "action_names_by_agent": {
+      "0": [
+        "action"
+      ]
+    },
+    "reward_function": {
+      "name": "fixture",
+      "params": {}
+    },
+    "building_names": [
+      "SyntheticBuilding"
+    ]
+  },
+  "agent": {
+    "format": "onnx",
+    "artifacts": [
+      {
+        "agent_index": 0,
+        "path": "model.onnx",
+        "format": "onnx",
+        "node_id": "root",
+        "artifact_id": "root:0",
+        "deployable": true,
+        "output_signal": "actions",
+        "config": {}
+      }
+    ],
+    "deployable": true,
+    "composition": {
+      "version": 1,
+      "root": "root",
+      "nodes": [
+        {
+          "id": "root",
+          "parent": null,
+          "position": 0,
+          "kind": "agent",
+          "algorithm": "SyntheticLinearFixture",
+          "input": "encoded",
+          "input_signal": "none",
+          "output_signal": "actions",
+          "model_runtimes": {
+            "model.onnx": {
+              "onnx": "1.17.0",
+              "onnxruntime": "1.20.1",
+              "provider": "CPUExecutionProvider",
+              "opsets": {
+                "ai.onnx": 13
+              }
+            }
+          },
+          "verification": "verification.json",
+          "references": "references.json",
+          "verification_status": "passed",
+          "reason": null,
+          "format": "onnx",
+          "deployable": true,
+          "requirements": [
+            "onnxruntime"
+          ],
+          "topology_scope": "exported_layout"
+        }
+      ]
+    },
+    "deployment": {
+      "eligible": true,
+      "status": "verified",
+      "consumer_contract": "algorithms.bundle.v2",
+      "requires": [
+        "onnxruntime"
+      ],
+      "reasons": []
+    }
+  },
+  "provenance": {
+    "workspace_id": "laboratory",
+    "community_id": null,
+    "datasets": [],
+    "version": 1,
+    "mapping_status": "unmapped",
+    "mapping_issues": [
+      "Runtime buildings have no frozen platform site mapping"
+    ],
+    "sites": [],
+    "bindings": [
+      {
+        "artifact_path": "model.onnx",
+        "agent_index": 0,
+        "stage_index": null,
+        "node_id": "root",
+        "scope": "site",
+        "building_ids": [
+          "SyntheticBuilding"
+        ],
+        "site_ids": [],
+        "agent_id": null
+      }
+    ],
+    "topology": {
+      "num_agents": 1,
+      "central_agent": false,
+      "building_ids": [
+        "SyntheticBuilding"
+      ],
+      "mode": "static",
+      "version": null,
+      "entity_specs_digest": null
+    },
+    "job_id": "synthetic-onnx",
+    "resolved_config_sha256": "87f595d6a832ece1db6dd00a543b8994c8600c7f0d71dd08683c12fd87f2a291",
+    "identity_sha256": "642a49b93a7d8987ddbda53fb7e38d8d5ac06542ec2df339bb53f06d896fadf2"
+  },
+  "contract": "algorithms.bundle.v2",
+  "algorithm": {
+    "name": "SyntheticLinearFixture"
+  },
+  "execution": {
+    "version": 1,
+    "root": "root",
+    "nodes": [
+      {
+        "id": "root",
+        "parent": null,
+        "position": 0,
+        "kind": "agent",
+        "algorithm": "SyntheticLinearFixture",
+        "input": "encoded",
+        "input_signal": "none",
+        "output_signal": "actions",
+        "model_runtimes": {
+          "model.onnx": {
+            "onnx": "1.17.0",
+            "onnxruntime": "1.20.1",
+            "provider": "CPUExecutionProvider",
+            "opsets": {
+              "ai.onnx": 13
+            }
+          }
+        },
+        "verification": "verification.json",
+        "references": "references.json",
+        "verification_status": "passed",
+        "reason": null,
+        "format": "onnx",
+        "deployable": true,
+        "requirements": [
+          "onnxruntime"
+        ],
+        "topology_scope": "exported_layout"
+      }
+    ]
+  },
+  "deployment": {
+    "eligible": true,
+    "status": "verified",
+    "consumer_contract": "algorithms.bundle.v2",
+    "requires": [
+      "onnxruntime"
+    ],
+    "reasons": []
+  },
+  "evaluation": {
+    "fixture": true
+  },
+  "build": {
+    "fixture": true,
+    "versions": {
+      "energaize-algorithms": "0.3.0"
+    }
+  },
+  "evidence": {
+    "fixture": {
+      "path": "fixture.json",
+      "sha256": "87f595d6a832ece1db6dd00a543b8994c8600c7f0d71dd08683c12fd87f2a291"
+    }
+  },
+  "files": {
+    "export_details.json": "4b2ac1af08ee6ef8e60b796f32706c0d7718b0b0340d87a23daafb8433c44b40",
+    "fixture.json": "87f595d6a832ece1db6dd00a543b8994c8600c7f0d71dd08683c12fd87f2a291",
+    "model.onnx": "41ea74d1a3f2a6ae0186588094287ee81adf6b25e8912495099d8e0161422974",
+    "references.json": "bef904f0ec13c46969d81e3a6e84087ad0c542fc2ac7c335dc8bfc2e897b628d",
+    "verification.json": "9f53760a8fe822a583617513e9994dca05c76074070160c21b35eb3ee777c7da"
+  }
+}

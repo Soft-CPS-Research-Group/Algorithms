@@ -8,7 +8,7 @@ Start with the [runtime guide](docs/runtime/README.md),
 [38-agent catalogue](docs/agent_catalogue.md), and [documentation index](docs/README.md).
 The [branch consolidation record](docs/consolidation/README.md) preserves historical
 origins. The [stage 2 delivery](docs/runtime/delivery.md) records the common-core
-reorganization and its verification.
+reorganization and its verification. The [stage 4 delivery](docs/runtime/export_delivery.md) covers final KPIs, portable manifests and policy parity, with explicit support limits.
 
 ## Quick start
 

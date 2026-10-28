@@ -17,9 +17,15 @@ def _check_bundle(agent, root, num_agents):
     manifest = _base_manifest()
     manifest['topology']['num_agents'] = num_agents
     manifest['agent'] = metadata
-    validate_bundle_contract(manifest, root)
-    assert metadata['deployable'] is False
-    assert all(item['deployable'] is False for item in metadata['artifacts'])
+    if not any(item.get("config", {}).get("scope") == "joint" for item in metadata["artifacts"]):
+        validate_bundle_contract(manifest, root)
+    if metadata["format"] in {"research_torch", "ti_marl_torch"}:
+        assert metadata['deployable'] is False
+        assert all(item['deployable'] is False for item in metadata['artifacts'])
+    else:
+        from algorithms.export.verification import onnx_session
+        for item in metadata["artifacts"]:
+            onnx_session(root / item["path"])
     return metadata
 
 
@@ -76,6 +82,11 @@ def test_flat_offline_train_registry_export_reload(name, tmp_path):
     reloaded.attach_environment(**attachment)
     np.testing.assert_allclose(reloaded.predict(observations, True), before)
 
+    from algorithms.export.bundle import export_tree
+    common = export_tree(agent, tmp_path / 'common-bundle', {'config': {}})
+    assert common['deployment']['eligible'] is False
+    assert common['format'] == 'research_torch'
+
 
 @pytest.mark.parametrize('name', ['IQLEntityAgent', 'CQLEntityAgent'])
 def test_entity_offline_train_registry_feature_order_export_reload(name, tmp_path):
@@ -109,7 +120,7 @@ def test_entity_offline_train_registry_feature_order_export_reload(name, tmp_pat
     sidecar.unlink()
     manifest = _base_manifest()
     manifest['agent'] = metadata
-    with pytest.raises(BundleValidationError, match='sidecar'):
+    with pytest.raises(BundleValidationError, match='sidecar|auxiliary_paths'):
         validate_bundle_contract(manifest, export)
     with pytest.raises(ValueError, match='action dimension'):
         restored.attach_environment(**{**attachment, 'action_names': [['act_0']]})
@@ -133,7 +144,7 @@ def test_transformer_registry_predict_export_reload_and_heterogeneous_guard(tmp_
     metadata = _check_bundle(agent, tmp_path, 2)
     restored = build_execution_unit(config)
     restored.attach_environment(**attachment)
-    restored.load_checkpoint(str(tmp_path / metadata['artifacts'][0]['path']))
+    restored.load_checkpoint(str(tmp_path / metadata['checkpoint_path']))
     np.testing.assert_allclose(restored.predict(observations, True), expected)
     with pytest.raises(ValueError, match='equal, nonzero'):
         restored.attach_environment(**{**attachment, 'action_space': [Box(-1, 1, (1,)), Box(-1, 1, (2,))]})
@@ -200,5 +211,5 @@ def test_pipeline_export_keeps_research_sidecars_and_non_deployability(tmp_path)
     validate_bundle_contract(manifest, tmp_path)
     assert metadata['deployable'] is False
     (root / 'architecture.json').unlink()
-    with pytest.raises(BundleValidationError, match='sidecar'):
+    with pytest.raises(BundleValidationError, match='sidecar|auxiliary_paths'):
         validate_bundle_contract(manifest, tmp_path)

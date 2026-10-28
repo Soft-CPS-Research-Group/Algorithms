@@ -1,0 +1,10 @@
+{
+  "format": "onnx",
+  "artifacts": [
+    {
+      "agent_index": 0,
+      "path": "model.onnx",
+      "format": "onnx"
+    }
+  ]
+}

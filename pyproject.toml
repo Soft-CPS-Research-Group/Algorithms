@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "energaize-algorithms"
-version = "0.2.0"
+version = "0.3.0"
 description = "Common experiment runtime and agent catalogue for energAIze"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -12,7 +12,7 @@ dependencies = ["pydantic==2.7.1", "PyYAML==6.0.2", "loguru==0.7.3", "typing_ext
 
 [project.optional-dependencies]
 training = ["softcpsrecsimulator==1.8.3", "torch==2.5.1", "torchvision==0.20.1", "numpy==1.26.4", "psutil==7.0.0"]
-export = ["onnx==1.17.0"]
+export = ["onnx==1.17.0", "onnxruntime==1.20.1"]
 tracking = ["mlflow==2.19.0"]
 offline = ["pyarrow==18.1.0", "pandas==2.2.3"]
 solver = ["scipy==1.15.1", "pandas==2.2.3"]
@@ -20,6 +20,7 @@ dev = ["pytest==8.3.2", "onnxruntime==1.20.1", "ruff==0.11.13", "mypy==1.15.0", 
 
 [project.scripts]
 algorithms-job = "algorithms.runtime.cli:cli_main"
+algorithms-bundle = "algorithms.export.consumer:main"
 
 [tool.setuptools]
 py-modules = ["run_experiment"]
@@ -35,7 +36,7 @@ configs = ["**/*.json", "**/*.yaml"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-include = ["algorithms/runtime/*.py", "algorithms/configuration/*.py", "algorithms/contracts.py", "algorithms/catalogue.py", "algorithms/registry.py", "algorithms/execution_unit.py", "algorithms/pipeline.py", "algorithms/agents/environment_validation.py", "tests/test_common_runtime_contract.py", "tests/test_runtime_reliability.py", "tests/e2e/test_runtime_reliability.py", "tests/e2e/test_common_job_profiles.py"]
+include = ["algorithms/runtime/*.py", "algorithms/export/bundle.py", "algorithms/export/support.py", "algorithms/export/dependencies.py", "setup.py", "scripts/benchmark_runtime_exports.py", "scripts/generate_bundle_contract_fixtures.py", "algorithms/export/consumer.py", "algorithms/export/offline.py", "algorithms/export/joint_transformer.py", "algorithms/export/policy_json.py", "algorithms/export/portable.py", "algorithms/export/references.py", "algorithms/export/validation.py", "algorithms/export/verification.py", "tests/test_export_contract.py", "tests/e2e/test_export_contract.py", "algorithms/configuration/*.py", "algorithms/contracts.py", "algorithms/catalogue.py", "algorithms/registry.py", "algorithms/execution_unit.py", "algorithms/pipeline.py", "algorithms/agents/environment_validation.py", "tests/test_common_runtime_contract.py", "tests/test_runtime_reliability.py", "tests/e2e/test_runtime_reliability.py", "tests/e2e/test_common_job_profiles.py"]
 
 [tool.ruff.lint]
 select = ["E9", "F", "I"]

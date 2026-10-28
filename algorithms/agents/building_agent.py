@@ -35,12 +35,14 @@ from algorithms.utils.ppo import PPOActorCritic, RolloutBuffer
 class _BuildingActorExport(nn.Module):
     """Deterministic deployment wrapper for a BuildingAgent PPO actor."""
 
-    def __init__(self, actor_mean: nn.Module) -> None:
+    def __init__(self, actor_mean: nn.Module, mean=0.0, std=1.0) -> None:
         super().__init__()
         self.actor_mean = actor_mean
+        self.register_buffer("mean", torch.as_tensor(mean, dtype=torch.float32))
+        self.register_buffer("std", torch.as_tensor(std, dtype=torch.float32))
 
     def forward(self, observation_with_context: torch.Tensor) -> torch.Tensor:
-        return torch.tanh(self.actor_mean(observation_with_context))
+        return torch.tanh(self.actor_mean((observation_with_context - self.mean) / self.std))
 
 
 class BuildingAgent(BaseAgent):
@@ -385,7 +387,7 @@ class BuildingAgent(BaseAgent):
         onnx_dir.mkdir(parents=True, exist_ok=True)
         export_path = onnx_dir / "building_agent.onnx"
 
-        export_model = _BuildingActorExport(self.actor_critic.actor_mean)
+        export_model = _BuildingActorExport(self.actor_critic.actor_mean, self._obs_rms.mean, self._obs_rms.std)
         export_model.eval()
         dummy_input = torch.randn(1, self._obs_dim + 1)
         torch.onnx.export(
@@ -412,6 +414,7 @@ class BuildingAgent(BaseAgent):
                     "format": "onnx",
                     "observation_dimension": self._obs_dim + 1,
                     "action_dimension": self._action_dim,
+                    "config": {"input_adapter": "append_scalar_context", "normalisation": "embedded"},
                 }
             ],
         }

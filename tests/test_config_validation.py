@@ -682,6 +682,7 @@ def test_validate_config_rejects_non_isolated_train_diagnostic_export(base_confi
         }
     )
 
+    config["simulator"]["export"]["profile"] = "diagnostic"
     with pytest.raises(ValueError, match="only for the final diagnostic episode"):
         validate_config(config)
 

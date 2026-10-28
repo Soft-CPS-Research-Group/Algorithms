@@ -91,3 +91,17 @@ def test_legacy_lab_remains_explicitly_unmapped(inputs):
     assert provenance['workspace_id'] == 'laboratory'
     assert provenance['mapping_status'] == 'unmapped'
     assert all(b['agent_id'] is None for b in provenance['bindings'])
+
+
+def test_v2_nodes_keep_identity_when_local_agent_indices_repeat(inputs):
+    config, env, agent = inputs
+    agent['artifacts'] = [
+        {'agent_index': 0, 'node_id': 'stage_0', 'path': 'manager.onnx', 'output_signal': 'price'},
+        {'agent_index': 0, 'node_id': 'stage_1/agent_0', 'member_index': 0, 'path': 'one.onnx'},
+        {'agent_index': 0, 'node_id': 'stage_2/agent_0', 'member_index': 0, 'path': 'two.onnx'},
+    ]
+    provenance = build_manifest(config, env, agent)['provenance']
+    assert provenance['mapping_status'] == 'verified'
+    bindings = provenance['bindings']
+    assert [b['site_ids'] for b in bindings] == [['site-2', 'site-1'], ['site-2'], ['site-2']]
+    assert len({b['agent_id'] for b in bindings}) == 3

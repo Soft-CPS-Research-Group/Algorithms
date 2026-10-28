@@ -1,0 +1,37 @@
+{
+  "policy_type": "random_policy",
+  "version": 1,
+  "agent_index": 0,
+  "dataset_schema": ".",
+  "action_names": [
+    "action"
+  ],
+  "default_actions": {
+    "action": 0.0
+  },
+  "rules": [],
+  "hyperparameters": {
+    "pv_charge_threshold": 0.0,
+    "flexibility_hours": 3.0,
+    "emergency_hours": 1.0,
+    "pv_preferred_charge_rate": 0.6,
+    "flex_trickle_charge": 0.0,
+    "min_charge_rate": 0.0,
+    "emergency_charge_rate": 1.0,
+    "energy_epsilon": 0.001,
+    "non_flexible_chargers": [],
+    "default_capacity_kwh": 60.0,
+    "control_storage": true,
+    "control_evs": true,
+    "control_deferrables": true,
+    "deferrable_start_action": 1.0,
+    "deferrable_urgency_threshold": 0.75,
+    "deferrable_slack_threshold": 0.25,
+    "deferrable_priority_threshold": 0.5,
+    "step_hours": 1.0,
+    "seed": 979518510,
+    "electrical_service_headroom_safety_margin_kw": 0.05,
+    "use_current_base_service_headroom": true
+  },
+  "charger_mapping": {}
+}

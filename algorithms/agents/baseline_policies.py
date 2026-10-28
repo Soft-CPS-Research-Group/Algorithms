@@ -16,7 +16,9 @@ class RandomPolicy(RuleBasedPolicy):
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
         hyper = (config.get("algorithm", {}).get("hyperparameters") or {})
-        seed = hyper.get("seed", config.get("training", {}).get("seed", 22))
+        seed = hyper.get("seed")
+        if seed is None:
+            seed = config.get("training", {}).get("seed", 22)
         self.seed = int(seed)
         self._rng = np.random.default_rng(self.seed)
 

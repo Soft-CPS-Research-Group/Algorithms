@@ -229,6 +229,11 @@ def test_total_home_replay_exports_safety_configuration_with_compatible_defaults
     )
 
     parameters = policy.export_artifacts(str(tmp_path / "artifacts"))["parameters"]
+    from algorithms.export.bundle import export_tree
+    common = export_tree(policy, tmp_path / "common", {"config": {}})
+    assert common["deployment"]["eligible"] is False
+    assert common["artifacts"][0]["config"]["auxiliary_paths"] == ["schedule.json"]
+    assert (tmp_path / "common/schedule.json").is_file()
 
     assert parameters["local_action_safety_fail_on_infeasible"] is False
     assert parameters["local_action_safety_protect_ev_minimum"] is True
