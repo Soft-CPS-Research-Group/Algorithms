@@ -1,5 +1,10 @@
 # Canonical annual REC datasets
 
+Historical inventory: Simulator 1.9.x now ships the Portugal 2023–2024 v3.1
+evaluation schemas under `rec_pt_2023_*_v2/evaluation/`. This retired dataset
+and its catalogue totals must not be substituted silently. See the current
+[BAU/RBC validation scope](../../docs/baseline_controllers.md).
+
 Dataset context retained on 2026-09-25 after retirement of the previous
 experimental campaign. This inventory records existing data and evidence;
 it does not prescribe the next campaign's algorithms, splits, seeds or budget.
