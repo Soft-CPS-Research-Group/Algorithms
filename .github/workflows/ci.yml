@@ -45,6 +45,11 @@ jobs:
           # The inherited upstream repository already owns an unrelated v1.8.0 tag.
           ref: dae69ec3ad2e0b11bd580221b41db8b47b7a5a04
           path: .ci/Simulator
+          # Source attestation plus the exact fixtures exercised by this suite.
+          sparse-checkout: |
+            citylearn
+            tests/data/minute_ev_demo
+            data/datasets/rec_pt_2023_micro_4_v2
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

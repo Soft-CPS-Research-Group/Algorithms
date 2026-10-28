@@ -31,9 +31,10 @@ permitem experiências explícitas; desativá-las muda o comportamento de refer�
 
 Nenhum dos três RBCs está limitado a carregar exclusivamente de dia ou de noite.
 O Basic compara o preço atual com os preços previstos. Com tarifa constante não
-inventa um período barato ou caro. Se faltarem preços/previsões, usa o fallback
+inventa um período barato ou caro. Se faltar o preço atual, usa o fallback
 documentado: horas 0–7 e 22–23 favoráveis; 17–21 desfavoráveis; restantes neutras.
-Sem preço e sem hora, fica neutro.
+Sem preço e sem hora, fica neutro. Com preço atual mas sem previsões, a
+classificação também é neutra: não infere uma tarifa horária.
 
 Smart Local e Community favorecem energia solar. Por omissão,
 `price_charge_rate: 0` desativa a carga da bateria motivada apenas por preço;
@@ -140,6 +141,6 @@ manifesto dos KPIs. A correção 1.9.1 inclui o módulo e testa o pacote instala
 do código-fonte antes de publicar. Os ambientes suportados ficam fixados na 1.9.1;
 a imagem Jetson antiga continua suspensa até à sua migração de plataforma.
 
-Validação local em checkout limpo: 1 880 testes unitários/integração passaram,
+Validação local em checkout limpo: 1 882 testes unitários/integração passaram,
 23 foram ignorados com motivos explícitos, e 65 testes de jobs completos passaram.
 Ruff, formatação, mypy, dependências e instalação mínima fora do checkout passaram.
