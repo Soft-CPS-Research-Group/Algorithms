@@ -117,6 +117,26 @@ def test_rbc_final_service_command_crosses_charger_deadband_without_exceeding_bu
     assert agent._safe_ev_charge_rate(ctx, 0.1, (-1.0, 1.0)) == 0.0
 
 
+@pytest.mark.parametrize("seconds", [15, 900, 3600])
+def test_last_ev_interval_does_not_treat_soc_gap_as_lossless_ac_energy(seconds):
+    agent, _ = policy(RBCBasicPolicy, {}, seconds=seconds)
+    ctx = {
+        "connected": True,
+        "soc": 0.819,
+        "required_soc": 0.82,
+        "capacity": 50.0,
+        "max_power": 7.7,
+        "min_power": 0.0,
+        "hours_to_departure": seconds / 3600,
+        "available_charge_action": 0.6,
+    }
+    # Use a gap just outside the declared SOC tolerance.
+    ctx["soc"] = 0.818
+    assert agent._safe_ev_charge_rate(ctx, 1.0, (-1.0, 1.0)) == pytest.approx(0.6)
+    # The deadline guard never increases an explicitly limited energy budget.
+    assert agent._safe_ev_charge_rate(ctx, 0.1, (-1.0, 1.0)) == pytest.approx(0.1)
+
+
 @pytest.mark.parametrize("cls", [RBCSmartPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy])
 @pytest.mark.parametrize("soc", [0.13, 0.80])
 def test_forecast_solar_only_postpones_nonurgent_ev_service(cls, soc):

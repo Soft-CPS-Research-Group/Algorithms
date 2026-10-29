@@ -101,6 +101,10 @@ o SOC pedido; não deve ficar permanentemente abaixo do alvo. Este ajuste não
 aumenta um orçamento solar ou elétrico insuficiente. A revisão seguinte do
 Simulator também corrige a disponibilidade perto de 100% e o arredondamento
 float32 na fronteira da potência mínima.
+No último intervalo disponível, havendo carga por servir, o RBC dá prioridade
+ao pedido urgente dentro da potência disponível. Não o limita ao equivalente
+sem perdas do défice de SOC: as perdas do carregador e da bateria deixariam
+parte do pedido por cumprir. Esta proteção pode ultrapassar o SOC pedido.
 
 ## Definição do BAU nativo nos resultados
 

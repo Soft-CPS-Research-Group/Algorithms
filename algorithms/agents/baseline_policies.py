@@ -1548,6 +1548,12 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             # BAU requests full charging; the simulator clips accepted energy
             # and tapers charging at the physical battery limit.
             max_target_rate = 1.0
+        elif float(ctx.get("hours_to_departure", float("inf"))) <= self.step_hours + 1.0e-9:
+            # In the last charging interval, the battery-side SOC gap is not
+            # an AC energy cap: charger and battery losses can leave a deficit
+            # with no later interval to correct it. Honour the service request
+            # (already bounded by power/PV availability), accepting overshoot.
+            max_target_rate = 1.0
         simulator_required = self._ctx_float(ctx, "min_required_action")
         if not math.isnan(simulator_required):
             max_target_rate = max(max_target_rate, simulator_required)
