@@ -11,9 +11,12 @@ NORMAL_DEFAULTS = {
 }
 
 SMART_DEFAULTS = {"price_charge_rate": 0.0}
+ECONOMIC_SMART_DEFAULTS = {"price_charge_rate": 0.60}
 
 
 def policy_defaults(name):
+    if name in {"RBCSmartLocalPolicy", "RBCCommunityPolicy"}:
+        return ECONOMIC_SMART_DEFAULTS
     if name in {"NormalPolicy", "NormalNoBatteryPolicy"}:
         return NORMAL_DEFAULTS
     if name in {

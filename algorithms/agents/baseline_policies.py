@@ -10,6 +10,7 @@ import numpy as np
 
 from algorithms.agents.rbc_agent import ChargerInfo, RulePolicyBase
 from algorithms.configuration.baseline_defaults import (
+    ECONOMIC_SMART_DEFAULTS,
     EV_SERVICE_SOC_TOLERANCE,
     NORMAL_DEFAULTS,
     SMART_DEFAULTS,
@@ -148,7 +149,7 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             hyper.get("community_surplus_threshold_kw", self.pv_surplus_threshold_kw)
         )
         self.community_import_threshold_kw: float = float(
-            hyper.get("community_import_threshold_kw", self.import_peak_threshold_kw)
+            hyper.get("community_import_threshold_kw") or self.import_peak_threshold_kw
         )
         self.ev_v2g_reserve_soc: float = float(hyper.get("ev_v2g_reserve_soc", 0.15))
         self.ev_service_margin_rate: float = max(
@@ -220,6 +221,20 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         self.community_grid_export_price: float = float(
             hyper.get("community_grid_export_price", 0.0)
         )
+        market = dict((self._dataset_info or {}).get("community_market") or {})
+        market.update(config.get("simulator", {}).get("community_market") or {})
+        self.community_market_enabled = bool(
+            market.get("enabled", hyper.get("community_market_enabled", False))
+        )
+        self.community_local_price_ratio = float(
+            market.get(
+                "local_price_ratio_to_grid_import",
+                market.get("intra_community_sell_ratio", self.community_local_price_ratio),
+            )
+        )
+        self.community_grid_export_price = float(
+            market.get("grid_export_price", self.community_grid_export_price)
+        )
         self._obs_match_cache: Dict[int, Dict[tuple, List[tuple[str, int]]]] = {}
         self._dispatch_budgets: Dict[int, Dict[str, float]] = {}
         self._shared_community_budget: Optional[Dict[str, float]] = None
@@ -243,6 +258,31 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         self._obs_match_cache = {}
         self._dispatch_budgets = {}
         self._shared_community_budget = None
+        market = (metadata or {}).get("community_market")
+        if isinstance(market, Mapping):
+            self.community_market_enabled = bool(market.get("enabled", False))
+            self.community_local_price_ratio = float(
+                market.get("local_price_ratio_to_grid_import", self.community_local_price_ratio)
+            )
+            self.community_grid_export_price = float(
+                market.get("grid_export_price", self.community_grid_export_price)
+            )
+        if isinstance(self, RBCCommunityPolicy):
+            self.uses_community_dispatch = self.community_market_enabled
+            hyper = self._config.get("algorithm", {}).get("hyperparameters") or {}
+            if hyper.get("community_import_threshold_kw") is None:
+                self.community_import_threshold_kw = self.import_peak_threshold_kw * max(
+                    1, len((metadata or {}).get("building_names") or observation_names)
+                )
+            if not self.community_market_enabled:
+                self._obs_index = [
+                    {
+                        name: index
+                        for name, index in obs_map.items()
+                        if "community" not in name.casefold()
+                    }
+                    for obs_map in self._obs_index
+                ]
         for agent_idx, names in enumerate(action_names):
             obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
             unsupported = [
@@ -2278,7 +2318,151 @@ class RBCSmartPolicy(RBCBasicPolicy):
         return float(np.clip(0.0, low, high))
 
 
-class RBCSmartLocalPolicy(RBCSmartPolicy):
+class _EconomicSmartPolicy(RBCSmartPolicy):
+    """Basic service/price decisions plus solar capture and current peak relief.
+
+    Forecasts never replace the service schedule. In particular a cheap period
+    is still usable before the departure becomes urgent. Stored energy is not
+    discharged against cheap imports immediately before a price-driven recharge.
+    """
+
+    economic_dispatch = True
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        hyper = config.get("algorithm", {}).get("hyperparameters") or {}
+        if self.economic_dispatch and "price_charge_rate" not in hyper:
+            self.price_charge_rate = ECONOMIC_SMART_DEFAULTS["price_charge_rate"]
+
+    def _usable_surplus_kw(self, agent_idx, obs, obs_map):
+        return self._budget_value(agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map))
+
+    def _expected_surplus_kw(self, obs, obs_map):
+        return self._forecast_local_surplus_kw(obs, obs_map)
+
+    def _compute_ev_action(self, agent_idx, obs, obs_map, charger_info, bounds, action_name=""):
+        if not self.economic_dispatch:
+            return RBCSmartPolicy._compute_ev_action(
+                self, agent_idx, obs, obs_map, charger_info, bounds, action_name
+            )
+        ctx = self._connected_ev_context(agent_idx, obs, obs_map, charger_info, action_name)
+        if not ctx["connected"]:
+            return 0.0
+        # Preserve the optional conservative V2G path; its reserve/service
+        # guards remain common to the legacy teacher and the operational RBCs.
+        if self.allow_v2g:
+            legacy = RBCSmartPolicy._compute_ev_action(
+                self, agent_idx, obs, obs_map, charger_info, bounds, action_name
+            )
+            if legacy < 0.0:
+                return legacy
+        service_rate = self._minimum_ev_service_charge_rate(ctx)
+        surplus = self._usable_surplus_kw(agent_idx, obs, obs_map)
+        if surplus > self.pv_surplus_threshold_kw:
+            rate = self._ev_power_limited_charge_rate(
+                ctx,
+                surplus,
+                1.0,
+                service_rate=service_rate,
+                allow_service_import=self._ev_service_is_urgent(ctx),
+            )
+            solar_action = self._safe_ev_charge_rate(ctx, rate, bounds)
+            if solar_action > self.energy_epsilon:
+                return solar_action
+        return RBCBasicPolicy._compute_ev_action(
+            self, agent_idx, obs, obs_map, charger_info, bounds, action_name
+        )
+
+    def _compute_deferrable_action(self, agent_idx, obs, obs_map, action_name, bounds):
+        if not self.economic_dispatch:
+            return RBCSmartPolicy._compute_deferrable_action(
+                self, agent_idx, obs, obs_map, action_name, bounds
+            )
+        basic = RBCBasicPolicy._compute_deferrable_action(
+            self, agent_idx, obs, obs_map, action_name, bounds
+        )
+        if basic > 0.0:
+            return basic
+        prefix = self._resolve_deferrable_observation_prefix(action_name, obs_map)
+        if prefix is None or not self._deferrable_is_startable(obs, obs_map, prefix):
+            return 0.0
+        if self._usable_surplus_kw(
+            agent_idx, obs, obs_map
+        ) > self.pv_surplus_threshold_kw and not self._is_grid_stressed(obs, obs_map):
+            return self._deferrable_start_value(bounds)
+        return 0.0
+
+    def _storage_demand(self, agent_idx, obs, obs_map):
+        local = self._budget_value(
+            agent_idx, "local_import_kw", self._get_import_power(obs, obs_map)
+        )
+        return local, self._has_low_headroom(obs, obs_map) or local >= self.import_peak_threshold_kw
+
+    def _compute_storage_action(self, agent_idx, obs, obs_map, action_name, bounds):
+        if not self.economic_dispatch:
+            return RBCSmartPolicy._compute_storage_action(
+                self, agent_idx, obs, obs_map, action_name, bounds
+            )
+        del action_name
+        soc = self._get_storage_soc(obs, obs_map)
+        min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
+        local_surplus = self._budget_value(
+            agent_idx, "local_surplus_kw", self._pv_surplus_kw(obs, obs_map)
+        )
+        surplus = self._usable_surplus_kw(agent_idx, obs, obs_map)
+        expected = self._expected_surplus_kw(obs, obs_map)
+        price = self._get_price_context(obs, obs_map)
+        demand, peak = self._storage_demand(agent_idx, obs, obs_map)
+        ceiling = (
+            max_soc
+            if local_surplus > self.pv_surplus_threshold_kw
+            else min(max_soc, self.community_surplus_charge_soc_ceiling)
+        )
+        if surplus > self.pv_surplus_threshold_kw:
+            if soc < ceiling:
+                rate = self._storage_power_limited_charge_rate(
+                    agent_idx, surplus, 1.0, obs=obs, obs_map=obs_map, target_soc=ceiling
+                )
+                return self._clip_storage_action(rate, obs, obs_map, bounds)
+            return 0.0
+        # Current peaks take priority; a forecast peak alone is a reason to
+        # retain energy, not to discharge it early into a small present load.
+        if (
+            peak
+            or bool(price["expensive"])
+            or (not price["cheap"] and expected > self.pv_surplus_threshold_kw)
+        ):
+            rate = self._storage_power_limited_discharge_rate(
+                agent_idx,
+                demand,
+                self.peak_discharge_rate if peak else self.price_discharge_rate,
+                obs=obs,
+                obs_map=obs_map,
+                reserve_soc=max(min_soc, self.storage_price_discharge_soc_floor),
+            )
+            return self._clip_storage_action(-rate, obs, obs_map, bounds)
+        if (
+            bool(price["cheap"])
+            and not peak
+            and expected <= self.pv_surplus_threshold_kw
+            and soc < min(max_soc, self.storage_price_charge_soc_ceiling)
+        ):
+            # Reserve current connection capacity for the service actions that
+            # were allocated first, instead of causing a synchronous BESS peak.
+            room = max(0.0, self.import_peak_threshold_kw - demand)
+            rate = self._storage_power_limited_charge_rate(
+                agent_idx,
+                room,
+                self.price_charge_rate,
+                obs=obs,
+                obs_map=obs_map,
+                target_soc=min(max_soc, self.storage_price_charge_soc_ceiling),
+            )
+            return self._clip_storage_action(rate, obs, obs_map, bounds)
+        return 0.0
+
+
+class RBCSmartLocalPolicy(_EconomicSmartPolicy):
     """Strict building-local variant of :class:`RBCSmartPolicy`.
 
     The regular smart policy remains backwards compatible and may use a
@@ -2432,7 +2616,56 @@ class RBCSmartLocalPolicy(RBCSmartPolicy):
         return float("inf")
 
 
-class RBCCommunityPolicy(RBCSmartPolicy):
+class RBCCommunityPolicy(_EconomicSmartPolicy):
+    """Local economic policy with explicitly enabled sharing and peak support.
+
+    Without a settlement market, cross-building battery export has no member
+    cost benefit. In that case this policy uses the same local dispatch as
+    Smart Local. Community thresholds are aggregate limits, scaled by member
+    count when no explicit limit was configured.
+    """
+
+    uses_community_dispatch = True
+
+    def _policy_type(self) -> str:
+        return "rbc_community_policy"
+
+    def _community_energy_is_discounted(self) -> bool:
+        return self.community_market_enabled and super()._community_energy_is_discounted()
+
+    def _usable_surplus_kw(self, agent_idx, obs, obs_map):
+        local = super()._usable_surplus_kw(agent_idx, obs, obs_map)
+        if not self._community_energy_is_discounted():
+            return local
+        shared = self._budget_value(
+            agent_idx, "community_surplus_kw", self._community_surplus_kw(obs, obs_map)
+        )
+        return max(local, shared)
+
+    def _expected_surplus_kw(self, obs, obs_map):
+        local = super()._expected_surplus_kw(obs, obs_map)
+        if not self._community_energy_is_discounted():
+            return local
+        return max(local, self._forecast_community_surplus_kw(obs, obs_map))
+
+    def _storage_demand(self, agent_idx, obs, obs_map):
+        local, local_peak = super()._storage_demand(agent_idx, obs, obs_map)
+        if not self.community_market_enabled:
+            return local, local_peak
+        shared = self._budget_value(
+            agent_idx, "community_import_kw", self._get_community_import_power(obs, obs_map)
+        )
+        # Relieve a present community peak only during an expensive period.
+        # Do not empty batteries to supply unrelated cheap member imports.
+        if (
+            shared >= self.community_import_threshold_kw
+            and self._get_price_context(obs, obs_map)["expensive"]
+        ):
+            return max(local, shared - self.community_import_threshold_kw), True
+        return local, local_peak
+
+
+class _LegacyCommunityPolicy(RBCSmartPolicy):
     """Community-aware heuristic that prioritises REC surplus and peak relief."""
 
     uses_community_dispatch = True
@@ -2867,6 +3100,8 @@ class SignalAwareRBC(RBCSmartPolicy):
 
 
 class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
+    economic_dispatch = False
+
     """Strict-local SMART leaf controlled only through the virtual price.
 
     The existing :class:`SignalAwareRBC` predates the strict building-local
@@ -3041,7 +3276,7 @@ class SignalAwareRBCSmartLocal(SignalAwareRBC, RBCSmartLocalPolicy):
             self._price_multiplier = configured_multiplier
 
 
-class SignalAwareRBCCommunity(RBCCommunityPolicy):
+class SignalAwareRBCCommunity(_LegacyCommunityPolicy):
     """RBCCommunityPolicy that reacts to a CC price multiplier.
 
     This is the price-reactive residual base for the ``CC -> frozen MATD3``

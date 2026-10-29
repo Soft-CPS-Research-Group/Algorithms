@@ -710,6 +710,15 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
                     encoded_observation_names,
                 )
         metadata = {
+            "community_market": {
+                "enabled": bool(getattr(self.env.unwrapped, "community_market_enabled", False)),
+                "local_price_ratio_to_grid_import": getattr(
+                    self.env.unwrapped, "community_market_sell_ratio", 1.0
+                ),
+                "grid_export_price": getattr(
+                    self.env.unwrapped, "community_market_grid_export_price", 0.0
+                ),
+            },
             "seconds_per_time_step": getattr(self.env, "seconds_per_time_step", None),
             "building_names": building_names,
             "interface": getattr(self.env, "interface", None),

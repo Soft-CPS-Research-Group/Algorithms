@@ -145,7 +145,7 @@ class RuleBasedHyperparameters(BaseModel):
     community_storage_discharge_rate: float = Field(default=0.65, ge=0)
     community_surplus_charge_soc_ceiling: float = Field(default=0.90, ge=0)
     community_surplus_threshold_kw: float = Field(default=0.25, ge=0)
-    community_import_threshold_kw: float = Field(default=7.0, ge=0)
+    community_import_threshold_kw: Optional[float] = Field(default=None, ge=0)
     community_local_price_ratio: float = Field(default=0.8, ge=0)
     community_grid_export_price: float = Field(default=0.0, ge=0)
     pv_surplus_threshold_kw: float = Field(default=0.25, ge=0)
