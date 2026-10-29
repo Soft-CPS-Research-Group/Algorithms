@@ -197,7 +197,7 @@ reserva comunitária sem duplicação e limiares agregados. O Basic mantém as s
 regras. A série histórica e a campanha revista usam as mesmas tarifas e dados;
 a variante com mercado ligado é identificada separadamente como cenário
 configurado, sem alterar os ficheiros do dataset. Os resultados finais da
-campanha ficam no relatório de evidência desta revisão.
+campanha ficam no [relatório desta revisão](baseline_hierarchy_2026_10_29.md).
 
 Reprodução pelo ciclo comum de jobs:
 

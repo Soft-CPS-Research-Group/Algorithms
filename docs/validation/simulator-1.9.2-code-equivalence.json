@@ -1,0 +1,294 @@
+{
+  "source_commit": "053d57e3aaa74fba2b5a48b366a32d382b219624",
+  "installed_version": "1.9.2",
+  "installed_path": "/home/tiago/dev/Algorithms/.venv/lib/python3.10/site-packages/citylearn",
+  "python_files": 57,
+  "only_difference": "__version__ in citylearn/__init__.py changes from 1.9.1 to 1.9.2",
+  "files": [
+    {
+      "file": "__init__.py",
+      "sha256": "583471011d27a8e9ca082985303a7f736ac0c722b7bce166c5b173187b3efa8c",
+      "identical": false
+    },
+    {
+      "file": "__main__.py",
+      "sha256": "6761a2df4ce972977eac637939568c0ed8389ded3459ac9eadaa99dbeccfcb7f",
+      "identical": true
+    },
+    {
+      "file": "agents/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "identical": true
+    },
+    {
+      "file": "agents/base.py",
+      "sha256": "33cbb3769c941a08cff7056c2b0770f0176540013ecafc29de75ce98d40b3bee",
+      "identical": true
+    },
+    {
+      "file": "agents/baseline.py",
+      "sha256": "696baf5b62c25fc861e84d92ffc3ed95c0e9b8f27346974077b31239d34efaa6",
+      "identical": true
+    },
+    {
+      "file": "agents/marlisa.py",
+      "sha256": "a65cbdcf5b71d93013c9abccad12e055954f3435fc78a0b69991760d8e26a9f3",
+      "identical": true
+    },
+    {
+      "file": "agents/q_learning.py",
+      "sha256": "3626ba99f66cd94b6560ef96727d6df2828c94b030d2945a3d25bf1fa015be9c",
+      "identical": true
+    },
+    {
+      "file": "agents/rbc.py",
+      "sha256": "c28b485533a45993d130ff21db7045c16a2145efbdd8438e7726ffb92912d86d",
+      "identical": true
+    },
+    {
+      "file": "agents/rlc.py",
+      "sha256": "dd1be03991b1edee4b93a0c528cf3cd30295a15ea07631c19aa224bfe07d05b6",
+      "identical": true
+    },
+    {
+      "file": "agents/sac.py",
+      "sha256": "4fcc95796fa49582d4e6f28cac1a5f1c18ae5005e48fc55a4b95b2cfa428e112",
+      "identical": true
+    },
+    {
+      "file": "base.py",
+      "sha256": "7d220cf1b7b7e3ef892a940e87d698a7931669dbf01f0622535103ca97b873c1",
+      "identical": true
+    },
+    {
+      "file": "building.py",
+      "sha256": "54a00a92f6656c091c5a7f845bd843dbc2a396ebd610717410cac0de4d0eedcd",
+      "identical": true
+    },
+    {
+      "file": "citylearn.py",
+      "sha256": "ddb581d6f734be40149ee25e429c0bc28d387855f172aaab17ee7cff9765663f",
+      "identical": true
+    },
+    {
+      "file": "community_dataset.py",
+      "sha256": "e53839f418df924c44b40759f7fd9a65cc3e2116aec5133d603763df77bc2846",
+      "identical": true
+    },
+    {
+      "file": "cost_function.py",
+      "sha256": "aee8dedfedd09766ea0f26c5d29fb80ff2739939d692f6e6517504f77b05e509",
+      "identical": true
+    },
+    {
+      "file": "data.py",
+      "sha256": "da6dd2fb66f6d7f17889343dc9f82a6a8291643c3f36e45ca8d26142ec6a8cd3",
+      "identical": true
+    },
+    {
+      "file": "dynamics.py",
+      "sha256": "412d759502d468fd71d1cdf9d09af7a36cc16b39b34565b336b088001a84775c",
+      "identical": true
+    },
+    {
+      "file": "electric_vehicle.py",
+      "sha256": "38a3f836282209b133a648ca505cbd7655a4647c096eed88cdc5196278492b5f",
+      "identical": true
+    },
+    {
+      "file": "electric_vehicle_charger.py",
+      "sha256": "efb7aa360f06573c898119de81293a7c36e7ac99f1fdb26e40a90270fbe6a235",
+      "identical": true
+    },
+    {
+      "file": "end_use_load_profiles/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "identical": true
+    },
+    {
+      "file": "end_use_load_profiles/clustering.py",
+      "sha256": "9ba2082c70599b37e332f90afe5935730968d1b1f44cfff1e584e51adb9e76a0",
+      "identical": true
+    },
+    {
+      "file": "end_use_load_profiles/lstm_model/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "identical": true
+    },
+    {
+      "file": "end_use_load_profiles/lstm_model/model.py",
+      "sha256": "2046269db9ed71b3dcba2dcbb01ad397451996a47488446c4f3e50aba2e13b26",
+      "identical": true
+    },
+    {
+      "file": "end_use_load_profiles/lstm_model/model_generation.py",
+      "sha256": "aabb2e356b395a2a7d4ec55b2fcdd76c7856c77886823f4211f199b0fdf8f906",
+      "identical": true
+    },
+    {
+      "file": "end_use_load_profiles/lstm_model/model_generation_wrapper.py",
+      "sha256": "b8814ff8f24693a471cd7d402e953d9f3c07874361c6af841ef4c16f9d93cab3",
+      "identical": true
+    },
+    {
+      "file": "end_use_load_profiles/lstm_model/preprocessing.py",
+      "sha256": "de6488bbe5d689494064e8ad929746e1479dfdc3e6ed4ef039b4e7992ca1a3f0",
+      "identical": true
+    },
+    {
+      "file": "end_use_load_profiles/neighborhood.py",
+      "sha256": "2a3154f3966f33a2639130256fe1dc39a3f14b5cb67ab40ff959156463ce978d",
+      "identical": true
+    },
+    {
+      "file": "end_use_load_profiles/simulate.py",
+      "sha256": "c7a745f5003722ebccbb83ce3b6416ef1b229fdc8be4a3e5ee1ca08722f8a29d",
+      "identical": true
+    },
+    {
+      "file": "energy_model.py",
+      "sha256": "5e5560cf800c64c805955ea18ffebccb1f1baafdec2278168c705e5ca1878b3a",
+      "identical": true
+    },
+    {
+      "file": "exporter.py",
+      "sha256": "bff75dcdddd77318a15be45bec08d5c69a58352f52cb774660361f3141d273bd",
+      "identical": true
+    },
+    {
+      "file": "internal/__init__.py",
+      "sha256": "4be65562c88e4667911fcfc40383274148acecab47de959175df03238c0d7732",
+      "identical": true
+    },
+    {
+      "file": "internal/baseline.py",
+      "sha256": "959a7f5fcde991281882057d09a4850494b4cf5ac57f2fdab3eca255b178d4f2",
+      "identical": true
+    },
+    {
+      "file": "internal/building_ops.py",
+      "sha256": "c203b0ea1c118ab96c0c48480d804224ca8511e9bbf64bd21819b4b6f899dc86",
+      "identical": true
+    },
+    {
+      "file": "internal/capabilities.py",
+      "sha256": "041ae390efaa2e15c602af6e58e3565ead293b29c629e997b9cea4c2dc6efbc2",
+      "identical": true
+    },
+    {
+      "file": "internal/demand_response.py",
+      "sha256": "8754bf5cf04fde52599545ea524a514198a1778f0cb1aef91f211479495d05d1",
+      "identical": true
+    },
+    {
+      "file": "internal/entity_interface.py",
+      "sha256": "9915153dcd99b7239fe9ad484f56c6b4b03813e7ee46c2b03d3b2cde510920a1",
+      "identical": true
+    },
+    {
+      "file": "internal/experiment.py",
+      "sha256": "c62ade353a24a72a4aff88142b638785572f2ef1186a0f47cd2bbdcb83da503f",
+      "identical": true
+    },
+    {
+      "file": "internal/kpi.py",
+      "sha256": "0e93a15ce23c0c23c436322ccb6726e0ba6f79c28a6859a7002bc3932740ace5",
+      "identical": true
+    },
+    {
+      "file": "internal/loading.py",
+      "sha256": "d6ab05e0753d32bd7f43906161912438f704aca748c1821fc00e560f72445c10",
+      "identical": true
+    },
+    {
+      "file": "internal/physics_invariants.py",
+      "sha256": "f216772e1f1f3fea36718c6ba02feb82a8babdf3f88538b45320ea4626a6dcbb",
+      "identical": true
+    },
+    {
+      "file": "internal/provenance.py",
+      "sha256": "97bbc28bfc9e256cef98298fe6b9cb1b4254bb18ed2dec48090137a2006cb27e",
+      "identical": true
+    },
+    {
+      "file": "internal/robustness.py",
+      "sha256": "3169c62e6fccf65b77a52bb334b06ee30906721e58f575a949908033229c1e16",
+      "identical": true
+    },
+    {
+      "file": "internal/runtime.py",
+      "sha256": "a6527428f540fb9ae24c664344ae1194db5edef331a347e7e84497f978798800",
+      "identical": true
+    },
+    {
+      "file": "internal/topology.py",
+      "sha256": "99ebd3bc37e305ac31999fc075f3e532dde3390f1694c323bfa2c58491f3ed94",
+      "identical": true
+    },
+    {
+      "file": "internal/units.py",
+      "sha256": "70eb90b0013e7b0886a797fcfa4e21d5f9535334addba8b7659bf43dd958b876",
+      "identical": true
+    },
+    {
+      "file": "multi_community.py",
+      "sha256": "34a0dfba1e4f7512463c3b3239dc2d14519c6b4d66df1808c9f46384dcdff67a",
+      "identical": true
+    },
+    {
+      "file": "occupant.py",
+      "sha256": "4f23d42a45eab66a4b1b6046aa12810ca78038c883847ee41b6e07f28a353e6f",
+      "identical": true
+    },
+    {
+      "file": "power_outage.py",
+      "sha256": "0181b021f40e3bf0eb944c8f38cd5fd8110228ffc9dae583fe6ad3b439c99acc",
+      "identical": true
+    },
+    {
+      "file": "preprocessing.py",
+      "sha256": "d753576d111065b8486cece168be4c9cd299bdadfc9ab763cf343e5a5904ec43",
+      "identical": true
+    },
+    {
+      "file": "reward_function.py",
+      "sha256": "0f32b7adf7fe39ed8f07f0d02f46a8767e7806e2ff2d92991b5e8b2ee81dc2c3",
+      "identical": true
+    },
+    {
+      "file": "rl.py",
+      "sha256": "c0da4efb5deddc83bdadd7873a2bbf290ff400b8be81feb8eefc0a23aff94020",
+      "identical": true
+    },
+    {
+      "file": "utilities.py",
+      "sha256": "340bd1541fa62c72a909129df2faaa49ff370c3ccbe5c0ab195a834a548a81a2",
+      "identical": true
+    },
+    {
+      "file": "utils/__init__.py",
+      "sha256": "a531dd1047d1a4b7e495e044cc039133077feb8bbf8f21c8c903dd8a72a115d2",
+      "identical": true
+    },
+    {
+      "file": "utils/file_handler.py",
+      "sha256": "3610ca57f5a65ad4d7174ebf503ff001b5603a418f1ce2e40d5b2e38d0e126cf",
+      "identical": true
+    },
+    {
+      "file": "utils/noise.py",
+      "sha256": "9f13293b7ac4c2bd6b242ffbe2b8d8da21bfa682ba4b3b607da4c4e2ad9baa64",
+      "identical": true
+    },
+    {
+      "file": "utils/paths.py",
+      "sha256": "7be341e173bc29409e348e0d2b051cdd681ea3656b0b700d0bedc0946ff9887d",
+      "identical": true
+    },
+    {
+      "file": "wrappers.py",
+      "sha256": "cb0077d26b36b0999a77f936f825fb2304f7e9faa208ebf1f7cb53462bb599d8",
+      "identical": true
+    }
+  ]
+}
