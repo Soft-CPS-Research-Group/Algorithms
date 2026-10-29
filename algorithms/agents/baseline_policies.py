@@ -148,8 +148,9 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         self.community_surplus_threshold_kw: float = float(
             hyper.get("community_surplus_threshold_kw", self.pv_surplus_threshold_kw)
         )
+        community_peak = hyper.get("community_import_threshold_kw")
         self.community_import_threshold_kw: float = float(
-            hyper.get("community_import_threshold_kw") or self.import_peak_threshold_kw
+            self.import_peak_threshold_kw if community_peak is None else community_peak
         )
         self.ev_v2g_reserve_soc: float = float(hyper.get("ev_v2g_reserve_soc", 0.15))
         self.ev_service_margin_rate: float = max(

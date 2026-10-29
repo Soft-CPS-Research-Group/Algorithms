@@ -21,8 +21,6 @@ def policy_defaults(name):
         return NORMAL_DEFAULTS
     if name in {
         "RBCSmartPolicy",
-        "RBCSmartLocalPolicy",
-        "RBCCommunityPolicy",
         "SignalAwareRBC",
         "SignalAwareRBCSmartLocal",
         "SignalAwareRBCCommunity",

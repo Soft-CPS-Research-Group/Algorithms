@@ -139,7 +139,7 @@ def test_last_ev_interval_does_not_treat_soc_gap_as_lossless_ac_energy(seconds):
 
 @pytest.mark.parametrize("cls", [RBCSmartPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy])
 @pytest.mark.parametrize("soc", [0.13, 0.80])
-def test_forecast_solar_only_postpones_nonurgent_ev_service(cls, soc):
+def test_forecast_solar_does_not_override_common_ev_service(cls, soc):
     values = {
         **ev(
             soc=soc,
@@ -158,8 +158,11 @@ def test_forecast_solar_only_postpones_nonurgent_ev_service(cls, soc):
     action = agent.predict([obs])[0][0]
     if soc == 0.13:
         assert action > 0.5
-    else:
+    elif cls is RBCSmartPolicy:
         assert action == 0.0
+    else:
+        basic, basic_obs = policy(RBCBasicPolicy, values, ("electric_vehicle_storage_charger_1",))
+        assert action == pytest.approx(basic.predict([basic_obs])[0][0])
 
 
 @pytest.mark.parametrize("cls", POLICIES)
@@ -361,7 +364,11 @@ def test_community_surplus_is_shared_once_across_buildings(donor_has_local_pv):
         action_names=[["electric_vehicle_storage_one"]] * 2,
         action_space=[space, space],
         observation_space=[None, None],
-        metadata={"building_names": ["Building_1", "Building_2"], "seconds_per_time_step": 3600},
+        metadata={
+            "building_names": ["Building_1", "Building_2"],
+            "seconds_per_time_step": 3600,
+            "community_market": {"enabled": True, "local_price_ratio_to_grid_import": 0.8},
+        },
     )
     obs = np.array(list(values.values()))
     donor_obs = obs.copy()

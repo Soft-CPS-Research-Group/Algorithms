@@ -138,3 +138,8 @@ def test_community_supports_expensive_peak_only_with_settlement_enabled():
     assert make(RBCCommunityPolicy, market=False).predict([x])[0][0] == 0.0
     assert make(RBCCommunityPolicy, market=True).predict([x])[0][0] == pytest.approx(-0.6)
     assert make(RBCSmartLocalPolicy, market=True).predict([x])[0][0] == 0.0
+
+
+def test_explicit_zero_community_peak_is_not_replaced_by_default():
+    policy = make(RBCCommunityPolicy, market=True, hyper={"community_import_threshold_kw": 0.0})
+    assert policy.community_import_threshold_kw == 0.0
