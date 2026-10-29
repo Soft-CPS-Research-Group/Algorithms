@@ -1501,7 +1501,10 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         obs: np.ndarray,
         obs_map: Mapping[str, int],
     ) -> bool:
-        if self._ev_departure_is_infeasible(ctx):
+        # Forecast solar cannot override the same service guard used by the
+        # charging branch. Otherwise a large, currently feasible energy gap
+        # can be deferred until charger/battery losses make departure infeasible.
+        if self._ev_service_is_urgent(ctx):
             return False
         if float(ctx["hours_to_departure"]) <= max(
             self.emergency_hours, self._effective_ev_service_lookahead_hours()

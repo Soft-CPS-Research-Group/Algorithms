@@ -42,6 +42,9 @@ esse valor já era a intenção do construtor e agora também é respeitado pela
 validação das configurações. Não desativa a carga necessária dos EVs.
 Os templates históricos que definem outro valor continuam a ser explícitos.
 V2G exige `allow_v2g: true` e as respetivas reservas e condições de serviço.
+Uma previsão solar favorável só permite esperar enquanto o serviço do EV não
+é urgente. A necessidade média de carga também ativa essa proteção, mesmo
+quando ainda falta bastante tempo para a saída.
 
 ## Pedidos de lavagem e serviço
 

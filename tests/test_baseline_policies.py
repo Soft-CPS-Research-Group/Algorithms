@@ -1569,7 +1569,7 @@ def test_rbc_smart_policy_boosts_ev_service_when_departure_feasibility_is_infeas
     assert actions[0][1] == pytest.approx(0.75)
 
 
-def test_rbc_smart_policy_waits_for_solar_when_ev_departure_is_feasible():
+def test_rbc_smart_policy_serves_urgent_ev_despite_forecast_solar():
     agent = RBCSmartPolicy(
         {
             "algorithm": {
@@ -1623,7 +1623,7 @@ def test_rbc_smart_policy_waits_for_solar_when_ev_departure_is_feasible():
 
     actions = agent.predict([obs])
 
-    assert actions[0][1] == pytest.approx(0.0)
+    assert actions[0][1] > 0.28
 
 
 def test_rbc_smart_policy_subhour_treats_near_tight_ev_service_as_urgent():

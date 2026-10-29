@@ -117,6 +117,31 @@ def test_rbc_final_service_command_crosses_charger_deadband_without_exceeding_bu
     assert agent._safe_ev_charge_rate(ctx, 0.1, (-1.0, 1.0)) == 0.0
 
 
+@pytest.mark.parametrize("cls", [RBCSmartPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy])
+@pytest.mark.parametrize("soc", [0.13, 0.80])
+def test_forecast_solar_only_postpones_nonurgent_ev_service(cls, soc):
+    values = {
+        **ev(
+            soc=soc,
+            required=0.93,
+            hours=10.0,
+            departure_feasibility_ratio=0.85,
+            departure_energy_margin_kwh=8.0,
+        ),
+        "direct_solar_irradiance_predicted_2": 815.0,
+        "district__direct_solar_irradiance_predicted_2": 815.0,
+        "electricity_pricing": 0.2,
+    }
+    agent, obs = policy(cls, values, ("electric_vehicle_storage_charger_1",))
+    # Solar is expected; a large gap must still trigger service now.
+    assert agent._forecast_solar_resource_expected(obs, agent._obs_index[0])
+    action = agent.predict([obs])[0][0]
+    if soc == 0.13:
+        assert action > 0.5
+    else:
+        assert action == 0.0
+
+
 @pytest.mark.parametrize("cls", POLICIES)
 @pytest.mark.parametrize("flag", ["pending", "can_start"])
 def test_appliance_never_starts_before_a_request_and_an_allowed_window(cls, flag):
