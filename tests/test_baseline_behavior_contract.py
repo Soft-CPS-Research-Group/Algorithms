@@ -85,6 +85,86 @@ def test_bau_starts_requested_washer_and_ev_independent_of_price_or_hour(cls, ho
     assert agent.predict([obs])[0] == pytest.approx([1.0, 1.0])
 
 
+@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy])
+def test_bau_does_not_reuse_departure_target_tolerance_near_full(cls):
+    values = ev(soc=0.9995, required=0.8, hours=20.0)
+    agent, obs = policy(cls, values, ("electric_vehicle_storage_charger_1",))
+    assert agent.predict([obs])[0] == pytest.approx([1.0])
+
+
+@pytest.mark.parametrize("cls", [RBCBasicPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy])
+def test_rbc_continues_service_with_a_three_percentage_point_soc_gap(cls):
+    values = ev(
+        soc=0.77, required=0.8, hours=0.5, min_charging_power_kw=1.38, max_charging_power_kw=7.36
+    )
+    agent, obs = policy(cls, values, ("electric_vehicle_storage_charger_1",), seconds=900)
+    assert agent.ev_service_soc_tolerance == pytest.approx(0.001)
+    assert agent.predict([obs])[0][0] >= 1.38 / 7.36
+
+
+def test_rbc_final_service_command_crosses_charger_deadband_without_exceeding_budget():
+    agent, _ = policy(RBCBasicPolicy, {})
+    ctx = {
+        "connected": True,
+        "soc": 0.797,
+        "required_soc": 0.8,
+        "capacity": 50.0,
+        "max_power": 7.36,
+        "min_power": 1.38,
+    }
+    assert agent._safe_ev_charge_rate(ctx, 1.0, (-1.0, 1.0)) == pytest.approx(1.38 / 7.36)
+    # An insufficient PV or physical-power budget must not be rounded up.
+    assert agent._safe_ev_charge_rate(ctx, 0.1, (-1.0, 1.0)) == 0.0
+
+
+@pytest.mark.parametrize("seconds", [15, 900, 3600])
+def test_last_ev_interval_does_not_treat_soc_gap_as_lossless_ac_energy(seconds):
+    agent, _ = policy(RBCBasicPolicy, {}, seconds=seconds)
+    ctx = {
+        "connected": True,
+        "soc": 0.819,
+        "required_soc": 0.82,
+        "capacity": 50.0,
+        "max_power": 7.7,
+        "min_power": 0.0,
+        "hours_to_departure": seconds / 3600,
+        "available_charge_action": 0.6,
+    }
+    # Use a gap just outside the declared SOC tolerance.
+    ctx["soc"] = 0.818
+    assert agent._safe_ev_charge_rate(ctx, 1.0, (-1.0, 1.0)) == pytest.approx(0.6)
+    # The deadline guard never increases an explicitly limited energy budget.
+    assert agent._safe_ev_charge_rate(ctx, 0.1, (-1.0, 1.0)) == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("cls", [RBCSmartPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy])
+@pytest.mark.parametrize("soc", [0.13, 0.80])
+def test_forecast_solar_does_not_override_common_ev_service(cls, soc):
+    values = {
+        **ev(
+            soc=soc,
+            required=0.93,
+            hours=10.0,
+            departure_feasibility_ratio=0.85,
+            departure_energy_margin_kwh=8.0,
+        ),
+        "direct_solar_irradiance_predicted_2": 815.0,
+        "district__direct_solar_irradiance_predicted_2": 815.0,
+        "electricity_pricing": 0.2,
+    }
+    agent, obs = policy(cls, values, ("electric_vehicle_storage_charger_1",))
+    # Solar is expected; a large gap must still trigger service now.
+    assert agent._forecast_solar_resource_expected(obs, agent._obs_index[0])
+    action = agent.predict([obs])[0][0]
+    if soc == 0.13:
+        assert action > 0.5
+    elif cls is RBCSmartPolicy:
+        assert action == 0.0
+    else:
+        basic, basic_obs = policy(RBCBasicPolicy, values, ("electric_vehicle_storage_charger_1",))
+        assert action == pytest.approx(basic.predict([basic_obs])[0][0])
+
+
 @pytest.mark.parametrize("cls", POLICIES)
 @pytest.mark.parametrize("flag", ["pending", "can_start"])
 def test_appliance_never_starts_before_a_request_and_an_allowed_window(cls, flag):
@@ -284,7 +364,11 @@ def test_community_surplus_is_shared_once_across_buildings(donor_has_local_pv):
         action_names=[["electric_vehicle_storage_one"]] * 2,
         action_space=[space, space],
         observation_space=[None, None],
-        metadata={"building_names": ["Building_1", "Building_2"], "seconds_per_time_step": 3600},
+        metadata={
+            "building_names": ["Building_1", "Building_2"],
+            "seconds_per_time_step": 3600,
+            "community_market": {"enabled": True, "local_price_ratio_to_grid_import": 0.8},
+        },
     )
     obs = np.array(list(values.values()))
     donor_obs = obs.copy()

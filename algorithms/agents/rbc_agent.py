@@ -257,6 +257,10 @@ class RulePolicyBase(BaseAgent):
             "deferrable_safety_margin_steps",
             "deferrable_import_block_threshold_kw",
             "deferrable_community_import_block_threshold_kw",
+            "community_market_enabled",
+            "community_local_price_ratio",
+            "community_grid_export_price",
+            "community_import_threshold_kw",
         ):
             if hasattr(self, attr):
                 hyperparameters[attr] = getattr(self, attr)
@@ -1429,6 +1433,7 @@ class RulePolicyBase(BaseAgent):
 
         return {
             "building_order": building_order,
+            "community_market": schema.get("community_market") or {},
             "charger_info": charger_info,
             "storage_info": storage_info,
             "electrical_service_info": electrical_service_info,

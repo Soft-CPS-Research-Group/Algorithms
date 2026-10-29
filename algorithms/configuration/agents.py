@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Union
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Literal
 
-from algorithms.configuration.baseline_defaults import policy_defaults
+from algorithms.configuration.baseline_defaults import EV_SERVICE_SOC_TOLERANCE, policy_defaults
 from algorithms.configuration.model import StrictModel as BaseModel
 
 
@@ -97,7 +97,7 @@ class RuleBasedHyperparameters(BaseModel):
     ev_subhour_min_service_margin_rate: float = Field(default=0.10, ge=0.0)
     ev_subhour_v2g_reserve_soc: float = Field(default=0.05, ge=0.0)
     ev_subhour_tight_feasibility_ratio: float = Field(default=0.90, ge=0.0, le=1.0)
-    ev_service_soc_tolerance: float = Field(default=0.04, ge=0.0)
+    ev_service_soc_tolerance: float = Field(default=EV_SERVICE_SOC_TOLERANCE, ge=0.0)
     deferrable_import_block_threshold_kw: Optional[float] = Field(default=None, ge=0.0)
     deferrable_community_import_block_threshold_kw: Optional[float] = Field(default=None, ge=0.0)
     seed: Optional[int] = None
@@ -145,7 +145,7 @@ class RuleBasedHyperparameters(BaseModel):
     community_storage_discharge_rate: float = Field(default=0.65, ge=0)
     community_surplus_charge_soc_ceiling: float = Field(default=0.90, ge=0)
     community_surplus_threshold_kw: float = Field(default=0.25, ge=0)
-    community_import_threshold_kw: float = Field(default=7.0, ge=0)
+    community_import_threshold_kw: Optional[float] = Field(default=None, ge=0)
     community_local_price_ratio: float = Field(default=0.8, ge=0)
     community_grid_export_price: float = Field(default=0.0, ge=0)
     pv_surplus_threshold_kw: float = Field(default=0.25, ge=0)

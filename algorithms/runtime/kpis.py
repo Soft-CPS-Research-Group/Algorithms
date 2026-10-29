@@ -29,12 +29,23 @@ def baseline_reference(enabled):
         simulator_version = version("softcpsrecsimulator")
     except PackageNotFoundError:
         simulator_version = None
+    from citylearn.agents.baseline import BusinessAsUsualAgent
+
+    definition = getattr(BusinessAsUsualAgent, "DEFINITION_VERSION", "deadline-spread-v1")
+    immediate = definition == "immediate-full-charge-v1"
     return {
         "implementation": "citylearn.agents.baseline.BusinessAsUsualAgent",
         "package": "softcpsrecsimulator",
         "version": simulator_version,
+        "definition": definition,
         "equivalent_to_normal_policy": False,
         "description": (
+            "Simulator native counterfactual requests immediate EV charging to 100%. "
+            "It shares the operational BAU objective with Algorithms NormalPolicy; "
+            "the implementations and configurable limits are not identical."
+        )
+        if immediate
+        else (
             "Simulator native counterfactual, with deadline-spread EV charging. "
             "Algorithms NormalPolicy instead requests immediate charging. "
             "Compare separate jobs with identical inputs for a NormalPolicy baseline."

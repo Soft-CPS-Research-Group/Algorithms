@@ -16,7 +16,7 @@ entity, token, layout, and backbone rules.
 
 TPPO is registered as `AgentTransformerPPO`. It supports
 `simulator.interface: entity`, including `simulator.topology_mode: dynamic`.
-The tested package is `softcpsrecsimulator==1.9.1`; the conceptual contract is
+The tested package is `softcpsrecsimulator==1.9.2`; the conceptual contract is
 the entity payload (`tables`, `edges`, `meta`), `meta.topology_version`, and
 active action-table shapes.
 

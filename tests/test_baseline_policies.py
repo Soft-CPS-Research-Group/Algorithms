@@ -4,11 +4,12 @@ import pytest
 from algorithms.agents.baseline_policies import (
     NormalNoBatteryPolicy,
     NormalPolicy,
+    RandomPolicy,
     RBCBasicPolicy,
     RBCCommunityPolicy,
     RBCSmartLocalPolicy,
     RBCSmartPolicy,
-    RandomPolicy,
+    _LegacyCommunityPolicy,
 )
 from algorithms.agents.rbc_agent import StorageInfo
 
@@ -132,11 +133,15 @@ def test_rbc_smart_local_actions_are_invariant_to_community_only_signals():
     assert agent._get_community_import_power(stressed_community, obs_map) == pytest.approx(0.0)
     assert agent._get_community_pv_power(stressed_community, obs_map) == pytest.approx(0.0)
     assert agent._get_community_headroom_kw(stressed_community, obs_map) == float("inf")
-    assert agent._forecast_community_import_peak_kw(stressed_community, obs_map) == pytest.approx(0.0)
+    assert agent._forecast_community_import_peak_kw(stressed_community, obs_map) == pytest.approx(
+        0.0
+    )
 
 
 def test_random_policy_samples_every_action_within_bounds():
-    agent = RandomPolicy({"training": {"seed": 123}, "algorithm": {"name": "RandomPolicy", "hyperparameters": {}}})
+    agent = RandomPolicy(
+        {"training": {"seed": 123}, "algorithm": {"name": "RandomPolicy", "hyperparameters": {}}}
+    )
     _attach(agent, ["hour"], _action_names())
 
     actions = agent.predict([np.array([12.0], dtype=float)])
@@ -151,7 +156,9 @@ def test_random_policy_samples_every_action_within_bounds():
 def test_random_policy_respects_phase_headroom_when_available():
     agent = RandomPolicy(
         {
-            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "simulator": {
+                "dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"
+            },
             "training": {"seed": 123},
             "algorithm": {"name": "RandomPolicy", "hyperparameters": {}},
         }
@@ -174,7 +181,9 @@ def test_random_policy_respects_observed_storage_soc_max():
         def uniform(self, low, high):
             return 0.8
 
-    agent = RandomPolicy({"training": {"seed": 123}, "algorithm": {"name": "RandomPolicy", "hyperparameters": {}}})
+    agent = RandomPolicy(
+        {"training": {"seed": 123}, "algorithm": {"name": "RandomPolicy", "hyperparameters": {}}}
+    )
     agent._rng = _Rng()
     agent.attach_environment(
         observation_names=[["electrical_storage_soc", "electrical_storage_soc_max_ratio"]],
@@ -229,7 +238,9 @@ def test_normal_policy_controls_storage_ev_and_deferrable():
 def test_normal_policy_prefers_pv_power_kw_over_legacy_solar_generation():
     agent = NormalPolicy({"algorithm": {"name": "NormalPolicy", "hyperparameters": {}}})
     agent.attach_environment(
-        observation_names=[["pv_power_kw", "solar_generation", "load_power_kw", "electrical_storage_soc"]],
+        observation_names=[
+            ["pv_power_kw", "solar_generation", "load_power_kw", "electrical_storage_soc"]
+        ],
         action_names=[["electrical_storage"]],
         action_space=[DummySpace([-1.0], [1.0])],
         observation_space=[None],
@@ -276,7 +287,9 @@ def test_normal_policy_charges_to_full_target_not_only_required_soc():
 
 
 def test_normal_no_battery_policy_leaves_storage_idle():
-    agent = NormalNoBatteryPolicy({"algorithm": {"name": "NormalNoBatteryPolicy", "hyperparameters": {}}})
+    agent = NormalNoBatteryPolicy(
+        {"algorithm": {"name": "NormalNoBatteryPolicy", "hyperparameters": {}}}
+    )
     _attach(agent, _base_observation_names(), _action_names())
     obs = np.array(
         [
@@ -348,7 +361,9 @@ def test_normal_policy_never_uses_ev_v2g():
 def test_normal_policy_clips_storage_to_three_phase_headroom():
     agent = NormalPolicy(
         {
-            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "simulator": {
+                "dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"
+            },
             "algorithm": {
                 "name": "NormalPolicy",
                 "hyperparameters": {
@@ -383,7 +398,9 @@ def test_normal_policy_clips_storage_to_three_phase_headroom():
 def test_rbc_smart_policy_can_charge_storage_from_local_pv_surplus_without_import_headroom():
     agent = RBCSmartPolicy(
         {
-            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "simulator": {
+                "dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"
+            },
             "algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {"pv_charge_rate": 0.5}},
         }
     )
@@ -412,7 +429,9 @@ def test_rbc_smart_policy_can_charge_storage_from_local_pv_surplus_without_impor
 def test_rbc_smart_policy_does_not_grid_charge_with_zero_electrical_headroom():
     agent = RBCSmartPolicy(
         {
-            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "simulator": {
+                "dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"
+            },
             "algorithm": {
                 "name": "RBCSmartPolicy",
                 "hyperparameters": {"price_charge_rate": 0.5, "pv_charge_rate": 0.0},
@@ -449,7 +468,9 @@ def test_rbc_smart_policy_does_not_grid_charge_with_zero_electrical_headroom():
 def test_rbc_smart_policy_does_not_charge_storage_at_observed_soc_max():
     agent = RBCSmartPolicy(
         {
-            "simulator": {"dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"},
+            "simulator": {
+                "dataset_path": "datasets/citylearn_three_phase_electrical_service_demo_15s_parquet/schema.json"
+            },
             "algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {"pv_charge_rate": 0.5}},
         }
     )
@@ -573,7 +594,10 @@ def test_rbc_smart_policy_does_not_discharge_storage_at_observed_soc_min():
         {
             "algorithm": {
                 "name": "RBCSmartPolicy",
-                "hyperparameters": {"storage_min_soc": 0.0, "storage_price_discharge_soc_floor": 0.0},
+                "hyperparameters": {
+                    "storage_min_soc": 0.0,
+                    "storage_price_discharge_soc_floor": 0.0,
+                },
             }
         }
     )
@@ -598,7 +622,9 @@ def test_rbc_smart_policy_does_not_discharge_storage_at_observed_soc_min():
         metadata={"building_names": ["Building_1"], "seconds_per_time_step": 3600},
     )
 
-    actions = agent.predict([np.array([0.60, 0.10, 0.20, 0.30, 0.0, 2.0, 9.0, 1.0, 0.20, 0.20, 0.95], dtype=float)])
+    actions = agent.predict(
+        [np.array([0.60, 0.10, 0.20, 0.30, 0.0, 2.0, 9.0, 1.0, 0.20, 0.20, 0.95], dtype=float)]
+    )
 
     assert actions[0][0] == pytest.approx(0.0)
 
@@ -647,7 +673,9 @@ def test_rbc_basic_policy_uses_price_for_storage_ev_and_deferrable():
 
 
 def test_rbc_basic_policy_never_uses_ev_v2g():
-    agent = RBCBasicPolicy({"algorithm": {"name": "RBCBasicPolicy", "hyperparameters": {"flex_trickle_charge": 0.0}}})
+    agent = RBCBasicPolicy(
+        {"algorithm": {"name": "RBCBasicPolicy", "hyperparameters": {"flex_trickle_charge": 0.0}}}
+    )
     _attach(agent, _base_observation_names(), _action_names())
     obs = np.array(
         [
@@ -719,11 +747,11 @@ def test_rbc_basic_policy_keeps_minimum_ev_service_rate_when_not_cheap():
     )
     _attach(agent, _base_observation_names(), _action_names())
     obs = np.array(
-            [
-                0.20,
-                0.10,
-                0.20,
-                0.30,
+        [
+            0.20,
+            0.10,
+            0.20,
+            0.30,
             0.0,
             2.0,
             0.0,
@@ -1569,7 +1597,7 @@ def test_rbc_smart_policy_boosts_ev_service_when_departure_feasibility_is_infeas
     assert actions[0][1] == pytest.approx(0.75)
 
 
-def test_rbc_smart_policy_waits_for_solar_when_ev_departure_is_feasible():
+def test_rbc_smart_policy_serves_urgent_ev_despite_forecast_solar():
     agent = RBCSmartPolicy(
         {
             "algorithm": {
@@ -1623,7 +1651,7 @@ def test_rbc_smart_policy_waits_for_solar_when_ev_departure_is_feasible():
 
     actions = agent.predict([obs])
 
-    assert actions[0][1] == pytest.approx(0.0)
+    assert actions[0][1] > 0.28
 
 
 def test_rbc_smart_policy_subhour_treats_near_tight_ev_service_as_urgent():
@@ -1856,7 +1884,12 @@ def test_rbc_smart_policy_does_not_trigger_v2g_from_a_flat_price():
 
 def test_rbc_smart_policy_caps_ev_charge_at_required_soc_target():
     agent = RBCSmartPolicy(
-        {"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {"ev_service_soc_tolerance": 0.001}}}
+        {
+            "algorithm": {
+                "name": "RBCSmartPolicy",
+                "hyperparameters": {"ev_service_soc_tolerance": 0.001},
+            }
+        }
     )
     _attach(agent, _base_observation_names(), _action_names())
     obs = np.array(
@@ -1932,7 +1965,9 @@ def test_rbc_smart_policy_limits_storage_charge_to_surplus_left_after_ev_charge(
     agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}})
     _attach(agent, _base_observation_names(), _action_names())
     agent._dataset_info = {
-        "storage_info": {"Building_1": StorageInfo(nominal_power=10.0, capacity=100.0, phase_connection=None)}
+        "storage_info": {
+            "Building_1": StorageInfo(nominal_power=10.0, capacity=100.0, phase_connection=None)
+        }
     }
     obs = np.array(
         [
@@ -1970,7 +2005,9 @@ def test_rbc_smart_policy_can_discharge_storage_to_cover_urgent_ev_import():
     agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}})
     _attach(agent, _base_observation_names(), _action_names())
     agent._dataset_info = {
-        "storage_info": {"Building_1": StorageInfo(nominal_power=10.0, capacity=100.0, phase_connection=None)}
+        "storage_info": {
+            "Building_1": StorageInfo(nominal_power=10.0, capacity=100.0, phase_connection=None)
+        }
     }
     obs = np.array(
         [
@@ -2004,8 +2041,12 @@ def test_rbc_smart_policy_can_discharge_storage_to_cover_urgent_ev_import():
     assert actions[0][0] < 0.0
 
 
-def test_rbc_smart_policy_default_ev_tolerance_ignores_small_service_gap():
-    agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}})
+@pytest.mark.parametrize("tolerance,should_charge", [(None, True), (0.04, False)])
+def test_rbc_smart_policy_tighter_default_and_explicit_legacy_ev_tolerance(
+    tolerance, should_charge
+):
+    hyper = {} if tolerance is None else {"ev_service_soc_tolerance": tolerance}
+    agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": hyper}})
     _attach(agent, _base_observation_names(), _action_names())
     obs = np.array(
         [
@@ -2035,7 +2076,10 @@ def test_rbc_smart_policy_default_ev_tolerance_ignores_small_service_gap():
 
     actions = agent.predict([obs])
 
-    assert actions[0][1] == pytest.approx(0.0)
+    if should_charge:
+        assert actions[0][1] > 0.0
+    else:
+        assert actions[0][1] == pytest.approx(0.0)
 
 
 def test_rbc_smart_policy_does_not_discharge_storage_to_zero_credit_export():
@@ -2075,7 +2119,9 @@ def test_rbc_smart_policy_does_not_discharge_storage_to_zero_credit_export():
 def test_rbc_smart_policy_storage_charge_tracks_real_surplus_and_soc_room():
     agent = RBCSmartPolicy(
         {
-            "simulator": {"dataset_path": "datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json"},
+            "simulator": {
+                "dataset_path": "datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json"
+            },
             "algorithm": {
                 "name": "RBCSmartPolicy",
                 "hyperparameters": {"pv_charge_rate": 0.9, "storage_max_soc": 0.75},
@@ -2322,8 +2368,8 @@ def test_rbc_smart_policy_actions_are_invariant_to_community_aggregates_when_loc
     assert np.asarray(stressed_actions) == pytest.approx(np.asarray(quiet_actions))
 
 
-def test_rbc_community_policy_uses_community_surplus_for_storage_ev_and_deferrable():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_uses_community_surplus_for_storage_ev_and_deferrable():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",
@@ -2375,8 +2421,8 @@ def test_rbc_community_policy_uses_community_surplus_for_storage_ev_and_deferrab
     assert actions[0][2] == pytest.approx(1.0)
 
 
-def test_rbc_community_policy_ignores_community_surplus_when_local_energy_is_not_discounted():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_ignores_community_surplus_when_local_energy_is_not_discounted():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",
@@ -2436,8 +2482,8 @@ def test_rbc_community_policy_ignores_community_surplus_when_local_energy_is_not
     assert actions[0][2] == pytest.approx(0.0)
 
 
-def test_rbc_community_policy_forecast_surplus_reserves_capacity_instead_of_charging_now():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_forecast_surplus_reserves_capacity_instead_of_charging_now():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",
@@ -2485,8 +2531,8 @@ def test_rbc_community_policy_forecast_surplus_reserves_capacity_instead_of_char
     assert actions[0][2] == pytest.approx(0.0)
 
 
-def test_rbc_community_policy_compact_community_net_forecast_reserves_capacity_instead_of_charging_now():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_compact_community_net_forecast_reserves_capacity_instead_of_charging_now():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",
@@ -2532,8 +2578,8 @@ def test_rbc_community_policy_compact_community_net_forecast_reserves_capacity_i
     assert actions[0][2] == pytest.approx(0.0)
 
 
-def test_rbc_community_policy_uses_safe_v2g_under_community_stress():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_uses_safe_v2g_under_community_stress():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",
@@ -2582,8 +2628,8 @@ def test_rbc_community_policy_uses_safe_v2g_under_community_stress():
     assert actions[0][1] == pytest.approx(-0.35)
 
 
-def test_rbc_community_policy_does_not_v2g_while_community_surplus_exists():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_does_not_v2g_while_community_surplus_exists():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",
@@ -2631,8 +2677,8 @@ def test_rbc_community_policy_does_not_v2g_while_community_surplus_exists():
     assert actions[0][1] >= 0.0
 
 
-def test_rbc_community_policy_uses_forecast_community_stress_for_storage_and_v2g():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_uses_forecast_community_stress_for_storage_and_v2g():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",
@@ -2678,8 +2724,8 @@ def test_rbc_community_policy_uses_forecast_community_stress_for_storage_and_v2g
     assert actions[0][2] == pytest.approx(0.0)
 
 
-def test_rbc_community_policy_uses_compact_community_net_forecast_for_stress():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_uses_compact_community_net_forecast_for_stress():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",
@@ -2725,8 +2771,8 @@ def test_rbc_community_policy_uses_compact_community_net_forecast_for_stress():
     assert actions[0][2] == pytest.approx(0.0)
 
 
-def test_rbc_community_policy_caps_storage_charge_from_discounted_community_surplus():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_caps_storage_charge_from_discounted_community_surplus():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",
@@ -2779,8 +2825,8 @@ def test_rbc_community_policy_caps_storage_charge_from_discounted_community_surp
     assert actions[0][0] == pytest.approx(0.0)
 
 
-def test_rbc_community_policy_still_charges_storage_from_free_local_pv_above_community_ceiling():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_still_charges_storage_from_free_local_pv_above_community_ceiling():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",
@@ -2833,8 +2879,8 @@ def test_rbc_community_policy_still_charges_storage_from_free_local_pv_above_com
     assert actions[0][0] == pytest.approx(1.0)
 
 
-def test_rbc_community_policy_does_not_discharge_storage_without_current_import_to_serve():
-    agent = RBCCommunityPolicy(
+def test_legacy_community_teacher_does_not_discharge_storage_without_current_import_to_serve():
+    agent = _LegacyCommunityPolicy(
         {
             "algorithm": {
                 "name": "RBCCommunityPolicy",

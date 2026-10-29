@@ -152,7 +152,7 @@ def test_portuguese_dataset_complete_job_and_portable_policy(cls, tmp_path):
         os.environ.get("SIMULATOR_REPO", Path(__file__).resolve().parents[3] / "Simulator")
     )
     schema = simulator / "data/datasets/rec_pt_2023_micro_4_v2/evaluation/core_4.json"
-    assert schema.is_file(), "The current Portuguese dataset from Simulator 1.9.1 is required"
+    assert schema.is_file(), "The current Portuguese dataset from Simulator 1.9.2 is required"
     config = config_for("NormalPolicy", tmp_path)
     config["job"] = {"profile": "evaluate"}
     config["training"]["episodes"] = 0

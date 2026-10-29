@@ -10,11 +10,11 @@ The [branch consolidation record](docs/consolidation/README.md) preserves histor
 origins. The [stage 2 delivery](docs/runtime/delivery.md) records the common-core
 reorganization and its verification. The [stage 4 delivery](docs/runtime/export_delivery.md) covers final KPIs, portable manifests and policy parity, with explicit support limits.
 
-See the [BAU/RBC behavior contract](docs/baseline_controllers.md) for the audited baselines, migration and Simulator 1.9.1.
+See the [BAU/RBC behavior contract](docs/baseline_controllers.md) for the audited baselines, migration and Simulator 1.9.2.
 
 ## Quick start
 
-Python 3.10 and `softcpsrecsimulator==1.9.1` are the tested baseline. Imports from
+Python 3.10 and `softcpsrecsimulator==1.9.2` are the tested baseline. Imports from
 the simulator remain `citylearn.*`. Use a fresh environment to avoid conflicting
 CityLearn distributions.
 

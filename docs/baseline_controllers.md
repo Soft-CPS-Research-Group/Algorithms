@@ -1,8 +1,8 @@
 # BAU e controladores por regras
 
-Contrato revisto em 28/10/2026, Algorithms 0.4, SoftCPS Simulator 1.9.1.
+Contrato revisto em 29/10/2026, Algorithms 0.4, SoftCPS Simulator 1.9.2.
 Esta revisão define comportamento e verifica execução e exportação. Não é uma
-classificação anual de desempenho nem uma calibração empírica de hábitos humanos.
+garantia universal de desempenho nem uma calibração empírica de hábitos humanos.
 
 ## Controladores principais
 
@@ -11,8 +11,8 @@ classificação anual de desempenho nem uma calibração empírica de hábitos h
 | `NormalPolicy` — BAU com bateria | Pede carga imediatamente após a ligação, sem esperar por preço ou sol. Por omissão, alvo de 100%. | Inicia no primeiro instante em que existe um pedido e o simulador permite o arranque. | Autoconsumo: carrega com excedente fotovoltaico e descarrega para consumo local. |
 | `NormalNoBatteryPolicy` — BAU sem controlo da bateria | Igual ao BAU. | Igual ao BAU. | Ação zero. O equipamento continua a existir no simulador, incluindo eventuais perdas passivas. |
 | `RBCBasicPolicy` | Usa preço relativo e necessidade de serviço até à saída. A urgência pode exigir carga a qualquer hora. | Começa com preço favorável, urgência ou proximidade do último arranque possível. | Carrega a preço favorável e descarrega a preço elevado para consumo útil. |
-| `RBCSmartLocalPolicy` | Aproveita excedente local e previsões; adia se houver margem, mas atende a necessidade de saída. V2G é opcional. | Aproveita excedente local ou arranca por urgência/prazo. | Favorece autoconsumo e redução de importações/picos locais; evita disputar energia com serviço urgente. |
-| `RBCCommunityPolicy` | Acrescenta excedente e pressão da comunidade, com as condições económicas configuradas. | Pode aproveitar excedente comunitário, além do local e dos prazos. | Usa também excedente comunitário e alívio das importações da comunidade. |
+| `RBCSmartLocalPolicy` | Mantém o serviço e as oportunidades de preço do Basic; antecipa carga com excedente local. V2G é opcional. | Mantém preço, urgência e prazo do Basic; acrescenta arranque com excedente local. | Acrescenta captura solar, reserva para preços altos e limitação da carga da bateria ao pico local configurado. |
+| `RBCCommunityPolicy` | Acrescenta excedente e pressão da comunidade, com as condições económicas configuradas. | Pode aproveitar excedente comunitário, além do local e dos prazos. | Com mercado ativo, usa excedente partilhável e ajuda nos picos comunitários caros. Sem mercado, usa a política local. |
 
 O BAU é uma hipótese operacional explícita: ligar e carregar; pedir uma lavagem
 e iniciar. Não pretende otimizar custo. Para comparar apenas o escalonamento
@@ -36,12 +36,35 @@ documentado: horas 0–7 e 22–23 favoráveis; 17–21 desfavoráveis; restante
 Sem preço e sem hora, fica neutro. Com preço atual mas sem previsões, a
 classificação também é neutra: não infere uma tarifa horária.
 
-Smart Local e Community favorecem energia solar. Por omissão,
-`price_charge_rate: 0` desativa a carga da bateria motivada apenas por preço;
-esse valor já era a intenção do construtor e agora também é respeitado pela
-validação das configurações. Não desativa a carga necessária dos EVs.
-Os templates históricos que definem outro valor continuam a ser explícitos.
-V2G exige `allow_v2g: true` e as respetivas reservas e condições de serviço.
+Smart Local e Community usam por omissão `price_charge_rate: 0.60`, tal como
+o Basic. A versão anterior desativava essa capacidade, adiava os EV mesmo em
+horas baratas e descarregava a bateria para qualquer consumo antes de avaliar
+a regra de preço. Isso explicava parte da inversão de custos.
+
+Os três usam a mesma base de serviço EV e arranque por preço/prazo. Smart Local
+acrescenta carga com excedente solar atual. Na bateria, dá prioridade ao solar,
+alivia picos atuais e períodos caros, reserva espaço quando prevê excedente e
+limita a carga comprada à margem até ao pico local configurado. Uma previsão
+de pico futuro, isoladamente, não manda gastar já a bateria.
+
+O Community recebe a configuração efetiva do mercado do simulador. Só usa energia
+comunitária com desconto se esse mercado estiver ativo. Sem mercado, filtra
+os sinais comunitários e reproduz a política local: exportar bateria para outro
+membro não pode ser tratado como autoconsumo gratuito. Com mercado, acrescenta
+um orçamento de excedente partilhado e alívio de picos comunitários durante
+períodos caros. O limiar agregado, se não for indicado, é o limiar local vezes
+o número de membros. Um `community_import_threshold_kw` explícito é sempre
+um limite agregado em kW.
+
+V2G continua opcional e protegido por reservas e condições de serviço. As variantes
+especializadas com sinais hierárquicos conservam as regras anteriores em classes
+de compatibilidade; a sua revisão permanece adiada. Os novos defaults aplicam-se
+aos dois controladores operacionais, não aos professores históricos.
+
+Esta é uma hierarquia de capacidades. Nenhuma heurística pode garantir menor
+custo e menor pico em todos os datasets, preços, previsões e estados iniciais.
+A comparação deve apresentar custo, energia, picos e serviço em conjunto, incluindo
+excesso de SOC e casos fisicamente inviáveis.
 
 ## Pedidos de lavagem e serviço
 
@@ -85,18 +108,39 @@ elétrica e ciclos adiáveis; controlo direto de HVAC e armazenamento térmico n
 está certificado por esta revisão. A presença dessas ações ativas é rejeitada
 com uma mensagem explícita, em vez de produzir zeros silenciosamente.
 
-## Dois significados de BAU nos resultados
+## Serviço EV e potência mínima
+
+O BAU pede carga até 100%, sem usar a tolerância do alvo de saída para parar
+antecipadamente. Os RBCs procuram o SOC pedido, com tolerância por omissão de
+0,001 (0,1 ponto percentual), em vez dos anteriores 0,04 (4 pontos). Um valor
+explícito numa configuração histórica continua a ser respeitado.
+
+Um pedido inferior à potência mínima do carregador produz zero energia. O
+último pedido de serviço pode usar o mínimo viável e ultrapassar ligeiramente
+o SOC pedido; não deve ficar permanentemente abaixo do alvo. Este ajuste não
+aumenta um orçamento solar ou elétrico insuficiente. O Simulator 1.9.2 também corrige a disponibilidade perto de 100% e o arredondamento
+float32 na fronteira da potência mínima.
+No último intervalo disponível, havendo carga por servir, o RBC dá prioridade
+ao pedido urgente dentro da potência disponível. Não o limita ao equivalente
+sem perdas do défice de SOC: as perdas do carregador e da bateria deixariam
+parte do pedido por cumprir. Esta proteção pode ultrapassar o SOC pedido.
+
+## Definição do BAU nativo nos resultados
 
 O simulador calcula opcionalmente um contrafactual próprio,
-`citylearn.agents.baseline.BusinessAsUsualAgent`. Na versão 1.9.1, esse agente
-distribui a carga dos EVs pelo tempo até à saída. **Não é `NormalPolicy`.**
+`citylearn.agents.baseline.BusinessAsUsualAgent`. Até à versão 1.9.1, esse agente
+distribuía a carga dos EVs pelo tempo até à saída. **Não é `NormalPolicy`.**
 Os KPIs com referência ao BAU interno não devem ser apresentados como uma
 comparação contra o nosso BAU imediato.
 
 `results/kpis.json` identifica agora essa implementação e a versão do simulador
 em `baseline_reference`. Uma comparação com o BAU definido neste documento exige
 dois jobs com o mesmo dataset, janela, seed, ativos, mercado e serviço configurado.
-A política nativa do Simulator não foi alterada nesta revisão do Algorithms.
+O Simulator 1.9.2 muda essa referência para carga imediata até
+100%, identificada como `immediate-full-charge-v1`. O Algorithms deteta a
+definição no pacote carregado e regista-a em `baseline_reference`; com 1.9.1
+preserva a descrição histórica. Mesmo com o objetivo alinhado, as implementações
+e os limites configuráveis não são declarados numericamente equivalentes.
 
 ## Nomes retirados e compatibilidade
 
@@ -138,9 +182,32 @@ anual ficam no trabalho de avaliação posterior, sem reabrir agora a etapa 5.
 
 O Simulator 1.9.0 publicado omitia `citylearn.utils` e falhava a exportação do
 manifesto dos KPIs. A correção 1.9.1 inclui o módulo e testa o pacote instalado fora
-do código-fonte antes de publicar. Os ambientes suportados ficam fixados na 1.9.1;
+do código-fonte antes de publicar. Os ambientes suportados passam para a 1.9.2;
 a imagem Jetson antiga continua suspensa até à sua migração de plataforma.
 
 Validação local em checkout limpo: 1 882 testes unitários/integração passaram,
 23 foram ignorados com motivos explícitos, e 65 testes de jobs completos passaram.
 Ruff, formatação, mypy, dependências e instalação mínima fora do checkout passaram.
+
+## Revisão da hierarquia em 29/10/2026
+
+`tests/test_economic_baseline_hierarchy.py` verifica oportunidades de carga barata,
+captura solar, limites locais, autoridade da configuração real do mercado,
+reserva comunitária sem duplicação e limiares agregados. O Basic mantém as suas
+regras. A série histórica e a campanha revista usam as mesmas tarifas e dados;
+a variante com mercado ligado é identificada separadamente como cenário
+configurado, sem alterar os ficheiros do dataset. Os resultados finais da
+campanha ficam no [relatório desta revisão](baseline_hierarchy_2026_10_29.md).
+
+Reprodução pelo ciclo comum de jobs:
+
+```console
+python scripts/experiments/run_baseline_hierarchy_audit.py \
+  --dataset-path /caminho/Simulator/data/datasets/citylearn_challenge_2022_phase_all_plus_evs/schema.json \
+  --output-dir /caminho/resultados --label mercado-ativo --market \
+  RBCBasicPolicy RBCSmartLocalPolicy RBCCommunityPolicy
+```
+
+Sem `--market`, respeita o mercado do schema original. Os templates antigos
+com taxas, V2G ou limites explícitos são experiências com parametrizações próprias;
+não representam automaticamente a campanha com os defaults auditados.
