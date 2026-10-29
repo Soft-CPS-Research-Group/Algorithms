@@ -17,7 +17,7 @@ Select extras for the work being performed:
 
 | Extra | Purpose |
 | --- | --- |
-| `training` | Simulator 1.9.1, PyTorch, numerical runtime and telemetry |
+| `training` | Simulator 1.9.2, PyTorch, numerical runtime and telemetry |
 | `export` | ONNX serialization |
 | `tracking` | MLflow 2.19 |
 | `offline` | Parquet transition datasets |
