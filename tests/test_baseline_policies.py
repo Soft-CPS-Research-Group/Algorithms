@@ -2004,8 +2004,12 @@ def test_rbc_smart_policy_can_discharge_storage_to_cover_urgent_ev_import():
     assert actions[0][0] < 0.0
 
 
-def test_rbc_smart_policy_default_ev_tolerance_ignores_small_service_gap():
-    agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": {}}})
+@pytest.mark.parametrize("tolerance,should_charge", [(None, True), (0.04, False)])
+def test_rbc_smart_policy_tighter_default_and_explicit_legacy_ev_tolerance(
+    tolerance, should_charge
+):
+    hyper = {} if tolerance is None else {"ev_service_soc_tolerance": tolerance}
+    agent = RBCSmartPolicy({"algorithm": {"name": "RBCSmartPolicy", "hyperparameters": hyper}})
     _attach(agent, _base_observation_names(), _action_names())
     obs = np.array(
         [
@@ -2035,7 +2039,10 @@ def test_rbc_smart_policy_default_ev_tolerance_ignores_small_service_gap():
 
     actions = agent.predict([obs])
 
-    assert actions[0][1] == pytest.approx(0.0)
+    if should_charge:
+        assert actions[0][1] > 0.0
+    else:
+        assert actions[0][1] == pytest.approx(0.0)
 
 
 def test_rbc_smart_policy_does_not_discharge_storage_to_zero_credit_export():

@@ -9,7 +9,11 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 from algorithms.agents.rbc_agent import ChargerInfo, RulePolicyBase
-from algorithms.configuration.baseline_defaults import NORMAL_DEFAULTS, SMART_DEFAULTS
+from algorithms.configuration.baseline_defaults import (
+    EV_SERVICE_SOC_TOLERANCE,
+    NORMAL_DEFAULTS,
+    SMART_DEFAULTS,
+)
 
 
 class RandomPolicy(RulePolicyBase):
@@ -195,7 +199,7 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         )
         self.ev_service_soc_tolerance: float = max(
             0.0,
-            float(hyper.get("ev_service_soc_tolerance", 0.04)),
+            float(hyper.get("ev_service_soc_tolerance", EV_SERVICE_SOC_TOLERANCE)),
         )
         self.deferrable_safety_margin_steps: float = max(
             0.0,
@@ -1280,6 +1284,15 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             if charger_info is None
             else charger_info.max_discharge_power or charger_info.max_power or 7.4
         )
+        min_power = self._get_ev_value(
+            obs,
+            obs_map,
+            charger_id=charger_id,
+            building_name=building_name,
+            feature="min_charging_power_kw",
+            generic_names=[],
+            default=0.0 if charger_info is None else charger_info.min_power,
+        )
         # Dynamic entity layouts can add or resize chargers after dataset loading.
         for feature, fallback in (
             ("max_charging_power_kw", max_power),
@@ -1369,6 +1382,7 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             "gap": max(required_soc - current_soc, 0.0),
             "hours_to_departure": max(hours, self.step_hours),
             "max_power": max(max_power, 1.0e-6),
+            "min_power": max(0.0, min(min_power, max_power)),
             "max_discharge_power": max(float(max_discharge_power), 1.0e-6),
             "capacity": max(float(capacity), 1.0e-6),
             "charger_id": charger_id,
@@ -1515,16 +1529,28 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             requested_rate = min(requested_rate, max(0.0, available))
 
         target_soc = max(float(ctx["required_soc"]), self.ev_service_target_soc)
-        if float(ctx["soc"]) >= target_soc - self.ev_service_soc_tolerance:
+        tolerance = 1.0e-6 if target_soc >= 1.0 else self.ev_service_soc_tolerance
+        if float(ctx["soc"]) >= target_soc - tolerance:
             return 0.0
         gap_to_target = max(target_soc - float(ctx["soc"]), 0.0)
         max_target_rate = (
             gap_to_target * float(ctx["capacity"]) / (self.step_hours * float(ctx["max_power"]))
         )
+        # A command below the charger minimum does not trickle-charge: it is
+        # zero output. Allow the final viable charging interval to cross the
+        # requested SOC slightly, rather than permanently stopping below it.
+        minimum_rate = float(ctx.get("min_power") or 0.0) / float(ctx["max_power"])
+        max_target_rate = max(max_target_rate, minimum_rate)
+        if target_soc >= 1.0:
+            # BAU requests full charging; the simulator clips accepted energy
+            # and tapers charging at the physical battery limit.
+            max_target_rate = 1.0
         simulator_required = self._ctx_float(ctx, "min_required_action")
         if not math.isnan(simulator_required):
             max_target_rate = max(max_target_rate, simulator_required)
         requested_rate = min(requested_rate, max(0.0, max_target_rate))
+        if requested_rate + 1.0e-9 < minimum_rate:
+            return 0.0
 
         return self._clip_non_v2g_charge(requested_rate, bounds)
 
@@ -1818,7 +1844,7 @@ class NormalPolicy(_OperationalBaselinePolicy):
             float(ctx["required_soc"]), float(np.clip(self.ev_normal_target_soc, 0.0, 1.0))
         )
         gap = max(target_soc - float(ctx["soc"]), 0.0)
-        if not ctx["connected"] or gap <= self.energy_epsilon:
+        if not ctx["connected"] or gap <= 1.0e-6:
             return 0.0
         ctx = dict(ctx)
         ctx["required_soc"] = target_soc

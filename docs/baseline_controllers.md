@@ -1,6 +1,6 @@
 # BAU e controladores por regras
 
-Contrato revisto em 28/10/2026, Algorithms 0.4, SoftCPS Simulator 1.9.1.
+Contrato revisto em 29/10/2026, Algorithms 0.4, SoftCPS Simulator 1.9.1 e revisão BAU seguinte.
 Esta revisão define comportamento e verifica execução e exportação. Não é uma
 classificação anual de desempenho nem uma calibração empírica de hábitos humanos.
 
@@ -85,7 +85,21 @@ elétrica e ciclos adiáveis; controlo direto de HVAC e armazenamento térmico n
 está certificado por esta revisão. A presença dessas ações ativas é rejeitada
 com uma mensagem explícita, em vez de produzir zeros silenciosamente.
 
-## Dois significados de BAU nos resultados
+## Serviço EV e potência mínima
+
+O BAU pede carga até 100%, sem usar a tolerância do alvo de saída para parar
+antecipadamente. Os RBCs procuram o SOC pedido, com tolerância por omissão de
+0,001 (0,1 ponto percentual), em vez dos anteriores 0,04 (4 pontos). Um valor
+explícito numa configuração histórica continua a ser respeitado.
+
+Um pedido inferior à potência mínima do carregador produz zero energia. O
+último pedido de serviço pode usar o mínimo viável e ultrapassar ligeiramente
+o SOC pedido; não deve ficar permanentemente abaixo do alvo. Este ajuste não
+aumenta um orçamento solar ou elétrico insuficiente. A revisão seguinte do
+Simulator também corrige a disponibilidade perto de 100% e o arredondamento
+float32 na fronteira da potência mínima.
+
+## Definição do BAU nativo nos resultados
 
 O simulador calcula opcionalmente um contrafactual próprio,
 `citylearn.agents.baseline.BusinessAsUsualAgent`. Na versão 1.9.1, esse agente
@@ -96,7 +110,11 @@ comparação contra o nosso BAU imediato.
 `results/kpis.json` identifica agora essa implementação e a versão do simulador
 em `baseline_reference`. Uma comparação com o BAU definido neste documento exige
 dois jobs com o mesmo dataset, janela, seed, ativos, mercado e serviço configurado.
-A política nativa do Simulator não foi alterada nesta revisão do Algorithms.
+A revisão seguinte do Simulator muda essa referência para carga imediata até
+100%, identificada como `immediate-full-charge-v1`. O Algorithms deteta a
+definição no pacote carregado e regista-a em `baseline_reference`; com 1.9.1
+preserva a descrição histórica. Mesmo com o objetivo alinhado, as implementações
+e os limites configuráveis não são declarados numericamente equivalentes.
 
 ## Nomes retirados e compatibilidade
 

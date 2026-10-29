@@ -85,6 +85,38 @@ def test_bau_starts_requested_washer_and_ev_independent_of_price_or_hour(cls, ho
     assert agent.predict([obs])[0] == pytest.approx([1.0, 1.0])
 
 
+@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy])
+def test_bau_does_not_reuse_departure_target_tolerance_near_full(cls):
+    values = ev(soc=0.9995, required=0.8, hours=20.0)
+    agent, obs = policy(cls, values, ("electric_vehicle_storage_charger_1",))
+    assert agent.predict([obs])[0] == pytest.approx([1.0])
+
+
+@pytest.mark.parametrize("cls", [RBCBasicPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy])
+def test_rbc_continues_service_with_a_three_percentage_point_soc_gap(cls):
+    values = ev(
+        soc=0.77, required=0.8, hours=0.5, min_charging_power_kw=1.38, max_charging_power_kw=7.36
+    )
+    agent, obs = policy(cls, values, ("electric_vehicle_storage_charger_1",), seconds=900)
+    assert agent.ev_service_soc_tolerance == pytest.approx(0.001)
+    assert agent.predict([obs])[0][0] >= 1.38 / 7.36
+
+
+def test_rbc_final_service_command_crosses_charger_deadband_without_exceeding_budget():
+    agent, _ = policy(RBCBasicPolicy, {})
+    ctx = {
+        "connected": True,
+        "soc": 0.797,
+        "required_soc": 0.8,
+        "capacity": 50.0,
+        "max_power": 7.36,
+        "min_power": 1.38,
+    }
+    assert agent._safe_ev_charge_rate(ctx, 1.0, (-1.0, 1.0)) == pytest.approx(1.38 / 7.36)
+    # An insufficient PV or physical-power budget must not be rounded up.
+    assert agent._safe_ev_charge_rate(ctx, 0.1, (-1.0, 1.0)) == 0.0
+
+
 @pytest.mark.parametrize("cls", POLICIES)
 @pytest.mark.parametrize("flag", ["pending", "can_start"])
 def test_appliance_never_starts_before_a_request_and_an_allowed_window(cls, flag):
