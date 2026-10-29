@@ -322,15 +322,17 @@
     "simulator_source_version": "1.9.1 (unpublished BAU candidate source)",
     "published_equivalent": "1.9.2",
     "source_equivalence": "All 57 packaged Python files match, except the version string in citylearn/__init__.py.",
-    "installed_pypi_verification": "All three market-enabled weekly jobs matched all 6,116 exported metrics of their source-run counterparts, and each bundle replay passed."
+    "installed_pypi_verification": "All three market-enabled weekly jobs matched all 6,116 exported metrics of their source-run counterparts, and each bundle replay passed.",
+    "final_compatibility_check": "Market binding is scoped to the operational Community; specialised signal-teacher assumptions are unchanged. Final official-package weekly jobs again matched all 6,116 metrics per policy."
   },
   "tests": {
-    "general_passed": 1910,
+    "general_passed": 1911,
     "general_skipped": 23,
     "behavior_and_e2e_passed": 139,
     "slow_deselected": 11,
     "lint": "passed",
     "format": "passed",
-    "mypy_modules_passed": 5
+    "mypy_modules_passed": 5,
+    "general_simulator_package": "official PyPI 1.9.2"
   }
 }

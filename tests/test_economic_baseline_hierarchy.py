@@ -143,3 +143,29 @@ def test_community_supports_expensive_peak_only_with_settlement_enabled():
 def test_explicit_zero_community_peak_is_not_replaced_by_default():
     policy = make(RBCCommunityPolicy, market=True, hyper={"community_import_threshold_kw": 0.0})
     assert policy.community_import_threshold_kw == 0.0
+
+
+def test_specialised_community_teacher_keeps_its_configured_market_assumption():
+    from algorithms.agents.baseline_policies import SignalAwareRBCCommunity
+
+    # Its separate policy audit is deferred: binding actual market assumptions
+    # is scoped to the operational Community, not silently to trained teachers.
+    policy = SignalAwareRBCCommunity(
+        {
+            "algorithm": {"hyperparameters": {"community_local_price_ratio": 1.0}},
+            "simulator": {
+                "community_market": {"enabled": True, "local_price_ratio_to_grid_import": 0.5}
+            },
+        }
+    )
+    policy.attach_environment(
+        observation_names=[NAMES],
+        action_names=[ACTIONS],
+        action_space=[Space()],
+        observation_space=[None],
+        metadata={
+            "community_market": {"enabled": True, "local_price_ratio_to_grid_import": 0.5},
+        },
+    )
+    assert policy.community_local_price_ratio == 1.0
+    assert not policy._community_energy_is_discounted()

@@ -45,7 +45,7 @@ BAU observada não é uma prova de viabilidade conjunta de escalonamento.
 A carga mínima e a proteção do último intervalo podem ultrapassar o alvo;
 por isso o serviço não é numericamente idêntico entre políticas.
 
-Os seis bundles passaram replay de 32 amostras. A suite geral passou 1 910 testes
+Os seis bundles passaram replay de 32 amostras. A suite geral passou 1 911 testes
 (23 omissões explícitas); os contratos e jobs completos passaram 139 verificações
 (11 testes lentos não selecionados). Ruff, formatação e mypy passaram.
 
@@ -70,3 +70,7 @@ Usar `scripts/experiments/run_baseline_hierarchy_audit.py` e o
 comparar estes defaults neste dataset. Não garante dominância universal de
 custo e pico, nem certifica as parametrizações dos templates históricos.
 A etapa 5 e a inferência especializada TI-MARL/hierárquica permanecem adiadas.
+
+A suite geral final usa o pacote oficial 1.9.2 instalado. A verificação final
+repete a paridade dos 6 116 indicadores por política após restringir a ligação
+do mercado ao Community operacional, preservando os professores especializados.

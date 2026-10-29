@@ -222,20 +222,7 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         self.community_grid_export_price: float = float(
             hyper.get("community_grid_export_price", 0.0)
         )
-        market = dict((self._dataset_info or {}).get("community_market") or {})
-        market.update(config.get("simulator", {}).get("community_market") or {})
-        self.community_market_enabled = bool(
-            market.get("enabled", hyper.get("community_market_enabled", False))
-        )
-        self.community_local_price_ratio = float(
-            market.get(
-                "local_price_ratio_to_grid_import",
-                market.get("intra_community_sell_ratio", self.community_local_price_ratio),
-            )
-        )
-        self.community_grid_export_price = float(
-            market.get("grid_export_price", self.community_grid_export_price)
-        )
+        self.community_market_enabled = bool(hyper.get("community_market_enabled", False))
         self._obs_match_cache: Dict[int, Dict[tuple, List[tuple[str, int]]]] = {}
         self._dispatch_budgets: Dict[int, Dict[str, float]] = {}
         self._shared_community_budget: Optional[Dict[str, float]] = None
@@ -259,31 +246,6 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         self._obs_match_cache = {}
         self._dispatch_budgets = {}
         self._shared_community_budget = None
-        market = (metadata or {}).get("community_market")
-        if isinstance(market, Mapping):
-            self.community_market_enabled = bool(market.get("enabled", False))
-            self.community_local_price_ratio = float(
-                market.get("local_price_ratio_to_grid_import", self.community_local_price_ratio)
-            )
-            self.community_grid_export_price = float(
-                market.get("grid_export_price", self.community_grid_export_price)
-            )
-        if isinstance(self, RBCCommunityPolicy):
-            self.uses_community_dispatch = self.community_market_enabled
-            hyper = self._config.get("algorithm", {}).get("hyperparameters") or {}
-            if hyper.get("community_import_threshold_kw") is None:
-                self.community_import_threshold_kw = self.import_peak_threshold_kw * max(
-                    1, len((metadata or {}).get("building_names") or observation_names)
-                )
-            if not self.community_market_enabled:
-                self._obs_index = [
-                    {
-                        name: index
-                        for name, index in obs_map.items()
-                        if "community" not in name.casefold()
-                    }
-                    for obs_map in self._obs_index
-                ]
         for agent_idx, names in enumerate(action_names):
             obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
             unsupported = [
@@ -2627,6 +2589,59 @@ class RBCCommunityPolicy(_EconomicSmartPolicy):
     """
 
     uses_community_dispatch = True
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        hyper = config.get("algorithm", {}).get("hyperparameters") or {}
+        market = dict((self._dataset_info or {}).get("community_market") or {})
+        market.update(config.get("simulator", {}).get("community_market") or {})
+        self.community_market_enabled = bool(
+            market.get("enabled", hyper.get("community_market_enabled", False))
+        )
+        self.community_local_price_ratio = float(
+            market.get(
+                "local_price_ratio_to_grid_import",
+                market.get("intra_community_sell_ratio", self.community_local_price_ratio),
+            )
+        )
+        self.community_grid_export_price = float(
+            market.get("grid_export_price", self.community_grid_export_price)
+        )
+
+    def attach_environment(
+        self, *, observation_names, action_names, action_space, observation_space, metadata=None
+    ) -> None:
+        super().attach_environment(
+            observation_names=observation_names,
+            action_names=action_names,
+            action_space=action_space,
+            observation_space=observation_space,
+            metadata=metadata,
+        )
+        market = (metadata or {}).get("community_market")
+        if isinstance(market, Mapping):
+            self.community_market_enabled = bool(market.get("enabled", False))
+            self.community_local_price_ratio = float(
+                market.get("local_price_ratio_to_grid_import", self.community_local_price_ratio)
+            )
+            self.community_grid_export_price = float(
+                market.get("grid_export_price", self.community_grid_export_price)
+            )
+        self.uses_community_dispatch = self.community_market_enabled
+        hyper = self._config.get("algorithm", {}).get("hyperparameters") or {}
+        if hyper.get("community_import_threshold_kw") is None:
+            self.community_import_threshold_kw = self.import_peak_threshold_kw * max(
+                1, len((metadata or {}).get("building_names") or observation_names)
+            )
+        if not self.community_market_enabled:
+            self._obs_index = [
+                {
+                    name: index
+                    for name, index in obs_map.items()
+                    if "community" not in name.casefold()
+                }
+                for obs_map in self._obs_index
+            ]
 
     def _policy_type(self) -> str:
         return "rbc_community_policy"
