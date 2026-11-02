@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from algorithms.oracles.citylearn_ev import deterministic_ev_initial_soc
+from algorithms.oracles.citylearn_contract import validate_static_oracle_schema
 from algorithms.oracles.total_home_milp import (
     DeferrableCycleSpec,
     EVSessionSpec,
@@ -213,6 +214,7 @@ def build_citylearn_total_home_problem(
     schema_path = Path(schema_path).resolve()
     raw_schema = schema_path.read_bytes()
     schema = json.loads(raw_schema)
+    validate_static_oracle_schema(schema)
     root = _dataset_root(schema_path, schema)
     building_id = str(building_id)
     building = (schema.get("buildings") or {}).get(building_id)

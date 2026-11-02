@@ -16,6 +16,14 @@ class DummyEncoder:
 
 
 class DummyEnv:
+    central_agent = False
+
+    @property
+    def buildings(self):
+        # Simulator 2.0 action histories use stable member identities.
+        return [type("Building", (), {"name": f"Building_{i + 1}"})()
+                for i in range(len(self.action_space))]
+
     def __init__(self):
         self.observation_names = [["feat1", "feat2"], ["feat3"]]
         self.observation_space = [

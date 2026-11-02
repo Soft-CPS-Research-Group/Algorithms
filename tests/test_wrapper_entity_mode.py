@@ -17,6 +17,13 @@ class _DummyEpisodeTracker:
 
 
 class _DummyEntityEnv:
+    central_agent = False
+
+    @property
+    def buildings(self):
+        return [type("Building", (), {"name": name})()
+                for name in self._building_ids(self._version)]
+
     def __init__(self):
         self.interface = "entity"
         self.topology_mode = "dynamic"

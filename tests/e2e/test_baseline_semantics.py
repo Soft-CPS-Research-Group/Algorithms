@@ -178,3 +178,69 @@ def test_portuguese_dataset_complete_job_and_portable_policy(cls, tmp_path):
     assert scorecard["eligible_for_scorecard"] and scorecard["metrics"]
     assert scorecard["baseline_reference"]["equivalent_to_normal_policy"] is False
     assert len(list((job / "results/simulation_data").rglob("exported_kpis.manifest.json"))) == 1
+
+
+@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy])
+def test_bau_two_equal_chargers_share_physical_limit(tmp_path, cls):
+    from copy import deepcopy
+
+    schema_path = schema_with_request(tmp_path)
+    schema = json.loads(schema_path.read_text())
+    schema["electric_vehicles_def"]["Electric_Vehicle_2"] = deepcopy(
+        schema["electric_vehicles_def"]["Electric_Vehicle_1"]
+    )
+    building = schema["buildings"]["Building_1"]
+    building["deferrable_appliances"] = {}
+    building["chargers"]["charger_1_2"] = deepcopy(building["chargers"]["charger_1_1"])
+    building["chargers"]["charger_1_2"]["charger_simulation"] = "charger_1_2.csv"
+    frame = pd.read_csv(schema_path.parent / "charger_1_1.csv")
+    frame["electric_vehicle_id"] = "Electric_Vehicle_2"
+    frame.to_csv(schema_path.parent / "charger_1_2.csv", index=False)
+    energy = pd.read_csv(schema_path.parent / "Building_1.csv")
+    energy["non_shiftable_load"] = 0.0
+    energy["solar_generation"] = 0.0
+    energy.to_csv(schema_path.parent / "Building_1.csv", index=False)
+    building["electrical_service"] = {
+        "mode": "single_phase",
+        "default_split": "L1",
+        "limits": {"total": {"import_kw": 4.0, "export_kw": 4.0}},
+    }
+    schema_path.write_text(json.dumps(schema))
+    env = CityLearnEnv(
+        str(schema_path),
+        interface="flat",
+        central_agent=False,
+        export_kpis_on_episode_end=False,
+        offline=True,
+    )
+    try:
+        observations, _ = env.reset(seed=0)
+        agent = cls(
+            {
+                "simulator": {"dataset_path": str(schema_path)},
+                "algorithm": {"hyperparameters": {"control_storage": False}},
+            }
+        )
+        agent.attach_environment(
+            observation_names=env.observation_names,
+            action_names=env.action_names,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            metadata={
+                "building_names": ["Building_1"],
+                "seconds_per_time_step": env.seconds_per_time_step,
+            },
+        )
+        actions = agent.predict(observations)
+        ev_actions = [
+            v
+            for n, v in zip(env.action_names[0], actions[0])
+            if n.startswith("electric_vehicle_storage")
+        ]
+        assert ev_actions == [1.0, 1.0]
+        env.step(actions)
+        chargers = env.buildings[0].electric_vehicle_chargers
+        energy = [float(c.electricity_consumption[0]) for c in chargers]
+        assert energy == pytest.approx([0.5, 0.5], abs=1e-6)
+    finally:
+        env.close()

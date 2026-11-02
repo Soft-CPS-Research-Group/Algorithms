@@ -1,6 +1,6 @@
 # BAU e controladores por regras
 
-Contrato revisto em 29/10/2026, Algorithms 0.4, SoftCPS Simulator 1.9.2.
+Contrato atualizado em 02/11/2026, Algorithms 0.4, SoftCPS Simulator 2.0.0.
 Esta revisão define comportamento e verifica execução e exportação. Não é uma
 garantia universal de desempenho nem uma calibração empírica de hábitos humanos.
 
@@ -211,3 +211,43 @@ python scripts/experiments/run_baseline_hierarchy_audit.py \
 Sem `--market`, respeita o mercado do schema original. Os templates antigos
 com taxas, V2G ou limites explícitos são experiências com parametrizações próprias;
 não representam automaticamente a campanha com os defaults auditados.
+
+
+## Atualização para Simulator 2.0.0 e Core30 v3.3
+
+Os dois BAU pedem carga máxima simultaneamente em todos os carregadores ligados,
+até 100%. A potência entregue é limitada proporcionalmente pelo Simulator; a
+ordem dos carregadores não reserva capacidade para o primeiro. O BAU não reduz
+o pedido pela estimativa sem perdas do défice final de SOC. A bateria doméstica
+mantém autoconsumo e os respetivos limites estratégicos. Testes com dois carros
+iguais confirmam 2 kW para cada um numa ligação limitada a 4 kW.
+
+Os datasets de referência são os de `softcpsrecsimulator-v2.0.0`, com
+`CURRENT_EVALUATION.json` v3.3. O tag upstream `v2.0.0` é outro produto.
+A comparação histórica acima continua a descrever o ensaio de outubro; não
+certifica a ordenação dos controladores no Core30 atual.
+
+### Referências MILP
+
+- `FixedServiceOracleReplayPolicy`: otimiza apenas a bateria, mantendo o serviço
+  EV/eletrodomésticos de um RBC explícito. É um limite condicional, não um
+  otimizador integral da casa.
+- `TotalHomeOracleReplayPolicy`: plano com conhecimento do futuro para uma casa,
+  incluindo bateria, EVs e ciclos. Minimiza importação individual com exportação
+  sem remuneração; não representa, por si, o custo liquidado em comunidade.
+- `TotalOracleReplayPolicy`: executa planos conjuntos produzidos pelo MILP de
+  energia total, com liquidação individual ou agregada. As variantes decompostas
+  individuais só são equivalentes quando não existe acoplamento comunitário.
+- O MILP de scorecard procura picos/rampas sob restrições de custo; não tem o
+  mesmo objetivo que minimizar o custo exclusivamente.
+
+A preparação do MILP integral preserva fases não ligadas com limite zero e
+resolve equipamentos sem fase explícita pela ligação predefinida da casa.
+Topologia dinâmica, perturbações de robustez e outages são rejeitados pelos
+adaptadores estáticos: não podem produzir um certificado omitindo esses efeitos.
+Normal e Safety podem ser preparados; a existência de solução depende dos limites
+físicos e do serviço. Limites de solver, hipóteses de fronteira, estado inicial,
+perdas, energia terminal e diferenças da física têm de acompanhar os resultados.
+Só a execução do plano no Simulator permite classificá-lo como referência
+fisicamente validada. Estes planos não são políticas online exportáveis para
+inferência sobre cenários novos.

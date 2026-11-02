@@ -56,6 +56,27 @@ def ev(charger="charger_1", *, soc=0.2, required=0.8, hours=10.0, **extra):
     return {f"charger::Building_1/{charger}::{key}": value for key, value in values.items()}
 
 
+@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy])
+def test_bau_requests_simultaneous_maximum_charge_without_list_priority(cls):
+    values = {
+        "charging_building_headroom_kw": 5.0,
+        **ev("a", max_charging_power_kw=7.0),
+        **ev("b", max_charging_power_kw=7.0),
+    }
+    names = ("electric_vehicle_storage_a", "electric_vehicle_storage_b")
+    agent, obs = policy(cls, values, names)
+    assert agent.predict([obs])[0] == [1.0, 1.0]
+    reversed_agent, reversed_obs = policy(cls, values, names[::-1])
+    assert reversed_agent.predict([reversed_obs])[0] == [1.0, 1.0]
+
+
+@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy])
+def test_bau_does_not_taper_request_at_lossless_soc_gap(cls):
+    values = ev(soc=0.995, available_charge_action_normalized=0.2, can_charge=1.0)
+    agent, obs = policy(cls, values, ("electric_vehicle_storage_charger_1",))
+    assert agent.predict([obs])[0] == [1.0]
+
+
 def appliance(name="washer", **extra):
     values = dict(
         pending=1.0,

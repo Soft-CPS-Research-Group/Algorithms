@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from algorithms.oracles.citylearn_ev import deterministic_ev_initial_soc
+from algorithms.oracles.citylearn_contract import validate_static_oracle_schema
 from algorithms.oracles.total_energy_milp import (
     DeferrableCycle,
     ElectricalService,
@@ -277,9 +278,11 @@ def _minimum_directional_battery_efficiency(
     return 0.99 * math.sqrt(minimum_technical)
 
 
-def _phase(value: Any) -> str:
+def _phase(value: Any, *, default_split: str = "balanced") -> str:
     if value is None:
-        return "all_phases"
+        # Missing device phase inherits the building service's default split.
+        # Explicit all_phases alone means a balanced three-phase device.
+        value = "all_phases" if default_split.lower() == "balanced" else default_split
     normalized = str(value).strip()
     lookup = {"l1": "L1", "l2": "L2", "l3": "L3", "all_phases": "all_phases"}
     try:
@@ -342,7 +345,10 @@ def _stationary_asset(
         discharge_efficiency=_minimum_directional_battery_efficiency(
             f"{building_id}.electrical_storage", attributes
         ),
-        phase_connection=_phase(attributes.get("phase_connection")),
+        phase_connection=_phase(
+            attributes.get("phase_connection"),
+            default_split=(building.get("electrical_service") or {}).get("default_split", "balanced"),
+        ),
     )
 
 
@@ -350,6 +356,10 @@ def _reserved_limit(value: Any, *, reserve_kw: float, name: str) -> float | None
     if value is None:
         return None
     parsed = _non_negative(name, value)
+    # An unused phase (or a forbidden direction) remains closed. A reserve
+    # cannot create negative capacity or reject a valid single-phase service.
+    if parsed == 0.0:
+        return 0.0
     if reserve_kw > parsed:
         raise ValueError(f"reserve_kw={reserve_kw} exceeds {name}={parsed}.")
     return parsed - reserve_kw
@@ -461,6 +471,7 @@ def build_citylearn_total_energy_problem(
     schema_path = Path(schema_path).resolve()
     raw_schema = schema_path.read_bytes()
     schema = json.loads(raw_schema)
+    validate_static_oracle_schema(schema)
     dataset_root = _dataset_root(schema_path, schema)
     start, end = int(start_time_step), int(end_time_step)
     if start < 0 or end <= start:
@@ -721,7 +732,10 @@ def build_citylearn_total_energy_problem(
                         discharge_efficiency=(
                             discharge_efficiency * battery_directional
                         ),
-                        phase_connection=_phase(attributes.get("phase_connection")),
+                        phase_connection=_phase(
+                            attributes.get("phase_connection"),
+                            default_split=(building.get("electrical_service") or {}).get("default_split", "balanced"),
+                        ),
                         allow_departure_shortfall=True,
                     )
                 )
@@ -754,7 +768,8 @@ def build_citylearn_total_energy_problem(
                 for row in profiles.itertuples(index=False)
             }
             appliance_phase = _phase(
-                (appliance.get("attributes") or {}).get("phase_connection")
+                (appliance.get("attributes") or {}).get("phase_connection"),
+                default_split=(building.get("electrical_service") or {}).get("default_split", "balanced"),
             )
             for row in schedule.itertuples(index=False):
                 cycle_id = f"{building_id}::{appliance_id}::{row.cycle_id}"

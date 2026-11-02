@@ -1858,9 +1858,21 @@ class NormalPolicy(_OperationalBaselinePolicy):
         gap = max(target_soc - float(ctx["soc"]), 0.0)
         if not ctx["connected"] or gap <= 1.0e-6:
             return 0.0
-        ctx = dict(ctx)
-        ctx["required_soc"] = target_soc
-        return self._safe_ev_charge_rate(ctx, self.ev_normal_charge_rate, bounds)
+        can_charge = self._ctx_float(ctx, "can_charge")
+        if not math.isnan(can_charge) and can_charge <= 0.5:
+            return 0.0
+        # BAU requests maximum charging until full. The observation's available
+        # action also includes a lossless SOC-gap estimate; using it here would
+        # taper the command prematurely. Equipment physics clips accepted energy.
+        return self._clip_non_v2g_charge(self.ev_normal_charge_rate, bounds)
+
+    def _apply_ev_dynamic_headroom_limit(
+        self, value, obs, obs_map, charger_info, bounds, agent_idx=None, residual_headroom=None
+    ) -> float:
+        # Submit simultaneous requests to the Simulator's proportional service
+        # allocator. Sequential policy-side reservations would privilege the
+        # first charger and prevent that allocator from sharing fairly.
+        return value
 
     def _compute_deferrable_action(
         self,
