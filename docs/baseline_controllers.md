@@ -231,6 +231,14 @@ Os datasets de referência são os de `softcpsrecsimulator-v2.0.0`, com
 A comparação histórica acima continua a descrever o ensaio de outubro; não
 certifica a ordenação dos controladores no Core30 atual.
 
+O Basic limita agora a energia comprada em cada passo ao espaço até ao teto de
+SOC configurado. Verificar apenas o SOC antes da carga permitia ultrapassar 90%
+num único passo. Nos três RBCs, os limiares de preço continuam iguais aos anteriores;
+esta correção não reduz a capacidade económica do Basic para favorecer os outros.
+A recolha remota aceita os KPIs finais oficiais `results/kpis.json` quando o
+orquestrador ainda só lista CSV e o Simulator exporta Parquet. O JSON original é
+preservado e a tabela CSV derivada mantém os mesmos valores e células inválidas.
+
 ### Referências MILP
 
 - `FixedServiceOracleReplayPolicy`: otimiza apenas a bateria, mantendo o serviço

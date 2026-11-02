@@ -2051,7 +2051,15 @@ class RBCBasicPolicy(_OperationalBaselinePolicy):
         price_ctx = self._get_price_context(obs, obs_map)
         low, high = bounds
         if bool(price_ctx["cheap"]) and soc < min(max_soc, self.storage_price_charge_soc_ceiling):
-            return self._clip_storage_action(self.price_charge_rate, obs, obs_map, bounds)
+            rate = self._storage_power_limited_charge_rate(
+                agent_idx,
+                float("inf"),
+                self.price_charge_rate,
+                obs=obs,
+                obs_map=obs_map,
+                target_soc=min(max_soc, self.storage_price_charge_soc_ceiling),
+            )
+            return self._clip_storage_action(rate, obs, obs_map, bounds)
         if bool(price_ctx["expensive"]) and soc > max(
             min_soc, self.storage_price_discharge_soc_floor
         ):

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import os
 import re
@@ -16,7 +17,6 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
-
 
 DEFAULT_SERVER = "http://193.136.62.78:8011"
 
@@ -217,6 +217,30 @@ def _parse_kpi_matrix(content: str) -> dict[str, dict[str, float | None]]:
             continue
         rows[key] = {entity: _parse_float(row.get(entity)) for entity in reader.fieldnames[1:]}
     return rows
+
+
+def _runtime_kpi_matrix(payload: dict[str, Any]) -> dict[str, dict[str, float | None]]:
+    """Read official final KPIs when the simulator exports Parquet, not CSV."""
+    if payload.get("schema_version") != "algorithms.kpis.v1":
+        raise ValueError("Unsupported runtime KPI schema.")
+    if payload.get("eligible_for_scorecard") is not True:
+        raise ValueError("Runtime KPIs are not eligible for a scorecard.")
+    matrix: dict[str, dict[str, float | None]] = {}
+    for metric in payload["metrics"]:
+        value = _parse_float(metric.get("value")) if metric.get("valid") else None
+        matrix.setdefault(metric["name"], {})[metric["entity"]] = value
+    return matrix
+
+
+def _matrix_csv(matrix: dict[str, dict[str, float | None]]) -> str:
+    """Compatibility view; retain the original JSON alongside this derivative."""
+    entities = sorted({entity for row in matrix.values() for entity in row})
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["cost_function", *entities])
+    for name, values in sorted(matrix.items()):
+        writer.writerow([name, *(values.get(entity) for entity in entities)])
+    return output.getvalue()
 
 
 def _district_value(matrix: dict[str, dict[str, float | None]], key: str) -> float | None:
@@ -477,6 +501,23 @@ def _collect_one(base_url: str, job_id: str, output_dir: Path, tail_lines: int, 
         errors.append(f"simulation_data: HTTP {exc.code}")
     except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
         errors.append(f"simulation_data: {exc}")
+
+    # Simulator 2 exports Parquet. Older orchestrators list only CSV files, so
+    # use the shared runtime's exact final-KPI artifact rather than reporting
+    # an apparently successful collection with every KPI missing.
+    if not kpi_matrix:
+        try:
+            runtime_kpis = _request_json(
+                base_url, "/simulation-data/file", method="POST",
+                payload={"job_id": job_id, "session": "latest",
+                         "relative_path": "results/kpis.json"}, timeout=timeout,
+            )
+            _write_json(job_dir / "kpis.json", runtime_kpis)
+            kpi_matrix = _runtime_kpi_matrix(runtime_kpis)
+            _write_text(job_dir / "exported_kpis.csv", _matrix_csv(kpi_matrix))
+            row["kpi_file"] = "results/kpis.json"
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError, KeyError, TypeError) as exc:
+            errors.append(f"runtime_kpis: {exc}")
 
     details = _as_dict(status.get("details"))
     deucalion_options = _as_dict(info.get("deucalion_options"))

@@ -309,6 +309,17 @@ def test_basic_hourly_fallback_is_explicit_when_price_is_missing(hour, expected)
     assert agent.predict([obs])[0] == pytest.approx([expected])
 
 
+@pytest.mark.parametrize("seconds", [15, 900, 3600])
+def test_basic_caps_purchased_charge_at_configured_soc_ceiling(seconds):
+    agent, obs = policy(
+        RBCBasicPolicy, {"hour": 2.0, "electrical_storage_soc": 0.89}, seconds=seconds
+    )
+    action = agent.predict([obs])[0][0]
+    requested_kwh = action * 10.0 * seconds / 3600.0
+    assert action > 0.0
+    assert requested_kwh <= (0.9 - 0.89) * 100.0 + 1e-9
+
+
 @pytest.mark.parametrize("cls", POLICIES + (RBCSmartPolicy,))
 def test_direct_and_validated_defaults_produce_same_actions(cls):
     values = {
