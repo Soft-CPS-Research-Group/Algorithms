@@ -84,8 +84,10 @@ o primeiro instante dessa janela é a hipótese usada pelo BAU.
 Dentro de cada edifício, os controladores calculam EVs, novos ciclos adiáveis e
 bateria por esta ordem, mantendo a ordem original do vetor de ações à saída.
 O excedente consumido por um dispositivo deixa de estar disponível para o seguinte.
-As decisões respeitam a margem elétrica observada; urgência não autoriza pedir
-potência acima dessa margem. O simulador mantém a decisão final sobre a física.
+Nos RBCs, as decisões respeitam a margem elétrica observada; urgência não autoriza
+pedir potência acima dessa margem. Os BAU pedem a potência máxima simultaneamente
+e deixam a repartição entre carregadores ao Simulator. O simulador mantém a
+decisão final sobre a física em todos os casos.
 
 O Community mantém um orçamento comum entre os edifícios da mesma instância.
 Energia reservada num edifício não pode voltar a ser oferecida como excedente no
@@ -218,7 +220,9 @@ não representam automaticamente a campanha com os defaults auditados.
 Os dois BAU pedem carga máxima simultaneamente em todos os carregadores ligados,
 até 100%. A potência entregue é limitada proporcionalmente pelo Simulator; a
 ordem dos carregadores não reserva capacidade para o primeiro. O BAU não reduz
-o pedido pela estimativa sem perdas do défice final de SOC. A bateria doméstica
+o pedido pela estimativa de potência aceite perto de 100%. Essa estimativa é,
+porém, usada para calcular a procura a servir pela bateria da casa: o pedido
+nominal de um carro quase cheio não constitui consumo efetivo. A bateria doméstica
 mantém autoconsumo e os respetivos limites estratégicos. Testes com dois carros
 iguais confirmam 2 kW para cada um numa ligação limitada a 4 kW.
 
@@ -245,9 +249,22 @@ A preparação do MILP integral preserva fases não ligadas com limite zero e
 resolve equipamentos sem fase explícita pela ligação predefinida da casa.
 Topologia dinâmica, perturbações de robustez e outages são rejeitados pelos
 adaptadores estáticos: não podem produzir um certificado omitindo esses efeitos.
+Equipamentos configurados com ações desativadas também são rejeitados, porque
+o otimizador não pode impor um plano a um dispositivo que não pode controlar.
+Os planos incluem explicitamente os equipamentos sem pedidos durante a janela,
+com ações zero; o replay continua a rejeitar ações em falta. A preparação do MILP
+de bateria aceita os exports CSV históricos e os Parquet atuais, incluindo partes
+ordenadas, e os identificadores `Member_001` do Core30.
 Normal e Safety podem ser preparados; a existência de solução depende dos limites
 físicos e do serviço. Limites de solver, hipóteses de fronteira, estado inicial,
 perdas, energia terminal e diferenças da física têm de acompanhar os resultados.
 Só a execução do plano no Simulator permite classificá-lo como referência
 fisicamente validada. Estes planos não são políticas online exportáveis para
 inferência sobre cenários novos.
+
+O consumo e a geração observados são medições do último intervalo concluído.
+Por isso, autoconsumo é a regra de decisão, não uma garantia de exportação nula
+em cada intervalo: mudanças de carga/sol, limites e perdas podem causar desvios.
+O BAU nativo tem acesso direto ao estado interno do Simulator; os controladores
+do Algorithms e os seus bundles usam o contrato de observações. Os dois não
+devem ser declarados numericamente equivalentes.

@@ -27,8 +27,8 @@ from typing import Any, Literal, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from algorithms.oracles.citylearn_contract import action_inventory, validate_static_oracle_schema
 from algorithms.oracles.citylearn_ev import deterministic_ev_initial_soc
-from algorithms.oracles.citylearn_contract import validate_static_oracle_schema
 from algorithms.oracles.total_energy_milp import (
     DeferrableCycle,
     ElectricalService,
@@ -36,7 +36,6 @@ from algorithms.oracles.total_energy_milp import (
     StorageAsset,
     TotalEnergyProblem,
 )
-
 
 _PHASES = ("L1", "L2", "L3")
 _RUNTIME_DRIFT_INITIAL_SOC_REASON = (
@@ -828,6 +827,7 @@ def build_citylearn_total_energy_problem(
     )
     metadata = {
         "scope": "total_energy_linear_milp_from_citylearn_dataset",
+        "action_inventory": action_inventory(schema, selected),
         "schema_path": str(schema_path),
         "schema_sha256": hashlib.sha256(raw_schema).hexdigest(),
         "dataset_root": str(dataset_root),

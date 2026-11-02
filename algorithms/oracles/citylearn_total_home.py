@@ -13,12 +13,12 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+from algorithms.oracles.citylearn_contract import action_inventory, validate_static_oracle_schema
 from algorithms.oracles.citylearn_ev import deterministic_ev_initial_soc
-from algorithms.oracles.citylearn_contract import validate_static_oracle_schema
 from algorithms.oracles.total_home_milp import (
     DeferrableCycleSpec,
-    EVSessionSpec,
     ElectricalServiceSpec,
+    EVSessionSpec,
     LinearStorageSpec,
     TotalHomeProblem,
 )
@@ -390,6 +390,7 @@ def build_citylearn_total_home_problem(
         electrical_service=_service_spec(building),
         metadata={
             "scope": "individual_total_home_linear_milp",
+            "action_inventory": action_inventory(schema, [building_id]),
             "schema_path": str(schema_path),
             "schema_sha256": hashlib.sha256(raw_schema).hexdigest(),
             "dataset_root": str(root),

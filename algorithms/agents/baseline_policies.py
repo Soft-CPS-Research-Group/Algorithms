@@ -1342,6 +1342,15 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             generic_names=[],
             default=float("nan"),
         )
+        available_charge_power = self._get_ev_value(
+            obs,
+            obs_map,
+            charger_id=charger_id,
+            building_name=building_name,
+            feature="available_charge_power_kw",
+            generic_names=[],
+            default=float("nan"),
+        )
         available_discharge_action = self._get_ev_value(
             obs,
             obs_map,
@@ -1392,6 +1401,7 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             "can_charge": can_charge,
             "can_discharge": can_discharge,
             "available_charge_action": available_charge_action,
+            "available_charge_power": available_charge_power,
             "available_discharge_action": available_discharge_action,
             "min_required_action": min_required_action,
             "departure_feasibility": departure_feasibility,
@@ -1873,6 +1883,16 @@ class NormalPolicy(_OperationalBaselinePolicy):
         # allocator. Sequential policy-side reservations would privilege the
         # first charger and prevent that allocator from sharing fairly.
         return value
+
+    def _record_ev_charge_dispatch(self, agent_idx, ctx, rate) -> None:
+        # Keep the EV command at maximum, but reserve only the power it can
+        # accept. Near full SOC, nominal charger power would make the BESS
+        # discharge against fictitious local demand. The observation is an
+        # estimate; final accepted energy remains the Simulator's decision.
+        available_kw = self._ctx_float(ctx, "available_charge_power")
+        if math.isfinite(available_kw):
+            rate = min(rate, max(0.0, available_kw) / float(ctx["max_power"]))
+        super()._record_ev_charge_dispatch(agent_idx, ctx, rate)
 
     def _compute_deferrable_action(
         self,

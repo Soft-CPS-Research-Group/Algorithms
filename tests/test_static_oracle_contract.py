@@ -23,18 +23,85 @@ def test_reserve_keeps_disconnected_phase_and_forbidden_export_closed():
         _reserved_limit(0.05, reserve_kw=0.1, name="invalid reserve")
 
 
-@pytest.mark.parametrize("schema", [
-    {"topology_mode": "dynamic"},
-    {"topology_events": [{"time_step": 4}]},
-    {"robustness": {"enabled": True}},
-    {"buildings": {"A": {"power_outage": {"simulate_power_outage": True}}}},
-])
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"topology_mode": "dynamic"},
+        {"topology_events": [{"time_step": 4}]},
+        {"robustness": {"enabled": True}},
+        {"buildings": {"A": {"power_outage": {"simulate_power_outage": True}}}},
+    ],
+)
 def test_unmodeled_runtime_mechanisms_are_not_silently_ignored(schema):
     with pytest.raises(ValueError, match="MILP"):
         validate_static_oracle_schema(schema)
 
 
 def test_static_schema_with_disabled_outage_is_supported():
-    validate_static_oracle_schema({"buildings": {
-        "A": {"power_outage": {"simulate_power_outage": False}},
-    }})
+    validate_static_oracle_schema(
+        {
+            "buildings": {
+                "A": {"power_outage": {"simulate_power_outage": False}},
+            }
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"actions": {"electrical_storage": {"active": False}}},
+        {
+            "buildings": {
+                "A": {
+                    "electrical_storage": {"attributes": {}},
+                    "inactive_actions": ["electrical_storage"],
+                }
+            }
+        },
+    ],
+)
+def test_optimizer_rejects_equipment_it_cannot_control(extra):
+    schema = {"buildings": {"A": {"electrical_storage": {"attributes": {}}}}, **extra}
+    with pytest.raises(ValueError, match="requires enabled"):
+        validate_static_oracle_schema(schema)
+
+
+@pytest.mark.parametrize("family", ["home", "total"])
+def test_solved_schedule_keeps_idle_equipment_for_replay(family):
+    import numpy as np
+
+    from algorithms.oracles.citylearn_contract import action_inventory
+    from algorithms.oracles.total_energy_milp import TotalEnergyProblem, solve_total_energy_schedule
+    from algorithms.oracles.total_home_milp import TotalHomeProblem, solve_total_home_milp
+
+    inventory = action_inventory(
+        {
+            "buildings": {
+                "A": {
+                    "chargers": {"idle": {}},
+                    "deferrable_appliances": {"washer": {}},
+                }
+            }
+        },
+        ["A"],
+    )
+    common = dict(
+        problem_id="idle-devices",
+        timestep_hours=0.25,
+        price_eur_per_kwh=np.ones(2),
+        metadata={"action_inventory": inventory},
+    )
+    if family == "home":
+        result = solve_total_home_milp(
+            TotalHomeProblem(**common, building_id="A", base_net_load_kwh=np.ones(2))
+        )
+    else:
+        result = solve_total_energy_schedule(
+            TotalEnergyProblem(**common, building_ids=("A",), base_net_load_kwh=np.ones((1, 2)))
+        )
+    assert result.schedule is not None
+    assert {item.action_name: item.values for item in result.schedule.series} == {
+        "electric_vehicle_storage_idle": (0.0, 0.0),
+        "deferrable_appliance_washer": (0.0, 0.0),
+    }

@@ -15,18 +15,18 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import coo_array
 
+from algorithms.oracles.citylearn_contract import complete_idle_series
 from algorithms.oracles.perfect_foresight_milp import (
     SemanticActionSeries,
     SemanticSchedule,
     SolveOptions,
 )
-
 
 EPS = 1.0e-8
 
@@ -695,7 +695,7 @@ def solve_total_home_milp(
         problem_id=problem.problem_id,
         horizon=horizon,
         timestep_hours=step_hours,
-        series=tuple(schedule_series),
+        series=complete_idle_series(schedule_series, problem.metadata.get("action_inventory", ()), horizon),
         metadata={
             **dict(problem.metadata),
             "scope": "individual_total_home_linear_milp",

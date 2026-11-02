@@ -77,6 +77,23 @@ def test_bau_does_not_taper_request_at_lossless_soc_gap(cls):
     assert agent.predict([obs])[0] == [1.0]
 
 
+def test_bau_battery_uses_accepted_ev_power_without_tapering_charger_request():
+    values = {
+        "net_power_kw": 1.0,
+        "bess_power_kw": 0.0,
+        "ev_charging_power_kw": 0.0,
+        "electrical_storage_soc": 0.5,
+        **ev(soc=0.995, max_charging_power_kw=7.0, available_charge_power_kw=0.2),
+    }
+    agent, obs = policy(
+        NormalPolicy, values, ("electric_vehicle_storage_charger_1", "electrical_storage")
+    )
+    ev_action, battery_action = agent.predict([obs])[0]
+    assert ev_action == 1.0
+    # 1 kW passive load plus 0.2 kW accepted EV power, on a 10 kW BESS.
+    assert battery_action == pytest.approx(-0.12)
+
+
 def appliance(name="washer", **extra):
     values = dict(
         pending=1.0,
