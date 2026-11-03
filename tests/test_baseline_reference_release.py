@@ -5,11 +5,13 @@ import json
 import pytest
 
 from algorithms.agents.baseline_policies import (
+    NormalTargetPolicy,
     RBCBasicPolicy,
     RBCCommunityPolicy,
     RBCSmartLocalPolicy,
 )
 from algorithms.configuration.agents import RuleBasedAlgorithmConfig
+from algorithms.configuration.baseline_defaults import NORMAL_DEFAULTS
 from algorithms.export.policy_json import load_policy, policy_state
 from algorithms.registry import ALGORITHM_REGISTRY, agent_spec
 from tests.test_baseline_behavior_contract import appliance, ev, policy
@@ -125,6 +127,57 @@ def test_old_basic_bundle_preserves_forecast_based_actions(tmp_path):
     assert load_policy(path).predict([observation]) == expected
     fixed, _ = policy(RBCBasicPolicy, signals())
     assert fixed.predict([observation]) != expected
+
+
+@pytest.mark.parametrize("price", [0.01, 0.09, 0.20])
+@pytest.mark.parametrize("pv,load", [(0.0, 3.0), (5.0, 1.0), (0.0, 0.0)])
+def test_basic_self_consumption_matches_bau_battery_without_reading_price(price, pv, load):
+    values = {
+        "electricity_pricing": price,
+        "pv_power_kw": pv,
+        "load_power_kw": load,
+        "electrical_storage_soc": 0.5,
+    }
+    bau, obs = policy(NormalTargetPolicy, values)
+    basic, _ = policy(
+        RBCBasicPolicy,
+        values,
+        hyper={**NORMAL_DEFAULTS, "basic_storage_policy": "self_consumption"},
+    )
+    assert basic.predict([obs]) == bau.predict([obs])
+
+
+@pytest.mark.parametrize("price", [0.01, 0.09, 0.20])
+def test_basic_storage_choice_preserves_ev_and_appliance_timing(price):
+    values = {**signals(price=price), **ev(hours=30), **appliance()}
+    actions = ("electric_vehicle_storage_charger_1", "deferrable_appliance_washer")
+    old, obs = policy(RBCBasicPolicy, values, actions, hyper={"basic_storage_policy": "price_only"})
+    new, _ = policy(
+        RBCBasicPolicy,
+        values,
+        actions,
+        hyper={**NORMAL_DEFAULTS, "basic_storage_policy": "self_consumption"},
+    )
+    assert old.predict([obs]) == new.predict([obs])
+
+
+def test_basic_storage_bundle_keeps_new_and_historical_rules(tmp_path):
+    values = {**signals(price=0.05), "pv_power_kw": 0.0, "load_power_kw": 2.0}
+    for mode in ("price_only", "self_consumption"):
+        agent, obs = policy(
+            RBCBasicPolicy, values, hyper={**NORMAL_DEFAULTS, "basic_storage_policy": mode}
+        )
+        expected = agent.predict([obs])
+        state = policy_state(agent)
+        if mode == "price_only":
+            state.pop("basic_storage_policy")
+        path = tmp_path / f"{mode}.json"
+        path.write_text(
+            json.dumps(
+                {"format": "algorithms_policy_v1", "algorithm": "RBCBasicPolicy", "state": state}
+            )
+        )
+        assert load_policy(path).predict([obs]) == expected
 
 
 @pytest.mark.parametrize(

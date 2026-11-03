@@ -95,6 +95,7 @@ class AlgorithmHyperparameters(BaseModel):
 
 class RuleBasedHyperparameters(BaseModel):
     basic_price_policy: Literal["fixed_thresholds", "forecast_relative"] = "fixed_thresholds"
+    basic_storage_policy: Literal["price_only", "self_consumption"] = "price_only"
     basic_cheap_price_eur_kwh: float = Field(
         default=BASIC_PRICE_DEFAULTS["basic_cheap_price_eur_kwh"], ge=0, allow_inf_nan=False
     )

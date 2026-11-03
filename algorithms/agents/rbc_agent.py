@@ -215,6 +215,7 @@ class RulePolicyBase(BaseAgent):
         }
         for attr in (
             "basic_price_policy",
+            "basic_storage_policy",
             "basic_cheap_price_eur_kwh",
             "basic_expensive_price_eur_kwh",
             "seed",

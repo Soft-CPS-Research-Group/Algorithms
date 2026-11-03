@@ -2096,6 +2096,9 @@ class RBCBasicPolicy(_OperationalBaselinePolicy):
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
         hyper = config.get("algorithm", {}).get("hyperparameters") or {}
+        self.basic_storage_policy = hyper.get("basic_storage_policy", "price_only")
+        if self.basic_storage_policy not in {"price_only", "self_consumption"}:
+            raise ValueError("basic_storage_policy must be price_only or self_consumption")
         self.basic_price_policy = hyper.get(
             "basic_price_policy", BASIC_PRICE_DEFAULTS["basic_price_policy"]
         )
@@ -2200,6 +2203,10 @@ class RBCBasicPolicy(_OperationalBaselinePolicy):
         action_name: str,
         bounds: Sequence[float],
     ) -> float:
+        if getattr(self, "basic_storage_policy", "price_only") == "self_consumption":
+            return NormalPolicy._compute_storage_action(
+                self, agent_idx, obs, obs_map, action_name, bounds
+            )
         del action_name
         soc = self._get_storage_soc(obs, obs_map)
         min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)
