@@ -13,6 +13,7 @@ from citylearn.citylearn import CityLearnEnv
 from algorithms.agents.baseline_policies import (
     NormalNoBatteryPolicy,
     NormalPolicy,
+    NormalTargetPolicy,
     RBCBasicPolicy,
     RBCCommunityPolicy,
     RBCSmartLocalPolicy,
@@ -89,6 +90,7 @@ def schema_with_request(tmp_path):
     [
         (NormalPolicy, 2),
         (NormalNoBatteryPolicy, 2),
+        (NormalTargetPolicy, 2),
         (RBCBasicPolicy, 4),
         (RBCSmartLocalPolicy, 4),
         (RBCCommunityPolicy, 4),
@@ -141,7 +143,14 @@ def test_washer_start_and_completed_service_in_simulator(cls, expected_start, tm
 
 @pytest.mark.parametrize(
     "cls",
-    [NormalPolicy, NormalNoBatteryPolicy, RBCBasicPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy],
+    [
+        NormalPolicy,
+        NormalNoBatteryPolicy,
+        NormalTargetPolicy,
+        RBCBasicPolicy,
+        RBCSmartLocalPolicy,
+        RBCCommunityPolicy,
+    ],
 )
 def test_portuguese_dataset_complete_job_and_portable_policy(cls, tmp_path):
     from algorithms.export.consumer import verify_bundle
