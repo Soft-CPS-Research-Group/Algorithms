@@ -10,6 +10,8 @@ import numpy as np
 
 from algorithms.agents.rbc_agent import ChargerInfo, RulePolicyBase, StorageInfo
 from algorithms.configuration.baseline_defaults import (
+    BASIC_PRICE_DEFAULTS,
+    COMMUNITY_IMPORT_THRESHOLD_KW,
     ECONOMIC_SMART_DEFAULTS,
     EV_SERVICE_SOC_TOLERANCE,
     NORMAL_DEFAULTS,
@@ -2014,7 +2016,52 @@ class NormalNoBatteryPolicy(NormalPolicy):
 
 
 class RBCBasicPolicy(_OperationalBaselinePolicy):
-    """Minimal intelligent controller using current/near-term price and urgency."""
+    """Current-price thresholds and urgency, without forecast-based price timing."""
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        hyper = config.get("algorithm", {}).get("hyperparameters") or {}
+        self.basic_price_policy = hyper.get(
+            "basic_price_policy", BASIC_PRICE_DEFAULTS["basic_price_policy"]
+        )
+        self.basic_cheap_price_eur_kwh = float(
+            hyper.get(
+                "basic_cheap_price_eur_kwh", BASIC_PRICE_DEFAULTS["basic_cheap_price_eur_kwh"]
+            )
+        )
+        self.basic_expensive_price_eur_kwh = float(
+            hyper.get(
+                "basic_expensive_price_eur_kwh",
+                BASIC_PRICE_DEFAULTS["basic_expensive_price_eur_kwh"],
+            )
+        )
+        if self.basic_price_policy not in {"fixed_thresholds", "forecast_relative"}:
+            raise ValueError("basic_price_policy must be fixed_thresholds or forecast_relative")
+        if not (
+            math.isfinite(self.basic_cheap_price_eur_kwh)
+            and math.isfinite(self.basic_expensive_price_eur_kwh)
+            and 0 <= self.basic_cheap_price_eur_kwh < self.basic_expensive_price_eur_kwh
+        ):
+            raise ValueError("Basic price thresholds must be finite and 0 <= cheap < expensive")
+
+    def _get_price_context(self, obs, obs_map):
+        # Historical executable bundles have no mode field. Preserve their
+        # forecast-relative decisions when loaded without calling __init__.
+        if getattr(self, "basic_price_policy", "forecast_relative") == "forecast_relative":
+            return super()._get_price_context(obs, obs_map)
+        price = self._get_first_value(
+            obs,
+            obs_map,
+            ["electricity_pricing", "district__electricity_pricing"],
+            default=float("nan"),
+        )
+        available = math.isfinite(price)
+        return {
+            "price": price if available else 0.0,
+            "cheap": available and price <= self.basic_cheap_price_eur_kwh,
+            "expensive": available and price >= self.basic_expensive_price_eur_kwh,
+            "near_forecast_peak": False,
+        }
 
     def _policy_type(self) -> str:
         return "rbc_basic_policy"
@@ -2122,6 +2169,11 @@ class RBCSmartPolicy(RBCBasicPolicy):
 
     def _policy_type(self) -> str:
         return "rbc_smart_policy"
+
+    def _get_price_context(self, obs, obs_map):
+        # Smart, Community and historical teachers keep the audited forecast
+        # classifier. Basic's simpler tariff must not alter their inheritance.
+        return _OperationalBaselinePolicy._get_price_context(self, obs, obs_map)
 
     def _compute_ev_action(
         self,
@@ -2657,8 +2709,8 @@ class RBCCommunityPolicy(_EconomicSmartPolicy):
 
     Without a settlement market, cross-building battery export has no member
     cost benefit. In that case this policy uses the same local dispatch as
-    Smart Local. Community thresholds are aggregate limits, scaled by member
-    count when no explicit limit was configured.
+    Smart. The default aggregate battery-support trigger is 15 kW, independent
+    of member count. It is not a hard import cap.
     """
 
     uses_community_dispatch = True
@@ -2666,6 +2718,8 @@ class RBCCommunityPolicy(_EconomicSmartPolicy):
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
         hyper = config.get("algorithm", {}).get("hyperparameters") or {}
+        if hyper.get("community_import_threshold_kw") is None:
+            self.community_import_threshold_kw = COMMUNITY_IMPORT_THRESHOLD_KW
         market = dict((self._dataset_info or {}).get("community_market") or {})
         market.update(config.get("simulator", {}).get("community_market") or {})
         self.community_market_enabled = bool(
@@ -2703,9 +2757,7 @@ class RBCCommunityPolicy(_EconomicSmartPolicy):
         self.uses_community_dispatch = self.community_market_enabled
         hyper = self._config.get("algorithm", {}).get("hyperparameters") or {}
         if hyper.get("community_import_threshold_kw") is None:
-            self.community_import_threshold_kw = self.import_peak_threshold_kw * max(
-                1, len((metadata or {}).get("building_names") or observation_names)
-            )
+            self.community_import_threshold_kw = COMMUNITY_IMPORT_THRESHOLD_KW
         if not self.community_market_enabled:
             self._obs_index = [
                 {

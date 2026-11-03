@@ -1,7 +1,8 @@
+# Compatibility path; use smart.yaml for the public Smart reference.
 schema_version: algorithms.config.v1
 metadata:
   experiment_name: baseline-reference-core30-sim200
-  run_name: core30-reference-smart_local
+  run_name: core30-reference-smart
   community_name: Core30 v3.3
   description: Core30 v3.3 reference, 48 hours from 2023-01-01, Simulator 2.0.0; audited
     defaults.
@@ -37,7 +38,7 @@ training:
   steps_between_training_updates: 1
   target_update_interval: 2
 pipeline:
-- algorithm: RBCSmartLocalPolicy
+- algorithm: Smart
   count: 1
 evaluation:
   episodes: 1

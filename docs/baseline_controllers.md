@@ -10,9 +10,9 @@ garantia universal de desempenho nem uma calibração empírica de hábitos huma
 |---|---|---|---|
 | `NormalPolicy` — BAU com bateria | Pede carga imediatamente após a ligação, sem esperar por preço ou sol. Por omissão, alvo de 100%. | Inicia no primeiro instante em que existe um pedido e o simulador permite o arranque. | Autoconsumo: carrega com excedente fotovoltaico e descarrega para consumo local. |
 | `NormalNoBatteryPolicy` — BAU sem controlo da bateria | Igual ao BAU. | Igual ao BAU. | Ação zero. O equipamento continua a existir no simulador, incluindo eventuais perdas passivas. |
-| `RBCBasicPolicy` | Usa preço relativo e necessidade de serviço até à saída. A urgência pode exigir carga a qualquer hora. | Começa com preço favorável, urgência ou proximidade do último arranque possível. | Carrega a preço favorável e descarrega a preço elevado para consumo útil. |
-| `RBCSmartLocalPolicy` | Mantém o serviço e as oportunidades de preço do Basic; antecipa carga com excedente local. V2G é opcional. | Mantém preço, urgência e prazo do Basic; acrescenta arranque com excedente local. | Acrescenta captura solar, reserva para preços altos e limitação da carga da bateria ao pico local configurado. |
-| `RBCCommunityPolicy` | Acrescenta excedente e pressão da comunidade, com as condições económicas configuradas. | Pode aproveitar excedente comunitário, além do local e dos prazos. | Com mercado ativo, usa excedente partilhável e ajuda nos picos comunitários caros. Sem mercado, usa a política local. |
+| `RBCBasicPolicy` — Basic | Usa preço atual e limiares fixos, sem previsões de preço; mantém serviço até à saída. A urgência pode exigir carga a qualquer hora. | Começa com preço abaixo do limiar, urgência ou proximidade do último arranque possível. | Carrega a preço abaixo do limiar barato e descarrega acima do limiar caro para consumo útil. |
+| `Smart` | Mantém as proteções de serviço; compara preços previstos e antecipa carga com excedente local. V2G é opcional. | Usa preço relativo, urgência e prazo; acrescenta arranque com excedente local. | Acrescenta captura solar, reserva para preços altos e limitação da carga da bateria ao pico local configurado. |
+| `RBCCommunityPolicy` — Community | Acrescenta excedente comunitário às decisões de preço/serviço do Smart. | Pode aproveitar excedente comunitário, além do local e dos prazos. | Com mercado ativo, usa excedente partilhável e ajuda nos picos comunitários caros, com gatilho agregado de 15 kW. Sem mercado, usa a política local. |
 
 O BAU é uma hipótese operacional explícita: ligar e carregar; pedir uma lavagem
 e iniciar. Não pretende otimizar custo. Para comparar apenas o escalonamento
@@ -30,18 +30,26 @@ permitem experiências explícitas; desativá-las muda o comportamento de refer�
 ## Horários e preços
 
 Nenhum dos três RBCs está limitado a carregar exclusivamente de dia ou de noite.
-O Basic compara o preço atual com os preços previstos. Com tarifa constante não
-inventa um período barato ou caro. Se faltar o preço atual, usa o fallback
-documentado: horas 0–7 e 22–23 favoráveis; 17–21 desfavoráveis; restantes neutras.
-Sem preço e sem hora, fica neutro. Com preço atual mas sem previsões, a
-classificação também é neutra: não infere uma tarifa horária.
+O Basic usa exclusivamente o preço atual: barato até **0,0765 €/kWh**, caro a partir
+de **0,1078 €/kWh**, neutro entre os dois. São os tercis da tarifa Core30 de 2023,
+arredondados a quatro casas decimais; não foram escolhidos com resultados de 2024.
+Os parâmetros `basic_cheap_price_eur_kwh` e `basic_expensive_price_eur_kwh` são
+fixos durante o job e ficam no export. Se faltar o preço, fica neutro e mantém
+as decisões de serviço. Uma tarifa constante pode ser barata/cara segundo estes
+limiares absolutos. Não há um fallback horário no Basic atual.
 
-Smart Local e Community usam por omissão `price_charge_rate: 0.60`, tal como
+Smart e Community mantêm a classificação relativa às previsões auditada anteriormente.
+Com tarifa constante ficam neutros. Sem preço atual usam o fallback histórico
+(0–7 e 22–23 favoráveis, 17–21 desfavoráveis); sem previsões e com preço atual
+ficam neutros. `basic_price_policy: forecast_relative` permite reproduzir a
+semântica histórica do Basic; a referência atual é `fixed_thresholds`.
+
+Smart e Community usam por omissão `price_charge_rate: 0.60`, tal como
 o Basic. A versão anterior desativava essa capacidade, adiava os EV mesmo em
 horas baratas e descarregava a bateria para qualquer consumo antes de avaliar
 a regra de preço. Isso explicava parte da inversão de custos.
 
-Os três usam a mesma base de serviço EV e arranque por preço/prazo. Smart Local
+Os três usam a mesma base de proteção de serviço EV e de prazo. Smart
 acrescenta carga com excedente solar atual. Na bateria, dá prioridade ao solar,
 alivia picos atuais e períodos caros, reserva espaço quando prevê excedente e
 limita a carga comprada à margem até ao pico local configurado. Uma previsão
@@ -52,9 +60,10 @@ comunitária com desconto se esse mercado estiver ativo. Sem mercado, filtra
 os sinais comunitários e reproduz a política local: exportar bateria para outro
 membro não pode ser tratado como autoconsumo gratuito. Com mercado, acrescenta
 um orçamento de excedente partilhado e alívio de picos comunitários durante
-períodos caros. O limiar agregado, se não for indicado, é o limiar local vezes
-o número de membros. Um `community_import_threshold_kw` explícito é sempre
-um limite agregado em kW.
+períodos caros. O limiar agregado por omissão é **15 kW**, independentemente do
+número de membros. `community_import_threshold_kw` é um gatilho de apoio das
+baterias, não um teto garantido de importação. Valores explícitos continuam a
+ser respeitados para reprodução de experiências.
 
 V2G continua opcional e protegido por reservas e condições de serviço. As variantes
 especializadas com sinais hierárquicos conservam as regras anteriores em classes
@@ -158,11 +167,14 @@ e os limites configuráveis não são declarados numericamente equivalentes.
 - `RBCSmartPolicy` mantém-se como compatibilidade para professores de aprendizagem,
   residuais, configurações e bundles existentes. Pode recorrer a sinais comunitários
   como fallback, pelo que não deve sustentar afirmações de informação estritamente
-  local. Para novas comparações, usar Smart Local ou Community.
+  local. Para novas comparações, usar `Smart` ou Community.
+- `Smart` é o nome público da implementação local já auditada. O identificador
+  `RBCSmartLocalPolicy` mantém-se como alias de compatibilidade, com decisões iguais.
+  A mudança de nome não altera o comportamento dos professores históricos.
 - Os templates `rbc_smart_local.yaml` históricos usam “local” no sentido de execução
   local no computador. Os novos `rbc_smart_building_local*.yaml` selecionam
-  explicitamente `RBCSmartLocalPolicy` e eliminam essa ambiguidade.
-- Há 37 nomes registados. As regras exportam JSON executável e manifesto comum;
+  explicitamente `Smart` e eliminam essa ambiguidade.
+- Há 38 nomes registados, incluindo o alias público `Smart`. As regras exportam JSON executável e manifesto comum;
   não são redes neuronais a converter para ONNX. A verificação reproduz as decisões
   da avaliação final. Bundles anteriores conservam a sua versão do Algorithms.
 
@@ -299,7 +311,8 @@ python run_experiment.py --config configs/templates/baselines/core30/bau.yaml --
 python run_experiment.py --config configs/templates/baselines/core30/bau.yaml
 ```
 
-Escolher `bau`, `bau_no_battery`, `basic`, `smart_local` ou `community`.
+Escolher `bau`, `bau_no_battery`, `basic`, `smart` ou `community`.
+`smart_local.yaml` fica como caminho de compatibilidade para a mesma referência Smart.
 Os templates históricos 15 s/15 min/2022 acima mantêm dados e parâmetros próprios;
 não reproduzem automaticamente esta referência Core30. Para repetir uma janela
 remota, usar a configuração guardada no respetivo job e a imagem registada no
@@ -315,9 +328,14 @@ e reduziu a média dos picos diários em apenas 0,055%, com mais 57,53% de energ
 movimentada nas baterias e menor reserva final. Todos os critérios de serviço,
 limites físicos e exportação passaram.
 
-Mantém-se o template de referência e o limiar automático de 210 kW para os
-30 membros: não se promove 15 kW como melhoria de pico validada. O candidato
-fica reproduzível nos payloads da campanha. O Basic não foi enfraquecido.
-Uma melhoria adicional de pico deve testar a coordenação das cargas flexíveis,
-incluindo a concentração de carregamento em horas baratas. Os resultados são
-de janelas sazonais independentes, não de uma avaliação anual contínua.
+A decisão inicial da campanha preservou 210 kW por não existir melhoria de pico
+validada. **Depois de analisar esses limites, Tiago escolheu a configuração de
+15 kW como Community oficial**, sem um nome de variante. O seu ganho de custo e
+as limitações de pico permanecem documentados; não se transforma esta decisão
+numa alegação de melhoria do pico. A coordenação adicional sugerida no
+[diagnóstico](community_peak_diagnosis_2026_11_03.md) ficou adiada.
+
+O mesmo fecho renomeou Smart Local para Smart e simplificou o Basic para preço
+atual e limiares fixos. Os BAUs e a política do Smart foram preservados. O
+[registo de fecho](baseline_reference_release_2026_11_03.md) descreve a seleção
+dos limiares, compatibilidade, validação e âmbito dos resultados.

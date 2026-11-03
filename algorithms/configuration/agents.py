@@ -7,7 +7,11 @@ from typing import Any, Dict, List, Optional, Union
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Literal
 
-from algorithms.configuration.baseline_defaults import EV_SERVICE_SOC_TOLERANCE, policy_defaults
+from algorithms.configuration.baseline_defaults import (
+    BASIC_PRICE_DEFAULTS,
+    EV_SERVICE_SOC_TOLERANCE,
+    policy_defaults,
+)
 from algorithms.configuration.model import StrictModel as BaseModel
 
 
@@ -90,6 +94,20 @@ class AlgorithmHyperparameters(BaseModel):
 
 
 class RuleBasedHyperparameters(BaseModel):
+    basic_price_policy: Literal["fixed_thresholds", "forecast_relative"] = "fixed_thresholds"
+    basic_cheap_price_eur_kwh: float = Field(
+        default=BASIC_PRICE_DEFAULTS["basic_cheap_price_eur_kwh"], ge=0, allow_inf_nan=False
+    )
+    basic_expensive_price_eur_kwh: float = Field(
+        default=BASIC_PRICE_DEFAULTS["basic_expensive_price_eur_kwh"], ge=0, allow_inf_nan=False
+    )
+
+    @model_validator(mode="after")
+    def require_ordered_basic_prices(self):
+        if self.basic_cheap_price_eur_kwh >= self.basic_expensive_price_eur_kwh:
+            raise ValueError("Basic price thresholds require cheap < expensive")
+        return self
+
     ev_v2g_buffer_soc: float = Field(default=0.0, ge=0.0)
     ev_subhour_service_guard_steps: float = Field(default=8.0, ge=0.0)
     ev_subhour_deadline_buffer_steps: float = Field(default=2.0, ge=0.0)
@@ -661,6 +679,7 @@ class RuleBasedAlgorithmConfig(BaseModel):
         "NormalNoBatteryPolicy",
         "RBCBasicPolicy",
         "RBCCommunityPolicy",
+        "Smart",
         "RBCSmartLocalPolicy",
         "RBCSmartPolicy",
         "SignalAwareRBC",

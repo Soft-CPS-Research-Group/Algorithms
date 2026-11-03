@@ -1,5 +1,7 @@
 """Agent declarations: importing this catalogue loads no model or simulator."""
 
+from dataclasses import replace
+
 from algorithms.contracts import AgentCapabilities, AgentSpec
 
 AGENT_SPECS = {
@@ -824,3 +826,6 @@ AGENT_SPECS = {
         ),
     ),
 }
+
+# Public name for the audited local baseline; historical IDs remain loadable.
+AGENT_SPECS["Smart"] = replace(AGENT_SPECS["RBCSmartLocalPolicy"], name="Smart")

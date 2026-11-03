@@ -1,7 +1,7 @@
 schema_version: algorithms.config.v1
 metadata:
   experiment_name: "rbc_smart_building_local_template"
-  run_name: "RBCSmartLocalPolicy 15s"
+  run_name: "Smart 15s"
   community_name: "citylearn_15s"
   description: "Strict building-local solar, price and peak-aware baseline over storage, EV and deferrables"
 
@@ -58,7 +58,7 @@ training:
   steps_between_training_updates: 1
   target_update_interval: 0
 pipeline:
-- algorithm: RBCSmartLocalPolicy
+- algorithm: Smart
   count: 1
   hyperparameters:
     allow_v2g: true

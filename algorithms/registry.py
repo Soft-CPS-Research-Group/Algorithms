@@ -104,7 +104,7 @@ def build_unsupported_algorithm_message(name: str | None) -> str:
         )
 
     if name == "RuleBasedPolicy":
-        return "RuleBasedPolicy was retired. Select NormalPolicy, RBCBasicPolicy, RBCSmartLocalPolicy or RBCCommunityPolicy explicitly; their behavior differs."
+        return "RuleBasedPolicy was retired. Select NormalPolicy, RBCBasicPolicy, Smart or RBCCommunityPolicy explicitly; their behavior differs."
 
     if name in PLACEHOLDER_ALGORITHMS:
         return (
