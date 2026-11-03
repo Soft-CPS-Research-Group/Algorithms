@@ -3,8 +3,8 @@ metadata:
   experiment_name: baseline-reference-core30-sim200
   run_name: core30-reference-bau
   community_name: Core30 v3.3
-  description: Core30 v3.3 reference, 48 hours from 2023-01-01, Simulator 2.0.0; audited
-    defaults.
+  description: 'Primary BAU: immediate EV charging capped by the user-requested departure
+    SOC, immediate appliances and stationary-battery self-consumption.'
 tracking:
   mlflow_enabled: false
   log_level: WARNING
@@ -29,7 +29,7 @@ simulator:
   export:
     profile: final
     mode: end
-    include_business_as_usual: true
+    include_business_as_usual: false
     export_business_as_usual_timeseries: false
 training:
   episodes: 0
@@ -37,7 +37,7 @@ training:
   steps_between_training_updates: 1
   target_update_interval: 2
 pipeline:
-- algorithm: NormalPolicy
+- algorithm: NormalTargetPolicy
   count: 1
 evaluation:
   episodes: 1

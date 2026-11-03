@@ -418,12 +418,18 @@ def test_dynamic_charger_obeys_building_headroom_without_static_phase_metadata()
 
 
 def test_kpi_baseline_reference_distinguishes_native_bau_from_normal_policy():
-    from algorithms.runtime.kpis import baseline_reference
+    from algorithms.runtime.kpis import baseline_reference, primary_comparison_reference
 
     assert baseline_reference(False) is None
     reference = baseline_reference(True)
     assert reference["implementation"] == "citylearn.agents.baseline.BusinessAsUsualAgent"
     assert reference["equivalent_to_normal_policy"] is False
+    assert reference["equivalent_to_primary_reference"] is False
+    assert reference["role"] == "simulator_native_diagnostic"
+    primary = primary_comparison_reference()
+    assert primary["algorithm"] == "NormalTargetPolicy"
+    assert primary["requires_matched_reference_job"] is True
+    assert primary["reductions_computed_here"] is False
 
 
 @pytest.mark.parametrize("donor_has_local_pv", [False, True])
