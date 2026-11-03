@@ -37,6 +37,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--node-limit", type=int)
     parser.add_argument("--display-solver-output", action="store_true")
     parser.add_argument(
+        "--no-presolve", action="store_true",
+        help="Disable HiGHS presolve when diagnosing slow or unstable preprocessing.",
+    )
+    parser.add_argument(
         "--decompose-individual",
         action="store_true",
         help=(
@@ -70,6 +74,7 @@ def main() -> int:
         else args.lexicographic_shortfall_tolerance_kwh
     )
     options = SolveOptions(
+        presolve=not args.no_presolve,
         time_limit_seconds=args.time_limit_seconds,
         mip_relative_gap=args.mip_relative_gap,
         node_limit=args.node_limit,
