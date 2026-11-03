@@ -33,6 +33,8 @@ def policy_defaults(name):
         }
     if name in {"Smart", "RBCSmartLocalPolicy"}:
         return ECONOMIC_SMART_DEFAULTS
+    if name == "NormalTargetPolicy":
+        return {**NORMAL_DEFAULTS, "ev_normal_target_soc": 0.0}
     if name in {"NormalPolicy", "NormalNoBatteryPolicy"}:
         return NORMAL_DEFAULTS
     if name in {

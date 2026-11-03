@@ -676,6 +676,7 @@ class RuleBasedAlgorithmConfig(BaseModel):
     algorithm: Literal[
         "RandomPolicy",
         "NormalPolicy",
+        "NormalTargetPolicy",
         "NormalNoBatteryPolicy",
         "RBCBasicPolicy",
         "RBCCommunityPolicy",
@@ -702,6 +703,10 @@ class RuleBasedAlgorithmConfig(BaseModel):
         value = dict(value)
         hyper = dict(value.get("hyperparameters") or {})
         name = value.get("algorithm")
+        if name == "NormalTargetPolicy" and hyper.get("ev_normal_target_soc", 0.0) != 0.0:
+            raise ValueError(
+                "NormalTargetPolicy follows the user target; ev_normal_target_soc must be 0"
+            )
         defaults = policy_defaults(name)
         for key, default in defaults.items():
             hyper.setdefault(key, default)

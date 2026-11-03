@@ -9,16 +9,32 @@ garantia universal de desempenho nem uma calibração empírica de hábitos huma
 | Controlador | EV | Máquina de lavar ou outro ciclo adiável | Bateria doméstica |
 |---|---|---|---|
 | `NormalPolicy` — BAU com bateria | Pede carga imediatamente após a ligação, sem esperar por preço ou sol. Por omissão, alvo de 100%. | Inicia no primeiro instante em que existe um pedido e o simulador permite o arranque. | Autoconsumo: carrega com excedente fotovoltaico e descarrega para consumo local. |
+| `NormalTargetPolicy` — BAU com limite do utilizador | Pede carga imediatamente até ao SOC pedido para a sessão. Limita a última ordem para não ultrapassar esse alvo. | Igual ao BAU com bateria. | Igual ao BAU com bateria. |
 | `NormalNoBatteryPolicy` — BAU sem controlo da bateria | Igual ao BAU. | Igual ao BAU. | Ação zero. O equipamento continua a existir no simulador, incluindo eventuais perdas passivas. |
 | `RBCBasicPolicy` — Basic | Usa preço atual e limiares fixos, sem previsões de preço; mantém serviço até à saída. A urgência pode exigir carga a qualquer hora. | Começa com preço abaixo do limiar, urgência ou proximidade do último arranque possível. | Carrega a preço abaixo do limiar barato e descarrega acima do limiar caro para consumo útil. |
 | `Smart` | Mantém as proteções de serviço; compara preços previstos e antecipa carga com excedente local. V2G é opcional. | Usa preço relativo, urgência e prazo; acrescenta arranque com excedente local. | Acrescenta captura solar, reserva para preços altos e limitação da carga da bateria ao pico local configurado. |
 | `RBCCommunityPolicy` — Community | Acrescenta excedente comunitário às decisões de preço/serviço do Smart. | Pode aproveitar excedente comunitário, além do local e dos prazos. | Com mercado ativo, usa excedente partilhável e ajuda nos picos comunitários caros, com gatilho agregado de 15 kW. Sem mercado, usa a política local. |
 
 O BAU é uma hipótese operacional explícita: ligar e carregar; pedir uma lavagem
-e iniciar. Não pretende otimizar custo. Para comparar apenas o escalonamento
-mantendo o mesmo serviço de mobilidade, pode definir-se `ev_normal_target_soc: 0`
-para seguir o SOC pedido para a saída. Essa experiência deve declarar a alteração:
-não equivale ao BAU de carga até 100%.
+e iniciar. Não pretende otimizar custo. **A referência principal continua a ser
+`NormalPolicy`, com bateria e carga EV até 100%.** `NormalTargetPolicy` é uma
+variante separada para comparar a carga imediata com os RBCs usando o SOC pedido.
+O template é `configs/templates/baselines/core30/bau_target.yaml`.
+
+O BAU com limite lê o SOC pedido de cada EV ligado, sem preços, previsões,
+adiamento ou V2G. A última ordem de carga fica limitada à energia que falta até
+ao alvo, usando capacidade e SOC observados. Não presume eficiências não
+observadas. Se essa ordem ficar abaixo da potência mínima do carregador, para
+ligeiramente abaixo do alvo; nunca a arredonda para cima, nem na saída. Com
+passos de 15 minutos, esta discretização deve ser medida nos resultados. Se o
+EV já chegar acima do alvo, não carrega nem descarrega para o corrigir. Sem SOC,
+capacidade ou alvo válidos, não inventa um pedido de carga. Mantém a mesma
+repartição física de potência entre carregadores que o BAU original.
+
+O parâmetro histórico `NormalPolicy.ev_normal_target_soc: 0` só muda o ponto de
+paragem entre intervalos e pode ultrapassar o pedido no último intervalo. Não
+equivale ao novo limite. `NormalTargetPolicy` exige esse parâmetro a zero e
+exporta uma identidade própria no bundle executável e no manifesto.
 
 `NormalPolicy` usa por omissão taxas máximas normalizadas de carga/descarga da
 bateria de 1, limiares de 0,05 kW e limites estratégicos de SOC de 20–90%.
@@ -174,7 +190,7 @@ e os limites configuráveis não são declarados numericamente equivalentes.
 - Os templates `rbc_smart_local.yaml` históricos usam “local” no sentido de execução
   local no computador. Os novos `rbc_smart_building_local*.yaml` selecionam
   explicitamente `Smart` e eliminam essa ambiguidade.
-- Há 38 nomes registados, incluindo o alias público `Smart`. As regras exportam JSON executável e manifesto comum;
+- Há 39 nomes registados, incluindo `NormalTargetPolicy` e o alias público `Smart`. As regras exportam JSON executável e manifesto comum;
   não são redes neuronais a converter para ONNX. A verificação reproduz as decisões
   da avaliação final. Bundles anteriores conservam a sua versão do Algorithms.
 

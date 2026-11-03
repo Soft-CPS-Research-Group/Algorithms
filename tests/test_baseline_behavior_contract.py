@@ -8,6 +8,7 @@ import pytest
 from algorithms.agents.baseline_policies import (
     NormalNoBatteryPolicy,
     NormalPolicy,
+    NormalTargetPolicy,
     RBCBasicPolicy,
     RBCCommunityPolicy,
     RBCSmartLocalPolicy,
@@ -19,6 +20,7 @@ from algorithms.configuration.agents import RuleBasedAlgorithmConfig
 POLICIES = (
     NormalPolicy,
     NormalNoBatteryPolicy,
+    NormalTargetPolicy,
     RBCBasicPolicy,
     RBCSmartLocalPolicy,
     RBCCommunityPolicy,
@@ -56,7 +58,7 @@ def ev(charger="charger_1", *, soc=0.2, required=0.8, hours=10.0, **extra):
     return {f"charger::Building_1/{charger}::{key}": value for key, value in values.items()}
 
 
-@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy])
+@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy, NormalTargetPolicy])
 def test_bau_requests_simultaneous_maximum_charge_without_list_priority(cls):
     values = {
         "charging_building_headroom_kw": 5.0,
@@ -113,7 +115,7 @@ def appliance(name="washer", **extra):
     }
 
 
-@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy])
+@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy, NormalTargetPolicy])
 @pytest.mark.parametrize("hour", [2.0, 12.0, 18.0])
 def test_bau_starts_requested_washer_and_ev_independent_of_price_or_hour(cls, hour):
     values = {"hour": hour, "electricity_pricing": 1.0, **ev(), **appliance()}

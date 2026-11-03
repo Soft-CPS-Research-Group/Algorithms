@@ -1993,6 +1993,81 @@ class NormalPolicy(_OperationalBaselinePolicy):
         return float(np.clip(0.0, low, high))
 
 
+class NormalTargetPolicy(NormalPolicy):
+    """Immediate BAU charging capped by the connected EV's requested departure SOC.
+
+    The last command is bounded by the remaining stored-energy gap, without
+    assuming unobserved charger/battery efficiencies. If that command is below
+    the charger minimum, stop below the target instead of overshooting it.
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        config = dict(config)
+        algorithm = dict(config.get("algorithm") or {})
+        hyper = dict(algorithm.get("hyperparameters") or {})
+        if hyper.get("ev_normal_target_soc", 0.0) != 0.0:
+            raise ValueError(
+                "NormalTargetPolicy follows the user target; ev_normal_target_soc must be 0"
+            )
+        hyper["ev_normal_target_soc"] = 0.0
+        algorithm["hyperparameters"] = hyper
+        config["algorithm"] = algorithm
+        super().__init__(config)
+
+    def _policy_type(self) -> str:
+        return "normal_target_policy"
+
+    def _compute_ev_action(
+        self,
+        agent_idx: int,
+        obs: np.ndarray,
+        obs_map: Dict[str, int],
+        charger_info: Optional[ChargerInfo],
+        bounds: Sequence[float],
+        action_name: str = "",
+    ) -> float:
+        ctx = self._connected_ev_context(agent_idx, obs, obs_map, charger_info, action_name)
+        if not ctx["connected"]:
+            return 0.0
+        # A guessed capacity or SOC cannot support a strict user-selected cap.
+        for feature, generic_names in (
+            ("soc", ["electric_vehicle_soc", "connected_electric_vehicle_at_charger_soc"]),
+            (
+                "required_soc_departure",
+                [
+                    "electric_vehicle_required_soc_departure",
+                    "connected_electric_vehicle_at_charger_required_soc_departure",
+                ],
+            ),
+            ("battery_capacity", ["connected_electric_vehicle_at_charger_battery_capacity"]),
+        ):
+            value = self._get_ev_value(
+                obs,
+                obs_map,
+                charger_id=ctx["charger_id"],
+                building_name=self._agent_buildings.get(agent_idx),
+                feature=feature,
+                generic_names=generic_names,
+                default=float("nan"),
+            )
+            if not math.isfinite(value) or (feature == "battery_capacity" and value <= 0.0):
+                return 0.0
+        can_charge = self._ctx_float(ctx, "can_charge")
+        if math.isfinite(can_charge) and can_charge <= 0.5:
+            return 0.0
+        # Float32 observations/actions need a tiny SOC margin at the cap.
+        gap = max(0.0, float(ctx["required_soc"]) - float(ctx["soc"]) - 1.0e-6)
+        if gap <= 0.0:
+            return 0.0
+        energy_cap_rate = gap * float(ctx["capacity"]) / (self.step_hours * float(ctx["max_power"]))
+        rate = min(self.ev_normal_charge_rate, energy_cap_rate, 1.0)
+        minimum_rate = float(ctx["min_power"]) / float(ctx["max_power"])
+        if rate <= 0.0 or rate < minimum_rate:
+            return 0.0
+        clipped = self._clip_non_v2g_charge(rate, bounds)
+        return clipped if minimum_rate <= clipped <= energy_cap_rate else 0.0
+
+
 class NormalNoBatteryPolicy(NormalPolicy):
     """Day-to-day behaviour without home battery control."""
 
