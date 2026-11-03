@@ -80,9 +80,20 @@ def power_envelope(name: str, attributes: Mapping[str, Any], *, ac_factor: float
 
 def align_simulator_linear_problem(problem: TotalEnergyProblem, schema: Mapping[str, Any]):
     """Remove legacy safety margins and model the supported physical equations."""
+    if problem.settlement == "community":
+        market = schema.get("community_market") or {}
+        if not market.get("enabled") or float(market.get("grid_export_price", 0)) != 0:
+            raise ValueError(
+                "simulator_linear community reference requires net settlement and zero grid export price."
+            )
     storage = []
     for asset in problem.stationary_storage:
         definition = schema["buildings"][asset.building_id]["electrical_storage"]
+        if (
+            definition.get("type", "citylearn.energy_model.Battery")
+            != "citylearn.energy_model.Battery"
+        ):
+            raise ValueError("simulator_linear does not support custom battery transitions.")
         attributes = definition["attributes"]
         efficiency = constant_efficiency(asset.building_id, attributes, battery=True)
         envelope = power_envelope(asset.building_id, attributes)
@@ -93,6 +104,12 @@ def align_simulator_linear_problem(problem: TotalEnergyProblem, schema: Mapping[
             replace(
                 asset,
                 capacity_kwh=float(attributes["capacity"]),
+                initial_energy_kwh=float(attributes["capacity"])
+                * float(
+                    attributes.get(
+                        "initial_soc", 1 - float(attributes.get("depth_of_discharge", 1))
+                    )
+                ),
                 charge_efficiency=efficiency,
                 discharge_efficiency=efficiency,
                 max_charge_kw=max_power,
@@ -108,9 +125,21 @@ def align_simulator_linear_problem(problem: TotalEnergyProblem, schema: Mapping[
     for session in problem.ev_sessions:
         ev_id = identities[session.session_id]
         battery = schema["electric_vehicles_def"][ev_id]["battery"]["attributes"]
+        if (
+            schema["electric_vehicles_def"][ev_id]["battery"].get(
+                "type", "citylearn.energy_model.Battery"
+            )
+            != "citylearn.energy_model.Battery"
+        ):
+            raise ValueError("simulator_linear does not support custom EV battery transitions.")
         charger_id = session.action_name.removeprefix("electric_vehicle_storage_")
         charger = schema["buildings"][session.building_id]["chargers"][charger_id]
         attributes = charger["attributes"]
+        if (
+            charger.get("type", "citylearn.electric_vehicle_charger.Charger")
+            != "citylearn.electric_vehicle_charger.Charger"
+        ):
+            raise ValueError("simulator_linear does not support custom charger transitions.")
         if float(charger.get("noise_std", 0)) != 0:
             raise ValueError("simulator_linear requires deterministic EV arrivals.")
         if (

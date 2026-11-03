@@ -144,6 +144,9 @@ def audit(reference_dir: Path, job_dir: Path):
     cost = metrics["district_cost_community_market_settled_total_eur"]
     lower = solved["solver"]["dual_bound_eur"]
     gates = {
+        "coverage": metrics["district_ev_departure_audit_min_acceptable_coverage_ratio"] == 1
+        and metrics["district_ev_departure_audit_min_acceptable_unknown_count"] == 0
+        and metrics["district_deferrable_appliance_audit_resolved_coverage_ratio"] == 1,
         "minimum_service": metrics[
             "district_ev_departure_audit_min_acceptable_service_feasible_ratio"
         ]

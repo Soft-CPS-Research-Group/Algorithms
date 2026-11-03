@@ -10,6 +10,7 @@ Raw solver evidence and ordinary runtime exports are retained under output-dir.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -110,6 +111,26 @@ def main():
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=False)
     config = yaml.safe_load(args.config.read_text())
+    source_root = Path(__file__).resolve().parents[1]
+    source_paths = [
+        Path(__file__).resolve(),
+        source_root / "algorithms/oracles/total_energy_milp.py",
+        source_root / "algorithms/oracles/citylearn_total_energy.py",
+        source_root / "algorithms/oracles/simulator_linear_physics.py",
+        source_root / "algorithms/oracles/perfect_foresight_milp.py",
+    ]
+    provenance = {
+        "source_commit": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, cwd=source_root
+        ).strip(),
+        "source_dirty": bool(
+            subprocess.check_output(["git", "status", "--porcelain"], cwd=source_root)
+        ),
+        "source_files_sha256": {
+            str(p.relative_to(source_root)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in source_paths
+        },
+    }
     problem = build_reference(config, service_margin_kwh=args.service_margin_kwh)
     (out / "problem.json").write_text(problem.to_json() + "\n")
     options = SolveOptions(
@@ -125,7 +146,7 @@ def main():
     evidence = {
         **result.to_dict(),
         "solve_wall_seconds": seconds,
-        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        **provenance,
         "options": vars(options),
         "config_path": str(args.config.resolve()),
     }
