@@ -574,7 +574,7 @@ def _milp_primal_only(
     c: np.ndarray,
     integrality: np.ndarray,
     bounds: Bounds,
-    constraints: LinearConstraint,
+    constraints: LinearConstraint | Sequence[LinearConstraint],
     options: Mapping[str, Any],
     x0: Optional[np.ndarray] = None,
 ) -> OptimizeResult:

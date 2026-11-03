@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Optional, Sequence
 
 import numpy as np
-from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.optimize import Bounds, LinearConstraint
 from scipy.sparse import coo_array
 
 from algorithms.oracles.citylearn_contract import complete_idle_series
@@ -39,6 +39,7 @@ from algorithms.oracles.perfect_foresight_milp import (
     SemanticSchedule,
     SolveOptions,
     SolverInfo,
+    _milp_primal_only,
 )
 
 _TOLERANCE = 1.0e-8
@@ -929,7 +930,7 @@ def _solve(
                 ]
             )
 
-    deferrable_start_exclusion: dict[tuple[str, str, int], list[int]] = {}
+    deferrable_occupancy: dict[tuple[str, str, int], list[int]] = {}
     for cycle, variables in zip(problem.deferrable_cycles, layout.cycles):
         upper_bounds[variables.variables] = 1.0
         if not relaxed:
@@ -941,14 +942,16 @@ def _solve(
         )
         building = building_index[cycle.building_id]
         for start, variable in zip(variables.starts, variables.variables):
-            deferrable_start_exclusion.setdefault(
-                (cycle.building_id, cycle.action_name, start), []
-            ).append(int(variable))
             for offset, energy in enumerate(cycle.load_profile_kwh):
+                # A device remains occupied for its entire cycle, including
+                # zero-power portions. Distinct starts must not overlap.
+                deferrable_occupancy.setdefault(
+                    (cycle.building_id, cycle.action_name, start + offset), []
+                ).append(int(variable))
                 controls[(building, start + offset)].append(
                     (variable, energy, cycle.phase_connection)
                 )
-    for variables in deferrable_start_exclusion.values():
+    for variables in deferrable_occupancy.values():
         if len(variables) > 1:
             add_row([(variable, 1.0) for variable in variables], -np.inf, 1.0)
 
@@ -1049,7 +1052,9 @@ def _solve(
             if extra_constraint is None
             else (base_constraints, extra_constraint)
         )
-        return milp(
+        # Reuse the bounded oracle's HiGHS adapter. SciPy 1.15.1 otherwise
+        # spends minutes converting basis marginals that milp discards.
+        return _milp_primal_only(
             c=solver_objective,
             integrality=integrality,
             bounds=bounds,
@@ -1359,7 +1364,7 @@ def _solve(
                 service_phase_shortfall_incumbent
             ),
             "includes_stationary_storage": bool(problem.stationary_storage),
-            "includes_ev_v2g": bool(problem.ev_sessions),
+            "includes_ev_v2g": any(session.max_discharge_kw > 0.0 for session in problem.ev_sessions),
             "includes_deferrable_appliances": bool(problem.deferrable_cycles),
             "includes_electrical_service": bool(problem.electrical_services),
             "requires_citylearn_replay": True,

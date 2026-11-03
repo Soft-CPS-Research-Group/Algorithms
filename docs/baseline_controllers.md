@@ -296,6 +296,12 @@ preservado e a tabela CSV derivada mantém os mesmos valores e células inválid
 
 ### Referências MILP
 
+A [auditoria MILP atual do Core30](milp_core30_audit_2026_11_03.md) valida os
+planos completos individual e comunitário nas mesmas semanas de 2024 dos
+baselines, com energia terminal por ativo pelo menos igual à do Community.
+Para novas comparações usar `total_energy_milp.py` e `TotalOracleReplayPolicy`.
+As implementações mais antigas não herdam automaticamente essa validação.
+
 - `FixedServiceOracleReplayPolicy`: otimiza apenas a bateria, mantendo o serviço
   EV/eletrodomésticos de um RBC explícito. É um limite condicional, não um
   otimizador integral da casa.

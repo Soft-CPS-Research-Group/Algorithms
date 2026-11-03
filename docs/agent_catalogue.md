@@ -15,7 +15,7 @@ are separate properties.
 | Typed multi-agent | `TIMARL` | Existing main implementation retained; research export. |
 | Hierarchical coordination | `BuildingAgent`, `CommunityCoordinator`, `CCLevel1`, `CCLevel2`, `CausalPriceSignal`, `FixedPriceSignal` | Existing implementations retained. |
 | Baselines and signal policies | `RandomPolicy`, `NormalPolicy`, `NormalTargetPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `Smart`, `RBCCommunityPolicy`, `RBCSmartPolicy`, `RBCSmartLocalPolicy`, `SignalAwareRBC`, `SignalAwareRBCSmartLocal` | `NormalTargetPolicy` is the primary BAU; `NormalPolicy` is the BAU 100% variant. `Smart` is the public local baseline; the older names remain compatible. Basic uses current-price/service scheduling and reactive battery self-consumption; Community defaults to a 15 kW battery-support trigger. |
-| Oracle replays | `FixedServiceOracleReplayPolicy`, `TotalHomeOracleReplayPolicy`, `TotalOracleReplayPolicy` | Existing audit/reference implementations retained. |
+| Oracle replays | `FixedServiceOracleReplayPolicy`, `TotalHomeOracleReplayPolicy`, `TotalOracleReplayPolicy` | Use `TotalOracleReplayPolicy` with the complete individual/community model for new Core30 references. Fixed-service and total-home implementations remain diagnostic/historical. See the [Core30 MILP audit](milp_core30_audit_2026_11_03.md). |
 | Historical Transformer | `TransformerMADDPG` | Recovered experimental joint actor. Static topology, uniform nonzero action dimensions. Joint ONNX includes learned tokenizer and actor; deterministic parity checked. Complete research checkpoint retained. |
 | Offline policies | `BCAgent`, `IQLAgent`, `IQLEntityAgent`, `CQLEntityAgent` | Recovered trainers and policies. Common job preparation, simulation, KPI and model export. Static, matching dataset layout required. |
 | Capacity coordinator | `CCLevel2Capacity` | Recovered distinct capacity-aware teacher/network. Does not replace current CCLevel2. Research checkpoint. |
@@ -45,4 +45,4 @@ All 39 names share finalization, KPI and bundle contracts. The original [v2 expo
 
 `bundle.require_deployable: true` rejects known specialised families during configuration validation and requires actual final-evaluation parity for the others. Ordinary exports retain research artifacts and explicit limitations. The [stage 4 delivery](runtime/export_delivery.md) records the acceptance evidence.
 
-The [BAU/RBC behavior contract](baseline_controllers.md) defines the principal baselines and the user-target BAU variant, retires `RuleBasedPolicy`, and preserves the historical `RBCSmartPolicy` teacher for compatibility. The public `Smart` reference is strictly local.
+The [BAU/RBC behavior contract](baseline_controllers.md) defines user-target BAU as the primary reference and full-charge BAU as a variant, retires `RuleBasedPolicy`, and preserves the historical `RBCSmartPolicy` teacher for compatibility. The public `Smart` reference is strictly local.

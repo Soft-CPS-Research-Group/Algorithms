@@ -1,5 +1,10 @@
 # Total-energy MILP reference
 
+For the current 30-member dataset, use the [November Core30 audit](../milp_core30_audit_2026_11_03.md).
+It includes corrected extraction/decomposition, solver performance, matched terminal
+conditions and 2024 replay comparisons. The 17-building certificates below remain
+historical evidence for their stated dataset and window.
+
 ## Purpose and comparator split
 
 The repository now distinguishes four optimization references instead of

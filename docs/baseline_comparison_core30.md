@@ -78,3 +78,7 @@ Evidência: [promoção do BAU e revisão do Basic](experiment_history/20261103_
 `runs/bau-user-target-20261103/`, `runs/bau-reference-comparison-20261103/`,
 `runs/baseline-reference-close-20261103/` e
 `runs/community-peak-core30-20261103/validation/remote-results/`.
+
+As referências offline com conhecimento do futuro são comparadas separadamente
+na [auditoria MILP](milp_core30_audit_2026_11_03.md), com os mesmos baselines e
+limites terminais explícitos. Não alteram a definição dos controladores desta tabela.
