@@ -90,6 +90,7 @@ def test_wrapper_passes_raw_and_encoded_observation_context_to_model():
 
     wrapper = Wrapper_CityLearn.__new__(Wrapper_CityLearn)
     wrapper.model = DummyModel()
+    wrapper.env = type("Env", (), {"unwrapped": type("Inner", (), {"topology_mode": "static"})()})()
     wrapper._entity_interface_mode = False
     wrapper.get_all_encoded_observations = lambda observations: [np.asarray([2.0])]  # type: ignore[method-assign]
     wrapper.next_time_step = lambda: None  # type: ignore[method-assign]

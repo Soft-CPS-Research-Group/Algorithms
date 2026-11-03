@@ -105,6 +105,47 @@ def test_repeated_job_id_retains_old_attempt(tmp_path):
     assert second["job_dir"].parent == first["job_dir"] / "attempts"
 
 
+def _worker_attempt(tmp_path):
+    outer = tmp_path / "jobs" / "remote"
+    base = outer / ".attempts" / "1"
+    prepared = base / "jobs" / "remote"
+    prepared.mkdir(parents=True)
+    (prepared / ".worker").mkdir()
+    (prepared / "results").mkdir()
+    (prepared / "config.resolved.yaml").write_text("schema_version: algorithms.config.v1\n")
+    (outer / "results").symlink_to(prepared / "results", target_is_directory=True)
+    return base, prepared
+
+
+def test_worker_prepared_config_is_adopted_without_hiding_results(tmp_path):
+    base, prepared = _worker_attempt(tmp_path)
+    paths = _prepare_paths(base, "remote")
+    assert paths["job_dir"] == prepared
+    paths["result_path"].write_text('{"status":"completed"}')
+    assert (tmp_path / "jobs/remote/results/result.json").read_text() == '{"status":"completed"}'
+    assert _prepare_paths(base, "remote")["job_dir"] != prepared
+
+
+@pytest.mark.parametrize(
+    "artifact", ["results/kpis.json", "bundle/policy.json", "progress/progress.json"]
+)
+def test_worker_handoff_never_overwrites_existing_artifacts(tmp_path, artifact):
+    base, prepared = _worker_attempt(tmp_path)
+    existing = prepared / artifact
+    existing.parent.mkdir(exist_ok=True)
+    existing.write_text("previous output")
+    assert _prepare_paths(base, "remote")["job_dir"] != prepared
+    assert existing.read_text() == "previous output"
+
+
+def test_existing_local_config_is_not_mistaken_for_worker_handoff(tmp_path):
+    prepared = tmp_path / "jobs/local"
+    prepared.mkdir(parents=True)
+    (prepared / "config.resolved.yaml").write_text("previous config")
+    assert _prepare_paths(tmp_path, "local")["job_dir"] != prepared
+    assert (prepared / "config.resolved.yaml").read_text() == "previous config"
+
+
 class Writer:
     def save_checkpoint(self, directory, step):
         target = Path(directory) / "weights.bin"

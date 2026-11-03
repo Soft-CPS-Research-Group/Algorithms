@@ -1,6 +1,6 @@
 # BAU e controladores por regras
 
-Contrato revisto em 29/10/2026, Algorithms 0.4, SoftCPS Simulator 1.9.2.
+Contrato atualizado em 03/11/2026, Algorithms 0.4, SoftCPS Simulator 2.0.0.
 Esta revisão define comportamento e verifica execução e exportação. Não é uma
 garantia universal de desempenho nem uma calibração empírica de hábitos humanos.
 
@@ -84,8 +84,10 @@ o primeiro instante dessa janela é a hipótese usada pelo BAU.
 Dentro de cada edifício, os controladores calculam EVs, novos ciclos adiáveis e
 bateria por esta ordem, mantendo a ordem original do vetor de ações à saída.
 O excedente consumido por um dispositivo deixa de estar disponível para o seguinte.
-As decisões respeitam a margem elétrica observada; urgência não autoriza pedir
-potência acima dessa margem. O simulador mantém a decisão final sobre a física.
+Nos RBCs, as decisões respeitam a margem elétrica observada; urgência não autoriza
+pedir potência acima dessa margem. Os BAU pedem a potência máxima simultaneamente
+e deixam a repartição entre carregadores ao Simulator. O simulador mantém a
+decisão final sobre a física em todos os casos.
 
 O Community mantém um orçamento comum entre os edifícios da mesma instância.
 Energia reservada num edifício não pode voltar a ser oferecida como excedente no
@@ -98,6 +100,9 @@ As grandezas históricas de energia por passo são convertidas em potência com 
 passo real. As observações em kW não são reconvertidas. Os carregadores são ligados
 às ações pela identidade, não pela ordem alfabética, e a potência observada em
 topologias dinâmicas prevalece sobre a configuração inicial.
+Também a potência, capacidade e ligação de fase de uma bateria instalada ou
+substituída durante o episódio são lidas das observações atuais. O schema inicial
+é apenas fallback quando esses sinais não estão disponíveis.
 
 A decisão só conhece os sinais publicados no dataset. Para descontar o novo
 ciclo adiável antes da bateria, deve estar disponível `start_power_kw`,
@@ -182,8 +187,8 @@ anual ficam no trabalho de avaliação posterior, sem reabrir agora a etapa 5.
 
 O Simulator 1.9.0 publicado omitia `citylearn.utils` e falhava a exportação do
 manifesto dos KPIs. A correção 1.9.1 inclui o módulo e testa o pacote instalado fora
-do código-fonte antes de publicar. Os ambientes suportados passam para a 1.9.2;
-a imagem Jetson antiga continua suspensa até à sua migração de plataforma.
+do código-fonte antes de publicar. A revisão inicial usou 1.9.2; a versão suportada atual é 2.0.0.
+A imagem Jetson antiga continua suspensa até à sua migração de plataforma.
 
 Validação local em checkout limpo: 1 882 testes unitários/integração passaram,
 23 foram ignorados com motivos explícitos, e 65 testes de jobs completos passaram.
@@ -211,3 +216,91 @@ python scripts/experiments/run_baseline_hierarchy_audit.py \
 Sem `--market`, respeita o mercado do schema original. Os templates antigos
 com taxas, V2G ou limites explícitos são experiências com parametrizações próprias;
 não representam automaticamente a campanha com os defaults auditados.
+
+
+## Atualização para Simulator 2.0.0 e Core30 v3.3
+
+Os dois BAU pedem carga máxima simultaneamente em todos os carregadores ligados,
+até 100%. A potência entregue é limitada proporcionalmente pelo Simulator; a
+ordem dos carregadores não reserva capacidade para o primeiro. O BAU não reduz
+o pedido pela estimativa de potência aceite perto de 100%. Essa estimativa é,
+porém, usada para calcular a procura a servir pela bateria da casa: o pedido
+nominal de um carro quase cheio não constitui consumo efetivo. A bateria doméstica
+mantém autoconsumo e os respetivos limites estratégicos. Testes com dois carros
+iguais confirmam 2 kW para cada um numa ligação limitada a 4 kW.
+
+Os datasets de referência são os de `softcpsrecsimulator-v2.0.0`, com
+`CURRENT_EVALUATION.json` v3.3. O tag upstream `v2.0.0` é outro produto.
+A comparação histórica acima continua a descrever o ensaio de outubro; não
+certifica a ordenação dos controladores no Core30 atual.
+
+O Basic limita agora a energia comprada em cada passo ao espaço até ao teto de
+SOC configurado. Verificar apenas o SOC antes da carga permitia ultrapassar 90%
+num único passo. Nos três RBCs, os limiares de preço continuam iguais aos anteriores;
+esta correção não reduz a capacidade económica do Basic para favorecer os outros.
+A recolha remota aceita os KPIs finais oficiais `results/kpis.json` quando o
+orquestrador ainda só lista CSV e o Simulator exporta Parquet. O JSON original é
+preservado e a tabela CSV derivada mantém os mesmos valores e células inválidas.
+
+### Referências MILP
+
+- `FixedServiceOracleReplayPolicy`: otimiza apenas a bateria, mantendo o serviço
+  EV/eletrodomésticos de um RBC explícito. É um limite condicional, não um
+  otimizador integral da casa.
+- `TotalHomeOracleReplayPolicy`: plano com conhecimento do futuro para uma casa,
+  incluindo bateria, EVs e ciclos. Minimiza importação individual com exportação
+  sem remuneração; não representa, por si, o custo liquidado em comunidade.
+- `TotalOracleReplayPolicy`: executa planos conjuntos produzidos pelo MILP de
+  energia total, com liquidação individual ou agregada. As variantes decompostas
+  individuais só são equivalentes quando não existe acoplamento comunitário.
+- O MILP de scorecard procura picos/rampas sob restrições de custo; não tem o
+  mesmo objetivo que minimizar o custo exclusivamente.
+
+A preparação do MILP integral preserva fases não ligadas com limite zero e
+resolve equipamentos sem fase explícita pela ligação predefinida da casa.
+Topologia dinâmica, perturbações de robustez e outages são rejeitados pelos
+adaptadores estáticos: não podem produzir um certificado omitindo esses efeitos.
+Equipamentos configurados com ações desativadas também são rejeitados, porque
+o otimizador não pode impor um plano a um dispositivo que não pode controlar.
+Os planos incluem explicitamente os equipamentos sem pedidos durante a janela,
+com ações zero; o replay continua a rejeitar ações em falta. A preparação do MILP
+de bateria aceita os exports CSV históricos e os Parquet atuais, incluindo partes
+ordenadas, e os identificadores `Member_001` do Core30.
+Normal e Safety podem ser preparados; a existência de solução depende dos limites
+físicos e do serviço. Limites de solver, hipóteses de fronteira, estado inicial,
+perdas, energia terminal e diferenças da física têm de acompanhar os resultados.
+Só a execução do plano no Simulator permite classificá-lo como referência
+fisicamente validada. Estes planos não são políticas online exportáveis para
+inferência sobre cenários novos.
+
+O consumo e a geração observados são medições do último intervalo concluído.
+Por isso, autoconsumo é a regra de decisão, não uma garantia de exportação nula
+em cada intervalo: mudanças de carga/sol, limites e perdas podem causar desvios.
+O BAU nativo tem acesso direto ao estado interno do Simulator; os controladores
+do Algorithms e os seus bundles usam o contrato de observações. Os dois não
+devem ser declarados numericamente equivalentes.
+
+A auditoria atual, incluindo as janelas Core30, correções MILP e limitações da
+comparação económica, está no [relatório de novembro](baselines_core30_audit_2026_11_02.md).
+A verificação final passou 1 949 testes gerais (23 ignorados por condições
+explicitadas) e 68 testes de execução completa/exportação.
+
+
+### Configurações atuais reproduzíveis
+
+Os cinco templates em [`configs/templates/baselines/core30/`](../configs/templates/baselines/core30/)
+usam os defaults auditados, Core30 Normal v3.3, 48 h de janeiro de 2023, seed 22,
+uma avaliação determinística, exportação final, MLflow desligado e verificação
+obrigatória do bundle. Colocar o dataset da release do Simulator em
+`datasets/rec_pt_2023_core_30_v2` ou ajustar `simulator.dataset_path` ao destino.
+
+```console
+python run_experiment.py --config configs/templates/baselines/core30/bau.yaml --validate
+python run_experiment.py --config configs/templates/baselines/core30/bau.yaml
+```
+
+Escolher `bau`, `bau_no_battery`, `basic`, `smart_local` ou `community`.
+Os templates históricos 15 s/15 min/2022 acima mantêm dados e parâmetros próprios;
+não reproduzem automaticamente esta referência Core30. Para repetir uma janela
+remota, usar a configuração guardada no respetivo job e a imagem registada no
+[histórico da auditoria](baselines_core30_audit_2026_11_02.md).

@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -31,8 +30,6 @@ from algorithms.oracles.perfect_foresight_milp import (
     SemanticSchedule,
 )
 
-
-_BUILDING_NAME = re.compile(r"^Building_(\d+)$")
 _NET_COLUMN = "Net Electricity Consumption-kWh"
 _BATTERY_COLUMN = "Battery (Dis)Charge-kWh"
 
@@ -204,12 +201,11 @@ def _finite_non_negative(name: str, value: Any) -> float:
 def _resolve_session_directory(path: Path, episode: int) -> Path:
     path = path.resolve()
     direct = path / f"exported_data_pricing_ep{episode}.csv"
-    if direct.is_file():
+    if _export_parts(direct):
         return path
     candidates = sorted(
-        item.parent
-        for item in path.glob(f"*/exported_data_pricing_ep{episode}.csv")
-        if item.is_file()
+        item for item in path.iterdir()
+        if item.is_dir() and _export_parts(item / direct.name)
     )
     if len(candidates) != 1:
         raise ValueError(
@@ -218,10 +214,32 @@ def _resolve_session_directory(path: Path, episode: int) -> Path:
     return candidates[0]
 
 
-def _read_series(path: Path, value_column: str) -> tuple[np.ndarray, np.ndarray]:
-    if not path.is_file():
+def _export_parts(path: Path) -> list[Path]:
+    """Resolve legacy CSV or the current ordered Parquet export parts."""
+    direct = [item for item in (path, path.with_suffix(".parquet")) if item.is_file()]
+    chunks = sorted(path.parent.glob(f"{path.stem}_part*.parquet"))
+    if len(direct) > 1 or (direct and chunks):
+        raise ValueError(f"Ambiguous export representations for {path.stem}.")
+    if chunks:
+        expected = [f"{path.stem}_part{i:05d}.parquet" for i in range(len(chunks))]
+        if [item.name for item in chunks] != expected:
+            raise ValueError(f"Missing or unordered Parquet parts for {path.stem}.")
+    return direct or chunks
+
+
+def _read_export_frame(path: Path) -> pd.DataFrame:
+    parts = _export_parts(path)
+    if not parts:
         raise FileNotFoundError(path)
-    frame = pd.read_csv(path)
+    frames = [pd.read_parquet(item) if item.suffix == ".parquet" else pd.read_csv(item)
+              for item in parts]
+    if any(list(frame.columns) != list(frames[0].columns) for frame in frames[1:]):
+        raise ValueError(f"Export part columns differ for {path.stem}.")
+    return pd.concat(frames, ignore_index=True)
+
+
+def _read_series(path: Path, value_column: str) -> tuple[np.ndarray, np.ndarray]:
+    frame = _read_export_frame(path)
     required = {"timestamp", value_column}
     missing = required - set(frame.columns)
     if missing:
@@ -243,12 +261,10 @@ def _assert_timestamps(reference: np.ndarray, candidate: np.ndarray, path: Path)
 
 
 def _building_export_stem(building_id: str) -> str:
-    match = _BUILDING_NAME.fullmatch(building_id)
-    if match is None:
-        raise ValueError(
-            f"Unsupported building id {building_id!r}; expected CityLearn Building_<n>."
-        )
-    return f"exported_data_building_{int(match.group(1))}"
+    name = str(building_id).lower()
+    if not name or name in {".", ".."} or any(char in name for char in ("/", "\\", "\0")):
+        raise ValueError(f"Building id cannot form an export filename: {building_id!r}.")
+    return f"exported_data_{name}"
 
 
 def _minimum_capacity_power_ratio(attributes: Mapping[str, Any]) -> float:
@@ -316,7 +332,7 @@ def build_fixed_service_battery_problem(
         raise ValueError("seconds_per_time_step must be > 0.")
 
     price_path = session_directory / f"exported_data_pricing_ep{episode}.csv"
-    price_frame = pd.read_csv(price_path)
+    price_frame = _read_export_frame(price_path)
     price_columns = [
         column
         for column in price_frame.columns

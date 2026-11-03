@@ -501,8 +501,10 @@ python scripts/validate_ti_marl_interfaces.py \
   --simulator-bindings /local/path/generated_interfaces/technology_bindings/simulator.yaml
 ```
 
-`softcpsrecsimulator==1.9.1` is the pinned runtime for TI-MARL. The
-end-to-end vertical slice runs against the installed package; using an adjacent
+The historical TI-MARL validation used `softcpsrecsimulator==1.9.1`. The
+repository now pins `softcpsrecsimulator==2.0.0`; specialized TI-MARL integration
+validation remains deferred and is not certified by the BAU/RBC audit. The
+end-to-end vertical slice uses the installed package; using an adjacent
 Simulator checkout is only a deliberate development override.
 
 Historical training, development checkpoint selection and confirmation followed

@@ -56,6 +56,44 @@ def ev(charger="charger_1", *, soc=0.2, required=0.8, hours=10.0, **extra):
     return {f"charger::Building_1/{charger}::{key}": value for key, value in values.items()}
 
 
+@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy])
+def test_bau_requests_simultaneous_maximum_charge_without_list_priority(cls):
+    values = {
+        "charging_building_headroom_kw": 5.0,
+        **ev("a", max_charging_power_kw=7.0),
+        **ev("b", max_charging_power_kw=7.0),
+    }
+    names = ("electric_vehicle_storage_a", "electric_vehicle_storage_b")
+    agent, obs = policy(cls, values, names)
+    assert agent.predict([obs])[0] == [1.0, 1.0]
+    reversed_agent, reversed_obs = policy(cls, values, names[::-1])
+    assert reversed_agent.predict([reversed_obs])[0] == [1.0, 1.0]
+
+
+@pytest.mark.parametrize("cls", [NormalPolicy, NormalNoBatteryPolicy])
+def test_bau_does_not_taper_request_at_lossless_soc_gap(cls):
+    values = ev(soc=0.995, available_charge_action_normalized=0.2, can_charge=1.0)
+    agent, obs = policy(cls, values, ("electric_vehicle_storage_charger_1",))
+    assert agent.predict([obs])[0] == [1.0]
+
+
+def test_bau_battery_uses_accepted_ev_power_without_tapering_charger_request():
+    values = {
+        "net_power_kw": 1.0,
+        "bess_power_kw": 0.0,
+        "ev_charging_power_kw": 0.0,
+        "electrical_storage_soc": 0.5,
+        **ev(soc=0.995, max_charging_power_kw=7.0, available_charge_power_kw=0.2),
+    }
+    agent, obs = policy(
+        NormalPolicy, values, ("electric_vehicle_storage_charger_1", "electrical_storage")
+    )
+    ev_action, battery_action = agent.predict([obs])[0]
+    assert ev_action == 1.0
+    # 1 kW passive load plus 0.2 kW accepted EV power, on a 10 kW BESS.
+    assert battery_action == pytest.approx(-0.12)
+
+
 def appliance(name="washer", **extra):
     values = dict(
         pending=1.0,
@@ -269,6 +307,42 @@ def test_basic_hourly_fallback_is_explicit_when_price_is_missing(hour, expected)
         RBCBasicPolicy, {"hour": hour, "electrical_storage_soc": 0.5, "import_power_kw": 5.0}
     )
     assert agent.predict([obs])[0] == pytest.approx([expected])
+
+
+@pytest.mark.parametrize("seconds", [15, 900, 3600])
+def test_basic_caps_purchased_charge_at_configured_soc_ceiling(seconds):
+    agent, obs = policy(
+        RBCBasicPolicy, {"hour": 2.0, "electrical_storage_soc": 0.89}, seconds=seconds
+    )
+    action = agent.predict([obs])[0][0]
+    requested_kwh = action * 10.0 * seconds / 3600.0
+    assert action > 0.0
+    assert requested_kwh <= (0.9 - 0.89) * 100.0 + 1e-9
+
+
+@pytest.mark.parametrize(
+    "cls", [NormalPolicy, RBCBasicPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy]
+)
+@pytest.mark.parametrize("has_initial_storage", [True, False])
+def test_commissioned_battery_uses_observed_capacity_and_power(cls, has_initial_storage):
+    values = {
+        "electrical_storage_soc": 0.89,
+        "pv_power_kw": 1.0,
+        "load_power_kw": 0.0,
+        "electricity_pricing": 0.1,
+        "electricity_pricing_predicted_1": 0.3,
+        "storage::Building_1/electrical_storage::nominal_power_kw": 2.56,
+        "storage::Building_1/electrical_storage::capacity_kwh": 5.12,
+        "storage::Building_1/electrical_storage::phase_connection_L1": 0.0,
+        "storage::Building_1/electrical_storage::phase_connection_L2": 1.0,
+        "storage::Building_1/electrical_storage::phase_connection_L3": 0.0,
+    }
+    agent, obs = policy(cls, values, seconds=900)
+    if not has_initial_storage:
+        agent._dataset_info["storage_info"] = {}
+    action = agent.predict([obs])[0][0]
+    assert 0.0 < action <= 0.08 + 1e-9
+    assert agent._get_storage_info(0) == StorageInfo(2.56, 5.12, "L2")
 
 
 @pytest.mark.parametrize("cls", POLICIES + (RBCSmartPolicy,))

@@ -187,3 +187,37 @@ def test_rejects_timestamp_mismatch(tmp_path: Path) -> None:
             simulation_data_directory=tmp_path,
             problem_id="bad",
         )
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_current_parquet_exports_preserve_fixed_service_problem(tmp_path, chunked):
+    # Reuse the known physical fixture, then replace only its export encoding.
+    test_builds_conditional_problem_and_reconstructs_source_cost(tmp_path)
+    schema_path = tmp_path / "schema.json"
+    schema = json.loads(schema_path.read_text())
+    schema["buildings"] = {name.replace("Building_", "Member_00"): data
+                           for name, data in schema["buildings"].items()}
+    schema_path.write_text(json.dumps(schema))
+    for path in tmp_path.glob("exported_data_building_*.csv"):
+        path.rename(path.with_name(path.name.replace("building_", "member_00")))
+    for path in tmp_path.glob("exported_data_*.csv"):
+        frame = pd.read_csv(path)
+        if chunked:
+            for i in range(len(frame)):
+                frame.iloc[i:i + 1].to_parquet(path.with_name(f"{path.stem}_part{i:05d}.parquet"))
+        else:
+            frame.to_parquet(path.with_suffix(".parquet"))
+        path.unlink()
+    built = build_fixed_service_battery_problem(
+        schema_path=tmp_path / "schema.json", simulation_data_directory=tmp_path,
+        problem_id="parquet-fixture")
+    assert built.diagnostics.source_policy_cost_reconstructed_eur == pytest.approx(5.0)
+    assert built.problem.base_net_load_kwh == pytest.approx(np.array([[1.5, 0.25], [1.0, 1.0]]))
+
+
+def test_missing_parquet_part_is_rejected(tmp_path):
+    from algorithms.oracles.citylearn_fixed_service import _read_export_frame
+    pd.DataFrame({"timestamp": ["2024-01-01"], "value": [1]}).to_parquet(
+        tmp_path / "exported_data_pricing_ep0_part00001.parquet")
+    with pytest.raises(ValueError, match="Missing or unordered"):
+        _read_export_frame(tmp_path / "exported_data_pricing_ep0.csv")

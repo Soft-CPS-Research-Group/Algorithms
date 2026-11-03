@@ -33,13 +33,13 @@ import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import coo_array
 
+from algorithms.oracles.citylearn_contract import complete_idle_series
 from algorithms.oracles.perfect_foresight_milp import (
     SemanticActionSeries,
     SemanticSchedule,
     SolveOptions,
     SolverInfo,
 )
-
 
 _TOLERANCE = 1.0e-8
 _PHASES = ("L1", "L2", "L3")
@@ -1335,7 +1335,7 @@ def _solve(
         problem_id=problem.problem_id,
         horizon=horizon,
         timestep_hours=problem.timestep_hours,
-        series=tuple(series),
+        series=complete_idle_series(series, problem.metadata.get("action_inventory", ()), horizon),
         metadata={
             "formulation": "total_energy_milp",
             "settlement": problem.settlement,

@@ -103,6 +103,26 @@ def test_invalid_config_creates_failure_and_retry_preserves_evidence(tmp_path):
     assert json.loads(result.read_text())["status"] == "completed"
 
 
+def test_worker_prepared_attempt_exposes_completed_result_at_public_job_path(tmp_path):
+    from algorithms.runtime.job import run_experiment
+
+    config = config_for("NormalPolicy", tmp_path)
+    config["outputs"] = {"model_artifacts": "none"}
+    outer = tmp_path / "jobs/worker"
+    base = outer / ".attempts/1"
+    prepared = base / "jobs/worker"
+    (prepared / ".worker").mkdir(parents=True)
+    (prepared / "results").mkdir()
+    (outer / "results").symlink_to(prepared / "results", target_is_directory=True)
+    source = prepared / "config.resolved.yaml"
+    source.write_text(json.dumps(config))
+    run_experiment(str(source), "worker", base)
+    result = json.loads((outer / "results/result.json").read_text())
+    assert result["status"] == "completed"
+    assert (outer / "results/kpis.json").is_file()
+    assert not (prepared / "attempts").exists()
+
+
 def test_sigterm_records_cancelled_and_closes_environment(tmp_path):
     config = config_for("NormalPolicy", tmp_path)
     path = tmp_path / "config.json"

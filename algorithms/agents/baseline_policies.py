@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from algorithms.agents.rbc_agent import ChargerInfo, RulePolicyBase
+from algorithms.agents.rbc_agent import ChargerInfo, RulePolicyBase, StorageInfo
 from algorithms.configuration.baseline_defaults import (
     ECONOMIC_SMART_DEFAULTS,
     EV_SERVICE_SOC_TOLERANCE,
@@ -226,6 +226,7 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         self._obs_match_cache: Dict[int, Dict[tuple, List[tuple[str, int]]]] = {}
         self._dispatch_budgets: Dict[int, Dict[str, float]] = {}
         self._shared_community_budget: Optional[Dict[str, float]] = None
+        self._observed_storage_info: Dict[int, StorageInfo] = {}
 
     def attach_environment(
         self,
@@ -246,6 +247,7 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         self._obs_match_cache = {}
         self._dispatch_budgets = {}
         self._shared_community_budget = None
+        self._observed_storage_info = {}
         for agent_idx, names in enumerate(action_names):
             obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
             unsupported = [
@@ -287,9 +289,11 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         actions: List[List[float]] = []
         self._dispatch_budgets = {}
         self._shared_community_budget = None
+        self._observed_storage_info = {}
 
         for agent_idx, raw_obs in enumerate(observations):
             obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
+            self._refresh_storage_info(agent_idx, np.asarray(raw_obs, dtype=float), obs_map)
             self._init_dispatch_budget(agent_idx, np.asarray(raw_obs, dtype=float), obs_map)
 
         if self.uses_community_dispatch and observations:
@@ -413,6 +417,35 @@ class _OperationalBaselinePolicy(RulePolicyBase):
 
         self.actions = actions
         return actions
+
+    def _get_storage_info(self, agent_idx: int) -> Optional[StorageInfo]:
+        return self._observed_storage_info.get(agent_idx) or super()._get_storage_info(agent_idx)
+
+    def _refresh_storage_info(self, agent_idx, obs, obs_map) -> None:
+        """Commissioned/replaced batteries must use their current electrical scale."""
+        initial = super()._get_storage_info(agent_idx)
+        power = self._get_first_storage_value(obs, obs_map, "nominal_power_kw")
+        capacity = self._get_first_storage_value(obs, obs_map, "capacity_kwh")
+        if not (
+            math.isfinite(power) and power >= 0.0 and math.isfinite(capacity) and capacity >= 0.0
+        ):
+            return
+        phase_values = [
+            self._get_first_storage_value(obs, obs_map, f"phase_connection_{p}")
+            for p in ("L1", "L2", "L3")
+        ]
+        phase = initial.phase_connection if initial is not None else None
+        if all(math.isfinite(v) and v >= 0.0 for v in phase_values):
+            observed_phases = tuple(p for p, v in zip(("L1", "L2", "L3"), phase_values) if v > 0.0)
+            if observed_phases and observed_phases != self._phase_connection_to_phases(phase):
+                phase = "_".join(observed_phases)
+        if initial is not None:
+            # Preserve static-schema precision when observations are float32.
+            if math.isclose(power, initial.nominal_power, rel_tol=1e-6, abs_tol=1e-6):
+                power = initial.nominal_power
+            if math.isclose(capacity, initial.capacity, rel_tol=1e-6, abs_tol=1e-6):
+                capacity = initial.capacity
+        self._observed_storage_info[agent_idx] = StorageInfo(power, capacity, phase)
 
     def _init_dispatch_budget(
         self, agent_idx: int, obs: np.ndarray, obs_map: Mapping[str, int]
@@ -1342,6 +1375,15 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             generic_names=[],
             default=float("nan"),
         )
+        available_charge_power = self._get_ev_value(
+            obs,
+            obs_map,
+            charger_id=charger_id,
+            building_name=building_name,
+            feature="available_charge_power_kw",
+            generic_names=[],
+            default=float("nan"),
+        )
         available_discharge_action = self._get_ev_value(
             obs,
             obs_map,
@@ -1392,6 +1434,7 @@ class _OperationalBaselinePolicy(RulePolicyBase):
             "can_charge": can_charge,
             "can_discharge": can_discharge,
             "available_charge_action": available_charge_action,
+            "available_charge_power": available_charge_power,
             "available_discharge_action": available_discharge_action,
             "min_required_action": min_required_action,
             "departure_feasibility": departure_feasibility,
@@ -1858,9 +1901,31 @@ class NormalPolicy(_OperationalBaselinePolicy):
         gap = max(target_soc - float(ctx["soc"]), 0.0)
         if not ctx["connected"] or gap <= 1.0e-6:
             return 0.0
-        ctx = dict(ctx)
-        ctx["required_soc"] = target_soc
-        return self._safe_ev_charge_rate(ctx, self.ev_normal_charge_rate, bounds)
+        can_charge = self._ctx_float(ctx, "can_charge")
+        if not math.isnan(can_charge) and can_charge <= 0.5:
+            return 0.0
+        # BAU requests maximum charging until full. The observation's available
+        # action also includes a lossless SOC-gap estimate; using it here would
+        # taper the command prematurely. Equipment physics clips accepted energy.
+        return self._clip_non_v2g_charge(self.ev_normal_charge_rate, bounds)
+
+    def _apply_ev_dynamic_headroom_limit(
+        self, value, obs, obs_map, charger_info, bounds, agent_idx=None, residual_headroom=None
+    ) -> float:
+        # Submit simultaneous requests to the Simulator's proportional service
+        # allocator. Sequential policy-side reservations would privilege the
+        # first charger and prevent that allocator from sharing fairly.
+        return value
+
+    def _record_ev_charge_dispatch(self, agent_idx, ctx, rate) -> None:
+        # Keep the EV command at maximum, but reserve only the power it can
+        # accept. Near full SOC, nominal charger power would make the BESS
+        # discharge against fictitious local demand. The observation is an
+        # estimate; final accepted energy remains the Simulator's decision.
+        available_kw = self._ctx_float(ctx, "available_charge_power")
+        if math.isfinite(available_kw):
+            rate = min(rate, max(0.0, available_kw) / float(ctx["max_power"]))
+        super()._record_ev_charge_dispatch(agent_idx, ctx, rate)
 
     def _compute_deferrable_action(
         self,
@@ -2019,7 +2084,15 @@ class RBCBasicPolicy(_OperationalBaselinePolicy):
         price_ctx = self._get_price_context(obs, obs_map)
         low, high = bounds
         if bool(price_ctx["cheap"]) and soc < min(max_soc, self.storage_price_charge_soc_ceiling):
-            return self._clip_storage_action(self.price_charge_rate, obs, obs_map, bounds)
+            rate = self._storage_power_limited_charge_rate(
+                agent_idx,
+                float("inf"),
+                self.price_charge_rate,
+                obs=obs,
+                obs_map=obs_map,
+                target_soc=min(max_soc, self.storage_price_charge_soc_ceiling),
+            )
+            return self._clip_storage_action(rate, obs, obs_map, bounds)
         if bool(price_ctx["expensive"]) and soc > max(
             min_soc, self.storage_price_discharge_soc_floor
         ):
