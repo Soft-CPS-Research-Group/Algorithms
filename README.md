@@ -11,6 +11,7 @@ origins. The [stage 2 delivery](docs/runtime/delivery.md) records the common-cor
 reorganization and its verification. The [stage 4 delivery](docs/runtime/export_delivery.md) covers final KPIs, portable manifests and policy parity, with explicit support limits.
 
 See the [BAU/RBC behavior contract](docs/baseline_controllers.md) for the audited baselines, migration and Simulator 2.0.0.
+The [Core30 MILP audit](docs/milp_core30_audit_2026_11_03.md) covers complete individual/community optimization, executable schedules, matched terminal energy and comparison with those baselines.
 The primary **BAU** is `NormalTargetPolicy`: immediate EV charging capped by the
 user-requested SOC, immediate appliance starts and stationary-battery self-consumption.
 `NormalPolicy` remains the **BAU 100%** variant. Use matched jobs for percentage
