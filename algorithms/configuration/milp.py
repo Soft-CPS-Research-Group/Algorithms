@@ -14,7 +14,7 @@ class MILPHyperparameters(StrictModel):
     solver_threads: int = Field(default=1, ge=1)
     mip_relative_gap: float = Field(default=0.001, ge=0, le=0.01, allow_inf_nan=False)
     forecast: Literal["perfect_24h"] = "perfect_24h"
-    physics: Literal["conservative", "simulator_linear"] = "conservative"
+    physics: Literal["conservative", "simulator_linear"] = "simulator_linear"
 
 
 class MILPStageConfig(StrictModel):
