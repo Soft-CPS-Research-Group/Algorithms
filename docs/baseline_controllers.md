@@ -304,3 +304,20 @@ Os templates históricos 15 s/15 min/2022 acima mantêm dados e parâmetros pró
 não reproduzem automaticamente esta referência Core30. Para repetir uma janela
 remota, usar a configuração guardada no respetivo job e a imagem registada no
 [histórico da auditoria](baselines_core30_audit_2026_11_02.md).
+
+### Calibração do pico comunitário — 03/11/2026
+
+A [campanha de calibração e validação](community_peak_calibration_2026_11_03.md)
+executou 28 jobs em quatro semanas de 2023 e 16 jobs nas mesmas épocas de 2024.
+O protocolo selecionou 15 kW em 2023. Em 2024, esse valor reduziu o custo de
+energia em 2,12% face ao Community original, mas deixou o pico máximo igual
+e reduziu a média dos picos diários em apenas 0,055%, com mais 57,53% de energia
+movimentada nas baterias e menor reserva final. Todos os critérios de serviço,
+limites físicos e exportação passaram.
+
+Mantém-se o template de referência e o limiar automático de 210 kW para os
+30 membros: não se promove 15 kW como melhoria de pico validada. O candidato
+fica reproduzível nos payloads da campanha. O Basic não foi enfraquecido.
+Uma melhoria adicional de pico deve testar a coordenação das cargas flexíveis,
+incluindo a concentração de carregamento em horas baratas. Os resultados são
+de janelas sazonais independentes, não de uma avaliação anual contínua.

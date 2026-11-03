@@ -293,3 +293,9 @@ um protocolo: serviço equivalente quando se pretende isolar apenas o preço,
 condições terminais dos MILPs, limiar de pico comunitário e avaliação anual ou
 janelas mais abrangentes. Calibração em 2023 e avaliação congelada em 2024.
 Isto é trabalho de avaliação posterior; não reabre a etapa 5 nem o TIMARL.
+
+Atualização de 03/11/2026: a [calibração do limiar comunitário](community_peak_calibration_2026_11_03.md)
+foi concluída em quatro semanas de 2023 e validada em quatro de 2024, com
+44 jobs aprovados nos critérios de serviço e funcionamento. O candidato de
+15 kW ficou mais barato, mas não trouxe uma melhoria relevante de pico face
+ao Community original em 2024. A referência e o Basic permanecem inalterados.
