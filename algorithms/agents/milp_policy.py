@@ -50,6 +50,11 @@ class MILPPolicy(BaseAgent):
             time_limit_seconds=self.settings.time_limit_seconds,
             mip_relative_gap=self.settings.mip_relative_gap,
             threads=self.settings.solver_threads,
+            # A per-solve service allowance can accumulate after each measured
+            # reset when a terminal EV target is physically unreachable.
+            lexicographic_shortfall_tolerance_kwh=(
+                0.0 if self.settings.physics == "simulator_linear" else 1e-3
+            ),
         )
         initial = self.forecast.problem(self.start, min(self.end, self.start + self.horizon_steps))
         idle = SemanticSchedule(
@@ -201,6 +206,7 @@ class MILPPolicy(BaseAgent):
             "observed_ev_energy_kwh": {f"{b}/{a}": v[0] for (b, a), v in ev.items()},
             "running_cycle_ids": sorted(running),
             "service_phase_status": result.service_phase_status,
+            "service_shortfall_tolerance_kwh": self.options.lexicographic_shortfall_tolerance_kwh,
             "service_phase_optimal": result.service_phase_optimal,
         }
         if result.schedule is None:

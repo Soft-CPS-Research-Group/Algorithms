@@ -29,6 +29,8 @@ O perfil `simulator_linear` exige eficiências constantes, degradação desativa
 
 O MPC reserva uma margem numérica de 0,1 Wh nos planos de vários passos e admite 0,01 Wh de tolerância terminal no último passo. Os alvos de serviço incluem uma margem de 0,1 Wh quando há capacidade disponível. Estas margens tratam a representação float32; não acrescentam uma potência fictícia nem arredondam o estado medido para cima.
 
+A fase de custo do perfil alinhado conserva o mínimo de défice EV sem folga adicional. O ensaio inicial ainda herdava uma folga de 1 Wh por resolução: a reotimização podia gastar essa folga repetidamente, acumulando cerca de 8 Wh no EV terminal de janeiro. Esse ensaio fica como diagnóstico; a comparação final usa a folga zero tanto no MPC como no semanal.
+
 ## Significado do limite e da validação
 
 Com eficiência constante, a conservação de energia é linear. Uma curva côncava de potência/SOC é representada exatamente pela interseção dos seus limites afins. Variáveis inteiras representam os sentidos de carga/descarga, os mínimos dos carregadores, a saturação e os instantes de arranque dos ciclos. A primeira fase minimiza défices de serviço; a segunda fixa esse serviço e minimiza o custo.

@@ -199,6 +199,10 @@ def test_milp_resolves_each_step_and_exports_research_evidence(tmp_path, physics
     assert [r["step"] for r in rows] == list(range(8))
     assert all(r["source_end_exclusive"] - r["source_start"] <= 96 for r in rows)
     assert all(not r["failed"] and r["solver"]["has_solution"] for r in rows)
+    assert all(
+        r["service_shortfall_tolerance_kwh"] == (0 if physics == "simulator_linear" else 1e-3)
+        for r in rows
+    )
     assert len({r["problem_sha256"] for r in rows}) >= 8
     assert (job / "bundle/artifact_manifest.json").exists()
     verification = json.loads((job / "bundle/verification.json").read_text())
