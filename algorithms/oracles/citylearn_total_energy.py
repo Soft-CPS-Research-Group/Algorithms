@@ -22,7 +22,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -463,6 +463,7 @@ def build_citylearn_total_energy_problem(
     building_ids: Sequence[str] | None = None,
     electrical_service_reserve_kw: float = 0.1,
     conservative_capacity_ratio: float = 0.99,
+    read_data: Callable[[Path, Any], pd.DataFrame] | None = None,
 ) -> CityLearnTotalEnergyBuild:
     """Extract a total-energy problem for source transitions ``[start, end)``.
 
@@ -477,6 +478,7 @@ def build_citylearn_total_energy_problem(
     schema = json.loads(raw_schema)
     validate_static_oracle_schema(schema)
     dataset_root = _dataset_root(schema_path, schema)
+    read_frame = read_data or _read_parquet
     start, end = int(start_time_step), int(end_time_step)
     if start < 0 or end <= start:
         raise ValueError("Source window must satisfy 0 <= start_time_step < end_time_step.")
@@ -529,8 +531,8 @@ def build_citylearn_total_energy_problem(
 
     for building_id in selected:
         building = included[building_id]
-        energy = _read_parquet(dataset_root, building.get("energy_simulation"))
-        pricing = _read_parquet(dataset_root, building.get("pricing"))
+        energy = read_frame(dataset_root, building.get("energy_simulation"))
+        pricing = read_frame(dataset_root, building.get("pricing"))
         if end > len(energy) or end > len(pricing):
             raise ValueError(
                 f"Requested source window exceeds data for {building_id}."
@@ -578,7 +580,7 @@ def build_citylearn_total_energy_problem(
             charger_count += 1
             if bool(charger.get("autosize", False)):
                 raise ValueError("Autosized EV chargers are not supported.")
-            frame = _read_parquet(dataset_root, charger.get("charger_simulation"))
+            frame = read_frame(dataset_root, charger.get("charger_simulation"))
             if end > len(frame):
                 raise ValueError(
                     f"Requested source window exceeds charger {charger_id!r}."
@@ -752,10 +754,10 @@ def build_citylearn_total_energy_problem(
         for appliance_id, appliance in (
             building.get("deferrable_appliances") or {}
         ).items():
-            profiles = _read_parquet(
+            profiles = read_frame(
                 dataset_root, appliance.get("cycle_profiles_file")
             )
-            schedule = _read_parquet(
+            schedule = read_frame(
                 dataset_root, appliance.get("flexibility_schedule_file")
             )
             required_profile_columns = {"profile_id", "load_profile"}

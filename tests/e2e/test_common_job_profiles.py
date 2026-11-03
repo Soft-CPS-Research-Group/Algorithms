@@ -152,3 +152,43 @@ def test_evaluation_uses_deterministic_episode_without_online_updates(tmp_path, 
     assert len(result["episode_execution"]) == 1
     assert result["episode_execution"][0]["deterministic"] is True
     assert result["episode_execution"][0]["training"] is False
+
+
+def test_milp_resolves_each_step_and_exports_research_evidence(tmp_path):
+    config = yaml.safe_load(Path("configs/templates/baselines/core30/milp.yaml").read_text())
+    config["simulator"].update(
+        dataset_path=str(
+            Path(
+                "datasets/citylearn_three_phase_electrical_service_demo_15min_parquet/schema.json"
+            ).resolve()
+        ),
+        building_ids=["Building_1"],
+        simulation_start_time_step=0,
+        simulation_end_time_step=8,
+        episode_time_steps=9,
+    )
+    config["evaluation"]["episodes"] = 1
+    # This short fixture starts at the physical 10% minimum; a 50% reserve
+    # cannot be reached with its conservative battery power in two hours.
+    config["pipeline"][0]["hyperparameters"] = {"terminal_storage_soc": 0.1}
+    config["tracking"].update(runtime_profiling_enabled=True, runtime_profiling_interval=1)
+    run_experiment(config, "mpc", tmp_path)
+    job = tmp_path / "jobs/mpc"
+    result = json.loads((job / "results/result.json").read_text())
+    assert result["status"] == "completed"
+    rows = [
+        json.loads(line)
+        for line in next((job / "offline_training").rglob("milp_decisions.jsonl"))
+        .read_text()
+        .splitlines()
+    ]
+    assert len(rows) == 8
+    assert [r["step"] for r in rows] == list(range(8))
+    assert all(r["source_end_exclusive"] - r["source_start"] <= 96 for r in rows)
+    assert all(not r["failed"] and r["solver"]["has_solution"] for r in rows)
+    assert len({r["problem_sha256"] for r in rows}) >= 8
+    assert (job / "bundle/artifact_manifest.json").exists()
+    verification = json.loads((job / "bundle/verification.json").read_text())
+    assert verification["status"] == "unverified"
+    metrics = [json.loads(line) for line in (job / "logs/metrics.jsonl").read_text().splitlines()]
+    assert sum("Runtime/predict_seconds" in row.get("metrics", {}) for row in metrics) == 8

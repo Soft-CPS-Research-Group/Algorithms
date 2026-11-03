@@ -55,23 +55,27 @@ class TotalOracleReplayPolicy(BaseAgent):
     _use_raw_observations: bool = True
     POWER_METADATA_KEY = "total_oracle_replay.action_power_limits_kw"
 
-    def __init__(self, config: Dict[str, Any]) -> None:
+    def __init__(self, config: Dict[str, Any], *, schedule: SemanticSchedule | None = None) -> None:
         super().__init__()
         hyperparameters = dict(
             (config.get("algorithm", {}).get("hyperparameters") or {})
         )
         raw_path = str(hyperparameters.get("schedule_path") or "").strip()
-        if not raw_path:
+        if not raw_path and schedule is None:
             raise ValueError("TotalOracleReplayPolicy requires schedule_path.")
 
-        self.schedule_path = Path(raw_path).resolve()
+        self.schedule_path = Path(raw_path).resolve() if raw_path else None
         self.allow_attached_action_subset = bool(
             hyperparameters.get("allow_attached_action_subset", False)
         )
         self.repeat_schedule_for_training = bool(
             hyperparameters.get("repeat_schedule_for_training", False)
         )
-        payload = self.schedule_path.read_bytes()
+        if schedule is None:
+            assert self.schedule_path is not None
+            payload = self.schedule_path.read_bytes()
+        else:
+            payload = schedule.to_json().encode()
         self.schedule_sha256 = hashlib.sha256(payload).hexdigest()
         self.schedule = SemanticSchedule.from_json(payload.decode("utf-8"))
         self._series: Dict[tuple[str, str], SemanticActionSeries] = {
@@ -104,6 +108,13 @@ class TotalOracleReplayPolicy(BaseAgent):
         ):
             return "storage"
         return None
+
+    def bind_schedule(self, schedule: SemanticSchedule, **environment: Any) -> None:
+        """Validate a newly solved plan against the same action/unit contract."""
+        self.schedule = schedule
+        self._series = {(item.building_id, item.action_name): item for item in schedule.series}
+        self._schedule_power_limits = schedule.metadata.get("action_power_limits_kw") or {}
+        self.attach_environment(**environment)
 
     @staticmethod
     def _series_requires_direction(series: SemanticActionSeries, direction: str) -> bool:
