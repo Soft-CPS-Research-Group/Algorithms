@@ -81,3 +81,17 @@ reference behaviour, not a claim that every household behaves identically.
 
 Raw evidence: `runs/community-peak-core30-20261103/`. Results and final decision
 will be appended after both phases finish.
+
+## Frozen choice before 2024 validation
+
+Selected **15 kW** at `2026-11-03T03:13:12.102161+00:00`, using only the 28 completed 2023 jobs. All passed the declared gates. The 15 and 30 kW candidates tied on weekly peaks; 15 kW won the daily-peak comparison under the predeclared tolerance. No 2024 job had been prepared or submitted.
+
+| Threshold (kW) | 2023 cost, 28 sampled days (€) | Mean weekly peak ratio to 210 | Mean daily peak ratio to 210 | Eligible |
+|---:|---:|---:|---:|---|
+| 15 | 675.041405 | 0.983076918 | 0.991560679 | True |
+| 30 | 686.489140 | 0.983076914 | 0.994208117 | True |
+| 45 | 688.984310 | 1.000000000 | 1.000000000 | True |
+| 60 | 688.984310 | 1.000000000 | 1.000000000 | True |
+| 210 | 688.984310 | 1.000000000 | 1.000000000 | True |
+
+2023 evidence SHA-256: `e2a8931a3f6453409c3636af83230f91c2ceede6035bd54071d2428213f01c41`. Selection file SHA-256: `e51605c5550c71f28ae8a4687e6fc3e22d73bea2829f2543395c582ecab3d40f`. Raw selection: `runs/community-peak-core30-20261103/selection.json`.
