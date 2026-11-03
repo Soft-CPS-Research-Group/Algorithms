@@ -18,6 +18,9 @@ configuration experiment, with no policy changes and no weakening of Basic.
   673 states; reset at the start of each window. This is seasonal partial-window
   evidence, not annual performance. January/July 2024 were inspected in the
   preceding audit; the new parameter selection nevertheless uses only 2023.
+  Windows and daily-maximum groups are anchored at midnight **UTC**, using fixed
+  dataset indices. During Portuguese summer time this is 01:00 local, rather
+  than local midnight. The submitted indices are the authoritative boundaries.
 - Seed 22 (deterministic evaluation stream 6763), zero training, one evaluation,
   same initial state protocol, reward, interface, final export and bundle checks.
 - MLflow disabled. Native BAU counterfactual export disabled for every job in
@@ -65,6 +68,9 @@ the observed community import exceeds it **and the price is classified as
 expensive**. It does not impose a hard import cap, shift all EV starts, or create
 storage capacity. Core30 Normal has only three stationary batteries. A lower
 threshold may therefore leave the largest (e.g. cheap-hour) peaks unchanged.
+The report also inspects battery throughput and last exported SOC. These RBC
+episodes do not impose an equal terminal SOC; energy costs exclude a monetary
+battery-wear charge. These diagnostics do not change the frozen selection rule.
 
 Basic remains an honest price/urgency baseline. A simpler policy would be a
 separate behavioural specification and comparison, not a retrospective change
