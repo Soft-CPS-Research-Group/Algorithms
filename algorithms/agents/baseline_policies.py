@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from algorithms.agents.rbc_agent import ChargerInfo, RulePolicyBase
+from algorithms.agents.rbc_agent import ChargerInfo, RulePolicyBase, StorageInfo
 from algorithms.configuration.baseline_defaults import (
     ECONOMIC_SMART_DEFAULTS,
     EV_SERVICE_SOC_TOLERANCE,
@@ -226,6 +226,7 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         self._obs_match_cache: Dict[int, Dict[tuple, List[tuple[str, int]]]] = {}
         self._dispatch_budgets: Dict[int, Dict[str, float]] = {}
         self._shared_community_budget: Optional[Dict[str, float]] = None
+        self._observed_storage_info: Dict[int, StorageInfo] = {}
 
     def attach_environment(
         self,
@@ -246,6 +247,7 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         self._obs_match_cache = {}
         self._dispatch_budgets = {}
         self._shared_community_budget = None
+        self._observed_storage_info = {}
         for agent_idx, names in enumerate(action_names):
             obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
             unsupported = [
@@ -287,9 +289,11 @@ class _OperationalBaselinePolicy(RulePolicyBase):
         actions: List[List[float]] = []
         self._dispatch_budgets = {}
         self._shared_community_budget = None
+        self._observed_storage_info = {}
 
         for agent_idx, raw_obs in enumerate(observations):
             obs_map = self._obs_index[agent_idx] if agent_idx < len(self._obs_index) else {}
+            self._refresh_storage_info(agent_idx, np.asarray(raw_obs, dtype=float), obs_map)
             self._init_dispatch_budget(agent_idx, np.asarray(raw_obs, dtype=float), obs_map)
 
         if self.uses_community_dispatch and observations:
@@ -413,6 +417,35 @@ class _OperationalBaselinePolicy(RulePolicyBase):
 
         self.actions = actions
         return actions
+
+    def _get_storage_info(self, agent_idx: int) -> Optional[StorageInfo]:
+        return self._observed_storage_info.get(agent_idx) or super()._get_storage_info(agent_idx)
+
+    def _refresh_storage_info(self, agent_idx, obs, obs_map) -> None:
+        """Commissioned/replaced batteries must use their current electrical scale."""
+        initial = super()._get_storage_info(agent_idx)
+        power = self._get_first_storage_value(obs, obs_map, "nominal_power_kw")
+        capacity = self._get_first_storage_value(obs, obs_map, "capacity_kwh")
+        if not (
+            math.isfinite(power) and power >= 0.0 and math.isfinite(capacity) and capacity >= 0.0
+        ):
+            return
+        phase_values = [
+            self._get_first_storage_value(obs, obs_map, f"phase_connection_{p}")
+            for p in ("L1", "L2", "L3")
+        ]
+        phase = initial.phase_connection if initial is not None else None
+        if all(math.isfinite(v) and v >= 0.0 for v in phase_values):
+            observed_phases = tuple(p for p, v in zip(("L1", "L2", "L3"), phase_values) if v > 0.0)
+            if observed_phases and observed_phases != self._phase_connection_to_phases(phase):
+                phase = "_".join(observed_phases)
+        if initial is not None:
+            # Preserve static-schema precision when observations are float32.
+            if math.isclose(power, initial.nominal_power, rel_tol=1e-6, abs_tol=1e-6):
+                power = initial.nominal_power
+            if math.isclose(capacity, initial.capacity, rel_tol=1e-6, abs_tol=1e-6):
+                capacity = initial.capacity
+        self._observed_storage_info[agent_idx] = StorageInfo(power, capacity, phase)
 
     def _init_dispatch_budget(
         self, agent_idx: int, obs: np.ndarray, obs_map: Mapping[str, int]

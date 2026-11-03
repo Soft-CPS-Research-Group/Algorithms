@@ -100,6 +100,9 @@ As grandezas históricas de energia por passo são convertidas em potência com 
 passo real. As observações em kW não são reconvertidas. Os carregadores são ligados
 às ações pela identidade, não pela ordem alfabética, e a potência observada em
 topologias dinâmicas prevalece sobre a configuração inicial.
+Também a potência, capacidade e ligação de fase de uma bateria instalada ou
+substituída durante o episódio são lidas das observações atuais. O schema inicial
+é apenas fallback quando esses sinais não estão disponíveis.
 
 A decisão só conhece os sinais publicados no dataset. Para descontar o novo
 ciclo adiável antes da bateria, deve estar disponível `start_power_kw`,

@@ -320,6 +320,31 @@ def test_basic_caps_purchased_charge_at_configured_soc_ceiling(seconds):
     assert requested_kwh <= (0.9 - 0.89) * 100.0 + 1e-9
 
 
+@pytest.mark.parametrize(
+    "cls", [NormalPolicy, RBCBasicPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy]
+)
+@pytest.mark.parametrize("has_initial_storage", [True, False])
+def test_commissioned_battery_uses_observed_capacity_and_power(cls, has_initial_storage):
+    values = {
+        "electrical_storage_soc": 0.89,
+        "pv_power_kw": 1.0,
+        "load_power_kw": 0.0,
+        "electricity_pricing": 0.1,
+        "electricity_pricing_predicted_1": 0.3,
+        "storage::Building_1/electrical_storage::nominal_power_kw": 2.56,
+        "storage::Building_1/electrical_storage::capacity_kwh": 5.12,
+        "storage::Building_1/electrical_storage::phase_connection_L1": 0.0,
+        "storage::Building_1/electrical_storage::phase_connection_L2": 1.0,
+        "storage::Building_1/electrical_storage::phase_connection_L3": 0.0,
+    }
+    agent, obs = policy(cls, values, seconds=900)
+    if not has_initial_storage:
+        agent._dataset_info["storage_info"] = {}
+    action = agent.predict([obs])[0][0]
+    assert 0.0 < action <= 0.08 + 1e-9
+    assert agent._get_storage_info(0) == StorageInfo(2.56, 5.12, "L2")
+
+
 @pytest.mark.parametrize("cls", POLICIES + (RBCSmartPolicy,))
 def test_direct_and_validated_defaults_produce_same_actions(cls):
     values = {
