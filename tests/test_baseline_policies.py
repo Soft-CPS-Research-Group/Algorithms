@@ -641,7 +641,7 @@ def test_rbc_basic_policy_uses_price_for_storage_ev_and_deferrable():
     _attach(agent, _base_observation_names(), _action_names())
     obs = np.array(
         [
-            0.10,
+            0.05,
             0.40,
             0.50,
             0.60,

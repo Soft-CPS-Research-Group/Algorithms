@@ -39,6 +39,8 @@ training:
 pipeline:
 - algorithm: RBCCommunityPolicy
   count: 1
+  hyperparameters:
+    community_import_threshold_kw: 15.0
 evaluation:
   episodes: 1
 job:

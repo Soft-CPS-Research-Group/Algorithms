@@ -83,7 +83,7 @@ def obs(*, price=0.1, pv=0.0, load=2.0, soc=0.5, ev=True, shared_pv=0.0, shared_
 
 @pytest.mark.parametrize("cls", [RBCSmartLocalPolicy, RBCCommunityPolicy])
 def test_smart_preserves_basic_cheap_ev_opportunity_before_urgency(cls):
-    x = obs()
+    x = obs(price=0.05)
     assert make(cls).predict([x])[0][1] == pytest.approx(make(RBCBasicPolicy).predict([x])[0][1])
     assert make(cls).predict([x])[0][1] > 0.5
 
@@ -124,9 +124,10 @@ def test_actual_market_enables_surplus_use_and_does_not_count_it_twice():
     assert shared[0] * 5.0 + shared[1] * 7.4 <= 8.0 + 1e-9
 
 
-def test_community_aggregate_peak_default_scales_with_member_count():
-    policy = make(RBCCommunityPolicy, market=True, members=17)
-    assert policy.community_import_threshold_kw == 119.0
+@pytest.mark.parametrize("members", [1, 17, 30])
+def test_community_aggregate_trigger_is_fixed_independent_of_member_count(members):
+    policy = make(RBCCommunityPolicy, market=True, members=members)
+    assert policy.community_import_threshold_kw == 15.0
     explicit = make(
         RBCCommunityPolicy, market=True, members=17, hyper={"community_import_threshold_kw": 80.0}
     )
@@ -134,7 +135,7 @@ def test_community_aggregate_peak_default_scales_with_member_count():
 
 
 def test_community_supports_expensive_peak_only_with_settlement_enabled():
-    x = obs(price=0.6, load=0.0, ev=False, shared_import=10.0)
+    x = obs(price=0.6, load=0.0, ev=False, shared_import=18.0)
     assert make(RBCCommunityPolicy, market=False).predict([x])[0][0] == 0.0
     assert make(RBCCommunityPolicy, market=True).predict([x])[0][0] == pytest.approx(-0.6)
     assert make(RBCSmartLocalPolicy, market=True).predict([x])[0][0] == 0.0

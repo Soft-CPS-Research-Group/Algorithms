@@ -288,7 +288,7 @@ def test_two_nonurgent_evs_cannot_reuse_the_same_pv(cls):
     assert result[1] == pytest.approx(2.6 / 7.4)
 
 
-@pytest.mark.parametrize("cls", [RBCBasicPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy])
+@pytest.mark.parametrize("cls", [RBCSmartLocalPolicy, RBCCommunityPolicy])
 def test_constant_tariff_has_no_cheap_or_expensive_incentive(cls):
     values = {
         "electrical_storage_soc": 0.5,
@@ -302,9 +302,11 @@ def test_constant_tariff_has_no_cheap_or_expensive_incentive(cls):
 
 
 @pytest.mark.parametrize("hour,expected", [(2.0, 0.6), (12.0, 0.0), (18.0, -0.45), (23.0, 0.6)])
-def test_basic_hourly_fallback_is_explicit_when_price_is_missing(hour, expected):
+def test_historical_basic_hourly_fallback_is_explicit_when_price_is_missing(hour, expected):
     agent, obs = policy(
-        RBCBasicPolicy, {"hour": hour, "electrical_storage_soc": 0.5, "import_power_kw": 5.0}
+        RBCBasicPolicy,
+        {"hour": hour, "electrical_storage_soc": 0.5, "import_power_kw": 5.0},
+        hyper={"basic_price_policy": "forecast_relative"},
     )
     assert agent.predict([obs])[0] == pytest.approx([expected])
 
@@ -312,7 +314,9 @@ def test_basic_hourly_fallback_is_explicit_when_price_is_missing(hour, expected)
 @pytest.mark.parametrize("seconds", [15, 900, 3600])
 def test_basic_caps_purchased_charge_at_configured_soc_ceiling(seconds):
     agent, obs = policy(
-        RBCBasicPolicy, {"hour": 2.0, "electrical_storage_soc": 0.89}, seconds=seconds
+        RBCBasicPolicy,
+        {"electricity_pricing": 0.05, "electrical_storage_soc": 0.89},
+        seconds=seconds,
     )
     action = agent.predict([obs])[0][0]
     requested_kwh = action * 10.0 * seconds / 3600.0
@@ -329,7 +333,7 @@ def test_commissioned_battery_uses_observed_capacity_and_power(cls, has_initial_
         "electrical_storage_soc": 0.89,
         "pv_power_kw": 1.0,
         "load_power_kw": 0.0,
-        "electricity_pricing": 0.1,
+        "electricity_pricing": 0.05,
         "electricity_pricing_predicted_1": 0.3,
         "storage::Building_1/electrical_storage::nominal_power_kw": 2.56,
         "storage::Building_1/electrical_storage::capacity_kwh": 5.12,

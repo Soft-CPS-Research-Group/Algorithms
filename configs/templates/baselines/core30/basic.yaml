@@ -39,6 +39,10 @@ training:
 pipeline:
 - algorithm: RBCBasicPolicy
   count: 1
+  hyperparameters:
+    basic_price_policy: fixed_thresholds
+    basic_cheap_price_eur_kwh: 0.0765
+    basic_expensive_price_eur_kwh: 0.1078
 evaluation:
   episodes: 1
 job:

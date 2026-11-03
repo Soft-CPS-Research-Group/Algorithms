@@ -25,6 +25,7 @@ from utils.bundle_validator import validate_bundle_contract
         "RandomPolicy",
         "RBCBasicPolicy",
         "RBCCommunityPolicy",
+        "Smart",
         "RBCSmartPolicy",
         "RBCSmartLocalPolicy",
     ],

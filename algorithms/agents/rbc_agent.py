@@ -214,6 +214,9 @@ class RulePolicyBase(BaseAgent):
             "step_hours": self.step_hours,
         }
         for attr in (
+            "basic_price_policy",
+            "basic_cheap_price_eur_kwh",
+            "basic_expensive_price_eur_kwh",
             "seed",
             "storage_min_soc",
             "storage_max_soc",
