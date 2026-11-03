@@ -20,7 +20,6 @@ import numpy as np
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.oracles import SemanticActionSeries, SemanticSchedule
 
-
 _TOLERANCE = 1.0e-8
 _ACTION_BOUND_TOLERANCE = 1.0e-6
 _DEADBAND_NUDGE_KW = 1.0e-6
@@ -57,9 +56,7 @@ class TotalOracleReplayPolicy(BaseAgent):
 
     def __init__(self, config: Dict[str, Any], *, schedule: SemanticSchedule | None = None) -> None:
         super().__init__()
-        hyperparameters = dict(
-            (config.get("algorithm", {}).get("hyperparameters") or {})
-        )
+        hyperparameters = dict((config.get("algorithm", {}).get("hyperparameters") or {}))
         raw_path = str(hyperparameters.get("schedule_path") or "").strip()
         if not raw_path and schedule is None:
             raise ValueError("TotalOracleReplayPolicy requires schedule_path.")
@@ -151,16 +148,18 @@ class TotalOracleReplayPolicy(BaseAgent):
         action = building.get(action_name) if isinstance(building, Mapping) else None
         if not isinstance(action, Mapping):
             return target
-        field = (
-            "min_charging_power_kw"
-            if target > 0.0
-            else "min_discharging_power_kw"
-        )
+        field = "min_charging_power_kw" if target > 0.0 else "min_discharging_power_kw"
         try:
             minimum = float(action.get(field, 0.0) or 0.0)
         except (TypeError, ValueError):
             return target
         magnitude = abs(target)
+        if (
+            target > 0
+            and self.schedule.metadata.get("delivered_power_clipping")
+            and 0 < magnitude < minimum
+        ):
+            return minimum + _DEADBAND_NUDGE_KW
         if minimum > 0.0 and abs(magnitude - minimum) <= _DEADBAND_NUDGE_KW:
             return math.copysign(minimum + _DEADBAND_NUDGE_KW, target)
         return target
@@ -175,9 +174,7 @@ class TotalOracleReplayPolicy(BaseAgent):
     ) -> Optional[float]:
         building = limits.get(building_id) or {}
         if not isinstance(building, Mapping):
-            raise ValueError(
-                f"Power metadata for building {building_id!r} must be a mapping."
-            )
+            raise ValueError(f"Power metadata for building {building_id!r} must be a mapping.")
         action = building.get(action_name) or {}
         if not isinstance(action, Mapping):
             raise ValueError(
@@ -253,9 +250,7 @@ class TotalOracleReplayPolicy(BaseAgent):
         if kind == "storage":
             exact.append(f"storage::{building_id}/{action_name}::{feature_name}")
             if action_name == "electrical_storage":
-                exact.append(
-                    f"storage::{building_id}/electrical_storage::{feature_name}"
-                )
+                exact.append(f"storage::{building_id}/electrical_storage::{feature_name}")
             namespace = "storage::"
         else:
             legacy_prefix = "electric_vehicle_storage_"
@@ -388,8 +383,7 @@ class TotalOracleReplayPolicy(BaseAgent):
 
         self._building_names = building_names
         self._observation_indices = [
-            {str(name): index for index, name in enumerate(group)}
-            for group in observation_names
+            {str(name): index for index, name in enumerate(group)} for group in observation_names
         ]
         self._action_names = [[str(name) for name in group] for group in action_names]
         self._action_bounds = []
@@ -519,8 +513,7 @@ class TotalOracleReplayPolicy(BaseAgent):
             )
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(
-                f"Invalid {source_name} power scale {value!r} for "
-                f"{(building_id, action_name)!r}."
+                f"Invalid {source_name} power scale {value!r} for {(building_id, action_name)!r}."
             )
         return value
 
@@ -570,9 +563,7 @@ class TotalOracleReplayPolicy(BaseAgent):
         if self.repeat_schedule_for_training:
             step %= self.schedule.horizon
         if step < 0 or step >= self.schedule.horizon:
-            raise IndexError(
-                f"schedule_step {step} is outside [0, {self.schedule.horizon})."
-            )
+            raise IndexError(f"schedule_step {step} is outside [0, {self.schedule.horizon}).")
         if len(observations) != len(self._building_names):
             raise ValueError(
                 "Runtime observation groups do not match attached building-local groups."

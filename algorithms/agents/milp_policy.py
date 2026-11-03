@@ -38,7 +38,7 @@ class MILPPolicy(BaseAgent):
         if simulator.get("simulation_end_time_step") is None:
             raise ValueError("MILP requires an explicit finite simulation window.")
         self.forecast = BoundedDatasetForecast(
-            simulator["dataset_path"], simulator.get("building_ids")
+            simulator["dataset_path"], simulator.get("building_ids"), physics=self.settings.physics
         )
         self.start = int(simulator.get("simulation_start_time_step") or 0)
         self.end = int(simulator["simulation_end_time_step"])
@@ -134,7 +134,10 @@ class MILPPolicy(BaseAgent):
             bid, name = asset.building_id, asset.action_name
             capacity = self._value(observations, bid, "storage", name, "capacity_kwh")
             soc = self._soc(self._value(observations, bid, "storage", name, "soc"))
-            storage[(bid, name)] = (soc * capacity, capacity)
+            # Entity SOC is the previous completed interval's endogenous state.
+            # The simulator applies standby loss before this interval's action.
+            retention = 1.0 - asset.loss_coefficient if self._step > 0 else 1.0
+            storage[(bid, name)] = (soc * capacity * retention, capacity)
         for session in problem.ev_sessions:
             if session.start_time_step != 0:
                 continue

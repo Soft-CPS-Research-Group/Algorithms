@@ -74,10 +74,18 @@ def _efficiency(name: str, value: Any) -> float:
 def _phase_connection(value: str) -> str:
     normalized = str(value).strip()
     if normalized not in {*_PHASES, "all_phases"}:
-        raise ValueError(
-            f"phase_connection must be one of L1/L2/L3/all_phases; got {value!r}."
-        )
+        raise ValueError(f"phase_connection must be one of L1/L2/L3/all_phases; got {value!r}.")
     return normalized
+
+
+def _validate_power_envelopes(asset: Any) -> None:
+    for field_name in ("charge_power_envelope", "discharge_power_envelope"):
+        envelope = tuple(tuple(float(x) for x in line) for line in getattr(asset, field_name))
+        if any(len(line) != 2 or not all(math.isfinite(x) for x in line) for line in envelope):
+            raise ValueError(f"{field_name} must contain finite (slope, intercept) pairs.")
+        if any(min(b, m * asset.capacity_kwh + b) < -_TOLERANCE for m, b in envelope):
+            raise ValueError(f"{field_name} is negative within the physical energy range.")
+        object.__setattr__(asset, field_name, envelope)
 
 
 @dataclass(frozen=True)
@@ -96,6 +104,12 @@ class StorageAsset:
     loss_coefficient: float = 0.0
     minimum_energy_kwh: float = 0.0
     phase_connection: str = "all_phases"
+    # Each affine upper envelope is (slope kW/kWh, intercept kW), evaluated
+    # at pre-action stored energy. Concave piecewise-linear power curves are
+    # exactly the intersection of these half-spaces.
+    charge_power_envelope: tuple[tuple[float, float], ...] = ()
+    discharge_power_envelope: tuple[tuple[float, float], ...] = ()
+    reserve_is_discharge_only: bool = False
 
     def __post_init__(self) -> None:
         if not str(self.building_id).strip() or not str(self.action_name).strip():
@@ -103,9 +117,7 @@ class StorageAsset:
         capacity = _finite("capacity_kwh", self.capacity_kwh, minimum=0.0)
         minimum = _finite("minimum_energy_kwh", self.minimum_energy_kwh, minimum=0.0)
         initial = _finite("initial_energy_kwh", self.initial_energy_kwh, minimum=0.0)
-        final_min = _finite(
-            "final_energy_min_kwh", self.final_energy_min_kwh, minimum=0.0
-        )
+        final_min = _finite("final_energy_min_kwh", self.final_energy_min_kwh, minimum=0.0)
         if minimum > capacity + _TOLERANCE:
             raise ValueError("minimum_energy_kwh exceeds capacity_kwh.")
         # Passive losses or an arriving EV may leave measured energy below the
@@ -144,12 +156,10 @@ class StorageAsset:
             raise ValueError("loss_coefficient must be <= 1.")
         object.__setattr__(self, "loss_coefficient", loss)
         object.__setattr__(self, "phase_connection", _phase_connection(self.phase_connection))
+        _validate_power_envelopes(self)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            field_name: getattr(self, field_name)
-            for field_name in self.__dataclass_fields__
-        }
+        return {field_name: getattr(self, field_name) for field_name in self.__dataclass_fields__}
 
 
 @dataclass(frozen=True)
@@ -174,8 +184,12 @@ class EVSession:
     loss_coefficient: float = 0.0
     phase_connection: str = "all_phases"
     allow_departure_shortfall: bool = False
+    charge_power_envelope: tuple[tuple[float, float], ...] = ()
+    discharge_power_envelope: tuple[tuple[float, float], ...] = ()
+    allow_charge_clipping: bool = False
 
     def __post_init__(self) -> None:
+        _validate_power_envelopes(self)
         if not str(self.session_id).strip():
             raise ValueError("session_id must be non-empty.")
         if not str(self.building_id).strip() or not str(self.action_name).strip():
@@ -187,9 +201,7 @@ class EVSession:
         capacity = _finite("capacity_kwh", self.capacity_kwh, minimum=0.0)
         minimum = _finite("minimum_energy_kwh", self.minimum_energy_kwh, minimum=0.0)
         initial = _finite("initial_energy_kwh", self.initial_energy_kwh, minimum=0.0)
-        required = _finite(
-            "required_final_energy_kwh", self.required_final_energy_kwh, minimum=0.0
-        )
+        required = _finite("required_final_energy_kwh", self.required_final_energy_kwh, minimum=0.0)
         if minimum > capacity + _TOLERANCE:
             raise ValueError("EV minimum_energy_kwh exceeds capacity_kwh.")
         # Passive losses or an arriving EV may leave measured energy below the
@@ -235,19 +247,14 @@ class EVSession:
             raise ValueError("loss_coefficient must be <= 1.")
         object.__setattr__(self, "loss_coefficient", loss)
         object.__setattr__(self, "phase_connection", _phase_connection(self.phase_connection))
-        object.__setattr__(
-            self, "allow_departure_shortfall", bool(self.allow_departure_shortfall)
-        )
+        object.__setattr__(self, "allow_departure_shortfall", bool(self.allow_departure_shortfall))
 
     @property
     def duration(self) -> int:
         return self.end_time_step - self.start_time_step + 1
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            field_name: getattr(self, field_name)
-            for field_name in self.__dataclass_fields__
-        }
+        return {field_name: getattr(self, field_name) for field_name in self.__dataclass_fields__}
 
 
 @dataclass(frozen=True)
@@ -273,8 +280,7 @@ class DeferrableCycle:
         if earliest < 0 or latest < earliest:
             raise ValueError("Deferrable cycle must satisfy 0 <= earliest <= latest.")
         profile = tuple(
-            _finite("load_profile_kwh", value, minimum=0.0)
-            for value in self.load_profile_kwh
+            _finite("load_profile_kwh", value, minimum=0.0) for value in self.load_profile_kwh
         )
         if not profile:
             raise ValueError("Deferrable load_profile_kwh must not be empty.")
@@ -413,9 +419,7 @@ class TotalEnergyProblem:
         for asset in (*self.stationary_storage, *self.ev_sessions, *self.deferrable_cycles):
             if asset.building_id not in building_set:
                 raise ValueError(f"Unknown flexible-asset building_id {asset.building_id!r}.")
-        storage_keys = [
-            (asset.building_id, asset.action_name) for asset in self.stationary_storage
-        ]
+        storage_keys = [(asset.building_id, asset.action_name) for asset in self.stationary_storage]
         if len(set(storage_keys)) != len(storage_keys):
             raise ValueError("Stationary-storage semantic keys must be unique.")
         session_ids = [session.session_id for session in self.ev_sessions]
@@ -423,9 +427,9 @@ class TotalEnergyProblem:
             raise ValueError("EV session_id values must be unique.")
         sessions_by_action: dict[tuple[str, str], list[EVSession]] = {}
         for session in self.ev_sessions:
-            sessions_by_action.setdefault(
-                (session.building_id, session.action_name), []
-            ).append(session)
+            sessions_by_action.setdefault((session.building_id, session.action_name), []).append(
+                session
+            )
         for semantic_key, sessions in sessions_by_action.items():
             ordered = sorted(sessions, key=lambda item: item.start_time_step)
             if any(
@@ -486,18 +490,12 @@ class TotalEnergyProblem:
     def from_dict(cls, payload: Mapping[str, Any]) -> "TotalEnergyProblem":
         data = dict(payload)
         data["building_ids"] = tuple(data["building_ids"])
-        data["price_eur_per_kwh"] = np.asarray(
-            data["price_eur_per_kwh"], dtype=np.float64
-        )
-        data["base_net_load_kwh"] = np.asarray(
-            data["base_net_load_kwh"], dtype=np.float64
-        )
+        data["price_eur_per_kwh"] = np.asarray(data["price_eur_per_kwh"], dtype=np.float64)
+        data["base_net_load_kwh"] = np.asarray(data["base_net_load_kwh"], dtype=np.float64)
         data["stationary_storage"] = tuple(
             StorageAsset(**item) for item in data.get("stationary_storage", ())
         )
-        data["ev_sessions"] = tuple(
-            EVSession(**item) for item in data.get("ev_sessions", ())
-        )
+        data["ev_sessions"] = tuple(EVSession(**item) for item in data.get("ev_sessions", ()))
         data["deferrable_cycles"] = tuple(
             DeferrableCycle(
                 **{
@@ -534,15 +532,9 @@ class TotalEnergyResult:
     minimum_total_ev_shortfall_kwh: Optional[float] = None
     realized_total_ev_shortfall_kwh: Optional[float] = None
     lexicographic_shortfall_tolerance_kwh: Optional[float] = None
-    minimum_ev_shortfall_by_building_kwh: Mapping[str, float] = field(
-        default_factory=dict
-    )
-    realized_ev_shortfall_by_building_kwh: Mapping[str, float] = field(
-        default_factory=dict
-    )
-    lexicographic_shortfall_cap_by_building_kwh: Mapping[str, float] = field(
-        default_factory=dict
-    )
+    minimum_ev_shortfall_by_building_kwh: Mapping[str, float] = field(default_factory=dict)
+    realized_ev_shortfall_by_building_kwh: Mapping[str, float] = field(default_factory=dict)
+    lexicographic_shortfall_cap_by_building_kwh: Mapping[str, float] = field(default_factory=dict)
     service_phase_status: Optional[str] = None
     service_phase_optimal: Optional[bool] = None
     service_phase_shortfall_incumbent_kwh: Optional[float] = None
@@ -561,17 +553,11 @@ class TotalEnergyResult:
             "schedule": None if self.schedule is None else self.schedule.to_dict(),
             "selected_deferrable_starts": dict(self.selected_deferrable_starts),
             "ev_final_energy_kwh": dict(self.ev_final_energy_kwh),
-            "ev_departure_shortfall_kwh": dict(
-                self.ev_departure_shortfall_kwh
-            ),
+            "ev_departure_shortfall_kwh": dict(self.ev_departure_shortfall_kwh),
             "minimum_total_ev_shortfall_kwh": self.minimum_total_ev_shortfall_kwh,
             "realized_total_ev_shortfall_kwh": self.realized_total_ev_shortfall_kwh,
-            "lexicographic_shortfall_tolerance_kwh": (
-                self.lexicographic_shortfall_tolerance_kwh
-            ),
-            "minimum_ev_shortfall_by_building_kwh": dict(
-                self.minimum_ev_shortfall_by_building_kwh
-            ),
+            "lexicographic_shortfall_tolerance_kwh": (self.lexicographic_shortfall_tolerance_kwh),
+            "minimum_ev_shortfall_by_building_kwh": dict(self.minimum_ev_shortfall_by_building_kwh),
             "realized_ev_shortfall_by_building_kwh": dict(
                 self.realized_ev_shortfall_by_building_kwh
             ),
@@ -580,9 +566,7 @@ class TotalEnergyResult:
             ),
             "service_phase_status": self.service_phase_status,
             "service_phase_optimal": self.service_phase_optimal,
-            "service_phase_shortfall_incumbent_kwh": (
-                self.service_phase_shortfall_incumbent_kwh
-            ),
+            "service_phase_shortfall_incumbent_kwh": (self.service_phase_shortfall_incumbent_kwh),
         }
 
 
@@ -634,6 +618,7 @@ class _EVVars:
     charge_on: np.ndarray
     discharge_on: np.ndarray
     shortfall: Optional[int]
+    charge_clipping: tuple[np.ndarray, ...]
 
 
 @dataclass(frozen=True)
@@ -680,13 +665,19 @@ class _Layout:
                     charge_on=block(session.duration),
                     discharge_on=block(session.duration),
                     shortfall=(int(block(1)[0]) if session.allow_departure_shortfall else None),
+                    charge_clipping=(
+                        tuple(
+                            block(session.duration)
+                            for _ in range(1 + len(session.charge_power_envelope))
+                        )
+                        if session.allow_charge_clipping
+                        else ()
+                    ),
                 )
             )
         cycles = []
         for cycle in problem.deferrable_cycles:
-            starts = tuple(
-                range(cycle.earliest_start_time_step, cycle.latest_start_time_step + 1)
-            )
+            starts = tuple(range(cycle.earliest_start_time_step, cycle.latest_start_time_step + 1))
             cycles.append(_CycleVars(starts=starts, variables=block(len(starts))))
         grid_rows = len(problem.building_ids) if problem.settlement == "individual" else 1
         grid = block(grid_rows * problem.horizon).reshape(grid_rows, problem.horizon)
@@ -732,9 +723,7 @@ def _solve(
     layout = _Layout.build(problem)
     horizon = problem.horizon
     building_index = {name: index for index, name in enumerate(problem.building_ids)}
-    service_by_building = {
-        service.building_id: service for service in problem.electrical_services
-    }
+    service_by_building = {service.building_id: service for service in problem.electrical_services}
 
     objective = np.zeros(layout.size, dtype=np.float64)
     for row in layout.grid:
@@ -760,9 +749,7 @@ def _solve(
     constraint_lower: list[float] = []
     constraint_upper: list[float] = []
 
-    def add_row(
-        entries: Sequence[tuple[int, float]], lower: float, upper: float
-    ) -> None:
+    def add_row(entries: Sequence[tuple[int, float]], lower: float, upper: float) -> None:
         row = len(constraint_lower)
         for column, coefficient in entries:
             if coefficient != 0.0:
@@ -789,7 +776,15 @@ def _solve(
         upper_bounds[variables.charge] = charge_limit
         upper_bounds[variables.discharge] = discharge_limit
         upper_bounds[variables.soc] = asset.capacity_kwh
-        lower_bounds[variables.soc] = asset.minimum_energy_kwh
+        if asset.reserve_is_discharge_only:
+            # Valid strengthening: charging cannot lower energy and discharge
+            # cannot cross the reserve. Only accumulated standby losses can.
+            floor = min(asset.minimum_energy_kwh, asset.initial_energy_kwh)
+            lower_bounds[variables.soc] = floor * (1 - asset.loss_coefficient) ** np.maximum(
+                np.arange(horizon + 1) - 1, 0
+            )
+        else:
+            lower_bounds[variables.soc] = asset.minimum_energy_kwh
         lower_bounds[variables.soc[0]] = asset.initial_energy_kwh
         upper_bounds[variables.soc[0]] = asset.initial_energy_kwh
         lower_bounds[variables.soc[-1]] = max(
@@ -801,6 +796,31 @@ def _solve(
         building = building_index[asset.building_id]
         for time_step in range(horizon):
             retention = 1.0 if time_step == 0 else 1.0 - asset.loss_coefficient
+            if asset.reserve_is_discharge_only:
+                # Standby loss may take energy below the discharge reserve.
+                # Idle/charging must not manufacture energy to restore it.
+                add_row(
+                    [
+                        (variables.discharge[time_step], 1.0 / asset.discharge_efficiency),
+                        (variables.soc[time_step], -retention),
+                        (variables.direction[time_step], -asset.minimum_energy_kwh),
+                    ],
+                    -np.inf,
+                    -asset.minimum_energy_kwh,
+                )
+            for flow, envelope in (
+                (variables.charge, asset.charge_power_envelope),
+                (variables.discharge, asset.discharge_power_envelope),
+            ):
+                for slope, intercept in envelope:
+                    add_row(
+                        [
+                            (flow[time_step], 1.0 / problem.timestep_hours),
+                            (variables.soc[time_step], -slope * retention),
+                        ],
+                        -np.inf,
+                        intercept,
+                    )
             add_row(
                 [
                     (variables.soc[time_step + 1], 1.0),
@@ -846,6 +866,13 @@ def _solve(
         upper_bounds[variables.discharge] = discharge_limit
         upper_bounds[variables.soc] = session.capacity_kwh
         lower_bounds[variables.soc] = session.minimum_energy_kwh
+        if session.max_discharge_kw == 0:
+            lower_bounds[variables.soc] = np.maximum(
+                session.minimum_energy_kwh,
+                session.initial_energy_kwh
+                * (1 - session.loss_coefficient)
+                ** np.maximum(np.arange(session.duration + 1) - 1, 0),
+            )
         lower_bounds[variables.soc[0]] = session.initial_energy_kwh
         upper_bounds[variables.soc[0]] = session.initial_energy_kwh
         if variables.shortfall is None:
@@ -858,9 +885,9 @@ def _solve(
                 0.0,
             )
             ev_shortfall_variables.append(variables.shortfall)
-            ev_shortfall_variables_by_building.setdefault(
-                session.building_id, []
-            ).append(variables.shortfall)
+            ev_shortfall_variables_by_building.setdefault(session.building_id, []).append(
+                variables.shortfall
+            )
             add_row(
                 [
                     (variables.soc[-1], 1.0),
@@ -874,10 +901,53 @@ def _solve(
         if not relaxed:
             integrality[variables.charge_on] = 1
             integrality[variables.discharge_on] = 1
+        for clipping in variables.charge_clipping:
+            upper_bounds[clipping] = 1.0
+            if not relaxed:
+                integrality[clipping] = 1
         building = building_index[session.building_id]
         for offset in range(session.duration):
             time_step = session.start_time_step + offset
             retention = 1.0 if offset == 0 else 1.0 - session.loss_coefficient
+            for flow, envelope in (
+                (variables.charge, session.charge_power_envelope),
+                (variables.discharge, session.discharge_power_envelope),
+            ):
+                for slope, intercept in envelope:
+                    add_row(
+                        [
+                            (flow[offset], 1.0 / problem.timestep_hours),
+                            (variables.soc[offset], -slope * retention),
+                        ],
+                        -np.inf,
+                        intercept,
+                    )
+            if variables.charge_clipping:
+                clipping = [int(v[offset]) for v in variables.charge_clipping]
+                add_row(
+                    [(v, 1.0) for v in clipping] + [(variables.charge_on[offset], -1.0)],
+                    -np.inf,
+                    0.0,
+                )
+                # A positive delivered flow below the command deadband is
+                # possible only when battery capacity or a power ceiling clips
+                # the command. The selected ceiling must then be attained.
+                add_row(
+                    [(variables.soc[offset + 1], 1.0), (clipping[0], -session.capacity_kwh)],
+                    0.0,
+                    np.inf,
+                )
+                for flag, (slope, intercept) in zip(clipping[1:], session.charge_power_envelope):
+                    big_m = max(intercept, slope * session.capacity_kwh + intercept)
+                    add_row(
+                        [
+                            (variables.charge[offset], 1.0 / problem.timestep_hours),
+                            (variables.soc[offset], -slope * retention),
+                            (flag, -big_m),
+                        ],
+                        intercept - big_m,
+                        np.inf,
+                    )
             add_row(
                 [
                     (variables.soc[offset + 1], 1.0),
@@ -903,7 +973,8 @@ def _solve(
                 [
                     (variables.charge[offset], -1.0),
                     (variables.charge_on[offset], min_charge),
-                ],
+                ]
+                + [(int(v[offset]), -min_charge) for v in variables.charge_clipping],
                 -np.inf,
                 0.0,
             )
@@ -993,8 +1064,7 @@ def _solve(
         base_fractions = service.fractions(None)
         for time_step in range(horizon):
             entries = [
-                (column, coefficient)
-                for column, coefficient, _ in controls[(building, time_step)]
+                (column, coefficient) for column, coefficient, _ in controls[(building, time_step)]
             ]
             base = float(problem.base_net_load_kwh[building, time_step])
             lower = (
@@ -1056,9 +1126,7 @@ def _solve(
         extra_constraint: Optional[LinearConstraint] = None,
     ) -> Any:
         constraints: Any = (
-            base_constraints
-            if extra_constraint is None
-            else (base_constraints, extra_constraint)
+            base_constraints if extra_constraint is None else (base_constraints, extra_constraint)
         )
         # Reuse the bounded oracle's HiGHS adapter. SciPy 1.15.1 otherwise
         # spends minutes converting basis marginals that milp discards.
@@ -1095,9 +1163,7 @@ def _solve(
             )
         if service_has_solution and service_phase_optimal:
             minimum_total_shortfall = service_phase_shortfall_incumbent
-            lexicographic_shortfall_tolerance = float(
-                options.lexicographic_shortfall_tolerance_kwh
-            )
+            lexicographic_shortfall_tolerance = float(options.lexicographic_shortfall_tolerance_kwh)
 
             # The service-only feasible set factorizes by building: community
             # settlement contributes an import epigraph but no physical
@@ -1109,14 +1175,10 @@ def _solve(
             # cross-building shortfall degeneracy in the economic phase.
             for building_id, variables in ev_shortfall_variables_by_building.items():
                 value = float(np.sum(service_solution[variables]))
-                minimum_shortfall_by_building[building_id] = (
-                    0.0 if value <= 1.0e-7 else value
-                )
+                minimum_shortfall_by_building[building_id] = 0.0 if value <= 1.0e-7 else value
 
             positive_total = sum(
-                value
-                for value in minimum_shortfall_by_building.values()
-                if value > 0.0
+                value for value in minimum_shortfall_by_building.values() if value > 0.0
             )
             for building_id, minimum in minimum_shortfall_by_building.items():
                 # A numerical tolerance must never introduce missed service
@@ -1192,25 +1254,17 @@ def _solve(
             building_net_load_kwh=None,
             schedule=None,
             minimum_total_ev_shortfall_kwh=minimum_total_shortfall,
-            lexicographic_shortfall_tolerance_kwh=(
-                lexicographic_shortfall_tolerance
-            ),
+            lexicographic_shortfall_tolerance_kwh=(lexicographic_shortfall_tolerance),
             minimum_ev_shortfall_by_building_kwh=minimum_shortfall_by_building,
-            lexicographic_shortfall_cap_by_building_kwh=(
-                shortfall_cap_by_building
-            ),
+            lexicographic_shortfall_cap_by_building_kwh=(shortfall_cap_by_building),
             service_phase_status=service_phase_status,
             service_phase_optimal=service_phase_optimal,
-            service_phase_shortfall_incumbent_kwh=(
-                service_phase_shortfall_incumbent
-            ),
+            service_phase_shortfall_incumbent_kwh=(service_phase_shortfall_incumbent),
         )
 
     solution = np.asarray(solution, dtype=np.float64)
     realized_total_shortfall = (
-        float(np.sum(solution[ev_shortfall_variables]))
-        if ev_shortfall_variables
-        else None
+        float(np.sum(solution[ev_shortfall_variables])) if ev_shortfall_variables else None
     )
     realized_shortfall_by_building = {
         building_id: float(np.sum(solution[variables]))
@@ -1236,21 +1290,13 @@ def _solve(
             schedule=None,
             minimum_total_ev_shortfall_kwh=minimum_total_shortfall,
             realized_total_ev_shortfall_kwh=realized_total_shortfall,
-            lexicographic_shortfall_tolerance_kwh=(
-                lexicographic_shortfall_tolerance
-            ),
+            lexicographic_shortfall_tolerance_kwh=(lexicographic_shortfall_tolerance),
             minimum_ev_shortfall_by_building_kwh=minimum_shortfall_by_building,
-            realized_ev_shortfall_by_building_kwh=(
-                realized_shortfall_by_building
-            ),
-            lexicographic_shortfall_cap_by_building_kwh=(
-                shortfall_cap_by_building
-            ),
+            realized_ev_shortfall_by_building_kwh=(realized_shortfall_by_building),
+            lexicographic_shortfall_cap_by_building_kwh=(shortfall_cap_by_building),
             service_phase_status=service_phase_status,
             service_phase_optimal=service_phase_optimal,
-            service_phase_shortfall_incumbent_kwh=(
-                service_phase_shortfall_incumbent
-            ),
+            service_phase_shortfall_incumbent_kwh=(service_phase_shortfall_incumbent),
         )
 
     semantic_values: dict[tuple[str, str], np.ndarray] = {}
@@ -1276,8 +1322,7 @@ def _solve(
             float(solution[variables.shortfall])
             if variables.shortfall is not None
             else max(
-                session.required_final_energy_kwh
-                - float(solution[variables.soc[-1]]),
+                session.required_final_energy_kwh - float(solution[variables.soc[-1]]),
                 0.0,
             )
         )
@@ -1308,19 +1353,13 @@ def _solve(
         )
     action_power_limits_kw: dict[str, dict[str, dict[str, float]]] = {}
     for asset in problem.stationary_storage:
-        action_power_limits_kw.setdefault(asset.building_id, {})[
-            asset.action_name
-        ] = {
-            "nominal_power_kw": float(
-                max(asset.max_charge_kw, asset.max_discharge_kw)
-            ),
+        action_power_limits_kw.setdefault(asset.building_id, {})[asset.action_name] = {
+            "nominal_power_kw": float(max(asset.max_charge_kw, asset.max_discharge_kw)),
             "max_charging_power_kw": float(asset.max_charge_kw),
             "max_discharging_power_kw": float(asset.max_discharge_kw),
         }
     for session in problem.ev_sessions:
-        action_limits = action_power_limits_kw.setdefault(
-            session.building_id, {}
-        ).setdefault(
+        action_limits = action_power_limits_kw.setdefault(session.building_id, {}).setdefault(
             session.action_name,
             {
                 "max_charging_power_kw": 0.0,
@@ -1354,25 +1393,17 @@ def _solve(
             "settlement": problem.settlement,
             "minimum_total_ev_shortfall_kwh": minimum_total_shortfall,
             "realized_total_ev_shortfall_kwh": realized_total_shortfall,
-            "lexicographic_shortfall_tolerance_kwh": (
-                lexicographic_shortfall_tolerance
-            ),
-            "minimum_ev_shortfall_by_building_kwh": (
-                minimum_shortfall_by_building
-            ),
-            "realized_ev_shortfall_by_building_kwh": (
-                realized_shortfall_by_building
-            ),
-            "lexicographic_shortfall_cap_by_building_kwh": (
-                shortfall_cap_by_building
-            ),
+            "lexicographic_shortfall_tolerance_kwh": (lexicographic_shortfall_tolerance),
+            "minimum_ev_shortfall_by_building_kwh": (minimum_shortfall_by_building),
+            "realized_ev_shortfall_by_building_kwh": (realized_shortfall_by_building),
+            "lexicographic_shortfall_cap_by_building_kwh": (shortfall_cap_by_building),
             "service_phase_status": service_phase_status,
             "service_phase_optimal": service_phase_optimal,
-            "service_phase_shortfall_incumbent_kwh": (
-                service_phase_shortfall_incumbent
-            ),
+            "service_phase_shortfall_incumbent_kwh": (service_phase_shortfall_incumbent),
             "includes_stationary_storage": bool(problem.stationary_storage),
-            "includes_ev_v2g": any(session.max_discharge_kw > 0.0 for session in problem.ev_sessions),
+            "includes_ev_v2g": any(
+                session.max_discharge_kw > 0.0 for session in problem.ev_sessions
+            ),
             "includes_deferrable_appliances": bool(problem.deferrable_cycles),
             "includes_electrical_service": bool(problem.electrical_services),
             "requires_citylearn_replay": True,
@@ -1385,28 +1416,20 @@ def _solve(
         solver=solver,
         cost_eur=official_cost,
         grid_import_kwh=tuple(tuple(float(value) for value in row) for row in grid),
-        building_net_load_kwh=tuple(
-            tuple(float(value) for value in row) for row in building_net
-        ),
+        building_net_load_kwh=tuple(tuple(float(value) for value in row) for row in building_net),
         schedule=schedule,
         selected_deferrable_starts=selected_starts,
         ev_final_energy_kwh=ev_final,
         ev_departure_shortfall_kwh=ev_shortfall,
         minimum_total_ev_shortfall_kwh=minimum_total_shortfall,
         realized_total_ev_shortfall_kwh=realized_total_shortfall,
-        lexicographic_shortfall_tolerance_kwh=(
-            lexicographic_shortfall_tolerance
-        ),
+        lexicographic_shortfall_tolerance_kwh=(lexicographic_shortfall_tolerance),
         minimum_ev_shortfall_by_building_kwh=minimum_shortfall_by_building,
         realized_ev_shortfall_by_building_kwh=realized_shortfall_by_building,
-        lexicographic_shortfall_cap_by_building_kwh=(
-            shortfall_cap_by_building
-        ),
+        lexicographic_shortfall_cap_by_building_kwh=(shortfall_cap_by_building),
         service_phase_status=service_phase_status,
         service_phase_optimal=service_phase_optimal,
-        service_phase_shortfall_incumbent_kwh=(
-            service_phase_shortfall_incumbent
-        ),
+        service_phase_shortfall_incumbent_kwh=(service_phase_shortfall_incumbent),
     )
 
 
@@ -1454,9 +1477,7 @@ def solve_bounded_total_energy_oracle(
             pass
         elif lower_service is None or upper_service is None:
             valid = False
-        elif not math.isclose(
-            lower_service, upper_service, rel_tol=0.0, abs_tol=1.0e-6
-        ):
+        elif not math.isclose(lower_service, upper_service, rel_tol=0.0, abs_tol=1.0e-6):
             valid = False
     absolute_gap: Optional[float] = None
     relative_gap: Optional[float] = None
