@@ -2,7 +2,7 @@
 
 Declarations and capabilities live in `algorithms/catalogue.py`; inspect them with
 `algorithms-job --list-agents` without loading model dependencies.
-The authoritative name list is `algorithms.registry.supported_algorithms()`: **39**
+The authoritative name list is `algorithms.registry.supported_algorithms()`: **40**
 registered agent/controller names, including `Smart`, the public name of the
 audited `RBCSmartLocalPolicy` implementation. A registered name
 means it can enter the common job builder; deployment readiness and model quality
@@ -15,6 +15,7 @@ are separate properties.
 | Typed multi-agent | `TIMARL` | Existing main implementation retained; research export. |
 | Hierarchical coordination | `BuildingAgent`, `CommunityCoordinator`, `CCLevel1`, `CCLevel2`, `CausalPriceSignal`, `FixedPriceSignal` | Existing implementations retained. |
 | Baselines and signal policies | `RandomPolicy`, `NormalPolicy`, `NormalTargetPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `Smart`, `RBCCommunityPolicy`, `RBCSmartPolicy`, `RBCSmartLocalPolicy`, `SignalAwareRBC`, `SignalAwareRBCSmartLocal` | `NormalTargetPolicy` is the primary BAU; `NormalPolicy` is the BAU 100% variant. `Smart` is the public local baseline; the older names remain compatible. Basic uses current-price/service scheduling and reactive battery self-consumption; Community defaults to a 15 kW battery-support trigger. |
+| Community optimization | `MILP` | Reoptimizes each step with measured state and at most 24 h of perfect forecasts. Static entity, one controller, evaluation only; research bundle requiring the live solver. See the [MPC comparison](milp_mpc_core30_2026_11_03.md). |
 | Oracle replays | `FixedServiceOracleReplayPolicy`, `TotalHomeOracleReplayPolicy`, `TotalOracleReplayPolicy` | Use `TotalOracleReplayPolicy` with the complete individual/community model for new Core30 references. Fixed-service and total-home implementations remain diagnostic/historical. See the [Core30 MILP audit](milp_core30_audit_2026_11_03.md). |
 | Historical Transformer | `TransformerMADDPG` | Recovered experimental joint actor. Static topology, uniform nonzero action dimensions. Joint ONNX includes learned tokenizer and actor; deterministic parity checked. Complete research checkpoint retained. |
 | Offline policies | `BCAgent`, `IQLAgent`, `IQLEntityAgent`, `CQLEntityAgent` | Recovered trainers and policies. Common job preparation, simulation, KPI and model export. Static, matching dataset layout required. |
@@ -41,7 +42,7 @@ Origins, validation scope and pending work: [first consolidation](consolidation/
 
 ## Export support after stage 4
 
-All 39 names share finalization, KPI and bundle contracts. The original [v2 export matrix](inference_bundle.md#delivery-formats) separates 14 neural names with verified ONNX, 13 rules/signal names with executable JSON, and 10 names requiring specialised research adapters. `NormalTargetPolicy` adds immediate charging with a strict user-requested SOC ceiling. The additional public `Smart` name uses the same executable JSON implementation as `RBCSmartLocalPolicy`. Counts describe registered names, not distinct algorithms or model quality. Hierarchical leaves are consumed as part of their declared graph.
+All 40 names share finalization, KPI and bundle contracts. The original [v2 export matrix](inference_bundle.md#delivery-formats) separates 14 neural names with verified ONNX, 13 rules/signal names with executable JSON, and 10 names requiring specialised research adapters. `NormalTargetPolicy` adds immediate charging with a strict user-requested SOC ceiling. The additional public `Smart` name uses the same executable JSON implementation as `RBCSmartLocalPolicy`. `MILP` adds a research-only receding-horizon controller, not an executable JSON serving policy. Counts describe registered names, not distinct algorithms or model quality. Hierarchical leaves are consumed as part of their declared graph.
 
 `bundle.require_deployable: true` rejects known specialised families during configuration validation and requires actual final-evaluation parity for the others. Ordinary exports retain research artifacts and explicit limitations. The [stage 4 delivery](runtime/export_delivery.md) records the acceptance evidence.
 

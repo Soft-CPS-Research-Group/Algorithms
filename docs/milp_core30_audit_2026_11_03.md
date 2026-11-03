@@ -1,5 +1,7 @@
 # Auditoria MILP no Core30 — 03/11/2026
 
+Seguimento: o nome `MILP` identifica agora o [controlador de 24 horas com resolução em cada passo](milp_mpc_core30_2026_11_03.md). Esta página conserva a auditoria histórica de planos offline e os respetivos números.
+
 Esta revisão parte dos baselines fechados em `7d76d90`: BAU com limite do
 utilizador, Basic com bateria em autoconsumo, Smart e Community. Não altera
 essas políticas, o Simulator, os datasets ou os pressupostos do mercado.

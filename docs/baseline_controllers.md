@@ -19,6 +19,8 @@ e identificam quando foram substituídos.
 | `Smart` | Mantém as proteções de serviço; compara preços previstos e antecipa carga com excedente local. V2G é opcional. | Usa preço relativo, urgência e prazo; acrescenta arranque com excedente local. | Coordena captura solar, arbitragem de preço, reservas e limitação da carga da bateria ao pico local configurado. |
 | `RBCCommunityPolicy` — Community | Acrescenta excedente comunitário às decisões de preço/serviço do Smart. | Pode aproveitar excedente comunitário, além do local e dos prazos. | Com mercado ativo, usa excedente partilhável e ajuda nos picos comunitários caros, com gatilho agregado de 15 kW. Sem mercado, usa a política local. |
 
+O controlador **MILP** otimiza conjuntamente baterias, EVs e arranques adiáveis a cada passo, com estado medido e horizonte máximo de 24 horas. O objetivo é serviço viável e depois custo comunitário, sem penalização de pico. Não é um RBC. O semanal mantém-se como oráculo offline; ver [política, limites e comparação](milp_mpc_core30_2026_11_03.md).
+
 O BAU é uma hipótese operacional explícita: ligar e carregar; pedir uma lavagem
 e iniciar. Não pretende otimizar custo. **A referência principal é agora
 `NormalTargetPolicy`, com bateria e limite EV definido pelo utilizador.**

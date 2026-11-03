@@ -82,3 +82,7 @@ Evidência: [promoção do BAU e revisão do Basic](experiment_history/20261103_
 As referências offline com conhecimento do futuro são comparadas separadamente
 na [auditoria MILP](milp_core30_audit_2026_11_03.md), com os mesmos baselines e
 limites terminais explícitos. Não alteram a definição dos controladores desta tabela.
+
+## MILP com decisão em cada passo
+
+A [comparação de 24 horas](milp_mpc_core30_2026_11_03.md) repete estes quatro baselines e acrescenta MILP a cada passo: 222,29 € (−17,70% face ao BAU), pico de 61,79 kW (+3,69%) e serviço mínimo viável de 100%. O semanal fica separado como oráculo offline: 222,97 € (−17,44%), com reservas finais por ativo não inferiores ao MPC. Esta diferença pequena reforça que o certificado do modelo linear não é um certificado de ótimo global do Simulator. As políticas desta página permanecem inalteradas.

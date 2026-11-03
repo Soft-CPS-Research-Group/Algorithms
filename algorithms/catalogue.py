@@ -773,7 +773,7 @@ AGENT_SPECS = {
             input_signal="none",
             output_signal="actions",
             status="experimental",
-            dependencies=("training",),
+            dependencies=("training", "solver", "offline"),
         ),
     ),
     "TotalOracleReplayPolicy": AgentSpec(
