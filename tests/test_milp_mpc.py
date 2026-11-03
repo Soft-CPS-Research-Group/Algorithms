@@ -136,3 +136,16 @@ def test_changed_connected_ev_capacity_fails_instead_of_using_wrong_asset_state(
             now=0,
             terminal_storage_soc=0.5,
         )
+
+
+def test_explicit_solver_threads_can_change_without_corrupting_native_scheduler():
+    from algorithms.oracles.perfect_foresight_milp import SolveOptions
+
+    costs = []
+    for threads in (None, 1, 2, 1, None):
+        result = solve_total_energy_schedule(problem(), options=SolveOptions(threads=threads))
+        assert result.solver.optimal
+        costs.append(result.cost_eur)
+    assert costs == pytest.approx([costs[0]] * len(costs))
+    with pytest.raises(ValueError, match="positive integer"):
+        SolveOptions(threads=0)

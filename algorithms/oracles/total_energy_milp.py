@@ -704,6 +704,8 @@ def _solver_options(options: SolveOptions) -> dict[str, Any]:
         payload["mip_rel_gap"] = float(options.mip_relative_gap)
     if options.node_limit is not None:
         payload["node_limit"] = int(options.node_limit)
+    if options.threads is not None:
+        payload["threads"] = int(options.threads)
     return payload
 
 

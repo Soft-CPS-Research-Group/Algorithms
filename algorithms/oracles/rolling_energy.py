@@ -193,5 +193,7 @@ def update_measured_problem(
             "terminal_storage_soc": terminal_storage_soc,
             "terminal_ev_policy": "announced_user_target",
             "measured_state": True,
+            "stationary_model": "measured initial energy, conservative linear physics, fixed terminal SOC reserve",
+            "community_observations_used": True,
         },
     ), running_actions

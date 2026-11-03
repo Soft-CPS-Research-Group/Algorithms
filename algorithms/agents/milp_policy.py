@@ -49,6 +49,7 @@ class MILPPolicy(BaseAgent):
         self.options = SolveOptions(
             time_limit_seconds=self.settings.time_limit_seconds,
             mip_relative_gap=self.settings.mip_relative_gap,
+            threads=self.settings.solver_threads,
         )
         initial = self.forecast.problem(self.start, min(self.end, self.start + self.horizon_steps))
         idle = SemanticSchedule(
