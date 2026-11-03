@@ -22,6 +22,32 @@ def _derive_job_id(job_id: Optional[str]) -> str:
     return datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
 
 
+def _prepared_worker_attempt(base_dir: Path, job_id: str, job_dir: Path) -> bool:
+    """Recognize the orchestrator's isolated, pre-populated first-write handoff.
+
+    ``attempt_artifacts_v1`` creates the input config and empty output folders
+    before launching Algorithms. That config alone is not an earlier run.
+    Require both the negotiated layout and its current-attempt symlink; never
+    adopt a regular existing local run or an attempt with produced artifacts.
+    """
+    if not (base_dir.name.isdecimal() and base_dir.parent.name == ".attempts"):
+        return False
+    outer_job = base_dir.parent.parent
+    current_results = outer_job / "results"
+    if outer_job.name != job_id or not (job_dir / ".worker").is_dir():
+        return False
+    if (
+        not current_results.is_symlink()
+        or current_results.resolve() != (job_dir / "results").resolve()
+    ):
+        return False
+    for name in ("results", "bundle", "checkpoints", "progress"):
+        directory = job_dir / name
+        if directory.exists() and any(directory.iterdir()):
+            return False
+    return True
+
+
 def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
     job_dir = base_dir / "jobs" / job_id
     logical_job_dir = job_dir
@@ -29,7 +55,10 @@ def _prepare_paths(base_dir: Path, job_id: str) -> dict[str, Path]:
     claim = job_dir / ".attempt"
     if (
         claim.exists()
-        or (job_dir / "config.resolved.yaml").exists()
+        or (
+            (job_dir / "config.resolved.yaml").exists()
+            and not _prepared_worker_attempt(base_dir, job_id, job_dir)
+        )
         or (job_dir / "results/result.json").exists()
     ):
         job_dir = job_dir / "attempts" / uuid.uuid4().hex

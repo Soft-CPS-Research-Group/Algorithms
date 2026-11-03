@@ -1,5 +1,13 @@
 # Reliable execution (stage 3)
 
+The worker's `attempt_artifacts_v1` handoff pre-creates the input configuration
+and empty outputs inside `jobs/<id>/.attempts/<number>/jobs/<id>`. The runtime
+recognizes this layout only when the outer job's current-results symlink points
+to that directory and output folders contain no prior artifacts. It claims the
+attempt atomically and writes there, keeping results visible to the orchestrator.
+An existing local config, claimed attempt or populated output still receives a
+separate retry directory; the handoff is not permission to overwrite a prior run.
+
 The table below preserves the stage-3 evidence. The active runtime was upgraded
 to SoftCPS Simulator 2.0.0 in the [BAU/RBC review](../baseline_controllers.md),
 which reran the full default suite and 65 complete job contracts. The catalogue
