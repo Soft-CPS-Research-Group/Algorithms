@@ -9,6 +9,7 @@ from algorithms.agents.baseline_policies import (
     RBCBasicPolicy,
     RBCCommunityPolicy,
     RBCSmartLocalPolicy,
+    RBCSmartPolicy,
 )
 from algorithms.configuration.agents import RuleBasedAlgorithmConfig
 from algorithms.configuration.baseline_defaults import NORMAL_DEFAULTS
@@ -40,13 +41,15 @@ def test_basic_cannot_change_decisions_by_reading_price_forecasts():
         )
         results.append(agent.predict([observation]))
     assert results[0] == results[1] == results[2]
-    assert results[0][0][0] == 0.0 and results[0][0][2] == 0.0
+    assert results[0][0][0] < 0.0 and results[0][0][2] == 0.0
 
 
 @pytest.mark.parametrize("price,expected", [(0.05, 0.6), (0.10, 0.0), (0.15, -0.2)])
-def test_basic_fixed_tariff_works_without_any_forecasts(price, expected):
+def test_legacy_basic_price_only_storage_works_without_any_forecasts(price, expected):
     values = {"electricity_pricing": price, "electrical_storage_soc": 0.5, "import_power_kw": 2.0}
-    agent, observation = policy(RBCBasicPolicy, values)
+    agent, observation = policy(
+        RBCBasicPolicy, values, hyper={"basic_storage_policy": "price_only"}
+    )
     assert agent.predict([observation])[0][0] == pytest.approx(expected)
 
 
@@ -178,6 +181,31 @@ def test_basic_storage_bundle_keeps_new_and_historical_rules(tmp_path):
             )
         )
         assert load_policy(path).predict([obs]) == expected
+
+
+def test_basic_selected_defaults_match_direct_and_validated_construction():
+    current = RBCBasicPolicy({})
+    schema = RuleBasedAlgorithmConfig(algorithm="RBCBasicPolicy").hyperparameters
+    assert current.basic_storage_policy == schema.basic_storage_policy == "self_consumption"
+    for key, value in NORMAL_DEFAULTS.items():
+        assert getattr(current, key) == getattr(schema, key) == value
+    legacy = RBCBasicPolicy(
+        {"algorithm": {"hyperparameters": {"basic_storage_policy": "price_only"}}}
+    )
+    legacy_schema = RuleBasedAlgorithmConfig(
+        algorithm="RBCBasicPolicy", hyperparameters={"basic_storage_policy": "price_only"}
+    ).hyperparameters
+    assert legacy.storage_charge_rate == legacy_schema.storage_charge_rate == 0.35
+    assert legacy.pv_surplus_threshold_kw == legacy_schema.pv_surplus_threshold_kw == 0.25
+
+
+@pytest.mark.parametrize("cls", [RBCSmartPolicy, RBCSmartLocalPolicy, RBCCommunityPolicy])
+def test_basic_default_change_preserves_smart_and_community_storage_defaults(cls):
+    agent = cls({})
+    schema = RuleBasedAlgorithmConfig(algorithm=cls.__name__).hyperparameters
+    assert agent.storage_charge_rate == schema.storage_charge_rate == 0.35
+    assert agent.storage_discharge_rate == schema.storage_discharge_rate == 0.35
+    assert agent.pv_surplus_threshold_kw == schema.pv_surplus_threshold_kw == 0.25
 
 
 @pytest.mark.parametrize(

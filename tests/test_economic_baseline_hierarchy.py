@@ -97,10 +97,16 @@ def test_smart_does_not_discharge_against_cheap_imports(cls):
 
 
 @pytest.mark.parametrize("cls", [RBCSmartLocalPolicy, RBCCommunityPolicy])
-def test_smart_captures_local_solar_that_basic_ignores(cls):
+def test_basic_and_smart_both_capture_current_solar_in_stationary_battery(cls):
     x = obs(price=0.6, pv=5.0, ev=False)
-    assert make(RBCBasicPolicy).predict([x])[0][0] == 0.0
+    assert make(RBCBasicPolicy).predict([x])[0][0] == pytest.approx(0.6)
     assert make(cls).predict([x])[0][0] == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize("cls", [RBCSmartLocalPolicy, RBCCommunityPolicy])
+def test_smart_also_uses_current_solar_for_ev_charging_beyond_basic_service(cls):
+    x = obs(price=0.6, pv=5.0, ev=True)
+    assert make(cls).predict([x])[0][1] > make(RBCBasicPolicy).predict([x])[0][1]
 
 
 def test_smart_keeps_basic_price_discharge_and_clips_to_actual_local_load():

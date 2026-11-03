@@ -16,6 +16,7 @@ from algorithms.configuration.baseline_defaults import (
     EV_SERVICE_SOC_TOLERANCE,
     NORMAL_DEFAULTS,
     SMART_DEFAULTS,
+    policy_defaults,
 )
 
 
@@ -2091,9 +2092,18 @@ class NormalNoBatteryPolicy(NormalPolicy):
 
 
 class RBCBasicPolicy(_OperationalBaselinePolicy):
-    """Current-price thresholds and urgency, without forecast-based price timing."""
+    """Current-price/service scheduling with reactive battery self-consumption."""
 
     def __init__(self, config: Dict[str, Any]) -> None:
+        # Smart/Community inherit helpers, but retain their own audited defaults.
+        if type(self) is RBCBasicPolicy:
+            config = dict(config)
+            algorithm = dict(config.get("algorithm") or {})
+            hyper = dict(algorithm.get("hyperparameters") or {})
+            for key, value in policy_defaults("RBCBasicPolicy", hyper).items():
+                hyper.setdefault(key, value)
+            algorithm["hyperparameters"] = hyper
+            config["algorithm"] = algorithm
         super().__init__(config)
         hyper = config.get("algorithm", {}).get("hyperparameters") or {}
         self.basic_storage_policy = hyper.get("basic_storage_policy", "price_only")

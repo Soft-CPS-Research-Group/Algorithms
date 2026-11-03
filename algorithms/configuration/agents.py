@@ -708,7 +708,7 @@ class RuleBasedAlgorithmConfig(BaseModel):
             raise ValueError(
                 "NormalTargetPolicy follows the user target; ev_normal_target_soc must be 0"
             )
-        defaults = policy_defaults(name)
+        defaults = policy_defaults(name, hyper)
         for key, default in defaults.items():
             hyper.setdefault(key, default)
         value["hyperparameters"] = hyper

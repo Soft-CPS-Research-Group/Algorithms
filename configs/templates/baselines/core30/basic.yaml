@@ -3,8 +3,9 @@ metadata:
   experiment_name: baseline-reference-core30-sim200
   run_name: core30-reference-basic
   community_name: Core30 v3.3
-  description: Core30 v3.3 reference, 48 hours from 2023-01-01, Simulator 2.0.0; audited
-    defaults.
+  description: Basic current-price/urgency scheduling for EVs and appliances; reactive
+    stationary-battery self-consumption matching the primary BAU. Selected on 2023,
+    validated on 2024.
 tracking:
   mlflow_enabled: false
   log_level: WARNING
@@ -43,6 +44,11 @@ pipeline:
     basic_price_policy: fixed_thresholds
     basic_cheap_price_eur_kwh: 0.0765
     basic_expensive_price_eur_kwh: 0.1078
+    basic_storage_policy: self_consumption
+    storage_charge_rate: 1.0
+    storage_discharge_rate: 1.0
+    pv_surplus_threshold_kw: 0.05
+    normal_storage_discharge_import_threshold_kw: 0.05
 evaluation:
   episodes: 1
 job:

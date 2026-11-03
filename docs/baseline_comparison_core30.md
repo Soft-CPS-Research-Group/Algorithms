@@ -24,7 +24,7 @@ e média dos 14 máximos diários. Não são resultados anuais.
 | Controlador | Custo (€) | Redução do custo | Pico máximo (kW) | Redução do pico | Redução da média dos picos diários |
 |---|---:|---:|---:|---:|---:|
 | **BAU** | **270,08** | **0%** | **59,59** | **0%** | **0%** |
-| Basic | 270,11 | −0,01% | 58,70 | 1,49% | 3,55% |
+| Basic | 261,30 | 3,25% | 58,50 | 1,81% | 10,48% |
 | Smart | 255,11 | 5,54% | 55,37 | 7,07% | 11,70% |
 | Community | 250,99 | 7,07% | 55,37 | 7,07% | 12,49% |
 | BAU 100% — variante | 427,97 | −58,46% | 81,02 | −35,98% | −39,20% |
@@ -34,8 +34,22 @@ positivo significa redução; um negativo significa aumento. A referência anter
 a 100% dava 41,35% de redução de custo ao Community; face ao BAU principal,
 o mesmo resultado é 7,07%. Não houve alteração do resultado Community.
 
-O Basic desta tabela usa limiares fixos de 0,0765/0,1078 €/kWh. Smart e Community
-mantêm as políticas auditadas; o Community usa o gatilho de apoio de 15 kW.
+O Basic mantém o preço atual e a urgência para decidir EVs e eletrodomésticos,
+com preço barato até 0,0765 €/kWh. A bateria passou a usar o mesmo autoconsumo
+reativo do BAU: guardar excedente local e servir consumo local, sem arbitragem
+de rede nem previsões. Esta alteração reduziu o custo do Basic anterior de
+270,11 € para 261,30 € (3,26%) e mantém-no entre o BAU e o Smart neste agregado.
+Smart e Community mantêm as políticas auditadas; o Community usa o gatilho
+de apoio de 15 kW.
+
+A escolha foi feita em janeiro/julho de 2023: menos 1,72% de custo do Basic,
+sem aumento do pico máximo e com todos os critérios de serviço cumpridos.
+Os parâmetros foram congelados antes das novas execuções de 2024. Uma primeira
+tentativa de alterar apenas o limiar caro foi rejeitada por piorar o custo em
+2023. As janelas de 2024 já tinham sido observadas anteriormente; esta é uma
+validação temporal de regressão, não um conjunto de teste intocado. A ordenação
+agregada não garante dominância em todas as semanas ou métricas.
+
 Custos oficiais em `district_cost_community_market_settled_total_eur`.
 Os números completos e a identidade do denominador estão em
 [`validation/core30_baseline_comparison.json`](validation/core30_baseline_comparison.json).
@@ -58,7 +72,9 @@ externa a zero; PV próprio sem custo operacional de energia. As transações
 internas cancelam no custo agregado. O SOC de chegada de cada sessão vem do
 dataset. Não se impõe igualdade de SOC terminal das baterias nem preço do desgaste.
 
-Evidência: [ensaio do BAU com limite](experiment_history/20261103_bau-user-target-20261103.md),
+Evidência: [promoção do BAU e revisão do Basic](experiment_history/20261103_bau-main-basic-20261103.md),
+[ensaio do BAU com limite](experiment_history/20261103_bau-user-target-20261103.md),
+`runs/bau-main-basic-20261103/`,
 `runs/bau-user-target-20261103/`, `runs/bau-reference-comparison-20261103/`,
 `runs/baseline-reference-close-20261103/` e
 `runs/community-peak-core30-20261103/validation/remote-results/`.

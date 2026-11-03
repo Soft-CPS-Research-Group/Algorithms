@@ -15,8 +15,8 @@ e identificam quando foram substituídos.
 | `NormalPolicy` — BAU 100% (variante) | Pede carga imediatamente após a ligação, sem esperar por preço ou sol. Por omissão, alvo de 100%. | Inicia no primeiro instante em que existe um pedido e o simulador permite o arranque. | Autoconsumo: carrega com excedente fotovoltaico e descarrega para consumo local. |
 | `NormalTargetPolicy` — BAU (referência principal) | Pede carga imediatamente até ao SOC pedido para a sessão. Limita a última ordem para não ultrapassar esse alvo. | Inicia logo que o pedido pode arrancar. | Autoconsumo local, sem arbitragem. |
 | `NormalNoBatteryPolicy` — BAU 100% sem controlo da bateria | Igual ao BAU 100%. | Igual ao BAU 100%. | Ação zero. O equipamento continua a existir no simulador, incluindo eventuais perdas passivas. |
-| `RBCBasicPolicy` — Basic | Usa preço atual e limiares fixos, sem previsões de preço; mantém serviço até à saída. A urgência pode exigir carga a qualquer hora. | Começa com preço abaixo do limiar, urgência ou proximidade do último arranque possível. | Carrega a preço abaixo do limiar barato e descarrega acima do limiar caro para consumo útil. |
-| `Smart` | Mantém as proteções de serviço; compara preços previstos e antecipa carga com excedente local. V2G é opcional. | Usa preço relativo, urgência e prazo; acrescenta arranque com excedente local. | Acrescenta captura solar, reserva para preços altos e limitação da carga da bateria ao pico local configurado. |
+| `RBCBasicPolicy` — Basic | Usa preço atual e limiar fixo, sem previsões de preço; mantém serviço até à saída. A urgência pode exigir carga a qualquer hora. | Começa com preço abaixo do limiar, urgência ou proximidade do último arranque possível. | Mesmo autoconsumo reativo do BAU: guarda excedente local e serve consumo local, sem arbitragem de rede. |
+| `Smart` | Mantém as proteções de serviço; compara preços previstos e antecipa carga com excedente local. V2G é opcional. | Usa preço relativo, urgência e prazo; acrescenta arranque com excedente local. | Coordena captura solar, arbitragem de preço, reservas e limitação da carga da bateria ao pico local configurado. |
 | `RBCCommunityPolicy` — Community | Acrescenta excedente comunitário às decisões de preço/serviço do Smart. | Pode aproveitar excedente comunitário, além do local e dos prazos. | Com mercado ativo, usa excedente partilhável e ajuda nos picos comunitários caros, com gatilho agregado de 15 kW. Sem mercado, usa a política local. |
 
 O BAU é uma hipótese operacional explícita: ligar e carregar; pedir uma lavagem
@@ -56,7 +56,12 @@ O Basic usa exclusivamente o preço atual: barato até **0,0765 €/kWh**, caro 
 de **0,1078 €/kWh**, neutro entre os dois. São os tercis da tarifa Core30 de 2023,
 arredondados a quatro casas decimais; não foram escolhidos com resultados de 2024.
 Os parâmetros `basic_cheap_price_eur_kwh` e `basic_expensive_price_eur_kwh` são
-fixos durante o job e ficam no export. Se faltar o preço, fica neutro e mantém
+fixos durante o job e ficam no export. EVs e eletrodomésticos usam o limiar barato
+e a urgência. A bateria atual usa `basic_storage_policy: self_consumption`:
+não carrega da rede por preço barato nem espera pelo limiar caro para servir
+consumo local. O limiar caro continua disponível para reproduzir a bateria
+anterior com `basic_storage_policy: price_only`.
+Se faltar o preço, fica neutro e mantém
 as decisões de serviço. Uma tarifa constante pode ser barata/cara segundo estes
 limiares absolutos. Não há um fallback horário no Basic atual.
 
@@ -64,15 +69,23 @@ Smart e Community mantêm a classificação relativa às previsões auditada ant
 Com tarifa constante ficam neutros. Sem preço atual usam o fallback histórico
 (0–7 e 22–23 favoráveis, 17–21 desfavoráveis); sem previsões e com preço atual
 ficam neutros. `basic_price_policy: forecast_relative` permite reproduzir a
-semântica histórica do Basic; a referência atual é `fixed_thresholds`.
+semântica histórica do Basic; sem escolha explícita da bateria, essa opção
+preserva `price_only`. A referência atual é `fixed_thresholds` com
+`self_consumption`. Esta última usa os defaults de bateria do BAU (taxas de 1,
+limiares de 0,05 kW e limites estratégicos de SOC de 20–90%). Selecionar
+explicitamente `price_only` conserva as taxas anteriores de 0,35 e o limiar
+solar de 0,25 kW, salvo configuração explícita.
 
-Smart e Community usam por omissão `price_charge_rate: 0.60`, tal como
-o Basic. A versão anterior desativava essa capacidade, adiava os EV mesmo em
+Smart e Community usam por omissão `price_charge_rate: 0.60`; o Basic atual
+não faz arbitragem de rede com a bateria. A versão anterior dos dois Smart
+desativava essa capacidade, adiava os EV mesmo em
 horas baratas e descarregava a bateria para qualquer consumo antes de avaliar
 a regra de preço. Isso explicava parte da inversão de custos.
 
 Os três usam a mesma base de proteção de serviço EV e de prazo. Smart
-acrescenta carga com excedente solar atual. Na bateria, dá prioridade ao solar,
+acrescenta carga EV e arranque de ciclos com excedente solar atual. O Basic já
+aproveita o excedente na bateria; o Smart coordena também previsões e preço.
+Na bateria, dá prioridade ao solar,
 alivia picos atuais e períodos caros, reserva espaço quando prevê excedente e
 limita a carga comprada à margem até ao pico local configurado. Uma previsão
 de pico futuro, isoladamente, não manda gastar já a bateria.
@@ -238,7 +251,7 @@ Ruff, formatação, mypy, dependências e instalação mínima fora do checkout 
 `tests/test_economic_baseline_hierarchy.py` verifica oportunidades de carga barata,
 captura solar, limites locais, autoridade da configuração real do mercado,
 reserva comunitária sem duplicação e limiares agregados. O Basic mantém as suas
-regras. A série histórica e a campanha revista usam as mesmas tarifas e dados;
+regras nessa campanha histórica. A série histórica e a campanha revista usam as mesmas tarifas e dados;
 a variante com mercado ligado é identificada separadamente como cenário
 configurado, sem alterar os ficheiros do dataset. Os resultados finais da
 campanha ficam no [relatório desta revisão](baseline_hierarchy_2026_10_29.md).

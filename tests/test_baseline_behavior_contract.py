@@ -314,10 +314,17 @@ def test_historical_basic_hourly_fallback_is_explicit_when_price_is_missing(hour
 
 
 @pytest.mark.parametrize("seconds", [15, 900, 3600])
-def test_basic_caps_purchased_charge_at_configured_soc_ceiling(seconds):
+@pytest.mark.parametrize("mode", ["price_only", "self_consumption"])
+def test_basic_caps_charge_at_configured_soc_ceiling(seconds, mode):
     agent, obs = policy(
         RBCBasicPolicy,
-        {"electricity_pricing": 0.05, "electrical_storage_soc": 0.89},
+        {
+            "electricity_pricing": 0.05,
+            "electrical_storage_soc": 0.89,
+            "pv_power_kw": 20.0,
+            "load_power_kw": 0.0,
+        },
+        hyper={"basic_storage_policy": mode},
         seconds=seconds,
     )
     action = agent.predict([obs])[0][0]
