@@ -123,7 +123,7 @@ class MILPPolicy(BaseAgent):
 
     @staticmethod
     def _soc(value):
-        value = value / 100.0 if value > 1.0 else value
+        # The entity contract publishes storage and connected-EV SOC as ratios.
         if not -1e-6 <= value <= 1 + 1e-6:
             raise ValueError("Observed SOC is outside [0, 1].")
         return float(np.clip(value, 0, 1))

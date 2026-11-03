@@ -134,15 +134,12 @@ def update_measured_problem(
     storage = []
     for asset in problem.stationary_storage:
         energy, physical_capacity = storage_energy[(asset.building_id, asset.action_name)]
-        if (
-            not np.isfinite(energy)
-            or not asset.minimum_energy_kwh - 1e-5 <= energy <= physical_capacity + 1e-5
-        ):
+        if not np.isfinite(energy) or not 0.0 <= energy <= physical_capacity + 1e-5:
             raise ValueError("Observed stationary energy is outside physical bounds.")
         storage.append(
             replace(
                 asset,
-                initial_energy_kwh=max(energy, asset.minimum_energy_kwh),
+                initial_energy_kwh=energy,
                 capacity_kwh=max(asset.capacity_kwh, energy),
                 final_energy_min_kwh=max(
                     asset.minimum_energy_kwh, terminal_storage_soc * physical_capacity
@@ -155,12 +152,9 @@ def update_measured_problem(
             energy, physical_capacity = ev_energy[(session.building_id, session.action_name)]
             if abs(physical_capacity - session.capacity_kwh) > 1e-4:
                 raise ValueError("Connected EV capacity differs from the forecast identity.")
-            if (
-                not np.isfinite(energy)
-                or not session.minimum_energy_kwh - 1e-5 <= energy <= physical_capacity + 1e-5
-            ):
+            if not np.isfinite(energy) or not 0.0 <= energy <= physical_capacity + 1e-5:
                 raise ValueError("Observed EV energy is outside physical bounds.")
-            session = replace(session, initial_energy_kwh=max(energy, session.minimum_energy_kwh))
+            session = replace(session, initial_energy_kwh=energy)
         sessions.append(session)
     cycles = [c for c in problem.deferrable_cycles if c.cycle_id not in started_cycles]
     running_actions: set[str] = set()

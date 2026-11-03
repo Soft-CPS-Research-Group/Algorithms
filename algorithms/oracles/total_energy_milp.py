@@ -108,7 +108,10 @@ class StorageAsset:
         )
         if minimum > capacity + _TOLERANCE:
             raise ValueError("minimum_energy_kwh exceeds capacity_kwh.")
-        if not minimum - _TOLERANCE <= initial <= capacity + _TOLERANCE:
+        # Passive losses or an arriving EV may leave measured energy below the
+        # discharge reserve. Keep that energy; future SOC constraints restore
+        # the reserve through actual charging, never by raising the initial state.
+        if initial > capacity + _TOLERANCE:
             raise ValueError("initial_energy_kwh is outside battery energy bounds.")
         if not minimum - _TOLERANCE <= final_min <= capacity + _TOLERANCE:
             raise ValueError("final_energy_min_kwh is outside battery energy bounds.")
@@ -189,7 +192,10 @@ class EVSession:
         )
         if minimum > capacity + _TOLERANCE:
             raise ValueError("EV minimum_energy_kwh exceeds capacity_kwh.")
-        if not minimum - _TOLERANCE <= initial <= capacity + _TOLERANCE:
+        # Passive losses or an arriving EV may leave measured energy below the
+        # discharge reserve. Keep that energy; future SOC constraints restore
+        # the reserve through actual charging, never by raising the initial state.
+        if initial > capacity + _TOLERANCE:
             raise ValueError("EV initial_energy_kwh is outside its energy bounds.")
         if not minimum - _TOLERANCE <= required <= capacity + _TOLERANCE:
             raise ValueError("EV required_final_energy_kwh is outside its energy bounds.")

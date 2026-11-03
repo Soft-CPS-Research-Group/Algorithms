@@ -149,3 +149,46 @@ def test_explicit_solver_threads_can_change_without_corrupting_native_scheduler(
     assert costs == pytest.approx([costs[0]] * len(costs))
     with pytest.raises(ValueError, match="positive integer"):
         SolveOptions(threads=0)
+
+
+@pytest.mark.parametrize("asset_kind", ["storage", "ev"])
+def test_measured_energy_below_reserve_is_restored_by_real_charge(asset_kind):
+    source = problem()
+    if asset_kind == "storage":
+        source = replace(
+            source,
+            stationary_storage=(replace(source.stationary_storage[0], minimum_energy_kwh=1),),
+            ev_sessions=(),
+        )
+    else:
+        source = replace(
+            source,
+            stationary_storage=(),
+            ev_sessions=(
+                replace(source.ev_sessions[0], minimum_energy_kwh=1, required_final_energy_kwh=4),
+            ),
+        )
+    updated, _ = update_measured_problem(
+        source,
+        storage_energy={("home", "electrical_storage"): (0.8, 10)},
+        ev_energy={("home", "charger"): (0.8, 40)},
+        started_cycles={},
+        now=0,
+        terminal_storage_soc=0.5,
+    )
+    asset = (updated.stationary_storage or updated.ev_sessions)[0]
+    assert asset.initial_energy_kwh == 0.8
+    assert asset.minimum_energy_kwh == 1
+    result = solve_total_energy_schedule(updated)
+    assert result.schedule is not None
+    action = next(s for s in result.schedule.series if s.action_name == asset.action_name)
+    assert action.values[0] * updated.timestep_hours >= 0.2 - 1e-6
+
+
+def test_entity_soc_uses_explicit_ratio_units_at_full_charge():
+    from algorithms.agents.milp_policy import MILPPolicy
+
+    assert MILPPolicy._soc(1.00000001) == 1
+    assert MILPPolicy._soc(0.01) == 0.01
+    with pytest.raises(ValueError, match="outside"):
+        MILPPolicy._soc(50)
