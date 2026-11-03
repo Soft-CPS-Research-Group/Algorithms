@@ -1,0 +1,50 @@
+schema_version: algorithms.config.v1
+metadata:
+  experiment_name: baseline-reference-core30-sim200
+  run_name: core30-reference-bau_no_battery
+  community_name: Core30 v3.3
+  description: Core30 v3.3 reference, 48 hours from 2023-01-01, Simulator 2.0.0; audited
+    defaults.
+tracking:
+  mlflow_enabled: false
+  log_level: WARNING
+  log_frequency: 512
+  progress_update_interval: 512
+  system_metrics_enabled: false
+simulator:
+  dataset_name: rec_pt_2023_core_30_v2
+  dataset_path: ./datasets/rec_pt_2023_core_30_v2/evaluation/core_30_normal.json
+  building_ids: null
+  central_agent: false
+  interface: entity
+  topology_mode: static
+  entity_encoding:
+    enabled: true
+    normalization: minmax_space
+    clip: true
+  reward_function: RewardFunction
+  simulation_start_time_step: 0
+  simulation_end_time_step: 192
+  episode_time_steps: 193
+  export:
+    profile: final
+    mode: end
+    include_business_as_usual: true
+    export_business_as_usual_timeseries: false
+training:
+  episodes: 0
+  seed: 22
+  steps_between_training_updates: 1
+  target_update_interval: 2
+pipeline:
+- algorithm: NormalNoBatteryPolicy
+  count: 1
+evaluation:
+  episodes: 1
+job:
+  profile: evaluate
+outputs:
+  model_artifacts: bundle
+bundle:
+  require_deployable: true
+  verification_samples: 32

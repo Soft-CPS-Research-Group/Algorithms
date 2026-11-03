@@ -1,6 +1,6 @@
 # BAU e controladores por regras
 
-Contrato atualizado em 02/11/2026, Algorithms 0.4, SoftCPS Simulator 2.0.0.
+Contrato atualizado em 03/11/2026, Algorithms 0.4, SoftCPS Simulator 2.0.0.
 Esta revisão define comportamento e verifica execução e exportação. Não é uma
 garantia universal de desempenho nem uma calibração empírica de hábitos humanos.
 
@@ -187,8 +187,8 @@ anual ficam no trabalho de avaliação posterior, sem reabrir agora a etapa 5.
 
 O Simulator 1.9.0 publicado omitia `citylearn.utils` e falhava a exportação do
 manifesto dos KPIs. A correção 1.9.1 inclui o módulo e testa o pacote instalado fora
-do código-fonte antes de publicar. Os ambientes suportados passam para a 1.9.2;
-a imagem Jetson antiga continua suspensa até à sua migração de plataforma.
+do código-fonte antes de publicar. A revisão inicial usou 1.9.2; a versão suportada atual é 2.0.0.
+A imagem Jetson antiga continua suspensa até à sua migração de plataforma.
 
 Validação local em checkout limpo: 1 882 testes unitários/integração passaram,
 23 foram ignorados com motivos explícitos, e 65 testes de jobs completos passaram.
@@ -279,3 +279,28 @@ em cada intervalo: mudanças de carga/sol, limites e perdas podem causar desvios
 O BAU nativo tem acesso direto ao estado interno do Simulator; os controladores
 do Algorithms e os seus bundles usam o contrato de observações. Os dois não
 devem ser declarados numericamente equivalentes.
+
+A auditoria atual, incluindo as janelas Core30, correções MILP e limitações da
+comparação económica, está no [relatório de novembro](baselines_core30_audit_2026_11_02.md).
+A verificação final passou 1 949 testes gerais (23 ignorados por condições
+explicitadas) e 68 testes de execução completa/exportação.
+
+
+### Configurações atuais reproduzíveis
+
+Os cinco templates em [`configs/templates/baselines/core30/`](../configs/templates/baselines/core30/)
+usam os defaults auditados, Core30 Normal v3.3, 48 h de janeiro de 2023, seed 22,
+uma avaliação determinística, exportação final, MLflow desligado e verificação
+obrigatória do bundle. Colocar o dataset da release do Simulator em
+`datasets/rec_pt_2023_core_30_v2` ou ajustar `simulator.dataset_path` ao destino.
+
+```console
+python run_experiment.py --config configs/templates/baselines/core30/bau.yaml --validate
+python run_experiment.py --config configs/templates/baselines/core30/bau.yaml
+```
+
+Escolher `bau`, `bau_no_battery`, `basic`, `smart_local` ou `community`.
+Os templates históricos 15 s/15 min/2022 acima mantêm dados e parâmetros próprios;
+não reproduzem automaticamente esta referência Core30. Para repetir uma janela
+remota, usar a configuração guardada no respetivo job e a imagem registada no
+[histórico da auditoria](baselines_core30_audit_2026_11_02.md).

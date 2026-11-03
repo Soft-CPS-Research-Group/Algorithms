@@ -10,7 +10,7 @@ separate retry directory; the handoff is not permission to overwrite a prior run
 
 The table below preserves the stage-3 evidence. The active runtime was upgraded
 to SoftCPS Simulator 2.0.0 in the [BAU/RBC review](../baseline_controllers.md),
-which reran the full default suite and 65 complete job contracts. The catalogue
+which reran the full default suite and 68 complete job contracts. The catalogue
 now has 37 names after retiring the public `RuleBasedPolicy`. Jetson remains
 suspended; historical platform evidence is not a new hardware certification.
 
