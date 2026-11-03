@@ -85,7 +85,7 @@ branches to the job runner or silently drop guards to make ONNX pass.
 
 ## Available Algorithms
 
-See the complete [39-name agent catalogue](docs/agent_catalogue.md). Offline agents
+See the complete [40-name agent catalogue](docs/agent_catalogue.md). Offline agents
 use the same job runner via `prepare_training`; recovered experiments and serving
 limitations are described in [the consolidation record](docs/consolidation/README.md).
 

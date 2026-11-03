@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
@@ -39,6 +40,8 @@ except ImportError:  # pragma: no cover - compatibility fallback for other SciPy
 
 
 _NUMERICAL_TOLERANCE = 1.0e-8
+_HIGHS_LOCK = threading.RLock()
+_HIGHS_THREAD_COUNT: Optional[int] = None
 
 
 def _finite_non_negative(name: str, value: float) -> float:
@@ -264,6 +267,7 @@ class SolveOptions:
     time_limit_seconds: Optional[float] = None
     mip_relative_gap: Optional[float] = None
     node_limit: Optional[int] = None
+    threads: Optional[int] = None
     presolve: bool = True
     solver: str = "choose"
     display_solver_output: bool = False
@@ -277,6 +281,8 @@ class SolveOptions:
             raise ValueError("mip_relative_gap must be >= 0 when provided.")
         if self.node_limit is not None and int(self.node_limit) < 0:
             raise ValueError("node_limit must be >= 0 when provided.")
+        if self.threads is not None and (int(self.threads) != self.threads or self.threads < 1):
+            raise ValueError("threads must be a positive integer when provided.")
         solver = str(self.solver).strip().lower()
         if solver not in {"choose", "simplex", "ipm"}:
             raise ValueError("solver must be one of: choose, simplex, ipm.")
@@ -566,10 +572,41 @@ def _solver_options(options: SolveOptions) -> dict[str, Any]:
         payload["mip_rel_gap"] = float(options.mip_relative_gap)
     if options.node_limit is not None:
         payload["node_limit"] = int(options.node_limit)
+    if options.threads is not None:
+        payload["threads"] = int(options.threads)
     return payload
 
 
 def _milp_primal_only(
+    *,
+    c: np.ndarray,
+    integrality: np.ndarray,
+    bounds: Bounds,
+    constraints: LinearConstraint | Sequence[LinearConstraint],
+    options: Mapping[str, Any],
+    x0: Optional[np.ndarray] = None,
+) -> OptimizeResult:
+    """Serialize access to the native process-global HiGHS thread scheduler.
+
+    Explicit CPU budgets must also work after a default-thread oracle in the
+    same process. HiGHS requires resetting its pool when that budget changes.
+    Independent jobs/processes remain parallel; native calls in one process
+    share this lock so a pool cannot be reset while another call is using it.
+    """
+    global _HIGHS_THREAD_COUNT
+    with _HIGHS_LOCK:
+        requested = int(options.get("threads", 0))
+        if (_highs_core is not None and hasattr(_highs_core._Highs, "resetGlobalScheduler")
+                and requested != _HIGHS_THREAD_COUNT):
+            _highs_core._Highs.resetGlobalScheduler(True)
+            _HIGHS_THREAD_COUNT = requested
+        return _milp_primal_only_impl(
+            c=c, integrality=integrality, bounds=bounds, constraints=constraints,
+            options=options, x0=x0,
+        )
+
+
+def _milp_primal_only_impl(
     *,
     c: np.ndarray,
     integrality: np.ndarray,
@@ -606,6 +643,7 @@ def _milp_primal_only(
     # public MILP validator. Route it explicitly to avoid a misleading
     # unrecognized-option warning on the private fast path.
     solver_choice = prepared_options.pop("solver", None)
+    thread_count = prepared_options.pop("threads", None)
     prepared = _milp_iv(
         c,
         integrality,
@@ -627,6 +665,8 @@ def _milp_primal_only(
     ) = prepared
     if solver_choice is not None:
         highs_option_values["solver"] = solver_choice
+    if thread_count is not None:
+        highs_option_values["threads"] = int(thread_count)
 
     model = _highs_core.HighsLp()
     model.num_col_ = int(objective.size)
