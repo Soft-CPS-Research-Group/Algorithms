@@ -10,6 +10,8 @@ As janelas são 1–7 de janeiro e 1–7 de julho de 2024, com 672 decisões de 
 
 O semanal conhece apenas a janela completa avaliada. O controlador `MILP` resolve novamente em cada passo e recebe, no máximo, as próximas 24 horas. Ambos partem do mesmo reset e usam os mesmos dados, preços, equipamentos e limite de serviço. As reservas terminais são definidas antes da resolução: 50% da capacidade das baterias estacionárias e o alvo anunciado dos EVs que continuam ligados no fim. Não se usa o resultado semanal para orientar o MPC.
 
+Os EVs cuja partida ocorre depois do fim da janela têm um alvo terminal de melhor esforço, e não uma partida inventada. Em janeiro, o EV do Member_022 chega quatro horas antes do fim com 22,31071 kWh; o alvo é 45,66655 kWh. O carregador de 3,68 kW, mesmo sempre ligado, só permite chegar a 36,01217 kWh nesse intervalo. O défice terminal inevitável é 9,65438 kWh. A fase de serviço encontra esse mínimo e a fase de custo conserva-o. Não há défice planeado nas partidas que efetivamente ocorrem dentro da janela. Em julho, o défice mínimo é zero, incluindo os alvos terminais.
+
 O mercado mantém os pressupostos anteriores: compra externa ao preço do dataset; transações internas a 80% desse preço; venda externa sem receita; autoconsumo solar sem custo de aquisição. Como os pagamentos e recebimentos internos se cancelam, o custo agregado corresponde ao preço multiplicado pela importação líquida positiva.
 
 ## Correções de física

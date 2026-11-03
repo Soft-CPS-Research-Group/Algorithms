@@ -92,6 +92,7 @@ def audit(reference_dir: Path, job_dir: Path):
     ev_frames = {}
     charger_frames = {}
     ev_rows = []
+    censored = set(problem.metadata["boundary_diagnostics"]["right_truncated_ev_session_ids"])
     for session in problem.ev_sessions:
         identity = problem.metadata["ev_identity_by_session"][session.session_id]
         if identity not in ev_frames:
@@ -122,6 +123,10 @@ def audit(reference_dir: Path, job_dir: Path):
         ev_rows.append(
             {
                 "session": session.session_id,
+                "right_censored": session.session_id in censored,
+                "model_shortfall_kwh": solved["ev_departure_shortfall_kwh"].get(
+                    session.session_id, 0
+                ),
                 "max_energy_residual_kwh": float(np.max(abs(prediction - actual))),
                 "max_flow_residual_kwh": float(np.max(abs(flows - delivered))),
                 "final_energy_kwh": float(actual[-1]),
@@ -161,12 +166,15 @@ def audit(reference_dir: Path, job_dir: Path):
         "terminal_storage": all(
             r["final_energy_kwh"] >= r["minimum_final_energy_kwh"] - 1e-4 for r in storage
         ),
-        "ev_targets": all(r["shortfall_kwh"] <= 1e-4 for r in ev_rows),
+        "ev_targets": all(
+            r["shortfall_kwh"] <= (r["model_shortfall_kwh"] if r["right_censored"] else 0) + 1e-4
+            for r in ev_rows
+        ),
         "state_fidelity": all(r["max_energy_residual_kwh"] <= 1e-4 for r in storage + ev_rows),
         "flow_fidelity": all(r["max_flow_residual_kwh"] <= 1e-4 for r in storage + ev_rows)
         and net_residual <= 1e-4,
         "service_phase": solved["service_phase_optimal"] is True
-        and solved["minimum_total_ev_shortfall_kwh"] <= 1e-6,
+        and all(r["right_censored"] or r["model_shortfall_kwh"] <= 1e-6 for r in ev_rows),
     }
     bound_usable = (
         problem.metadata.get("physics") == "simulator_linear"
@@ -195,6 +203,7 @@ def audit(reference_dir: Path, job_dir: Path):
         else None,
         "model_mip_gap": solved["solver"]["mip_gap"],
         "model_solver_status": solved["solver"]["status"],
+        "minimum_terminal_best_effort_shortfall_kwh": solved["minimum_total_ev_shortfall_kwh"],
         "solve_wall_seconds": solved.get("solve_wall_seconds", solved.get("wall_seconds")),
         "peak_kw": float(power.max()),
         "mean_daily_peak_kw": float(

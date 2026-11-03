@@ -104,14 +104,15 @@ def test_capacity_clipped_ev_can_finish_below_command_deadband(clipping):
         assert result.solver.status == "infeasible"
 
 
-def test_soc_power_clipping_branch_matches_battery_transfer():
+@pytest.mark.parametrize("capacity", [10, 40])
+def test_soc_power_clipping_branch_matches_battery_transfer(capacity):
     from citylearn.base import EpisodeTracker
     from citylearn.energy_model import Battery
 
     tracker = EpisodeTracker(0, 2)
     tracker.next_episode(3, False, False, 0)
     battery = Battery(
-        capacity=10,
+        capacity=capacity,
         nominal_power=4,
         initial_soc=0.95,
         efficiency=1,
@@ -133,20 +134,26 @@ def test_soc_power_clipping_branch_matches_battery_transfer():
         "charger",
         0,
         0,
-        10,
-        9.5,
-        10,
+        capacity,
+        capacity * 0.95,
+        capacity,
         0,
         4,
         0,
         min_charge_kw=3,
+        allow_departure_shortfall=True,
         allow_charge_clipping=True,
-        charge_power_envelope=((0, 4), (-3.6, 36.4)),
+        charge_power_envelope=((0, 4), (-36 / capacity, 36.4)),
     )
-    result = solve_total_energy_schedule(_problem(ev_sessions=(ev,)))
-    # Capacity clips again to 0.5 kWh, with no phantom minimum-power energy.
+    result = solve_total_energy_schedule(
+        _problem(ev_sessions=(ev,)),
+        SolveOptions(lexicographic_shortfall_tolerance_kwh=0),
+    )
+    # The 10 kWh battery fills at 0.5 kWh; the 40 kWh battery remains below
+    # capacity and transfers 0.55 kWh at the SOC-dependent power ceiling.
     assert result.solver.optimal
     assert result.cost_eur == pytest.approx(actual, abs=1e-6)
+    assert result.ev_final_energy_kwh["ev"] == pytest.approx(capacity * 0.95 + actual, abs=1e-6)
     roundtrip = TotalEnergyProblem.from_json(_problem(ev_sessions=(ev,)).to_json())
     assert roundtrip.ev_sessions == (ev,)
 
