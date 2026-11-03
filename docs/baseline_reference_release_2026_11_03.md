@@ -65,7 +65,61 @@ Os templates oficiais estão em `configs/templates/baselines/core30/`: `bau.yaml
 A validação verifica invariância do Basic a previsões, decisões de serviço urgente,
 respeito pelos limites, preservação do classificador Smart/Community, igualdade
 dos dois nomes Smart, configurações e roundtrip dos bundles novos e históricos.
-Os resultados finais dos testes e ensaios são registados após a sua conclusão.
+
+No checkout limpo do commit de implementação
+`258fc6009e7df83dea08270a50cadd89fbda31e9`, com Simulator 2.0.0 publicado:
+**1 971 testes gerais passaram, 23 foram ignorados com motivos explícitos, e
+69 testes de jobs completos/exportação passaram**. Ruff, formatação e mypy
+passaram. Foi usada a configuração CPU da CI. Os ficheiros locais de experiências
+ignorados pelo Git ficaram preservados e fora do checkout de aceitação.
+
+Repetiram-se apenas as quatro semanas de 2024 do Basic pelo runner comum,
+em dois processos CPU locais, com zero treino, seed de avaliação 6763,
+672 intervalos por semana e verificação obrigatória de 32 decisões por bundle.
+O dataset e os 87 ficheiros referenciados nos manifests, os preços exportados,
+as janelas, o mercado e o Simulator coincidiram com a campanha anterior.
+O caminho local do dataset e o nome dos jobs mudaram; as hipóteses económicas
+e de serviço permaneceram iguais. Native BAU desativado, como na comparação anterior.
+
+| Semana de 2024 | Basic atual (€) | Basic anterior (€) | Máximo atual (kW) | Média dos máximos diários (kW) |
+|---|---:|---:|---:|---:|
+| 1–7 janeiro | 192,792932 | 187,310688 | 58,700710 | 40,192889 |
+| 1–7 abril | 15,066227 | 13,222251 | 58,909031 | 37,443913 |
+| 1–7 julho | 77,316247 | 68,686144 | 28,464643 | 21,804848 |
+| 1–7 outubro | 158,424730 | 152,421481 | 51,828156 | 38,923922 |
+
+O Basic atual totalizou **443,600136 €**, mais **5,208%** que os 421,640563 €
+anteriores. O máximo foi 58,909031 kW e a média diária 34,591393 kW. Foram
+observadas 352 saídas EV e 302 ciclos concluídos, sem ciclos perdidos ou
+violações elétricas. Serviço mínimo viável 100%, precisão de alvo 341/352 =
+96,875%, cobertura completa e zero desconhecidos. SOC das três baterias ativas
+entre 30,474% e 90%, throughput 133,942 kWh. Os exports de baterias vazias de
+edifícios sem armazenamento foram excluídos da estatística SOC. Todos os bundles
+passaram os 32 exemplos com erro máximo zero.
+
+Critérios mantidos: serviço mínimo viável ≥99,9%, precisão ≥80% em cada semana,
+coberturas 100%, zero ciclos perdidos, energia de violação ≤1e−6 kWh e zero
+eventos, SOC físico em [0,1] com tolerância 1e−6. Os quatro jobs passaram.
+
+| Referência atual | Custo dos 28 dias (€) | Máximo (kW) | Média dos máximos diários (kW) |
+|---|---:|---:|---:|
+| Basic | 443,600136 | 58,909031 | 34,591393 |
+| Smart | 420,035168 | 55,372711 | 30,571767 |
+| Community | 410,510912 | 55,372711 | 29,911209 |
+
+Os resultados Smart e Community são os da campanha anterior, cujas políticas
+foram preservadas; não foram simulados de novo neste fecho. Smart custa 5,312%
+menos que o novo Basic neste conjunto. A simplificação aumentou significativamente
+o pico de abril: 34,494 → 58,909 kW, embora o maior pico das quatro semanas
+tenha mudado pouco. Não se promete uma hierarquia universal ou desempenho anual.
+Não se ajustaram os limiares depois de observar estes resultados.
+
+Evidência local: `runs/baseline-reference-close-20261103/`, incluindo `protocol.json`,
+`execution.json`, `summary.json/csv`, configurações, logs, outputs completos dos
+quatro jobs e os scripts `analysis/run_basic.py` e `analysis/score_basic.py`.
+Os jobs são `closed-2024-01-basic`, `closed-2024-04-basic`, `closed-2024-07-basic`
+e `closed-2024-10-basic`. Os testes de aceitação encontram-se também registados
+no PR deste fecho. Nenhum job remoto anterior foi alterado.
 
 As avaliações anteriores do Basic descrevem a versão com previsões. Não devem
 ser apresentadas como resultados desta política simplificada. O diagnóstico
