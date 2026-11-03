@@ -66,6 +66,10 @@ def split_individual_total_energy_problems(
     for building_index, building_id in enumerate(problem.building_ids):
         metadata = {
             **dict(problem.metadata),
+            "action_inventory": [
+                dict(item) for item in problem.metadata.get("action_inventory", ())
+                if item["building_id"] == building_id
+            ],
             "source_problem_id": problem.problem_id,
             "individual_building_id": building_id,
             "decomposition": "exact_individual_settlement_by_building",
@@ -169,6 +173,8 @@ def _expected_action_keys(
         *problem.deferrable_cycles,
     ):
         keys.add((item.building_id, item.action_name))
+    for item in problem.metadata.get("action_inventory", ()):
+        keys.add((item["building_id"], item["action_name"]))
     building_order = {name: index for index, name in enumerate(problem.building_ids)}
     return tuple(sorted(keys, key=lambda key: (building_order[key[0]], key[1])))
 
@@ -309,7 +315,7 @@ def _combine_schedule(
             ),
             "per_building_lexicographic_shortfall_tolerance": True,
             "includes_stationary_storage": bool(problem.stationary_storage),
-            "includes_ev_v2g": bool(problem.ev_sessions),
+            "includes_ev_v2g": any(session.max_discharge_kw > 0.0 for session in problem.ev_sessions),
             "includes_deferrable_appliances": bool(problem.deferrable_cycles),
             "includes_electrical_service": bool(problem.electrical_services),
             "requires_citylearn_replay": True,

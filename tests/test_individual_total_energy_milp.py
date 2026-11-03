@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -117,6 +119,30 @@ def test_bounded_decomposition_sums_bounds_and_retains_building_evidence():
     assert len(result.buildings) == 2
     assert all(item.result.certificate_valid for item in result.buildings)
     assert "not a community-settlement optimum" in result.guarantee
+
+
+@pytest.mark.parametrize("mode", ["schedule", "bounded"])
+def test_decomposition_preserves_idle_devices_without_leaking_other_owners(mode):
+    source = _source()
+    inventory = [
+        {"building_id": owner, "action_name": "idle_charger", "unit": "kW",
+         "positive_direction": "charge"}
+        for owner in source.building_ids
+    ]
+    source = replace(source, metadata={**source.metadata, "action_inventory": inventory})
+    parts = split_individual_total_energy_problems(source)
+    for part in parts:
+        assert {x["building_id"] for x in part.metadata["action_inventory"]} == set(part.building_ids)
+    result = solve_decomposed_individual_total_energy(source, mode=mode)
+    assert result.schedule is not None
+    actions = {(x.building_id, x.action_name): x.values for x in result.schedule.series}
+    assert set(actions) == {
+        ("Home_A", "dishwasher_a"), ("Home_B", "battery_b"),
+        ("Home_A", "idle_charger"), ("Home_B", "idle_charger"),
+    }
+    assert actions[("Home_A", "idle_charger")] == (0.0, 0.0)
+    assert actions[("Home_B", "idle_charger")] == (0.0, 0.0)
+    assert source.metadata["action_inventory"] == inventory
 
 
 def test_soft_service_totals_preserve_exact_lexicographic_optimum():
