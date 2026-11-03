@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Optional, Sequence
 
 import numpy as np
-from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.optimize import Bounds, LinearConstraint
 from scipy.sparse import coo_array
 
 from algorithms.oracles.citylearn_contract import complete_idle_series
@@ -39,6 +39,7 @@ from algorithms.oracles.perfect_foresight_milp import (
     SemanticSchedule,
     SolveOptions,
     SolverInfo,
+    _milp_primal_only,
 )
 
 _TOLERANCE = 1.0e-8
@@ -1051,7 +1052,9 @@ def _solve(
             if extra_constraint is None
             else (base_constraints, extra_constraint)
         )
-        return milp(
+        # Reuse the bounded oracle's HiGHS adapter. SciPy 1.15.1 otherwise
+        # spends minutes converting basis marginals that milp discards.
+        return _milp_primal_only(
             c=solver_objective,
             integrality=integrality,
             bounds=bounds,
