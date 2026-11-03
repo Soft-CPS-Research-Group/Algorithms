@@ -1,9 +1,11 @@
 """Immediate charging respects a user SOC ceiling, including the final interval."""
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from algorithms.agents.baseline_policies import NormalPolicy, NormalTargetPolicy
 from algorithms.configuration.agents import RuleBasedAlgorithmConfig
@@ -87,6 +89,19 @@ def test_user_target_is_a_separate_validated_policy():
     target, _ = policy(NormalTargetPolicy, ev(soc=0.81), ("electric_vehicle_storage_charger_1",))
     assert normal.predict([obs]) == [[1.0]]
     assert target.predict([obs]) == [[0.0]]
+
+
+def test_core30_default_bau_and_full_charge_variant_are_unambiguous():
+    root = Path(__file__).resolve().parents[1] / "configs/templates/baselines/core30"
+    main = yaml.safe_load((root / "bau.yaml").read_text())
+    alias = yaml.safe_load((root / "bau_target.yaml").read_text())
+    full = yaml.safe_load((root / "bau_full_charge.yaml").read_text())
+    assert main == alias
+    assert main["pipeline"][0]["algorithm"] == "NormalTargetPolicy"
+    assert full["pipeline"][0]["algorithm"] == "NormalPolicy"
+    for name in ("bau", "bau_full_charge", "basic", "smart", "community"):
+        recipe = yaml.safe_load((root / f"{name}.yaml").read_text())
+        assert recipe["simulator"]["export"]["include_business_as_usual"] is False
 
 
 def test_lossy_physical_charger_approaches_target_without_overshoot():

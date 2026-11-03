@@ -1,5 +1,9 @@
 # Fecho das referências BAU, Basic, Smart e Community
 
+> Decisão posterior: o BAU principal é `NormalTargetPolicy`; `NormalPolicy`
+> permanece como BAU 100%. Este documento conserva o fecho anterior.
+> Consultar o [contrato atual](baseline_controllers.md) para as referências em vigor.
+
 Decisão de Tiago em 03/11/2026, após a calibração e o diagnóstico dos picos.
 
 | Nome público | Identificador do job | Decisão |

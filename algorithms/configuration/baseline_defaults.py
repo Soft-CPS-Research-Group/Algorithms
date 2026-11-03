@@ -23,9 +23,18 @@ SMART_DEFAULTS = {"price_charge_rate": 0.0}
 ECONOMIC_SMART_DEFAULTS = {"price_charge_rate": 0.60}
 
 
-def policy_defaults(name):
+def policy_defaults(name, hyperparameters=None):
     if name == "RBCBasicPolicy":
-        return BASIC_PRICE_DEFAULTS
+        hyper = hyperparameters or {}
+        # Forecast-relative recipes are historical; preserve their battery rule
+        # unless the caller explicitly opts into the new storage policy.
+        legacy = hyper.get("basic_price_policy") == "forecast_relative"
+        mode = hyper.get("basic_storage_policy", "price_only" if legacy else "self_consumption")
+        return {
+            **BASIC_PRICE_DEFAULTS,
+            **(NORMAL_DEFAULTS if mode == "self_consumption" else {}),
+            "basic_storage_policy": mode,
+        }
     if name == "RBCCommunityPolicy":
         return {
             **ECONOMIC_SMART_DEFAULTS,

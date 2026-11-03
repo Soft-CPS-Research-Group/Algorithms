@@ -4,22 +4,28 @@ Contrato atualizado em 03/11/2026, Algorithms 0.4, SoftCPS Simulator 2.0.0.
 Esta revisão define comportamento e verifica execução e exportação. Não é uma
 garantia universal de desempenho nem uma calibração empírica de hábitos humanos.
 
+A [comparação atual do Core30](baseline_comparison_core30.md) usa o BAU com
+limite como denominador. Os relatórios históricos mantêm a referência original
+e identificam quando foram substituídos.
+
 ## Controladores principais
 
 | Controlador | EV | Máquina de lavar ou outro ciclo adiável | Bateria doméstica |
 |---|---|---|---|
-| `NormalPolicy` — BAU com bateria | Pede carga imediatamente após a ligação, sem esperar por preço ou sol. Por omissão, alvo de 100%. | Inicia no primeiro instante em que existe um pedido e o simulador permite o arranque. | Autoconsumo: carrega com excedente fotovoltaico e descarrega para consumo local. |
-| `NormalTargetPolicy` — BAU com limite do utilizador | Pede carga imediatamente até ao SOC pedido para a sessão. Limita a última ordem para não ultrapassar esse alvo. | Igual ao BAU com bateria. | Igual ao BAU com bateria. |
-| `NormalNoBatteryPolicy` — BAU sem controlo da bateria | Igual ao BAU. | Igual ao BAU. | Ação zero. O equipamento continua a existir no simulador, incluindo eventuais perdas passivas. |
-| `RBCBasicPolicy` — Basic | Usa preço atual e limiares fixos, sem previsões de preço; mantém serviço até à saída. A urgência pode exigir carga a qualquer hora. | Começa com preço abaixo do limiar, urgência ou proximidade do último arranque possível. | Carrega a preço abaixo do limiar barato e descarrega acima do limiar caro para consumo útil. |
-| `Smart` | Mantém as proteções de serviço; compara preços previstos e antecipa carga com excedente local. V2G é opcional. | Usa preço relativo, urgência e prazo; acrescenta arranque com excedente local. | Acrescenta captura solar, reserva para preços altos e limitação da carga da bateria ao pico local configurado. |
+| `NormalPolicy` — BAU 100% (variante) | Pede carga imediatamente após a ligação, sem esperar por preço ou sol. Por omissão, alvo de 100%. | Inicia no primeiro instante em que existe um pedido e o simulador permite o arranque. | Autoconsumo: carrega com excedente fotovoltaico e descarrega para consumo local. |
+| `NormalTargetPolicy` — BAU (referência principal) | Pede carga imediatamente até ao SOC pedido para a sessão. Limita a última ordem para não ultrapassar esse alvo. | Inicia logo que o pedido pode arrancar. | Autoconsumo local, sem arbitragem. |
+| `NormalNoBatteryPolicy` — BAU 100% sem controlo da bateria | Igual ao BAU 100%. | Igual ao BAU 100%. | Ação zero. O equipamento continua a existir no simulador, incluindo eventuais perdas passivas. |
+| `RBCBasicPolicy` — Basic | Usa preço atual e limiar fixo, sem previsões de preço; mantém serviço até à saída. A urgência pode exigir carga a qualquer hora. | Começa com preço abaixo do limiar, urgência ou proximidade do último arranque possível. | Mesmo autoconsumo reativo do BAU: guarda excedente local e serve consumo local, sem arbitragem de rede. |
+| `Smart` | Mantém as proteções de serviço; compara preços previstos e antecipa carga com excedente local. V2G é opcional. | Usa preço relativo, urgência e prazo; acrescenta arranque com excedente local. | Coordena captura solar, arbitragem de preço, reservas e limitação da carga da bateria ao pico local configurado. |
 | `RBCCommunityPolicy` — Community | Acrescenta excedente comunitário às decisões de preço/serviço do Smart. | Pode aproveitar excedente comunitário, além do local e dos prazos. | Com mercado ativo, usa excedente partilhável e ajuda nos picos comunitários caros, com gatilho agregado de 15 kW. Sem mercado, usa a política local. |
 
 O BAU é uma hipótese operacional explícita: ligar e carregar; pedir uma lavagem
-e iniciar. Não pretende otimizar custo. **A referência principal continua a ser
-`NormalPolicy`, com bateria e carga EV até 100%.** `NormalTargetPolicy` é uma
-variante separada para comparar a carga imediata com os RBCs usando o SOC pedido.
-O template é `configs/templates/baselines/core30/bau_target.yaml`.
+e iniciar. Não pretende otimizar custo. **A referência principal é agora
+`NormalTargetPolicy`, com bateria e limite EV definido pelo utilizador.**
+`NormalPolicy` mantém-se como variante BAU 100%. A decisão sucede ao ensaio inicial
+da variante com limite, em 03/11/2026. O template principal é
+`configs/templates/baselines/core30/bau.yaml`; `bau_target.yaml` é uma cópia
+compatível. `bau_full_charge.yaml` seleciona explicitamente o BAU 100%.
 
 O BAU com limite lê o SOC pedido de cada EV ligado, sem preços, previsões,
 adiamento ou V2G. A última ordem de carga fica limitada à energia que falta até
@@ -50,7 +56,12 @@ O Basic usa exclusivamente o preço atual: barato até **0,0765 €/kWh**, caro 
 de **0,1078 €/kWh**, neutro entre os dois. São os tercis da tarifa Core30 de 2023,
 arredondados a quatro casas decimais; não foram escolhidos com resultados de 2024.
 Os parâmetros `basic_cheap_price_eur_kwh` e `basic_expensive_price_eur_kwh` são
-fixos durante o job e ficam no export. Se faltar o preço, fica neutro e mantém
+fixos durante o job e ficam no export. EVs e eletrodomésticos usam o limiar barato
+e a urgência. A bateria atual usa `basic_storage_policy: self_consumption`:
+não carrega da rede por preço barato nem espera pelo limiar caro para servir
+consumo local. O limiar caro continua disponível para reproduzir a bateria
+anterior com `basic_storage_policy: price_only`.
+Se faltar o preço, fica neutro e mantém
 as decisões de serviço. Uma tarifa constante pode ser barata/cara segundo estes
 limiares absolutos. Não há um fallback horário no Basic atual.
 
@@ -58,15 +69,23 @@ Smart e Community mantêm a classificação relativa às previsões auditada ant
 Com tarifa constante ficam neutros. Sem preço atual usam o fallback histórico
 (0–7 e 22–23 favoráveis, 17–21 desfavoráveis); sem previsões e com preço atual
 ficam neutros. `basic_price_policy: forecast_relative` permite reproduzir a
-semântica histórica do Basic; a referência atual é `fixed_thresholds`.
+semântica histórica do Basic; sem escolha explícita da bateria, essa opção
+preserva `price_only`. A referência atual é `fixed_thresholds` com
+`self_consumption`. Esta última usa os defaults de bateria do BAU (taxas de 1,
+limiares de 0,05 kW e limites estratégicos de SOC de 20–90%). Selecionar
+explicitamente `price_only` conserva as taxas anteriores de 0,35 e o limiar
+solar de 0,25 kW, salvo configuração explícita.
 
-Smart e Community usam por omissão `price_charge_rate: 0.60`, tal como
-o Basic. A versão anterior desativava essa capacidade, adiava os EV mesmo em
+Smart e Community usam por omissão `price_charge_rate: 0.60`; o Basic atual
+não faz arbitragem de rede com a bateria. A versão anterior dos dois Smart
+desativava essa capacidade, adiava os EV mesmo em
 horas baratas e descarregava a bateria para qualquer consumo antes de avaliar
 a regra de preço. Isso explicava parte da inversão de custos.
 
 Os três usam a mesma base de proteção de serviço EV e de prazo. Smart
-acrescenta carga com excedente solar atual. Na bateria, dá prioridade ao solar,
+acrescenta carga EV e arranque de ciclos com excedente solar atual. O Basic já
+aproveita o excedente na bateria; o Smart coordena também previsões e preço.
+Na bateria, dá prioridade ao solar,
 alivia picos atuais e períodos caros, reserva espaço quando prevê excedente e
 limita a carga comprada à margem até ao pico local configurado. Uma previsão
 de pico futuro, isoladamente, não manda gastar já a bateria.
@@ -140,7 +159,7 @@ com uma mensagem explícita, em vez de produzir zeros silenciosamente.
 
 ## Serviço EV e potência mínima
 
-O BAU pede carga até 100%, sem usar a tolerância do alvo de saída para parar
+O BAU 100% pede carga até 100%, sem usar a tolerância do alvo de saída para parar
 antecipadamente. Os RBCs procuram o SOC pedido, com tolerância por omissão de
 0,001 (0,1 ponto percentual), em vez dos anteriores 0,04 (4 pontos). Um valor
 explícito numa configuração histórica continua a ser respeitado.
@@ -161,7 +180,12 @@ O simulador calcula opcionalmente um contrafactual próprio,
 `citylearn.agents.baseline.BusinessAsUsualAgent`. Até à versão 1.9.1, esse agente
 distribuía a carga dos EVs pelo tempo até à saída. **Não é `NormalPolicy`.**
 Os KPIs com referência ao BAU interno não devem ser apresentados como uma
-comparação contra o nosso BAU imediato.
+comparação contra o BAU principal com limite do utilizador. Os templates Core30
+atuais desligam esse contrafactual. `results/kpis.json` declara a referência
+principal em `primary_comparison_reference`, sem fingir que a executou. Os
+campos `baseline_reference` e os rácios nativos continuam a identificar o
+diagnóstico do Simulator, quando explicitamente solicitado. As reduções
+principais exigem um job `NormalTargetPolicy` com inputs equivalentes.
 
 `results/kpis.json` identifica agora essa implementação e a versão do simulador
 em `baseline_reference`. Uma comparação com o BAU definido neste documento exige
@@ -227,7 +251,7 @@ Ruff, formatação, mypy, dependências e instalação mínima fora do checkout 
 `tests/test_economic_baseline_hierarchy.py` verifica oportunidades de carga barata,
 captura solar, limites locais, autoridade da configuração real do mercado,
 reserva comunitária sem duplicação e limiares agregados. O Basic mantém as suas
-regras. A série histórica e a campanha revista usam as mesmas tarifas e dados;
+regras nessa campanha histórica. A série histórica e a campanha revista usam as mesmas tarifas e dados;
 a variante com mercado ligado é identificada separadamente como cenário
 configurado, sem alterar os ficheiros do dataset. Os resultados finais da
 campanha ficam no [relatório desta revisão](baseline_hierarchy_2026_10_29.md).
@@ -248,9 +272,9 @@ não representam automaticamente a campanha com os defaults auditados.
 
 ## Atualização para Simulator 2.0.0 e Core30 v3.3
 
-Os dois BAU pedem carga máxima simultaneamente em todos os carregadores ligados,
-até 100%. A potência entregue é limitada proporcionalmente pelo Simulator; a
-ordem dos carregadores não reserva capacidade para o primeiro. O BAU não reduz
+As duas variantes históricas `NormalPolicy` e `NormalNoBatteryPolicy` pedem
+carga máxima simultaneamente nos carregadores ligados, até 100%. A potência entregue é limitada proporcionalmente pelo Simulator; a
+ordem dos carregadores não reserva capacidade para o primeiro. O BAU 100% não reduz
 o pedido pela estimativa de potência aceite perto de 100%. Essa estimativa é,
 porém, usada para calcular a procura a servir pela bateria da casa: o pedido
 nominal de um carro quase cheio não constitui consumo efetivo. A bateria doméstica
@@ -316,7 +340,7 @@ explicitadas) e 68 testes de execução completa/exportação.
 
 ### Configurações atuais reproduzíveis
 
-Os cinco templates em [`configs/templates/baselines/core30/`](../configs/templates/baselines/core30/)
+Os templates em [`configs/templates/baselines/core30/`](../configs/templates/baselines/core30/)
 usam os defaults auditados, Core30 Normal v3.3, 48 h de janeiro de 2023, seed 22,
 uma avaliação determinística, exportação final, MLflow desligado e verificação
 obrigatória do bundle. Colocar o dataset da release do Simulator em
@@ -327,7 +351,9 @@ python run_experiment.py --config configs/templates/baselines/core30/bau.yaml --
 python run_experiment.py --config configs/templates/baselines/core30/bau.yaml
 ```
 
-Escolher `bau`, `bau_no_battery`, `basic`, `smart` ou `community`.
+Escolher `bau` (principal), `bau_full_charge` (100%), `bau_no_battery`
+(100% sem controlo da bateria), `basic`, `smart` ou `community`.
+`bau_target.yaml` permanece como caminho compatível para o BAU principal.
 `smart_local.yaml` fica como caminho de compatibilidade para a mesma referência Smart.
 Os templates históricos 15 s/15 min/2022 acima mantêm dados e parâmetros próprios;
 não reproduzem automaticamente esta referência Core30. Para repetir uma janela

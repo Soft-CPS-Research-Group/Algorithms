@@ -95,6 +95,7 @@ class AlgorithmHyperparameters(BaseModel):
 
 class RuleBasedHyperparameters(BaseModel):
     basic_price_policy: Literal["fixed_thresholds", "forecast_relative"] = "fixed_thresholds"
+    basic_storage_policy: Literal["price_only", "self_consumption"] = "price_only"
     basic_cheap_price_eur_kwh: float = Field(
         default=BASIC_PRICE_DEFAULTS["basic_cheap_price_eur_kwh"], ge=0, allow_inf_nan=False
     )
@@ -707,7 +708,7 @@ class RuleBasedAlgorithmConfig(BaseModel):
             raise ValueError(
                 "NormalTargetPolicy follows the user target; ev_normal_target_soc must be 0"
             )
-        defaults = policy_defaults(name)
+        defaults = policy_defaults(name, hyper)
         for key, default in defaults.items():
             hyper.setdefault(key, default)
         value["hyperparameters"] = hyper

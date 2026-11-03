@@ -22,7 +22,7 @@ UNITS = {
 
 
 def baseline_reference(enabled):
-    """Name the simulator counterfactual; it is not Algorithms' NormalPolicy."""
+    """Name the native diagnostic, independently of the primary job comparator."""
     if not enabled:
         return None
     try:
@@ -39,10 +39,13 @@ def baseline_reference(enabled):
         "version": simulator_version,
         "definition": definition,
         "equivalent_to_normal_policy": False,
+        "equivalent_to_primary_reference": False,
+        "role": "simulator_native_diagnostic",
         "description": (
             "Simulator native counterfactual requests immediate EV charging to 100%. "
             "It shares the operational BAU objective with Algorithms NormalPolicy; "
-            "the implementations and configurable limits are not identical."
+            "the implementations and configurable limits are not identical. "
+            "The primary Algorithms reference is NormalTargetPolicy, using a separate matched job."
         )
         if immediate
         else (
@@ -50,6 +53,19 @@ def baseline_reference(enabled):
             "Algorithms NormalPolicy instead requests immediate charging. "
             "Compare separate jobs with identical inputs for a NormalPolicy baseline."
         ),
+    }
+
+
+def primary_comparison_reference():
+    """Declare the comparison convention without claiming a baseline was run."""
+    return {
+        "algorithm": "NormalTargetPolicy",
+        "label": "BAU",
+        "definition": "immediate-user-target-self-consumption-v1",
+        "requires_matched_reference_job": True,
+        "reductions_computed_here": False,
+        "reduction_percent_formula": "100 * (reference - candidate) / reference",
+        "full_charge_variant": "NormalPolicy",
     }
 
 
@@ -121,6 +137,7 @@ def write_scorecard(context, wrapper):
         "sources": sources,
         "baseline_calculation_enabled": export.get("include_business_as_usual", True),
         "baseline_reference": baseline_reference(export.get("include_business_as_usual", True)),
+        "primary_comparison_reference": primary_comparison_reference(),
         "metrics": records,
     }
     atomic_json(paths["results_dir"] / "kpis.json", result)

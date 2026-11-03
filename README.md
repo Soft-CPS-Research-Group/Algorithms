@@ -11,6 +11,10 @@ origins. The [stage 2 delivery](docs/runtime/delivery.md) records the common-cor
 reorganization and its verification. The [stage 4 delivery](docs/runtime/export_delivery.md) covers final KPIs, portable manifests and policy parity, with explicit support limits.
 
 See the [BAU/RBC behavior contract](docs/baseline_controllers.md) for the audited baselines, migration and Simulator 2.0.0.
+The primary **BAU** is `NormalTargetPolicy`: immediate EV charging capped by the
+user-requested SOC, immediate appliance starts and stationary-battery self-consumption.
+`NormalPolicy` remains the **BAU 100%** variant. Use matched jobs for percentage
+comparisons; the simulator's native BAU ratios use a different reference.
 
 ## Quick start
 

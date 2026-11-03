@@ -314,10 +314,17 @@ def test_historical_basic_hourly_fallback_is_explicit_when_price_is_missing(hour
 
 
 @pytest.mark.parametrize("seconds", [15, 900, 3600])
-def test_basic_caps_purchased_charge_at_configured_soc_ceiling(seconds):
+@pytest.mark.parametrize("mode", ["price_only", "self_consumption"])
+def test_basic_caps_charge_at_configured_soc_ceiling(seconds, mode):
     agent, obs = policy(
         RBCBasicPolicy,
-        {"electricity_pricing": 0.05, "electrical_storage_soc": 0.89},
+        {
+            "electricity_pricing": 0.05,
+            "electrical_storage_soc": 0.89,
+            "pv_power_kw": 20.0,
+            "load_power_kw": 0.0,
+        },
+        hyper={"basic_storage_policy": mode},
         seconds=seconds,
     )
     action = agent.predict([obs])[0][0]
@@ -418,12 +425,18 @@ def test_dynamic_charger_obeys_building_headroom_without_static_phase_metadata()
 
 
 def test_kpi_baseline_reference_distinguishes_native_bau_from_normal_policy():
-    from algorithms.runtime.kpis import baseline_reference
+    from algorithms.runtime.kpis import baseline_reference, primary_comparison_reference
 
     assert baseline_reference(False) is None
     reference = baseline_reference(True)
     assert reference["implementation"] == "citylearn.agents.baseline.BusinessAsUsualAgent"
     assert reference["equivalent_to_normal_policy"] is False
+    assert reference["equivalent_to_primary_reference"] is False
+    assert reference["role"] == "simulator_native_diagnostic"
+    primary = primary_comparison_reference()
+    assert primary["algorithm"] == "NormalTargetPolicy"
+    assert primary["requires_matched_reference_job"] is True
+    assert primary["reductions_computed_here"] is False
 
 
 @pytest.mark.parametrize("donor_has_local_pv", [False, True])

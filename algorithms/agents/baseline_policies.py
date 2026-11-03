@@ -16,6 +16,7 @@ from algorithms.configuration.baseline_defaults import (
     EV_SERVICE_SOC_TOLERANCE,
     NORMAL_DEFAULTS,
     SMART_DEFAULTS,
+    policy_defaults,
 )
 
 
@@ -2091,11 +2092,23 @@ class NormalNoBatteryPolicy(NormalPolicy):
 
 
 class RBCBasicPolicy(_OperationalBaselinePolicy):
-    """Current-price thresholds and urgency, without forecast-based price timing."""
+    """Current-price/service scheduling with reactive battery self-consumption."""
 
     def __init__(self, config: Dict[str, Any]) -> None:
+        # Smart/Community inherit helpers, but retain their own audited defaults.
+        if type(self) is RBCBasicPolicy:
+            config = dict(config)
+            algorithm = dict(config.get("algorithm") or {})
+            hyper = dict(algorithm.get("hyperparameters") or {})
+            for key, value in policy_defaults("RBCBasicPolicy", hyper).items():
+                hyper.setdefault(key, value)
+            algorithm["hyperparameters"] = hyper
+            config["algorithm"] = algorithm
         super().__init__(config)
         hyper = config.get("algorithm", {}).get("hyperparameters") or {}
+        self.basic_storage_policy = hyper.get("basic_storage_policy", "price_only")
+        if self.basic_storage_policy not in {"price_only", "self_consumption"}:
+            raise ValueError("basic_storage_policy must be price_only or self_consumption")
         self.basic_price_policy = hyper.get(
             "basic_price_policy", BASIC_PRICE_DEFAULTS["basic_price_policy"]
         )
@@ -2200,6 +2213,10 @@ class RBCBasicPolicy(_OperationalBaselinePolicy):
         action_name: str,
         bounds: Sequence[float],
     ) -> float:
+        if getattr(self, "basic_storage_policy", "price_only") == "self_consumption":
+            return NormalPolicy._compute_storage_action(
+                self, agent_idx, obs, obs_map, action_name, bounds
+            )
         del action_name
         soc = self._get_storage_soc(obs, obs_map)
         min_soc, max_soc = self._storage_strategy_limits(obs, obs_map)

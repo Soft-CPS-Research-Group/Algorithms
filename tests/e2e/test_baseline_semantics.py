@@ -186,6 +186,9 @@ def test_portuguese_dataset_complete_job_and_portable_policy(cls, tmp_path):
     scorecard = json.loads((job / "results/kpis.json").read_text())
     assert scorecard["eligible_for_scorecard"] and scorecard["metrics"]
     assert scorecard["baseline_reference"]["equivalent_to_normal_policy"] is False
+    assert scorecard["baseline_reference"]["equivalent_to_primary_reference"] is False
+    assert scorecard["primary_comparison_reference"]["algorithm"] == "NormalTargetPolicy"
+    assert scorecard["primary_comparison_reference"]["reductions_computed_here"] is False
     assert len(list((job / "results/simulation_data").rglob("exported_kpis.manifest.json"))) == 1
 
 

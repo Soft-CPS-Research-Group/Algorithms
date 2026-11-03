@@ -1,11 +1,10 @@
 schema_version: algorithms.config.v1
 metadata:
   experiment_name: baseline-reference-core30-sim200
-  run_name: core30-reference-bau-target
+  run_name: core30-reference-bau
   community_name: Core30 v3.3
-  description: Immediate EV charging capped by the user-requested departure SOC; stationary
-    battery self-consumption. Separate comparator; full-charge BAU remains the primary
-    reference.
+  description: 'Primary BAU: immediate EV charging capped by the user-requested departure
+    SOC, immediate appliances and stationary-battery self-consumption.'
 tracking:
   mlflow_enabled: false
   log_level: WARNING

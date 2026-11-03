@@ -1,0 +1,131 @@
+{
+  "primary_reference": {
+    "label": "BAU",
+    "algorithm": "NormalTargetPolicy",
+    "definition": "immediate user SOC limit plus stationary-battery self-consumption"
+  },
+  "windows_utc": [
+    "2024-01-01 through 07",
+    "2024-07-01 through 07"
+  ],
+  "days": 14,
+  "formula": "100 * (reference - candidate) / reference; positive means reduction",
+  "aggregate": [
+    {
+      "label": "BAU",
+      "algorithm": "NormalTargetPolicy",
+      "cost_eur": 270.0832128267681,
+      "peak_kw": 59.58587411046028,
+      "mean_daily_peak_kw": 32.13876591143864,
+      "cost_reduction_percent": 0.0,
+      "peak_reduction_percent": 0.0,
+      "mean_daily_peak_reduction_percent": 0.0,
+      "departures": 170.0,
+      "cycles": 153.0
+    },
+    {
+      "label": "Basic",
+      "algorithm": "RBCBasicPolicy",
+      "cost_eur": 261.3040751502212,
+      "peak_kw": 58.50448153913021,
+      "mean_daily_peak_kw": 28.771690727344584,
+      "cost_reduction_percent": 3.2505306733661588,
+      "peak_reduction_percent": 1.8148472057746168,
+      "mean_daily_peak_reduction_percent": 10.47667851768902,
+      "departures": 170.0,
+      "cycles": 153.0
+    },
+    {
+      "label": "Smart",
+      "algorithm": "Smart",
+      "cost_eur": 255.11367883850124,
+      "peak_kw": 55.37271060049534,
+      "mean_daily_peak_kw": 28.37762536534241,
+      "cost_reduction_percent": 5.542563653472355,
+      "peak_reduction_percent": 7.070742139579222,
+      "mean_daily_peak_reduction_percent": 11.702815710038161,
+      "departures": 170.0,
+      "cycles": 153.0
+    },
+    {
+      "label": "Community",
+      "algorithm": "RBCCommunityPolicy",
+      "cost_eur": 250.98778249050588,
+      "peak_kw": 55.37271060049534,
+      "mean_daily_peak_kw": 28.124867970389978,
+      "cost_reduction_percent": 7.070202600303799,
+      "peak_reduction_percent": 7.070742139579222,
+      "mean_daily_peak_reduction_percent": 12.48927215223301,
+      "departures": 170.0,
+      "cycles": 153.0
+    },
+    {
+      "label": "BAU 100%",
+      "algorithm": "NormalPolicy",
+      "cost_eur": 427.9748299121466,
+      "peak_kw": 81.02461004257202,
+      "mean_daily_peak_kw": 44.73815344327262,
+      "cost_reduction_percent": -58.46035946952783,
+      "peak_reduction_percent": -35.97956101536517,
+      "mean_daily_peak_reduction_percent": -39.20308442008249,
+      "departures": 170.0,
+      "cycles": 153.0
+    }
+  ],
+  "basic_parameters": {
+    "basic_price_policy": "fixed_thresholds",
+    "basic_storage_policy": "self_consumption",
+    "basic_cheap_price_eur_kwh": 0.0765,
+    "basic_expensive_price_eur_kwh": 0.1078,
+    "storage_charge_rate": 1.0,
+    "storage_discharge_rate": 1.0,
+    "pv_surplus_threshold_kw": 0.05,
+    "normal_storage_discharge_import_threshold_kw": 0.05
+  },
+  "source_evidence": [
+    "runs/bau-user-target-20261103/scorecard.json",
+    "runs/bau-reference-comparison-20261103/comparison.json",
+    "runs/bau-main-basic-20261103/storage_validation_scorecard.json"
+  ],
+  "limitations": [
+    "Two separately reset seven-day windows, not annual evidence.",
+    "User-cap BAU can stop short by charger minimum-step granularity; RBCs can overshoot slightly.",
+    "No equal terminal BESS SOC or battery wear price.",
+    "All policies use dataset-defined arrival SOC rather than carrying excess departure SOC into the next arrival.",
+    "Native BAU export differs; actual-policy official costs and matched input hashes are compared.",
+    "2024 windows were previously observed; this is temporal regression validation, not an untouched holdout. Basic selection was frozen before its new 2024 runs."
+  ],
+  "previous_basic": {
+    "aggregate": {
+      "label": "Basic",
+      "algorithm": "RBCBasicPolicy",
+      "cost_eur": 270.1091790172466,
+      "peak_kw": 58.70070971548557,
+      "mean_daily_peak_kw": 30.99886859314782,
+      "cost_reduction_percent": -0.009614144547076542,
+      "peak_reduction_percent": 1.4855272464977087,
+      "mean_daily_peak_reduction_percent": 3.546798658765904,
+      "departures": 170.0,
+      "cycles": 153.0
+    },
+    "parameters": {
+      "basic_price_policy": "fixed_thresholds",
+      "basic_cheap_price_eur_kwh": 0.0765,
+      "basic_expensive_price_eur_kwh": 0.1078
+    }
+  },
+  "basic_source_commit": "7ea7ffc54d05b2857c00b0de28831d5ad785c0ca",
+  "basic_jobs": [
+    "basic-self-2024-01",
+    "basic-self-2024-07"
+  ],
+  "basic_selection": {
+    "selected_at": "2026-11-03T10:25:24.198866+00:00",
+    "selected": "self_consumption",
+    "old_cost_eur": 404.3196272269293,
+    "new_cost_eur": 397.3538134463258,
+    "old_peak_kw": 63.06524473428726,
+    "new_peak_kw": 63.06524470448494,
+    "cost_reduction_percent": 1.7228482892060692
+  }
+}

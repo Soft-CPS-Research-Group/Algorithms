@@ -629,12 +629,13 @@ def test_rbc_smart_policy_does_not_discharge_storage_at_observed_soc_min():
     assert actions[0][0] == pytest.approx(0.0)
 
 
-def test_rbc_basic_policy_uses_price_for_storage_ev_and_deferrable():
+@pytest.mark.parametrize("mode,battery_sign", [("price_only", 1), ("self_consumption", -1)])
+def test_rbc_basic_policy_uses_price_for_ev_and_deferrable_with_battery_mode(mode, battery_sign):
     agent = RBCBasicPolicy(
         {
             "algorithm": {
                 "name": "RBCBasicPolicy",
-                "hyperparameters": {"flex_trickle_charge": 0.0},
+                "hyperparameters": {"flex_trickle_charge": 0.0, "basic_storage_policy": mode},
             }
         }
     )
@@ -667,7 +668,7 @@ def test_rbc_basic_policy_uses_price_for_storage_ev_and_deferrable():
 
     actions = agent.predict([obs])
 
-    assert actions[0][0] > 0.0
+    assert actions[0][0] * battery_sign > 0.0
     assert actions[0][1] > 0.0
     assert actions[0][2] == pytest.approx(1.0)
 

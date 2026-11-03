@@ -1,4 +1,3 @@
-# Compatibility path; use smart.yaml for the public Smart reference.
 schema_version: algorithms.config.v1
 metadata:
   experiment_name: baseline-reference-core30-sim200
@@ -30,7 +29,7 @@ simulator:
   export:
     profile: final
     mode: end
-    include_business_as_usual: true
+    include_business_as_usual: false
     export_business_as_usual_timeseries: false
 training:
   episodes: 0
