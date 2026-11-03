@@ -221,6 +221,24 @@ def test_explicit_ev_initial_soc_overrides_deterministic_fallback(
     )
 
 
+def test_extractor_preserves_stationary_and_ev_standby_losses(tmp_path: Path) -> None:
+    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    schema["buildings"]["Building_10"]["electrical_storage"]["attributes"][
+        "loss_coefficient"
+    ] = 0.001
+    schema["electric_vehicles_def"]["Electric_Vehicle_3"]["battery"]["attributes"][
+        "loss_coefficient"
+    ] = 0.002
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    built = build_citylearn_total_energy_problem(
+        schema_path=schema_path, start_time_step=0, end_time_step=224,
+        building_ids=("Building_10",),
+    )
+    assert built.problem.stationary_storage[0].loss_coefficient == pytest.approx(0.001)
+    assert built.problem.ev_sessions[0].loss_coefficient == pytest.approx(0.002)
+
+
 def test_small_real_building_15_window_solves_with_phase_service() -> None:
     built = build_citylearn_total_energy_problem(
         schema_path=_SCHEMA,

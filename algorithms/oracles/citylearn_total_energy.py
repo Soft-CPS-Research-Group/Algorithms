@@ -344,6 +344,11 @@ def _stationary_asset(
         discharge_efficiency=_minimum_directional_battery_efficiency(
             f"{building_id}.electrical_storage", attributes
         ),
+        loss_coefficient=_non_negative(
+            f"{building_id}.electrical_storage.loss_coefficient",
+            attributes.get("loss_coefficient"),
+            0.0,
+        ),
         phase_connection=_phase(
             attributes.get("phase_connection"),
             default_split=(building.get("electrical_service") or {}).get("default_split", "balanced"),
@@ -730,6 +735,11 @@ def build_citylearn_total_energy_problem(
                         charge_efficiency=charge_efficiency * battery_directional,
                         discharge_efficiency=(
                             discharge_efficiency * battery_directional
+                        ),
+                        loss_coefficient=_non_negative(
+                            f"{ev_id}.battery.loss_coefficient",
+                            battery_attributes.get("loss_coefficient"),
+                            0.0,
                         ),
                         phase_connection=_phase(
                             attributes.get("phase_connection"),

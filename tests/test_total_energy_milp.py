@@ -190,6 +190,30 @@ def test_deferrable_cycle_selects_cheapest_feasible_start_and_emits_trigger():
     assert series.values == pytest.approx((1.0, 0.0))
 
 
+@pytest.mark.parametrize("same_appliance,expected_start", [(True, 2), (False, 1)])
+def test_deferrable_cannot_restart_while_previous_cycle_is_still_running(
+    same_appliance, expected_start
+):
+    first = DeferrableCycle(
+        cycle_id="first", building_id="Building_1", action_name="washer",
+        earliest_start_time_step=0, latest_start_time_step=0,
+        load_profile_kwh=(1.0, 0.0),
+    )
+    second = DeferrableCycle(
+        cycle_id="second", building_id="Building_1",
+        action_name="washer" if same_appliance else "dryer",
+        earliest_start_time_step=1, latest_start_time_step=2,
+        load_profile_kwh=(1.0,),
+    )
+    result = solve_total_energy_schedule(_problem(
+        price_eur_per_kwh=np.array([1.0, 0.0, 10.0]),
+        base_net_load_kwh=np.zeros((1, 3)), deferrable_cycles=(first, second),
+    ))
+    assert result.solver.optimal
+    assert result.selected_deferrable_starts == {"first": 0, "second": expected_start}
+    assert result.cost_eur == pytest.approx(11.0 if same_appliance else 1.0)
+
+
 def test_building_15_all_phase_storage_respects_tightest_phase_limit():
     storage = StorageAsset(
         building_id="Building_15",
