@@ -1,9 +1,6 @@
 # Configuration v1
 
-The canonical discriminator is `schema_version: algorithms.config.v1`. All 46
-tracked YAML configurations have been migrated. [The migration record](template_migration.json)
-identifies every file and every removed value. Comments and explicit values have
-been preserved where their semantics were already supported.
+Set `schema_version: algorithms.config.v1` in reusable configurations.
 
 Common sections are `metadata`, `runtime`, `job`, `outputs`, `tracking`,
 `checkpointing`, `simulator`, `training`, `topology`, `execution`, `bundle`, and

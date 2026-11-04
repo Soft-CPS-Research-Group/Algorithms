@@ -19,12 +19,6 @@ In entity mode with `minmax_space` encoding, per-building encoded
 observation vectors preserve feature order and width under the shared entity
 contract.
 
-## Plain-language
-
-A filter middleware that intercepts an observation and edits four
-price fields. It is format-sensitive: it must know exactly where the
-fields sit. In entity mode with `minmax_space`, positions are stable.
-
 ## Decision
 
 Apply the adapter pre-tokenization (P-PRE) — the per-building

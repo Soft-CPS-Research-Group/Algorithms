@@ -1,17 +1,13 @@
 # Config Templates
 
-All tracked templates use `schema_version: algorithms.config.v1`. See the
-[configuration and migration guide](../../docs/runtime/configuration.md); the
-[per-file migration record](../../docs/runtime/template_migration.json) identifies
-previously ignored parameters. Use `--validate` before running a modified template.
+Use `schema_version: algorithms.config.v1` and check the edited recipe with `--validate`. See the [configuration guide](../../docs/runtime/configuration.md).
 
 Templates are grouped by purpose:
 
 - `maddpg/`: current MADDPG training templates for the supported static datasets.
 - `rl/`: RL/MARL comparators (`MATD3`, `MASAC`, `IPPO`, `MAPPO`, `HAPPO`) that
   use the same wrapper/export contract.
-- `baselines/`: Random, Normal, NormalNoBattery, legacy RuleBased, RBCBasic,
-  RBCSmart and RBCCommunity comparison baselines.
+- `baselines/core30/`: [reference controllers and weekly oracle](../../docs/baseline_comparison_core30.md).
 - `dynamic/`: entity dynamic-topology smoke/debug templates. This group includes
   Transformer PPO and Transformer MATD3 default, residual, and behavior-cloning
   variants.

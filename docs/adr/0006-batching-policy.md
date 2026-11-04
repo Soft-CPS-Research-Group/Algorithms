@@ -18,12 +18,6 @@ We must decide:
 - 6b — behavior when the current-signature bucket is under-full.
 - 6c — sampler API surface.
 
-## Plain-language
-
-Analogy: filing cabinet with folders labeled by schema fingerprint.
-For any training step, we pull records only from the folder matching
-today's fingerprint. Old folders remain for analytics and future extensions.
-
 ## Decisions
 
 ### 6a — batching strategy: B1 signature-bucketed

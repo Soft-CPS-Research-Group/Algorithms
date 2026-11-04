@@ -8,15 +8,15 @@ audited `RBCSmartLocalPolicy` implementation. A registered name
 means it can enter the common job builder; deployment readiness and model quality
 are separate properties.
 
-| Family | Registered names | State at consolidation |
+| Family | Registered names | Usage |
 |---|---|---|
 | Actor–critic | `MADDPG`, `MATD3`, `MASAC`, `PPO`, `TD3`, `IPPO`, `MAPPO`, `HAPPO` | Existing main implementations retained. |
 | Shared entity Transformers | `AgentTransformerPPO`, `AgentTransformerMATD3` | Current main implementations retained, including dynamic topology and BC paths. |
 | Typed multi-agent | `TIMARL` | Existing main implementation retained; research export. |
 | Hierarchical coordination | `BuildingAgent`, `CommunityCoordinator`, `CCLevel1`, `CCLevel2`, `CausalPriceSignal`, `FixedPriceSignal` | Existing implementations retained. |
 | Baselines and signal policies | `RandomPolicy`, `NormalPolicy`, `NormalTargetPolicy`, `NormalNoBatteryPolicy`, `RBCBasicPolicy`, `Smart`, `RBCCommunityPolicy`, `RBCSmartPolicy`, `RBCSmartLocalPolicy`, `SignalAwareRBC`, `SignalAwareRBCSmartLocal` | `NormalTargetPolicy` is the primary BAU; `NormalPolicy` is the BAU 100% variant. `Smart` is the public local baseline; the older names remain compatible. Basic uses current-price/service scheduling and reactive battery self-consumption; Community defaults to a 15 kW battery-support trigger. |
-| Community optimization | `MILP` | Reoptimizes each step with measured state and at most 24 h of perfect forecasts. Static entity, one controller, evaluation only; research bundle requiring the live solver. The default physical profile rejects unsupported nonlinear devices. See the [physical reference and MPC comparison](milp_physics_reference_core30_2026_11_03.md). |
-| Oracle replays | `FixedServiceOracleReplayPolicy`, `TotalHomeOracleReplayPolicy`, `TotalOracleReplayPolicy` | Use `TotalOracleReplayPolicy` with the complete individual/community model for new Core30 references. Fixed-service and total-home implementations remain diagnostic/historical. See the [Core30 MILP audit](milp_core30_audit_2026_11_03.md). |
+| Community optimization | `MILP` | Reoptimizes each step with measured state and at most 24 h of perfect forecasts. Static entity, one controller, evaluation only; research bundle requiring the live solver. The default physical profile rejects unsupported nonlinear devices. See the [oracle guide](oracles/total_energy_milp.md). |
+| Oracle replays | `FixedServiceOracleReplayPolicy`, `TotalHomeOracleReplayPolicy`, `TotalOracleReplayPolicy` | Use `TotalOracleReplayPolicy` with the complete individual/community model for new Core30 references. Fixed-service and total-home implementations remain diagnostic/historical. See the [weekly oracle procedure](oracles/total_energy_milp.md). |
 | Historical Transformer | `TransformerMADDPG` | Recovered experimental joint actor. Static topology, uniform nonzero action dimensions. Joint ONNX includes learned tokenizer and actor; deterministic parity checked. Complete research checkpoint retained. |
 | Offline policies | `BCAgent`, `IQLAgent`, `IQLEntityAgent`, `CQLEntityAgent` | Recovered trainers and policies. Common job preparation, simulation, KPI and model export. Static, matching dataset layout required. |
 | Capacity coordinator | `CCLevel2Capacity` | Recovered distinct capacity-aware teacher/network. Does not replace current CCLevel2. Research checkpoint. |
@@ -40,10 +40,10 @@ superseded prototypes are not counted as additional implemented agents.
 
 Origins, validation scope and pending work: [first consolidation](consolidation/README.md).
 
-## Export support after stage 4
+## Export support
 
 All 40 names share finalization, KPI and bundle contracts. The original [v2 export matrix](inference_bundle.md#delivery-formats) separates 14 neural names with verified ONNX, 13 rules/signal names with executable JSON, and 10 names requiring specialised research adapters. `NormalTargetPolicy` adds immediate charging with a strict user-requested SOC ceiling. The additional public `Smart` name uses the same executable JSON implementation as `RBCSmartLocalPolicy`. `MILP` adds a research-only receding-horizon controller, not an executable JSON serving policy. Counts describe registered names, not distinct algorithms or model quality. Hierarchical leaves are consumed as part of their declared graph.
 
-`bundle.require_deployable: true` rejects known specialised families during configuration validation and requires actual final-evaluation parity for the others. Ordinary exports retain research artifacts and explicit limitations. The [stage 4 delivery](runtime/export_delivery.md) records the acceptance evidence.
+`bundle.require_deployable: true` rejects known specialised families during configuration validation and requires actual final-evaluation parity for the others. Ordinary exports retain research artifacts and explicit limitations.
 
-The [BAU/RBC behavior contract](baseline_controllers.md) defines user-target BAU as the primary reference and full-charge BAU as a variant, retires `RuleBasedPolicy`, and preserves the historical `RBCSmartPolicy` teacher for compatibility. The public `Smart` reference is strictly local.
+The [BAU/RBC behavior contract](baseline_comparison_core30.md) defines user-target BAU as the primary reference and full-charge BAU as a variant, retires `RuleBasedPolicy`, and preserves the historical `RBCSmartPolicy` teacher for compatibility. The public `Smart` reference is strictly local.

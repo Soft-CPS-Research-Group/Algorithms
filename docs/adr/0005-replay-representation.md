@@ -18,20 +18,6 @@ Sub-decisions:
 - 5c — validity of transitions from prior layouts.
 - 5d — replay behavior on building-count change.
 
-## Plain-language
-
-The replay buffer must retain evidence across topologies without
-mixing incompatible shapes into one gradient batch. Analogy: Kafka
-topic tagged by Avro schema fingerprint; consumers filter by
-fingerprint at read time.
-
-Transferability note: when a new CA instance appears, per-type
-tokenizer projections, backbone attention, and the per-CA actor head
-are all shared per type. The new asset uses trained weights from step
-1. What is missing is *its own* replay evidence until enough
-new-topology transitions accumulate. Actor/critic weights do not
-degrade during the accumulation window.
-
 ## Decisions
 
 ### 5a — transition representation: R1

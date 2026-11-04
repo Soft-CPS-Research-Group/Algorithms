@@ -1,4 +1,4 @@
-# Reliable execution (stage 3)
+# Reliable execution
 
 The worker's `attempt_artifacts_v1` handoff pre-creates the input configuration
 and empty outputs inside `jobs/<id>/.attempts/<number>/jobs/<id>`. The runtime
@@ -7,34 +7,6 @@ to that directory and output folders contain no prior artifacts. It claims the
 attempt atomically and writes there, keeping results visible to the orchestrator.
 An existing local config, claimed attempt or populated output still receives a
 separate retry directory; the handoff is not permission to overwrite a prior run.
-
-The table below preserves the stage-3 evidence. The active runtime was upgraded
-to SoftCPS Simulator 2.0.0 in the [BAU/RBC review](../baseline_controllers.md),
-which reran the full default suite and 68 complete job contracts. The catalogue
-now has 37 names after retiring the public `RuleBasedPolicy`. Jetson remains
-suspended; historical platform evidence is not a new hardware certification.
-
-The common runtime owns input validation, initialization, execution, checkpoint
-publication and attempt completion. Agents retain their numerical methods. The
-public entry point and 38 registered names remain available; this stage does not
-claim scientific quality, production inference compatibility or GPU certification.
-
-## Runtime evidence at stage 3
-
-| Target | Python / PyTorch / CUDA / Simulator | Evidence and support decision |
-|---|---|---|
-| Linux CPU reference | 3.10 / 2.5.1 CPU / none / 1.8.3 | Clean installed package, actual training/reference jobs, independent-process repetition and episode resume |
-| Development CPU on CUDA wheel | 3.10.12 / 2.5.1+cu121 with CUDA disabled / 1.8.3 | Full regression suite and tracking benchmark |
-| Generic amd64 image | Dockerfile pins Torch 2.5.1, CUDA 12.1 wheel, Simulator 1.8.3 | Build support; GPU numerical equivalence remains a hardware validation task |
-| Generic arm64 image | Same Python/Simulator contract; architecture-specific wheel | Build support; no ARM runtime certification in this stage |
-| Union Blackwell | Dockerfile.union: Torch 2.7.1, CUDA 12.8, Simulator 1.8.3 | Separate image retained; no silent switch to CPU reference pins and no hardware certification claimed |
-| Jetson Xavier L4T r35 | Legacy Python 3.8, NVIDIA Torch 2.0, CUDA 11.4, Simulator 1.8.0 | Previous image retained. Automatic replacement disabled: stage-3 job requires Python >=3.10. Migration and target-device acceptance are required before re-enabling publication |
-
-Simulator source for the reference is
-`0ca1696884cb372ff8f09f443eddf6f50dccd238`, package `softcpsrecsimulator==1.8.3`.
-The package's Python range is >=3.10,<3.13; only 3.10 is certified here. Version
-pins reproduce this evidence; they do not assert absence of dependency vulnerabilities.
-The existing dependency-security action A10.06 remains open.
 
 ## Training, evaluation and randomness
 
@@ -53,8 +25,7 @@ evaluation:
 This means **20 training episodes plus one evaluation**. Evaluation may be disabled
 with `episodes: 0`. Smoke is one training plus one evaluation; evaluate is zero
 plus one. Legacy `simulator.episodes=N` with `deterministic_finish=true` still means
-N-1 training plus one evaluation. Migration preserves that effective budget:
-[46-template inventory](episode_migration.json). Conflicting old/new counts fail.
+N-1 training plus one evaluation. Migration preserves that effective budget. Conflicting old/new counts fail.
 Research helpers whose CLI count historically included evaluation use the explicit
 compatibility helper in `algorithms.configuration.episodes`.
 
@@ -176,7 +147,7 @@ and Infinity are rejected. The common runner commits `completed` only after outp
 validation, local tracking finalization and resource cleanup. Remote curated result
 snapshots may say `finalizing`; the local result/progress is the completion authority.
 
-## Tracking and measured cost
+## Tracking
 
 MLflow defaults off and is an optional installation extra. Local JSONL, outputs and
 checkpoints work without importing or installing it. One facade governs metrics
@@ -187,38 +158,3 @@ and checkpoint upload flags can opt in. `mlflow_failure_policy: local` retains l
 records after a remote failure; `abort` fails the attempt. Artifact retention has
 no automatic expiry. Explicit checkpoint downloads remain possible independently
 of whether logging is enabled.
-
-The [recorded benchmark](tracking_benchmark.json) uses one unmeasured warmup and
-three independent processes per mode: the same small MADDPG job, two training
-and one evaluation episodes, 17 state points, CPU and a temporary file-based
-MLflow store. No production service was installed or contacted.
-
-| Mode | Median job wall / CPU seconds | Peak RSS MiB | Local job bytes | MLflow calls |
-|---|---:|---:|---:|---:|
-| Off | 1.272 / 1.245 | 647.7 | 867,606 | 0 |
-| Local detailed metrics | 1.319 / 1.290 | 648.4 | 1,490,989 | 0 |
-| MLflow minimal, sample 10 | 1.920 / 1.884 | 687.8 | 1,490,985 | 17 |
-| MLflow full, every step + artifacts | 2.332 / 2.294 | 688.4 | 1,490,922 | 98 |
-
-Peak RSS includes imports; timed wall/CPU exclude imports. File MLflow excludes
-network latency and is not a production-size throughput estimate. Its separate
-store used 2,871,893 bytes for all measured runs. Detailed profiling intentionally
-increases local logs by about 0.62 MB even in this tiny job; keep it opt-in and use
-normal sampling for routine runs. In a representative local sample, environment
-steps took 0.090 s, encoding 0.009 s, prediction 0.036 s and learning 0.190 s;
-checkpoint/output costs are separately recorded. These timers overlap and must
-not be summed. Traces, detailed profiling and remote uploads remain opt-in; no
-unmeasured universal cost limit is invented.
-
-Decision: **keep the code integration optional, use local tracking normally**.
-The measured overhead does not justify restoring the removed production service
-(SOF-222). MLflow is useful only when an experiment explicitly needs its comparison
-UI/remote store. Reproduce from the checkout with the tracking extra installed:
-
-```bash
-CUDA_VISIBLE_DEVICES='' python -m scripts.benchmark_runtime_tracking --output /tmp/tracking-comparison
-```
-
-Stage 4 still owns the final global KPI/export policy, complete delivery manifest
-and inference handoff. Stage 5 owns exhaustive family/hardware acceptance and
-scientific comparison. Their actions remain in the master plan.

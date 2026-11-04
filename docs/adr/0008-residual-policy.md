@@ -22,13 +22,6 @@ Sub-decisions:
 - 8e — BC-A cloning target under residual.
 - 8f — replay storage of base and cloning actions.
 
-## Plain-language
-
-Analogy: pair-programming rollout. Base policy is the senior
-developer; the actor is the junior. Final action is
-`senior + authority × junior`. Authority is scheduled from low to high
-over training.
-
 ## Decisions
 
 ### 8a — R-YES: preserve residual

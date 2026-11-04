@@ -5,10 +5,7 @@ constructs the simulator and execution unit, runs training/evaluation, and write
 results plus the requested model artifacts. Agent implementations own numerical
 learning; they do not create a second job lifecycle.
 
-Start with [configuration and migration](configuration.md), [installation](installation.md),
-and the [agent extension guide](agents.md). The [37-agent catalogue](../agent_catalogue.md)
-records implementations and research limitations. The [stage 2 delivery](delivery.md)
-records the initial architecture scope. See [reliability](reliability.md) for stage 3 and [exports](exports.md) / [stage 4 delivery](export_delivery.md) for final KPIs and verified portable policy bundles.
+Start with [installation](installation.md), [configuration](configuration.md) and the [agent catalogue](../agent_catalogue.md). See [reliability](reliability.md) for seeds and checkpoints and [exports](exports.md) for final KPIs and model bundles.
 
 ```text
 run_experiment.py / algorithms-job
@@ -87,5 +84,3 @@ multi-seed experiments or comparisons, not an alternative supported production
 job contract. They reuse the simulator input adapter instead of importing the
 whole job runner. See [ownership and provenance](ownership.md) and the
 [architecture decision](adr-001-common-runtime.md).
-
-See the [stage-3 reliability contract](reliability.md) for explicit training/evaluation budgets, data validation, seeds, checkpoint/resume limits, platform support and the measured optional-tracking decision.

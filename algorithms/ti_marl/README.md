@@ -507,10 +507,4 @@ validation remains deferred and is not certified by the BAU/RBC audit. The
 end-to-end vertical slice uses the installed package; using an adjacent
 Simulator checkout is only a deliberate development override.
 
-Historical training, development checkpoint selection and confirmation followed
-[`notes/ti-marl/experiment-protocol-v1.md`](../../notes/ti-marl/experiment-protocol-v1.md).
-That experimental line was retired on 2026-09-25. Its protocol remains available
-to interpret existing artefacts; it does not define the next campaign. See
-the [current research status](../../notes/README.md). The implemented protocol
-tools still separate neural and Simulator seeds, fingerprint paired evaluation
-surfaces and prevent confirmation results from influencing model selection.
+For experiment design, see the [lessons from long runs](../../docs/learning-experience.md). The protocol tools separate simulator and neural seeds and fingerprint paired evaluation inputs.

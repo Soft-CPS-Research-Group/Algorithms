@@ -10,8 +10,7 @@ Use this guide for configuration and operation. Use the
 flows. Use the [ADRs](adr/README.md) when changing an architectural decision.
 Terms specific to this controller are defined in the
 [glossary](transformer_matd3_glossary.md).
-The [current status](transformer_matd3_status.md) records the latest validated
-recipe, rejected hypotheses, evidence limits, and next experiments.
+The H7 recipe used the executed-action critic, average EV minimum, protected service target, zero additional headroom reserve, and replay imitation with EV multiplier 18, storage multiplier 0.08 and minimum weight 0.04. See [lessons from long runs](learning-experience.md) for its evaluation scope.
 
 ## Supported contract
 

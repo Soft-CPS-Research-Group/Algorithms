@@ -20,14 +20,6 @@ and no `src_key_padding_mask`). Every MATD3 per-building auxiliary
 (action bounds, safety adapter, price adapter, warm-start base
 policy) already operates per building.
 
-## Plain-language
-
-Analogy: one team per building vs one company-wide team. Per-building
-teams keep per-building context intact and match the ownership TPPO
-already uses. Company-wide teams require new coordination
-infrastructure (positional labels + attention masks) that we do not
-have.
-
 ## Decision
 
 Option A: per-building stack. Each building owns its own tokenizer +

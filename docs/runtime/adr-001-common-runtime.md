@@ -28,6 +28,4 @@ common job intent.
 
 Consequences: extension work needs a schema and a capability declaration; accepted
 configuration errors fail earlier. A successful smoke job proves the common
-lifecycle, not model quality, exact reproducibility or inference readiness. Full
-common-contract certification is stage 3; global final-episode export semantics,
-tracking performance and final deployment manifests remain later stages.
+lifecycle, not model quality, exact reproducibility or inference readiness. For the current guarantees, see [reliability](reliability.md) and [exports](exports.md).

@@ -19,19 +19,6 @@ Four sub-decisions:
 - 3c — how the CA action attaches to CA features.
 - 3d — whether the critic reuses the actor's feature stack.
 
-## Plain-language
-
-The critic must fold a variable-size community into one Q scalar. Two
-strategies: (S1) put every building's tokens in one big attention room
-with name tags, or (S2) let each building meet internally, elect a
-summary vector, and have all summaries meet in a smaller room.
-
-Fairness note for aggregation: Deep Sets mean gives every building
-weight 1/N and thereby guarantees every per-building actor receives
-proportional critic gradient. A learned attention aggregator can
-concentrate on a subset of buildings and starve the others' actor
-gradients.
-
 ## Decisions
 
 ### 3a — critic multiplicity: M1

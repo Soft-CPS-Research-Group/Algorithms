@@ -13,13 +13,6 @@ Related: ADR-0007 (BC), ADR-0002..ADR-0012 (depend on shared package availabilit
 building blocks. Options: leave modules in place and cross-import, or
 extract into a shared package with a documented reuse boundary.
 
-## Plain-language
-
-Analogy: two microservices need the same helper library. Options: (a)
-duplicate the code, (b) let service B import from service A, or (c)
-extract to a shared library both services depend on. We pick (c) with a
-one-time migration and no permanent shims.
-
 ## Decision
 
 Extract the algorithm-neutral core into
