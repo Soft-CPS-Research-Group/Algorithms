@@ -9,7 +9,7 @@ Executar os cinco controladores nos mesmos membros, ficheiros, janelas, seeds e 
 | **Basic** | Usa preço atual e urgência para EVs e ciclos adiáveis. A bateria faz autoconsumo local. | [basic.yaml](../configs/templates/baselines/core30/basic.yaml) |
 | **Smart** | Usa previsões de preço e excedente solar local para agendar cargas. A bateria combina autoconsumo, arbitragem e reserva. | [smart.yaml](../configs/templates/baselines/core30/smart.yaml) |
 | **Community** | Acrescenta a energia partilhável entre membros. As baterias podem ajudar em períodos caros quando a importação comunitária atinge o gatilho de 15 kW. Este valor desencadeia uma ação e o pico observado pode ultrapassá-lo. | [community.yaml](../configs/templates/baselines/core30/community.yaml) |
-| **Oráculo semanal comunitário** | Conhece os dados da semana e planeia de uma vez as 672 ações de quarto de hora. É a referência de custo sujeita a serviço, restrições físicas e reservas terminais. | [Procedimento do oráculo](oracles/total_energy_milp.md) |
+| **Oráculo semanal comunitário** | Conhece os dados da semana e planeia de uma vez as 672 ações de quarto de hora. Cada semana começa no estado observado do mesmo episódio. A última pode ser parcial. | [Configuração](../configs/templates/baselines/core30/weekly_oracle.yaml) · [Execução e verificação](oracles/total_energy_milp.md) |
 
 **Denominador.** Calcular a poupança por `100 × (custo_BAU_com_limite − custo_candidato) / custo_BAU_com_limite` quando o custo de referência é positivo. Somar os custos das janelas emparelhadas antes de calcular a percentagem agregada. Usar o custo do job explícito de BAU com limite. O contrafactual nativo do simulador tem uma definição própria.
 

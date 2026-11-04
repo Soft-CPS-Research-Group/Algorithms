@@ -193,3 +193,31 @@ def test_entity_soc_uses_explicit_ratio_units_at_full_charge():
     assert MILPPolicy._soc(0.01) == 0.01
     with pytest.raises(ValueError, match="outside"):
         MILPPolicy._soc(50)
+
+
+def test_open_week_keeps_a_full_appliance_commitment_and_charges_only_executed_steps():
+    cycle = DeferrableCycle("washer", "home", "washer", 3, 3, (1, 0, 2))
+    with pytest.raises(ValueError, match="exceeds the horizon"):
+        replace(problem(), deferrable_cycles=(cycle,))
+    source = replace(
+        problem(),
+        stationary_storage=(),
+        ev_sessions=(),
+        deferrable_cycles=(cycle,),
+        metadata={"open_appliance_boundary": True},
+    )
+    solved = solve_total_energy_schedule(source)
+    assert solved.selected_deferrable_starts == {"washer": 3}
+    assert solved.building_net_load_kwh[0] == pytest.approx((0, 0, 0, 1))
+    following, running = update_measured_problem(
+        replace(source, deferrable_cycles=(), metadata={}),
+        storage_energy={},
+        ev_energy={},
+        started_cycles={"washer": (3, cycle)},
+        now=4,
+        terminal_storage_soc=0.5,
+    )
+    assert running == {"washer"}
+    assert solve_total_energy_schedule(following).building_net_load_kwh[0] == pytest.approx(
+        (0, 2, 0, 0)
+    )

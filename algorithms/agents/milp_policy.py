@@ -1,4 +1,4 @@
-"""Community cost MPC: one measured-state MILP per step, at most 24 h ahead."""
+"""Community cost plans from measured Simulator state, per step or per week."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import numpy as np
 
 from algorithms.agents.base_agent import BaseAgent
 from algorithms.agents.total_oracle_replay_policy import TotalOracleReplayPolicy
-from algorithms.configuration.milp import MILPHyperparameters
+from algorithms.configuration.milp import MILPStageConfig, WeeklyOracleHyperparameters
 from algorithms.oracles.citylearn_contract import complete_idle_series
 from algorithms.oracles.perfect_foresight_milp import SemanticSchedule, SolveOptions
 from algorithms.oracles.rolling_energy import (
@@ -29,16 +29,21 @@ class MILPPolicy(BaseAgent):
 
     def __init__(self, config):
         super().__init__()
-        self.settings = MILPHyperparameters.model_validate(
-            (config.get("algorithm") or {}).get("hyperparameters") or {}
-        )
+        self.settings = MILPStageConfig(
+            algorithm="MILP",
+            hyperparameters=(config.get("algorithm") or {}).get("hyperparameters") or {},
+        ).hyperparameters
+        self.weekly = isinstance(self.settings, WeeklyOracleHyperparameters)
         simulator = config["simulator"]
         if (config.get("training") or {}).get("episodes", 0) != 0:
             raise ValueError("MILP requires zero training episodes and an evaluation job.")
         if simulator.get("simulation_end_time_step") is None:
             raise ValueError("MILP requires an explicit finite simulation window.")
         self.forecast = BoundedDatasetForecast(
-            simulator["dataset_path"], simulator.get("building_ids"), physics=self.settings.physics
+            simulator["dataset_path"],
+            simulator.get("building_ids"),
+            physics=self.settings.physics,
+            weekly=self.weekly,
         )
         self.start = int(simulator.get("simulation_start_time_step") or 0)
         self.end = int(simulator["simulation_end_time_step"])
@@ -56,7 +61,9 @@ class MILPPolicy(BaseAgent):
                 0.0 if self.settings.physics == "simulator_linear" else 1e-3
             ),
         )
-        initial = self.forecast.problem(self.start, min(self.end, self.start + self.horizon_steps))
+        if self.weekly:
+            self.options = replace(self.options, throughput_tiebreaker_eur_per_kwh=0.0)
+        initial = self.forecast.problem(self.start, self.start + 1)
         idle = SemanticSchedule(
             problem_id="milp-mpc-attachment",
             horizon=1,
@@ -71,7 +78,8 @@ class MILPPolicy(BaseAgent):
         self._started = {}
         self._rows = []
         self._decision_log = None
-        self._last_schedule = None
+        self._plan_step = None
+        self._planned_starts = {}
 
     def prepare_training(self, output_dir, context=None):
         destination = Path(output_dir)
@@ -109,6 +117,8 @@ class MILPPolicy(BaseAgent):
         self._step = 0
         self._episode = episode
         self._started.clear()
+        self._plan_step = None
+        self._planned_starts.clear()
 
     def set_episode_context(self, *, episode_step=None, next_episode_step=None):
         if episode_step is not None:
@@ -169,15 +179,31 @@ class MILPPolicy(BaseAgent):
                     raise ValueError(
                         "A committed appliance start was not applied by the Simulator."
                     )
+                if self.weekly:
+                    tail = cycle.load_profile_kwh[elapsed:]
+                    state = (observations, cycle.building_id, "deferrable_appliance", aid)
+                    if self._value(*state, "remaining_duration_steps") != len(
+                        tail
+                    ) or not math.isclose(
+                        self._value(*state, "remaining_energy_kwh"),
+                        sum(tail),
+                        rel_tol=1e-5,
+                        abs_tol=1e-6,
+                    ):
+                        raise ValueError(f"Simulator appliance phase differs for {cycle.cycle_id}.")
         return storage, ev
 
     def predict(self, observations, deterministic=None, *, context=None):
         if self._attachment is None:
             raise RuntimeError("MILP must be attached before prediction.")
+        if self.weekly and self._plan_step is not None:
+            offset = self._step - self._plan_step
+            if 0 < offset < self.converter.schedule.horizon:
+                return self._execute(observations, offset)
         begin = time.perf_counter()
         now = self.start + self._step
         end = min(self.end, now + self.horizon_steps)
-        problem = self.forecast.problem(now, end)
+        problem = self.forecast.problem(now, end, episode_end=self.end if self.weekly else None)
         storage, ev = self._measured(problem, observations)
         problem, running = update_measured_problem(
             problem,
@@ -186,6 +212,7 @@ class MILPPolicy(BaseAgent):
             started_cycles=self._started,
             now=now,
             terminal_storage_soc=self.settings.terminal_storage_soc,
+            numerical_margin=not self.weekly,
         )
         prepared = time.perf_counter()
         result = solve_total_energy_schedule(problem, options=self.options)
@@ -235,24 +262,20 @@ class MILPPolicy(BaseAgent):
         # Bind the same standard unit conversion against the new plan; no RBC
         # teacher, safety projection or precomputed weekly action is used.
         self.converter.bind_schedule(schedule, **self._attachment)
-        actions = self.converter.predict_at_step(observations, schedule_step=0)
+        self._plan_step = self._step
+        self._planned_starts = {}
         for cycle in problem.deferrable_cycles:
-            if (
-                cycle.cycle_id not in running
-                and result.selected_deferrable_starts.get(cycle.cycle_id) == 0
-            ):
-                aid = cycle.action_name.removeprefix("deferrable_appliance_")
-                if (
-                    self._value(
-                        observations, cycle.building_id, "deferrable_appliance", aid, "can_start"
-                    )
-                    <= 0
-                ):
-                    raise ValueError(
-                        "MILP selected an appliance request unavailable in observed state."
-                    )
-                self._started[cycle.cycle_id] = (now, cycle)
-        self._last_schedule = schedule
+            offset = result.selected_deferrable_starts.get(cycle.cycle_id)
+            if cycle.cycle_id not in running and offset is not None:
+                self._planned_starts.setdefault(offset, []).append(cycle)
+        if self.weekly and self._decision_log is not None:
+            block = self._decision_log.parent / f"episode-{self._episode}" / f"week-{now}"
+            block.mkdir(parents=True, exist_ok=True)
+            (block / "problem.json").write_text(problem.to_json())
+            (block / "result.json").write_text(
+                json.dumps(replace(result, schedule=schedule).to_dict(), allow_nan=False)
+            )
+        actions = self._execute(observations, 0)
         row.update(
             {
                 "decision_seconds": time.perf_counter() - begin,
@@ -262,6 +285,20 @@ class MILPPolicy(BaseAgent):
             }
         )
         self._record(row)
+        return actions
+
+    def _execute(self, observations, offset):
+        actions = self.converter.predict_at_step(observations, schedule_step=offset)
+        for cycle in self._planned_starts.get(offset, ()):
+            aid = cycle.action_name.removeprefix("deferrable_appliance_")
+            if (
+                self._value(
+                    observations, cycle.building_id, "deferrable_appliance", aid, "can_start"
+                )
+                <= 0
+            ):
+                raise ValueError(f"Simulator cannot start the scheduled request {cycle.cycle_id}.")
+            self._started[cycle.cycle_id] = (self.start + self._step, cycle)
         self._step += 1
         return actions
 
@@ -278,11 +315,13 @@ class MILPPolicy(BaseAgent):
         destination = Path(output_dir)
         destination.mkdir(parents=True, exist_ok=True)
         shared = {
-            "policy_type": "milp_mpc",
-            "forecast": "perfect_dataset_values_bounded_to_24h",
+            "policy_type": "weekly_community_oracle" if self.weekly else "milp_mpc",
+            "forecast": "perfect_dataset_values_bounded_to_168h"
+            if self.weekly
+            else "perfect_dataset_values_bounded_to_24h",
             "hyperparameters": self.settings.model_dump(),
             "schema_sha256": self.forecast.schema_sha256,
-            "reoptimizes_every_step": True,
+            "reoptimizes_every_step": not self.weekly,
             "global_optimum_claim": False,
             "runtime_only_reason": "requires_live_state_forecasts_and_milp_solver",
         }

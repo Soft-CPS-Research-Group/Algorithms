@@ -209,3 +209,28 @@ def test_milp_resolves_each_step_and_exports_research_evidence(tmp_path, physics
     assert verification["status"] == "unverified"
     metrics = [json.loads(line) for line in (job / "logs/metrics.jsonl").read_text().splitlines()]
     assert sum("Runtime/predict_seconds" in row.get("metrics", {}) for row in metrics) == 8
+
+
+def test_weekly_oracle_replans_at_the_boundary_with_a_short_final_block(tmp_path):
+    from scripts.audit_weekly_oracle import audit
+
+    config = yaml.safe_load(
+        Path("configs/templates/baselines/core30/weekly_oracle.yaml").read_text()
+    )
+    simulator_root = Path(os.environ.get("SIMULATOR_REPO", Path.cwd().parent / "Simulator"))
+    config["simulator"].update(
+        dataset_path=str(
+            simulator_root / "data/datasets/rec_pt_2023_micro_4_v2/evaluation/core_4.json"
+        ),
+        building_ids=["Member_001", "Member_002"],
+        simulation_start_time_step=39,
+        simulation_end_time_step=759,
+        episode_time_steps=721,
+    )
+    config["pipeline"][0]["hyperparameters"].update(time_limit_seconds=30, mip_relative_gap=0.001)
+    run_experiment(config, "chain", tmp_path)
+    report = audit(tmp_path / "jobs/chain")
+    assert report["intervals"] == 672 + 48
+    assert report["solves"] == 2
+    assert "Member_001" in report["boundaries"][0]["storage"]
+    assert report["completed_cycles"] > 0

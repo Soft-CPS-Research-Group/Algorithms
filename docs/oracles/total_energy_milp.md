@@ -2,7 +2,20 @@
 
 The oracle plans one week of battery flows, EV charging and appliance starts using the realized demand, PV, prices and arrivals. It minimizes EV shortfall first, then the community energy bill at that service level. The reported peak is an outcome. A separate research controller, `MILP`, replans with at most 24 hours of forecasts.
 
-## Prepare a week
+## Chain weeks in one simulator episode
+
+The [Core30 weekly configuration](../../configs/templates/baselines/core30/weekly_oracle.yaml) runs two weeks from 1 January 2024 UTC. The ordinary job runner builds a new plan every 672 transitions from the start of the episode. A shorter final block solves just the remaining intervals. For the whole of 2024 use the half-open interval `[35040, 70176)`, 35137 observations, terminal observation padding and one evaluation episode.
+
+```bash
+algorithms-job --config configs/templates/baselines/core30/weekly_oracle.yaml --job_id weekly-pilot
+python scripts/audit_weekly_oracle.py --job-dir runs/jobs/weekly-pilot
+```
+
+At a cut, the next plan reads stationary battery SOC and connected EV energy from the live simulator. It applies the stationary battery’s standby loss once before the next action. A running appliance keeps its remaining load profile, including zero-power phases, without a second start command. A pending request keeps its original deadline. Completed requests cannot be scheduled again.
+
+The `perfect_week` setting selects this planning cadence. Each solve saves the physical problem, schedule, cost bound and timing under the job’s `offline_training` directory. The audit compares the weekly inputs with the simulator’s exported trajectories and service ledger. For a continuity test, include a cut during an active appliance cycle and one with a pending request. Calendar weeks can have no such events. Report cost bounds per conditional weekly problem. A full-year optimum would require a separate formulation.
+
+## Solve and replay an isolated week
 
 Start with a [Core30 evaluation configuration](../../configs/templates/baselines/core30/milp_community.yaml). Point `simulator.dataset_path` at the evaluation schema. Set `simulation_end_time_step` to the start plus 672 and `episode_time_steps` to 673 (672 transitions of 15 minutes). Use one deterministic evaluation episode, zero training episodes and the same market and seed as the candidate.
 

@@ -24,7 +24,10 @@ from algorithms.oracles.total_energy_milp import DeferrableCycle, TotalEnergyPro
 class BoundedDatasetForecast:
     """Perfect foresight restricted at the data boundary, not after optimization."""
 
-    def __init__(self, schema_path: str | Path, building_ids=None, *, physics="conservative"):
+    def __init__(
+        self, schema_path: str | Path, building_ids=None, *, physics="conservative", weekly=False
+    ):
+        self.weekly = weekly
         self.physics = physics
         self.schema_path = Path(schema_path).resolve()
         payload = self.schema_path.read_bytes()
@@ -48,9 +51,14 @@ class BoundedDatasetForecast:
                 self._kinds[str(appliance["cycle_profiles_file"])] = "profiles"
                 self._kinds[str(appliance["flexibility_schedule_file"])] = "requests"
 
-    def problem(self, start: int, end: int) -> TotalEnergyProblem:
-        if start < 0 or end <= start or (end - start) * self.timestep_hours > 24.0 + 1e-9:
-            raise ValueError("A forecast must cover a positive window of at most 24 hours.")
+    def problem(
+        self, start: int, end: int, *, episode_end: int | None = None
+    ) -> TotalEnergyProblem:
+        limit = 168 if self.weekly else 24
+        if start < 0 or end <= start or (end - start) * self.timestep_hours > limit + 1e-9:
+            raise ValueError(f"A forecast must cover a positive window of at most {limit} hours.")
+        if episode_end is not None and (not self.weekly or episode_end < end):
+            raise ValueError("Invalid weekly episode boundary.")
         visible: dict[str, pd.DataFrame] = {}
 
         def read_window(root: Path, filename: Any) -> pd.DataFrame:
@@ -87,16 +95,19 @@ class BoundedDatasetForecast:
             settlement="community",
             building_ids=self.building_ids,
             read_data=read_window,
+            episode_end_time_step=None if episode_end is None else episode_end - start,
             physics=self.physics,
         )
         problem = built.problem
+        if self.weekly and built.diagnostics.runtime_drift_initial_soc_ev_session_ids:
+            raise ValueError("Weekly oracle requires known arrival SOC for future EV sessions.")
         sessions = []
         for session in problem.ev_sessions:
             frame = visible[self._charger_files[(session.building_id, session.action_name)]]
             # A right-censored connection has no invented departure. Its
             # announced user target is nevertheless the horizon reserve; this
             # prevents endless deferral and borrowing charge beyond the job.
-            row = frame.iloc[session.start_time_step]
+            row = frame.iloc[session.end_time_step if self.weekly else session.start_time_step]
             raw_target = float(row["electric_vehicle_required_soc_departure"])
             if self.physics == "simulator_linear":
                 raw_target = np.float32(raw_target)
@@ -115,13 +126,13 @@ class BoundedDatasetForecast:
             )
         return replace(
             problem,
-            problem_id=f"milp-mpc::{start}_{end}",
+            problem_id=f"milp-{'weekly' if self.weekly else 'mpc'}::{start}_{end}",
             ev_sessions=tuple(sessions),
             metadata={
                 **problem.metadata,
                 "source_start_time_step": start,
                 "source_end_time_step_exclusive": end,
-                "forecast": "perfect_dataset_values_bounded_to_24h",
+                "forecast": f"perfect_dataset_values_bounded_to_{limit}h",
                 "global_optimum_claim": False,
             },
         )
@@ -135,8 +146,10 @@ def update_measured_problem(
     started_cycles: Mapping[str, tuple[int, DeferrableCycle]],
     now: int,
     terminal_storage_soc: float,
+    numerical_margin: bool = True,
 ) -> tuple[TotalEnergyProblem, set[str]]:
     """Carry observed energy and committed appliance tails into a new solve."""
+    margin = numerical_margin and problem.metadata.get("physics") == "simulator_linear"
     storage = []
     # Float32 simulator SOC can undershoot a planned terminal state through
     # round-off. Reserve 0.1 Wh in multi-step plans; accept 0.01 Wh of
@@ -153,17 +166,13 @@ def update_measured_problem(
                 final_energy_min_kwh=max(
                     asset.minimum_energy_kwh,
                     terminal_storage_soc * physical_capacity
-                    + (
-                        (1e-4 if problem.horizon > 1 else -1e-5)
-                        if problem.metadata.get("physics") == "simulator_linear"
-                        else 0.0
-                    ),
+                    + ((1e-4 if problem.horizon > 1 else -1e-5) if margin else 0.0),
                 ),
             )
         )
     sessions = []
     for session in problem.ev_sessions:
-        if problem.metadata.get("physics") == "simulator_linear":
+        if margin:
             session = replace(
                 session,
                 required_final_energy_kwh=min(
@@ -210,9 +219,7 @@ def update_measured_problem(
             "terminal_ev_policy": "announced_user_target",
             "measured_state": True,
             "stationary_model": "measured initial energy, declared physics profile, fixed terminal SOC reserve",
-            "numerical_service_margin_kwh": (
-                1e-4 if problem.metadata.get("physics") == "simulator_linear" else 0.0
-            ),
+            "numerical_service_margin_kwh": (1e-4 if margin else 0.0),
             "community_observations_used": True,
         },
     ), running_actions
