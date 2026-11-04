@@ -19,7 +19,7 @@ e identificam quando foram substituídos.
 | `Smart` | Mantém as proteções de serviço; compara preços previstos e antecipa carga com excedente local. V2G é opcional. | Usa preço relativo, urgência e prazo; acrescenta arranque com excedente local. | Coordena captura solar, arbitragem de preço, reservas e limitação da carga da bateria ao pico local configurado. |
 | `RBCCommunityPolicy` — Community | Acrescenta excedente comunitário às decisões de preço/serviço do Smart. | Pode aproveitar excedente comunitário, além do local e dos prazos. | Com mercado ativo, usa excedente partilhável e ajuda nos picos comunitários caros, com gatilho agregado de 15 kW. Sem mercado, usa a política local. |
 
-O controlador **MILP** otimiza conjuntamente baterias, EVs e arranques adiáveis a cada passo, com estado medido e horizonte máximo de 24 horas. O objetivo é serviço viável e depois custo comunitário, sem penalização de pico. Não é um RBC. O semanal mantém-se como oráculo offline; ver [física alinhada, intervalo de ótimo e comparação](milp_physics_reference_core30_2026_11_03.md). O certificado aplica-se ao objetivo e às condições terminais declarados, não a um ótimo universal de todos os KPIs.
+O **oráculo semanal comunitário** é a referência de otimização escolhida para comparar com MARL. Planeia em conjunto as ações das baterias, dos EVs e dos ciclos adiáveis, dando prioridade ao serviço e depois ao custo comunitário. O controlador `MILP` com horizonte móvel de 24 horas fica como ferramenta de investigação. A formulação, as condições terminais e os resultados exploratórios constam do [estudo do oráculo](milp_physics_reference_core30_2026_11_03.md).
 
 O BAU é uma hipótese operacional explícita: ligar e carregar; pedir uma lavagem
 e iniciar. Não pretende otimizar custo. **A referência principal é agora
@@ -298,11 +298,7 @@ preservado e a tabela CSV derivada mantém os mesmos valores e células inválid
 
 ### Referências MILP
 
-A [auditoria MILP atual do Core30](milp_core30_audit_2026_11_03.md) valida os
-planos completos individual e comunitário nas mesmas semanas de 2024 dos
-baselines, com energia terminal por ativo pelo menos igual à do Community.
-Para novas comparações usar `total_energy_milp.py` e `TotalOracleReplayPolicy`.
-As implementações mais antigas não herdam automaticamente essa validação.
+Para novas comparações usar o [protocolo do oráculo semanal](milp_physics_reference_core30_2026_11_03.md#reprodução), que fixa as reservas terminais antes da resolução. A [primeira auditoria MILP](milp_core30_audit_2026_11_03.md) documenta os ensaios históricos com planos individuais e comunitários.
 
 - `FixedServiceOracleReplayPolicy`: otimiza apenas a bateria, mantendo o serviço
   EV/eletrodomésticos de um RBC explícito. É um limite condicional, não um

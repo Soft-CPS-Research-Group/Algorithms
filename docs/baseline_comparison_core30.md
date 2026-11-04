@@ -1,4 +1,18 @@
-# Comparação atual dos baselines Core30
+# Referências do Core30 para comparação com MARL
+
+O conjunto acordado em 04/11/2026 tem seis referências. Para os cinco controladores,
+usar os [templates Core30](../configs/templates/baselines/core30/).
+
+1. **BAU com limite do utilizador** (`bau.yaml`). Carrega à chegada até ao SOC pedido. É o denominador de todas as poupanças.
+2. **BAU sem limite do utilizador** (`bau_full_charge.yaml`). Carrega à chegada até 100%. Ambos os BAU usam a bateria doméstica em autoconsumo e iniciam os ciclos adiáveis assim que possível.
+3. **Basic** (`basic.yaml`). Decide por preço atual e urgência de serviço.
+4. **Smart** (`smart.yaml`). Acrescenta previsão de preço e aproveitamento do excedente solar local.
+5. **Community** (`community.yaml`). Acrescenta coordenação entre membros. É o comparador por regras para o controlo comunitário.
+6. **Oráculo semanal comunitário**. Usar o [solver da referência física](../scripts/validate_core30_milp_reference.py) com uma janela de sete dias (672 intervalos de 15 minutos). Planeia a semana uma vez e executa o plano com `TotalOracleReplayPolicy`. Comparar o custo para os mesmos requisitos de serviço e reservas finais. Reportar o tempo de resolução por semana.
+
+O MILP com horizonte móvel de 24 horas fica disponível para análise de horizontes.
+A tabela de desempenho das experiências longas será calculada com os respetivos
+jobs emparelhados. Os números abaixo pertencem à análise exploratória anterior.
 
 Decisão de Tiago em 03/11/2026: **BAU = `NormalTargetPolicy`**, com carga EV
 imediata limitada ao SOC pedido, arranque imediato dos eletrodomésticos e bateria
@@ -13,7 +27,7 @@ os seus rácios continuam a ser diagnósticos nativos e não poupanças face ao 
 principal. `results/kpis.json` declara esta distinção e exige um job de referência
 correspondente; não inventa uma execução de BAU nem recalcula custos oficiais.
 
-## Resultados comparáveis
+## Ensaio exploratório dos BAU e RBCs
 
 Core30 v3.3, Simulator 2.0.0, 30 membros, seed de avaliação 6763, 14 dias:
 1–7 janeiro e 1–7 julho de 2024 UTC. Janelas `[35040,35712)` e `[52512,53184)`,
@@ -83,7 +97,7 @@ As referências offline com conhecimento do futuro são comparadas separadamente
 na [auditoria MILP](milp_core30_audit_2026_11_03.md), com os mesmos baselines e
 limites terminais explícitos. Não alteram a definição dos controladores desta tabela.
 
-## MILP com decisão em cada passo
+## Histórico do MILP com decisão em cada passo
 
 A [referência física atual](milp_physics_reference_core30_2026_11_03.md) substitui os valores MILP do primeiro ensaio abaixo, com física alinhada, validação das trajetórias e intervalo residual de ótimo. Os baselines desta página mantêm-se inalterados.
 

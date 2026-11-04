@@ -11,7 +11,7 @@ origins. The [stage 2 delivery](docs/runtime/delivery.md) records the common-cor
 reorganization and its verification. The [stage 4 delivery](docs/runtime/export_delivery.md) covers final KPIs, portable manifests and policy parity, with explicit support limits.
 
 See the [BAU/RBC behavior contract](docs/baseline_controllers.md) for the audited baselines, migration and Simulator 2.0.0.
-The [current Core30 MILP reference](docs/milp_physics_reference_core30_2026_11_03.md) aligns the optimization with Simulator physics, audits every replayed trajectory and reports the remaining cost interval alongside the 24-hour controller's real decision latency. The [first MPC comparison](docs/milp_mpc_core30_2026_11_03.md) and [earlier audit](docs/milp_core30_audit_2026_11_03.md) preserve historical approximations and results.
+The [Core30 references for MARL](docs/baseline_comparison_core30.md) are BAU with the user's EV target, BAU charging to 100%, Basic, Smart, Community and the weekly community cost oracle. The [exploratory MILP study](docs/milp_physics_reference_core30_2026_11_03.md) documents the weekly oracle's physical model and the separate 24-hour rolling controller.
 The primary **BAU** is `NormalTargetPolicy`: immediate EV charging capped by the
 user-requested SOC, immediate appliance starts and stationary-battery self-consumption.
 `NormalPolicy` remains the **BAU 100%** variant. Use matched jobs for percentage
