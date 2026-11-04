@@ -1,6 +1,6 @@
 # Total-energy MILP reference
 
-For the current 30-member dataset, use the [24-hour MILP comparison](../milp_mpc_core30_2026_11_03.md). `MILP` now reoptimizes every step; full-window schedules remain offline oracles. The [earlier audit](../milp_core30_audit_2026_11_03.md) is historical evidence.
+For the current 30-member dataset, use the [physical reference and 24-hour MILP comparison](../milp_physics_reference_core30_2026_11_03.md). `MILP` reoptimizes every step; full-window schedules remain offline oracles. The `simulator_linear` extraction profile requires constant efficiency, zero degradation, supported concave power curves and charge-only EVs. It models delivered power clipping explicitly and requires independent simulator replay before promotion. The older `conservative` profile and [first MPC comparison](../milp_mpc_core30_2026_11_03.md) remain available as historical evidence.
 It includes corrected extraction/decomposition, solver performance, matched terminal
 conditions and 2024 replay comparisons. The 17-building certificates below remain
 historical evidence for their stated dataset and window.

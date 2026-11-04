@@ -1,0 +1,1849 @@
+{
+  "campaign": "milp-physics-core30-20261103",
+  "dataset": "Core30 Normal v3.3",
+  "simulator": "softcpsrecsimulator==2.0.0",
+  "windows": [
+    [
+      35040,
+      35712
+    ],
+    [
+      52512,
+      53184
+    ]
+  ],
+  "evaluation_seed": 6763,
+  "baseline": "NormalTargetPolicy with stationary battery",
+  "evidence_horizon": "14 days, two independent weekly resets; not annual",
+  "aggregate": [
+    {
+      "controller": "BAU",
+      "cost_eur": 270.0832128267681,
+      "peak_kw": 59.58587411046028,
+      "mean_daily_peak_kw": 32.13876591143864,
+      "minimum_service": 1.0,
+      "target_service": 0.1566265060240964,
+      "precision": 0.8850574712643678,
+      "departures": 170.0,
+      "cycles": 153.0,
+      "gates_pass": true,
+      "decision_timing": {
+        "count": 1344,
+        "mean_seconds": 0.11647675611843192,
+        "median_seconds": 0.11887032499362249,
+        "p95_seconds": 0.12290618410770549,
+        "max_seconds": 0.16693015200144146,
+        "total_seconds": 156.5447602231725
+      },
+      "cost_reduction_percent": 0.0,
+      "peak_reduction_percent": 0.0,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Basic",
+      "cost_eur": 261.3040751502212,
+      "peak_kw": 58.50448153913021,
+      "mean_daily_peak_kw": 28.771690727344584,
+      "minimum_service": 1.0,
+      "target_service": 0.6551724137931034,
+      "precision": 0.8850574712643678,
+      "departures": 170.0,
+      "cycles": 153.0,
+      "gates_pass": true,
+      "decision_timing": {
+        "count": 1344,
+        "mean_seconds": 0.11507259934743767,
+        "median_seconds": 0.11734539399913047,
+        "p95_seconds": 0.1210641116485931,
+        "max_seconds": 0.13703435099159833,
+        "total_seconds": 154.65757352295623
+      },
+      "cost_reduction_percent": 3.250530673366157,
+      "peak_reduction_percent": 1.814847205774619,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Smart",
+      "cost_eur": 255.11367883850124,
+      "peak_kw": 55.37271060049534,
+      "mean_daily_peak_kw": 28.37762536534241,
+      "minimum_service": 1.0,
+      "target_service": 0.6436781609195402,
+      "precision": 0.8850574712643678,
+      "departures": 170.0,
+      "cycles": 153.0,
+      "gates_pass": true,
+      "decision_timing": {
+        "count": 1344,
+        "mean_seconds": 0.11799447165685706,
+        "median_seconds": 0.11992903400096111,
+        "p95_seconds": 0.12358010319076129,
+        "max_seconds": 0.21771876400453039,
+        "total_seconds": 158.5845699068159
+      },
+      "cost_reduction_percent": 5.54256365347236,
+      "peak_reduction_percent": 7.070742139579226,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Community",
+      "cost_eur": 250.98778249050588,
+      "peak_kw": 55.37271060049534,
+      "mean_daily_peak_kw": 28.124867970389978,
+      "minimum_service": 1.0,
+      "target_service": 0.6091954022988506,
+      "precision": 0.8850574712643678,
+      "departures": 170.0,
+      "cycles": 153.0,
+      "gates_pass": true,
+      "decision_timing": {
+        "count": 1344,
+        "mean_seconds": 0.11935046436317298,
+        "median_seconds": 0.12172026400367031,
+        "p95_seconds": 0.12502383865139563,
+        "max_seconds": 0.1349436400050763,
+        "total_seconds": 160.4070241041045
+      },
+      "cost_reduction_percent": 7.070202600303803,
+      "peak_reduction_percent": 7.070742139579226,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "MILP",
+      "cost_eur": 222.17472254939258,
+      "peak_kw": 56.19746383279562,
+      "mean_daily_peak_kw": 34.011250701599884,
+      "minimum_service": 1.0,
+      "target_service": 1.0,
+      "precision": 0.8850574712643678,
+      "departures": 170.0,
+      "cycles": 153.0,
+      "gates_pass": true,
+      "decision_timing": {
+        "count": 1344,
+        "mean_seconds": 2.583703641950894,
+        "median_seconds": 1.9785525245006284,
+        "p95_seconds": 7.731840734000155,
+        "max_seconds": 11.168143222999788,
+        "total_seconds": 3472.4976947820014
+      },
+      "cost_reduction_percent": 17.738418384449574,
+      "peak_reduction_percent": 5.686599933707823,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Or\u00e1culo offline",
+      "cost_eur": 221.83895615285635,
+      "peak_kw": 56.19659697264433,
+      "mean_daily_peak_kw": 34.85901675399925,
+      "minimum_service": 1.0,
+      "target_service": 1.0,
+      "precision": 0.8850574712643678,
+      "departures": 170.0,
+      "cycles": 153.0,
+      "gates_pass": true,
+      "decision_timing": {
+        "count": 1344,
+        "mean_seconds": 0.16283655857812446,
+        "median_seconds": 0.16302642250002464,
+        "p95_seconds": 0.17365654760001234,
+        "max_seconds": 0.3345389959995373,
+        "total_seconds": 218.85233472899927
+      },
+      "cost_reduction_percent": 17.862737994329063,
+      "peak_reduction_percent": 5.688054741855278,
+      "decision_timing_kind": "prepared_schedule_replay_only",
+      "offline_solve_seconds_by_month": {
+        "1": 932.3472043249999,
+        "7": 927.7745261599994
+      }
+    }
+  ],
+  "jobs": [
+    {
+      "controller": "BAU",
+      "month": 1,
+      "job": "runs/milp-mpc-core30-20261103/validated/jobs/bau-2024-01",
+      "cost_eur": 194.73891960504005,
+      "minimum_service": 1.0,
+      "precision": 0.8850574712643678,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 87.0,
+      "cycles": 74.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 59.58587411046028,
+      "mean_daily_peak_kw": 40.76074105501175,
+      "terminal_storage_kwh": {
+        "Member_001": 2.0471125793457032,
+        "Member_014": 1.4522389221191407,
+        "Member_025": 7.09470458984375
+      },
+      "storage_soc_min": 0.19726058840751648,
+      "storage_soc_max": 0.8999898433685303,
+      "battery_throughput_kwh": 204.63597869873047,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.8212268948554993,
+          "energy_kwh": 41.06134474277496,
+          "target_soc": 0.822486738068855
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8890590071678162,
+          "energy_kwh": 53.34354043006897,
+          "target_soc": 0.8900601554677038
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.5082424283027649,
+          "energy_kwh": 25.412121415138245,
+          "target_soc": 0.5111091813441743
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.6787565350532532,
+          "energy_kwh": 40.72539210319519,
+          "target_soc": 0.6832130383470946
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.8127816319465637,
+          "energy_kwh": 62.58418565988541,
+          "target_soc": 0.8153563069800218
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7805609107017517,
+          "energy_kwh": 74.15328651666641,
+          "target_soc": 0.7809552410209928
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.9111827611923218,
+          "energy_kwh": 70.16107261180878,
+          "target_soc": 0.9116840720845141
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.7024808526039124,
+          "energy_kwh": 57.60342991352081,
+          "target_soc": 0.702998123164021
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.6002026796340942,
+          "energy_kwh": 36.012160778045654,
+          "target_soc": 0.7611091813441743
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 0.11856134804215149,
+        "median_seconds": 0.12079978250403656,
+        "p95_seconds": 0.12348749905067961,
+        "max_seconds": 0.14833984900906216,
+        "total_seconds": 79.6732258843258
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true
+      },
+      "gates_pass": true,
+      "target_service": 0.1839080459770115,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Basic",
+      "month": 1,
+      "job": "runs/milp-mpc-core30-20261103/validated/jobs/basic-2024-01",
+      "cost_eur": 189.85069527323031,
+      "minimum_service": 1.0,
+      "precision": 0.8850574712643678,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 87.0,
+      "cycles": 74.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 58.50448153913021,
+      "mean_daily_peak_kw": 37.519085619066445,
+      "terminal_storage_kwh": {
+        "Member_001": 5.505723876953125,
+        "Member_014": 1.4522389221191407,
+        "Member_025": 7.09470458984375
+      },
+      "storage_soc_min": 0.19726058840751648,
+      "storage_soc_max": 0.8999898433685303,
+      "battery_throughput_kwh": 195.73140716552734,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.7443485856056213,
+          "energy_kwh": 37.21742928028107,
+          "target_soc": 0.822486738068855
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8896524906158447,
+          "energy_kwh": 53.379149436950684,
+          "target_soc": 0.8900601554677038
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.36052799224853516,
+          "energy_kwh": 18.026399612426758,
+          "target_soc": 0.5111091813441743
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.5802774429321289,
+          "energy_kwh": 34.816646575927734,
+          "target_soc": 0.6832130383470946
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.742716908454895,
+          "energy_kwh": 57.18920195102692,
+          "target_soc": 0.8153563069800218
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7058516144752502,
+          "energy_kwh": 67.05590337514877,
+          "target_soc": 0.7809552410209928
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.9107219576835632,
+          "energy_kwh": 70.12559074163437,
+          "target_soc": 0.9116840720845141
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.61407870054245,
+          "energy_kwh": 50.354453444480896,
+          "target_soc": 0.702998123164021
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.5183373689651489,
+          "energy_kwh": 31.100242137908936,
+          "target_soc": 0.7611091813441743
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 0.11358961841527898,
+        "median_seconds": 0.115723856499244,
+        "p95_seconds": 0.11818722575189895,
+        "max_seconds": 0.12362517800647765,
+        "total_seconds": 76.33222357506747
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true
+      },
+      "gates_pass": true,
+      "target_service": 0.6551724137931034,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Smart",
+      "month": 1,
+      "job": "runs/milp-mpc-core30-20261103/validated/jobs/smart-2024-01",
+      "cost_eur": 186.57614567801517,
+      "minimum_service": 1.0,
+      "precision": 0.8850574712643678,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 87.0,
+      "cycles": 74.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 55.37271060049534,
+      "mean_daily_peak_kw": 35.89648422385965,
+      "terminal_storage_kwh": {
+        "Member_001": 9.2154052734375,
+        "Member_014": 4.607706298828125,
+        "Member_025": 9.215424194335938
+      },
+      "storage_soc_min": 0.19822631776332855,
+      "storage_soc_max": 0.8999898433685303,
+      "battery_throughput_kwh": 188.33817291259766,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.8217813968658447,
+          "energy_kwh": 41.089069843292236,
+          "target_soc": 0.822486738068855
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8896524906158447,
+          "energy_kwh": 53.379149436950684,
+          "target_soc": 0.8900601554677038
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.42603370547294617,
+          "energy_kwh": 21.30168527364731,
+          "target_soc": 0.5111091813441743
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.6602025032043457,
+          "energy_kwh": 39.61215019226074,
+          "target_soc": 0.6832130383470946
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.804996132850647,
+          "energy_kwh": 61.98470222949982,
+          "target_soc": 0.8153563069800218
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7085647583007812,
+          "energy_kwh": 67.31365203857422,
+          "target_soc": 0.7809552410209928
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.9107219576835632,
+          "energy_kwh": 70.12559074163437,
+          "target_soc": 0.9116840720845141
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.6725603938102722,
+          "energy_kwh": 55.14995229244232,
+          "target_soc": 0.702998123164021
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.5214418768882751,
+          "energy_kwh": 31.28651261329651,
+          "target_soc": 0.7611091813441743
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 0.1181629004076101,
+        "median_seconds": 0.12020078949717572,
+        "p95_seconds": 0.12326707488755345,
+        "max_seconds": 0.21771876400453039,
+        "total_seconds": 79.40546907391399
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true
+      },
+      "gates_pass": true,
+      "target_service": 0.6436781609195402,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Community",
+      "month": 1,
+      "job": "runs/milp-mpc-core30-20261103/validated/jobs/community-2024-01",
+      "cost_eur": 184.78323285518022,
+      "minimum_service": 1.0,
+      "precision": 0.8850574712643678,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 87.0,
+      "cycles": 74.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 55.37271060049534,
+      "mean_daily_peak_kw": 36.12696871800082,
+      "terminal_storage_kwh": {
+        "Member_001": 8.394053955078125,
+        "Member_014": 4.607702026367187,
+        "Member_025": 9.21543212890625
+      },
+      "storage_soc_min": 0.19756825268268585,
+      "storage_soc_max": 0.8999899625778198,
+      "battery_throughput_kwh": 300.9823684692383,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.8217813968658447,
+          "energy_kwh": 41.089069843292236,
+          "target_soc": 0.822486738068855
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8896524906158447,
+          "energy_kwh": 53.379149436950684,
+          "target_soc": 0.8900601554677038
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.42603370547294617,
+          "energy_kwh": 21.30168527364731,
+          "target_soc": 0.5111091813441743
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.6602025032043457,
+          "energy_kwh": 39.61215019226074,
+          "target_soc": 0.6832130383470946
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.804996132850647,
+          "energy_kwh": 61.98470222949982,
+          "target_soc": 0.8153563069800218
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7085647583007812,
+          "energy_kwh": 67.31365203857422,
+          "target_soc": 0.7809552410209928
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.9107219576835632,
+          "energy_kwh": 70.12559074163437,
+          "target_soc": 0.9116840720845141
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.6725603938102722,
+          "energy_kwh": 55.14995229244232,
+          "target_soc": 0.702998123164021
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.5214418768882751,
+          "energy_kwh": 31.28651261329651,
+          "target_soc": 0.7611091813441743
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 0.12087196481128817,
+        "median_seconds": 0.12305703349557007,
+        "p95_seconds": 0.12573393165075686,
+        "max_seconds": 0.1349436400050763,
+        "total_seconds": 81.22596035318566
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true
+      },
+      "gates_pass": true,
+      "target_service": 0.6091954022988506,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "BAU",
+      "month": 7,
+      "job": "runs/milp-mpc-core30-20261103/validated/jobs/bau-2024-07",
+      "cost_eur": 75.34429322172807,
+      "minimum_service": 1.0,
+      "precision": 1.0,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 83.0,
+      "cycles": 79.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 30.487552970647812,
+      "mean_daily_peak_kw": 23.516790767865523,
+      "terminal_storage_kwh": {
+        "Member_001": 8.177250976562501,
+        "Member_014": 3.423200378417969,
+        "Member_025": 8.173377685546875
+      },
+      "storage_soc_min": 0.19669823348522186,
+      "storage_soc_max": 0.899989902973175,
+      "battery_throughput_kwh": 200.69717407226562,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.7634392976760864,
+          "energy_kwh": 38.17196488380432,
+          "target_soc": 0.7655614522407068
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8721573948860168,
+          "energy_kwh": 52.32944369316101,
+          "target_soc": 0.8740849040519023
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.5454622507095337,
+          "energy_kwh": 27.273112535476685,
+          "target_soc": 0.5237164317415504
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.7083345055580139,
+          "energy_kwh": 42.500070333480835,
+          "target_soc": 0.7090476100877745
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.7797994613647461,
+          "energy_kwh": 60.04455852508545,
+          "target_soc": 0.7804212504967137
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7770520448684692,
+          "energy_kwh": 73.81994426250458,
+          "target_soc": 0.7773990554643316
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.8863205909729004,
+          "energy_kwh": 68.24668550491333,
+          "target_soc": 0.8639123772239365
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.7349980473518372,
+          "energy_kwh": 60.26983988285065,
+          "target_soc": 0.7357428118403974
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.8252128958702087,
+          "energy_kwh": 49.512773752212524,
+          "target_soc": 0.8261033781516248
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 0.11439216419471233,
+        "median_seconds": 0.11651575849828077,
+        "p95_seconds": 0.11937457070089294,
+        "max_seconds": 0.16693015200144146,
+        "total_seconds": 76.87153433884669
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true
+      },
+      "gates_pass": true,
+      "target_service": 0.1566265060240964,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Basic",
+      "month": 7,
+      "job": "runs/milp-mpc-core30-20261103/validated/jobs/basic-2024-07",
+      "cost_eur": 71.45337987699088,
+      "minimum_service": 1.0,
+      "precision": 1.0,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 83.0,
+      "cycles": 79.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 24.10007256269455,
+      "mean_daily_peak_kw": 20.02429583562272,
+      "terminal_storage_kwh": {
+        "Member_001": 8.177250976562501,
+        "Member_014": 3.423200378417969,
+        "Member_025": 8.173377685546875
+      },
+      "storage_soc_min": 0.19745463132858276,
+      "storage_soc_max": 0.8999899625778198,
+      "battery_throughput_kwh": 202.65540313720703,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.7664363384246826,
+          "energy_kwh": 38.32181692123413,
+          "target_soc": 0.7655614522407068
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8744301199913025,
+          "energy_kwh": 52.46580719947815,
+          "target_soc": 0.8740849040519023
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.5454622507095337,
+          "energy_kwh": 27.273112535476685,
+          "target_soc": 0.5237164317415504
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.7084342241287231,
+          "energy_kwh": 42.50605344772339,
+          "target_soc": 0.7090476100877745
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.7799543142318726,
+          "energy_kwh": 60.05648219585419,
+          "target_soc": 0.7804212504967137
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7770529389381409,
+          "energy_kwh": 73.82002919912338,
+          "target_soc": 0.7773990554643316
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.8863205909729004,
+          "energy_kwh": 68.24668550491333,
+          "target_soc": 0.8639123772239365
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.738306999206543,
+          "energy_kwh": 60.54117393493652,
+          "target_soc": 0.7357428118403974
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.825411319732666,
+          "energy_kwh": 49.52467918395996,
+          "target_soc": 0.8261033781516248
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 0.11655558027959637,
+        "median_seconds": 0.1186248599915416,
+        "p95_seconds": 0.12213396149600157,
+        "max_seconds": 0.13703435099159833,
+        "total_seconds": 78.32534994788875
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true
+      },
+      "gates_pass": true,
+      "target_service": 0.7108433734939759,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Smart",
+      "month": 7,
+      "job": "runs/milp-mpc-core30-20261103/validated/jobs/smart-2024-07",
+      "cost_eur": 68.53753316048609,
+      "minimum_service": 1.0,
+      "precision": 1.0,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 83.0,
+      "cycles": 79.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 25.655153587460518,
+      "mean_daily_peak_kw": 20.858766506825173,
+      "terminal_storage_kwh": {
+        "Member_001": 8.404248657226562,
+        "Member_014": 3.9247305297851565,
+        "Member_025": 8.426372680664063
+      },
+      "storage_soc_min": 0.19993360340595245,
+      "storage_soc_max": 0.899989902973175,
+      "battery_throughput_kwh": 145.47919273376465,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.7645814418792725,
+          "energy_kwh": 38.22907209396362,
+          "target_soc": 0.7655614522407068
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8744301199913025,
+          "energy_kwh": 52.46580719947815,
+          "target_soc": 0.8740849040519023
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.5454622507095337,
+          "energy_kwh": 27.273112535476685,
+          "target_soc": 0.5237164317415504
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.710844099521637,
+          "energy_kwh": 42.65064597129822,
+          "target_soc": 0.7090476100877745
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.7799543142318726,
+          "energy_kwh": 60.05648219585419,
+          "target_soc": 0.7804212504967137
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7770529389381409,
+          "energy_kwh": 73.82002919912338,
+          "target_soc": 0.7773990554643316
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.8863205909729004,
+          "energy_kwh": 68.24668550491333,
+          "target_soc": 0.8639123772239365
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.738306999206543,
+          "energy_kwh": 60.54117393493652,
+          "target_soc": 0.7357428118403974
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.8255512714385986,
+          "energy_kwh": 49.53307628631592,
+          "target_soc": 0.8261033781516248
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 0.11782604290610402,
+        "median_seconds": 0.11952831399685238,
+        "p95_seconds": 0.12381749380074325,
+        "max_seconds": 0.1293587620020844,
+        "total_seconds": 79.1791008329019
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true
+      },
+      "gates_pass": true,
+      "target_service": 0.7469879518072289,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Community",
+      "month": 7,
+      "job": "runs/milp-mpc-core30-20261103/validated/jobs/community-2024-07",
+      "cost_eur": 66.20454963532568,
+      "minimum_service": 1.0,
+      "precision": 1.0,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 83.0,
+      "cycles": 79.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 25.655153587460518,
+      "mean_daily_peak_kw": 20.12276722277914,
+      "terminal_storage_kwh": {
+        "Member_001": 8.40457275390625,
+        "Member_014": 3.924374694824219,
+        "Member_025": 8.426049194335938
+      },
+      "storage_soc_min": 0.1998431235551834,
+      "storage_soc_max": 0.899989902973175,
+      "battery_throughput_kwh": 148.21104431152344,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.7698618769645691,
+          "energy_kwh": 38.493093848228455,
+          "target_soc": 0.7655614522407068
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8775104880332947,
+          "energy_kwh": 52.65062928199768,
+          "target_soc": 0.8740849040519023
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.5454622507095337,
+          "energy_kwh": 27.273112535476685,
+          "target_soc": 0.5237164317415504
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.7131071090698242,
+          "energy_kwh": 42.78642654418945,
+          "target_soc": 0.7090476100877745
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.7798004150390625,
+          "energy_kwh": 60.04463195800781,
+          "target_soc": 0.7804212504967137
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7770892977714539,
+          "energy_kwh": 73.82348328828812,
+          "target_soc": 0.7773990554643316
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.8863205909729004,
+          "energy_kwh": 68.24668550491333,
+          "target_soc": 0.8639123772239365
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.7375360727310181,
+          "energy_kwh": 60.47795796394348,
+          "target_soc": 0.7357428118403974
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.8252137899398804,
+          "energy_kwh": 49.51282739639282,
+          "target_soc": 0.8261033781516248
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 0.11782896391505779,
+        "median_seconds": 0.1198611029976746,
+        "p95_seconds": 0.12253040590585443,
+        "max_seconds": 0.12847950198920444,
+        "total_seconds": 79.18106375091884
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true
+      },
+      "gates_pass": true,
+      "target_service": 0.7831325301204819,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "MILP",
+      "month": 1,
+      "job": "runs/milp-physics-core30-20261103/final-comparison/jobs/milp-physical-final-2024-01",
+      "cost_eur": 174.50362707817706,
+      "minimum_service": 1.0,
+      "precision": 0.8850574712643678,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 87.0,
+      "cycles": 74.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 56.19746383279562,
+      "mean_daily_peak_kw": 42.87667319391455,
+      "terminal_storage_kwh": {
+        "Member_001": 5.119989929199219,
+        "Member_014": 2.5599899291992188,
+        "Member_025": 5.119989929199219
+      },
+      "storage_soc_min": 0.09999930113554001,
+      "storage_soc_max": 1.0,
+      "battery_throughput_kwh": 627.9207992553711,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.8224887847900391,
+          "energy_kwh": 41.12443923950195,
+          "target_soc": 0.822486738068855
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8900617957115173,
+          "energy_kwh": 53.40370774269104,
+          "target_soc": 0.8900601554677038
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.5111111402511597,
+          "energy_kwh": 25.555557012557983,
+          "target_soc": 0.5111091813441743
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.6832147240638733,
+          "energy_kwh": 40.9928834438324,
+          "target_soc": 0.6832130383470946
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.8153576254844666,
+          "energy_kwh": 62.782537162303925,
+          "target_soc": 0.8153563069800218
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7809563279151917,
+          "energy_kwh": 74.1908511519432,
+          "target_soc": 0.7809552410209928
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.9116854071617126,
+          "energy_kwh": 70.19977635145187,
+          "target_soc": 0.9116840720845141
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.7029992938041687,
+          "energy_kwh": 57.64594209194183,
+          "target_soc": 0.702998123164021
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.6002026796340942,
+          "energy_kwh": 36.012160778045654,
+          "target_soc": 0.7611091813441743
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 1.8847474763898482,
+        "median_seconds": 1.4791544705003616,
+        "p95_seconds": 4.201780274300471,
+        "max_seconds": 10.784246578999955,
+        "total_seconds": 1266.550304133978
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true,
+        "terminal_storage": true
+      },
+      "solve_timing": {
+        "count": 672,
+        "mean_seconds": 1.6541204987932123,
+        "median_seconds": 1.2519670890005727,
+        "p95_seconds": 3.9820060086492024,
+        "max_seconds": 10.634596741001587,
+        "total_seconds": 1111.5689751890386
+      },
+      "build_timing": {
+        "count": 672,
+        "mean_seconds": 0.07151083406397502,
+        "median_seconds": 0.06912540250141319,
+        "p95_seconds": 0.0818104634996416,
+        "max_seconds": 0.15352434699889272,
+        "total_seconds": 48.05528049099121
+      },
+      "solver": {
+        "optimal_count": 664,
+        "limit_count": 8,
+        "max_mip_gap": 0.006163681409916203,
+        "service_optimal_count": 672,
+        "failed_count": 0
+      },
+      "gates_pass": true,
+      "target_service": 1.0,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "MILP",
+      "month": 7,
+      "job": "runs/milp-physics-core30-20261103/final-comparison/jobs/milp-physical-final-2024-07",
+      "cost_eur": 47.671095471215516,
+      "minimum_service": 1.0,
+      "precision": 0.9518072289156626,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 83.0,
+      "cycles": 79.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 35.16084688901901,
+      "mean_daily_peak_kw": 25.145828209285224,
+      "terminal_storage_kwh": {
+        "Member_001": 5.119989929199219,
+        "Member_014": 2.5599900817871095,
+        "Member_025": 5.119989929199219
+      },
+      "storage_soc_min": 0.09999999403953552,
+      "storage_soc_max": 1.0,
+      "battery_throughput_kwh": 566.7329025268555,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.7655634880065918,
+          "energy_kwh": 38.27817440032959,
+          "target_soc": 0.7655614522407068
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8740865588188171,
+          "energy_kwh": 52.44519352912903,
+          "target_soc": 0.8740849040519023
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.5454622507095337,
+          "energy_kwh": 27.273112535476685,
+          "target_soc": 0.5237164317415504
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.7090492844581604,
+          "energy_kwh": 42.542957067489624,
+          "target_soc": 0.7090476100877745
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.780422568321228,
+          "energy_kwh": 60.09253776073456,
+          "target_soc": 0.7804212504967137
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7774001359939575,
+          "energy_kwh": 73.85301291942596,
+          "target_soc": 0.7773990554643316
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.8863205909729004,
+          "energy_kwh": 68.24668550491333,
+          "target_soc": 0.8639123772239365
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.7396602034568787,
+          "energy_kwh": 60.65213668346405,
+          "target_soc": 0.7357428118403974
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.8261050581932068,
+          "energy_kwh": 49.56630349159241,
+          "target_soc": 0.8261033781516248
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 3.2826598075119398,
+        "median_seconds": 2.60248320699975,
+        "p95_seconds": 10.60389008705015,
+        "max_seconds": 11.168143222999788,
+        "total_seconds": 2205.9473906480234
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true,
+        "terminal_storage": true
+      },
+      "solve_timing": {
+        "count": 672,
+        "mean_seconds": 3.064080812211292,
+        "median_seconds": 2.387052225500156,
+        "p95_seconds": 10.39683609594913,
+        "max_seconds": 11.03934598700107,
+        "total_seconds": 2059.062305805988
+      },
+      "build_timing": {
+        "count": 672,
+        "mean_seconds": 0.06891027598364222,
+        "median_seconds": 0.06676865400004317,
+        "p95_seconds": 0.07885413400044854,
+        "max_seconds": 0.1439421080012835,
+        "total_seconds": 46.30770546100757
+      },
+      "solver": {
+        "optimal_count": 626,
+        "limit_count": 46,
+        "max_mip_gap": 0.020704521275186873,
+        "service_optimal_count": 672,
+        "failed_count": 0
+      },
+      "gates_pass": true,
+      "target_service": 1.0,
+      "decision_timing_kind": "online_controller_decision"
+    },
+    {
+      "controller": "Or\u00e1culo offline",
+      "month": 1,
+      "job": "runs/milp-physics-core30-20261103/reference-jan/replay/jobs/reference-jan",
+      "cost_eur": 174.26591853953892,
+      "minimum_service": 1.0,
+      "precision": 0.8850574712643678,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 87.0,
+      "cycles": 74.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 56.19659697264433,
+      "mean_daily_peak_kw": 43.706416570714545,
+      "terminal_storage_kwh": {
+        "Member_001": 5.119998168945313,
+        "Member_014": 2.5599957275390626,
+        "Member_025": 5.1199853515625
+      },
+      "storage_soc_min": 0.09998039156198502,
+      "storage_soc_max": 1.0,
+      "battery_throughput_kwh": 627.8144226074219,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.822486937046051,
+          "energy_kwh": 41.12434685230255,
+          "target_soc": 0.822486738068855
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8900601267814636,
+          "energy_kwh": 53.40360760688782,
+          "target_soc": 0.8900601554677038
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.5111091732978821,
+          "energy_kwh": 25.555458664894104,
+          "target_soc": 0.5111091813441743
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.6832128167152405,
+          "energy_kwh": 40.99276900291443,
+          "target_soc": 0.6832130383470946
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.8153564929962158,
+          "energy_kwh": 62.78244996070862,
+          "target_soc": 0.8153563069800218
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7809553742408752,
+          "energy_kwh": 74.19076055288315,
+          "target_soc": 0.7809552410209928
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.9116840958595276,
+          "energy_kwh": 70.19967538118362,
+          "target_soc": 0.9116840720845141
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.7029983401298523,
+          "energy_kwh": 57.64586389064789,
+          "target_soc": 0.702998123164021
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.6002026796340942,
+          "energy_kwh": 36.012160778045654,
+          "target_soc": 0.7611091813441743
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 0.16261490896130226,
+        "median_seconds": 0.16477895250000074,
+        "p95_seconds": 0.17317276544954438,
+        "max_seconds": 0.2297927110003002,
+        "total_seconds": 109.27721882199512
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true,
+        "minimum_service": true,
+        "physical_bounds": true,
+        "terminal_storage": true,
+        "ev_targets": true,
+        "state_fidelity": true,
+        "flow_fidelity": true,
+        "service_phase": true,
+        "cost_bound": true,
+        "cost_fidelity": true
+      },
+      "gates_pass": true,
+      "target_service": 1.0,
+      "offline_solve_seconds": 932.3472043249999,
+      "decision_timing_kind": "prepared_schedule_replay_only"
+    },
+    {
+      "controller": "Or\u00e1culo offline",
+      "month": 7,
+      "job": "runs/milp-physics-core30-20261103/reference-jul/replay/jobs/reference-jul",
+      "cost_eur": 47.57303761331743,
+      "minimum_service": 1.0,
+      "precision": 1.0,
+      "coverage": 1.0,
+      "unknown": 0.0,
+      "departures": 83.0,
+      "cycles": 79.0,
+      "missed_cycles": 0.0,
+      "appliance_coverage": 1.0,
+      "grid_energy_kwh": 0.0,
+      "grid_events": 0.0,
+      "peak_kw": 40.279593378305435,
+      "mean_daily_peak_kw": 26.011616937283957,
+      "terminal_storage_kwh": {
+        "Member_001": 5.119998779296875,
+        "Member_014": 2.56,
+        "Member_025": 5.119999389648438
+      },
+      "storage_soc_min": 0.09998580813407898,
+      "storage_soc_max": 1.0,
+      "battery_throughput_kwh": 563.6859741210938,
+      "terminal_connected_evs": {
+        "Member_001/electric_vehicle_storage_CHG-M001-01": {
+          "ev_id": "EV-M001-01",
+          "soc": 0.7698618769645691,
+          "energy_kwh": 38.493093848228455,
+          "target_soc": 0.7655614522407068
+        },
+        "Member_003/electric_vehicle_storage_CHG-M003-01": {
+          "ev_id": "EV-M003-01",
+          "soc": 0.8740848898887634,
+          "energy_kwh": 52.445093393325806,
+          "target_soc": 0.8740849040519023
+        },
+        "Member_004/electric_vehicle_storage_CHG-M004-01": {
+          "ev_id": "EV-M004-01",
+          "soc": 0.5454622507095337,
+          "energy_kwh": 27.273112535476685,
+          "target_soc": 0.5237164317415504
+        },
+        "Member_005/electric_vehicle_storage_CHG-M005-01": {
+          "ev_id": "EV-M005-01",
+          "soc": 0.7090473771095276,
+          "energy_kwh": 42.542842626571655,
+          "target_soc": 0.7090476100877745
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-01": {
+          "ev_id": "EV-M006-01",
+          "soc": 0.7804213166236877,
+          "energy_kwh": 60.092441380023956,
+          "target_soc": 0.7804212504967137
+        },
+        "Member_006/electric_vehicle_storage_CHG-M006-02": {
+          "ev_id": "EV-M006-02",
+          "soc": 0.7773991823196411,
+          "energy_kwh": 73.8529223203659,
+          "target_soc": 0.7773990554643316
+        },
+        "Member_018/electric_vehicle_storage_CHG-M018-01": {
+          "ev_id": "EV-M018-01",
+          "soc": 0.8863205909729004,
+          "energy_kwh": 68.24668550491333,
+          "target_soc": 0.8639123772239365
+        },
+        "Member_020/electric_vehicle_storage_CHG-M020-01": {
+          "ev_id": "EV-M020-01",
+          "soc": 0.7357430458068848,
+          "energy_kwh": 60.33092975616455,
+          "target_soc": 0.7357428118403974
+        },
+        "Member_022/electric_vehicle_storage_CHG-M022-01": {
+          "ev_id": "EV-M022-01",
+          "soc": 0.8261030912399292,
+          "energy_kwh": 49.56618547439575,
+          "target_soc": 0.8261033781516248
+        }
+      },
+      "decision_timing": {
+        "count": 672,
+        "mean_seconds": 0.16305820819494665,
+        "median_seconds": 0.16046932050039686,
+        "p95_seconds": 0.17875655829993742,
+        "max_seconds": 0.3345389959995373,
+        "total_seconds": 109.57511590700415
+      },
+      "gates": {
+        "service": true,
+        "precision": true,
+        "coverage": true,
+        "appliances": true,
+        "electrical": true,
+        "soc": true,
+        "minimum_service": true,
+        "physical_bounds": true,
+        "terminal_storage": true,
+        "ev_targets": true,
+        "state_fidelity": true,
+        "flow_fidelity": true,
+        "service_phase": true,
+        "cost_bound": true,
+        "cost_fidelity": true
+      },
+      "gates_pass": true,
+      "target_service": 1.0,
+      "offline_solve_seconds": 927.7745261599994,
+      "decision_timing_kind": "prepared_schedule_replay_only"
+    }
+  ],
+  "reference_audits": [
+    {
+      "scope": "declared constant-efficiency real-valued model, independent float32 simulator replay; numerical tolerances apply",
+      "gate_profile": {
+        "minimum_service": 0.999,
+        "precision": 0.8,
+        "electrical_kwh": 1e-06,
+        "state_flow_terminal_tolerance_kwh": 0.0001,
+        "cost_fidelity_tolerance_eur": 0.0001
+      },
+      "gates": {
+        "coverage": true,
+        "minimum_service": true,
+        "precision": true,
+        "electrical": true,
+        "appliances": true,
+        "physical_bounds": true,
+        "terminal_storage": true,
+        "ev_targets": true,
+        "state_fidelity": true,
+        "flow_fidelity": true,
+        "service_phase": true,
+        "cost_bound": true,
+        "cost_fidelity": true
+      },
+      "gates_pass": true,
+      "model_lower_bound_eur": 174.26451398366314,
+      "model_incumbent_eur": 174.2659143580731,
+      "replay_cost_eur": 174.26591853953892,
+      "replay_minus_model_cost_eur": 4.1814658118255466e-06,
+      "replay_minus_model_lower_bound_eur": 0.0014045558757800336,
+      "replay_gap_to_model_bound_eur": 0.0014045558757800336,
+      "replay_gap_to_model_bound_percent": 0.0008059907571955282,
+      "model_mip_gap": 8.03584806102247e-06,
+      "model_solver_status": "limit_reached",
+      "minimum_terminal_best_effort_shortfall_kwh": 9.654378791657976,
+      "solve_wall_seconds": 932.3472043249999,
+      "peak_kw": 56.19659697264433,
+      "mean_daily_peak_kw": 43.706416570714545,
+      "max_building_net_residual_kwh": 6.4776720531956045e-06,
+      "month": 1,
+      "reference_dir": "runs/milp-physics-core30-20261103/reference-jan",
+      "max_state_residual_kwh": 1.9550323507644407e-05,
+      "max_flow_residual_kwh": 6.4776720531956045e-06,
+      "max_actual_departure_shortfall_kwh": 1.430511474609375e-05,
+      "boundary_best_effort_sessions": [
+        {
+          "session": "Member_022::CHG-M022-01::session_0475::35696_35744",
+          "right_censored": true,
+          "model_shortfall_kwh": 9.654378791657976,
+          "max_energy_residual_kwh": 1.0828169294541112e-05,
+          "max_flow_residual_kwh": 1.6689300386119044e-08,
+          "final_energy_kwh": 36.012160778045654,
+          "required_energy_kwh": 45.666550397872925,
+          "shortfall_kwh": 9.65438961982727,
+          "physical_bounds_pass": true
+        }
+      ]
+    },
+    {
+      "scope": "declared constant-efficiency real-valued model, independent float32 simulator replay; numerical tolerances apply",
+      "gate_profile": {
+        "minimum_service": 0.999,
+        "precision": 0.8,
+        "electrical_kwh": 1e-06,
+        "state_flow_terminal_tolerance_kwh": 0.0001,
+        "cost_fidelity_tolerance_eur": 0.0001
+      },
+      "gates": {
+        "coverage": true,
+        "minimum_service": true,
+        "precision": true,
+        "electrical": true,
+        "appliances": true,
+        "physical_bounds": true,
+        "terminal_storage": true,
+        "ev_targets": true,
+        "state_fidelity": true,
+        "flow_fidelity": true,
+        "service_phase": true,
+        "cost_bound": true,
+        "cost_fidelity": true
+      },
+      "gates_pass": true,
+      "model_lower_bound_eur": 47.570746819014985,
+      "model_incumbent_eur": 47.57303403291441,
+      "replay_cost_eur": 47.57303761331743,
+      "replay_minus_model_cost_eur": 3.5804030247277296e-06,
+      "replay_minus_model_lower_bound_eur": 0.002290794302446386,
+      "replay_gap_to_model_bound_eur": 0.002290794302446386,
+      "replay_gap_to_model_bound_percent": 0.00481555253097416,
+      "model_mip_gap": 4.807794890385615e-05,
+      "model_solver_status": "limit_reached",
+      "minimum_terminal_best_effort_shortfall_kwh": 0.0,
+      "solve_wall_seconds": 927.7745261599994,
+      "peak_kw": 40.279593378305435,
+      "mean_daily_peak_kw": 26.011616937283957,
+      "max_building_net_residual_kwh": 5.464351782201622e-06,
+      "month": 7,
+      "reference_dir": "runs/milp-physics-core30-20261103/reference-jul",
+      "max_state_residual_kwh": 1.9550323507644407e-05,
+      "max_flow_residual_kwh": 5.449450621086704e-06,
+      "max_actual_departure_shortfall_kwh": 9.179115295410156e-06,
+      "boundary_best_effort_sessions": []
+    }
+  ],
+  "certificate": {
+    "model_lower_bound_eur": 221.83526080267814,
+    "model_feasible_upper_bound_eur": 221.83894839098753,
+    "model_interval_eur": 0.0036875883093898665,
+    "model_relative_interval_percent": 0.0016623093623830913,
+    "simulator_replay_cost_eur": 221.83895615285635,
+    "replay_minus_model_eur": 7.761868829447849e-06,
+    "replay_excess_above_model_lower_bound_eur": 0.0036953501782193143,
+    "replay_relative_excess_percent": 0.0016658082961420269,
+    "mpc_cost_eur": 222.17472254939258,
+    "mpc_minus_reference_replay_eur": 0.3357663965362292,
+    "nominal_mpc_excess_interval_eur": [
+      0.33577415840505864,
+      0.3394617467144485
+    ],
+    "nominal_mpc_excess_interval_percent": [
+      0.1513594257638033,
+      0.1530242511880917
+    ],
+    "total_offline_solve_seconds": 1860.1217304849993,
+    "scope": "Real-valued declared physical model; solver numerical tolerances apply. Simulator replay is independently audited, not a universal float32 proof. MPC service and terminal numerical tolerances are reported separately."
+  },
+  "terminal_comparison": [
+    {
+      "month": 1,
+      "asset": "Member_001/electrical_storage",
+      "required_kwh": 5.12,
+      "mpc_kwh": 5.119989929199219,
+      "oracle_kwh": 5.119998168945313,
+      "mpc_shortfall_kwh": 1.0070800780859201e-05
+    },
+    {
+      "month": 1,
+      "asset": "Member_014/electrical_storage",
+      "required_kwh": 2.56,
+      "mpc_kwh": 2.5599899291992188,
+      "oracle_kwh": 2.5599957275390626,
+      "mpc_shortfall_kwh": 1.007080078130329e-05
+    },
+    {
+      "month": 1,
+      "asset": "Member_025/electrical_storage",
+      "required_kwh": 5.12,
+      "mpc_kwh": 5.119989929199219,
+      "oracle_kwh": 5.1199853515625,
+      "mpc_shortfall_kwh": 1.0070800780859201e-05
+    },
+    {
+      "month": 1,
+      "asset": "Member_001/electric_vehicle_storage_CHG-M001-01",
+      "required_kwh": 41.124337911605835,
+      "mpc_kwh": 41.12443923950195,
+      "oracle_kwh": 41.12434685230255,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 1,
+      "asset": "Member_003/electric_vehicle_storage_CHG-M003-01",
+      "required_kwh": 53.40360760688782,
+      "mpc_kwh": 53.40370774269104,
+      "oracle_kwh": 53.40360760688782,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 1,
+      "asset": "Member_004/electric_vehicle_storage_CHG-M004-01",
+      "required_kwh": 25.555458664894104,
+      "mpc_kwh": 25.555557012557983,
+      "oracle_kwh": 25.555458664894104,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 1,
+      "asset": "Member_005/electric_vehicle_storage_CHG-M005-01",
+      "required_kwh": 40.992783308029175,
+      "mpc_kwh": 40.9928834438324,
+      "oracle_kwh": 40.99276900291443,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 1,
+      "asset": "Member_006/electric_vehicle_storage_CHG-M006-01",
+      "required_kwh": 62.782436192035675,
+      "mpc_kwh": 62.782537162303925,
+      "oracle_kwh": 62.78244996070862,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 1,
+      "asset": "Member_006/electric_vehicle_storage_CHG-M006-02",
+      "required_kwh": 74.19074922800064,
+      "mpc_kwh": 74.1908511519432,
+      "oracle_kwh": 74.19076055288315,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 1,
+      "asset": "Member_018/electric_vehicle_storage_CHG-M018-01",
+      "required_kwh": 70.19967538118362,
+      "mpc_kwh": 70.19977635145187,
+      "oracle_kwh": 70.19967538118362,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 1,
+      "asset": "Member_020/electric_vehicle_storage_CHG-M020-01",
+      "required_kwh": 57.6458443403244,
+      "mpc_kwh": 57.64594209194183,
+      "oracle_kwh": 57.64586389064789,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 1,
+      "asset": "Member_022/electric_vehicle_storage_CHG-M022-01",
+      "required_kwh": 36.01217160621495,
+      "mpc_kwh": 36.012160778045654,
+      "oracle_kwh": 36.012160778045654,
+      "mpc_shortfall_kwh": 1.0828169294541112e-05
+    },
+    {
+      "month": 7,
+      "asset": "Member_001/electrical_storage",
+      "required_kwh": 5.12,
+      "mpc_kwh": 5.119989929199219,
+      "oracle_kwh": 5.119998779296875,
+      "mpc_shortfall_kwh": 1.0070800780859201e-05
+    },
+    {
+      "month": 7,
+      "asset": "Member_014/electrical_storage",
+      "required_kwh": 2.56,
+      "mpc_kwh": 2.5599900817871095,
+      "oracle_kwh": 2.56,
+      "mpc_shortfall_kwh": 9.918212890536182e-06
+    },
+    {
+      "month": 7,
+      "asset": "Member_025/electrical_storage",
+      "required_kwh": 5.12,
+      "mpc_kwh": 5.119989929199219,
+      "oracle_kwh": 5.119999389648438,
+      "mpc_shortfall_kwh": 1.0070800780859201e-05
+    },
+    {
+      "month": 7,
+      "asset": "Member_001/electric_vehicle_storage_CHG-M001-01",
+      "required_kwh": 38.27807307243347,
+      "mpc_kwh": 38.27817440032959,
+      "oracle_kwh": 38.493093848228455,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 7,
+      "asset": "Member_003/electric_vehicle_storage_CHG-M003-01",
+      "required_kwh": 52.445093393325806,
+      "mpc_kwh": 52.44519352912903,
+      "oracle_kwh": 52.445093393325806,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 7,
+      "asset": "Member_004/electric_vehicle_storage_CHG-M004-01",
+      "required_kwh": 26.18582248687744,
+      "mpc_kwh": 27.273112535476685,
+      "oracle_kwh": 27.273112535476685,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 7,
+      "asset": "Member_005/electric_vehicle_storage_CHG-M005-01",
+      "required_kwh": 42.5428569316864,
+      "mpc_kwh": 42.542957067489624,
+      "oracle_kwh": 42.542842626571655,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 7,
+      "asset": "Member_006/electric_vehicle_storage_CHG-M006-01",
+      "required_kwh": 60.09243679046631,
+      "mpc_kwh": 60.09253776073456,
+      "oracle_kwh": 60.092441380023956,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 7,
+      "asset": "Member_006/electric_vehicle_storage_CHG-M006-02",
+      "required_kwh": 73.8529109954834,
+      "mpc_kwh": 73.85301291942596,
+      "oracle_kwh": 73.8529223203659,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 7,
+      "asset": "Member_018/electric_vehicle_storage_CHG-M018-01",
+      "required_kwh": 66.52125507593155,
+      "mpc_kwh": 68.24668550491333,
+      "oracle_kwh": 68.24668550491333,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 7,
+      "asset": "Member_020/electric_vehicle_storage_CHG-M020-01",
+      "required_kwh": 60.330910205841064,
+      "mpc_kwh": 60.65213668346405,
+      "oracle_kwh": 60.33092975616455,
+      "mpc_shortfall_kwh": 0
+    },
+    {
+      "month": 7,
+      "asset": "Member_022/electric_vehicle_storage_CHG-M022-01",
+      "required_kwh": 49.566203355789185,
+      "mpc_kwh": 49.56630349159241,
+      "oracle_kwh": 49.56618547439575,
+      "mpc_shortfall_kwh": 0
+    }
+  ],
+  "max_mpc_departure_target_shortfall_kwh": 0,
+  "artifact_sha256": {
+    "runs/milp-mpc-core30-20261103/validated/jobs/bau-2024-01/results/kpis.json": "3387b7b16eeb3071a662913d5fcfaa896be21d76d3b50e2d36c7471064d2dcff",
+    "runs/milp-mpc-core30-20261103/validated/jobs/bau-2024-01/config.resolved.yaml": "1132f3877bfafc3ea9409d1d80ed6779126350e5dc2f9c21a90ae7d39f205326",
+    "runs/milp-mpc-core30-20261103/validated/jobs/basic-2024-01/results/kpis.json": "98ea2223ace57e8ca9ee46d82cf6d301d154db4aaeb5636a84cee60f7f5f1e6e",
+    "runs/milp-mpc-core30-20261103/validated/jobs/basic-2024-01/config.resolved.yaml": "1ca338b878c8be32fbf671409c8ecdabfd7b845e904061c927fc85ca87a6fc29",
+    "runs/milp-mpc-core30-20261103/validated/jobs/smart-2024-01/results/kpis.json": "7c1b901f53e10a6237cd744cfa588c5266890e3c540a1b44788be2f08ce90f2b",
+    "runs/milp-mpc-core30-20261103/validated/jobs/smart-2024-01/config.resolved.yaml": "e71f8e0afeee347548f9a14f11f26bd6701981224a2b7a307ffd460cd456f970",
+    "runs/milp-mpc-core30-20261103/validated/jobs/community-2024-01/results/kpis.json": "8351b37d0c46e181db445178f346dfd5eb63f045346af013fb4ee50078bb1808",
+    "runs/milp-mpc-core30-20261103/validated/jobs/community-2024-01/config.resolved.yaml": "6bb9291d391312bad96c7ab7b555c1fcb4836745158abe2a0bd1f5f2f4220136",
+    "runs/milp-mpc-core30-20261103/validated/jobs/bau-2024-07/results/kpis.json": "174ac284b76e25b106de7f630fe60a6a0aeb1a8f4c7591e252e93c71ef0aed0f",
+    "runs/milp-mpc-core30-20261103/validated/jobs/bau-2024-07/config.resolved.yaml": "2190b1c2e88d42008886d483a5ae2dbf0ae0acb77ab35c118f446686aec09ed8",
+    "runs/milp-mpc-core30-20261103/validated/jobs/basic-2024-07/results/kpis.json": "4e55ab8b814c7c74f219f24dd4c0a84b1e262d1c9611109a7ba029253525fdec",
+    "runs/milp-mpc-core30-20261103/validated/jobs/basic-2024-07/config.resolved.yaml": "7c915aa6eb2d8686bcced137391895d26d4443e9b55afaa9469b7db04eb15c8d",
+    "runs/milp-mpc-core30-20261103/validated/jobs/smart-2024-07/results/kpis.json": "55c9eaae32c0130c1eea15db3747a81f7d6291e86066c219d6b3e697bbd8eff3",
+    "runs/milp-mpc-core30-20261103/validated/jobs/smart-2024-07/config.resolved.yaml": "a6a1e6978a17804ae37923ba15171165d1981a99b4683dc8d53f8c21cad769f1",
+    "runs/milp-mpc-core30-20261103/validated/jobs/community-2024-07/results/kpis.json": "0c10930e5e87a6ffca3446f977c832ced8934d4d4acd6999dbb542de622db6ea",
+    "runs/milp-mpc-core30-20261103/validated/jobs/community-2024-07/config.resolved.yaml": "bd1a36ee2da0e0417a9924a65e5bd130304b30f7754d706b6289a69d2f01a9f7",
+    "runs/milp-physics-core30-20261103/final-comparison/jobs/milp-physical-final-2024-01/results/kpis.json": "fd50336fbabdbc4f6df32a33ec4d2519959f685b1f9ae85a98b0fdeaf0a1afd7",
+    "runs/milp-physics-core30-20261103/final-comparison/jobs/milp-physical-final-2024-01/config.resolved.yaml": "67af44e810ff4414847c998e80090f112150d9e230c6d427bdd86b5baeaf650e",
+    "runs/milp-physics-core30-20261103/final-comparison/jobs/milp-physical-final-2024-07/results/kpis.json": "0146f620ae206fada37e57fb6f360cc65ffb18484c49b503503a7cb46f7eacda",
+    "runs/milp-physics-core30-20261103/final-comparison/jobs/milp-physical-final-2024-07/config.resolved.yaml": "472827a26b8de9ace86dbfcc2a0479b1f2f9c23a56ccc97d1bce7125ae2862ba",
+    "runs/milp-physics-core30-20261103/reference-jan/replay/jobs/reference-jan/results/kpis.json": "7e80db0a476d0597a32dcfa6b15f61531eb496990b25ade5cc5bf426922a50a8",
+    "runs/milp-physics-core30-20261103/reference-jan/replay/jobs/reference-jan/config.resolved.yaml": "3c96b0319a231da94ee85f5dc69cef1fe8071a1d6038fb4f1d9a28f0fa7bfbcc",
+    "runs/milp-physics-core30-20261103/reference-jan/problem.json": "3a7388867e78e8247a2f88b8da1f576adf5faa22e322ab61d089e32d9aac9449",
+    "runs/milp-physics-core30-20261103/reference-jan/result.json": "8e22e422b48589d2e09516477973e2090eb23f3be49c9c88c643952af9f8f051",
+    "runs/milp-physics-core30-20261103/reference-jan/replay_schedule.json": "571121eec8a1a980639b699d404aaf2fc8bdfd4f48f8b3edbcbf95b155cc054b",
+    "runs/milp-physics-core30-20261103/reference-jan/replay_audit.json": "7c30115082e87285620909f90a58c1840eadc64f6b64bda02a496911b73df841",
+    "runs/milp-physics-core30-20261103/reference-jul/replay/jobs/reference-jul/results/kpis.json": "291d5b528257c1d437b0148a54bccaec4b1158d3dd07a41a989e48ac7b4c8bdb",
+    "runs/milp-physics-core30-20261103/reference-jul/replay/jobs/reference-jul/config.resolved.yaml": "aeefdc1dd13f539ab7d1b7c170fb02b3a8802293acb12af56b261d2b69e0b419",
+    "runs/milp-physics-core30-20261103/reference-jul/problem.json": "d8d260a2f9195869eab574e8d70e840e2eee6ed8594d5fc04d64521aaaf3a698",
+    "runs/milp-physics-core30-20261103/reference-jul/result.json": "99284498be43064b66ec009c1bc1745fe141f47a6421374de16c27c49b8253b7",
+    "runs/milp-physics-core30-20261103/reference-jul/replay_schedule.json": "d9ed44cce71ecfbdd7901c8fc1ecd768f741996e9faa68b6036eac7f80c391b7",
+    "runs/milp-physics-core30-20261103/reference-jul/replay_audit.json": "92a2a9567966d0aa4f2b27a1912ded5dd7dbfb981ade6426832dd4dd9f8b90c1"
+  },
+  "provenance": {
+    "mpc_commit": "0c3d0f263a53f22b51e6687922e49cf0b374bbb9",
+    "mpc_plans": "runs/milp-physics-core30-20261103/final-comparison/plans.json",
+    "baseline_campaign": "milp-mpc-core30-20261103; eight unchanged baseline jobs reused",
+    "physical_formulation": {
+      "reference-jan": {
+        "identical": true,
+        "sha256_current": "3a7388867e78e8247a2f88b8da1f576adf5faa22e322ab61d089e32d9aac9449",
+        "sha256_reference": "3a7388867e78e8247a2f88b8da1f576adf5faa22e322ab61d089e32d9aac9449",
+        "parsed_equal": true
+      },
+      "reference-jul": {
+        "identical": true,
+        "sha256_current": "d8d260a2f9195869eab574e8d70e840e2eee6ed8594d5fc04d64521aaaf3a698",
+        "sha256_reference": "d8d260a2f9195869eab574e8d70e840e2eee6ed8594d5fc04d64521aaaf3a698",
+        "parsed_equal": true
+      },
+      "formulation_6decdc5": "8e251751675103143c335b1f48fa7c19148eab4a23f61322a118baa80c9077f7",
+      "formulation_HEAD": "8e251751675103143c335b1f48fa7c19148eab4a23f61322a118baa80c9077f7",
+      "solver_formulation_unchanged": true
+    },
+    "source_schema_sha256": "990ece4b767f3b1d59ecabd82845f355ba6051f2fc79d4025b62e08f052c9eab",
+    "manifest_input_fingerprints": {
+      "1": {
+        "count": 87,
+        "sha256": "0a5e8ecb427c2c235536002af926bb0188fe98a30b3b5306685dc0c494342009"
+      },
+      "7": {
+        "count": 87,
+        "sha256": "0a5e8ecb427c2c235536002af926bb0188fe98a30b3b5306685dc0c494342009"
+      }
+    },
+    "comparison_matching_fields": [
+      "data_files_sha256",
+      "community_market",
+      "simulator_version",
+      "seconds_per_time_step",
+      "episode_start_time_step",
+      "episode_end_time_step",
+      "completed_intervals",
+      "random_seed"
+    ],
+    "hardware": "Intel Core i9-13980HX, one physical core per independent job, one HiGHS thread, no GPU; shared machine",
+    "mpc_per_phase_seconds": 10,
+    "mpc_relative_gap": 0.001,
+    "weekly_per_phase_seconds": 900,
+    "weekly_relative_gap": 1e-06
+  }
+}

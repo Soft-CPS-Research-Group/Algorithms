@@ -1,5 +1,7 @@
 # MILP com horizonte móvel no Core30 — 03/11/2026
 
+**Relatório histórico.** A [referência física alinhada](milp_physics_reference_core30_2026_11_03.md) substitui os resultados desta aproximação conservadora. Os valores abaixo mantêm-se para rastreabilidade; os seus limites duais não constituem limites do Simulator.
+
 `MILP` passa a identificar o controlador comunitário que volta a otimizar em cada passo. `TotalOracleReplayPolicy` e os templates de planos semanais permanecem como oráculo offline; o MILP individual conserva-se para diagnóstico, fora da comparação principal.
 
 ## Contrato e política
