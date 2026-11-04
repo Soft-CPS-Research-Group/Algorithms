@@ -50,7 +50,7 @@ not an interchangeable production interface.
 
 Every successful job writes `config.resolved.yaml`, `job_info.json`, progress,
 `results/result.json` and `results/summary.json` under `runs/jobs/<job_id>/`.
-Results include `output_contract_version: algorithms.outputs.v1` and provenance.
+Results include `output_contract_version: algorithms.outputs.v2` and provenance.
 KPI and time-series collection continue to follow `simulator.export`.
 
 | `outputs.model_artifacts` | Final artifacts |
@@ -62,10 +62,9 @@ KPI and time-series collection continue to follow `simulator.export`.
 | omitted / `null` | Legacy configured checkpoint schedule plus bundle |
 
 An explicit checkpoint request fails if no stage supports saving, or if the
-completed job does not actually produce the checkpoint. A research artifact is
-still a research artifact: the recovered Transformer/offline agents do not become
-serving-ready because they share a manifest. ONNX signatures, final-only export
-policy and inference interoperability retain their separate later workstreams.
+completed job does not actually produce the checkpoint. Check deployment eligibility
+in the bundle manifest. The [bundle contract](../inference_bundle.md#delivery-formats)
+lists supported formats and the inference adapters required by each family.
 Use a unique job ID for each independent execution; resume by providing a checkpoint.
 
 MLflow is an optional extra and is loaded only when tracking is requested. Local
