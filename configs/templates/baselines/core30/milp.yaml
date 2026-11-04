@@ -39,7 +39,8 @@ training:
 pipeline:
 - algorithm: MILP
   count: 1
-  hyperparameters: {}
+  hyperparameters:
+    physics: simulator_linear
 evaluation:
   episodes: 1
 job:

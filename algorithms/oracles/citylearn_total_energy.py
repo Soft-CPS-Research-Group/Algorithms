@@ -96,22 +96,14 @@ class CityLearnTotalEnergyDiagnostics:
             "ev_session_count": self.ev_session_count,
             "deferrable_cycle_count": self.deferrable_cycle_count,
             "electrical_service_count": self.electrical_service_count,
-            "left_truncated_ev_session_ids": list(
-                self.left_truncated_ev_session_ids
-            ),
-            "right_truncated_ev_session_ids": list(
-                self.right_truncated_ev_session_ids
-            ),
-            "assumed_initial_soc_ev_session_ids": list(
-                self.assumed_initial_soc_ev_session_ids
-            ),
+            "left_truncated_ev_session_ids": list(self.left_truncated_ev_session_ids),
+            "right_truncated_ev_session_ids": list(self.right_truncated_ev_session_ids),
+            "assumed_initial_soc_ev_session_ids": list(self.assumed_initial_soc_ev_session_ids),
             "runtime_drift_initial_soc_ev_session_ids": list(
                 self.runtime_drift_initial_soc_ev_session_ids
             ),
             "runtime_drift_initial_soc_reason": _RUNTIME_DRIFT_INITIAL_SOC_REASON,
-            "restricted_deferrable_cycle_ids": list(
-                self.restricted_deferrable_cycle_ids
-            ),
+            "restricted_deferrable_cycle_ids": list(self.restricted_deferrable_cycle_ids),
             "omitted_boundary_deferrable_cycle_ids": list(
                 self.omitted_boundary_deferrable_cycle_ids
             ),
@@ -160,11 +152,15 @@ def _soc(value: Any, *, default: float | None = None) -> float:
 
 def _dataset_root(schema_path: Path, schema: Mapping[str, Any]) -> Path:
     root_value = Path(str(schema.get("root_directory") or schema_path.parent))
-    candidates = [root_value] if root_value.is_absolute() else [
-        Path.cwd() / root_value,
-        schema_path.parent / root_value,
-        schema_path.parent,
-    ]
+    candidates = (
+        [root_value]
+        if root_value.is_absolute()
+        else [
+            Path.cwd() / root_value,
+            schema_path.parent / root_value,
+            schema_path.parent,
+        ]
+    )
     buildings = schema.get("buildings") or {}
     sample_file = next(
         (
@@ -176,13 +172,9 @@ def _dataset_root(schema_path: Path, schema: Mapping[str, Any]) -> Path:
     )
     for candidate in candidates:
         resolved = candidate.resolve()
-        if resolved.is_dir() and (
-            sample_file is None or (resolved / sample_file).is_file()
-        ):
+        if resolved.is_dir() and (sample_file is None or (resolved / sample_file).is_file()):
             return resolved
-    raise FileNotFoundError(
-        f"Could not resolve root_directory for CityLearn schema {schema_path}."
-    )
+    raise FileNotFoundError(f"Could not resolve root_directory for CityLearn schema {schema_path}.")
 
 
 def _read_parquet(root: Path, filename: Any) -> pd.DataFrame:
@@ -213,9 +205,7 @@ def _parse_profile(raw: Any) -> tuple[float, ...]:
             dtype=np.float64,
         ).reshape(-1)
     if values.size == 0 or np.any(~np.isfinite(values)) or np.any(values < 0.0):
-        raise ValueError(
-            "Deferrable load profiles must contain finite non-negative kWh values."
-        )
+        raise ValueError("Deferrable load profiles must contain finite non-negative kWh values.")
     return tuple(float(value) for value in values)
 
 
@@ -226,9 +216,9 @@ def _connected_intervals(frame: pd.DataFrame) -> list[tuple[int, int, str]]:
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"Charger simulation is missing columns: {sorted(missing)}.")
-    states = pd.to_numeric(
-        frame["electric_vehicle_charger_state"], errors="coerce"
-    ).to_numpy(dtype=np.float64)
+    states = pd.to_numeric(frame["electric_vehicle_charger_state"], errors="coerce").to_numpy(
+        dtype=np.float64
+    )
     identifiers = frame["electric_vehicle_id"].fillna("").astype(str).to_numpy()
     connected = states == 1.0
     intervals: list[tuple[int, int, str]] = []
@@ -241,11 +231,7 @@ def _connected_intervals(frame: pd.DataFrame) -> list[tuple[int, int, str]]:
         if not identifier or identifier.lower() == "nan":
             raise ValueError(f"Connected charger row {cursor} has no EV id.")
         end = cursor + 1
-        while (
-            end < len(frame)
-            and connected[end]
-            and identifiers[end].strip() == identifier
-        ):
+        while end < len(frame) and connected[end] and identifiers[end].strip() == identifier:
             end += 1
         intervals.append((cursor, end, identifier))
         cursor = end
@@ -263,9 +249,7 @@ def _curve_minimum(name: str, raw: Any, *, default: float) -> float:
     return max(float(np.min(array[:, 1])), 0.0)
 
 
-def _minimum_directional_battery_efficiency(
-    name: str, attributes: Mapping[str, Any]
-) -> float:
+def _minimum_directional_battery_efficiency(name: str, attributes: Mapping[str, Any]) -> float:
     technical = _efficiency(f"{name}.efficiency", attributes.get("efficiency"), 0.9)
     minimum_technical = _curve_minimum(
         f"{name}.power_efficiency_curve",
@@ -317,13 +301,9 @@ def _stationary_asset(
     if depth > 1.0:
         raise ValueError("Stationary battery depth_of_discharge must be <= 1.")
     minimum = capacity * (1.0 - depth)
-    initial_soc = _soc(
-        attributes.get("initial_soc"), default=(1.0 - depth)
-    )
+    initial_soc = _soc(attributes.get("initial_soc"), default=(1.0 - depth))
     initial = max(capacity * initial_soc, minimum)
-    conservative_capacity = max(
-        capacity * conservative_capacity_ratio, initial, minimum
-    )
+    conservative_capacity = max(capacity * conservative_capacity_ratio, initial, minimum)
     minimum_power_ratio = _curve_minimum(
         f"{building_id}.electrical_storage.capacity_power_curve",
         attributes.get("capacity_power_curve"),
@@ -351,7 +331,9 @@ def _stationary_asset(
         ),
         phase_connection=_phase(
             attributes.get("phase_connection"),
-            default_split=(building.get("electrical_service") or {}).get("default_split", "balanced"),
+            default_split=(building.get("electrical_service") or {}).get(
+                "default_split", "balanced"
+            ),
         ),
     )
 
@@ -464,6 +446,7 @@ def build_citylearn_total_energy_problem(
     electrical_service_reserve_kw: float = 0.1,
     conservative_capacity_ratio: float = 0.99,
     read_data: Callable[[Path, Any], pd.DataFrame] | None = None,
+    physics: Literal["conservative", "simulator_linear"] = "conservative",
 ) -> CityLearnTotalEnergyBuild:
     """Extract a total-energy problem for source transitions ``[start, end)``.
 
@@ -479,20 +462,42 @@ def build_citylearn_total_energy_problem(
     validate_static_oracle_schema(schema)
     dataset_root = _dataset_root(schema_path, schema)
     read_frame = read_data or _read_parquet
+    if physics == "simulator_linear":
+        raw_reader = read_frame
+
+        def read_frame(root: Path, filename: Any) -> pd.DataFrame:
+            # Mirror the simulator's input precision before constructing the
+            # real-valued optimization problem. Keep missing arrival values
+            # missing so the existing explicit fallback diagnostics still work.
+            frame = raw_reader(root, filename).copy()
+            for column in ("non_shiftable_load", "solar_generation", "electricity_pricing"):
+                if column in frame:
+                    frame[column] = frame[column].astype(np.float32).astype(np.float64)
+            for column in (
+                "electric_vehicle_current_soc",
+                "electric_vehicle_estimated_soc_arrival",
+                "electric_vehicle_required_soc_departure",
+            ):
+                if column in frame:
+                    values = frame[column].to_numpy(dtype=np.float32, copy=True)
+                    values[values > 1] /= np.float32(100)
+                    frame[column] = values.astype(np.float64)
+            return frame
+
     start, end = int(start_time_step), int(end_time_step)
     if start < 0 or end <= start:
         raise ValueError("Source window must satisfy 0 <= start_time_step < end_time_step.")
-    timestep_hours = _non_negative(
-        "seconds_per_time_step", schema.get("seconds_per_time_step")
-    ) / 3600.0
+    timestep_hours = (
+        _non_negative("seconds_per_time_step", schema.get("seconds_per_time_step")) / 3600.0
+    )
     if timestep_hours <= 0.0:
         raise ValueError("seconds_per_time_step must be > 0.")
-    reserve_kw = _non_negative(
-        "electrical_service_reserve_kw", electrical_service_reserve_kw
-    )
-    capacity_ratio = _non_negative(
-        "conservative_capacity_ratio", conservative_capacity_ratio
-    )
+    if physics not in {"conservative", "simulator_linear"}:
+        raise ValueError(f"Unknown physics profile: {physics}")
+    reserve_kw = _non_negative("electrical_service_reserve_kw", electrical_service_reserve_kw)
+    if physics == "simulator_linear":
+        reserve_kw = 0.0
+    capacity_ratio = _non_negative("conservative_capacity_ratio", conservative_capacity_ratio)
     if not 0.0 < capacity_ratio <= 1.0:
         raise ValueError("conservative_capacity_ratio must be in (0, 1].")
 
@@ -527,16 +532,23 @@ def build_citylearn_total_energy_problem(
     restricted_cycles: list[str] = []
     omitted_cycles: list[str] = []
     ev_initial_sources: dict[str, str] = {}
+    ev_identities: dict[str, str] = {}
     ev_definitions = schema.get("electric_vehicles_def") or {}
 
     for building_id in selected:
         building = included[building_id]
         energy = read_frame(dataset_root, building.get("energy_simulation"))
+        if physics == "simulator_linear":
+            if float(building.get("noise_std", 0)) != 0:
+                raise ValueError("simulator_linear requires deterministic exogenous data.")
+            for field_name in ("dhw_demand", "cooling_demand", "heating_demand"):
+                if field_name in energy and np.any(
+                    energy[field_name].iloc[start:end].to_numpy() != 0
+                ):
+                    raise ValueError(f"simulator_linear does not model nonzero {field_name}.")
         pricing = read_frame(dataset_root, building.get("pricing"))
         if end > len(energy) or end > len(pricing):
-            raise ValueError(
-                f"Requested source window exceeds data for {building_id}."
-            )
+            raise ValueError(f"Requested source window exceeds data for {building_id}.")
         non_shiftable = _numeric_series(
             energy, "non_shiftable_load", source=f"{building_id}.energy_simulation"
         )
@@ -570,9 +582,7 @@ def build_citylearn_total_energy_problem(
         )
         if storage is not None:
             stationary.append(storage)
-        service = _electrical_service(
-            building_id, building, reserve_kw=reserve_kw
-        )
+        service = _electrical_service(building_id, building, reserve_kw=reserve_kw)
         if service is not None:
             services.append(service)
 
@@ -582,9 +592,7 @@ def build_citylearn_total_energy_problem(
                 raise ValueError("Autosized EV chargers are not supported.")
             frame = read_frame(dataset_root, charger.get("charger_simulation"))
             if end > len(frame):
-                raise ValueError(
-                    f"Requested source window exceeds charger {charger_id!r}."
-                )
+                raise ValueError(f"Requested source window exceeds charger {charger_id!r}.")
             attributes = dict(charger.get("attributes") or {})
             charger_efficiency = _efficiency(
                 f"{charger_id}.efficiency", attributes.get("efficiency"), 1.0
@@ -635,9 +643,7 @@ def build_citylearn_total_energy_problem(
                         schema_random_seed=int(schema["random_seed"]),
                         electric_vehicle_id=ev_id,
                     )
-                    schema_initial_source = (
-                        "citylearn_deterministic_schema_seed_fallback"
-                    )
+                    schema_initial_source = "citylearn_deterministic_schema_seed_fallback"
                 else:
                     schema_initial_soc = _soc(configured_initial_soc)
                     schema_initial_source = "schema"
@@ -657,9 +663,7 @@ def build_citylearn_total_energy_problem(
                 # not an observed departure.  Do not manufacture a terminal
                 # departure constraint from that row.
                 dataset_right_censored = global_end == len(frame)
-                right_truncated = global_end > end or (
-                    global_end == end and dataset_right_censored
-                )
+                right_truncated = global_end > end or (global_end == end and dataset_right_censored)
                 session_id = (
                     f"{building_id}::{charger_id}::session_{ordinal:04d}::"
                     f"{global_start}_{global_end}"
@@ -668,27 +672,23 @@ def build_citylearn_total_energy_problem(
                     left_ev.append(session_id)
                     if initial_source != "current_soc":
                         assumed_ev.append(session_id)
-                if (
-                    clipped_start > start
-                    and initial_source
-                    in {"schema", "citylearn_deterministic_schema_seed_fallback"}
-                ):
+                if clipped_start > start and initial_source in {
+                    "schema",
+                    "citylearn_deterministic_schema_seed_fallback",
+                }:
                     runtime_drift_ev.append(session_id)
                     initial_source = f"{initial_source}_runtime_drift_unreproducible"
                 if right_truncated:
                     right_ev.append(session_id)
                 ev_initial_sources[session_id] = initial_source
+                ev_identities[session_id] = ev_id
 
                 required_soc = _soc(
-                    frame.iloc[global_end - 1].get(
-                        "electric_vehicle_required_soc_departure"
-                    ),
+                    frame.iloc[global_end - 1].get("electric_vehicle_required_soc_departure"),
                     default=arrival_soc,
                 )
                 required_final = (
-                    minimum
-                    if right_truncated
-                    else max(capacity * required_soc, minimum)
+                    minimum if right_truncated else max(capacity * required_soc, minimum)
                 )
                 battery_directional = _minimum_directional_battery_efficiency(
                     f"{ev_id}.battery", battery_attributes
@@ -735,9 +735,7 @@ def build_citylearn_total_energy_problem(
                             0.0,
                         ),
                         charge_efficiency=charge_efficiency * battery_directional,
-                        discharge_efficiency=(
-                            discharge_efficiency * battery_directional
-                        ),
+                        discharge_efficiency=(discharge_efficiency * battery_directional),
                         loss_coefficient=_non_negative(
                             f"{ev_id}.battery.loss_coefficient",
                             battery_attributes.get("loss_coefficient"),
@@ -745,21 +743,17 @@ def build_citylearn_total_energy_problem(
                         ),
                         phase_connection=_phase(
                             attributes.get("phase_connection"),
-                            default_split=(building.get("electrical_service") or {}).get("default_split", "balanced"),
+                            default_split=(building.get("electrical_service") or {}).get(
+                                "default_split", "balanced"
+                            ),
                         ),
                         allow_departure_shortfall=True,
                     )
                 )
 
-        for appliance_id, appliance in (
-            building.get("deferrable_appliances") or {}
-        ).items():
-            profiles = read_frame(
-                dataset_root, appliance.get("cycle_profiles_file")
-            )
-            schedule = read_frame(
-                dataset_root, appliance.get("flexibility_schedule_file")
-            )
+        for appliance_id, appliance in (building.get("deferrable_appliances") or {}).items():
+            profiles = read_frame(dataset_root, appliance.get("cycle_profiles_file"))
+            schedule = read_frame(dataset_root, appliance.get("flexibility_schedule_file"))
             required_profile_columns = {"profile_id", "load_profile"}
             required_schedule_columns = {
                 "cycle_id",
@@ -771,16 +765,16 @@ def build_citylearn_total_energy_problem(
             if missing := required_profile_columns - set(profiles.columns):
                 raise ValueError(f"Cycle profiles missing columns: {sorted(missing)}.")
             if missing := required_schedule_columns - set(schedule.columns):
-                raise ValueError(
-                    f"Flexibility schedule missing columns: {sorted(missing)}."
-                )
+                raise ValueError(f"Flexibility schedule missing columns: {sorted(missing)}.")
             profile_map = {
                 str(row.profile_id): _parse_profile(row.load_profile)
                 for row in profiles.itertuples(index=False)
             }
             appliance_phase = _phase(
                 (appliance.get("attributes") or {}).get("phase_connection"),
-                default_split=(building.get("electrical_service") or {}).get("default_split", "balanced"),
+                default_split=(building.get("electrical_service") or {}).get(
+                    "default_split", "balanced"
+                ),
             )
             for row in schedule.itertuples(index=False):
                 cycle_id = f"{building_id}::{appliance_id}::{row.cycle_id}"
@@ -859,15 +853,14 @@ def build_citylearn_total_energy_problem(
         "boundary_service_exact": diagnostics.boundary_service_exact,
         "boundary_diagnostics": diagnostics.to_dict(),
         "ev_initial_soc_source": ev_initial_sources,
+        "ev_identity_by_session": ev_identities,
+        "physics": physics,
         "global_optimum_claim": False,
         "requires_citylearn_replay": True,
         "community_observations_used": False,
     }
     problem = TotalEnergyProblem(
-        problem_id=(
-            problem_id
-            or f"citylearn-total-energy::{settlement}::{start}_{end}"
-        ),
+        problem_id=(problem_id or f"citylearn-total-energy::{settlement}::{start}_{end}"),
         timestep_hours=timestep_hours,
         building_ids=selected,
         price_eur_per_kwh=prices,
@@ -879,6 +872,10 @@ def build_citylearn_total_energy_problem(
         electrical_services=tuple(services),
         metadata=metadata,
     )
+    if physics == "simulator_linear":
+        from algorithms.oracles.simulator_linear_physics import align_simulator_linear_problem
+
+        problem = align_simulator_linear_problem(problem, schema)
     return CityLearnTotalEnergyBuild(problem=problem, diagnostics=diagnostics)
 
 

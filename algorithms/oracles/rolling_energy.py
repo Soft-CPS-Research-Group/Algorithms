@@ -24,7 +24,8 @@ from algorithms.oracles.total_energy_milp import DeferrableCycle, TotalEnergyPro
 class BoundedDatasetForecast:
     """Perfect foresight restricted at the data boundary, not after optimization."""
 
-    def __init__(self, schema_path: str | Path, building_ids=None):
+    def __init__(self, schema_path: str | Path, building_ids=None, *, physics="conservative"):
+        self.physics = physics
         self.schema_path = Path(schema_path).resolve()
         payload = self.schema_path.read_bytes()
         self.schema_sha256 = hashlib.sha256(payload).hexdigest()
@@ -86,6 +87,7 @@ class BoundedDatasetForecast:
             settlement="community",
             building_ids=self.building_ids,
             read_data=read_window,
+            physics=self.physics,
         )
         problem = built.problem
         sessions = []
@@ -96,6 +98,10 @@ class BoundedDatasetForecast:
             # prevents endless deferral and borrowing charge beyond the job.
             row = frame.iloc[session.start_time_step]
             raw_target = float(row["electric_vehicle_required_soc_departure"])
+            if self.physics == "simulator_linear":
+                raw_target = np.float32(raw_target)
+                if raw_target > 1:
+                    raw_target = raw_target / np.float32(100)
             target = raw_target / 100.0 if raw_target > 1.0 else raw_target
             if not np.isfinite(target) or not 0 <= target <= 1:
                 raise ValueError("Forecast EV target is missing or outside [0, 1].")
@@ -132,6 +138,9 @@ def update_measured_problem(
 ) -> tuple[TotalEnergyProblem, set[str]]:
     """Carry observed energy and committed appliance tails into a new solve."""
     storage = []
+    # Float32 simulator SOC can undershoot a planned terminal state through
+    # round-off. Reserve 0.1 Wh in multi-step plans; accept 0.01 Wh of
+    # final-step numerical tolerance instead of declaring that state infeasible.
     for asset in problem.stationary_storage:
         energy, physical_capacity = storage_energy[(asset.building_id, asset.action_name)]
         if not np.isfinite(energy) or not 0.0 <= energy <= physical_capacity + 1e-5:
@@ -142,12 +151,25 @@ def update_measured_problem(
                 initial_energy_kwh=energy,
                 capacity_kwh=max(asset.capacity_kwh, energy),
                 final_energy_min_kwh=max(
-                    asset.minimum_energy_kwh, terminal_storage_soc * physical_capacity
+                    asset.minimum_energy_kwh,
+                    terminal_storage_soc * physical_capacity
+                    + (
+                        (1e-4 if problem.horizon > 1 else -1e-5)
+                        if problem.metadata.get("physics") == "simulator_linear"
+                        else 0.0
+                    ),
                 ),
             )
         )
     sessions = []
     for session in problem.ev_sessions:
+        if problem.metadata.get("physics") == "simulator_linear":
+            session = replace(
+                session,
+                required_final_energy_kwh=min(
+                    session.capacity_kwh, session.required_final_energy_kwh + 1e-4
+                ),
+            )
         if session.start_time_step == 0:
             energy, physical_capacity = ev_energy[(session.building_id, session.action_name)]
             if abs(physical_capacity - session.capacity_kwh) > 1e-4:
@@ -187,7 +209,10 @@ def update_measured_problem(
             "terminal_storage_soc": terminal_storage_soc,
             "terminal_ev_policy": "announced_user_target",
             "measured_state": True,
-            "stationary_model": "measured initial energy, conservative linear physics, fixed terminal SOC reserve",
+            "stationary_model": "measured initial energy, declared physics profile, fixed terminal SOC reserve",
+            "numerical_service_margin_kwh": (
+                1e-4 if problem.metadata.get("physics") == "simulator_linear" else 0.0
+            ),
             "community_observations_used": True,
         },
     ), running_actions

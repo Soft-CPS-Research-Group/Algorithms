@@ -42,6 +42,7 @@ def test_mpc_is_registered_with_strict_bounded_settings():
 
     assert agent_spec("MILP").capabilities.observations == "raw"
     assert MILPStageConfig(algorithm="MILP").hyperparameters.horizon_hours == 24
+    assert MILPStageConfig(algorithm="MILP").hyperparameters.physics == "simulator_linear"
     for hyper in ({"horizon_hours": 168}, {"horizon_hours": 0}, {"schedule_path": "weekly.json"}):
         with pytest.raises(ValidationError):
             MILPStageConfig(algorithm="MILP", hyperparameters=hyper)

@@ -1,6 +1,7 @@
 """Small complete jobs exercising profiles and outputs through the public runner."""
 
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
 
@@ -154,7 +155,8 @@ def test_evaluation_uses_deterministic_episode_without_online_updates(tmp_path, 
     assert result["episode_execution"][0]["training"] is False
 
 
-def test_milp_resolves_each_step_and_exports_research_evidence(tmp_path):
+@pytest.mark.parametrize("physics", ["conservative", "simulator_linear"])
+def test_milp_resolves_each_step_and_exports_research_evidence(tmp_path, physics):
     config = yaml.safe_load(Path("configs/templates/baselines/core30/milp.yaml").read_text())
     config["simulator"].update(
         dataset_path=str(
@@ -168,9 +170,20 @@ def test_milp_resolves_each_step_and_exports_research_evidence(tmp_path):
         episode_time_steps=9,
     )
     config["evaluation"]["episodes"] = 1
+    if physics == "simulator_linear":
+        simulator_root = Path(os.environ.get("SIMULATOR_REPO", Path.cwd().parent / "Simulator"))
+        config["simulator"].update(
+            dataset_path=str(
+                simulator_root / "data/datasets/rec_pt_2023_micro_4_v2/evaluation/core_4.json"
+            ),
+            building_ids=["Member_001"],
+        )
     # This short fixture starts at the physical 10% minimum; a 50% reserve
     # cannot be reached with its conservative battery power in two hours.
-    config["pipeline"][0]["hyperparameters"] = {"terminal_storage_soc": 0.1}
+    config["pipeline"][0]["hyperparameters"] = {
+        "terminal_storage_soc": 0.1 if physics == "conservative" else 0.5,
+        "physics": physics,
+    }
     config["tracking"].update(runtime_profiling_enabled=True, runtime_profiling_interval=1)
     run_experiment(config, "mpc", tmp_path)
     job = tmp_path / "jobs/mpc"
@@ -186,6 +199,10 @@ def test_milp_resolves_each_step_and_exports_research_evidence(tmp_path):
     assert [r["step"] for r in rows] == list(range(8))
     assert all(r["source_end_exclusive"] - r["source_start"] <= 96 for r in rows)
     assert all(not r["failed"] and r["solver"]["has_solution"] for r in rows)
+    assert all(
+        r["service_shortfall_tolerance_kwh"] == (0 if physics == "simulator_linear" else 1e-3)
+        for r in rows
+    )
     assert len({r["problem_sha256"] for r in rows}) >= 8
     assert (job / "bundle/artifact_manifest.json").exists()
     verification = json.loads((job / "bundle/verification.json").read_text())

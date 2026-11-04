@@ -85,4 +85,6 @@ limites terminais explícitos. Não alteram a definição dos controladores dest
 
 ## MILP com decisão em cada passo
 
+A [referência física atual](milp_physics_reference_core30_2026_11_03.md) substitui os valores MILP do primeiro ensaio abaixo, com física alinhada, validação das trajetórias e intervalo residual de ótimo. Os baselines desta página mantêm-se inalterados.
+
 A [comparação de 24 horas](milp_mpc_core30_2026_11_03.md) repete estes quatro baselines e acrescenta MILP a cada passo: 222,29 € (−17,70% face ao BAU), pico de 61,79 kW (+3,69%) e serviço mínimo viável de 100%. O semanal fica separado como oráculo offline: 222,97 € (−17,44%), com reservas finais por ativo não inferiores ao MPC. Esta diferença pequena reforça que o certificado do modelo linear não é um certificado de ótimo global do Simulator. As políticas desta página permanecem inalteradas.

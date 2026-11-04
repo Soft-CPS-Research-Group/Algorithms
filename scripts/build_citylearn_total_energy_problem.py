@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,9 +19,7 @@ def main() -> int:
     parser.add_argument("--schema", type=Path, required=True)
     parser.add_argument("--start-time-step", type=int, required=True)
     parser.add_argument("--end-time-step", type=int, required=True)
-    parser.add_argument(
-        "--settlement", choices=("individual", "community"), required=True
-    )
+    parser.add_argument("--settlement", choices=("individual", "community"), required=True)
     parser.add_argument(
         "--building",
         action="append",
@@ -29,6 +27,9 @@ def main() -> int:
         help="Repeat to select buildings; omit to include all schema buildings.",
     )
     parser.add_argument("--electrical-service-reserve-kw", type=float, default=0.1)
+    parser.add_argument(
+        "--physics", choices=("conservative", "simulator_linear"), default="conservative"
+    )
     parser.add_argument("--problem-id")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -41,12 +42,11 @@ def main() -> int:
         settlement=args.settlement,
         building_ids=args.buildings,
         electrical_service_reserve_kw=args.electrical_service_reserve_kw,
+        physics=args.physics,
     )
     output_directory = args.output_dir.resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
-    (output_directory / "problem.json").write_text(
-        built.problem.to_json() + "\n", encoding="utf-8"
-    )
+    (output_directory / "problem.json").write_text(built.problem.to_json() + "\n", encoding="utf-8")
     summary = {
         "problem_id": built.problem.problem_id,
         "settlement": built.problem.settlement,
