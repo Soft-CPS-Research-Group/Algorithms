@@ -192,3 +192,27 @@ def test_hourly_standby_loss_is_scaled_to_the_control_interval():
     loss = aligned.stationary_storage[0].loss_coefficient
     assert loss == pytest.approx(0.0025)
     assert float(battery.soc[1]) * 10 == pytest.approx(5 * (1 - loss), abs=1e-6)
+
+
+@pytest.mark.parametrize("residue_kw", [4e-7, 1e-3])
+def test_solver_bound_residue_cannot_request_v2g_on_a_charge_only_ev(monkeypatch, residue_kw):
+    import algorithms.oracles.total_energy_milp as module
+
+    ev = EVSession("ev", "home", "charger", 0, 1, 10, 5, 5, 0, 4, 0)
+    p = _problem(ev_sessions=(ev,))
+    index = module._Layout.build(p).ev[0].charge[0]
+    solve = module._milp_primal_only
+
+    def with_residue(*args, **kwargs):
+        raw = solve(*args, **kwargs)
+        raw.x[index] = -residue_kw * p.timestep_hours
+        return raw
+
+    monkeypatch.setattr(module, "_milp_primal_only", with_residue)
+    if residue_kw > 1e-6:
+        with pytest.raises(ValueError, match="Charge-only"):
+            solve_total_energy_schedule(p)
+    else:
+        result = solve_total_energy_schedule(p)
+        assert result.schedule.series[0].values == (0.0, 0.0)
+        assert result.schedule.metadata["numerical_flow_projection_max_kw"] == residue_kw

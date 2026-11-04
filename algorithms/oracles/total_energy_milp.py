@@ -43,6 +43,20 @@ from algorithms.oracles.perfect_foresight_milp import (
 )
 
 _TOLERANCE = 1.0e-8
+
+
+def _charge_only_power(power_kw: np.ndarray) -> np.ndarray:
+    """Remove only solver bound residue in a physically forbidden direction.
+
+    HiGHS feasibility tolerances can leave a tiny negative charge variable.
+    Passing that residue to a charge-only charger would request a nonexistent
+    discharge scale. Larger violations remain an error, never a V2G fallback.
+    """
+    if not np.isfinite(power_kw).all() or np.any(power_kw < -1e-6):
+        raise ValueError("Charge-only solver power violates its bound by more than 1e-6 kW.")
+    return np.maximum(power_kw, 0.0)
+
+
 _PHASES = ("L1", "L2", "L3")
 _STATUS_NAMES = {
     0: "optimal",
@@ -1310,12 +1324,20 @@ def _solve(
         semantic_metadata[key] = ("kW", "charge")
     ev_final: dict[str, float] = {}
     ev_shortfall: dict[str, float] = {}
+    maximum_flow_projection_kw = 0.0
     for session, variables in zip(problem.ev_sessions, layout.ev):
         key = (session.building_id, session.action_name)
         values = semantic_values.setdefault(key, np.zeros(horizon, dtype=np.float64))
-        values[session.start_time_step : session.end_time_step + 1] += (
+        delivered = (
             solution[variables.charge] - solution[variables.discharge]
         ) / problem.timestep_hours
+        if session.max_discharge_kw == 0:
+            projected = _charge_only_power(delivered)
+            maximum_flow_projection_kw = max(
+                maximum_flow_projection_kw, float(np.max(abs(projected - delivered)))
+            )
+            delivered = projected
+        values[session.start_time_step : session.end_time_step + 1] += delivered
         semantic_metadata[key] = ("kW", "charge")
         ev_final[session.session_id] = float(solution[variables.soc[-1]])
         ev_shortfall[session.session_id] = (
@@ -1409,6 +1431,7 @@ def _solve(
             "requires_citylearn_replay": True,
             "action_power_limits_kw": action_power_limits_kw,
             **dict(problem.metadata),
+            "numerical_flow_projection_max_kw": maximum_flow_projection_kw,
         },
     )
     return TotalEnergyResult(

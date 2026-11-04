@@ -207,6 +207,11 @@ class MILPPolicy(BaseAgent):
             "running_cycle_ids": sorted(running),
             "service_phase_status": result.service_phase_status,
             "service_shortfall_tolerance_kwh": self.options.lexicographic_shortfall_tolerance_kwh,
+            "numerical_flow_projection_max_kw": (
+                result.schedule.metadata.get("numerical_flow_projection_max_kw", 0)
+                if result.schedule is not None
+                else None
+            ),
             "service_phase_optimal": result.service_phase_optimal,
         }
         if result.schedule is None:
