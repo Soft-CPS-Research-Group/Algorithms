@@ -42,8 +42,13 @@ def audit(reference_dir: Path, job_dir: Path):
     if len(manifests) != 1:
         raise ValueError("Exactly one final deterministic episode is required.")
     manifest = json.loads(manifests[0].read_text())
-    if manifest["completed_intervals"] != problem.horizon:
-        raise ValueError("Replay and optimization horizons differ.")
+    if (
+        manifest["completed_intervals"] != problem.horizon
+        or manifest["episode_start_time_step"] != problem.metadata["source_start_time_step"]
+        or manifest["episode_end_time_step"] != problem.metadata["source_end_time_step_exclusive"]
+        or manifest["seconds_per_time_step"] != 3600 * problem.timestep_hours
+    ):
+        raise ValueError("Replay and optimization windows or time steps differ.")
     export = manifests[0].parent
     metrics = {
         m["name"]: m["value"] for m in kpis["metrics"] if m["level"] == "community" and m["valid"]
@@ -176,11 +181,21 @@ def audit(reference_dir: Path, job_dir: Path):
         "service_phase": solved["service_phase_optimal"] is True
         and all(r["right_censored"] or r["model_shortfall_kwh"] <= 1e-6 for r in ev_rows),
     }
+    options = solved.get("options", {})
     bound_usable = (
         problem.metadata.get("physics") == "simulator_linear"
+        and problem.settlement == "community"
+        and options.get("throughput_tiebreaker_eur_per_kwh") == 0
+        and options.get("lexicographic_shortfall_tolerance_kwh") == 0
         and lower is not None
+        and np.isfinite(lower)
         and gates["service_phase"]
     )
+    # A cost bound from a penalized objective cannot certify pure energy cost.
+    # Keep signed discrepancies visible instead of concealing them with max(0, ...).
+    gates["cost_bound"] = bool(bound_usable and lower <= solved["cost_eur"] + 1e-6)
+    gates["cost_fidelity"] = abs(cost - solved["cost_eur"]) <= 1e-4
+    accepted = all(gates.values())
     return {
         "reference_dir": str(reference_dir),
         "job_dir": str(job_dir),
@@ -190,16 +205,18 @@ def audit(reference_dir: Path, job_dir: Path):
             "precision": 0.8,
             "electrical_kwh": 1e-6,
             "state_flow_terminal_tolerance_kwh": 1e-4,
+            "cost_fidelity_tolerance_eur": 1e-4,
         },
         "gates": gates,
-        "gates_pass": all(gates.values()),
+        "gates_pass": accepted,
         "model_lower_bound_eur": lower if bound_usable else None,
         "model_incumbent_eur": solved["cost_eur"],
         "replay_cost_eur": cost,
         "replay_minus_model_cost_eur": cost - solved["cost_eur"],
-        "replay_gap_to_model_bound_eur": max(0, cost - lower) if bound_usable else None,
-        "replay_gap_to_model_bound_percent": 100 * max(0, cost - lower) / abs(lower)
-        if bound_usable and lower
+        "replay_minus_model_lower_bound_eur": cost - lower if bound_usable else None,
+        "replay_gap_to_model_bound_eur": cost - lower if accepted else None,
+        "replay_gap_to_model_bound_percent": 100 * (cost - lower) / abs(lower)
+        if accepted and lower
         else None,
         "model_mip_gap": solved["solver"]["mip_gap"],
         "model_solver_status": solved["solver"]["status"],

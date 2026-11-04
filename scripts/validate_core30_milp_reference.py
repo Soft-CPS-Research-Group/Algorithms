@@ -32,6 +32,12 @@ from algorithms.oracles.total_energy_milp import solve_total_energy_schedule
 
 
 def build_reference(config, *, terminal_storage_soc=0.5, service_margin_kwh=0.0):
+    if (
+        not 0 <= terminal_storage_soc <= 1
+        or not np.isfinite(service_margin_kwh)
+        or service_margin_kwh < 0
+    ):
+        raise ValueError("Expected a terminal SOC in [0, 1] and a finite, nonnegative EV margin.")
     simulator = config["simulator"]
     schema_path = Path(simulator["dataset_path"]).resolve()
     schema = json.loads(schema_path.read_text())

@@ -45,16 +45,33 @@ from algorithms.oracles.perfect_foresight_milp import (
 _TOLERANCE = 1.0e-8
 
 
-def _charge_only_power(power_kw: np.ndarray) -> np.ndarray:
-    """Remove only solver bound residue in a physically forbidden direction.
+def _physical_flow_kw(
+    charge, discharge, charge_max, discharge_max, charge_mode, discharge_mode, dt
+):
+    """Canonicalize solver bound residue in the native matrix unit (kWh).
 
-    HiGHS feasibility tolerances can leave a tiny negative charge variable.
-    Passing that residue to a charge-only charger would request a nonexistent
-    discharge scale. Larger violations remain an error, never a V2G fallback.
+    The selected integer mode fixes a disabled direction's limit at zero.
+    This avoids replaying a negative charge, exceeding a charger's maximum,
+    or promoting positive off-mode residue to a minimum charging command.
+    A material violation remains an error. No objective or bound is changed.
     """
-    if not np.isfinite(power_kw).all() or np.any(power_kw < -1e-6):
-        raise ValueError("Charge-only solver power violates its bound by more than 1e-6 kW.")
-    return np.maximum(power_kw, 0.0)
+
+    def canonical(flow, maximum, mode):
+        selected = (mode >= 0.5).astype(float)
+        mode_residue = abs(mode - selected)
+        if not np.isfinite(flow).all() or not np.all(mode_residue <= 1e-6 + 1e-12):
+            raise ValueError("Invalid solver flow or nonintegral charge/discharge mode.")
+        clean = np.clip(flow, 0, maximum * selected)
+        correction = abs(clean - flow)
+        # The mode-coupling row has a physical coefficient of maximum kWh.
+        # Account for its measured integrality residue, not a blanket margin.
+        if np.any(correction > 1e-6 + maximum * mode_residue + 1e-12):
+            raise ValueError(f"Solver flow violates its physical bound by {correction.max()} kWh.")
+        return clean, float(correction.max())
+
+    clean_charge, a = canonical(charge, charge_max, charge_mode)
+    clean_discharge, b = canonical(discharge, discharge_max, discharge_mode)
+    return (clean_charge - clean_discharge) / dt, max(a, b) / dt
 
 
 _PHASES = ("L1", "L2", "L3")
@@ -1315,28 +1332,37 @@ def _solve(
 
     semantic_values: dict[tuple[str, str], np.ndarray] = {}
     semantic_metadata: dict[tuple[str, str], tuple[str, str]] = {}
+    maximum_flow_projection_kw = 0.0
     for asset, variables in zip(problem.stationary_storage, layout.storage):
         key = (asset.building_id, asset.action_name)
-        values = (
-            solution[variables.charge] - solution[variables.discharge]
-        ) / problem.timestep_hours
+        charging = solution[variables.direction]
+        values, correction = _physical_flow_kw(
+            solution[variables.charge],
+            solution[variables.discharge],
+            asset.max_charge_kw * problem.timestep_hours,
+            asset.max_discharge_kw * problem.timestep_hours,
+            charging,
+            1 - charging,
+            problem.timestep_hours,
+        )
+        maximum_flow_projection_kw = max(maximum_flow_projection_kw, correction)
         semantic_values[key] = values.copy()
         semantic_metadata[key] = ("kW", "charge")
     ev_final: dict[str, float] = {}
     ev_shortfall: dict[str, float] = {}
-    maximum_flow_projection_kw = 0.0
     for session, variables in zip(problem.ev_sessions, layout.ev):
         key = (session.building_id, session.action_name)
         values = semantic_values.setdefault(key, np.zeros(horizon, dtype=np.float64))
-        delivered = (
-            solution[variables.charge] - solution[variables.discharge]
-        ) / problem.timestep_hours
-        if session.max_discharge_kw == 0:
-            projected = _charge_only_power(delivered)
-            maximum_flow_projection_kw = max(
-                maximum_flow_projection_kw, float(np.max(abs(projected - delivered)))
-            )
-            delivered = projected
+        delivered, correction = _physical_flow_kw(
+            solution[variables.charge],
+            solution[variables.discharge],
+            session.max_charge_kw * problem.timestep_hours,
+            session.max_discharge_kw * problem.timestep_hours,
+            solution[variables.charge_on],
+            solution[variables.discharge_on],
+            problem.timestep_hours,
+        )
+        maximum_flow_projection_kw = max(maximum_flow_projection_kw, correction)
         values[session.start_time_step : session.end_time_step + 1] += delivered
         semantic_metadata[key] = ("kW", "charge")
         ev_final[session.session_id] = float(solution[variables.soc[-1]])
