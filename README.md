@@ -1,31 +1,41 @@
 # Algorithms
 
-Algorithms trains and evaluates energy controllers for energAIze. A job takes a simulator dataset and a YAML configuration, runs the selected controller, and writes evaluation KPIs and any requested model bundle to `runs/jobs/<job_id>/`.
+**English** · [Português](docs/README.md)
+
+Algorithms trains and evaluates controllers for energy communities. To run a job you choose a dataset, a time window and a policy. The same runner can evaluate a charging rule or train a multi-agent reinforcement learning policy. You can also run an offline oracle to estimate the lowest achievable community electricity cost for a week.
+
+## How a job works
+
+1. **Configure the experiment.** The YAML file sets the simulation window, seed, training and evaluation episodes, and requested outputs. `simulator.dataset_path` points to the simulator schema. That schema describes the buildings and devices and references time series such as demand, solar generation and prices.
+2. **Run the simulator.** The runner opens the dataset with SoftCPS REC Simulator (`softcpsrecsimulator==2.0.0`). At each interval the agent receives observations and returns actions, such as how much power to request for an EV. The simulator applies the physical limits and returns the next observations and rewards.
+3. **Train and evaluate.** During training, the runner passes transitions to the agent according to its update schedule. The agent owns the learning rule. The final deterministic evaluation produces the comparable KPIs. The runner writes the results and any requested checkpoint or model bundle.
+
+**Change the controller in `pipeline`.** Each stage selects a registered `algorithm` and its own parameters. For example, the Basic and Smart Core30 templates use the same simulator and dataset. To compare the two policies, keep the window, seed and evaluation settings matched and use the stage from the corresponding template. Run `--dry-run` to check that an agent supports the chosen interface and topology. [Basic](configs/templates/baselines/core30/basic.yaml) · [Smart](configs/templates/baselines/core30/smart.yaml)
+
+**Add a new agent.** Implement its decision, learning and export methods in a `BaseAgent` subclass. Register its implementation, parameter schema and supported capabilities with an `AgentSpec` in `algorithms/catalogue.py`. Once registered, it uses the same runner, simulator loop and job directory as the built-in agents. [Agent development guide](docs/runtime/agents.md)
 
 ## Run a first job
 
-From the repository root, using Python 3.10 on Linux x86-64:
+Start at the root of a clone with Python 3.10 on Linux x86-64. This example uses two buildings from the bundled demo dataset. The commands install the CPU runtime and export dependencies.
 
 ```bash
-python -m venv .venv
+python3.10 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements/lock-cpu-py310-linux-x86_64.txt
-pip install . --no-deps
+python -m pip install -r requirements/lock-cpu-py310-linux-x86_64.txt
+python -m pip install '.[export]'
 
-algorithms-job --list-agents
-algorithms-job --config configs/templates/experimental/transformer_maddpg_smoke.yaml --validate
-algorithms-job --config configs/templates/experimental/transformer_maddpg_smoke.yaml --dry-run
-algorithms-job --config configs/templates/experimental/transformer_maddpg_smoke.yaml --profile smoke --job_id first-job
+config=configs/templates/experimental/transformer_maddpg_smoke.yaml
+algorithms-job --config "$config" --validate
+algorithms-job --config "$config" --dry-run
+algorithms-job --config "$config" --profile smoke --job_id first-job
 ```
 
-Validation checks the configuration. The dry run also constructs and resets the environment. The smoke profile exercises the job on a bundled dataset. Large datasets are supplied separately. For other platforms or configuration-only installs, see the [installation guide](docs/runtime/installation.md).
+The first check validates the YAML. The second loads and resets the environment. The last command runs one short training episode and one deterministic evaluation. Open `runs/jobs/first-job/results/result.json` and look for `"status": "completed"`. In the same job directory, `config.resolved.yaml` records the effective settings, `results/kpis.json` contains the evaluation metrics and `bundle/artifact_manifest.json` describes the exported policy. For Core30, supply the separate dataset and set its schema path in the config. [Installation on other platforms](docs/runtime/installation.md) · [Configuration reference](docs/runtime/configuration.md)
 
-## Work on a controller
+## Available today and remaining work
 
-- **Choose a controller.** Find its registered name and supported interfaces in the [agent catalogue](docs/agent_catalogue.md). The [Core30 guide](docs/baseline_comparison_core30.md) defines the two BAUs, three rule-based controllers and weekly cost oracle used to compare MARL agents.
-- **Configure a job.** Start from a [reusable template](configs/templates/README.md). Set the dataset, window, training and evaluation episodes, and requested outputs. [Configuration reference](docs/runtime/configuration.md).
-- **Implement an agent.** The agent owns decisions, learning and numerical serialization. The runtime owns the simulator loop, checkpoints and finalization. [Agent development](docs/runtime/agents.md).
-- **Evaluate and export.** Use the final deterministic episode for comparisons. The job writes the resolved config, `results/result.json`, requested KPIs and, when enabled, `bundle/artifact_manifest.json`. [Output contract](docs/runtime/exports.md).
-- **Run remotely.** The container accepts `--config /data/config.yaml --job_id <id>`. With `OPEVA_BASE_DIR=/data`, results go under `/data/jobs/<id>/`. The experiment CLI supports payload preparation, worker checks, submission and collection. [Platform guide](docs/platform_guide.md).
+- **Controllers.** The catalogue includes MADDPG, MATD3, Transformer agents, TI-MARL, hierarchical coordinators and offline learners. Run `algorithms-job --list-agents` to see their registered names and capabilities. [Agent catalogue](docs/agent_catalogue.md)
+- **Comparison.** Core30 uses two BAUs (charge to the user target or to 100%), Basic, Smart, Community and the weekly cost oracle. Savings use the user-target BAU as the reference. The long-run comparison of the MARL candidates against this set is still pending. [Comparison protocol (PT)](docs/baseline_comparison_core30.md) · [Weekly oracle](docs/oracles/total_energy_milp.md)
+- **Inference.** A job can export a policy after evaluation. Supported neural policies use ONNX and supported rule-based policies use executable JSON. Check deployment eligibility for the specific bundle. TI-MARL and complete coordinator pipelines still require specialized inference adapters. [Bundle formats and support](docs/inference_bundle.md#delivery-formats)
 
-The [documentation index](docs/README.md) groups the implementation guides and the [lessons from long runs](docs/learning-experience.md). Submit changes through a pull request. Run the relevant tests and static checks defined in [CI](.github/workflows/ci.yml).
+For remote jobs, see the [platform guide](docs/platform_guide.md). For context when choosing an algorithm, see the [lessons from long runs (PT)](docs/learning-experience.md).
