@@ -1,7 +1,7 @@
 # Common output lifecycle
 
 The core owns output selection, final-evaluation association, validation and
-completion. Agents own mathematical policy and numerical export. All 38 names
+completion. Agents own mathematical policy and numerical export. All registered agents
 use the same service; recursive composition needs no algorithm branches in the
 job runner.
 
@@ -59,26 +59,6 @@ the isolated attempts introduced in stage 3.
 `results/finalization.json` reports output/checkpoint time, per-episode KPI export
 time and byte volumes. Simulator rendering can occur inside `step`; episode-export
 timers do not capture all rendering and must not be added to wall time.
-
-## Measured cost
-
-[Raw measurements](export_benchmark.json): 27 local CPU jobs, two selected buildings,
-NormalPolicy, two training episodes plus one deterministic evaluation,
-24/168/720 hourly steps, three repetitions/profile, tracking/model export disabled.
-This is an output-policy benchmark, not production-cluster training performance.
-
-| Steps/episode | Final KPIs bytes / median wall time | Previous final-series profile | All episodes + BAU series |
-|---|---:|---:|---:|
-| 24 | 33,240 / 0.499 s | 54,418 / 0.507 s | 188,021 / 0.891 s |
-| 168 | 33,625 / 1.694 s | 176,958 / 1.823 s | 697,695 / 2.412 s |
-| 720 | 33,633 / 6.005 s | 651,432 / 5.998 s | 2,659,417 / 7.847 s |
-
-At 720 steps, final KPIs reduce simulator bytes by 94.8% against final series and
-98.7% against all-episode diagnostics. Wall time versus final series is within
-noise; versus all-episode export it falls about 23.5%. Final-KPI volume stays
-approximately constant with horizon here. The explicit 128 MiB diagnostic budget
-is above this measured envelope. Reproduce:
-`python -m scripts.benchmark_runtime_exports --output /tmp/export-costs`.
 
 ## Adding an agent
 

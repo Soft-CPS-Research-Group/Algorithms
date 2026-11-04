@@ -14,13 +14,6 @@ Existing export patterns:
 - TPPO: per-building deterministic actor ONNX with tokenizer, backbone, actor
   head, `tanh`, and affine bounds baked in at opset 17.
 
-## Plain-language
-
-Analogy: exporting a REST contract. Inputs, outputs, and internal
-logic are frozen at export time. Any external runtime dependency
-(residual base policy, safety projector, price adapter) breaks
-inference parity when the graph is deployed alone.
-
 ## Decisions
 
 ### 11a — per-building export

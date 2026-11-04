@@ -16,13 +16,6 @@ Two existing checkpoint contracts:
 Transformer MATD3 combines MATD3's replay/exploration state with
 TPPO's per-building neural stack and layout signature validation.
 
-## Plain-language
-
-Analogy: MATD3's checkpoint is a database backup for the trained
-system (actor + critic + optimizer + replay). Add TPPO's schema-hash
-validation on restore to prevent loading a snapshot into an
-incompatible topology.
-
 ## Decisions
 
 ### 10a — format version: 6

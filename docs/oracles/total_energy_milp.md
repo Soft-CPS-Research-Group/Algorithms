@@ -1,176 +1,26 @@
-# Total-energy MILP reference
+# Weekly community cost oracle
 
-For the current 30-member dataset, use the [physical reference and 24-hour MILP comparison](../milp_physics_reference_core30_2026_11_03.md). `MILP` reoptimizes every step; full-window schedules remain offline oracles. The `simulator_linear` extraction profile requires constant efficiency, zero degradation, supported concave power curves and charge-only EVs. It models delivered power clipping explicitly and requires independent simulator replay before promotion. The older `conservative` profile and [first MPC comparison](../milp_mpc_core30_2026_11_03.md) remain available as historical evidence.
-It includes corrected extraction/decomposition, solver performance, matched terminal
-conditions and 2024 replay comparisons. The 17-building certificates below remain
-historical evidence for their stated dataset and window.
+The oracle plans one week of battery flows, EV charging and appliance starts using the realized demand, PV, prices and arrivals. It minimizes EV shortfall first, then the community energy bill at that service level. The reported peak is an outcome. A separate research controller, `MILP`, replans with at most 24 hours of forecasts.
 
-## Purpose and comparator split
+## Prepare a week
 
-The repository now distinguishes four optimization references instead of
-calling every perfect-foresight schedule "the MILP":
+Start with a [Core30 evaluation configuration](../../configs/templates/baselines/core30/milp_community.yaml). Point `simulator.dataset_path` at the evaluation schema. Set `simulation_end_time_step` to the start plus 672 and `episode_time_steps` to 673 (672 transitions of 15 minutes). Use one deterministic evaluation episode, zero training episodes and the same market and seed as the candidate.
 
-| Reference | Physical scope | Settlement | Intended comparator |
-|---|---|---|---|
-| Individual fixed-service | Stationary battery only; EV/deferrables frozen | Positive import per building | Earlier storage-assisted PPO/TD3 diagnosis |
-| Community fixed-service | Stationary batteries only; EV/deferrables frozen | District net import | Earlier community battery diagnosis |
-| Individual total-energy | Battery + EV/V2G + deferrables + building/phase service | Positive import per building | Building-local PPO/TD3 |
-| Community total-energy | Same complete physical scope | District net import/market settlement | Future CC and MARL |
+```bash
+python scripts/validate_core30_milp_reference.py \
+  --config week.yaml --output-dir runs/oracle-week \
+  --time-limit-seconds 900 --mip-relative-gap 0.000001 --solver-threads 1
 
-The individual total-energy problems contain no community observation or
-coupling.  They answer the question "how good could this home be with perfect
-foresight?".  The community problem uses the same physical models but permits
-economic netting across buildings.  It answers a different question and must
-not be used as the direct denominator for a community-blind local policy.
-
-## Current linear formulation
-
-`algorithms/oracles/total_energy_milp.py` jointly schedules:
-
-- stationary battery charge, discharge, SOC, standby loss and direction;
-- EV charge/V2G by contiguous connection session, including arrival SOC,
-  minimum SOC, departure target, charger efficiency and minimum-power
-  deadbands;
-- one binary start for every must-run deferrable cycle and its complete fixed
-  kWh/step profile;
-- signed building import/export envelopes;
-- signed L1/L2/L3 envelopes, including balanced base load and `all_phases`
-  storage;
-- either per-building positive imports (`individual`) or positive district
-  net import (`community`).
-
-Export currently has zero credit, matching the dataset's grid-export tariff.
-The common-price community market cancels internal payments at district level,
-so its total cost is the grid cost after netting.  Member bill allocation is a
-post-processing question unless fairness or bill caps enter the objective.
-
-## Lexicographic EV service tolerance
-
-EV departure service is solved before energy cost.  The first solve minimizes
-total departure shortfall.  Once that phase is certified optimal, the second
-minimizes cost under one aggregate shortfall cap per building.  This is exact
-at zero tolerance: service feasibility and all physical constraints factor by
-building, while community settlement appears only in the economic objective,
-so every global service optimum must attain each building's local minimum.
-The per-building caps remove the otherwise large cross-building degeneracy.
-The economic phase is not run when the service phase has only an incumbent;
-such an incumbent remains explicitly non-optimal rather than being hidden
-behind a later `optimal` status.
-
-The default numerical slack is `0.001 kWh` (1 Wh), selected because tighter
-`1e-7` to `1e-4 kWh` caps caused HiGHS to stall or report a false infeasibility
-on the joint week-one problem even though every building subproblem was
-feasible.  Buildings whose minimum shortfall is zero receive a hard zero cap;
-the single 1 Wh allowance is distributed only among buildings with a positive
-minimum.  Thus numerical slack cannot create missed service at an otherwise
-fully serviceable home.  The CLI exposes
-`--lexicographic-shortfall-tolerance-kwh`.
-
-Every result records the service-phase status, global and per-building minima,
-per-building caps, realized per-building shortfall and tolerance.  Consequently
-the realized value, rather than only the first-stage minimum, is the auditable
-service outcome.  This tolerance is numerical and must not be described as
-unmet service hidden by the optimizer.
-
-## Week-one corrected-SOC certificate
-
-The first week-one extraction used `1 - depth_of_discharge` for EVs without an
-explicit schema `initial_soc`.  CityLearn instead samples those initial SOCs
-deterministically from MD5 of seed, EV type and EV identifier.  The shared
-extractor now reproduces that algorithm exactly.  Pre-correction individual
-and community certificates are superseded as dataset-aligned optima; their
-CityLearn replays remain feasible diagnostic trajectories.
-
-The corrected community instance has 17 buildings and 672 steps.  Its service
-phase is optimal at 28.902728 kWh unavoidable shortfall, entirely in
-`Building_15`.  The economic phase is optimal at EUR 347.7026176791, with dual
-bound EUR 347.6787858945 and 0.0068547% MIP gap.  The realized shortfall is
-28.903728 kWh: the exact minimum plus the configured 1 Wh numerical tolerance.
-
-The zero-teacher CityLearn replay costs EUR 347.7026162444, only
--EUR 0.0000014346 relative to the model objective.  It passes 17/17 local hard
-gates, improves all 17 buildings, and reduces matching RBCCommunity cost from
-EUR 440.0609948344 by EUR 92.3583785900 (20.99%).  It is therefore accepted as:
-
-- optimal for the supplied corrected linear model;
-- a CityLearn-feasible replay schedule;
-- a tight week-one conditional benchmark.
-
-It is not called the global optimum of nonlinear CityLearn.  The `[0,672)`
-window also right-truncates eight EV sessions, so this result is not seasonal
-or annual promotion evidence.  Raw solve and replay-audit evidence lives under
-`runs/analysis/total_energy_community_week1_corrected_soc_solve_20260731` and
-`runs/analysis/total_energy_community_week1_corrected_soc_optimal_replay_audit_20260731`.
-
-## Bounds and permitted claims
-
-The continuous relaxation is a structural lower bound for the supplied
-linear model.  The mixed-integer solution is feasible for that linear model
-and emits semantic CityLearn actions.  It is not automatically feasible for
-the nonlinear simulator because CityLearn also applies SOC-dependent power,
-efficiency curves, degradation, float32 action conversion and requested-power
-service checks.
-
-The valid claim before replay is therefore:
-
-```text
-linear lower bound <= optimum of supplied linear model <= linear MILP cost
+python scripts/score_milp_reference.py \
+  --reference-dir runs/oracle-week --job-dir runs/oracle-week/replay/jobs/oracle-week
 ```
 
-After a zero-intervention CityLearn replay, the replay cost is a valid
-simulator-feasible upper bound.  A global "CityLearn optimum" claim additionally
-requires an optimistic model proven to contain the nonlinear simulator's
-feasible set and a sufficiently small lower-bound/replay interval.
+Choose a new output directory for each solve. The first command builds the physical problem, saves the solver result and schedule, and replays it through the common job runner. The second compares the planned states and flows with the simulator and checks cost, EV service and electrical limits. `--solve-only` is useful to measure planning time. A replay is required for a simulator comparison.
 
-## Building_15 electrical service
+## Conditions and interpretation
 
-The total-energy model keeps `Building_15` physical rather than aggregating it:
+The `simulator_linear` physics profile supports constant battery/charger efficiencies, concave SOC-dependent power limits, zero degradation and charge-only EVs with zero standby loss and discharge reserve. Standby loss for stationary storage is scaled by timestep duration. A charger's minimum applies to the command, so actual delivery can be smaller at saturation. The builder checks supported physics, known initial EV states and complete appliance service windows.
 
-- total import/export: ±12 kW;
-- L1: ±7 kW, with `charger_15_1` on L1;
-- L2: ±5 kW, with `charger_15_2` on L2;
-- L3: ±4 kW;
-- stationary battery: balanced across all phases;
-- unassigned base load: balanced across all phases.
+The weekly reference sets a terminal minimum of 50% for stationary batteries. An EV still connected at the end is given its announced target on a best-effort basis. Count actual departures separately. Compare the terminal stored energy when interpreting the cost of another policy.
 
-Initial replay candidates reserve 0.10 kW inside every applicable total/phase
-limit.  This exceeds the approximately 0.0802 kW aggregate requested-power
-excess observed across the three tiny violations in the earlier annual
-fixed-service community replay.  The reserve may only be reduced after a
-zero-violation requested/limited/applied trace.
-
-## Annual execution strategy
-
-The current online reference implements a maximum 24-hour horizon and one-step commits. The longer lookahead below is a historical proposal, not its current contract.
-
-An annual monolithic complete MILP is not the default.  At 15-minute resolution
-it would have roughly 2.38 million continuous variables and 0.97 million binary
-variables before piecewise-linear battery physics.  The execution plan is:
-
-1. annual optimistic relaxation for a lower bound;
-2. seven-day lookahead complete MILP with one-day commits;
-3. exact carry of storage/EV SOC and already-started deferrable profiles;
-4. strict semantic preflight;
-5. CityLearn replay with no safety intervention accepted;
-6. scorecard against a matching RBC on the same window and settlement;
-7. archive model, schedule, replay, hashes, bounds and decision in experiment
-   history.
-
-The maximum observed EV session is about 67 hours and the maximum deferrable
-window plus profile is below nine hours, so seven days contains the local
-events while keeping each solve tractable.  Rolling horizon produces a strong
-candidate, not by itself a global certificate.
-
-## CC use of local PPO/TD3
-
-The CC does not add community inputs to local actors.  The local checkpoint
-keeps exactly the same observation dimension and sees only its effective local
-price.  A price adapter decodes the normalized tariff, multiplies the raw
-price, and re-encodes it.  Multiplier 1.0 must be bitwise neutral.  Official
-costs always use the real simulator tariff; virtual prices are policy/training
-signals only.
-
-Existing eight-week checkpoints are mechanically compatible with this
-adapter, but they are not yet validated as price-responsive or seasonal.  They
-must be fine-tuned with price-domain randomization and evaluated on embargoed,
-strictly held-out seasonal windows before use under a learned CC.
+For a pure cost objective, the solver's dual bound and its feasible plan bracket the optimum **of the formulated model**, subject to numerical tolerances. Report both values, solver status, wall time and independent simulator cost. The time budget applies per solver phase. A small residual interval after a time limit can be adequate for a monetary comparison. The offline solve time is measured per week. Online latency is measured per decision in the runner.

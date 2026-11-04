@@ -1,22 +1,12 @@
-# AgentTransformerPPO Specification
+# AgentTransformerPPO
 
-> Status: **Current implementation**
-> Scope: `AgentTransformerPPO` on the entity interface with dynamic topology.
-> Last reviewed: 2026-08-16
-> Reviewed `main` commit: `f2809313c7550405eccd4d9b276adbf8a9103a5c`
-> Maintainer: Algorithms maintainers
-
-This is a current implementation specification. It documents code on the
-reviewed commit. It does not restore closed PR 23, define Transformer MATD3,
-or turn historical proposals into requirements. See the shared
-[Transformer Entity Controller Contract](transformer_entity_controller.md) for
-entity, token, layout, and backbone rules.
+This guide describes training and evaluation of per-building policies. For tokenization and layout changes, see the [shared entity contract](transformer_entity_controller.md).
 
 ## 1. Status and applicability
 
 TPPO is registered as `AgentTransformerPPO`. It supports
 `simulator.interface: entity`, including `simulator.topology_mode: dynamic`.
-The tested package is `softcpsrecsimulator==1.9.2`; the conceptual contract is
+The controller consumes
 the entity payload (`tables`, `edges`, `meta`), `meta.topology_version`, and
 active action-table shapes.
 

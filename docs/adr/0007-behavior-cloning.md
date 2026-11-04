@@ -17,15 +17,6 @@ patterns exist:
   reservoir with actor-only pretraining and optional auxiliary loss.
   The shared implementation is `BehaviorCloningRegularizer`.
 
-## Plain-language
-
-- BC-A is a continuous side loss during MATD3 updates — like a
-  CI job running on every commit.
-- BC-B is dedicated pretraining before RL, like language-model
-  pretraining on a curated corpus.
-
-Both remain useful; both are opt-in.
-
 ## Decisions
 
 ### 7a — variants shipped: BC-C hybrid

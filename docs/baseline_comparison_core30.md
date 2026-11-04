@@ -1,104 +1,18 @@
-# Referências do Core30 para comparação com MARL
+# Referências para comparar MARL no Core30
 
-O conjunto acordado em 04/11/2026 tem seis referências. Para os cinco controladores,
-usar os [templates Core30](../configs/templates/baselines/core30/).
+Executar os cinco controladores nos mesmos membros, ficheiros, janelas, seeds e condições de mercado do candidato. Os dois BAU iniciam as máquinas no primeiro instante admissível e usam a bateria doméstica para guardar excedente solar e servir consumo local.
 
-1. **BAU com limite do utilizador** (`bau.yaml`). Carrega à chegada até ao SOC pedido. É o denominador de todas as poupanças.
-2. **BAU sem limite do utilizador** (`bau_full_charge.yaml`). Carrega à chegada até 100%. Ambos os BAU usam a bateria doméstica em autoconsumo e iniciam os ciclos adiáveis assim que possível.
-3. **Basic** (`basic.yaml`). Decide por preço atual e urgência de serviço.
-4. **Smart** (`smart.yaml`). Acrescenta previsão de preço e aproveitamento do excedente solar local.
-5. **Community** (`community.yaml`). Acrescenta coordenação entre membros. É o comparador por regras para o controlo comunitário.
-6. **Oráculo semanal comunitário**. Usar o [solver da referência física](../scripts/validate_core30_milp_reference.py) com uma janela de sete dias (672 intervalos de 15 minutos). Planeia a semana uma vez e executa o plano com `TotalOracleReplayPolicy`. Comparar o custo para os mesmos requisitos de serviço e reservas finais. Reportar o tempo de resolução por semana.
+| Referência | Política | Configuração |
+|---|---|---|
+| **BAU com limite do utilizador** | Carrega o EV assim que chega, até ao SOC pedido. Limita a última ordem à carga em falta. Com potência mínima do carregador, o EV pode ficar ligeiramente abaixo do alvo. | [bau.yaml](../configs/templates/baselines/core30/bau.yaml) |
+| **BAU sem limite do utilizador** | Carrega imediatamente até 100%. A diferença para o primeiro BAU inclui a energia adicional entregue ao EV. | [bau_full_charge.yaml](../configs/templates/baselines/core30/bau_full_charge.yaml) |
+| **Basic** | Usa preço atual e urgência para EVs e ciclos adiáveis. A bateria faz autoconsumo local. | [basic.yaml](../configs/templates/baselines/core30/basic.yaml) |
+| **Smart** | Usa previsões de preço e excedente solar local para agendar cargas. A bateria combina autoconsumo, arbitragem e reserva. | [smart.yaml](../configs/templates/baselines/core30/smart.yaml) |
+| **Community** | Acrescenta a energia partilhável entre membros. As baterias podem ajudar em períodos caros quando a importação comunitária atinge o gatilho de 15 kW. Este valor desencadeia uma ação e o pico observado pode ultrapassá-lo. | [community.yaml](../configs/templates/baselines/core30/community.yaml) |
+| **Oráculo semanal comunitário** | Conhece os dados da semana e planeia de uma vez as 672 ações de quarto de hora. É a referência de custo sujeita a serviço, restrições físicas e reservas terminais. | [Procedimento do oráculo](oracles/total_energy_milp.md) |
 
-O MILP com horizonte móvel de 24 horas fica disponível para análise de horizontes.
-A tabela de desempenho das experiências longas será calculada com os respetivos
-jobs emparelhados. Os números abaixo pertencem à análise exploratória anterior.
+**Denominador.** Calcular a poupança por `100 × (custo_BAU_com_limite − custo_candidato) / custo_BAU_com_limite` quando o custo de referência é positivo. Somar os custos das janelas emparelhadas antes de calcular a percentagem agregada. Usar o custo do job explícito de BAU com limite. O contrafactual nativo do simulador tem uma definição própria.
 
-Decisão de Tiago em 03/11/2026: **BAU = `NormalTargetPolicy`**, com carga EV
-imediata limitada ao SOC pedido, arranque imediato dos eletrodomésticos e bateria
-doméstica em autoconsumo. **BAU 100% = `NormalPolicy`**, preservado como variante.
-`NormalNoBatteryPolicy` continua disponível como variante auxiliar a 100%, sem
-controlo da bateria doméstica; não é o denominador das comparações.
+**Mercado.** Verificar no manifesto os pressupostos do ensaio. Na comparação Core30, a compra externa usa o preço do dataset, a partilha interna usa 80% desse preço, a venda à rede tem receita zero e o autoconsumo solar tem custo de aquisição zero. Usar o custo liquidado pelo simulador.
 
-Os templates `bau.yaml` e `bau_target.yaml` selecionam a referência principal;
-`bau_full_charge.yaml` seleciona a variante a 100%. Os templates Core30 desligam
-o contrafactual nativo do Simulator, que tem outra definição. Se alguém o ligar,
-os seus rácios continuam a ser diagnósticos nativos e não poupanças face ao BAU
-principal. `results/kpis.json` declara esta distinção e exige um job de referência
-correspondente; não inventa uma execução de BAU nem recalcula custos oficiais.
-
-## Ensaio exploratório dos BAU e RBCs
-
-Core30 v3.3, Simulator 2.0.0, 30 membros, seed de avaliação 6763, 14 dias:
-1–7 janeiro e 1–7 julho de 2024 UTC. Janelas `[35040,35712)` e `[52512,53184)`,
-15 minutos por intervalo, com resets separados. Dataset, hashes dos inputs,
-preços e mercado coincidentes. Custos somados, pico máximo dos 1344 intervalos
-e média dos 14 máximos diários. Não são resultados anuais.
-
-| Controlador | Custo (€) | Redução do custo | Pico máximo (kW) | Redução do pico | Redução da média dos picos diários |
-|---|---:|---:|---:|---:|---:|
-| **BAU** | **270,08** | **0%** | **59,59** | **0%** | **0%** |
-| Basic | 261,30 | 3,25% | 58,50 | 1,81% | 10,48% |
-| Smart | 255,11 | 5,54% | 55,37 | 7,07% | 11,70% |
-| Community | 250,99 | 7,07% | 55,37 | 7,07% | 12,49% |
-| BAU 100% — variante | 427,97 | −58,46% | 81,02 | −35,98% | −39,20% |
-
-Todas as percentagens usam `100 × (BAU − controlador) / BAU`. Um valor
-positivo significa redução; um negativo significa aumento. A referência anterior
-a 100% dava 41,35% de redução de custo ao Community; face ao BAU principal,
-o mesmo resultado é 7,07%. Não houve alteração do resultado Community.
-
-O Basic mantém o preço atual e a urgência para decidir EVs e eletrodomésticos,
-com preço barato até 0,0765 €/kWh. A bateria passou a usar o mesmo autoconsumo
-reativo do BAU: guardar excedente local e servir consumo local, sem arbitragem
-de rede nem previsões. Esta alteração reduziu o custo do Basic anterior de
-270,11 € para 261,30 € (3,26%) e mantém-no entre o BAU e o Smart neste agregado.
-Smart e Community mantêm as políticas auditadas; o Community usa o gatilho
-de apoio de 15 kW.
-
-A escolha foi feita em janeiro/julho de 2023: menos 1,72% de custo do Basic,
-sem aumento do pico máximo e com todos os critérios de serviço cumpridos.
-Os parâmetros foram congelados antes das novas execuções de 2024. Uma primeira
-tentativa de alterar apenas o limiar caro foi rejeitada por piorar o custo em
-2023. As janelas de 2024 já tinham sido observadas anteriormente; esta é uma
-validação temporal de regressão, não um conjunto de teste intocado. A ordenação
-agregada não garante dominância em todas as semanas ou métricas.
-
-Custos oficiais em `district_cost_community_market_settled_total_eur`.
-Os números completos e a identidade do denominador estão em
-[`validation/core30_baseline_comparison.json`](validation/core30_baseline_comparison.json).
-
-## Serviço, pressupostos e limitações
-
-Serviço mínimo viável 100%, 170 saídas EV e 153 ciclos concluídos por controlador,
-zero violações elétricas e zero ciclos perdidos. Critérios: mínimo ≥99,9%,
-precisão ≥80%, coberturas 100%, energia de violação ≤1e−6 kWh e zero eventos,
-SOC físico em [0,1] ±1e−6 e verificação de exportação passada.
-
-O BAU com limite não provocou ultrapassagens do alvo. O défice positivo de SOC
-na saída foi 0,244 pontos percentuais em média, máximo 2,062, devido ao controlo
-discreto e à potência mínima. Os RBCs podem ultrapassar ligeiramente o alvo;
-os pedidos de SOC são iguais, mas a energia entregue não é exatamente igual.
-Alguns EVs já chegam acima do pedido, e o BAU não os descarrega.
-
-Compra à rede ao preço completo do dataset; transações internas a 80%; venda
-externa a zero; PV próprio sem custo operacional de energia. As transações
-internas cancelam no custo agregado. O SOC de chegada de cada sessão vem do
-dataset. Não se impõe igualdade de SOC terminal das baterias nem preço do desgaste.
-
-Evidência: [promoção do BAU e revisão do Basic](experiment_history/20261103_bau-main-basic-20261103.md),
-[ensaio do BAU com limite](experiment_history/20261103_bau-user-target-20261103.md),
-`runs/bau-main-basic-20261103/`,
-`runs/bau-user-target-20261103/`, `runs/bau-reference-comparison-20261103/`,
-`runs/baseline-reference-close-20261103/` e
-`runs/community-peak-core30-20261103/validation/remote-results/`.
-
-As referências offline com conhecimento do futuro são comparadas separadamente
-na [auditoria MILP](milp_core30_audit_2026_11_03.md), com os mesmos baselines e
-limites terminais explícitos. Não alteram a definição dos controladores desta tabela.
-
-## Histórico do MILP com decisão em cada passo
-
-A [referência física atual](milp_physics_reference_core30_2026_11_03.md) substitui os valores MILP do primeiro ensaio abaixo, com física alinhada, validação das trajetórias e intervalo residual de ótimo. Os baselines desta página mantêm-se inalterados.
-
-A [comparação de 24 horas](milp_mpc_core30_2026_11_03.md) repete estes quatro baselines e acrescenta MILP a cada passo: 222,29 € (−17,70% face ao BAU), pico de 61,79 kW (+3,69%) e serviço mínimo viável de 100%. O semanal fica separado como oráculo offline: 222,97 € (−17,44%), com reservas finais por ativo não inferiores ao MPC. Esta diferença pequena reforça que o certificado do modelo linear não é um certificado de ótimo global do Simulator. As políticas desta página permanecem inalteradas.
+**Leitura.** Verificar serviço EV, ciclos concluídos, violações elétricas e energia terminal antes do custo. Reportar também o pico. Para controlo online, medir o tempo por decisão. Para o oráculo, medir o tempo de resolução por semana e registar o limite do solver. O controlador móvel `MILP` está disponível para estudos de horizonte.
