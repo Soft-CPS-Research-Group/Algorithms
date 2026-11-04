@@ -445,6 +445,7 @@ def build_citylearn_total_energy_problem(
     building_ids: Sequence[str] | None = None,
     electrical_service_reserve_kw: float = 0.1,
     conservative_capacity_ratio: float = 0.99,
+    episode_end_time_step: int | None = None,
     read_data: Callable[[Path, Any], pd.DataFrame] | None = None,
     physics: Literal["conservative", "simulator_linear"] = "conservative",
 ) -> CityLearnTotalEnergyBuild:
@@ -790,7 +791,11 @@ def build_citylearn_total_energy_problem(
                 if earliest >= end or latest + duration <= start:
                     continue
                 clipped_earliest = max(earliest, start)
-                clipped_latest = min(latest, end - duration)
+                # A planning boundary is interior to the same simulation episode.
+                last_executable = (
+                    episode_end_time_step if episode_end_time_step is not None else end
+                ) - duration
+                clipped_latest = min(latest, end - 1, last_executable)
                 restricted = clipped_earliest != earliest or clipped_latest != latest
                 if clipped_earliest > clipped_latest:
                     omitted_cycles.append(cycle_id)
@@ -805,7 +810,11 @@ def build_citylearn_total_energy_problem(
                         earliest_start_time_step=clipped_earliest - start,
                         latest_start_time_step=clipped_latest - start,
                         load_profile_kwh=profile,
-                        must_run=bool(row.must_run),
+                        must_run=bool(row.must_run)
+                        and not (
+                            episode_end_time_step is not None
+                            and min(latest, last_executable) >= end
+                        ),
                         phase_connection=appliance_phase,
                     )
                 )
@@ -850,6 +859,8 @@ def build_citylearn_total_energy_problem(
             "charger/battery efficiency linearization"
         ),
         "electrical_service_reserve_kw": reserve_kw,
+        "open_appliance_boundary": episode_end_time_step is not None
+        and end < episode_end_time_step,
         "boundary_service_exact": diagnostics.boundary_service_exact,
         "boundary_diagnostics": diagnostics.to_dict(),
         "ev_initial_soc_source": ev_initial_sources,

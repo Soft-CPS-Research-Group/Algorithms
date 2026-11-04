@@ -17,8 +17,19 @@ class MILPHyperparameters(StrictModel):
     physics: Literal["conservative", "simulator_linear"] = "simulator_linear"
 
 
+class WeeklyOracleHyperparameters(MILPHyperparameters):
+    # Explicit opt-in keeps the per-step MPC's 24-hour cap intact.
+    forecast: Literal["perfect_week"]
+    horizon_hours: Literal[168] = 168
+    physics: Literal["simulator_linear"] = "simulator_linear"
+    time_limit_seconds: float = Field(default=900, gt=0, allow_inf_nan=False)
+    mip_relative_gap: float = Field(default=1e-6, ge=0, le=0.01, allow_inf_nan=False)
+
+
 class MILPStageConfig(StrictModel):
     algorithm: Literal["MILP"]
     count: Literal[1] = 1
     frozen: bool = False
-    hyperparameters: MILPHyperparameters = Field(default_factory=MILPHyperparameters)
+    hyperparameters: MILPHyperparameters | WeeklyOracleHyperparameters = Field(
+        default_factory=MILPHyperparameters
+    )

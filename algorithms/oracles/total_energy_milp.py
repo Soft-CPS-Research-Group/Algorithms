@@ -475,7 +475,10 @@ class TotalEnergyProblem:
             if session.end_time_step >= prices.size:
                 raise ValueError(f"EV session {session.session_id!r} exceeds the horizon.")
         for cycle in self.deferrable_cycles:
-            if cycle.latest_start_time_step + len(cycle.load_profile_kwh) > prices.size:
+            if cycle.latest_start_time_step >= prices.size or (
+                not self.metadata.get("open_appliance_boundary")
+                and cycle.latest_start_time_step + len(cycle.load_profile_kwh) > prices.size
+            ):
                 raise ValueError(f"Deferrable cycle {cycle.cycle_id!r} exceeds the horizon.")
         services = tuple(self.electrical_services)
         service_ids = [service.building_id for service in services]
@@ -1052,7 +1055,7 @@ def _solve(
         )
         building = building_index[cycle.building_id]
         for start, variable in zip(variables.starts, variables.variables):
-            for offset, energy in enumerate(cycle.load_profile_kwh):
+            for offset, energy in enumerate(cycle.load_profile_kwh[: horizon - start]):
                 # A device remains occupied for its entire cycle, including
                 # zero-power portions. Distinct starts must not overlap.
                 deferrable_occupancy.setdefault(
