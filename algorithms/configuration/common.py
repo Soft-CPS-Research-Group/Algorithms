@@ -42,6 +42,15 @@ class MetadataConfig(BaseModel):
 
 
 class RuntimeConfig(BaseModel):
+    torch_num_threads: Optional[int] = Field(
+        default=None,
+        ge=1,
+        strict=True,
+        description=(
+            "Optional Torch CPU intra-operation thread count for this job process; "
+            "None preserves the existing Torch setting."
+        ),
+    )
     randomness: Optional[Dict[str, Any]] = None
     episode_plan: Optional[Dict[str, Any]] = None
     input_identity: Optional[str] = None
