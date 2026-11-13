@@ -40,33 +40,39 @@ Executar os cinco controladores nos mesmos membros, ficheiros, janelas, seeds e 
    timestamps, inventário dos exports e ausência de alterações dos inputs.
    Os testes da atualização cobrem este funcionamento; não certificam qualidade anual.
 2. **Auditar serviço e energia.** Usar primeiro 14 dias de janeiro de 2023 no
-   Core30 Normal. Comparar os dois BAU, Basic, Smart e Community por sessão EV e
+   Core30 Normal. Comparar os dois BAU, Basic, Smart, Community e o oráculo por sessão EV e
    ciclo de aparelho: chegada, alvo, partida, energia AC, energia na bateria,
    perdas, excesso de carga e serviço em falta. Distinguir atingir o alvo exato,
    ficar dentro da tolerância e cumprir o serviço mínimo. Verificar potências,
    limites elétricos e SOC inicial/final das baterias. Explicar diferenças antes
    de alterar regras.
-3. **Revalidar a política sazonal.** Manter as quatro quinzenas de validação de
-   2023: 1–14 de fevereiro, maio, agosto e novembro, dias completos em UTC.
-   Qualquer calibração usa apenas o restante 2023. Os limiares atuais do Basic
-   e o gatilho comunitário de 15 kW precisam desta revalidação. Não degradar um
-   controlador para impor uma classificação: custo, pico e serviço podem ter
-   ordenações diferentes. Fixar regras e critérios antes do teste final.
-4. **Revalidar o oráculo.** Correr duas semanas encadeadas em 2023 e verificar
+3. **Verificar o encadeamento do oráculo no mesmo ensaio.** Correr duas semanas
+   encadeadas em janeiro de 2023 e verificar
    planos contra trajetórias executadas, incluindo uma fronteira com EV ligado
    e outra com aparelho em execução/pedido pendente. Registar limites primal e
    dual, serviço, energia terminal e tempo real por resolução. Uma passagem
    curta sem fronteira semanal não fecha esta validação. O oráculo é uma
    referência offline de informação perfeita para o modelo suportado, não uma
    prova do ótimo anual nem um controlador com latência online comparável.
-5. **Executar o ano comum.** Após os pontos anteriores, avaliar os seis em 2024
+4. **Executar o ano comum antes de rever políticas.** Após a validação técnica,
+   de serviço e energia, avaliar os seis com as políticas atuais em 2024
    inteiro: `[35040, 70176)`, 35 136 transições de 15 minutos, 35 137 observações
    e `terminal_observation_padding: true`. Usar um episódio contínuo por
    controlador, zero episódios de treino, seed do simulador 6763 e seed do
    runtime 22. Exportar KPIs e séries temporais só no final; MLflow desligado.
    A cada semana, o oráculo recebe o estado vivo do mesmo episódio. Comparar
    custo liquidado, pico de importação em kW, serviço, energia dos EVs e estado
-   terminal, com o BAU com limite como denominador.
+   terminal, com o BAU com limite como denominador. Este ensaio anual serve
+   para conhecer o comportamento das referências nos dados novos; não ajustar
+   os limiares do Basic ou do Community antes dele. Corrigir eventuais falhas
+   de implementação ou de dados antes da comparação e registar a nova versão.
+5. **Revalidar a política sazonal depois do ano comum.** Manter as quatro
+   quinzenas de validação de 2023: 1–14 de fevereiro, maio, agosto e novembro,
+   dias completos em UTC. Qualquer calibração usa apenas o restante 2023.
+   Os limiares atuais do Basic e o gatilho comunitário de 15 kW ficam para esta
+   fase. Não degradar um controlador para impor uma classificação: custo, pico
+   e serviço podem ter ordenações diferentes. Se as políticas mudarem, repetir
+   a comparação anual com as versões identificadas; não misturar resultados.
 6. **Comparar MARL.** Só depois de estabilizar as referências, treinar em 2023
    fora das janelas reservadas, selecionar naquelas quatro quinzenas e congelar
    o candidato antes de o avaliar em 2024. Usar várias seeds de treino e a mesma

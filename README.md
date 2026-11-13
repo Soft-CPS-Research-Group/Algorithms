@@ -43,9 +43,11 @@ For remote jobs, see the [platform guide](docs/platform_guide.md). For context w
 The current baseline evaluation starts again with Simulator 2.1.0 and the
 Portugal `portugal-realism-4` / `portugal-ev-mobility-1` inputs. Previous scores
 are not comparable. First audit EV/appliance service and battery energy over
-14 days of 2023, revalidate the rules across the four reserved 2023 fortnights,
-then check the weekly oracle's state transfer and solver bounds. Freeze the
-policies before the common full-2024 evaluation and subsequent MARL comparison.
+14 days of January 2023, including the weekly oracle's state transfer and
+solver bounds. Then evaluate all six over full 2024 with the current policies.
+Policy revalidation across the four reserved 2023 fortnights comes afterwards;
+do not tune thresholds before the annual diagnostic comparison. Repeat annual
+comparisons if policies change and disclose that 2024 has already been inspected.
 Short integration jobs verify execution and exports only. Remote runs require
 the new dataset snapshot and matching image; the old server copy is unsuitable.
 The [working protocol (PT)](docs/baseline_comparison_core30.md) contains the dates,
