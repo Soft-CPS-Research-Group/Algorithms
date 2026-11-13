@@ -22,6 +22,13 @@ class StandardisedPolicy(torch.nn.Module):
         return self.policy.predict_deterministic(standardized)[:, self.action_order]
 
 
+class EmptyActionPolicy(torch.nn.Module):
+    """Preserve passive community members without inventing controllable assets."""
+
+    def forward(self, observations):
+        return observations[:, :0]
+
+
 def export_entity_policies(unit, output_dir):
     root = Path(output_dir)
     directory = root / "onnx_models"
@@ -34,9 +41,10 @@ def export_entity_policies(unit, output_dir):
             StandardisedPolicy(
                 unit._policy_map[dimension], unit._standardiser_map[dimension], order, action_order
             )
-            .to(unit._device)
-            .eval()
+            if action_order
+            else EmptyActionPolicy()
         )
+        model = model.to(unit._device).eval()
         path = directory / f"agent_{index}.onnx"
         torch.onnx.export(
             model,
