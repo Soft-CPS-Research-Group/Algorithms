@@ -117,7 +117,8 @@ def align_simulator_linear_problem(problem: TotalEnergyProblem, schema: Mapping[
                 charge_power_envelope=envelope,
                 discharge_power_envelope=envelope,
                 reserve_is_discharge_only=True,
-                loss_coefficient=float(attributes["loss_coefficient"]) * problem.timestep_hours,
+                loss_coefficient=1.0
+                - (1.0 - float(attributes["loss_coefficient"])) ** problem.timestep_hours,
             )
         )
     identities = problem.metadata["ev_identity_by_session"]

@@ -158,7 +158,8 @@ def test_soc_power_clipping_branch_matches_battery_transfer(capacity):
     assert roundtrip.ev_sessions == (ev,)
 
 
-def test_hourly_standby_loss_is_scaled_to_the_control_interval():
+@pytest.mark.parametrize("step_hours", [0.25, 0.5, 1.0, 2.0])
+def test_hourly_standby_loss_is_scaled_to_the_control_interval(step_hours):
     from citylearn.base import EpisodeTracker
     from citylearn.energy_model import Battery
 
@@ -173,9 +174,12 @@ def test_hourly_standby_loss_is_scaled_to_the_control_interval():
         power_efficiency_curve=[[0, 0.94], [1, 0.94]],
         capacity_power_curve=[[0, 1], [1, 1]],
     )
-    p = _problem(
-        stationary_storage=(StorageAsset("home", "electrical_storage", 10, 5, 5, 5, 5),),
-        metadata={"ev_identity_by_session": {}},
+    p = replace(
+        _problem(
+            stationary_storage=(StorageAsset("home", "electrical_storage", 10, 5, 5, 5, 5),),
+            metadata={"ev_identity_by_session": {}},
+        ),
+        timestep_hours=step_hours,
     )
     aligned = align_simulator_linear_problem(
         p, {"buildings": {"home": {"electrical_storage": {"attributes": attributes}}}}
@@ -183,14 +187,17 @@ def test_hourly_standby_loss_is_scaled_to_the_control_interval():
     tracker = EpisodeTracker(0, 2)
     tracker.next_episode(3, False, False, 0)
     battery = Battery(
-        **attributes, episode_tracker=tracker, seconds_per_time_step=900, time_step_ratio=1
+        **attributes,
+        episode_tracker=tracker,
+        seconds_per_time_step=int(step_hours * 3600),
+        time_step_ratio=1,
     )
     battery.reset()
     battery.charge(0)
     battery.next_time_step()
     battery.charge(0)
     loss = aligned.stationary_storage[0].loss_coefficient
-    assert loss == pytest.approx(0.0025)
+    assert (1 - loss) ** (1 / step_hours) == pytest.approx(0.99)
     assert float(battery.soc[1]) * 10 == pytest.approx(5 * (1 - loss), abs=1e-6)
 
 

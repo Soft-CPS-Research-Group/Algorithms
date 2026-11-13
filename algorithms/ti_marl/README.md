@@ -502,7 +502,7 @@ python scripts/validate_ti_marl_interfaces.py \
 ```
 
 The historical TI-MARL validation used `softcpsrecsimulator==1.9.1`. The
-repository now pins `softcpsrecsimulator==2.0.0`; specialized TI-MARL integration
+repository now pins `softcpsrecsimulator==2.1.0`; specialized TI-MARL integration
 validation remains deferred and is not certified by the BAU/RBC audit. The
 end-to-end vertical slice uses the installed package; using an adjacent
 Simulator checkout is only a deliberate development override.

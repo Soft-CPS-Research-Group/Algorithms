@@ -179,7 +179,25 @@ class RuleBasedHyperparameters(BaseModel):
     ev_v2g_min_departure_hours: float = Field(default=2.0, ge=0)
     ev_v2g_service_margin_soc: float = Field(default=0.05, ge=0)
     schedule_path: Optional[str] = None
+    schedule_step_offset: int = 0
+    service_policy: Literal[
+        "RBCSmartLocalPolicy", "RBCSmartPolicy", "SignalAwareRBC", "SignalAwareRBCSmartLocal"
+    ] = "RBCSmartLocalPolicy"
+    allow_attached_action_subset: bool = False
     repeat_schedule_for_training: bool = False
+    signal_price_charge_rate: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    signal_price_response_mode: Literal["binary", "linear_discount", "linear_bidirectional"] = (
+        "binary"
+    )
+    signal_price_charge_reference_multiplier: float = Field(
+        default=0.90, gt=0, lt=1, allow_inf_nan=False
+    )
+    signal_price_charge_gain_max: float = Field(default=1.5, gt=0, allow_inf_nan=False)
+    signal_price_discharge_rate: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    signal_price_discharge_reference_multiplier: float = Field(
+        default=1.10, gt=1, allow_inf_nan=False
+    )
+    signal_price_discharge_gain_max: float = Field(default=1.5, gt=0, allow_inf_nan=False)
     local_action_safety_enabled: bool = True
     local_action_safety_fail_on_infeasible: bool = False
     local_action_safety_protect_ev_minimum: bool = True
