@@ -1,10 +1,10 @@
 schema_version: algorithms.config.v1
 metadata:
-  experiment_name: baseline-reference-core30-sim200
+  experiment_name: baseline-reference-core30-sim210
   run_name: core30-reference-community
-  community_name: Core30 v3.3
-  description: Core30 v3.3 reference, 48 hours from 2023-01-01, Simulator 2.0.0; audited
-    defaults.
+  community_name: Core30 portugal-realism-4
+  description: Core30 portugal-realism-4, 48 hours from 2023-01-01, Simulator 2.1.0.
+    Starting policy; long-run evaluation on this dataset revision is pending.
 tracking:
   mlflow_enabled: false
   log_level: WARNING

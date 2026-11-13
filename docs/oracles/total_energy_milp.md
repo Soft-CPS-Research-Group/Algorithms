@@ -32,7 +32,9 @@ Choose a new output directory for each solve. The first command builds the physi
 
 ## Conditions and interpretation
 
-The `simulator_linear` physics profile supports constant battery/charger efficiencies, concave SOC-dependent power limits, zero degradation and charge-only EVs with zero standby loss and discharge reserve. Standby loss for stationary storage is scaled by timestep duration. A charger's minimum applies to the command, so actual delivery can be smaller at saturation. The builder checks supported physics, known initial EV states and complete appliance service windows.
+The `simulator_linear` physics profile supports constant battery/charger efficiencies, concave SOC-dependent power limits, zero degradation and charge-only EVs with zero standby loss and discharge reserve. With Simulator 2.1.0, the stationary storage step loss is `1 - (1 - hourly_loss) ** step_hours`. A charger's minimum applies to the command, so actual delivery can be smaller at saturation. The builder checks supported physics, known initial EV states and complete appliance service windows.
+
+After a simulator or dataset update, repeat the chained replay audit before an annual campaign. A successful one-day replay does not verify weekly state transfer or establish a near-optimal annual reference. See the [Core30 evaluation sequence](../baseline_comparison_core30.md#retomar-a-avaliação).
 
 The weekly reference sets a terminal minimum of 50% for stationary batteries. An EV still connected at the end is given its announced target on a best-effort basis. Count actual departures separately. Compare the terminal stored energy when interpreting the cost of another policy.
 

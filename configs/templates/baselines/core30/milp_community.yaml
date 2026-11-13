@@ -1,8 +1,8 @@
 schema_version: algorithms.config.v1
 metadata:
-  experiment_name: baseline-reference-core30-sim200
+  experiment_name: baseline-reference-core30-sim210
   run_name: core30-milp-community
-  community_name: Core30 v3.3
+  community_name: Core30 portugal-realism-4
   description: Offline full-window community oracle replay (weekly reference). Prepare the matching
     dataset/window plan first; research-only export.
 tracking:

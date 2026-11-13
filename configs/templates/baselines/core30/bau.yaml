@@ -1,8 +1,8 @@
 schema_version: algorithms.config.v1
 metadata:
-  experiment_name: baseline-reference-core30-sim200
+  experiment_name: baseline-reference-core30-sim210
   run_name: core30-reference-bau
-  community_name: Core30 v3.3
+  community_name: Core30 portugal-realism-4
   description: 'Primary BAU: immediate EV charging capped by the user-requested departure
     SOC, immediate appliances and stationary-battery self-consumption.'
 tracking:
