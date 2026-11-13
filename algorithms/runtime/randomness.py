@@ -87,6 +87,11 @@ def call_hook(unit, name, *args, stream="learning", **kwargs):
 
 
 def initialize_job(config):
+    # Configure CPU work before seeding, constructing agents or preparing offline
+    # training. An omitted setting must preserve the process's Torch default.
+    num_threads = config.get("runtime", {}).get("torch_num_threads")
+    if num_threads is not None:
+        torch.set_num_threads(num_threads)
     training = config.get("training", {})
     seed = int(training.get("seed", 22))
     # Set before CUDA initialization; strict kernels fail explicitly if unsupported.
@@ -107,7 +112,7 @@ def initialize_job(config):
         raise ValueError(
             "Simulator random episode splitting requires a smaller random_seed for this episode budget"
         )
-    return {
+    metadata = {
         "version": "algorithms.random.v1",
         "training_seed": seed,
         "simulator_seed": simulator["random_seed"],
@@ -119,3 +124,6 @@ def initialize_job(config):
         "device_available": torch.cuda.is_available(),
         "comparison": "Exact repetition is tested on the pinned CPU runtime; cross-device equality is not promised.",
     }
+    if num_threads is not None:
+        metadata["torch_num_threads"] = torch.get_num_threads()
+    return metadata
