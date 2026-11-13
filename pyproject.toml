@@ -15,7 +15,7 @@ training = ["softcpsrecsimulator==2.1.0", "torch==2.5.1", "torchvision==0.20.1",
 export = ["onnx==1.17.0", "onnxruntime==1.20.1"]
 tracking = ["mlflow==2.19.0"]
 offline = ["pyarrow==18.1.0", "pandas==2.2.3"]
-solver = ["scipy==1.15.1", "pandas==2.2.3"]
+solver = ["scipy==1.15.1", "highspy==1.16.0", "pandas==2.2.3"]
 dev = ["pytest==8.3.2", "onnxruntime==1.20.1", "ruff==0.11.13", "mypy==1.15.0", "build==1.2.2.post1", "types-PyYAML==6.0.12.20240917"]
 
 [project.scripts]

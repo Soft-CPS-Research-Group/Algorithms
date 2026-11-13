@@ -214,6 +214,12 @@ class MILPPolicy(BaseAgent):
             terminal_storage_soc=self.settings.terminal_storage_soc,
             numerical_margin=not self.weekly,
         )
+        block = None
+        if self.weekly and self._decision_log is not None:
+            block = self._decision_log.parent / f"episode-{self._episode}" / f"week-{now}"
+            block.mkdir(parents=True, exist_ok=True)
+            # Keep the measured boundary input even if native solving fails.
+            (block / "problem.json").write_text(problem.to_json())
         prepared = time.perf_counter()
         result = solve_total_energy_schedule(problem, options=self.options)
         solved = time.perf_counter()
@@ -268,10 +274,7 @@ class MILPPolicy(BaseAgent):
             offset = result.selected_deferrable_starts.get(cycle.cycle_id)
             if cycle.cycle_id not in running and offset is not None:
                 self._planned_starts.setdefault(offset, []).append(cycle)
-        if self.weekly and self._decision_log is not None:
-            block = self._decision_log.parent / f"episode-{self._episode}" / f"week-{now}"
-            block.mkdir(parents=True, exist_ok=True)
-            (block / "problem.json").write_text(problem.to_json())
+        if block is not None:
             (block / "result.json").write_text(
                 json.dumps(replace(result, schedule=schedule).to_dict(), allow_nan=False)
             )

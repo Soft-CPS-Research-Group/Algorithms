@@ -15,6 +15,11 @@ At a cut, the next plan reads stationary battery SOC and connected EV energy fro
 
 The `perfect_week` setting selects this planning cadence. Each solve saves the physical problem, schedule, cost bound and timing under the job’s `offline_training` directory. The audit compares the weekly inputs with the simulator’s exported trajectories and service ledger. For a continuity test, include a cut during an active appliance cycle and one with a pending request. Calendar weeks can have no such events. Report cost bounds per conditional weekly problem. A full-year optimum would require a separate formulation.
 
+Install the `solver` extra for local planning. The runtime uses the pinned
+`highspy==1.16.0` solver, independently of SciPy's bundled HiGHS. The latter's
+1.8 build can crash on a valid Core30 weekly service problem. A missing standalone
+solver is an explicit installation error; it does not select the older build.
+
 ## Solve and replay an isolated week
 
 Start with a [Core30 evaluation configuration](../../configs/templates/baselines/core30/milp_community.yaml). Point `simulator.dataset_path` at the evaluation schema. Set `simulation_end_time_step` to the start plus 672 and `episode_time_steps` to 673 (672 transitions of 15 minutes). Use one deterministic evaluation episode, zero training episodes and the same market and seed as the candidate.

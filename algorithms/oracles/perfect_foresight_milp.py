@@ -28,15 +28,14 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
-from scipy.optimize import Bounds, LinearConstraint, OptimizeResult, milp
+from scipy.optimize import Bounds, LinearConstraint, OptimizeResult
+from scipy.optimize._milp import _milp_iv
 from scipy.sparse import coo_array, csc_array
 
-try:  # SciPy 1.15.x exposes its bundled HiGHS bindings here.
-    from scipy.optimize._highspy import _core as _highs_core
-    from scipy.optimize._milp import _milp_iv
-except ImportError:  # pragma: no cover - compatibility fallback for other SciPy builds.
+try:
+    import highspy as _highs_core
+except ImportError:  # Replay/configuration imports do not require a solver installation.
     _highs_core = None
-    _milp_iv = None
 
 
 _NUMERICAL_TOLERANCE = 1.0e-8
@@ -596,9 +595,8 @@ def _milp_primal_only(
     global _HIGHS_THREAD_COUNT
     with _HIGHS_LOCK:
         requested = int(options.get("threads", 0))
-        if (_highs_core is not None and hasattr(_highs_core._Highs, "resetGlobalScheduler")
-                and requested != _HIGHS_THREAD_COUNT):
-            _highs_core._Highs.resetGlobalScheduler(True)
+        if _highs_core is not None and requested != _HIGHS_THREAD_COUNT:
+            _highs_core.Highs.resetGlobalScheduler(True)
             _HIGHS_THREAD_COUNT = requested
         return _milp_primal_only_impl(
             c=c, integrality=integrality, bounds=bounds, constraints=constraints,
@@ -615,27 +613,25 @@ def _milp_primal_only_impl(
     options: Mapping[str, Any],
     x0: Optional[np.ndarray] = None,
 ) -> OptimizeResult:
-    """Run bundled HiGHS without extracting unused LP basis marginals.
+    """Run the pinned standalone HiGHS without unused LP basis marginals.
 
     SciPy 1.15.1's public :func:`scipy.optimize.milp` wrapper iterates over
     every column through pybind after HiGHS has solved the model in order to
     construct bound marginals.  ``milp`` does not expose those marginals, and
     on an annual 15-minute oracle that conversion takes hours even though the
     LP itself takes seconds.  The oracle only needs the primal solution,
-    objective and MIP certificate, so use the same bundled solver while
-    intentionally omitting that discarded basis conversion.
+    objective and MIP certificate, so omit that discarded basis conversion.
 
-    Builds of SciPy without the bundled private bindings retain the public
-    fallback.  The project pins SciPy 1.15.1 on the x86 experiment workers.
+    SciPy 1.15.1's bundled HiGHS 1.8 crashes in dual simplex on the Core30
+    second-week service model. Use the separately pinned highspy package;
+    never silently fall back to the affected native build. SciPy's pinned
+    input validator still prepares the sparse matrix and bounds.
     """
 
-    if _highs_core is None or _milp_iv is None:
-        return milp(
-            c=c,
-            integrality=integrality,
-            bounds=bounds,
-            constraints=constraints,
-            options=dict(options),
+    if _highs_core is None:
+        raise RuntimeError(
+            "MILP solving requires highspy. Install energaize-algorithms[solver] "
+            "with the repository's pinned solver dependencies."
         )
 
     prepared_options = dict(options)
@@ -689,7 +685,7 @@ def _milp_primal_only_impl(
             _highs_core.HighsVarType(int(value)) for value in variable_types
         ]
 
-    solver = _highs_core._Highs()
+    solver = _highs_core.Highs()
     highs_options = _highs_core.HighsOptions()
     for key, value in highs_option_values.items():
         if value is None:
