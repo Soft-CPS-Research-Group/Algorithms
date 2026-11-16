@@ -37,13 +37,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Simulator 2.1.0 benchmark data
+      - name: Checkout Simulator 2.1.1 benchmark data
         uses: actions/checkout@v4
         with:
           repository: Soft-CPS-Research-Group/Simulator
-          # Exact source commit used to publish softcpsrecsimulator 2.1.0.
-          # The fork release is softcpsrecsimulator-v2.1.0; upstream tags are unrelated.
-          ref: 5f01523e8726a4ff4523bafa18911e991da5fe71
+          # Exact source commit used to publish softcpsrecsimulator 2.1.1.
+          # The fork release is softcpsrecsimulator-v2.1.1; upstream tags are unrelated.
+          ref: 07f044569f0d3646083737188c50502cad140801
           path: .ci/Simulator
           # Source attestation plus the exact fixtures exercised by this suite.
           sparse-checkout: |
