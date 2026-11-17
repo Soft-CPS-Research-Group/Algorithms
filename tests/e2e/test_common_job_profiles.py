@@ -173,9 +173,7 @@ def test_milp_resolves_each_step_and_exports_research_evidence(tmp_path, physics
     if physics == "simulator_linear":
         simulator_root = Path(os.environ.get("SIMULATOR_REPO", Path.cwd().parent / "Simulator"))
         config["simulator"].update(
-            dataset_path=str(
-                simulator_root / "data/datasets/rec_pt_2023_micro_4_v2/evaluation/core_4.json"
-            ),
+            dataset_path=str(simulator_root / "data/datasets/pt_rec_4/evaluation/rec_4.json"),
             building_ids=["Member_001"],
         )
     # This short fixture starts at the physical 10% minimum; a 50% reserve
@@ -219,9 +217,7 @@ def test_weekly_oracle_replans_at_the_boundary_with_a_short_final_block(tmp_path
     )
     simulator_root = Path(os.environ.get("SIMULATOR_REPO", Path.cwd().parent / "Simulator"))
     config["simulator"].update(
-        dataset_path=str(
-            simulator_root / "data/datasets/rec_pt_2023_micro_4_v2/evaluation/core_4.json"
-        ),
+        dataset_path=str(simulator_root / "data/datasets/pt_rec_4/evaluation/rec_4.json"),
         building_ids=["Member_001", "Member_002"],
         simulation_start_time_step=39,
         simulation_end_time_step=759,

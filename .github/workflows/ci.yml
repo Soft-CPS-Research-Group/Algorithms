@@ -37,19 +37,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout Simulator 2.1.1 benchmark data
+      - name: Checkout Simulator 2.2.0 benchmark data
         uses: actions/checkout@v4
         with:
           repository: Soft-CPS-Research-Group/Simulator
-          # Exact source commit used to publish softcpsrecsimulator 2.1.1.
-          # The fork release is softcpsrecsimulator-v2.1.1; upstream tags are unrelated.
-          ref: 07f044569f0d3646083737188c50502cad140801
+          # Exact source commit used to publish softcpsrecsimulator 2.2.0.
+          # The fork release is softcpsrecsimulator-v2.2.0; upstream tags are unrelated.
+          ref: 88cf281f673cf241f04f36b731e677420a036482
           path: .ci/Simulator
           # Source attestation plus the exact fixtures exercised by this suite.
           sparse-checkout: |
             citylearn
             tests/data/minute_ev_demo
-            data/datasets/rec_pt_2023_micro_4_v2
+            data/datasets/pt_rec_4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
