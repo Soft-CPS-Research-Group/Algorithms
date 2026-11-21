@@ -319,6 +319,11 @@ def run_episodes(
                     "reward_components",
                     self._get_reward_components_payload(),
                 )
+                feedback = getattr(self.model, "interval_reward_feedback", None)
+                if callable(feedback):
+                    self._entity_step_info.update(
+                        feedback(self.env, time_step, self._entity_step_info)
+                    )
             if should_profile_step:
                 runtime_profile_metrics["Runtime/reward_shaping_seconds"] = (
                     time.perf_counter() - phase_start_time

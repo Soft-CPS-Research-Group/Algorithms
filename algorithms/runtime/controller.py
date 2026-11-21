@@ -1054,6 +1054,12 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
 
         return run_episodes(self, episodes, deterministic, deterministic_finish)
 
+    def _timed_entity_info(self, info):
+        """Expose the start of this episode on the dataset clock to typed policies."""
+        tracker = getattr(self, "episode_tracker", None)
+        start = getattr(tracker, "episode_start_time_step", None)
+        return info if start is None else {**(info or {}), "episode_start_time_step": int(start)}
+
     def predict(self, observations, deterministic=None, *, episode_step=None):
         """
         Updates the predict action logic. It now uses a mix of algorithm and the next time step.
@@ -1109,7 +1115,7 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
                 )
             entity_observation_context_hook(
                 observation_payload=self._entity_current_payload,
-                info=self._entity_current_info,
+                info=self._timed_entity_info(self._entity_current_info),
             )
 
         actions = decide(self.model, encoded_observations, deterministic)
@@ -1254,7 +1260,7 @@ class SimulationController(ResourceLifecycle, Diagnostics, RLC):
             entity_transition_context_hook(
                 observation_payload=self._entity_current_payload,
                 next_observation_payload=self._entity_next_payload,
-                info=self._entity_step_info,
+                info=self._timed_entity_info(self._entity_step_info),
             )
         if callable(profiled_transition_context_hook):
             profiled_transition_context_hook(

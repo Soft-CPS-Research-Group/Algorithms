@@ -5,7 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping
 
 from algorithms.ti_marl.contracts.models import (
     InterfaceSnapshot,
@@ -43,6 +43,8 @@ class BufferedTraceWriter:
         current: InterfaceSnapshot,
         following: InterfaceSnapshot,
         transition: TypedTransition,
+        *,
+        construction: Mapping[str, Any] | None = None,
     ) -> None:
         if not self.enabled:
             return
@@ -53,7 +55,10 @@ class BufferedTraceWriter:
         )
         self._stage_snapshot(current, force=force_snapshot)
         self._stage_snapshot(following, force=force_snapshot)
-        self._transitions.append(canonical_value(transition))
+        record = canonical_value(transition)
+        if construction is not None:
+            record["construction"] = canonical_value(construction)
+        self._transitions.append(record)
         self.transition_count += 1
         if len(self._transitions) >= self.chunk_size:
             self.flush()

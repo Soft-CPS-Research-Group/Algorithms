@@ -1,4 +1,40 @@
-# TI-MARL v1
+# TI-MARL
+
+## Thesis controllers
+
+The Core-30 recipe exercises the thesis controller with one short training episode and one deterministic evaluation. Make the dataset in the recipe available locally, or change its path in a copy of the recipe. Generate the interfaces from that same schema. From the Algorithms root:
+
+```bash
+recipe=configs/templates/rl/ti_marl_core30.yaml
+schema=datasets/rec_pt_2023_core_30_v2/evaluation/preparation_2023/core_30_normal.json
+mkdir -p runs/ti-marl-inputs
+python scripts/generate_typed_interfaces.py --config "$recipe" --output runs/ti-marl-inputs/interfaces
+python scripts/prepare_ti_marl_forecasts.py "$schema" runs/ti-marl-inputs/forecasts.jsonl --first 836 --last 852 --calibration-end 800
+algorithms-job --config "$recipe" --job_id ti-marl-core30
+```
+
+| Configuration | Control and learning |
+|---|---|
+| `method_variant: v0` | Independent proposals, minimal-change reconciliation, one observed-return credit per site. |
+| `v1` or `v1c` | Joint sequential choices within verified domains. Each site receives one credit, from the observed return or the critic respectively. |
+| `v2` | Joint choices and a separate critic estimate before and after each choice. |
+| `v2` with `hierarchy` | Experimental V3 adds a community policy. Every quarter-hour it publishes a bounded curve of tariff adjustments for the next day. Compatible homes share their local policy. |
+
+The preparation script uses each site's non-shiftable demand and absolute PV from the previous day and the tariff estimates already issued by the dataset. It records forecasts as estimates. The calibration end is exclusive and must precede the first issue. Use the same frozen preparation residuals for comparisons. A live Predictor can supply the same records in `entity_v1.meta.ti_marl_forecasts`, keyed by site. Each record carries issue, receipt, first delivery and interval times in seconds on the dataset clock, with arrays `price_eur_per_kwh`, `non_shiftable_kw` and `solar_kw`. A per-slot boolean `published_price` distinguishes confirmed prices. Late or missing inputs retain their quality flags.
+
+Once a metered quarter closes, each site compares its average non-shiftable demand and PV with the last estimate seen before the quarter began. A complete quarter of fresh meter readings is required for each channel. The SoftCPS PV meter is assigned to its reported endogenous interval, which usually ends at the decision time. The trace includes the signed deviation, the delivery time, and when the controller last saw the forecast. Within the episode, the largest absolute error widens the corresponding calibrated margin whenever necessary. Without an initial calibration the future physical margin stays unknown. Each episode starts again from the declared calibration.
+
+For V3, add `hierarchy: {signal: learned, training_phase: local}` to the V2 hyperparameters. First train the homes with varying incentives. Resume their checkpoint in a second job with `training_phase: coordinator`; the coordinator learns against realised settlement and service with the homes frozen. The `neutral` and `rule` signal modes enable paired controls. `peak_weight_per_kw` is optional and expressed in EUR per kW increase of the daily maximum. Report the realised bill separately from the local training adjustment.
+
+For a width comparison change `actor.d_model` from 32 to 64, keeping the seed, dates, heads, layers and optimiser fixed. To inspect a specific vehicle decision after training, enable the TI-MARL trace and run `python scripts/probe_ti_marl_flexibility.py --help`; the probe replays independently shifted price, solar and incentive curves against a trusted checkpoint.
+
+The optional `departure_margin_seconds` asks the constructor to protect EV charge earlier when feasible. A value of 900 reserves against loss of the final 15 minutes. Contractual service for every declared commitment has priority. The trace records any margin that could not be secured separately from missed service. The default is zero.
+
+The thesis variants use the strict reward by default. It requires post-action settlement, electrical and service ledgers. Missing evidence raises an error. `reward_penalties` sets the provisional chapter 7 coefficients in EUR/kWh, for example `{ev_tolerance_kwh: 2.0}`. Report the coefficients with the run. The measured bill stays in EUR. The explicitly partial `settlement_smoke` profile exercises cost and stationary battery throughput. The resulting checkpoints and bundles require the specialised TI-MARL runtime. Record decision latency and service on the intended control interval before deployment.
+
+## Legacy controller
+
+The remaining sections document the original controller and its optional training extensions. Existing jobs select it through `method_variant: legacy` or by omitting the variant.
 
 `TIMARL` is a first-class Algorithms agent that compiles deployment-neutral
 typed runtime frames into a health-aware local control interface.
@@ -501,10 +537,9 @@ python scripts/validate_ti_marl_interfaces.py \
   --simulator-bindings /local/path/generated_interfaces/technology_bindings/simulator.yaml
 ```
 
-The historical TI-MARL validation used `softcpsrecsimulator==1.9.1`. The
-repository now pins `softcpsrecsimulator==2.1.1`; specialized TI-MARL integration
-validation remains deferred and is not certified by the BAU/RBC audit. The
-end-to-end vertical slice uses the installed package; using an adjacent
-Simulator checkout is only a deliberate development override.
+The Core-30 thesis recipe was exercised with the pinned package
+`softcpsrecsimulator==2.1.1`. The historical controller also ran on 1.9.1.
+The public job uses the installed package. An adjacent Simulator checkout can
+supply local datasets.
 
 For experiment design, see the [lessons from long runs](../../docs/learning-experience.md). The protocol tools separate simulator and neural seeds and fingerprint paired evaluation inputs.

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
-import re
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -13,18 +13,18 @@ import numpy as np
 from algorithms.ti_marl.compiler.health import HealthDeriver
 from algorithms.ti_marl.contracts.compatibility import CompatibilitySignature
 from algorithms.ti_marl.contracts.enums import (
+    HEALTH_SEVERITY,
     AvailabilityState,
     ConnectionState,
     EventDomain,
-    HEALTH_SEVERITY,
     HealthState,
     QualityState,
 )
 from algorithms.ti_marl.contracts.interface_definition import (
+    OBSERVATION_USES,
     ActionDefinition,
     ActuatorDefinition,
     InterfaceRegistry,
-    OBSERVATION_USES,
     ObservationDefinition,
     RegistryDelta,
     TypedAgentInterface,
@@ -59,7 +59,6 @@ from algorithms.ti_marl.runtime.contracts import (
     TypedRuntimeEntity,
     TypedRuntimeFrame,
 )
-
 
 COMPILER_VERSION = "tic_v5"
 
@@ -97,6 +96,7 @@ class TypedInterfaceCompiler:
         self.entity_specs: Dict[str, Any] = {}
         self.seconds_per_time_step = 1.0
         self._mismatch_counts: Dict[Tuple[str, str], int] = {}
+        self._unconfirmed_outputs: Dict[str, int] = {}
         self._structure_key: Optional[Tuple[Any, ...]] = None
         self._observation_plan: Tuple[
             Tuple[str, str, str, ObservationDefinition], ...
@@ -218,6 +218,7 @@ class TypedInterfaceCompiler:
             "health": self.health_deriver.snapshot_state(),
             "registry_hash": self.interface_registry.registry_hash,
             "mismatch_counts": deepcopy(self._mismatch_counts),
+            "unconfirmed_outputs": self._unconfirmed_outputs.copy(),
         }
 
     def restore_state(self, payload: Mapping[str, Any]) -> None:
@@ -228,6 +229,7 @@ class TypedInterfaceCompiler:
                 seconds_per_time_step=float(payload.get("seconds_per_time_step", 1.0)),
             )
         self.health_deriver.restore_state(payload.get("health", {}))
+        self._unconfirmed_outputs = dict(payload.get("unconfirmed_outputs", {}))
         self._mismatch_counts = {
             tuple(key) if not isinstance(key, tuple) else key: int(value)
             for key, value in payload.get("mismatch_counts", {}).items()
@@ -238,14 +240,17 @@ class TypedInterfaceCompiler:
             "health": self.health_deriver.snapshot_state(),
             "registry_hash": self.interface_registry.registry_hash,
             "mismatch_counts": deepcopy(self._mismatch_counts),
+            "unconfirmed_outputs": self._unconfirmed_outputs.copy(),
         }
 
     def reset_runtime_state(self) -> None:
         self.health_deriver.reset()
         self._mismatch_counts.clear()
+        self._unconfirmed_outputs.clear()
 
     def load_checkpoint_state(self, payload: Mapping[str, Any]) -> None:
         self.health_deriver.restore_state(payload.get("health", {}))
+        self._unconfirmed_outputs = dict(payload.get("unconfirmed_outputs", {}))
         self._mismatch_counts = {
             tuple(key) if not isinstance(key, tuple) else key: int(value)
             for key, value in payload.get("mismatch_counts", {}).items()
@@ -717,6 +722,8 @@ class TypedInterfaceCompiler:
                     max_discharge_power_kw=max_discharge,
                     activation_power_kw=activation_power,
                     adapter_target_entity_id=entity.entity_id,
+                    reservation_profile=actuator.reservation_profile,
+                    phase_weights=actuator.phase_weights,
                 )
             )
         return tuple(sorted(groups, key=lambda item: item.group_id))
@@ -787,7 +794,8 @@ class TypedInterfaceCompiler:
             disconnected = False
             runtime_target = group.adapter_target_entity_id or group.module_id
             mismatch_key = (group.owner_agent_id, group.module_id)
-            if self._mismatch_counts.get(mismatch_key, 0) >= 3:
+            repeated_mismatch = self._mismatch_counts.get(mismatch_key, 0) >= 3
+            if repeated_mismatch:
                 updated = self._safe_idle(updated, "repeated_requested_applied_mismatch")
                 log.append(
                     self._closure_row(updated, "repeated_requested_applied_mismatch")
@@ -816,6 +824,8 @@ class TypedInterfaceCompiler:
                 )
                 log.append(self._closure_row(updated, "power_outage"))
             for item in evidence:
+                if item.agent_id is not None and item.agent_id != group.owner_agent_id:
+                    continue
                 if item.target_id not in {"*", runtime_target, group.module_id, actuator_id}:
                     continue
                 assessment = assessments.get(HealthDeriver.subject_id(item))
@@ -849,6 +859,35 @@ class TypedInterfaceCompiler:
                     "asset_disconnected",
                 )
                 log.append(self._closure_row(updated, "asset_disconnected"))
+
+            # A logical IDLE cannot prove that a dropped command stopped a
+            # physical actuator. Retain the uncertainty until a later valid
+            # measurement confirms zero or a physical EV disconnect is known.
+            if disconnected:
+                self._unconfirmed_outputs.pop(group.group_id, None)
+            elif relevant_channel_failure or repeated_mismatch:
+                self._unconfirmed_outputs.setdefault(group.group_id, frame.sequence)
+            failed_since = self._unconfirmed_outputs.get(group.group_id)
+            if failed_since is not None:
+                stopped = frame.sequence > failed_since and any(
+                    part.owner_agent_id == group.owner_agent_id
+                    and part.sensor_id == group.module_id
+                    and part.observation_id in {"last_applied_power_kw", "current_step_power_kw"}
+                    and part.valid
+                    and not part.estimated
+                    and part.health == HealthState.HEALTHY
+                    and part.age_seconds == 0
+                    and len(part.values) == 1
+                    and abs(part.values[0]) <= 1e-8
+                    for part in parts
+                )
+                if stopped:
+                    self._unconfirmed_outputs.pop(group.group_id)
+                else:
+                    updated = self._safe_idle(
+                        updated, updated.fallback_reason or "unconfirmed_output"
+                    )
+                    updated = replace(updated, output_unconfirmed=True)
 
             for action in actuator.actions:
                 for dependency_path, outcomes in action.dependencies.items():
@@ -932,9 +971,11 @@ class TypedInterfaceCompiler:
                     )
                 ):
                     safety_paths.append(path)
+                source = parts.get((group.owner_agent_id, path))
                 if sensor.sensor_id == actuator.actuator_id or (
-                    actuator.source_entity_type == "charger"
-                    and sensor.sensor_type in {"bidirectional_ev_charger", "ev_charger"}
+                    source is not None
+                    and group.adapter_target_entity_id is not None
+                    and source.source_entity_id == group.adapter_target_entity_id
                 ):
                     charger_paths.append((path, observation.observation_id))
 
@@ -954,7 +995,7 @@ class TypedInterfaceCompiler:
             return group, rows
 
         if actuator.source_entity_type == "charger":
-            connected_paths = [path for path, name in charger_paths if "connected" in name]
+            connected_paths = [path for path, name in charger_paths if name == "connected_state"]
             connection_confirmed = any(
                 (
                     parts.get((group.owner_agent_id, path)) is not None
@@ -1148,7 +1189,23 @@ class TypedInterfaceCompiler:
         for agent_id in frame.active_agent_ids:
             interface = self.interface_registry.for_agent(agent_id)
             member_ids = tuple(group.group_id for group in groups if group.owner_agent_id == agent_id)
-            phase_weights = self._group_phase_weights(parts, agent_id, groups)
+            for constraint_id, declared in interface.constraints.items():
+                if declared.get("members"):
+                    keys = tuple(f"{agent_id}:{member}" for member in declared["members"])
+                    active_members = tuple(key for key in keys if key in member_ids)
+                    if active_members:
+                        constraints.append(
+                            LocalConstraint(
+                                constraint_id=f"{agent_id}:{constraint_id}",
+                                owner_agent_id=agent_id,
+                                constraint_type="group_import_limit_kw",
+                                upper_bound=declared["max"],
+                                member_group_ids=active_members,
+                            )
+                        )
+            phase_weights = self._group_phase_weights(
+                parts, agent_id, groups, interface.constraints.get("background_phase_weights")
+            )
             current_charge_power = self._current_direction_power(
                 parts,
                 agent_id,
@@ -1198,6 +1255,7 @@ class TypedInterfaceCompiler:
                         owner_agent_id=agent_id,
                         constraint_type="charging_headroom_kw",
                         upper_bound=charge_headroom,
+                        nameplate_kw=configured_max,
                         member_group_ids=member_ids,
                     ),
                     LocalConstraint(
@@ -1205,6 +1263,7 @@ class TypedInterfaceCompiler:
                         owner_agent_id=agent_id,
                         constraint_type="export_headroom_kw",
                         upper_bound=export_headroom,
+                        nameplate_kw=configured_export_max,
                         member_group_ids=member_ids,
                     ),
                 )
@@ -1229,6 +1288,7 @@ class TypedInterfaceCompiler:
                             constraint_id=f"{agent_id}:charging_phase_{phase}_headroom_kw",
                             owner_agent_id=agent_id,
                             constraint_type="charging_phase_headroom_kw",
+                            nameplate_kw=interface.constraints.get("phase_import", {}).get("max", {}).get(phase),
                             upper_bound=upper_bound,
                             member_group_ids=tuple(item[0] for item in coefficients),
                             member_group_coefficients=coefficients,
@@ -1254,6 +1314,7 @@ class TypedInterfaceCompiler:
                             constraint_id=f"{agent_id}:export_phase_{phase}_headroom_kw",
                             owner_agent_id=agent_id,
                             constraint_type="export_phase_headroom_kw",
+                            nameplate_kw=interface.constraints.get("phase_export", {}).get("max", {}).get(phase),
                             upper_bound=upper_bound,
                             member_group_ids=tuple(item[0] for item in coefficients),
                             member_group_coefficients=coefficients,
@@ -1327,6 +1388,7 @@ class TypedInterfaceCompiler:
         parts: Sequence[ObservationPart],
         agent_id: str,
         groups: Sequence[ActionGroupInstance],
+        background_weights: Optional[Mapping[str, float]] = None,
     ) -> Mapping[str, Mapping[str, float]]:
         result: Dict[str, Mapping[str, float]] = {}
         known_phases = {
@@ -1356,6 +1418,12 @@ class TypedInterfaceCompiler:
                 and np.isfinite(float(part.values[0]))
                 and float(part.values[0]) > 0.5
             }
+            if not phases and group.phase_weights:
+                result[group.group_id] = dict(group.phase_weights)
+                continue
+            if not phases and group.group_type == "deferrable" and background_weights:
+                result[group.group_id] = dict(background_weights)
+                continue
             if not phases and group.group_type == "deferrable":
                 # Deferrables have no physical phase-connection feature in
                 # the public contract.  The Simulator's default service

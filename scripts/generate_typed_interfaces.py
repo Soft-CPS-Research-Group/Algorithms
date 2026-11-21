@@ -8,11 +8,11 @@ outside the generated YAMLs.
 from __future__ import annotations
 
 import argparse
-from copy import deepcopy
 import csv
 import json
-from pathlib import Path
 import sys
+from copy import deepcopy
+from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 import numpy as np
@@ -22,16 +22,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from algorithms.runtime.simulator import _resolve_citylearn_schema_input
 from algorithms.ti_marl.contracts.interface_definition import TypedAgentInterface
 from algorithms.ti_marl.contracts.profile_registry import (
-    CapabilityProfileRegistry,
     SENSOR_ENTITY_TYPES,
+    CapabilityProfileRegistry,
     channel_for,
 )
-from algorithms.runtime.simulator import _resolve_citylearn_schema_input
 from scripts.dump_entity_obs_sample import _build_env
 from utils.config_schema import validate_config
-
 
 SENSOR_TYPES = {
     "building": "building_meter",
@@ -173,7 +172,6 @@ def _actuator(
 ) -> Mapping[str, Any]:
     if actuator_type in {"bidirectional_ev_charger", "ev_charger"}:
         entity_type = "charger"
-        bound_features = specs["tables"][entity_type].get("features", [])
         charge_min = max(float(charge_min_kw), 0.0)
         charge_max = max(float(charge_max_kw), 0.0)
         discharge_min = max(float(discharge_min_kw), 0.0)
@@ -327,6 +325,96 @@ def _schema_asset_limits(
     return 0.0, 0.0, 0.0, 0.0
 
 
+def _reservation_profile(schema, site, kind):
+    """Describe a constant-efficiency profile from declared equipment only.
+
+    The charger view identifies an EV's capacity and SoC but omits its rating.
+    A lower bound valid for every eligible battery is operationally available
+    without consulting the future vehicle roster of any charging session.
+    """
+    if not schema or kind not in {"storage", "charger"}:
+        return {}
+    if kind == "storage":
+        config = schema.get("buildings", {}).get(site, {}).get("electrical_storage", {})
+        batteries = [config.get("attributes", {})]
+    else:
+        fleet = schema.get("electric_vehicles_def", {})
+        batteries = [
+            ev.get("battery", {}).get("attributes", {})
+            for ev in fleet.values()
+            if ev.get("include", True)
+        ]
+    if not batteries:
+        return {}
+    fields = ("efficiency", "loss_coefficient", "capacity_power_curve", "power_efficiency_curve")
+    if any(
+        any(k not in battery for k in fields) or battery.get("capacity_loss_coefficient") != 0
+        for battery in batteries
+    ):
+        return {}
+    first = batteries[0]
+    if any(any(battery[k] != first[k] for k in fields) for battery in batteries):
+        return {}
+    efficiency = float(first["efficiency"])
+    if any(float(y) != efficiency for _, y in first["power_efficiency_curve"]):
+        return {}
+    profile = {"battery_efficiency": efficiency, "hourly_loss": float(first["loss_coefficient"])}
+    curve = first["capacity_power_curve"]
+    if kind == "storage":
+        return profile if all(float(y) == 1.0 for _, y in curve) else {}
+    if (
+        len(curve) != 3
+        or curve[0] != [0, 1]
+        or curve[1][1] != 1
+        or curve[2][0] != 1
+        or not 0 < curve[1][0] < 1
+        or not 0 <= curve[2][1] <= 1
+        or any(float(b.get("nominal_power", 0)) <= 0 for b in batteries)
+    ):
+        return {}
+    profile.update(
+        ev_battery_rating_kw=min(float(b["nominal_power"]) for b in batteries),
+        ev_taper_start_soc=float(curve[1][0]),
+        ev_taper_at_full=float(curve[2][1]),
+    )
+    return profile
+
+
+def _phase_routing(schema, site, kind="background", entity_id=""):
+    """Physical routing used by SoftCPS building_ops for base and equipment."""
+    building = (schema or {}).get("buildings", {}).get(site, {})
+    service = building.get("electrical_service", {})
+    if not service.get("mode"):
+        return {}
+    if service["mode"] == "single_phase":
+        return {"L1": 1.0}
+    if service["mode"] != "three_phase":
+        return {}
+    phases = ("L1", "L2", "L3")
+    if kind in {"background", "deferrable_appliance"}:
+        connection = service.get("default_split", "balanced")
+    elif kind == "storage":
+        connection = (
+            building.get("electrical_storage", {}).get("attributes", {}).get("phase_connection")
+        )
+    elif kind == "charger":
+        cid = entity_id.split("/", 1)[-1]
+        connection = (
+            building.get("chargers", {}).get(cid, {}).get("attributes", {}).get("phase_connection")
+        )
+    else:
+        return {}
+    # On a three-phase service, the simulator resolves an unassigned charger
+    # or storage to all_phases, even when unassigned background runs on L2.
+    label = str(connection or "all_phases").lower().replace("-", "_")
+    if label in {"balanced", "all_phases", "three_phase"}:
+        return dict.fromkeys(phases, 1.0 / 3)
+    label = {"phase_1": "l1", "phase_2": "l2", "phase_3": "l3"}.get(label, label).upper()
+    if label not in phases:
+        raise ValueError(f"Unknown {kind} phase connection {connection!r} at {site}")
+    return {phase: float(phase == label) for phase in phases}
+
+
 def _building_constraints(
     schema: Mapping[str, Any] | None,
     agent_id: str,
@@ -344,6 +432,9 @@ def _building_constraints(
         result["grid_import"] = {"unit": "kW", "max": float(total["import_kw"])}
     if total.get("export_kw") is not None:
         result["grid_export"] = {"unit": "kW", "max": float(total["export_kw"])}
+    background = _phase_routing(schema, agent_id)
+    if background:
+        result["background_phase_weights"] = background
     for direction in ("import", "export"):
         values = {
             str(phase): float(dict(config or {}).get(f"{direction}_kw"))
@@ -449,6 +540,12 @@ def generate(
                         discharge_min_kw=schema_discharge_min,
                         discharge_max_kw=schema_discharge_max or runtime_discharge,
                     )
+                    topology = _phase_routing(schema, agent_id, entity_type, entity_id)
+                    if topology:
+                        actuators[sensor_id]["phase_weights"] = topology
+                    physical = _reservation_profile(schema, agent_id, entity_type)
+                    if physical:
+                        actuators[sensor_id]["reservation_profile"] = physical
         interface = {
             "version": "typed_agent_interface_v1",
             "contract": "ti_marl_v1",

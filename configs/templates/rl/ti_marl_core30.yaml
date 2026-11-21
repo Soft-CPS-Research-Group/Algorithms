@@ -1,0 +1,54 @@
+schema_version: algorithms.config.v1
+metadata:
+  experiment_name: TI-MARL Core-30
+  run_name: V2 short training
+tracking:
+  mlflow_enabled: false
+  system_metrics_enabled: false
+simulator:
+  dataset_name: rec_pt_2023_core_30_v2
+  dataset_path: datasets/rec_pt_2023_core_30_v2/evaluation/preparation_2023/core_30_normal.json
+  interface: entity
+  central_agent: false
+  topology_mode: static
+  entity_encoding:
+    enabled: false
+  reward_function: IndividualScorecardAlignedRewardV3
+  simulation_start_time_step: 836
+  simulation_end_time_step: 852
+  episode_time_steps: 17
+  repeat_episode_scenario: true
+  export:
+    profile: final
+    mode: end
+    include_business_as_usual: false
+training:
+  episodes: 1
+  seed: 42
+  determinism: strict
+  steps_between_training_updates: 1
+pipeline:
+  - algorithm: TIMARL
+    count: 1
+    hyperparameters:
+      method_variant: v2
+      typed_interfaces_dir: runs/ti-marl-inputs/interfaces
+      simulator_bindings_path: runs/ti-marl-inputs/interfaces/technology_bindings/simulator.yaml
+      issued_forecasts_path: runs/ti-marl-inputs/forecasts.jsonl
+      operating_reward: thesis_common_reward_v1
+      reference_sites: 30
+      backbone: {name: mappo}
+      critic: {kind: set}
+      actor: {d_model: 32, attention_heads: 4, relation_layers: 2, group_context_kind: action_conditioned}
+      rollout_steps: 4
+      ppo_epochs: 1
+      gamma: 0.99
+      discount_timebase_seconds: 3600
+evaluation:
+  episodes: 1
+job:
+  profile: train
+outputs:
+  model_artifacts: both
+bundle:
+  require_deployable: false
