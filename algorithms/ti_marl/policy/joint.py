@@ -240,8 +240,11 @@ class JointActor(TypedActor):
             idx = torch.tensor(c.allowed.index(c.mode), device=ref.device)
             return dist.log_prob(idx), dist.entropy()
         log_width_kw = log((c.upper - c.lower) * c.scale_kw)
+        # EV power heads can sample in float64 while the actor context is float32.
+        # Rounding an interior draw to 1 changes its density and breaks PPO replay.
+        sample = dist.concentration1.new_tensor(c.unit_sample)
         return (
-            dist.log_prob(ref.new_tensor(c.unit_sample)) - log_width_kw,
+            dist.log_prob(sample) - log_width_kw,
             dist.entropy() + log_width_kw,
         )
 

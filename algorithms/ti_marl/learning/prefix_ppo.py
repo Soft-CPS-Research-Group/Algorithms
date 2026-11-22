@@ -117,7 +117,9 @@ class PrefixPPO:
                         loss = torch.stack(terms).sum() / site_count
                         loss.backward()
                         value_loss += float(loss.detach())
-                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    self.critic.parameters(), self.max_grad_norm, error_if_nonfinite=True
+                )
                 self.critic_optimizer.step()
 
             with torch.no_grad():
@@ -152,7 +154,9 @@ class PrefixPPO:
                         policy_loss += float(loss.detach())
                         sampled += len(terms)
                 if sampled:
-                    torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.actor.parameters(), self.max_grad_norm, error_if_nonfinite=True
+                    )
                     self.actor_optimizer.step()
                 if progress_callback:
                     progress_callback({"phase": "prefix_ppo", "epoch": epoch + 1})

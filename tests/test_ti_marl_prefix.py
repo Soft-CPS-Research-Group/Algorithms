@@ -211,3 +211,24 @@ def test_physical_density_scales_with_the_port_rating():
     after, wider_entropy = JointActor._score(beta, replace(choice, scale_kw=4.0), torch.zeros(()))
     assert (after - before).item() == pytest.approx(-log(2))
     assert (wider_entropy - entropy).item() == pytest.approx(log(2))
+
+
+def test_ppo_preserves_an_interior_double_precision_ev_power_sample():
+    from math import log
+
+    from algorithms.ti_marl.policy.joint import Choice, JointActor
+
+    parameters = torch.tensor([1.5e6, 1.1], dtype=torch.float64, requires_grad=True)
+    beta = torch.distributions.Beta(*parameters.unbind())
+    sample = 1.0 - 1e-8
+    context = torch.zeros(128, dtype=torch.float32)
+    assert context.new_tensor(sample).item() == 1.0
+    choice = Choice("ev", "ev_session", "power", 1, upper=1.0, scale_kw=11.0, unit_sample=sample)
+    old, _ = JointActor._score(beta, choice, context)
+    replay, entropy = JointActor._score(beta, replace(choice, old_log_prob=old.item()), context)
+    expected = beta.log_prob(parameters.new_tensor(sample)) - log(choice.scale_kw)
+    torch.testing.assert_close(old, expected)
+    ratio = (replay - old.detach()).exp()
+    assert ratio.item() == pytest.approx(1.0)
+    (ratio + 0.01 * entropy).backward()
+    assert torch.isfinite(parameters.grad).all()
