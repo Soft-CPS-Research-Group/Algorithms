@@ -77,14 +77,6 @@ class EVActor(JointActor):
         self.ev_gate = scalar_head(FEATURES, self.d_model)
         self.ev_watts = scalar_head(FEATURES + 2, self.d_model)
 
-    @staticmethod
-    def _score(dist, c, ref):
-        if isinstance(dist, Beta):
-            unit_to_kw = np.log((c.upper - c.lower) * c.scale_kw)
-            log_prob = dist.log_prob(dist.concentration1.new_tensor(c.unit_sample))
-            return log_prob - unit_to_kw, dist.entropy() + unit_to_kw
-        return JointActor._score(dist, c, ref)
-
     def _contexts(self, snapshot):
         if self.step_seconds != 900.0:
             raise ValueError("The EV research adapter requires quarter-hour decisions")
