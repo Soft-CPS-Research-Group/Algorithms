@@ -473,14 +473,15 @@ class PrefixCritic(nn.Module):
             )
             state = self.memory.start([context[key] for key in trace.order], queries[i])
             states = [self.memory.read(state, queries[i])]
+            prefix_indices = [0]
             for choice in trace.choices:
-                state = self.memory.extend(state, context[choice.group_id], choice)
-                states.append(
-                    states[-1]
-                    if choice.stage == "inapplicable"
-                    else self.memory.read(state, queries[i])
-                )
-            values[site] = self.value_head(torch.stack(states)).squeeze(-1)
+                if choice.stage != "inapplicable":
+                    state = self.memory.extend(state, context[choice.group_id], choice)
+                    states.append(self.memory.read(state, queries[i]))
+                # An inapplicable stage must receive exactly zero prefix credit.
+                prefix_indices.append(len(states) - 1)
+            prefix_values = self.value_head(torch.stack(states)).squeeze(-1)
+            values[site] = prefix_values[prefix_indices]
         return values
 
     def forward(self, snapshot):
