@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import math
-import threading
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
@@ -32,6 +31,8 @@ from scipy.optimize import Bounds, LinearConstraint, OptimizeResult
 from scipy.optimize._milp import _milp_iv
 from scipy.sparse import coo_array, csc_array
 
+from algorithms.utils.highs_scheduler import highs_scheduler
+
 try:
     import highspy as _highs_core
 except ImportError:  # Replay/configuration imports do not require a solver installation.
@@ -39,8 +40,6 @@ except ImportError:  # Replay/configuration imports do not require a solver inst
 
 
 _NUMERICAL_TOLERANCE = 1.0e-8
-_HIGHS_LOCK = threading.RLock()
-_HIGHS_THREAD_COUNT: Optional[int] = None
 
 
 def _finite_non_negative(name: str, value: float) -> float:
@@ -592,12 +591,7 @@ def _milp_primal_only(
     Independent jobs/processes remain parallel; native calls in one process
     share this lock so a pool cannot be reset while another call is using it.
     """
-    global _HIGHS_THREAD_COUNT
-    with _HIGHS_LOCK:
-        requested = int(options.get("threads", 0))
-        if _highs_core is not None and requested != _HIGHS_THREAD_COUNT:
-            _highs_core.Highs.resetGlobalScheduler(True)
-            _HIGHS_THREAD_COUNT = requested
+    with highs_scheduler(_highs_core, int(options.get("threads", 0))):
         return _milp_primal_only_impl(
             c=c, integrality=integrality, bounds=bounds, constraints=constraints,
             options=options, x0=x0,

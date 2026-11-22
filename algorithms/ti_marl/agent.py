@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import random
+import time
 from collections import Counter
 from copy import deepcopy
 from dataclasses import asdict
-import os
 from pathlib import Path
-import random
-import time
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import numpy as np
@@ -20,13 +20,14 @@ from algorithms.agents.maddpg_agent import _select_torch_device
 from algorithms.ti_marl.compiler.compiler import TypedInterfaceCompiler
 from algorithms.ti_marl.contracts.compatibility import CompatibilitySignature
 from algorithms.ti_marl.contracts.models import TypedTransition, canonical_value
-from algorithms.ti_marl.learning.mappo import TIMAPPO
 from algorithms.ti_marl.learning.behavior_cloning import (
     TypedBehaviorCloningWarmStart,
 )
 from algorithms.ti_marl.learning.ev_planning import CausalEVPlanner
-from algorithms.ti_marl.learning.storage_planning import CausalStoragePlanner
+from algorithms.ti_marl.learning.mappo import TIMAPPO
 from algorithms.ti_marl.learning.rollout import RolloutStep
+from algorithms.ti_marl.learning.storage_planning import CausalStoragePlanner
+from algorithms.ti_marl.operational import OperatingControl
 from algorithms.ti_marl.policy.networks import (
     CentralSetCritic,
     LocalTypedCritic,
@@ -40,7 +41,7 @@ from algorithms.ti_marl.runtime.feasibility import AnalyticLocalProjector
 from algorithms.ti_marl.runtime.traces import BufferedTraceWriter
 
 
-class TIMARL(BaseAgent):
+class TypedController(BaseAgent):
     """Typed-interface control with PPO or MAPPO learning backbones."""
 
     supports_dynamic_topology = True
@@ -122,11 +123,23 @@ class TIMARL(BaseAgent):
         self.allow_checkpoint_compiler_migration = bool(
             hyper.get("allow_checkpoint_compiler_migration", False)
         )
+        self.method_variant = str(hyper.get("method_variant", "legacy"))
+        if self.method_variant not in {"legacy", "v0", "v1", "v1c", "v2"}:
+            raise ValueError(f"Unknown TI-MARL method variant {self.method_variant!r}")
+        self.thesis_method = self.method_variant != "legacy"
+        if self.thesis_method:
+            from algorithms.ti_marl.learning.prefix_ppo import PrefixPPO
+            from algorithms.ti_marl.policy.joint import JointActor, PrefixCritic
+
+            if (hyper.get("behavior_cloning") or {}).get("enabled", False):
+                raise ValueError("TI-MARL thesis variants require on-policy collection")
+            if hyper.get("policy_anchor_reset_on_resume", False):
+                raise ValueError("TI-MARL thesis variants do not use a policy anchor")
         actor_cfg = dict(hyper.get("actor", {}))
         d_model = int(actor_cfg.get("d_model", 128))
         relation_layers = int(actor_cfg.get("relation_layers", 2))
-        self.actor_group_context_kind = str(
-            actor_cfg.get("group_context_kind", "local")
+        self.actor_group_context_kind = (
+            "action_conditioned" if self.thesis_method else str(actor_cfg.get("group_context_kind", "local"))
         )
         self.policy_credit_assignment = str(
             hyper.get("policy_credit_assignment", "joint_agent")
@@ -134,10 +147,19 @@ class TIMARL(BaseAgent):
         self.policy_anchor_reset_on_resume = bool(
             hyper.get("policy_anchor_reset_on_resume", False)
         )
-        self.actor = TypedActor(
+        actor_class = JointActor if self.thesis_method else TypedActor
+        self.actor_readout = actor_cfg.get("readout", "standard")
+        if self.actor_readout in {"household", "household_start"}:
+            from algorithms.ti_marl.policy.household import HouseholdActor
+
+            if self.method_variant != "v2":
+                raise ValueError("The household readout requires TI-MARL V2")
+            actor_class = HouseholdActor
+        self.actor = actor_class(
             self.compiler.type_registry,
             d_model=d_model,
             attention_heads=int(actor_cfg.get("attention_heads", 4)),
+            **({"variant": self.method_variant} if self.thesis_method else {}),
             relation_layers=relation_layers,
             group_context_kind=self.actor_group_context_kind,
             deterministic_mode_strategy=str(
@@ -162,13 +184,28 @@ class TIMARL(BaseAgent):
                 )
             ),
         ).to(self.device)
+        if self.actor_readout in {"household", "household_start"}:
+            self.actor.use_partial_ev_outlook = hyper.get("use_partial_ev_outlook", False)
+        if self.actor_readout == "household_start":
+            self.actor.observe_programme_start_solar = True
         critic_class = (
             CentralSetCritic if self.critic_kind == "set" else LocalTypedCritic
         )
+        if self.thesis_method:
+            self.actor.reserve_programmes_in_certified_window = hyper.get(
+                "reserve_programmes_in_certified_window", False
+            )
+            self.actor.tolerance_soc = float(feasibility_cfg.get("ev_service_tolerance_ratio", 0.05))
+            self.actor.departure_margin_seconds = float(hyper.get("departure_margin_seconds", 0.0))
+            critic_class = PrefixCritic
+            self.policy_credit_assignment = {
+                "v0": "site_return", "v1": "site_return", "v1c": "site_critic", "v2": "prefix"
+            }[self.method_variant]
         self.critic = critic_class(
             self.compiler.type_registry,
             d_model=d_model,
             relation_layers=relation_layers,
+            **({"centralised": self.critic_kind == "set"} if self.thesis_method else {}),
         ).to(self.device)
         self.group_critic = (
             TypedGroupCritic(
@@ -318,7 +355,7 @@ class TIMARL(BaseAgent):
             if storage_planning_auxiliary_coeff > 0.0
             else None
         )
-        self.learner = TIMAPPO(
+        self.learner = PrefixPPO(self.actor, self.critic, hyper) if self.thesis_method else TIMAPPO(
             self.actor,
             self.critic,
             group_critic=self.group_critic,
@@ -746,15 +783,18 @@ class TIMARL(BaseAgent):
                 self._current_snapshot,
                 deterministic=bool(deterministic),
             )
-            values = self.critic(self._current_snapshot)
+            values = {} if self.thesis_method else self.critic(self._current_snapshot)
             group_values = (
                 {}
                 if self.group_critic is None
                 else self.group_critic(self._current_snapshot)
             )
         raw_bundles = evaluation.bundles
-        final_bundles = self.projector.project(self._current_snapshot, raw_bundles)
-        self.projector.assert_feasible(self._current_snapshot, final_bundles)
+        if self.thesis_method:
+            final_bundles = evaluation.executed
+        else:
+            final_bundles = self.projector.project(self._current_snapshot, raw_bundles)
+            self.projector.assert_feasible(self._current_snapshot, final_bundles)
         typed_commands = self.command_builder.build(
             self._current_snapshot,
             final_bundles,
@@ -825,7 +865,7 @@ class TIMARL(BaseAgent):
             "final_bundles": final_bundles,
             "commands": commands,
             "typed_commands": typed_commands,
-            "old_log_probs": {
+            "old_log_probs": {} if self.thesis_method else {
                 key: float(value.detach().cpu()) for key, value in evaluation.log_prob_by_agent.items()
             },
             "values": {key: float(value.detach().cpu()) for key, value in values.items()},
@@ -837,6 +877,12 @@ class TIMARL(BaseAgent):
                 for agent_id, values_by_group in group_values.items()
             },
         }
+        if self.thesis_method:
+            self._pending["prefix_traces"] = evaluation.traces
+            self._pending["reservations"] = evaluation.diagnostics
+            self._latest_diagnostics["TI_MARL/supervised_site_decisions"] = sum(
+                trace.supervised for trace in evaluation.traces.values()
+            )
         return commands
 
     def _action_mode_diagnostics(
@@ -998,7 +1044,7 @@ class TIMARL(BaseAgent):
                     f"projector_{label}_takeover"
                 ] += 1
 
-        planner = self.learner.ev_planner
+        planner = getattr(self.learner, "ev_planner", None)
         if planner is not None:
             for target in planner.targets(
                 snapshot,
@@ -1123,41 +1169,55 @@ class TIMARL(BaseAgent):
             agent_id: float(rewards[index]) if index < len(rewards) else 0.0
             for index, agent_id in enumerate(current.agent_ids)
         }
-        with torch.no_grad():
-            next_values = {
-                key: float(value.detach().cpu()) for key, value in self.critic(following).items()
-            }
-            next_group_values = (
-                {}
-                if self.group_critic is None
-                else {
-                    agent_id: {
-                        group_id: float(value.detach().cpu())
-                        for group_id, value in values_by_group.items()
-                    }
-                    for agent_id, values_by_group in self.group_critic(
-                        following
-                    ).items()
-                }
-            )
         removed = set(current.agent_ids) - set(following.agent_ids)
         if terminated:
             removed.update(current.agent_ids)
-        step = RolloutStep(
-            snapshot=current,
-            next_snapshot=following,
-            bundles=tuple(self._pending["raw_bundles"]),
-            old_log_probs=dict(self._pending["old_log_probs"]),
-            values=dict(self._pending["values"]),
-            next_values=next_values,
-            rewards=reward_by_agent,
-            terminated_agent_ids=tuple(sorted(removed)),
-            truncated=bool(truncated),
-            reward_components_by_agent=self._reward_components_by_agent(current),
-            group_values=dict(self._pending.get("group_values", {})),
-            next_group_values=next_group_values,
-            final_bundles=tuple(self._pending["final_bundles"]),
-        )
+        if self.thesis_method:
+            from algorithms.ti_marl.learning.prefix_ppo import PrefixStep
+
+            community, adjustments = self._thesis_rewards(current, rewards)
+            with torch.no_grad():
+                next_values = {
+                    key: float(value) for key, value in self.critic(following).items()
+                }
+            step = PrefixStep(
+                current, self._pending["prefix_traces"], community, adjustments,
+                next_values, bool(terminated), bool(truncated),
+                self.actor.step_seconds,
+            )
+        else:
+            with torch.no_grad():
+                next_values = {
+                    key: float(value.detach().cpu()) for key, value in self.critic(following).items()
+                }
+                next_group_values = (
+                    {}
+                    if self.group_critic is None
+                    else {
+                        agent_id: {
+                            group_id: float(value.detach().cpu())
+                            for group_id, value in values_by_group.items()
+                        }
+                        for agent_id, values_by_group in self.group_critic(
+                            following
+                        ).items()
+                    }
+                )
+            step = RolloutStep(
+                snapshot=current,
+                next_snapshot=following,
+                bundles=tuple(self._pending["raw_bundles"]),
+                old_log_probs=dict(self._pending["old_log_probs"]),
+                values=dict(self._pending["values"]),
+                next_values=next_values,
+                rewards=reward_by_agent,
+                terminated_agent_ids=tuple(sorted(removed)),
+                truncated=bool(truncated),
+                reward_components_by_agent=self._reward_components_by_agent(current),
+                group_values=dict(self._pending.get("group_values", {})),
+                next_group_values=next_group_values,
+                final_bundles=tuple(self._pending["final_bundles"]),
+            )
         self.learner.rollout.add(step)
         if update_step and self.learner.ready():
             self.actor.train()
@@ -1177,6 +1237,24 @@ class TIMARL(BaseAgent):
             reward_by_agent=reward_by_agent,
             removed=removed,
         )
+
+    def _thesis_rewards(self, current, rewards):
+        """Environment convention: mean of the per-member community reward signal."""
+        community_reward = float(np.mean(rewards)) if len(rewards) else 0.0
+        return community_reward, {}
+
+    def _extra_policy_state(self):
+        return {}
+
+    def _extra_model_state(self):
+        return self._extra_deployment_state()
+
+    def _extra_deployment_state(self):
+        return {}
+
+    def _restore_extra_policy_state(self, state):
+        if state:
+            raise ValueError("Unexpected coordinator state for a standalone TI-MARL policy")
 
     def observe_transition(
         self,
@@ -1242,7 +1320,13 @@ class TIMARL(BaseAgent):
                 canonical_value(item) for item in self._pending["typed_commands"]
             ),
         )
-        self.trace_writer.record(current, following, typed_transition)
+        if self.thesis_method:
+            self.trace_writer.record(current, following, typed_transition, construction={
+                "prefixes": self._pending["prefix_traces"],
+                "reservations": self._pending["reservations"],
+            })
+        else:
+            self.trace_writer.record(current, following, typed_transition)
         execution = self._transition_info.get("entity_action_execution", {})
         execution_entries = execution.get("entries", []) if isinstance(execution, Mapping) else []
         requested_applied_errors = [
@@ -1305,6 +1389,10 @@ class TIMARL(BaseAgent):
     def on_episode_start(self, *, episode: int, training: bool) -> None:
         self._current_episode = int(episode)
         self._current_episode_is_training = bool(training)
+        if self.thesis_method:
+            # Same recorded permutation in collection and bootstrap; zero in evaluation.
+            self.actor.order_seed = self.seed + int(episode) + 1 if training else 0
+            self.critic.order_seed = self.actor.order_seed
         self.compiler.reset_runtime_state()
         self._current_snapshot = None
         self._next_snapshot = None
@@ -1336,6 +1424,8 @@ class TIMARL(BaseAgent):
                 "critic": self.critic_kind,
                 "actor_group_context": self.actor_group_context_kind,
                 "policy_credit_assignment": self.policy_credit_assignment,
+                **({"method_variant": self.method_variant} if self.thesis_method else {}),
+                **({"actor_readout": self.actor_readout} if self.actor_readout != "standard" else {}),
             },
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
@@ -1345,6 +1435,7 @@ class TIMARL(BaseAgent):
                 else self.group_critic.state_dict()
             ),
             "learner": self.learner.state_dict(),
+            **({"extra_policy_state": self._extra_policy_state()} if self.thesis_method else {}),
             "compiler_state": self.compiler.checkpoint_state(),
             "compatibility_signature": asdict(self.compiler.compatibility_signature),
             "configuration": deepcopy(self.config),
@@ -1402,6 +1493,8 @@ class TIMARL(BaseAgent):
             "critic": self.critic_kind,
             "actor_group_context": self.actor_group_context_kind,
             "policy_credit_assignment": self.policy_credit_assignment,
+            **({"method_variant": self.method_variant} if self.thesis_method else {}),
+            **({"actor_readout": self.actor_readout} if self.actor_readout != "standard" else {}),
         }
         architecture.setdefault("actor_group_context", "local")
         architecture.setdefault("policy_credit_assignment", "joint_agent")
@@ -1425,6 +1518,7 @@ class TIMARL(BaseAgent):
         )
         if not compatible and not compiler_migration:
             raise ValueError("TIMARL checkpoint compatibility signature is not accepted")
+        self._restore_extra_policy_state(payload.get("extra_policy_state", {}))
         self.actor.load_state_dict(payload["actor"])
         self.critic.load_state_dict(payload["critic"])
         if self.group_critic is not None:
@@ -1475,10 +1569,13 @@ class TIMARL(BaseAgent):
             {
                 "format": "ti_marl_torch",
                 "deployable": False,
+                **({"extra_policy_state": self._extra_model_state()} if self.thesis_method else {}),
                 "learning_architecture": {
                     "backbone": self.backbone_name,
                     "critic": self.critic_kind,
                     "policy_credit_assignment": self.policy_credit_assignment,
+                    **({"method_variant": self.method_variant} if self.thesis_method else {}),
+                    **({"actor_readout": self.actor_readout} if self.actor_readout != "standard" else {}),
                 },
                 "actor": self.actor.state_dict(),
                 "critic": self.critic.state_dict(),
@@ -1497,10 +1594,14 @@ class TIMARL(BaseAgent):
         torch.save(
             {
                 "format": "ti_marl_deployment_bundle_v1",
+                **({"extra_policy_state": self._extra_deployment_state(),
+                    "hyperparameters": deepcopy(self.config["algorithm"]["hyperparameters"])} if self.thesis_method else {}),
                 "actor": self.actor.state_dict(),
                 "training_backbone": self.backbone_name,
                 "actor_group_context": self.actor_group_context_kind,
                 "policy_credit_assignment": self.policy_credit_assignment,
+                **({"method_variant": self.method_variant} if self.thesis_method else {}),
+                **({"actor_readout": self.actor_readout} if self.actor_readout != "standard" else {}),
                 "behavior_cloning_warm_start": self.behavior_cloning is not None,
                 "typed_interfaces": self.compiler.resolved_typed_interface(),
                 "compiler": {
@@ -1508,7 +1609,10 @@ class TIMARL(BaseAgent):
                     "contract_version": self.compiler.contract_version,
                     "health_rules": deepcopy(self.compiler.health_rules),
                 },
-                "feasibility": dict(self.projector.configuration()),
+                "feasibility": (
+                    {"kind": "site_reservation", "variant": self.method_variant}
+                    if self.thesis_method else dict(self.projector.configuration())
+                ),
                 "normalisation": {"kind": "per_observation_declared"},
                 "compatibility_signature": asdict(self.compiler.compatibility_signature),
                 "versions": self._versions(),
@@ -1538,6 +1642,8 @@ class TIMARL(BaseAgent):
                 "backbone": self.backbone_name,
                 "critic": self.critic_kind,
                 "policy_credit_assignment": self.policy_credit_assignment,
+                **({"method_variant": self.method_variant} if self.thesis_method else {}),
+                **({"actor_readout": self.actor_readout} if self.actor_readout != "standard" else {}),
             },
             "compatibility_signature": asdict(self.compiler.compatibility_signature),
             "trace": dict(self.trace_writer.manifest()),
@@ -1584,3 +1690,7 @@ class TIMARL(BaseAgent):
             "algorithms": os.environ.get("ALGORITHMS_VERSION", "working-tree"),
             "simulator": simulator_version,
         }
+
+
+class TIMARL(OperatingControl, TypedController):
+    """Public controller for legacy and thesis recipes, including the V3 hierarchy."""

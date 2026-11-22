@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Annotated, Any, Dict, List, Optional, Union
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Literal
@@ -870,6 +870,7 @@ class TIMARLBackboneConfig(BaseModel):
 
 
 class TIMARLActorConfig(BaseModel):
+    readout: Literal["standard", "household", "household_start"] = "standard"
     d_model: int = Field(default=128, ge=16)
     attention_heads: int = Field(default=4, ge=1)
     relation_layers: int = Field(default=2, ge=1)
@@ -1212,10 +1213,50 @@ class TIMARLStoragePlanningConfig(BaseModel):
         return self
 
 
+CostPerKWh = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+
+
+class TIMARLRewardPenalties(BaseModel):
+    """Configurable EUR per kWh in the provisional chapter 7 operating objective."""
+
+    proposal_exceedance_kwh: CostPerKWh = 60.0
+    ev_deficit_kwh: CostPerKWh = 120.0
+    programme_deficit_kwh: CostPerKWh = 120.0
+    fixed_deficit_kwh: CostPerKWh = 120.0
+    ev_tolerance_kwh: CostPerKWh = 1.0
+    ev_excess_kwh: CostPerKWh = 0.0
+    stationary_terminal_deficit_kwh: CostPerKWh = 0.0
+    stationary_throughput_kwh: CostPerKWh = 0.01
+
+
+class TIMARLHierarchyConfig(BaseModel):
+    """Common community adjustment curve; local tariff settlement is unchanged."""
+
+    signal: Literal["neutral", "rule", "learned"] = "neutral"
+    training_phase: Literal["local", "coordinator"] = "local"
+    max_adjustment_eur_kwh: float = Field(default=0.05, gt=0, allow_inf_nan=False)
+    peak_weight_per_kw: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    learning_rate: float = Field(default=3.0e-4, gt=0, allow_inf_nan=False)
+    curve_knots: int = Field(default=8, ge=2, le=96)
+
+
 class TIMARLHyperparameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     contract_version: Literal["ti_marl_v1"] = "ti_marl_v1"
+    method_variant: Literal["legacy", "v0", "v1", "v1c", "v2"] = "legacy"
+    hierarchy: Optional[TIMARLHierarchyConfig] = None
+    operating_reward: Literal["environment", "thesis_common_reward_v1", "settlement_smoke"] = (
+        "environment"
+    )
+    reward_penalties: TIMARLRewardPenalties = Field(default_factory=TIMARLRewardPenalties)
+    reference_sites: int = Field(default=30, ge=1)
+    departure_margin_seconds: float = Field(default=0.0, ge=0, le=86400, allow_inf_nan=False)
+    use_partial_ev_outlook: bool = False
+    reserve_programmes_in_certified_window: bool = False
+    issued_forecasts_path: Optional[str] = Field(default=None, min_length=1)
+    # Training-calibrated bound on error in forecast non-controllable net load.
+    reservation_error_kw: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     typed_interfaces_dir: str = Field(min_length=1)
     interface_polling: bool = False
     simulator_bindings_path: Optional[str] = Field(default=None, min_length=1)
@@ -1258,6 +1299,21 @@ class TIMARLHyperparameters(BaseModel):
 
     @model_validator(mode="after")
     def validate_learning_architecture(self) -> "TIMARLHyperparameters":
+        if self.actor.readout in {"household", "household_start"} and self.method_variant != "v2":
+            raise ValueError("The household readout requires TI-MARL V2")
+        if self.method_variant != "legacy" and "operating_reward" not in self.model_fields_set:
+            self.operating_reward = "thesis_common_reward_v1"
+        if self.hierarchy is not None and self.method_variant != "v2":
+            raise ValueError("TI-MARL V3 requires method_variant=v2")
+        if self.hierarchy is not None and self.operating_reward == "environment":
+            raise ValueError(
+                "Community incentives require a named operating reward in EUR per reference member"
+            )
+        if self.method_variant != "legacy":
+            if self.behavior_cloning and self.behavior_cloning.enabled:
+                raise ValueError("The thesis variants train on their constructed actions")
+            if self.ev_planning.auxiliary_coeff or self.storage_planning.auxiliary_coeff:
+                raise ValueError("The thesis variants use their service reservation and policy")
         expected = {"ppo": "local", "mappo": "set"}[self.backbone.name]
         if self.critic.kind != expected:
             raise ValueError(

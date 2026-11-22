@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, is_dataclass
-from enum import Enum
-from functools import cached_property
 import hashlib
 import json
+from dataclasses import asdict, dataclass, is_dataclass
+from enum import Enum
+from functools import cached_property
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from algorithms.ti_marl.contracts.enums import (
@@ -207,6 +207,9 @@ class ActionGroupInstance:
     forced_fraction: Optional[float] = None
     fallback_reason: Optional[str] = None
     adapter_target_entity_id: Optional[str] = None
+    reservation_profile: Tuple[Tuple[str, float], ...] = ()
+    phase_weights: Tuple[Tuple[str, float], ...] = ()
+    output_unconfirmed: bool = False
 
 
 @dataclass(frozen=True)
@@ -247,6 +250,7 @@ class LocalConstraint:
     member_group_ids: Tuple[str, ...] = ()
     member_group_coefficients: Tuple[Tuple[str, float], ...] = ()
     active: bool = True
+    nameplate_kw: Optional[float] = None
 
 
 @dataclass(frozen=True)

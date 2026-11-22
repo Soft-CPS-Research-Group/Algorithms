@@ -2,22 +2,22 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass
 import hashlib
 import json
+import math
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import yaml
 
 from algorithms.ti_marl.contracts.profile_registry import (
-    CapabilityProfileRegistry,
     SUPPORTED_AGENT_TYPES,
     SUPPORTED_ROLES,
     SUPPORTED_UNITS,
+    CapabilityProfileRegistry,
 )
-
 
 TYPED_AGENT_INTERFACE_VERSION = "typed_agent_interface_v1"
 CONTRACT_VERSION = "ti_marl_v1"
@@ -37,6 +37,20 @@ def _mapping(value: Any, path: str, *, optional: bool = False) -> Dict[str, Any]
     if not isinstance(value, Mapping):
         raise ValueError(f"TI-MARL {path} must be a mapping")
     return deepcopy(dict(value))
+
+
+def _phase_weights(raw):
+    values = _mapping(raw, "phase_weights")
+    if values:
+        weights = {phase: float(value) for phase, value in values.items()}
+        if (
+            not weights.keys() <= {"L1", "L2", "L3"}
+            or not all(math.isfinite(w) and w >= 0.0 for w in weights.values())
+            or not math.isclose(sum(weights.values()), 1.0)
+        ):
+            raise ValueError("TI-MARL phase routing weights must be non-negative and sum to one")
+        return weights
+    return {}
 
 
 def _identifier(value: Any, path: str) -> str:
@@ -146,6 +160,8 @@ class ActuatorDefinition:
     source_entity_type: str
     modes: Tuple[str, ...]
     actions: Tuple[ActionDefinition, ...]
+    reservation_profile: Tuple[Tuple[str, float], ...] = ()
+    phase_weights: Tuple[Tuple[str, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -225,6 +241,11 @@ class TypedAgentInterface:
             observation_paths,
         )
         constraints = cls._parse_constraints(raw.get("constraints", {}))
+        actuator_ids = {a.actuator_id for a in actuators}
+        for cid, constraint in constraints.items():
+            missing = set(constraint.get("members", ())) - actuator_ids
+            if missing:
+                raise ValueError(f"Unknown actuator members of {cid}: {sorted(missing)}")
         fallback = _mapping(raw.get("fallback", {}), "fallback")
         description = str(raw.get("description", "")).strip()
 
@@ -421,9 +442,35 @@ class TypedAgentInterface:
             actuator = _mapping(raw_actuator, f"actuators.{actuator_id}")
             _reject_unknown(
                 actuator,
-                {"type", "actions"},
+                {"type", "actions", "reservation_profile", "phase_weights"},
                 f"actuators.{actuator_id}",
             )
+            physics = _mapping(actuator.get("reservation_profile", {}), "reservation_profile")
+            _reject_unknown(
+                physics,
+                {
+                    "battery_efficiency",
+                    "hourly_loss",
+                    "ev_battery_rating_kw",
+                    "ev_taper_at_full",
+                    "ev_taper_start_soc",
+                },
+                "reservation_profile",
+            )
+            physics = {key: float(value) for key, value in physics.items()}
+            if not all(math.isfinite(value) for value in physics.values()):
+                raise ValueError("Nonfinite reservation profile coefficient")
+            if physics and not (
+                0 < physics.get("battery_efficiency", 0.0) <= 1.0
+                and 0 <= physics.get("hourly_loss", -1.0) < 1.0
+            ):
+                raise ValueError("Invalid constant-efficiency reservation profile")
+            if any(key.startswith("ev_") for key in physics) and not (
+                physics.get("ev_battery_rating_kw", 0.0) > 0
+                and 0 <= physics.get("ev_taper_start_soc", -1.0) < 1.0
+                and 0 <= physics.get("ev_taper_at_full", -1.0) <= 1.0
+            ):
+                raise ValueError("Invalid EV taper reservation profile")
             actuator_type = str(actuator.get("type", "")).strip()
             profile = profiles.action_profile(actuator_type)
             target_entity_id = None
@@ -517,6 +564,10 @@ class TypedAgentInterface:
                     source_entity_type=str(profile["entity_type"]),
                     modes=modes,
                     actions=tuple(sorted(actions, key=lambda item: item.action_id)),
+                    reservation_profile=tuple(sorted(physics.items())),
+                    phase_weights=tuple(
+                        sorted(_phase_weights(actuator.get("phase_weights", {})).items())
+                    ),
                 )
             )
         return tuple(sorted(actuators, key=lambda item: item.actuator_id))
@@ -531,9 +582,12 @@ class TypedAgentInterface:
                 raw_constraint,
                 f"constraints.{constraint_id}",
             )
+            if constraint_id == "background_phase_weights":
+                result[constraint_id] = _phase_weights(constraint)
+                continue
             _reject_unknown(
                 constraint,
-                {"unit", "min", "max"},
+                {"unit", "min", "max", "members"},
                 f"constraints.{constraint_id}",
             )
             unit = str(constraint.get("unit", ""))
@@ -546,6 +600,21 @@ class TypedAgentInterface:
                     f"TI-MARL constraint {constraint_id!r} requires min or max"
                 )
             normalized: Dict[str, Any] = {"unit": unit}
+            if "members" in constraint:
+                members = constraint["members"]
+                if (
+                    not isinstance(members, list)
+                    or not members
+                    or not all(isinstance(m, str) for m in members)
+                    or len(members) != len(set(members))
+                    or unit != "kW"
+                    or "min" in constraint
+                    or not isinstance(constraint.get("max"), (float, int))
+                    or not math.isfinite(constraint["max"])
+                    or constraint["max"] < 0
+                ):
+                    raise ValueError(f"Invalid shared import limit {constraint_id!r}")
+                normalized["members"] = sorted(_identifier(member, "constraint member") for member in members)
             for bound_name in ("min", "max"):
                 if bound_name not in constraint:
                     continue
@@ -604,6 +673,16 @@ class TypedAgentInterface:
                 ),
                 "group_type": actuator.group_type,
                 "source_entity_type": actuator.source_entity_type,
+                **(
+                    {"phase_weights": dict(actuator.phase_weights)}
+                    if actuator.phase_weights
+                    else {}
+                ),
+                **(
+                    {"reservation_profile": dict(actuator.reservation_profile)}
+                    if actuator.reservation_profile
+                    else {}
+                ),
                 "actions": actions,
             }
         return result

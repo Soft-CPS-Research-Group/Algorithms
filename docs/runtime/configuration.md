@@ -39,6 +39,19 @@ working directory, preserving existing jobs. Use absolute paths in external
 jobs. Missing relative `configs/...` tokenizer assets may resolve to packaged
 resources, while an existing local file takes precedence.
 
+## Torch CPU threads
+
+Set `runtime.torch_num_threads` to a positive integer to select Torch's CPU
+intra-operation thread count for the job process. The runtime applies it before
+agent construction and offline preparation. Omit it or use `null` to preserve
+the existing Torch setting. Configuration validation does not load Torch.
+
+The requested value remains in the resolved configuration; the observed value
+is recorded as `runtime.randomness.torch_num_threads` alongside the runtime's
+Torch and device provenance. This process-wide setting does not change inter-op
+threads, other libraries' thread pools, GPU allocation or worker concurrency.
+Use separate processes for jobs requiring independent thread settings.
+
 ## Profiles
 
 - `train`: retain the configured training schedule and episode/export policy.

@@ -7,8 +7,8 @@ directory produced by :mod:`algorithms.offline_rl.iql_entity_trainer`.
 At predict time the agent:
 
 1. Receives a list of per-agent observation vectors (one per building).
-2. Identifies each agent's group by ``obs_dim`` (unique within the four
-   groups: 627/706/749/785).
+2. Identifies each active agent's group by ``obs_dim``; ambiguous loaded
+   dimensions are rejected. Passive members receive empty actions.
 3. Applies the group-specific ``ObservationStandardiser``.
 4. Runs the trained policy's deterministic head
    (``tanh(mean)``) and returns the clamped action.
@@ -92,7 +92,7 @@ class IQLEntityAgent(OfflineTrainingPreparation, BaseAgent):
         device: str = str(hyp.get("device", "cpu"))
 
         self._device = torch.device(device)
-        # Keyed by obs_dim (sufficient for dispatch — unique in our 4 groups)
+        # Loading rejects ambiguous dimensions; attachment also checks semantics.
         self._policy_map: Dict[int, GaussianPolicy] = {}
         self._standardiser_map: Dict[int, ObservationStandardiser] = {}
         # Full group key for metadata
@@ -106,6 +106,7 @@ class IQLEntityAgent(OfflineTrainingPreparation, BaseAgent):
 
         # Populated by attach_environment if called
         self._obs_dims_per_agent: Optional[List[int]] = None
+        self._action_dims_per_agent: Optional[List[int]] = None
 
     # ------------------------------------------------------------------
     # Model loading
@@ -193,10 +194,13 @@ class IQLEntityAgent(OfflineTrainingPreparation, BaseAgent):
         observation_space: List[Any],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Cache per-agent obs_dim for fast dispatch at predict time."""
+        """Bind exact or typed-local feature layouts and preserve passive members."""
         self._obs_dims_per_agent = [len(names) for names in observation_names]
+        self._action_dims_per_agent = [len(names) for names in action_names]
         # Validate that every agent has a loaded policy
         for i, obs_dim in enumerate(self._obs_dims_per_agent):
+            if self._action_dims_per_agent[i] == 0:
+                continue
             if obs_dim not in self._policy_map:
                 available = sorted(self._policy_map.keys())
                 raise ValueError(
@@ -207,16 +211,24 @@ class IQLEntityAgent(OfflineTrainingPreparation, BaseAgent):
         self._observation_orders = []
         self._action_orders = []
         for i, obs_dim in enumerate(self._obs_dims_per_agent):
+            if self._action_dims_per_agent[i] == 0:
+                self._observation_orders.append([])
+                self._action_orders.append([])
+                continue
             if len(action_names[i]) != self._action_dims[obs_dim]:
                 raise ValueError(f"Agent {i} action dimension differs from its offline policy")
             trained_names = self._architectures[obs_dim].get("obs_names") or self._standardiser_map[obs_dim].feature_names
-            if len(set(observation_names[i])) != len(trained_names) or set(trained_names) != set(observation_names[i]):
+            current_names, current_actions = observation_names[i], action_names[i]
+            if set(trained_names) != set(current_names):
+                from algorithms.offline_rl.entity_layout import canonicalize_entity_names
+                current_names, current_actions = canonicalize_entity_names(current_names, current_actions)
+            if len(set(current_names)) != len(trained_names) or set(trained_names) != set(current_names):
                 raise ValueError(f"Agent {i} observation names differ from its offline dataset")
-            self._observation_orders.append([observation_names[i].index(name) for name in trained_names])
+            self._observation_orders.append([current_names.index(name) for name in trained_names])
             trained_actions = self._architectures[obs_dim].get("action_names") or action_names[i]
-            if set(trained_actions) != set(action_names[i]):
+            if len(set(current_actions)) != len(trained_actions) or set(trained_actions) != set(current_actions):
                 raise ValueError(f"Agent {i} action names differ from its offline dataset")
-            self._action_orders.append([trained_actions.index(name) for name in action_names[i]])
+            self._action_orders.append([trained_actions.index(name) for name in current_actions])
 
     def predict(  # type: ignore[override]
         self,
@@ -229,6 +241,9 @@ class IQLEntityAgent(OfflineTrainingPreparation, BaseAgent):
         del context  # offline inference agent ignores pipeline context
         actions: List[List[float]] = []
         for i, obs_i in enumerate(observations):
+            if self._action_dims_per_agent is not None and self._action_dims_per_agent[i] == 0:
+                actions.append([])
+                continue
             obs_arr = np.asarray(obs_i, dtype=np.float32).reshape(-1)
             obs_dim = obs_arr.shape[0]
 
@@ -294,6 +309,8 @@ class IQLEntityAgent(OfflineTrainingPreparation, BaseAgent):
 
         artifacts = []
         for index, obs_dim in enumerate(self._obs_dims_per_agent or sorted(self._policy_map)):
+            if self._action_dims_per_agent is not None and self._action_dims_per_agent[index] == 0:
+                continue
             group = self._group_keys[obs_dim]
             artifacts.append({
                 "agent_index": index, "path": f"{group}/policy.pt",
@@ -314,8 +331,9 @@ class IQLEntityAgent(OfflineTrainingPreparation, BaseAgent):
             from algorithms.export.offline import export_entity_policies
             executable = export_entity_policies(self, output_dir)
             executable["artifact_type"] = "iql_entity_agent"
-            for index, artifact in enumerate(executable["artifacts"]):
-                artifact["config"]["auxiliary_paths"] = manifest["artifacts"][index]["config"]["auxiliary_paths"]
+            auxiliary = {item["agent_index"]: item["config"]["auxiliary_paths"] for item in artifacts}
+            for artifact in executable["artifacts"]:
+                artifact["config"]["auxiliary_paths"] = auxiliary.get(artifact["agent_index"], [])
             return executable
         return manifest
 
