@@ -360,3 +360,72 @@ def test_manager_discounts_on_the_same_configured_physical_clock_as_the_local_po
     manager.observe_reward(1.0, 30)
     manager.observe_reward(1.0, 30)
     assert decision.reward == pytest.approx(1.9)
+
+
+def test_prepared_meter_forecast_is_causal_and_keeps_the_price_feed(tmp_path):
+    import numpy as np
+    import pandas as pd
+
+    from scripts.prepare_ti_marl_forecasts import MeterForecaster, prepare
+
+    issue, fit_end, calibration_end = 864, 800, 830
+    steps = np.arange(issue + 98)
+    daylight = np.maximum(0, np.sin((steps % 96 - 22) * np.pi / 48))
+    physical = pd.DataFrame(
+        {
+            "non_shiftable_load": 0.1 + (steps % 21) / 80,
+            "solar_generation": daylight * (1 + (steps // 96) / 4),
+        }
+    ).astype("float32")
+    meter_file = tmp_path / "meters.parquet"
+    physical.to_parquet(meter_file)
+    tariff = {"electricity_pricing": steps / 900}
+    tariff.update({f"electricity_pricing_predicted_{i}": steps / 1100 + i for i in (1, 2, 3)})
+    pd.DataFrame(tariff).to_parquet(tmp_path / "price.parquet")
+    schema = tmp_path / "schema.json"
+    schema.write_text(
+        json.dumps(
+            {
+                "seconds_per_time_step": 900,
+                "simulation_end_time_step": int(steps[-1]),
+                "buildings": {
+                    "site": {
+                        "energy_simulation": meter_file.name,
+                        "pricing": "price.parquet",
+                        "pv": {"attributes": {"generation_mode": "absolute"}},
+                    }
+                },
+            }
+        )
+    )
+
+    def issue_record(filename, **kwargs):
+        path = tmp_path / filename
+        prepare(schema, path, issue, issue, **kwargs)
+        return json.loads(path.read_text())
+
+    prior = issue_record("prior.jsonl")
+    fitted = issue_record("fitted.jsonl", meter_fit_end=fit_end, calibration_end=calibration_end)
+    assert IssuedForecastArchive(tmp_path / "fitted.jsonl").at(issue * 900)["site"] == fitted
+    assert fitted["price_eur_per_kwh"] == prior["price_eur_per_kwh"]
+    np.testing.assert_allclose(
+        prior["solar_kw"], 4 * physical.solar_generation.iloc[issue - 96 : issue]
+    )
+    assert len(fitted["solar_kw"]) == len(fitted["non_shiftable_kw"]) == 96
+    assert min(fitted["solar_kw"] + fitted["non_shiftable_kw"]) >= 0
+    assert fitted["solar_kw"] != prior["solar_kw"]
+    meters = physical.to_numpy() * 4
+    model = MeterForecaster.fit(meters[:fit_end], fit_end)
+    origins = np.arange(fit_end, calibration_end - 1)
+    errors = meters[origins + 1] - model.predict(meters, origins, 1)
+    np.testing.assert_allclose(fitted["calibration_error_kw"], 1.1 * np.abs(errors).max(axis=0))
+    physical.loc[issue:, :] = 75.0
+    physical.to_parquet(meter_file)
+    assert (
+        issue_record("changed.jsonl", meter_fit_end=fit_end, calibration_end=calibration_end)
+        == fitted
+    )
+    with pytest.raises(ValueError, match="before the first issue"):
+        issue_record("future.jsonl", meter_fit_end=issue + 1)
+    with pytest.raises(ValueError, match="after fitting"):
+        issue_record("overlap.jsonl", meter_fit_end=fit_end, calibration_end=fit_end + 1)
