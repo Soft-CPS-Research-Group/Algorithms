@@ -13,8 +13,8 @@ tracking:
   progress_update_interval: 512
   system_metrics_enabled: false
 simulator:
-  dataset_name: rec_pt_2023_core_30_v2
-  dataset_path: ./datasets/rec_pt_2023_core_30_v2/evaluation/core_30_normal.json
+  dataset_name: pt_rec_30
+  dataset_path: ./datasets/pt_rec_30/evaluation/rec_30_normal.json
   building_ids: null
   central_agent: false
   interface: entity

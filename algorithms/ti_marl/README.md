@@ -552,9 +552,6 @@ python scripts/validate_ti_marl_interfaces.py \
   --simulator-bindings /local/path/generated_interfaces/technology_bindings/simulator.yaml
 ```
 
-The Core-30 thesis recipe was exercised with the pinned package
-`softcpsrecsimulator==2.1.1`. The historical controller also ran on 1.9.1.
-The public job uses the installed package. An adjacent Simulator checkout can
-supply local datasets.
+Algorithms loads the installed SoftCPS Simulator. The release pins 2.2.0. The earlier Core-30 weekly evaluations used 2.1.1. Record the package version alongside each comparison.
 
 For experiment design, see the [lessons from long runs](../../docs/learning-experience.md). The protocol tools separate simulator and neural seeds and fingerprint paired evaluation inputs.
