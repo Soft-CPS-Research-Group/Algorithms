@@ -80,7 +80,9 @@ def _fixed_service(env, step):
 class SoftCPSRewardFeedback:
     """Resolve one-step simulator ledger increments, resetting at each episode."""
 
-    def __init__(self):
+    def __init__(self, *, measure_ev_excess=False, measure_terminal_stock=False):
+        self.measure_terminal_stock = measure_terminal_stock
+        self.measure_ev_excess = measure_ev_excess
         self._programmes = {}
         self._ev_recognised = {}
         self._previous_step = None
@@ -107,10 +109,31 @@ class SoftCPSRewardFeedback:
             "fixed_deficit_kwh": _fixed_service(env, step),
             "programme_deficit_kwh": self._programme_deficit(env),
         }
+        if self.measure_terminal_stock:
+            evidence["stationary_terminal_deficit_kwh"] = self._terminal_stock_deficit(env, step)
         evidence.update(self._ev_deficits(env, step))
         terms = {name: value for name, value in evidence.items() if value is not None}
         self._previous_step, self._previous_terms = step, terms
         return terms.copy()
+
+    @staticmethod
+    def _terminal_stock_deficit(env, step):
+        """Stored kWh needed to restore initial inventory in a static, finite episode."""
+        if getattr(env, "topology_mode", None) != "static":
+            return None
+        if not env.terminated and not env.truncated:
+            return 0.
+        missing = []
+        for building in env.buildings:
+            battery = building.electrical_storage
+            if battery is None or battery.nominal_power == 0:
+                continue
+            initial = float(battery.initial_soc) * float(battery.capacity)
+            final = float(battery.soc[step]) * float(battery.capacity)
+            if not (math.isfinite(initial) and math.isfinite(final)):
+                return None
+            missing.append(max(0., initial-final))
+        return math.fsum(missing)
 
     def _ev_deficits(self, env, step):
         """Charge each protected kWh once, including at a recorded departure.
@@ -124,7 +147,7 @@ class SoftCPSRewardFeedback:
         audit = getattr(env, "_kpi_service", None)
         if getattr(env, "topology_mode", None) != "static" or audit is None:
             return {}
-        due, tolerance_band = 0.0, 0.0
+        due, tolerance_band, excess = 0.0, 0.0, 0.0
         recognised = self._ev_recognised.copy()
         for building in env.buildings:
             for charger in building.electric_vehicle_chargers:
@@ -150,6 +173,16 @@ class SoftCPSRewardFeedback:
                     or not math.isfinite(capacity)
                 ):
                     return {}
+                if self.measure_ev_excess:
+                    # The AC charger reading includes losses. The battery terminal
+                    # ledger measures energy actually accepted in this interval.
+                    charge = ev.battery.gross_energy_charge
+                    if charge is None:
+                        return {}
+                    accepted_kwh = float(charge[step]) * float(ev.battery.round_trip_efficiency)
+                    if not math.isfinite(accepted_kwh) or accepted_kwh < 0:
+                        return {}
+                    excess += min(accepted_kwh, max(0., (soc - target) * capacity))
                 requested_kwh = max(target - soc, 0.0) * capacity
                 accepted = max(target - audit._ev_departure_service_tolerance(), 0.0)
                 protected_kwh = max(accepted - soc, 0.0) * capacity
@@ -196,7 +229,10 @@ class SoftCPSRewardFeedback:
                     recognised[key] = max(previous, irrevocable)
                 due += max(0.0, irrevocable - previous)
         self._ev_recognised = recognised
-        return {"ev_deficit_kwh": due, "ev_tolerance_kwh": tolerance_band}
+        terms = {"ev_deficit_kwh": due, "ev_tolerance_kwh": tolerance_band}
+        if self.measure_ev_excess:
+            terms["ev_excess_kwh"] = excess
+        return terms
 
     def _programme_deficit(self, env):
         # Dynamic exits/reinstallations need the cross-instance service ledger

@@ -197,6 +197,7 @@ class JointActor(TypedActor):
         self.step_seconds = 900.0
         self.tolerance_soc = 0.05
         self.departure_margin_seconds = 0.0
+        self.reserve_programmes_in_certified_window = False
         self.order_seed = 0
         self.memory = PrefixMemory(self.d_model, max(map(len, self.group_modes.values())))
         self.domain_context = nn.Linear(8 + self.memory.mode_count, self.d_model)
@@ -361,6 +362,7 @@ class JointActor(TypedActor):
                 order_seed=self.order_seed,
                 tolerance_soc=self.tolerance_soc,
                 departure_margin_seconds=self.departure_margin_seconds,
+                reserve_programmes_in_certified_window=self.reserve_programmes_in_certified_window,
             )
             try:
                 proposal, verified, traces[site], diagnostics[site] = self._decode_site(

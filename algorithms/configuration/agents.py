@@ -870,6 +870,7 @@ class TIMARLBackboneConfig(BaseModel):
 
 
 class TIMARLActorConfig(BaseModel):
+    readout: Literal["standard", "household", "household_start"] = "standard"
     d_model: int = Field(default=128, ge=16)
     attention_heads: int = Field(default=4, ge=1)
     relation_layers: int = Field(default=2, ge=1)
@@ -1223,6 +1224,8 @@ class TIMARLRewardPenalties(BaseModel):
     programme_deficit_kwh: CostPerKWh = 120.0
     fixed_deficit_kwh: CostPerKWh = 120.0
     ev_tolerance_kwh: CostPerKWh = 1.0
+    ev_excess_kwh: CostPerKWh = 0.0
+    stationary_terminal_deficit_kwh: CostPerKWh = 0.0
     stationary_throughput_kwh: CostPerKWh = 0.01
 
 
@@ -1247,6 +1250,8 @@ class TIMARLHyperparameters(BaseModel):
     reward_penalties: TIMARLRewardPenalties = Field(default_factory=TIMARLRewardPenalties)
     reference_sites: int = Field(default=30, ge=1)
     departure_margin_seconds: float = Field(default=0.0, ge=0, le=86400, allow_inf_nan=False)
+    use_partial_ev_outlook: bool = False
+    reserve_programmes_in_certified_window: bool = False
     issued_forecasts_path: Optional[str] = Field(default=None, min_length=1)
     # Training-calibrated bound on error in forecast non-controllable net load.
     reservation_error_kw: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
@@ -1292,6 +1297,8 @@ class TIMARLHyperparameters(BaseModel):
 
     @model_validator(mode="after")
     def validate_learning_architecture(self) -> "TIMARLHyperparameters":
+        if self.actor.readout in {"household", "household_start"} and self.method_variant != "v2":
+            raise ValueError("The household readout requires TI-MARL V2")
         if self.method_variant != "legacy" and "operating_reward" not in self.model_fields_set:
             self.operating_reward = "thesis_common_reward_v1"
         if self.hierarchy is not None and self.method_variant != "v2":

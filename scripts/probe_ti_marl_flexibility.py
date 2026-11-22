@@ -95,8 +95,8 @@ class EVProbe:
         incentive = -0.05 if active and variable == "incentive" else 0.0
         return price, solar, incentive
 
-    def snapshot(self, variable, first, t, stored, target):
-        now = (28 + t) * 900.0
+    def snapshot(self, variable, first, t, stored, target, *, start_step=28, quarters=4):
+        now = (start_step + t) * 900.0
         price, solar, _ = self.window(variable, first, t)
         readings = {
             "connected_state": 1.0,
@@ -105,7 +105,7 @@ class EVProbe:
             "connected_ev_soc_min_ratio": 0.0,
             "connected_ev_battery_nominal_power_kw": POWER,
             "connected_ev_required_soc_departure": target,
-            "hours_until_departure": (4 - t) * DT,
+            "hours_until_departure": (quarters - t) * DT,
             "charge_efficiency_at_max_ratio": 1.0,
             "charger_efficiency_ratio": 1.0,
             "min_charging_power_kw": 1.4,
@@ -142,7 +142,7 @@ class EVProbe:
             contract_version="ti_marl_v1",
             compiler_version="controlled_probe",
             topology_version=0,
-            time_step=28 + t,
+            time_step=start_step + t,
             agent_ids=(self.site,),
             modules=(),
             entities=(),

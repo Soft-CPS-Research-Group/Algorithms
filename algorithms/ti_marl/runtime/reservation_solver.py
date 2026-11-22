@@ -110,7 +110,7 @@ class LinearModel:
             )
         return self.matrix
 
-    def solve(self, cost=None):
+    def solve(self, cost=None, *, known_feasible=None):
         """Return an optimal, independently checked primal; never use a timed-out incumbent."""
         import highspy
 
@@ -138,15 +138,38 @@ class LinearModel:
             cols = sorted(self.cost.keys() | cost.keys())
             self.solver.changeColsCost(len(cols), cols, [cost.get(col, 0.0) for col in cols])
             self.cost = dict(cost)
+
+        def optimise():
+            self.solver.setOptionValue("time_limit", self.remaining_seconds())
+            self.solves += 1
+            if self.solver.run() == highspy.HighsStatus.kError:
+                raise ReservationUnavailable("HiGHS failed to run the reservation model")
+            return self.solver.getModelStatus()
+
         try:
             with highs_scheduler(highspy, 1, timeout=self.remaining_seconds()):
-                self.solver.setOptionValue("time_limit", self.remaining_seconds())
-                self.solves += 1
-                if self.solver.run() == highspy.HighsStatus.kError:
-                    raise ReservationUnavailable("HiGHS failed to run the reservation model")
+                status = optimise()
+                if (
+                    status == highspy.HighsModelStatus.kInfeasible
+                    and known_feasible is not None
+                    and self.verify(known_feasible)
+                ):
+                    # A previous optimum satisfies the new priority floor. Resolve the
+                    # identical problem without reductions before accepting infeasibility.
+                    _, presolve = self.solver.getOptionValue("presolve")
+                    self.solver.clearSolver()
+                    self.solver.setOptionValue("presolve", "off")
+                    try:
+                        self.solver.setSolution(
+                            len(self.bounds),
+                            np.arange(len(self.bounds), dtype=np.int32),
+                            np.asarray(known_feasible, dtype=float),
+                        )
+                        status = optimise()
+                    finally:
+                        self.solver.setOptionValue("presolve", presolve)
         except TimeoutError as exc:
             raise ReservationUnavailable("Site time budget expired waiting for HiGHS") from exc
-        status = self.solver.getModelStatus()
         if status == highspy.HighsModelStatus.kInfeasible:
             raise ReservationInfeasible("No continuation for these conditions")
         if status != highspy.HighsModelStatus.kOptimal:

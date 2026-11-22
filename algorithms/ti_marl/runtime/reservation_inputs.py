@@ -57,6 +57,9 @@ class Equipment:
     unconfirmed_export_kw: float = 0.0
     unconfirmed_service: bool = False
     measured_request: float | None = None
+    # None denotes a fully specified programme. A peak alone gives no
+    # guaranteed absorption of solar power in an individual future slot.
+    programme_min_kw: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -154,11 +157,22 @@ def _profiles(group, values, dt, tolerance, diagnostics):
                 raise ReservationUnavailable(f"{group.group_id}: incomplete active programme")
             # The public interface exposes the first power and a peak, rather than
             # the complete shape. An upper envelope protects each occupied slot.
-            first = values.get("current_step_power_kw" if running else "start_power_kw", peak)
+            first_key = "current_step_power_kw" if running else "start_power_kw"
+            # SoftCPS returns zero preview power outside the start window.
+            # There is then no measurement of the first sample of a future start.
+            first = values.get(first_key) if running or values.get("can_start", 0) > 0.5 else None
+            # SoftCPS names the last occupied interval as the deadline.
+            # The reservation uses the exclusive end of that interval. A
+            # separately declared latest start can close the window earlier.
+            finish = max(0.0, until * 3600.0) + dt
+            latest = values.get("hours_until_latest_start")
+            if not running and latest is not None and latest >= 0.0:
+                finish = min(finish, latest * 3600.0 + steps * dt)
             kwargs.update(
-                programme_kw=(first,) + (peak,) * (steps - 1),
+                programme_kw=(peak if first is None else first,) + (peak,) * (steps - 1),
+                programme_min_kw=(0.0 if first is None else first,) + (0.0,) * (steps - 1),
                 programme_step_seconds=dt,
-                deadline_seconds=max(0.0, until * 3600.0),
+                deadline_seconds=finish,
                 earliest_seconds=max(0.0, values.get("hours_until_earliest_start", 0.0) * 3600.0),
                 running=running,
             )

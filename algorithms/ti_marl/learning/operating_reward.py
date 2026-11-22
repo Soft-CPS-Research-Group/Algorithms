@@ -17,10 +17,11 @@ from algorithms.configuration.agents import TIMARLRewardPenalties
 
 THESIS_PROFILE = "thesis_common_reward_v1"
 SMOKE_PROFILE = "settlement_smoke"
+OPTIONAL_TERMS = ("ev_excess_kwh", "stationary_terminal_deficit_kwh")
 TERM_WEIGHTS = {
     "energy_cost_eur": 1.0,
     "dr_cost_eur": 1.0,
-    **TIMARLRewardPenalties().model_dump(),
+    **TIMARLRewardPenalties().model_dump(exclude=set(OPTIONAL_TERMS)),
 }
 SMOKE_TERMS = ("energy_cost_eur", "stationary_throughput_kwh")
 
@@ -110,7 +111,7 @@ def operating_reward(
     if not isinstance(ledger, Mapping):
         raise ValueError("Expected a mapping of post-action thesis reward terms")
     for name, raw in ledger.items():
-        if name not in TERM_WEIGHTS:
+        if name not in TERM_WEIGHTS and name not in OPTIONAL_TERMS:
             raise ValueError(f"Unknown thesis reward term: {name}")
         if raw is None:
             continue
@@ -119,8 +120,10 @@ def operating_reward(
             raise ValueError(f"Physical ledger disagrees with the simulator for {name}")
         terms[name] = value
     missing = tuple(name for name in TERM_WEIGHTS if name not in terms)
-    required = TERM_WEIGHTS if profile == THESIS_PROFILE else SMOKE_TERMS
-    unavailable = [name for name in required if name in missing]
+    required = tuple(TERM_WEIGHTS) if profile == THESIS_PROFILE else SMOKE_TERMS
+    if profile == THESIS_PROFILE and penalties is not None:
+        required += tuple(key for key in OPTIONAL_TERMS if getattr(penalties, key) > 0)
+    unavailable = [name for name in required if name not in terms]
     if unavailable:
         raise ValueError(f"{profile} lacks physical reward terms: {', '.join(unavailable)}")
     weights = TERM_WEIGHTS if penalties is None else {**TERM_WEIGHTS, **penalties.model_dump()}

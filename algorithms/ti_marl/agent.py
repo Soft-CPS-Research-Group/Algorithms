@@ -148,6 +148,13 @@ class TypedController(BaseAgent):
             hyper.get("policy_anchor_reset_on_resume", False)
         )
         actor_class = JointActor if self.thesis_method else TypedActor
+        self.actor_readout = actor_cfg.get("readout", "standard")
+        if self.actor_readout in {"household", "household_start"}:
+            from algorithms.ti_marl.experiments.household import HouseholdActor
+
+            if self.method_variant != "v2":
+                raise ValueError("The household readout requires TI-MARL V2")
+            actor_class = HouseholdActor
         self.actor = actor_class(
             self.compiler.type_registry,
             d_model=d_model,
@@ -177,10 +184,17 @@ class TypedController(BaseAgent):
                 )
             ),
         ).to(self.device)
+        if self.actor_readout in {"household", "household_start"}:
+            self.actor.use_partial_ev_outlook = hyper.get("use_partial_ev_outlook", False)
+        if self.actor_readout == "household_start":
+            self.actor.observe_programme_start_solar = True
         critic_class = (
             CentralSetCritic if self.critic_kind == "set" else LocalTypedCritic
         )
         if self.thesis_method:
+            self.actor.reserve_programmes_in_certified_window = hyper.get(
+                "reserve_programmes_in_certified_window", False
+            )
             self.actor.tolerance_soc = float(feasibility_cfg.get("ev_service_tolerance_ratio", 0.05))
             self.actor.departure_margin_seconds = float(hyper.get("departure_margin_seconds", 0.0))
             critic_class = PrefixCritic
@@ -1411,6 +1425,7 @@ class TypedController(BaseAgent):
                 "actor_group_context": self.actor_group_context_kind,
                 "policy_credit_assignment": self.policy_credit_assignment,
                 **({"method_variant": self.method_variant} if self.thesis_method else {}),
+                **({"actor_readout": self.actor_readout} if self.actor_readout != "standard" else {}),
             },
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
@@ -1479,6 +1494,7 @@ class TypedController(BaseAgent):
             "actor_group_context": self.actor_group_context_kind,
             "policy_credit_assignment": self.policy_credit_assignment,
             **({"method_variant": self.method_variant} if self.thesis_method else {}),
+            **({"actor_readout": self.actor_readout} if self.actor_readout != "standard" else {}),
         }
         architecture.setdefault("actor_group_context", "local")
         architecture.setdefault("policy_credit_assignment", "joint_agent")
@@ -1559,6 +1575,7 @@ class TypedController(BaseAgent):
                     "critic": self.critic_kind,
                     "policy_credit_assignment": self.policy_credit_assignment,
                     **({"method_variant": self.method_variant} if self.thesis_method else {}),
+                    **({"actor_readout": self.actor_readout} if self.actor_readout != "standard" else {}),
                 },
                 "actor": self.actor.state_dict(),
                 "critic": self.critic.state_dict(),
@@ -1584,6 +1601,7 @@ class TypedController(BaseAgent):
                 "actor_group_context": self.actor_group_context_kind,
                 "policy_credit_assignment": self.policy_credit_assignment,
                 **({"method_variant": self.method_variant} if self.thesis_method else {}),
+                **({"actor_readout": self.actor_readout} if self.actor_readout != "standard" else {}),
                 "behavior_cloning_warm_start": self.behavior_cloning is not None,
                 "typed_interfaces": self.compiler.resolved_typed_interface(),
                 "compiler": {
@@ -1625,6 +1643,7 @@ class TypedController(BaseAgent):
                 "critic": self.critic_kind,
                 "policy_credit_assignment": self.policy_credit_assignment,
                 **({"method_variant": self.method_variant} if self.thesis_method else {}),
+                **({"actor_readout": self.actor_readout} if self.actor_readout != "standard" else {}),
             },
             "compatibility_signature": asdict(self.compiler.compatibility_signature),
             "trace": dict(self.trace_writer.manifest()),

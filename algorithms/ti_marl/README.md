@@ -24,6 +24,8 @@ The preparation script uses each site's non-shiftable demand and absolute PV fro
 
 Once a metered quarter closes, each site compares its average non-shiftable demand and PV with the last estimate seen before the quarter began. A complete quarter of fresh meter readings is required for each channel. The SoftCPS PV meter is assigned to its reported endogenous interval, which usually ends at the decision time. The trace includes the signed deviation, the delivery time, and when the controller last saw the forecast. Within the episode, the largest absolute error widens the corresponding calibrated margin whenever necessary. Without an initial calibration the future physical margin stays unknown. Each episode starts again from the declared calibration.
 
+If the available equipment cannot absorb a forecast solar surplus across one or more intervals under the site and phase limits, the reservation records a `forecast_export_alert`. It certifies the current action and any appliance cycle it starts up to the first affected interval. The next decision uses fresh measurements and repeats the full check. Site, phase and circuit bounds keep their declared values. An infeasible current command or an uncertifiable running cycle stops dispatch. The appliance deadline in SoftCPS includes the final occupied interval. The reservation also respects the last permitted start.
+
 For V3, add `hierarchy: {signal: learned, training_phase: local}` to the V2 hyperparameters. First train the homes with varying incentives. Resume their checkpoint in a second job with `training_phase: coordinator`; the coordinator learns against realised settlement and service with the homes frozen. The `neutral` and `rule` signal modes enable paired controls. `peak_weight_per_kw` is optional and expressed in EUR per kW increase of the daily maximum. Report the realised bill separately from the local training adjustment.
 
 For a width comparison change `actor.d_model` from 32 to 64, keeping the seed, dates, heads, layers and optimiser fixed. To inspect a specific vehicle decision after training, enable the TI-MARL trace and run `python scripts/probe_ti_marl_flexibility.py --help`; the probe replays independently shifted price, solar and incentive curves against a trusted checkpoint.
@@ -31,6 +33,19 @@ For a width comparison change `actor.d_model` from 32 to 64, keeping the seed, d
 The optional `departure_margin_seconds` asks the constructor to protect EV charge earlier when feasible. A value of 900 reserves against loss of the final 15 minutes. Contractual service for every declared commitment has priority. The trace records any margin that could not be secured separately from missed service. The default is zero.
 
 The thesis variants use the strict reward by default. It requires post-action settlement, electrical and service ledgers. Missing evidence raises an error. `reward_penalties` sets the provisional chapter 7 coefficients in EUR/kWh, for example `{ev_tolerance_kwh: 2.0}`. Report the coefficients with the run. The measured bill stays in EUR. On static SoftCPS 2.1.1 episodes, the adapter reconstructs completed appliance service from its physical records. Removing and reinstalling an appliance in a dynamic episode requires the simulator to supply a service ledger that spans both instances, including confirmed cancellations. The explicitly partial `settlement_smoke` profile exercises cost and stationary battery throughput. The resulting checkpoints and bundles require the specialised TI-MARL runtime. Record decision latency and service on the intended control interval before deployment.
+
+### Two EVs sharing a household connection
+
+The experimental V2 household readout takes each EV's state, target and departure from its own charger. The two EVs share a continuous power policy. The stationary battery and appliance have separate readouts under the same electrical reservation. The appliance sees surplus solar at the proposed start as well as the mean over its cycle. The quarter-hour study transfers the width-128 EV policy and fits the household readouts from realised episode returns, without demonstrations. The short-episode objective prices newly stored energy above each EV target at €0.05/kWh. It values any end-of-episode stationary battery deficit at its agreed refill cost. Both components are opt-in in the native PPO job.
+
+To evaluate a saved household checkpoint, generate the test inputs from the Core-30 Normal 2023 schema. The generator writes to the output directory and keeps the source dataset intact.
+
+```bash
+python -m scripts.ti_marl_household.fixture /tmp/ti-marl-house \
+  --schema /path/to/core_30_normal.json --checkpoint /path/to/latest_checkpoint.pth \
+  --case 284 --service-tolerance 0.001 --departure-margin 900
+algorithms-job --config /tmp/ti-marl-house/job.yaml --job_id household-evaluation --base-dir /tmp/ti-marl-jobs
+```
 
 ## Legacy controller
 

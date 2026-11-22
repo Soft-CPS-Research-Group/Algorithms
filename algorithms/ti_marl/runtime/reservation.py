@@ -11,6 +11,7 @@ import math
 from collections import defaultdict
 from dataclasses import replace
 from hashlib import sha256
+from time import monotonic
 
 import numpy as np
 
@@ -44,6 +45,15 @@ def _sum_terms(target, terms, factor=1.0):
         target[col] = target.get(col, 0.0) + factor * coefficient
 
 
+class _UnavoidableForecastExport(ReservationInfeasible):
+    """No joint schedule can absorb the projected export over the affected intervals."""
+
+    def __init__(self, at_seconds, limit_key):
+        super().__init__(f"Forecast export exceeds controllable absorption at {limit_key}")
+        self.at_seconds = at_seconds
+        self.limit_key = limit_key
+
+
 class SiteReservation:
     @classmethod
     def from_snapshot(
@@ -55,19 +65,44 @@ class SiteReservation:
         order_seed=0,
         tolerance_soc=0.05,
         departure_margin_seconds=0.0,
+        reserve_programmes_in_certified_window=False,
         budget_seconds=5.0,
         envelopes=None,
     ):
         inputs = read_site_inputs(snapshot, agent_id, step_seconds, tolerance_soc, envelopes)
-        return cls(
+        return cls.plan(
             inputs,
             step_seconds=step_seconds,
             departure_margin_seconds=departure_margin_seconds,
+            reserve_programmes_in_certified_window=reserve_programmes_in_certified_window,
             group_order=group_order_for(snapshot, agent_id, order_seed),
             budget_seconds=budget_seconds,
             block_offset_seconds=getattr(snapshot, "clock_seconds", snapshot.timestamp_seconds)
             % 900.0,
         )
+
+    @classmethod
+    def plan(cls, inputs, *, budget_seconds=5.0, **options):
+        """Prefer a full witness. Reassess before an unserviceable forecast export.
+
+        Every retained row keeps its original physical bound. A new programme
+        must finish inside the certified window. A held command or running
+        programme may never be truncated to obtain a witness.
+        """
+        end_time = monotonic() + budget_seconds
+        alert = None
+        remaining = budget_seconds
+        while True:
+            try:
+                return cls(inputs, budget_seconds=remaining, _forecast_alert=alert, **options)
+            except _UnavoidableForecastExport as conflict:
+                # Each retry ends before a conflict strictly inside the last horizon.
+                alert = conflict
+                remaining = end_time - monotonic()
+                if remaining <= 0:
+                    raise ReservationUnavailable(
+                        "Site reservation time budget expired"
+                    ) from conflict
 
     def __init__(
         self,
@@ -78,6 +113,8 @@ class SiteReservation:
         budget_seconds=5.0,
         block_offset_seconds=0.0,
         departure_margin_seconds=0.0,
+        reserve_programmes_in_certified_window=False,
+        _forecast_alert=None,
     ):
         if not 0 < step_seconds <= 86400 or not math.isfinite(step_seconds):
             raise ValueError("Invalid physical control interval")
@@ -106,7 +143,7 @@ class SiteReservation:
         self.service_status = {}
         self.calendar = ()
         self.flow = defaultdict(dict)
-        self.running = defaultdict(float)
+        self.programmes = defaultdict(dict)
         self.block_offset = float(block_offset_seconds) % 900.0
         self.dt = step_seconds
         if (
@@ -117,12 +154,39 @@ class SiteReservation:
         self.departure_margin = departure_margin_seconds
         self.early_reserve = {}
         self.edges = self._edges(step_seconds)
+        self.forecast_alert = _forecast_alert
+        self.reserve_programmes_in_certified_window = reserve_programmes_in_certified_window
+        if _forecast_alert is not None:
+            cut = _forecast_alert.at_seconds
+            held = max(
+                [self.dt]
+                + [
+                    len(u.programme_kw) * u.programme_step_seconds
+                    for u in inputs.equipment
+                    if u.running
+                ]
+            )
+            if cut < held or cut not in self.edges[:-1]:
+                raise ReservationInfeasible("Forecast conflict within a committed interval")
+            self.edges = self.edges[: self.edges.index(cut) + 1]
         self.n = len(self.edges) - 1
         for unit in inputs.equipment:
             self._build_equipment(unit)
+        forecast_rows = {}
         for limit in inputs.limits:
-            self._build_limit(limit)
-        self._prioritise()
+            self._build_limit(limit, forecast_rows)
+        # Service optimisation fixes additional bounds. The diagnostic must
+        # start from the original physical problem, before those priorities.
+        initial_bounds = tuple(self.model.bounds) if forecast_rows else ()
+        initial_rows = len(self.model.rows)
+        try:
+            self._prioritise()
+        except ReservationInfeasible:
+            if forecast_rows and self._forecast_causes_conflict(
+                forecast_rows, initial_bounds, initial_rows
+            ):
+                raise _UnavoidableForecastExport(*min(forecast_rows.values()))
+            raise
         self._original_problem = self.model.verification_problem()
         self._initial_witness = self.witness.copy()
 
@@ -260,25 +324,24 @@ class SiteReservation:
         self._service(unit)
 
     def _add_programme(self, unit, start, bit):
-        # Maximum power within each overlapping block is conservative for a
-        # coarser reservation grid, exact on aligned constant-power intervals.
-        occupied = defaultdict(float)
-        for n, power in enumerate(unit.programme_kw):
-            lo = start + n * unit.programme_step_seconds
-            hi = lo + unit.programme_step_seconds
-            for t in range(max(0, int(np.searchsorted(self.edges, lo, side="right")) - 1), self.n):
-                if self.edges[t] >= hi:
-                    break
-                occupied[t] = max(occupied[t], power)
-        for t, power in occupied.items():
-            if bit is None:
-                # A running programme is already in the measured residual
-                # headroom of the current interval. Future envelopes are
-                # relative to uncontrollable load and must retain the cycle.
-                if t > 0:
-                    self.running[unit.key, t] += power
-            else:
-                self.flow[unit.key, t][bit] = power
+        # Import needs a peak, export needs a guaranteed minimum. A block
+        # that overlaps only part of a cycle has zero guaranteed absorption.
+        lower = unit.programme_kw if unit.programme_min_kw is None else unit.programme_min_kw
+        if len(lower) != len(unit.programme_kw) or any(
+            not 0 <= lo <= hi for lo, hi in zip(lower, unit.programme_kw)
+        ):
+            raise ReservationUnavailable(f"{unit.key}: invalid programme power envelope")
+        end = start + len(lower) * unit.programme_step_seconds
+        for t, (lo, hi) in enumerate(zip(self.edges, self.edges[1:])):
+            if hi <= start or lo >= end or (t == 0 and bit is None):
+                # Running power is already included in the live net meter.
+                continue
+            first = max(0, math.floor((lo - start) / unit.programme_step_seconds))
+            stop = min(len(lower), math.ceil((hi - start) / unit.programme_step_seconds))
+            self.programmes["import", unit.key, t][bit] = max(unit.programme_kw[first:stop])
+            self.programmes["export", unit.key, t][bit] = (
+                min(lower[first:stop]) if start <= lo and hi <= end else 0.0
+            )
 
     def _energy_balance(self, unit, t, hours, charge, discharge):
         key, b = unit.key, unit.battery
@@ -327,9 +390,19 @@ class SiteReservation:
         else:
             return
         self.ledger[unit.key] = requested
+        service_status = "in_reservation"
         if deadline > self.edges[-1]:
-            self.service_status[unit.key] = "beyond_reservation_horizon"
-            return
+            if not (
+                self.reserve_programmes_in_certified_window
+                and self.forecast_alert is not None
+                and unit.programme_kw
+                and any(key == unit.key for key, _ in self.starts)
+            ):
+                self.service_status[unit.key] = "beyond_reservation_horizon"
+                return
+            # Consider only complete starts constructed inside the certified horizon.
+            # The original user deadline still governs priority between devices.
+            service_status = "in_certified_window"
         if deadline < self.dt - 1e-8:
             # A single setpoint must be executable throughout its control
             # interval. No part of a later interval counts towards this service.
@@ -337,9 +410,9 @@ class SiteReservation:
             if requested > 0.0:
                 self.protected[unit.key] = 0.0
             return
-        self.service_status[unit.key] = "in_reservation"
-        end = self.edges.index(deadline)
+        self.service_status[unit.key] = service_status
         if unit.battery and unit.target_kwh is not None:
+            end = self.edges.index(deadline)
             initial = min(unit.battery.energy_kwh, unit.target_kwh)
             deficit = max(0.0, unit.target_kwh - unit.battery.energy_kwh)
             if deficit < 1e-9:
@@ -355,7 +428,7 @@ class SiteReservation:
             return
         self.coverage[unit.key] = frac
 
-    def _build_limit(self, limit):
+    def _build_limit(self, limit, forecast_rows):
         if limit.direction not in {"import", "export"}:
             raise ReservationUnavailable(f"Unknown limit direction {limit.direction}")
         sign = 1.0 if limit.direction == "import" else -1.0
@@ -368,7 +441,12 @@ class SiteReservation:
                 _sum_terms(terms, self.flow[key, t], sign * factor)
                 unit = self.units[key]
                 unknown = unit.unconfirmed_import_kw if sign > 0 else unit.unconfirmed_export_kw
-                operating += factor * (unknown + sign * self.running[key, t])
+                operating += factor * unknown
+                for bit, power in self.programmes[limit.direction, key, t].items():
+                    if bit is None:
+                        operating += sign * factor * power
+                    else:
+                        terms[bit] = terms.get(bit, 0.0) + sign * factor * power
             lo, hi = self.edges[t : t + 2]
             bound = limit.at(lo, self.block_offset)
             if t == 0 and not limit.constant:
@@ -376,7 +454,40 @@ class SiteReservation:
                 # cadence. It must fit every quarter over which it is applied.
                 for boundary in range(900, math.ceil(hi + self.block_offset), 900):
                     bound = min(bound, limit.at(boundary - self.block_offset, self.block_offset))
-            self.model.row(terms, hi=bound - operating)
+            upper = bound - operating
+            self.model.row(terms, hi=upper)
+            if (
+                t > 0
+                and bound < 0.0
+                and limit.direction == "export"
+                and not limit.constant
+                and limit.scope in {"site", "phase"}
+            ):
+                forecast_rows[len(self.model.rows) - 1] = (lo, limit.key)
+
+    def _forecast_causes_conflict(self, forecast_rows, initial_bounds, initial_rows):
+        """Isolate the cause; no command from this diagnostic model is dispatched."""
+        probe = LinearModel(self.model.remaining_seconds())
+        integers = set(self.model.integer)
+        for col, (lower, upper) in enumerate(initial_bounds):
+            probe.var(lower, upper, binary=col in integers)
+        for row in range(initial_rows):
+            if row not in forecast_rows:
+                probe.row(self.model.rows[row], *self.model.limits[row])
+        try:
+            probe.solve()
+        except ReservationInfeasible:
+            return False
+        # Reinstating exactly these original rows must prove the full physical
+        # problem infeasible, independent of the service optimisation. This
+        # also detects consecutive solar slots competing for a single start.
+        for row in forecast_rows:
+            probe.row(self.model.rows[row], *self.model.limits[row])
+        try:
+            probe.solve()
+        except ReservationInfeasible:
+            return True
+        return False
 
     def _fair_service_groups(self, fractions):
         cohorts = defaultdict(list)
@@ -406,11 +517,11 @@ class SiteReservation:
             x = self.model.solve({fair: -1.0})
             self.model.bound(fair, max(0.0, x[fair] - 1e-9), 1.0)
             cost = {fractions[key]: -1.0 for key in cohort}
-            x = self.model.solve(cost)
+            x = self.model.solve(cost, known_feasible=x)
             self.model.row(dict.fromkeys(cost, 1.0), lo=sum(x[col] for col in cost) - 1e-9)
             for key in cohort:
                 col = fractions[key]
-                x = self.model.solve({col: -1.0})
+                x = self.model.solve({col: -1.0}, known_feasible=x)
                 level = float(np.clip(x[col], 0.0, 1.0))
                 if col in self.model.integer:
                     level = round(level)
@@ -747,6 +858,14 @@ class SiteReservation:
     def diagnostics(self):
         return {
             "reservation_notes": self.notes,
+            "forecast_export_alert": (
+                {
+                    "at_seconds": self.forecast_alert.at_seconds,
+                    "limit": self.forecast_alert.limit_key,
+                }
+                if self.forecast_alert is not None
+                else None
+            ),
             "requested_service": dict(self.ledger),
             "protected_fractions": dict(self.protected),
             "departure_margin_seconds": self.departure_margin,

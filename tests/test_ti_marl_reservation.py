@@ -470,3 +470,136 @@ def test_another_native_solve_cannot_block_site_beyond_its_deadline():
             assert not job.done()
         finally:
             finish.set()
+
+
+def test_retry_contradictory_infeasibility_requires_a_verified_witness(monkeypatch):
+    import highspy
+
+    from algorithms.ti_marl.runtime.reservation_solver import LinearModel, ReservationInfeasible
+
+    model = LinearModel(5.0)
+    col = model.var()
+    previous = model.solve({col: -1.0})
+    assert previous[col] == pytest.approx(1.0)
+    actual_status = highspy.Highs.getModelStatus
+    statuses = []
+
+    def spurious_infeasibility(solver):
+        statuses.append(solver.getOptionValue("presolve")[1])
+        if len(statuses) == 1:
+            return highspy.HighsModelStatus.kInfeasible
+        return actual_status(solver)
+
+    monkeypatch.setattr(highspy.Highs, "getModelStatus", spurious_infeasibility)
+    optimum = model.solve({col: 1.0}, known_feasible=previous)
+    assert optimum[col] == pytest.approx(0.0)
+    assert statuses == ["choose", "off"]
+    assert model.solver.getOptionValue("presolve")[1] == "choose"
+
+    model.bound(col, 0.0, 0.0)
+    statuses.clear()
+    with pytest.raises(ReservationInfeasible):
+        model.solve(known_feasible=previous)
+    assert statuses == ["choose"]
+
+
+def test_forecast_export_alert_keeps_measured_limits_and_complete_programmes():
+    washer = Equipment("W", (IDLE, START), deadline_seconds=3600.0, programme_kw=(1.0,) * 3)
+    export = PowerLimit("site", {"W": 1.0}, "export", 4.0, (4.0, 4.0, -3.0, 4.0), scope="site")
+    data = SiteInputs((washer,), (export,))
+    site = SiteReservation.plan(data)
+    assert site.diagnostics["forecast_export_alert"] == {"at_seconds": 1800.0, "limit": "site"}
+    assert site.diagnostics["verified"]
+    assert site.edges[-1] == 1800
+    assert site.admissible_modes("W") == ("IDLE",)
+    from algorithms.ti_marl.runtime.reservation_solver import ReservationInfeasible
+
+    # A present violation cannot be hidden by a forecast alert.
+    with pytest.raises(ReservationInfeasible):
+        SiteReservation.plan(replace(data, limits=(replace(export, current_kw=-3.0),)))
+    # A held, irreversible action cannot be cut short for certification.
+    with pytest.raises(ReservationInfeasible):
+        SiteReservation.plan(replace(data, equipment=(replace(washer, running=True),)))
+
+
+def test_available_absorption_preserves_the_full_export_witness():
+    car = Equipment("A", (IDLE, CHARGE), Battery(60, 10), deadline_seconds=1800, target_kwh=11)
+    export = PowerLimit("phase", {"A": 1.0}, "export", 1, (1, -3), scope="phase")
+    site = SiteReservation.plan(SiteInputs((car,), (export,)))
+    assert site.diagnostics["forecast_export_alert"] is None
+    assert site.edges[-1] == 1800
+    assert site.diagnostics["verified"]
+
+
+def test_softcps_programme_uses_last_occupied_slot_and_separate_last_start():
+    from types import SimpleNamespace
+
+    from algorithms.ti_marl.runtime.reservation_inputs import _profiles
+
+    group = SimpleNamespace(
+        group_id="W",
+        group_type="deferrable",
+        reservation_profile={},
+        ports=[],
+        max_charge_power_kw=0,
+        max_discharge_power_kw=0,
+        output_unconfirmed=False,
+    )
+    values = dict(
+        pending=1,
+        cycle_duration_steps=4,
+        cycle_peak_power_kw=1,
+        hours_until_deadline=0.75,
+        hours_until_latest_start=0,
+    )
+    for deadline in (0.75, 4.0):
+        unit = _profiles(group, dict(values, hours_until_deadline=deadline), 900, 0.05, [])
+        assert unit.deadline_seconds == 3600
+        site = SiteReservation(SiteInputs((replace(unit, modes=(IDLE, START)),), ()))
+        assert site.admissible_modes("W") == ("START",)
+
+
+def test_programme_peak_is_not_guaranteed_absorption_of_forecast_solar():
+    washer = Equipment("W", (IDLE, START), deadline_seconds=1800, programme_kw=(1, 4))
+    cap = PowerLimit("phase", {"W": 1.0}, "export", 3, (3, -3), scope="phase")
+    assert SiteReservation.plan(SiteInputs((washer,), (cap,))).admissible_modes("W") == ("START",)
+    unknown_shape = replace(washer, programme_min_kw=(1, 0))
+    domain = SiteReservation.plan(SiteInputs((unknown_shape,), (cap,)))
+    assert domain.diagnostics["forecast_export_alert"]["at_seconds"] == 900
+    assert domain.admissible_modes("W") == ("IDLE",)
+
+
+def test_absorbable_forecast_export_cannot_hide_an_unrelated_import_conflict():
+    from algorithms.ti_marl.runtime.reservation_solver import ReservationInfeasible
+
+    car = Equipment("A", (IDLE, CHARGE), Battery(60, 10), deadline_seconds=1800, target_kwh=11)
+    lost = Equipment("L", (IDLE,), unconfirmed_import_kw=3)
+    export = PowerLimit("site", {"A": 1.0}, "export", 5, (5, -3), scope="site")
+    branch = PowerLimit("branch", {"L": 1.0}, "import", 4, (4, 1), scope="group")
+    with pytest.raises(ReservationInfeasible):
+        SiteReservation.plan(SiteInputs((car, lost), (export, branch)))
+
+
+def test_consecutive_solar_alerts_cannot_use_the_same_programme_start_twice():
+    washer = Equipment("W", (IDLE, START), deadline_seconds=3600, programme_kw=(1,))
+    cap = PowerLimit("phase", {"W": 1.0}, "export", 3, (3, -0.5, -0.5, 3), scope="phase")
+    domain = SiteReservation.plan(SiteInputs((washer,), (cap,)))
+    assert domain.diagnostics["forecast_export_alert"]["at_seconds"] == 900
+    assert domain.edges == [0, 900]
+
+
+def test_certified_window_protects_a_complete_cycle_without_relaxing_export():
+    washer = Equipment("W", (IDLE, START), deadline_seconds=3600, programme_kw=(1.0, 1.0))
+    export = PowerLimit("site", {"W": 1.0}, "export", 4.0, (4.0, 4.0, -3.0, 4.0), scope="site")
+    inputs = SiteInputs((washer,), (export,))
+    legacy = SiteReservation.plan(inputs)
+    assert set(legacy.admissible_modes("W")) == {"IDLE", "START"}
+    enabled = SiteReservation.plan(inputs, reserve_programmes_in_certified_window=True)
+    assert enabled.edges == legacy.edges and enabled.edges[-1] == 1800
+    assert enabled.units["W"].deadline_seconds == 3600
+    assert enabled.service_status["W"] == "in_certified_window"
+    assert enabled.admissible_modes("W") == ("START",)
+    too_long = replace(inputs, equipment=(replace(washer, programme_kw=(1.0,) * 3),))
+    blocked = SiteReservation.plan(too_long, reserve_programmes_in_certified_window=True)
+    assert blocked.admissible_modes("W") == ("IDLE",)
+    assert blocked.service_status["W"] == "beyond_reservation_horizon"

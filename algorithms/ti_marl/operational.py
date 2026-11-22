@@ -68,7 +68,10 @@ class OperatingControl:
         if self.reward_profile != "environment":
             from algorithms.ti_marl.runtime.reward_feedback import SoftCPSRewardFeedback
 
-            self.interval_reward_feedback = SoftCPSRewardFeedback().transition_info
+            self.interval_reward_feedback = SoftCPSRewardFeedback(
+                measure_ev_excess=self.reward_penalties.ev_excess_kwh > 0,
+                measure_terminal_stock=self.reward_penalties.stationary_terminal_deficit_kwh > 0,
+            ).transition_info
             self.requires_deterministic_transition_observation = True
 
     def _market_day(self, seconds):
