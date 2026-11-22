@@ -25,6 +25,7 @@ jobs:
         working-directory: /tmp
         run: |
           algorithms-job --validate --config "$GITHUB_WORKSPACE/configs/config.yaml"
+          algorithms-job --validate --config "$GITHUB_WORKSPACE/configs/templates/rl/ti_marl_v2_evaluate.yaml"
           algorithms-job --validate --config "$GITHUB_WORKSPACE/configs/templates/dynamic/transformer_ppo_entity_dynamic.yaml"
           python -c 'import sys; from algorithms.configuration.project import validate_config; assert not ({"torch", "citylearn", "mlflow", "numpy"} & sys.modules.keys())'
   test:

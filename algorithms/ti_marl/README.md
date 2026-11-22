@@ -6,12 +6,14 @@ The Core-30 recipe exercises the thesis controller with one short training episo
 
 ```bash
 recipe=configs/templates/rl/ti_marl_core30.yaml
-schema=datasets/rec_pt_2023_core_30_v2/evaluation/preparation_2023/core_30_normal.json
+schema=datasets/pt_rec_30/evaluation/rec_30_normal.json
 mkdir -p runs/ti-marl-inputs
 python scripts/generate_typed_interfaces.py --config "$recipe" --output runs/ti-marl-inputs/interfaces
 python scripts/prepare_ti_marl_forecasts.py "$schema" runs/ti-marl-inputs/forecasts.jsonl --first 836 --last 852 --calibration-end 800
 algorithms-job --config "$recipe" --job_id ti-marl-core30
 ```
+
+For a frozen household policy, use [the evaluation recipe](../../configs/templates/rl/ti_marl_v2_evaluate.yaml). It loads a width-128 checkpoint through the standard job runner, runs one deterministic evaluation and exports final KPIs and time series. Match the actor settings, site bindings, reward coefficients and forecast interval to the checkpoint and study. In AI Training, place the checkpoint, bindings and forecasts in the versioned dataset and set their paths under its mounted directory. Select the Algorithms image version produced by CI for the merged commit.
 
 | Configuration | Control and learning |
 |---|---|

@@ -150,7 +150,7 @@ class TypedController(BaseAgent):
         actor_class = JointActor if self.thesis_method else TypedActor
         self.actor_readout = actor_cfg.get("readout", "standard")
         if self.actor_readout in {"household", "household_start"}:
-            from algorithms.ti_marl.experiments.household import HouseholdActor
+            from algorithms.ti_marl.policy.household import HouseholdActor
 
             if self.method_variant != "v2":
                 raise ValueError("The household readout requires TI-MARL V2")

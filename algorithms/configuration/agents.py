@@ -1246,7 +1246,9 @@ class TIMARLHyperparameters(BaseModel):
     contract_version: Literal["ti_marl_v1"] = "ti_marl_v1"
     method_variant: Literal["legacy", "v0", "v1", "v1c", "v2"] = "legacy"
     hierarchy: Optional[TIMARLHierarchyConfig] = None
-    operating_reward: Literal["environment", "thesis_common_reward_v1", "settlement_smoke"] = "environment"
+    operating_reward: Literal["environment", "thesis_common_reward_v1", "settlement_smoke"] = (
+        "environment"
+    )
     reward_penalties: TIMARLRewardPenalties = Field(default_factory=TIMARLRewardPenalties)
     reference_sites: int = Field(default=30, ge=1)
     departure_margin_seconds: float = Field(default=0.0, ge=0, le=86400, allow_inf_nan=False)
@@ -1304,7 +1306,9 @@ class TIMARLHyperparameters(BaseModel):
         if self.hierarchy is not None and self.method_variant != "v2":
             raise ValueError("TI-MARL V3 requires method_variant=v2")
         if self.hierarchy is not None and self.operating_reward == "environment":
-            raise ValueError("Community incentives require a named operating reward in EUR per reference member")
+            raise ValueError(
+                "Community incentives require a named operating reward in EUR per reference member"
+            )
         if self.method_variant != "legacy":
             if self.behavior_cloning and self.behavior_cloning.enabled:
                 raise ValueError("The thesis variants train on their constructed actions")
