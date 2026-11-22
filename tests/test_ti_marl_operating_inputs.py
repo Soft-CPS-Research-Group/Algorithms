@@ -545,9 +545,9 @@ def test_paired_export_requires_contiguous_same_lead_evidence_and_preserves_floo
         )
     )
     spec = {
-        "grid_export": {"max": 15},
+        "grid_export": {"max": 8},
         "grid_import": {"max": 10},
-        "phase_export": {"max": {"L1": 5, "L2": 5}},
+        "phase_export": {"max": {"L1": 3, "L2": 5}},
         "background_phase_weights": {"L1": 1 / 3},
     }
     registry = SimpleNamespace(for_agent=lambda _: SimpleNamespace(constraints=spec))
@@ -592,8 +592,11 @@ def test_paired_export_requires_contiguous_same_lead_evidence_and_preserves_floo
             again = feed.snapshot(site_data, {site: record}, now, error_kw=0.1, pv_lag_steps=1)
             assert again.outlooks == snap.outlooks
             bounds = reservation_envelopes(snap, registry, 0.1)
-            assert bounds["export"][1:3] == pytest.approx((13.5, 14.0))
-            assert bounds["s:export_phase_L1_kw"][1] == pytest.approx(4.5)
+            assert bounds["export"][1:3] == pytest.approx((0.0, 0.0))
+            assert bounds["s:export_phase_L1_kw"][1] == pytest.approx(0.0)
+            # Even higher certified capacity never increases ordinary export headroom.
+            spec["grid_export"]["max"] = 15
+            assert reservation_envelopes(snap, registry, 0.1)["export"][1] == pytest.approx(4.0)
             assert bounds["s:export_phase_L2_kw"][1] == pytest.approx(-6)
             assert bounds["site_import"][1] == pytest.approx(0)
         elif block == 100:

@@ -459,8 +459,12 @@ def reservation_envelopes(snapshot, registry, error_kw):
                 lead = len(bounds)
                 if share is not None and 1 <= lead <= len(curve.passive_export_error_kw):
                     paired = curve.passive_export_error_kw[lead - 1]
-                    if paired is not None and lq == pq == ESTIMATED:
-                        background = min(background, share * (pv - load + paired))
+                    if paired is not None and lq == pq == ESTIMATED and background > rating:
+                        # If only the independent extremes imply overload, a measured
+                        # joint certificate can admit net-consuming programmes. Give
+                        # discretionary export no additional capacity.
+                        if share * (pv - load + paired) <= rating:
+                            background = float(rating)
             else:
                 background = load_hi if share is None else share * (load_hi - pv_lo)
             bounds.append(float(rating) - background)
