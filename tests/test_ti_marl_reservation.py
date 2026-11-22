@@ -603,3 +603,71 @@ def test_certified_window_protects_a_complete_cycle_without_relaxing_export():
     blocked = SiteReservation.plan(too_long, reserve_programmes_in_certified_window=True)
     assert blocked.admissible_modes("W") == ("IDLE",)
     assert blocked.service_status["W"] == "beyond_reservation_horizon"
+
+
+def test_running_programme_can_certify_its_tail_from_metered_energy():
+    from types import SimpleNamespace
+
+    from algorithms.ti_marl.runtime.reservation_inputs import _profiles
+    from algorithms.ti_marl.runtime.reservation_solver import ReservationInfeasible
+
+    group = SimpleNamespace(
+        group_id="washer",
+        group_type="deferrable",
+        reservation_profile={},
+        ports=[],
+        max_charge_power_kw=0,
+        max_discharge_power_kw=0,
+        output_unconfirmed=False,
+    )
+    # A non-interruptible three-quarter programme has 0.10 kWh left after
+    # this quarter. All of it could fall in either of the two later quarters.
+    values = dict(
+        running=1,
+        remaining_duration_steps=3,
+        cycle_peak_power_kw=2,
+        hours_until_deadline=0.5,
+        current_step_power_kw=1.6,
+        current_step_energy_kwh=0.4,
+        remaining_energy_kwh=0.5,
+    )
+
+    def equipment(observations):
+        return replace(_profiles(group, observations, 900, 0.05, []), modes=(IDLE, START))
+
+    washer = equipment(values)
+    limit = PowerLimit("site", {"washer": 1}, "import", 1.0, (1, 0.5, 0.5), scope="site")
+    inputs = SiteInputs((washer,), (limit,))
+    reservation = SiteReservation.plan(inputs)
+    assert reservation.diagnostics["verified"]
+    assert reservation.edges == [0, 900, 1800, 2700]
+    assert reservation.units["washer"].programme_kw == pytest.approx((1.6, 0.4, 0.4), abs=1e-5)
+    assert reservation.units["washer"].programme_min_kw == (1.6, 0.0, 0.0)
+    assert reservation.limits == (limit,)
+    assert "washer:measured_running_energy_envelope" in reservation.notes
+
+    loose = replace(limit, future_kw=(1, 3, 3))
+    already_feasible = SiteReservation.plan(replace(inputs, limits=(loose,)))
+    assert already_feasible.units["washer"].programme_kw == (1.6, 2, 2)
+
+    # 0.10 kWh could all be used in one slot. An average over the two slots
+    # would incorrectly admit this 0.30 kW limit.
+    tight = replace(limit, future_kw=(1, 0.3, 0.3))
+    with pytest.raises(ReservationInfeasible):
+        SiteReservation.plan(replace(inputs, limits=(tight,)))
+    export = replace(limit, direction="export", future_kw=(1, -0.1, -0.1))
+    with pytest.raises(ReservationInfeasible):
+        SiteReservation.plan(replace(inputs, limits=(limit, export)))
+
+    for inconsistent in (
+        {k: v for k, v in values.items() if k != "remaining_energy_kwh"},
+        dict(values, remaining_energy_kwh=0.1),
+        dict(values, current_step_energy_kwh=0.2),
+        dict(values, remaining_energy_kwh=2.0),
+    ):
+        unverified = equipment(inconsistent)
+        assert unverified.running_tail_max_kw is None
+        with pytest.raises(ReservationInfeasible):
+            SiteReservation.plan(SiteInputs((unverified,), (limit,)))
+    group.output_unconfirmed = True
+    assert equipment(values).running_tail_max_kw is None
