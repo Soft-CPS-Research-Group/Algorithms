@@ -2,6 +2,8 @@ schema_version: algorithms.config.v1
 metadata:
   experiment_name: TI-MARL Core-30
   run_name: V2 frozen household evaluation
+runtime:
+  torch_num_threads: 1
 tracking:
   mlflow_enabled: false
   system_metrics_enabled: false
