@@ -14,6 +14,7 @@ from typing import Mapping
 import numpy as np
 
 from algorithms.ti_marl.contracts.models import InterfaceSnapshot
+from algorithms.ti_marl.runtime.passive_export import PassiveExportFeedback
 
 BLOCK_SECONDS = 900
 HORIZON = 96
@@ -38,6 +39,8 @@ class SiteOutlook:
     prediction_as_of_seconds: float | None = None
     residual_kw: tuple[float | None, float | None] = (None, None)
     max_abs_residual_kw: tuple[float, float] = (0.0, 0.0)
+    # Indexed by lead minus one. A missing entry keeps the independent channel bound.
+    passive_export_error_kw: tuple[float | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -118,12 +121,17 @@ class ForecastInputs:
     forecast_load includes deferrable programmes and is not a substitute.
     """
 
-    def __init__(self, step_seconds: float):
+    def __init__(self, step_seconds: float, *, metered_export_reserve=False):
         if not math.isfinite(step_seconds) or step_seconds <= 0:
             raise ValueError("step_seconds must be positive")
         self.step_seconds = step_seconds
         self.history = {}
         self.feedback = defaultdict(PhysicalForecastFeedback)
+        self.export_feedback = (
+            defaultdict(PassiveExportFeedback)
+            if metered_export_reserve and step_seconds == BLOCK_SECONDS
+            else None
+        )
         self.last_timestamp = None
 
     def snapshot(
@@ -192,7 +200,10 @@ class ForecastInputs:
                         ):
                             raise ValueError("Invalid or non-causal reservation calibration")
             if error_kw is not None:
-                error = (error_kw, error_kw)
+                if self.export_feedback is not None and error is not None:
+                    error = tuple(max(error_kw, e) for e in error)
+                else:
+                    error = (error_kw, error_kw)
             feedback = self.feedback[site]
             if new_instant:
                 # Only a fresh local meter can validate the forecast. The
@@ -220,6 +231,20 @@ class ForecastInputs:
                     for c in (1, 2)
                 )
                 feedback.observe(now, self.step_seconds, actual, upcoming, error, pv_lag_steps)
+            export_errors = ()
+            if self.export_feedback is not None and now == block * BLOCK_SECONDS:
+                paired = self.export_feedback[site]
+                eligible = self._paired_slots(record, now, paired.LEADS)
+                if new_instant:
+                    predicted = np.where(
+                        eligible, values[2, paired.LEADS] - values[1, paired.LEADS], np.nan
+                    )
+                    paired.observe(block, feedback.completed_passive_export_kw, predicted)
+                floors = feedback.calibration if error is not None else None
+                export_errors = tuple(
+                    margin if present else None
+                    for margin, present in zip(paired.margins(floors), eligible)
+                )
             outlooks.append(
                 SiteOutlook(
                     site,
@@ -232,10 +257,33 @@ class ForecastInputs:
                     feedback.residual_as_of,
                     feedback.residual,
                     feedback.max_abs,
+                    export_errors,
                 )
             )
         attrs = {f.name: getattr(base, f.name) for f in fields(InterfaceSnapshot)}
         return OperatingSnapshot(**attrs, outlooks=tuple(outlooks), clock_seconds=now)
+
+    @staticmethod
+    def _paired_slots(record, now, leads):
+        # Only a fresh, explicitly issued pair can calibrate the joint meter.
+        if (
+            record is None
+            or any(
+                record[k] != now
+                for k in ("issued_at_seconds", "received_at_seconds", "valid_from_seconds")
+            )
+            or record["interval_seconds"] != BLOCK_SECONDS
+        ):
+            return np.zeros(len(leads), dtype=bool)
+        demand, solar = (record.get(key, ()) for key in CHANNELS[1:])
+        return np.array(
+            [
+                lead < min(len(demand), len(solar))
+                and demand[lead] is not None
+                and solar[lead] is not None
+                for lead in leads
+            ]
+        )
 
     @staticmethod
     def _overlay(record, now, block, values, quality):
@@ -285,6 +333,7 @@ class PhysicalForecastFeedback:
         self.residual_block = self.residual_as_of = None
         self.residual = (None, None)
         self.max_abs = (0.0, 0.0)
+        self.completed_passive_export_kw = None
         self.calibration = (0.0, 0.0)
 
     def _add_meter(self, channel, start, seconds, power):
@@ -307,8 +356,13 @@ class PhysicalForecastFeedback:
         block = math.floor(now / BLOCK_SECONDS)
         start = block * BLOCK_SECONDS
         if self.block != block:
+            self.completed_passive_export_kw = None
             if self.block is not None:
                 end = (self.block + 1) * BLOCK_SECONDS
+                if block == self.block + 1 and all(
+                    math.isclose(cursor, end, rel_tol=0.0, abs_tol=1e-6) for cursor in self.cursor
+                ):
+                    self.completed_passive_export_kw = (self.area[1] - self.area[0]) / BLOCK_SECONDS
                 self.residual_block = self.block * BLOCK_SECONDS
                 self.residual_as_of = self.as_of
                 self.residual = tuple(
@@ -358,7 +412,11 @@ def reservation_envelopes(snapshot, registry, error_kw):
         curve = curves[site]
         margin = curve.calibration_error_kw
         if error_kw is not None:
-            margin = tuple(max(error_kw, residual) for residual in curve.max_abs_residual_kw)
+            floor = margin or (error_kw, error_kw)
+            margin = tuple(
+                max(error_kw, old, observed)
+                for old, observed in zip(floor, curve.max_abs_residual_kw)
+            )
         if margin is None:
             continue
         phase = re.search(r"_phase_(L[123])_", constraint.constraint_id)
@@ -398,6 +456,15 @@ def reservation_envelopes(snapshot, registry, error_kw):
                 share = weights.get(phase[1]) if isinstance(weights, Mapping) else None
             if export:
                 background = pv_hi if share is None else share * (pv_hi - load_lo)
+                lead = len(bounds)
+                if share is not None and 1 <= lead <= len(curve.passive_export_error_kw):
+                    paired = curve.passive_export_error_kw[lead - 1]
+                    if paired is not None and lq == pq == ESTIMATED and background > rating:
+                        # If only the independent extremes imply overload, a measured
+                        # joint certificate can admit net-consuming programmes. Give
+                        # discretionary export no additional capacity.
+                        if share * (pv - load + paired) <= rating:
+                            background = float(rating)
             else:
                 background = load_hi if share is None else share * (load_hi - pv_lo)
             bounds.append(float(rating) - background)

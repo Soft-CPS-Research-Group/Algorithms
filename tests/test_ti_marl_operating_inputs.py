@@ -429,3 +429,184 @@ def test_prepared_meter_forecast_is_causal_and_keeps_the_price_feed(tmp_path):
         issue_record("future.jsonl", meter_fit_end=issue + 1)
     with pytest.raises(ValueError, match="after fitting"):
         issue_record("overlap.jsonl", meter_fit_end=fit_end, calibration_end=fit_end + 1)
+
+
+def test_weather_nowcast_obeys_issue_and_fit_cutoffs(tmp_path):
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    from scripts.prepare_ti_marl_forecasts import prepare
+    from scripts.ti_marl_weather_pv import WEATHER_COLUMNS, WeatherPV
+
+    fit_end, issue = 2304, 2330
+    t = np.arange(issue + 100)
+    daylight = np.maximum(0, np.sin(2 * np.pi * (t % 96 - 24) / 96))
+    pv = daylight * (3 + t % 5 / 10)
+    w = pd.DataFrame({col: daylight * (100 + i) for i, col in enumerate(WEATHER_COLUMNS)})
+    model = WeatherPV.fit(pv[:fit_end], w.iloc[:fit_end], fit_end)
+    reference = model.predict(pv, w, [issue])
+    pv_moved = pv.copy()
+    pv_moved[issue:] += 100
+    later_weather = w.copy()
+    later_weather.iloc[issue + 1 :] += 100
+    extended = WeatherPV.fit(pv_moved, later_weather, fit_end)
+    np.testing.assert_equal(model.weights, extended.weights)
+    np.testing.assert_equal(extended.predict(pv_moved, later_weather, [issue]), reference)
+
+    series = pd.DataFrame({"non_shiftable_load": 0.2 + t % 4, "solar_generation": pv / 4})
+    series.to_parquet(tmp_path / "meter.parquet")
+    w.to_parquet(tmp_path / "weather.parquet")
+    tariff = pd.DataFrame({"electricity_pricing": t * 0.001})
+    for j in (1, 2, 3):
+        tariff[f"electricity_pricing_predicted_{j}"] = t * 0.002
+    tariff.to_parquet(tmp_path / "tariff.parquet")
+    schema = tmp_path / "schema.json"
+    schema.write_text(
+        json.dumps(
+            {
+                "seconds_per_time_step": 900,
+                "simulation_end_time_step": int(t[-1]),
+                "buildings": {
+                    "home": {
+                        "energy_simulation": "meter.parquet",
+                        "weather": "weather.parquet",
+                        "pricing": "tariff.parquet",
+                        "pv": {"attributes": {"generation_mode": "absolute"}},
+                    }
+                },
+            }
+        )
+    )
+    previous = tmp_path / "previous.jsonl"
+    updated = tmp_path / "updated.jsonl"
+    prepare(schema, previous, issue, issue, meter_fit_end=900)
+    prepare(
+        schema,
+        updated,
+        issue,
+        issue,
+        meter_fit_end=900,
+        weather_fit_end=fit_end,
+        calibration_end=issue,
+    )
+    before, after = (json.loads(p.read_text()) for p in (previous, updated))
+    assert before["price_eur_per_kwh"] == after["price_eur_per_kwh"]
+    for channel in ("non_shiftable_kw", "solar_kw"):
+        assert before[channel][0] == after[channel][0]
+        assert before[channel][13:] == after[channel][13:]
+    assert before["non_shiftable_kw"][2:] == after["non_shiftable_kw"][2:]
+    medium = WeatherPV.fit(pv, w, fit_end, 8)
+    expectation = medium.predict(pv, w, [issue])[0]
+    assert after["solar_kw"][8] == pytest.approx(
+        (before["solar_kw"][8] + expectation) / 2, abs=1e-5
+    )
+    assert medium.predict(pv_moved, later_weather, [issue])[0] == pytest.approx(expectation)
+    assert after["non_shiftable_kw"][1] == pytest.approx(series.non_shiftable_load.iat[issue] * 4)
+    assert after["solar_kw"][1] == pytest.approx(reference[0], abs=1e-5)
+    origins = np.arange(fit_end, issue - 1)
+    err_load = 4 * (
+        series.non_shiftable_load.to_numpy()[origins + 1]
+        - series.non_shiftable_load.to_numpy()[origins]
+    )
+    err_pv = pv[origins + 1] - model.predict(pv, w, origins)
+    np.testing.assert_allclose(
+        after["calibration_error_kw"], 1.1 * np.abs([err_load, err_pv]).max(axis=1), atol=1e-5
+    )
+    with pytest.raises(ValueError, match="after fitting"):
+        prepare(
+            schema,
+            tmp_path / "invalid",
+            issue,
+            issue,
+            weather_fit_end=fit_end,
+            calibration_end=fit_end,
+        )
+
+
+def test_paired_export_requires_contiguous_same_lead_evidence_and_preserves_floors(tmp_path):
+    from types import SimpleNamespace
+
+    from algorithms.ti_marl.contracts.models import LocalConstraint
+    from algorithms.ti_marl.runtime.forecasts import reservation_envelopes
+
+    _, base = compile_snapshot(tmp_path, buildings=("Building_1",))
+    site = base.agent_ids[0]
+    template = base.observation_parts[0]
+    feed = ForecastInputs(900, metered_export_reserve=True)
+    limits = tuple(
+        LocalConstraint(key, site, kind)
+        for key, kind in (
+            ("export", "export_headroom_kw"),
+            ("site_import", "charging_headroom_kw"),
+            ("s:export_phase_L1_kw", "export_phase_headroom_kw"),
+            ("s:export_phase_L2_kw", "export_phase_headroom_kw"),
+        )
+    )
+    spec = {
+        "grid_export": {"max": 8},
+        "grid_import": {"max": 10},
+        "phase_export": {"max": {"L1": 3, "L2": 5}},
+        "background_phase_weights": {"L1": 1 / 3},
+    }
+    registry = SimpleNamespace(for_agent=lambda _: SimpleNamespace(constraints=spec))
+    # Both meters jump together. Underprediction of net export is zero at lead
+    # one, and 2 kW at lead two. The individual absolute errors reach 6 kW.
+    for block in range(103):
+        now = 900 * block
+        demand = 4 if block % 2 == 0 else 10
+        lagged_solar = 5 if (block - 1) % 2 == 0 else 11
+        obs = tuple(
+            replace(
+                template,
+                sensor_id="self",
+                observation_id=key,
+                owner_agent_id=site,
+                values=(value,),
+                valid=not (block == 101 and key == "pv_power_kw"),
+                estimated=False,
+                age_seconds=0,
+            )
+            for key, value in (("non_shiftable_load", demand / 4), ("pv_power_kw", lagged_solar))
+        )
+        site_data = replace(base, constraints=limits, observation_parts=obs)
+        solar = [5.0] * 96
+        solar[2] = 3.0
+        record = issued(
+            site,
+            issued_at_seconds=now,
+            received_at_seconds=now,
+            valid_from_seconds=now,
+            non_shiftable_kw=[4.0] * 96,
+            solar_kw=solar,
+            calibration_error_kw=[0.2, 0.3],
+            calibration_end_seconds=0,
+        )
+        snap = feed.snapshot(site_data, {site: record}, now, error_kw=0.1, pv_lag_steps=1)
+        curve = snap.outlooks[0]
+        if block == 96:
+            assert curve.passive_export_error_kw[0] is None
+        elif block == 99:
+            assert curve.passive_export_error_kw[:2] == pytest.approx((0.5, 2.0))
+            again = feed.snapshot(site_data, {site: record}, now, error_kw=0.1, pv_lag_steps=1)
+            assert again.outlooks == snap.outlooks
+            bounds = reservation_envelopes(snap, registry, 0.1)
+            assert bounds["export"][1:3] == pytest.approx((0.0, 0.0))
+            assert bounds["s:export_phase_L1_kw"][1] == pytest.approx(0.0)
+            # Even higher certified capacity never increases ordinary export headroom.
+            spec["grid_export"]["max"] = 15
+            assert reservation_envelopes(snap, registry, 0.1)["export"][1] == pytest.approx(4.0)
+            assert bounds["s:export_phase_L2_kw"][1] == pytest.approx(-6)
+            assert bounds["site_import"][1] == pytest.approx(0)
+        elif block == 100:
+            missing = dict(record, solar_kw=[5.0, None] + solar[2:])
+            assert (
+                feed.snapshot(site_data, {site: missing}, now, error_kw=0.1, pv_lag_steps=1)
+                .outlooks[0]
+                .passive_export_error_kw[0]
+                is None
+            )
+        elif block > 100:
+            assert all(v is None for v in curve.passive_export_error_kw)
+    assert ForecastInputs(60, metered_export_reserve=True).export_feedback is None

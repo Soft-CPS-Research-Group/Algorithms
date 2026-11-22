@@ -19,6 +19,12 @@ from tempfile import NamedTemporaryFile
 import numpy as np
 import pandas as pd
 
+if __package__:
+    from .ti_marl_weather_pv import HISTORY, SOLAR_LEADS, WEATHER_COLUMNS, WeatherPV
+else:  # Also support invoking this file directly.
+    from ti_marl_weather_pv import HISTORY, SOLAR_LEADS, WEATHER_COLUMNS, WeatherPV
+
+
 SLOTS_PER_DAY = 96
 FIRST_FIT_ISSUE = 7 * SLOTS_PER_DAY + 2
 # Fit separate coefficients for short and long leads, pooling nearby leads.
@@ -112,6 +118,7 @@ def prepare(
     calibration_end: int | None = None,
     *,
     meter_fit_end: int | None = None,
+    weather_fit_end: int | None = None,
 ):
     schema = json.loads(schema_path.read_text())
     if schema["seconds_per_time_step"] != 900:
@@ -126,8 +133,14 @@ def prepare(
             raise ValueError("Meter fitting needs historical labels ending before the first issue")
         if calibration_end is not None and calibration_end <= meter_fit_end + 1:
             raise ValueError("Calibration needs a completed one-step forecast after fitting")
+    if weather_fit_end is not None:
+        if not HISTORY + 96 <= weather_fit_end <= first:
+            raise ValueError("Next-quarter fitting requires 23 prior days before the first issue")
+        if calibration_end is not None and calibration_end <= weather_fit_end + 1:
+            raise ValueError("Next-quarter calibration needs completed observations after fitting")
     root = (schema_path.parent / schema.get("root_directory", ".")).resolve()
-    sites, tariffs = {}, {}
+    first_prediction = max(weather_fit_end or 0, meter_fit_end or 0)
+    sites, tariffs, weather_files = {}, {}, {}
     for site, building in schema["buildings"].items():
         if not building.get("include", True):
             continue
@@ -148,16 +161,39 @@ def prepare(
         if tariff_name not in tariffs:
             tariffs[tariff_name] = pd.read_parquet(root / tariff_name)
         model = MeterForecaster.fit(physical, meter_fit_end) if meter_fit_end is not None else None
+        next_values = None
+        if weather_fit_end is not None:
+            origins = np.arange(first_prediction, last + 1)
+            next_pv = np.zeros((len(origins), SOLAR_LEADS))
+            if pv:
+                weather_path = root / building["weather"]
+                if weather_path not in weather_files:
+                    weather_files[weather_path] = (
+                        pd.read_parquet(weather_path, columns=list(WEATHER_COLUMNS))
+                        .iloc[: last + 1]
+                        .astype(float)
+                    )
+                weather = weather_files[weather_path]
+                for lead in range(1, SOLAR_LEADS + 1):
+                    estimator = WeatherPV.fit(physical[:, 1], weather, weather_fit_end, lead)
+                    next_pv[:, lead - 1] = estimator.predict(physical[:, 1], weather, origins)
+            # The live non-shiftable demand is an exogenous reading at the issue time.
+            next_values = np.column_stack((physical[origins, 0], next_pv))
         error = None
         if calibration_end is not None:
-            if model is None:
+            if next_values is not None:
+                stop = calibration_end - first_prediction - 1
+                residuals = (
+                    physical[first_prediction + 1 : calibration_end] - next_values[:stop, :2]
+                )
+            elif model is None:
                 residuals = physical[96:calibration_end] - physical[: calibration_end - 96]
             else:
                 issues = np.arange(meter_fit_end, calibration_end - 1)
                 residuals = physical[issues + 1] - model.predict(physical, issues, 1)
             # Keep errors separate so load and PV bounds cannot cross zero.
             error = (1.1 * np.abs(residuals).max(axis=0)).tolist()
-        sites[site] = physical, tariff_name, error, model
+        sites[site] = physical, tariff_name, error, model, next_values
     with new_archive(output) as destination:
         for issue in range(first, last + 1):
             targets = issue + np.arange(96)
@@ -182,12 +218,18 @@ def prepare(
                                 break
                     series.append(price if price is not None and np.isfinite(price) else None)
                 prices[name] = series
-            for site, (physical, tariff_name, error, model) in sites.items():
+            for site, (physical, tariff_name, error, model, next_values) in sites.items():
                 forecast = (
                     physical[history]
                     if model is None
                     else model.predict(physical, issue, targets - issue)
                 )
+                if next_values is not None:
+                    short = next_values[issue - first_prediction]
+                    forecast[1] = short[:2]
+                    forecast[2 : SOLAR_LEADS + 1, 1] = (
+                        forecast[2 : SOLAR_LEADS + 1, 1] + short[2:]
+                    ) / 2
                 record = {
                     "site": site,
                     "issued_at_seconds": issue * 900,
@@ -221,6 +263,12 @@ if __name__ == "__main__":
         type=int,
         help="Use a fitted passive demand and solar forecast. Excludes this native step and later labels.",
     )
+    parser.add_argument(
+        "--weather-fit-end",
+        type=int,
+        help="Use live base demand for one quarter and issued weather for three hours. "
+        "Solar model labels end strictly before this native step.",
+    )
     options = parser.parse_args()
     prepare(
         options.schema,
@@ -229,4 +277,5 @@ if __name__ == "__main__":
         options.last,
         options.calibration_end,
         meter_fit_end=options.meter_fit_end,
+        weather_fit_end=options.weather_fit_end,
     )
