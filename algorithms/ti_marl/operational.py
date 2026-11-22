@@ -31,6 +31,7 @@ class OperatingControl:
         self.manager = None
         self.forecasts = None
         self.reservation_error = hyper.get("reservation_error_kw")
+        self.metered_export_reserve = hyper.get("metered_export_reserve", False)
         archive_path = hyper.get("issued_forecasts_path")
         self.archive = IssuedForecastArchive(archive_path) if archive_path else None
         default_reward = "thesis_common_reward_v1" if self.thesis_method else "environment"
@@ -90,12 +91,16 @@ class OperatingControl:
         ):
             raise ValueError("Local decision steps must divide the 15-minute coordinator period")
         if self.forecasts is None or seconds != self.forecasts.step_seconds:
-            self.forecasts = ForecastInputs(seconds)
+            self.forecasts = ForecastInputs(
+                seconds, metered_export_reserve=self.metered_export_reserve
+            )
 
     def on_episode_start(self, *, episode, training):
         super().on_episode_start(episode=episode, training=training)
         if self.forecasts:
-            self.forecasts = ForecastInputs(self.forecasts.step_seconds)
+            self.forecasts = ForecastInputs(
+                self.forecasts.step_seconds, metered_export_reserve=self.metered_export_reserve
+            )
         if self.manager:
             if self.manager.phase == "coordinator":
                 self.actor.order_seed = self.critic.order_seed = 0

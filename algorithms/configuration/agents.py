@@ -1257,6 +1257,7 @@ class TIMARLHyperparameters(BaseModel):
     issued_forecasts_path: Optional[str] = Field(default=None, min_length=1)
     # Training-calibrated bound on error in forecast non-controllable net load.
     reservation_error_kw: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    metered_export_reserve: bool = False
     typed_interfaces_dir: str = Field(min_length=1)
     interface_polling: bool = False
     simulator_bindings_path: Optional[str] = Field(default=None, min_length=1)
