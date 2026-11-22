@@ -610,3 +610,92 @@ def test_paired_export_requires_contiguous_same_lead_evidence_and_preserves_floo
         elif block > 100:
             assert all(v is None for v in curve.passive_export_error_kw)
     assert ForecastInputs(60, metered_export_reserve=True).export_feedback is None
+
+
+def test_same_quarter_export_history_uses_only_previously_completed_days():
+    import numpy as np
+
+    from scripts.prepare_ti_marl_forecasts import historical_passive_export
+
+    meters = np.zeros((96 * 62, 2))
+    meters[:, 0] = 2
+    meters[:, 1] = 5
+    slot = 9
+    meters[96 * 45 + slot, 1] = 9
+    issue = 96 * 57 - 1
+    upper = historical_passive_export(meters)
+    assert np.isnan(upper[96 * 55 + slot])
+    # Rolling peak 9 - 2 and the four-kW innovation observed on day 45.
+    assert upper[96 * 57 + slot] == 11
+    assert upper[96 * 57 + slot - 1] == 3
+    changed = meters.copy()
+    changed[issue:, 1] = 1000
+    expected = upper[issue + 1 : issue + 13]
+    np.testing.assert_array_equal(
+        historical_passive_export(changed)[issue + 1 : issue + 13], expected
+    )
+    np.testing.assert_array_equal(
+        historical_passive_export(meters[:issue])[issue + 1 : issue + 12], expected[:-1]
+    )
+
+
+def test_history_calibration_is_separate_from_actor_and_live_physical_bounds(tmp_path):
+    from types import SimpleNamespace
+
+    from algorithms.ti_marl.contracts.models import LocalConstraint
+    from algorithms.ti_marl.runtime.forecasts import reservation_envelopes
+
+    _, base = compile_snapshot(tmp_path, buildings=("Building_1",))
+    site = base.agent_ids[0]
+    feed = ForecastInputs(900, metered_export_reserve=True)
+    ordinary = ForecastInputs(900, metered_export_reserve=True)
+    spec = {"grid_export": {"max": 5}, "phase_export": {"max": {"L1": 2}}}
+    registry = SimpleNamespace(for_agent=lambda _: SimpleNamespace(constraints=spec))
+    limits = (
+        LocalConstraint("export", site, "export_headroom_kw"),
+        LocalConstraint("x_phase_L1_export", site, "export_phase_headroom_kw"),
+    )
+    template = base.observation_parts[0]
+    for block in range(105):
+        now = block * 900
+        obs = tuple(
+            replace(
+                template,
+                sensor_id="self",
+                observation_id=key,
+                owner_agent_id=site,
+                valid=block != 103,
+                estimated=False,
+                age_seconds=0,
+                values=(value,),
+            )
+            for key, value in (("non_shiftable_load", 0.5), ("pv_power_kw", 5))
+        )
+        state = replace(base, observation_parts=obs, constraints=limits)
+        r = issued(
+            site,
+            issued_at_seconds=now,
+            received_at_seconds=now,
+            valid_from_seconds=now,
+            non_shiftable_kw=[2.0] * 96,
+            solar_kw=[12.0] * 96,
+        )
+        # The alternative 1 kW estimate underestimates actual passive export (3 kW).
+        historical = dict(
+            r, passive_export_upper_kw=[1.0] * 12, passive_export_history_end_seconds=0
+        )
+        if block == 101:
+            historical["passive_export_history_end_seconds"] = now + 900
+        snap = feed.snapshot(state, {site: historical}, now, error_kw=0.1, pv_lag_steps=1)
+        old = ordinary.snapshot(state, {site: r}, now, error_kw=0.1, pv_lag_steps=1)
+        assert snap.outlooks[0].values == old.outlooks[0].values
+        limits_new = reservation_envelopes(snap, registry, 0.1)
+        limits_old = reservation_envelopes(old, registry, 0.1)
+        if block == 100:
+            assert snap.outlooks[0].historical_export_upper_kw[0] == pytest.approx(3)
+            assert limits_old["export"][1] < 0
+            assert limits_new["export"][1] == 0
+            assert limits_new["x_phase_L1_export"] == limits_old["x_phase_L1_export"]
+            assert limits_new["export"][0] == limits_old["export"][0]
+        elif block in (1, 101, 104):
+            assert limits_new == limits_old
