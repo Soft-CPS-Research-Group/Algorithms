@@ -60,6 +60,8 @@ class Equipment:
     # None denotes a fully specified programme. A peak alone gives no
     # guaranteed absorption of solar power in an individual future slot.
     programme_min_kw: tuple[float, ...] | None = None
+    # A measured maximum for any later slot of this already-running programme.
+    running_tail_max_kw: float | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,26 @@ def _parts_by_sensor(snapshot, agent):
         if physical_reading(part):
             result.setdefault(part.sensor_id, {})[part.observation_id] = float(part.values[0])
     return result
+
+
+def _running_tail_max_kw(values, steps, dt, first_kw, peak_kw):
+    """Cap each future nonnegative slot by the total energy left after this one."""
+    remaining = values.get("remaining_energy_kwh")
+    current = values.get("current_step_energy_kwh")
+    if steps < 2 or first_kw is None or remaining is None or current is None:
+        return None
+    hours = dt / 3600.0
+    # The two native meter readings are stored as floats. Round their
+    # difference upwards before treating it as a physical upper bound.
+    slack = 1e-6 * max(1.0, abs(remaining), abs(current), peak_kw * hours)
+    if (
+        not 0 <= current <= remaining
+        or abs(current - first_kw * hours) > slack
+        or remaining > steps * peak_kw * hours + slack
+    ):
+        return None
+    upper = (remaining - current + slack) / hours
+    return upper if upper < peak_kw else None
 
 
 def _profiles(group, values, dt, tolerance, diagnostics):
@@ -176,6 +198,8 @@ def _profiles(group, values, dt, tolerance, diagnostics):
                 earliest_seconds=max(0.0, values.get("hours_until_earliest_start", 0.0) * 3600.0),
                 running=running,
             )
+            if running and not group.output_unconfirmed:
+                kwargs["running_tail_max_kw"] = _running_tail_max_kw(values, steps, dt, first, peak)
             if steps > 1:
                 diagnostics.append(f"{group.group_id}:programme_peak_envelope")
     elif is_ev:

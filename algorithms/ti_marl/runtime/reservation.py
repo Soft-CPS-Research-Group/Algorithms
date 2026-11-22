@@ -45,6 +45,33 @@ def _sum_terms(target, terms, factor=1.0):
         target[col] = target.get(col, 0.0) + factor * coefficient
 
 
+def _with_measured_running_tails(inputs):
+    """Tighten only the upper envelope of a running load with fresh energy readings."""
+    units = []
+    notes = []
+    for unit in inputs.equipment:
+        cap = unit.running_tail_max_kw
+        if (
+            unit.running
+            and cap is not None
+            and len(unit.programme_kw) > 1
+            and unit.programme_min_kw is not None
+            and len(unit.programme_min_kw) == len(unit.programme_kw)
+        ):
+            upper = (unit.programme_kw[0],) + tuple(min(kw, cap) for kw in unit.programme_kw[1:])
+            if upper != unit.programme_kw and all(
+                lo <= hi for lo, hi in zip(unit.programme_min_kw, upper)
+            ):
+                unit = replace(unit, programme_kw=upper, running_tail_max_kw=None)
+                notes.append(f"{unit.key}:measured_running_energy_envelope")
+        units.append(unit)
+    if notes:
+        return replace(
+            inputs, equipment=tuple(units), diagnostics=inputs.diagnostics + tuple(notes)
+        )
+    return None
+
+
 class _UnavoidableForecastExport(ReservationInfeasible):
     """No joint schedule can absorb the projected export over the affected intervals."""
 
@@ -98,11 +125,17 @@ class SiteReservation:
             except _UnavoidableForecastExport as conflict:
                 # Each retry ends before a conflict strictly inside the last horizon.
                 alert = conflict
-                remaining = end_time - monotonic()
-                if remaining <= 0:
-                    raise ReservationUnavailable(
-                        "Site reservation time budget expired"
-                    ) from conflict
+            except ReservationInfeasible:
+                refined = _with_measured_running_tails(inputs)
+                if refined is None:
+                    raise
+                # Retry the full horizon. Current power, the complete running
+                # duration, import/export ratings and lower envelopes are unchanged.
+                inputs = refined
+                alert = None
+            remaining = end_time - monotonic()
+            if remaining <= 0:
+                raise ReservationUnavailable("Site reservation time budget expired")
 
     def __init__(
         self,
