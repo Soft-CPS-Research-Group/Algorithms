@@ -41,6 +41,7 @@ class SiteOutlook:
     max_abs_residual_kw: tuple[float, float] = (0.0, 0.0)
     # Indexed by lead minus one. A missing entry keeps the independent channel bound.
     passive_export_error_kw: tuple[float | None, ...] = ()
+    historical_export_upper_kw: tuple[float | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,7 @@ class ForecastInputs:
             if metered_export_reserve and step_seconds == BLOCK_SECONDS
             else None
         )
+        self.historical_export_feedback = {}
         self.last_timestamp = None
 
     def snapshot(
@@ -232,6 +234,7 @@ class ForecastInputs:
                 )
                 feedback.observe(now, self.step_seconds, actual, upcoming, error, pv_lag_steps)
             export_errors = ()
+            historical_upper = ()
             if self.export_feedback is not None and now == block * BLOCK_SECONDS:
                 paired = self.export_feedback[site]
                 eligible = self._paired_slots(record, now, paired.LEADS)
@@ -245,6 +248,21 @@ class ForecastInputs:
                     margin if present else None
                     for margin, present in zip(paired.margins(floors), eligible)
                 )
+                if site in self.historical_export_feedback or (
+                    record is not None and "passive_export_upper_kw" in record
+                ):
+                    if site not in self.historical_export_feedback:
+                        self.historical_export_feedback[site] = PassiveExportFeedback()
+                    history = self.historical_export_feedback[site]
+                    upper = self._historical_export(record, now, eligible)
+                    if new_instant:
+                        history.observe(block, feedback.completed_passive_export_kw, upper)
+                    # The issued estimate already retains all historical same-quarter
+                    # misses. Add the live same-lead miss or configured floor on top.
+                    historical_upper = tuple(
+                        float(value + margin) if np.isfinite(value) and margin is not None else None
+                        for value, margin in zip(upper, history.margins(floors))
+                    )
             outlooks.append(
                 SiteOutlook(
                     site,
@@ -258,10 +276,30 @@ class ForecastInputs:
                     feedback.residual,
                     feedback.max_abs,
                     export_errors,
+                    historical_upper,
                 )
             )
         attrs = {f.name: getattr(base, f.name) for f in fields(InterfaceSnapshot)}
         return OperatingSnapshot(**attrs, outlooks=tuple(outlooks), clock_seconds=now)
+
+    @staticmethod
+    def _historical_export(record, now, eligible):
+        result = np.full(len(eligible), np.nan)
+        if not any(eligible) or record is None or "passive_export_upper_kw" not in record:
+            return result
+        cutoff = record.get("passive_export_history_end_seconds")
+        curve = record["passive_export_upper_kw"]
+        if (
+            not isinstance(cutoff, (float, int))
+            or not 0 <= cutoff <= now
+            or not isinstance(curve, (list, tuple))
+            or len(curve) != len(eligible)
+        ):
+            return result
+        for i, value in enumerate(curve):
+            if eligible[i] and isinstance(value, (float, int)) and math.isfinite(value):
+                result[i] = value
+        return result
 
     @staticmethod
     def _paired_slots(record, now, leads):
@@ -463,7 +501,12 @@ def reservation_envelopes(snapshot, registry, error_kw):
                         # If only the independent extremes imply overload, a measured
                         # joint certificate can admit net-consuming programmes. Give
                         # discretionary export no additional capacity.
-                        if share * (pv - load + paired) <= rating:
+                        upper = pv - load + paired
+                        if lead <= len(curve.historical_export_upper_kw):
+                            historical = curve.historical_export_upper_kw[lead - 1]
+                            if historical is not None:
+                                upper = min(upper, historical)
+                        if share * upper <= rating:
                             background = float(rating)
             else:
                 background = load_hi if share is None else share * (load_hi - pv_lo)

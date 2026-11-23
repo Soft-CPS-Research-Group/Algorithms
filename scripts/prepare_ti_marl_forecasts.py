@@ -64,6 +64,27 @@ def _meter_features(meters, issues, leads):
     )
 
 
+def historical_passive_export(meters):
+    """Upper estimate by delivery quarter using only earlier paired meter readings.
+
+    The preceding 28 occurrences determine the peak. Every past positive miss
+    of this estimate at the same quarter is retained, with at least 28 prior errors
+    observed before publication. No decision-time weather or actor inputs change.
+    """
+    net = np.asarray(meters[:, 1], dtype=float) - meters[:, 0]
+    # Include targets just beyond the last issue. Their most recent input is
+    # still at least 84 quarters old at issuance.
+    future = np.full(len(net) + SOLAR_LEADS, np.nan)
+    for quarter in range(SLOTS_PER_DAY):
+        observed = pd.Series(net[quarter::SLOTS_PER_DAY])
+        series = observed.reindex(range(len(future[quarter::SLOTS_PER_DAY])))
+        peak = series.shift(1).rolling(28, min_periods=28).max()
+        error = (series - peak).clip(lower=0)
+        allowance = error.shift(1).expanding(min_periods=28).max()
+        future[quarter::SLOTS_PER_DAY] = (peak + allowance).to_numpy()
+    return future
+
+
 @dataclass(frozen=True)
 class MeterForecaster:
     """Per-site ridge forecasts for passive kW demand and PV, indexed by lead quarter."""
@@ -119,6 +140,7 @@ def prepare(
     *,
     meter_fit_end: int | None = None,
     weather_fit_end: int | None = None,
+    passive_export_history: bool = False,
 ):
     schema = json.loads(schema_path.read_text())
     if schema["seconds_per_time_step"] != 900:
@@ -141,6 +163,7 @@ def prepare(
     root = (schema_path.parent / schema.get("root_directory", ".")).resolve()
     first_prediction = max(weather_fit_end or 0, meter_fit_end or 0)
     sites, tariffs, weather_files = {}, {}, {}
+    export_reference = {}
     for site, building in schema["buildings"].items():
         if not building.get("include", True):
             continue
@@ -157,6 +180,8 @@ def prepare(
             physical[:, 1] = 0
         if not np.isfinite(physical).all() or (physical < 0).any():
             raise ValueError(f"Invalid physical profile for {site}")
+        if passive_export_history:
+            export_reference[site] = historical_passive_export(physical)
         tariff_name = building["pricing"]
         if tariff_name not in tariffs:
             tariffs[tariff_name] = pd.read_parquet(root / tariff_name)
@@ -240,6 +265,13 @@ def prepare(
                     "non_shiftable_kw": forecast[:, 0].tolist(),
                     "solar_kw": forecast[:, 1].tolist(),
                 }
+                if passive_export_history:
+                    upper = export_reference[site][issue + 1 : issue + SOLAR_LEADS + 1]
+                    if np.isfinite(upper).all():
+                        record["passive_export_upper_kw"] = upper.tolist()
+                        record["passive_export_history_end_seconds"] = (
+                            issue + SOLAR_LEADS - SLOTS_PER_DAY + 1
+                        ) * 900
                 if error is not None:
                     record.update(
                         calibration_error_kw=error, calibration_end_seconds=calibration_end * 900
@@ -269,6 +301,11 @@ if __name__ == "__main__":
         help="Use live base demand for one quarter and issued weather for three hours. "
         "Solar model labels end strictly before this native step.",
     )
+    parser.add_argument(
+        "--passive-export-history",
+        action="store_true",
+        help="Include a separate same-quarter passive export estimate for the supervisor.",
+    )
     options = parser.parse_args()
     prepare(
         options.schema,
@@ -278,4 +315,5 @@ if __name__ == "__main__":
         options.calibration_end,
         meter_fit_end=options.meter_fit_end,
         weather_fit_end=options.weather_fit_end,
+        passive_export_history=options.passive_export_history,
     )
