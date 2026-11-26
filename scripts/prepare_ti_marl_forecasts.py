@@ -85,6 +85,42 @@ def historical_passive_export(meters):
     return future
 
 
+def programme_meter_limits(meters, calibration_end):
+    """Fit signed passive kW maxima by quarter, then cover held-out misses."""
+    validation_steps = 28 * SLOTS_PER_DAY
+    if calibration_end is None or not 2 * validation_steps <= calibration_end <= len(meters):
+        raise ValueError("Programme bounds require 28 days each of fit and prior validation")
+    fit_end = calibration_end - validation_steps
+    net = np.asarray(meters[:calibration_end], dtype=float)
+    net = net[:, 0] - net[:, 1]
+    quarters = np.arange(calibration_end) % SLOTS_PER_DAY
+
+    def upper(series):
+        fitted = np.array(
+            [series[:fit_end][quarters[:fit_end] == q].max() for q in range(SLOTS_PER_DAY)]
+        )
+        held = np.array(
+            [series[fit_end:][quarters[fit_end:] == q].max() for q in range(SLOTS_PER_DAY)]
+        )
+        return fitted + 1.1 * np.maximum(0.0, held - fitted)
+
+    return np.stack((upper(net), upper(-net)))
+
+
+def programme_meter_record(limits, calibration_end, issue):
+    if issue < calibration_end:
+        raise ValueError("Cannot issue a programme envelope before validation ends")
+    slots = (issue + np.arange(SOLAR_LEADS + 1)) % SLOTS_PER_DAY
+    return dict(
+        history_start=0,
+        fit_end=(calibration_end - 28 * SLOTS_PER_DAY) * 900,
+        validation_end=calibration_end * 900,
+        import_upper_kw=limits[0, slots].tolist(),
+        export_upper_kw=limits[1, slots].tolist(),
+        all_quarters_upper_kw=limits.max(axis=1).tolist(),
+    )
+
+
 @dataclass(frozen=True)
 class MeterForecaster:
     """Per-site ridge forecasts for passive kW demand and PV, indexed by lead quarter."""
@@ -141,6 +177,7 @@ def prepare(
     meter_fit_end: int | None = None,
     weather_fit_end: int | None = None,
     passive_export_history: bool = False,
+    programme_meter_history: bool = False,
 ):
     schema = json.loads(schema_path.read_text())
     if schema["seconds_per_time_step"] != 900:
@@ -164,6 +201,7 @@ def prepare(
     first_prediction = max(weather_fit_end or 0, meter_fit_end or 0)
     sites, tariffs, weather_files = {}, {}, {}
     export_reference = {}
+    programme_reference = {}
     for site, building in schema["buildings"].items():
         if not building.get("include", True):
             continue
@@ -182,6 +220,13 @@ def prepare(
             raise ValueError(f"Invalid physical profile for {site}")
         if passive_export_history:
             export_reference[site] = historical_passive_export(physical)
+        if (
+            programme_meter_history
+            and building.get("deferrable_appliances")
+            and not building.get("chargers")
+            and not building.get("electrical_storage")
+        ):
+            programme_reference[site] = programme_meter_limits(physical, calibration_end)
         tariff_name = building["pricing"]
         if tariff_name not in tariffs:
             tariffs[tariff_name] = pd.read_parquet(root / tariff_name)
@@ -272,6 +317,10 @@ def prepare(
                         record["passive_export_history_end_seconds"] = (
                             issue + SOLAR_LEADS - SLOTS_PER_DAY + 1
                         ) * 900
+                if site in programme_reference:
+                    record["programme_meter_envelope"] = programme_meter_record(
+                        programme_reference[site], calibration_end, issue
+                    )
                 if error is not None:
                     record.update(
                         calibration_error_kw=error, calibration_end_seconds=calibration_end * 900
@@ -306,6 +355,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Include a separate same-quarter passive export estimate for the supervisor.",
     )
+    parser.add_argument(
+        "--programme-meter-history",
+        action="store_true",
+        help="Include prevalidated passive flow estimates for appliance-only sites.",
+    )
     options = parser.parse_args()
     prepare(
         options.schema,
@@ -316,4 +370,5 @@ if __name__ == "__main__":
         meter_fit_end=options.meter_fit_end,
         weather_fit_end=options.weather_fit_end,
         passive_export_history=options.passive_export_history,
+        programme_meter_history=options.programme_meter_history,
     )

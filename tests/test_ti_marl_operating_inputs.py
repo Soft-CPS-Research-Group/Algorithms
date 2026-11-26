@@ -680,6 +680,9 @@ def test_history_calibration_is_separate_from_actor_and_live_physical_bounds(tmp
             non_shiftable_kw=[2.0] * 96,
             solar_kw=[12.0] * 96,
         )
+        # The point forecast's separate demand and PV errors do not measure
+        # the error of the independent historical net-export estimate.
+        r.update(calibration_error_kw=[4.0, 5.0], calibration_end_seconds=0)
         # The alternative 1 kW estimate underestimates actual passive export (3 kW).
         historical = dict(
             r, passive_export_upper_kw=[1.0] * 12, passive_export_history_end_seconds=0
@@ -699,3 +702,40 @@ def test_history_calibration_is_separate_from_actor_and_live_physical_bounds(tmp
             assert limits_new["export"][0] == limits_old["export"][0]
         elif block in (1, 101, 104):
             assert limits_new == limits_old
+
+
+def test_programme_envelope_uses_pre_issue_labels_and_widens_after_meter_miss():
+    import numpy as np
+
+    from algorithms.ti_marl.runtime.programme_envelope import ProgrammeMeterEnvelope
+    from scripts.prepare_ti_marl_forecasts import programme_meter_limits, programme_meter_record
+
+    end = 96 * 60
+    meters = np.ones((end + 100, 2))
+    meters[:, 0] = 3
+    meters[end - 96, 0] = 4
+    limits = programme_meter_limits(meters, end)
+    assert limits[0, 0] == pytest.approx(3.1)
+    meters[end:] = [1000, 0]
+    np.testing.assert_array_equal(limits, programme_meter_limits(meters, end))
+    model = ProgrammeMeterEnvelope()
+
+    def record(block):
+        now = block * 900
+        return dict(
+            issued_at_seconds=now,
+            received_at_seconds=now,
+            valid_from_seconds=now,
+            programme_meter_envelope=programme_meter_record(limits, end, block),
+        )
+
+    first = record(end)
+    assert model.forecast(first, end - 1, None, 0) == ()
+    assert model.forecast(first, end, None, 0.1)[0][0] == pytest.approx(2.2)
+    # Actual import in the previous slot was 4.1 kW against its issued 3.1.
+    after = model.forecast(record(end + 1), end + 1, -4.1, 0.1)
+    assert after[0][0] == pytest.approx(3)
+    assert after[1][0] == pytest.approx(-1.8)
+    assert model.forecast(record(end + 1), end + 1, -99, 0.1) == after
+    first["programme_meter_envelope"]["fit_end"] = end * 900
+    assert model.forecast(first, end, None, 0) == ()
