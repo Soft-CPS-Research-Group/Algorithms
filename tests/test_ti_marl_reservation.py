@@ -588,6 +588,23 @@ def test_consecutive_solar_alerts_cannot_use_the_same_programme_start_twice():
     assert domain.edges == [0, 900]
 
 
+def test_passive_import_forecast_rechecks_before_overload_and_preserves_committed_loads():
+    from algorithms.ti_marl.runtime.reservation_solver import ReservationInfeasible
+
+    washer = Equipment("W", (IDLE, START), deadline_seconds=3600, programme_kw=(1, 1))
+    limit = PowerLimit("phase", {"W": 1.0}, "import", 3, (3, -0.8, 2), scope="phase")
+    domain = SiteReservation.plan(SiteInputs((washer,), (limit,)))
+    assert domain.diagnostics["forecast_import_alert"] == {"at_seconds": 900, "limit": "phase"}
+    assert domain.diagnostics["forecast_export_alert"] is None
+    assert domain.admissible_modes("W") == ("IDLE",)
+    for unit, cap in [
+        (replace(washer, running=True), limit),
+        (washer, replace(limit, current_kw=-1)),
+    ]:
+        with pytest.raises(ReservationInfeasible):
+            SiteReservation.plan(SiteInputs((unit,), (cap,)))
+
+
 def test_certified_window_protects_a_complete_cycle_without_relaxing_export():
     washer = Equipment("W", (IDLE, START), deadline_seconds=3600, programme_kw=(1.0, 1.0))
     export = PowerLimit("site", {"W": 1.0}, "export", 4.0, (4.0, 4.0, -3.0, 4.0), scope="site")

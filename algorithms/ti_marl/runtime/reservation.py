@@ -72,13 +72,14 @@ def _with_measured_running_tails(inputs):
     return None
 
 
-class _UnavoidableForecastExport(ReservationInfeasible):
-    """No joint schedule can absorb the projected export over the affected intervals."""
+class _UnavoidableForecastFlow(ReservationInfeasible):
+    """The forecast passive flow cannot be offset by any feasible joint schedule."""
 
-    def __init__(self, at_seconds, limit_key):
-        super().__init__(f"Forecast export exceeds controllable absorption at {limit_key}")
+    def __init__(self, at_seconds, limit_key, direction):
+        super().__init__(f"Unavoidable forecast {direction} at {limit_key}")
         self.at_seconds = at_seconds
         self.limit_key = limit_key
+        self.direction = direction
 
 
 class SiteReservation:
@@ -110,7 +111,7 @@ class SiteReservation:
 
     @classmethod
     def plan(cls, inputs, *, budget_seconds=5.0, **options):
-        """Prefer a full witness. Reassess before an unserviceable forecast export.
+        """Prefer a full witness. Reassess before an unavoidable forecast overload.
 
         Every retained row keeps its original physical bound. A new programme
         must finish inside the certified window. A held command or running
@@ -122,7 +123,7 @@ class SiteReservation:
         while True:
             try:
                 return cls(inputs, budget_seconds=remaining, _forecast_alert=alert, **options)
-            except _UnavoidableForecastExport as conflict:
+            except _UnavoidableForecastFlow as conflict:
                 # Each retry ends before a conflict strictly inside the last horizon.
                 alert = conflict
             except ReservationInfeasible:
@@ -218,7 +219,7 @@ class SiteReservation:
             if forecast_rows and self._forecast_causes_conflict(
                 forecast_rows, initial_bounds, initial_rows
             ):
-                raise _UnavoidableForecastExport(*min(forecast_rows.values()))
+                raise _UnavoidableForecastFlow(*min(forecast_rows.values()))
             raise
         self._original_problem = self.model.verification_problem()
         self._initial_witness = self.witness.copy()
@@ -492,11 +493,11 @@ class SiteReservation:
             if (
                 t > 0
                 and bound < 0.0
-                and limit.direction == "export"
+                and limit.direction in {"export", "import"}
                 and not limit.constant
                 and limit.scope in {"site", "phase"}
             ):
-                forecast_rows[len(self.model.rows) - 1] = (lo, limit.key)
+                forecast_rows[len(self.model.rows) - 1] = (lo, limit.key, limit.direction)
 
     def _forecast_causes_conflict(self, forecast_rows, initial_bounds, initial_rows):
         """Isolate the cause; no command from this diagnostic model is dispatched."""
@@ -889,16 +890,16 @@ class SiteReservation:
 
     @property
     def diagnostics(self):
+        alert = self.forecast_alert
+        alert_record = {"at_seconds": alert.at_seconds, "limit": alert.limit_key} if alert else None
         return {
             "reservation_notes": self.notes,
-            "forecast_export_alert": (
-                {
-                    "at_seconds": self.forecast_alert.at_seconds,
-                    "limit": self.forecast_alert.limit_key,
-                }
-                if self.forecast_alert is not None
-                else None
-            ),
+            "forecast_export_alert": alert_record
+            if alert and alert.direction == "export"
+            else None,
+            "forecast_import_alert": alert_record
+            if alert and alert.direction == "import"
+            else None,
             "requested_service": dict(self.ledger),
             "protected_fractions": dict(self.protected),
             "departure_margin_seconds": self.departure_margin,

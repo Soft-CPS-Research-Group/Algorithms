@@ -15,6 +15,7 @@ import numpy as np
 
 from algorithms.ti_marl.contracts.models import InterfaceSnapshot
 from algorithms.ti_marl.runtime.passive_export import PassiveExportFeedback
+from algorithms.ti_marl.runtime.programme_envelope import ProgrammeMeterEnvelope
 
 BLOCK_SECONDS = 900
 HORIZON = 96
@@ -42,6 +43,7 @@ class SiteOutlook:
     # Indexed by lead minus one. A missing entry keeps the independent channel bound.
     passive_export_error_kw: tuple[float | None, ...] = ()
     historical_export_upper_kw: tuple[float | None, ...] = ()
+    programme_meter_bounds: tuple[tuple[float, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,7 @@ class ForecastInputs:
             else None
         )
         self.historical_export_feedback = {}
+        self.programme_feedback = defaultdict(ProgrammeMeterEnvelope)
         self.last_timestamp = None
 
     def snapshot(
@@ -207,22 +210,22 @@ class ForecastInputs:
                 else:
                     error = (error_kw, error_kw)
             feedback = self.feedback[site]
+            # Only a fresh local meter can validate the forecast. The
+            # policy can still consume stale estimates with a quality flag.
+            measured = {
+                p.observation_id: float(p.values[0])
+                for p in base.parts_for(site)
+                if p.owner_agent_id == site
+                and p.sensor_id == "self"
+                and p.observation_id in {"non_shiftable_load", "pv_power_kw"}
+                and p.valid
+                and not p.estimated
+                and p.age_seconds == 0
+                and len(p.values) == 1
+                and math.isfinite(p.values[0])
+                and p.values[0] >= 0
+            }
             if new_instant:
-                # Only a fresh local meter can validate the forecast. The
-                # policy can still consume stale estimates with a quality flag.
-                measured = {
-                    p.observation_id: float(p.values[0])
-                    for p in base.parts_for(site)
-                    if p.owner_agent_id == site
-                    and p.sensor_id == "self"
-                    and p.observation_id in {"non_shiftable_load", "pv_power_kw"}
-                    and p.valid
-                    and not p.estimated
-                    and p.age_seconds == 0
-                    and len(p.values) == 1
-                    and math.isfinite(p.values[0])
-                    and p.values[0] >= 0
-                }
                 measured_load = measured.get("non_shiftable_load")
                 actual = (
                     None if measured_load is None else measured_load * 3600 / self.step_seconds,
@@ -235,9 +238,21 @@ class ForecastInputs:
                 feedback.observe(now, self.step_seconds, actual, upcoming, error, pv_lag_steps)
             export_errors = ()
             historical_upper = ()
+            programme_bounds = ()
             if self.export_feedback is not None and now == block * BLOCK_SECONDS:
                 paired = self.export_feedback[site]
                 eligible = self._paired_slots(record, now, paired.LEADS)
+                if (
+                    record is not None
+                    and "programme_meter_envelope" in record
+                    and error is not None
+                    and all(eligible)
+                    and all(g.group_type == "deferrable" for g in base.groups_for(site))
+                    and measured.keys() >= {"non_shiftable_load", "pv_power_kw"}
+                ):
+                    programme_bounds = self.programme_feedback[site].forecast(
+                        record, block, feedback.completed_passive_export_kw, error_kw or 0.0
+                    )
                 if new_instant:
                     predicted = np.where(
                         eligible, values[2, paired.LEADS] - values[1, paired.LEADS], np.nan
@@ -257,11 +272,13 @@ class ForecastInputs:
                     upper = self._historical_export(record, now, eligible)
                     if new_instant:
                         history.observe(block, feedback.completed_passive_export_kw, upper)
-                    # The issued estimate already retains all historical same-quarter
-                    # misses. Add the live same-lead miss or configured floor on top.
+                    # This estimate already includes past same-quarter net-export
+                    # misses. Validate it against its own live errors. The separate
+                    # load/PV point forecasts' calibration belongs to those models.
+                    historical_floor = None if floors is None else (error_kw or 0.0,) * 2
                     historical_upper = tuple(
                         float(value + margin) if np.isfinite(value) and margin is not None else None
-                        for value, margin in zip(upper, history.margins(floors))
+                        for value, margin in zip(upper, history.margins(historical_floor))
                     )
             outlooks.append(
                 SiteOutlook(
@@ -277,6 +294,7 @@ class ForecastInputs:
                     feedback.max_abs,
                     export_errors,
                     historical_upper,
+                    programme_bounds,
                 )
             )
         attrs = {f.name: getattr(base, f.name) for f in fields(InterfaceSnapshot)}
@@ -510,6 +528,17 @@ def reservation_envelopes(snapshot, registry, error_kw):
                             background = float(rating)
             else:
                 background = load_hi if share is None else share * (load_hi - pv_lo)
+            lead = len(bounds)
+            if (
+                curve.programme_meter_bounds
+                and share is not None
+                and lq == pq == ESTIMATED
+                and 0 < lead <= len(curve.programme_meter_bounds[int(export)])
+            ):
+                upper = max(0.0, share * curve.programme_meter_bounds[int(export)][lead - 1])
+                # A consuming programme may use certified import headroom. A
+                # less pessimistic export estimate grants no discretionary export.
+                background = min(background, max(rating, upper) if export else upper)
             bounds.append(float(rating) - background)
         result[constraint.constraint_id] = tuple(bounds)
     return result
