@@ -360,10 +360,13 @@ class SiteReservation:
     def _add_programme(self, unit, start, bit):
         # Import needs a peak, export needs a guaranteed minimum. A block
         # that overlaps only part of a cycle has zero guaranteed absorption.
+        upper = unit.programme_kw
+        # The live start preview certifies a command issued in this interval.
+        # A hypothetical later start must still have room for the peak envelope.
+        if start == 0.0 and bit is not None and unit.start_now_upper_kw is not None:
+            upper = unit.start_now_upper_kw
         lower = unit.programme_kw if unit.programme_min_kw is None else unit.programme_min_kw
-        if len(lower) != len(unit.programme_kw) or any(
-            not 0 <= lo <= hi for lo, hi in zip(lower, unit.programme_kw)
-        ):
+        if len(lower) != len(upper) or any(not 0 <= lo <= hi for lo, hi in zip(lower, upper)):
             raise ReservationUnavailable(f"{unit.key}: invalid programme power envelope")
         end = start + len(lower) * unit.programme_step_seconds
         for t, (lo, hi) in enumerate(zip(self.edges, self.edges[1:])):
@@ -372,7 +375,7 @@ class SiteReservation:
                 continue
             first = max(0, math.floor((lo - start) / unit.programme_step_seconds))
             stop = min(len(lower), math.ceil((hi - start) / unit.programme_step_seconds))
-            self.programmes["import", unit.key, t][bit] = max(unit.programme_kw[first:stop])
+            self.programmes["import", unit.key, t][bit] = max(upper[first:stop])
             self.programmes["export", unit.key, t][bit] = (
                 min(lower[first:stop]) if start <= lo and hi <= end else 0.0
             )

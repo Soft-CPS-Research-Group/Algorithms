@@ -688,3 +688,82 @@ def test_running_programme_can_certify_its_tail_from_metered_energy():
             SiteReservation.plan(SiteInputs((unverified,), (limit,)))
     group.output_unconfirmed = True
     assert equipment(values).running_tail_max_kw is None
+
+
+def test_pending_programme_reserves_energy_for_the_announced_peak():
+    from algorithms.ti_marl.runtime.reservation_inputs import _pending_programme_upper_kw
+
+    # Same 15-minute first sample and peak, very little energy in the other slots.
+    upper = (1.6, 2.0, 2.0, 2.0)
+    summary = dict(cycle_peak_step_offset_ratio=2 / 3, cycle_energy_kwh=0.925)
+    bounded = _pending_programme_upper_kw(upper, 1.6, 2, summary, 900)
+    assert bounded[0] == 1.6 and bounded[2] == 2
+    assert 0.1 <= bounded[1] == bounded[3] < 0.101
+    for other in (
+        {},
+        dict(summary, cycle_energy_kwh=0.2),
+        dict(summary, cycle_peak_step_offset_ratio=0.5),
+        dict(summary, cycle_peak_step_offset_ratio=0),
+    ):
+        assert _pending_programme_upper_kw(upper, 1.6, 2, other, 900) == upper
+    assert _pending_programme_upper_kw(upper, None, 2, summary, 900) == upper
+
+    # When the peak is at the start its energy can be counted only once.
+    upper = (2.0, 2.0, 2.0)
+    peak_first = dict(cycle_peak_step_offset_ratio=0, cycle_energy_kwh=0.6)
+    bounded = _pending_programme_upper_kw(upper, 2, 2, peak_first, 900)
+    assert bounded[0] == 2 and 0.4 <= bounded[1] == bounded[2] < 0.401
+
+
+def test_measured_pending_energy_opens_a_verified_start_under_a_later_power_limit():
+    from types import SimpleNamespace
+
+    from algorithms.ti_marl.runtime.reservation_inputs import _profiles
+
+    group = SimpleNamespace(
+        group_id="dryer",
+        group_type="deferrable",
+        reservation_profile={},
+        ports=[],
+        max_charge_power_kw=0,
+        max_discharge_power_kw=0,
+        output_unconfirmed=False,
+    )
+    values = dict(
+        pending=1,
+        can_start=1,
+        cycle_duration_steps=3,
+        cycle_peak_power_kw=2.0,
+        start_power_kw=1.7,
+        cycle_peak_step_offset_ratio=0.5,
+        cycle_energy_kwh=0.95,
+        hours_until_deadline=0.5,
+        hours_until_latest_start=0,
+    )
+    limit = PowerLimit("site", {"dryer": 1}, "import", 2.1, (2.1, 2.1, 0.2), scope="site")
+
+    def modes(readings):
+        unit = replace(_profiles(group, readings, 900, 0.05, []), modes=(IDLE, START))
+        return SiteReservation.plan(SiteInputs((unit,), (limit,))).admissible_modes("dryer")
+
+    assert modes(values) == ("START",)
+    assert modes({k: v for k, v in values.items() if k != "cycle_energy_kwh"}) == ("IDLE",)
+    assert modes(dict(values, cycle_energy_kwh=1.1)) == ("IDLE",)
+    assert modes(dict(values, cycle_peak_step_offset_ratio=1.0)) == ("IDLE",)
+
+
+def test_current_programme_preview_cannot_justify_delaying_a_certified_start():
+    unit = Equipment(
+        "dryer",
+        (IDLE, START),
+        programme_kw=(1.0, 2.0, 2.0),
+        programme_min_kw=(1.0, 0.0, 0.0),
+        start_now_upper_kw=(1.0, 2.0, 0.1),
+        programme_step_seconds=900,
+        deadline_seconds=3600,
+    )
+    # The first three quarters can cover the full peak. A delay would require
+    # assuming that the last low-power slot is still certified at the next issue.
+    limit = PowerLimit("site", {"dryer": 1}, "import", 2.1, (2.1, 2.1, 2.1, 0.2), scope="site")
+    domain = SiteReservation.plan(SiteInputs((unit,), (limit,)))
+    assert domain.admissible_modes("dryer") == ("START",)

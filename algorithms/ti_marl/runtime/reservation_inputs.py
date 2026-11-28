@@ -62,6 +62,8 @@ class Equipment:
     programme_min_kw: tuple[float, ...] | None = None
     # A measured maximum for any later slot of this already-running programme.
     running_tail_max_kw: float | None = None
+    # A pending device advertises this tighter shape for a start issued now.
+    start_now_upper_kw: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,45 @@ def _running_tail_max_kw(values, steps, dt, first_kw, peak_kw):
     return upper if upper < peak_kw else None
 
 
+def _pending_programme_upper_kw(upper, first, peak, values, dt):
+    """Bound each unmeasured slot by the energy left after the start and the peak."""
+    steps = len(upper)
+    offset = values.get("cycle_peak_step_offset_ratio")
+    energy = values.get("cycle_energy_kwh")
+    if (
+        first is None
+        or steps < 2
+        or offset is None
+        or not 0 <= offset <= 1
+        or energy is None
+        or not math.isfinite(energy)
+        or energy < 0
+        or not 0 <= first <= peak
+    ):
+        return upper
+
+    position = offset * (steps - 1)
+    index = round(position)
+    # The native channel represents a discrete sample index as a float32 ratio.
+    # An ambiguous or non-grid peak position cannot certify individual slots.
+    offset_error = (steps - 1) * 6e-8
+    if offset_error >= 0.5 or abs(position - index) > offset_error:
+        return upper
+    if index == 0 and not math.isclose(first, peak, rel_tol=1e-6, abs_tol=1e-6):
+        return upper
+
+    hours = dt / 3600
+    # Allow for the simulator's tolerance between declared kWh and the sum of
+    # the profile, plus roundoff in the separately observed first and peak kW.
+    slack = 2e-5 * max(1.0, energy) / hours + 1e-6 * max(1.0, peak)
+    total = energy / hours
+    known = first if index == 0 else first + peak
+    if total < known - slack or total > first + (steps - 1) * peak + slack:
+        return upper
+    remaining = min(peak, max(0.0, total - known + slack))
+    return tuple(power if i in (0, index) else remaining for i, power in enumerate(upper))
+
+
 def _profiles(group, values, dt, tolerance, diagnostics):
     physics = dict(group.reservation_profile)
     charge = group.max_charge_power_kw
@@ -190,8 +231,13 @@ def _profiles(group, values, dt, tolerance, diagnostics):
             latest = values.get("hours_until_latest_start")
             if not running and latest is not None and latest >= 0.0:
                 finish = min(finish, latest * 3600.0 + steps * dt)
+            upper = (peak if first is None else first,) + (peak,) * (steps - 1)
+            if pending and not running and not group.output_unconfirmed:
+                observed = _pending_programme_upper_kw(upper, first, peak, values, dt)
+                if observed != upper:
+                    kwargs["start_now_upper_kw"] = observed
             kwargs.update(
-                programme_kw=(peak if first is None else first,) + (peak,) * (steps - 1),
+                programme_kw=upper,
                 programme_min_kw=(0.0 if first is None else first,) + (0.0,) * (steps - 1),
                 programme_step_seconds=dt,
                 deadline_seconds=finish,
